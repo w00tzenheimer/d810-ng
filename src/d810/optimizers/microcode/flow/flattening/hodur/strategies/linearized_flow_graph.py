@@ -79,6 +79,12 @@ from d810.recon.flow.residual_handoff_discovery import (
     resolve_synthesized_handoff_target,
     state_has_semantic_support,
 )
+from d810.recon.flow.shared_suffix_discovery import (
+    can_rewrite_shared_suffix_family_fallback,
+    has_prior_branch_cut_for_state,
+    is_shared_suffix_conditional_tail,
+    pred_split_target_reaches_via_pred,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -2726,151 +2732,6 @@ class LinearizedFlowGraphStrategy:
         )
 
     @classmethod
-    def _has_prior_branch_cut_for_state(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        source_block: int,
-        state_value: int | None,
-        bst_node_blocks: set[int],
-        dispatcher: object | None = None,
-    ) -> bool:
-        """Return True when ``source_block`` is only a tail inside an earlier
-        conditional corridor for the same semantic state.
-
-        In that shape, rewriting the shared suffix block itself is unsafe even
-        if the state can be re-evaluated locally; the correct semantic cut is
-        the earlier conditional branch anchor.
-        """
-        if state_value is None:
-            return False
-
-        raw_value = state_value & 0xFFFFFFFF
-        for edge in dag.edges:
-            if edge.kind not in (
-                SemanticEdgeKind.TRANSITION,
-                SemanticEdgeKind.CONDITIONAL_TRANSITION,
-            ):
-                continue
-            if edge.target_state is None or (edge.target_state & 0xFFFFFFFF) != raw_value:
-                continue
-            if edge.source_anchor.kind != RedirectSourceKind.CONDITIONAL_BRANCH:
-                continue
-            if source_block not in edge.ordered_path:
-                continue
-            path_index = edge.ordered_path.index(source_block)
-            if path_index <= 0:
-                continue
-            target_entry = cls._resolve_redirect_safe_target_entry(
-                dag,
-                edge,
-                bst_node_blocks=bst_node_blocks,
-            )
-            if target_entry is None and edge.target_state is not None and edge.target_key is None:
-                target_entry = cls._resolve_nonexact_dispatch_target(
-                    dag,
-                    edge.target_state,
-                    source_block=edge.source_anchor.block_serial,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher=dispatcher,
-                    dispatcher_lookup=(
-                        getattr(dispatcher, "lookup", None) if dispatcher is not None else None
-                    ),
-                )
-            if target_entry is None or target_entry in bst_node_blocks:
-                continue
-            if target_entry == source_block:
-                continue
-            return True
-        return False
-
-    @staticmethod
-    def _is_shared_suffix_conditional_tail(
-        dag: LinearizedStateDag,
-        *,
-        source_block: int,
-    ) -> bool:
-        if not any(source_block in node.shared_suffix_blocks for node in dag.nodes):
-            return False
-        for edge in dag.edges:
-            if edge.source_anchor.kind != RedirectSourceKind.CONDITIONAL_BRANCH:
-                continue
-            if source_block not in edge.ordered_path:
-                continue
-            if edge.ordered_path.index(source_block) > 0:
-                return True
-        return False
-
-    @classmethod
-    def _can_rewrite_shared_suffix_family_fallback(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        source_block: int,
-        target_entry: int,
-        current_preds: tuple[int, ...],
-        bst_node_blocks: set[int],
-        flow_graph: object | None = None,
-    ) -> bool:
-        if len(current_preds) != 1:
-            return False
-        via_pred = current_preds[0]
-        expected_fallback = cls._resolve_owner_family_fallback_entry(
-            dag,
-            via_pred=via_pred,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-        )
-        if expected_fallback is not None and expected_fallback == target_entry:
-            return True
-        if flow_graph is None:
-            return False
-        try:
-            via_pred_block = flow_graph.get_block(via_pred)
-        except Exception:
-            via_pred_block = None
-        if via_pred_block is None:
-            return False
-        for pred_serial in tuple(getattr(via_pred_block, "preds", ())):
-            try:
-                pred_block = flow_graph.get_block(pred_serial)
-            except Exception:
-                pred_block = None
-            succs = tuple(getattr(pred_block, "succs", ())) if pred_block is not None else ()
-            if len(succs) == 2 and via_pred in succs and target_entry in succs:
-                return True
-        return False
-
-    @classmethod
-    def _pred_split_target_reaches_via_pred(
-        cls,
-        flow_graph: object,
-        *,
-        target_entry: int,
-        via_pred: int,
-        source_block: int,
-        ignored_blocks: set[int],
-        limit: int = 256,
-    ) -> bool:
-        """Detect true back-edges for pred-split redirects.
-
-        For a pred-split, the cloned path is entered from ``via_pred`` rather
-        than the original shared feeder block. Reaching the original
-        ``source_block`` from ``target_entry`` is therefore not necessarily a
-        cycle; the dangerous case is when ``target_entry`` can already reach
-        ``via_pred`` and would loop back into the cloned path.
-        """
-        pred_ignored = set(ignored_blocks)
-        pred_ignored.add(source_block)
-        return cls._target_reaches_source_ignoring_blocks(
-            flow_graph,
-            target_entry=target_entry,
-            source_block=via_pred,
-            ignored_blocks=pred_ignored,
-            limit=limit,
-        )
-
-    @classmethod
     def _emit_residual_dispatcher_handoffs(
         cls,
         *,
@@ -3234,7 +3095,7 @@ class LinearizedFlowGraphStrategy:
                                     via_pred,
                                     builder,
                                 ),
-                                target_reaches_via_pred=cls._pred_split_target_reaches_via_pred(
+                                target_reaches_via_pred=pred_split_target_reaches_via_pred(
                                     projected_flow_graph,
                                     target_entry=target_entry,
                                     via_pred=via_pred,
@@ -3282,7 +3143,7 @@ class LinearizedFlowGraphStrategy:
 
             state_value, target_entry = handoff
 
-            allow_family_fallback_tail = cls._can_rewrite_shared_suffix_family_fallback(
+            allow_family_fallback_tail = can_rewrite_shared_suffix_family_fallback(
                 dag,
                 source_block=source_block,
                 target_entry=target_entry,
@@ -3303,11 +3164,11 @@ class LinearizedFlowGraphStrategy:
                             dispatcher_serial=dispatcher_serial,
                             bst_node_blocks=frozenset(bst_node_blocks),
                             allow_family_fallback_tail=allow_family_fallback_tail,
-                            is_shared_suffix_conditional_tail=cls._is_shared_suffix_conditional_tail(
+                            is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail(
                                 dag,
                                 source_block=source_block,
                             ),
-                            has_prior_branch_cut=cls._has_prior_branch_cut_for_state(
+                            has_prior_branch_cut=has_prior_branch_cut_for_state(
                                 dag,
                                 source_block=source_block,
                                 state_value=state_value,

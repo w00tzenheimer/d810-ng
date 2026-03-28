@@ -38,6 +38,44 @@ def compute_reachable_blocks(
     return reachable
 
 
+def target_reaches_source_ignoring_blocks(
+    flow_graph: object,
+    *,
+    target_entry: int,
+    source_block: int,
+    ignored_blocks: set[int],
+    limit: int = 256,
+) -> bool:
+    """Return whether ``target_entry`` can reach ``source_block``.
+
+    ``ignored_blocks`` are treated as removed from the graph while exploring
+    the reachable frontier.
+    """
+    if target_entry == source_block:
+        return True
+
+    worklist: list[int] = [int(target_entry)]
+    seen: set[int] = set()
+    while worklist and len(seen) < limit:
+        current = worklist.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current == source_block:
+            return True
+        try:
+            succs = tuple(flow_graph.successors(current))
+        except Exception:
+            block = flow_graph.get_block(current)
+            succs = tuple(getattr(block, "succs", ())) if block is not None else ()
+        for succ in succs:
+            succ_serial = int(succ)
+            if succ_serial in ignored_blocks or succ_serial in seen:
+                continue
+            worklist.append(succ_serial)
+    return False
+
+
 def collect_dispatcher_predecessors(
     flow_graph: object,
     dispatcher_serial: int,
@@ -158,4 +196,5 @@ __all__ = [
     "edge_reachable_frontier",
     "graph_reaches_block",
     "pick_deepest_rescue_frontier",
+    "target_reaches_source_ignoring_blocks",
 ]
