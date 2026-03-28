@@ -6,6 +6,8 @@ dispatcher handoffs without choosing or applying any lowering policy.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ida_hexrays
 
 from d810.recon.flow.bst_analysis import _forward_eval_insn
@@ -17,6 +19,24 @@ from d810.recon.flow.linearized_state_dag import (
     StateDagNode,
     StateNodeKind,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualSourceHandoffFacts:
+    """Pure discovery facts for one residual dispatcher source block."""
+
+    source_block: int
+    current_preds: tuple[int, ...]
+    source_has_state_write: bool
+    assignment_map_handoff: tuple[int, int] | None
+    projected_snapshot_handoff: tuple[int, int] | None
+    immediate_handoff: tuple[int, int] | None
+    synthesized_handoff: tuple[int, int] | None
+    live_immediate_handoff: tuple[int, int] | None
+    live_synthesized_handoff: tuple[int, int] | None
+    source_level_handoff: tuple[int, int] | None
+    projected_path_handoff: tuple[int, int] | None
+    handoff: tuple[int, int] | None
 
 
 def dispatcher_has_exact_state_row(
@@ -1426,7 +1446,163 @@ def resolve_synthesized_handoff_target(
     return None
 
 
+def collect_residual_source_handoff_facts(
+    dag: LinearizedStateDag,
+    *,
+    state_machine: object | None,
+    projected_flow_graph: object,
+    source_block: int,
+    current_preds: tuple[int, ...],
+    state_var_stkoff: int | None,
+    bst_node_blocks: set[int],
+    dispatcher_lookup: object | None,
+    dispatcher: object | None = None,
+    analysis_mba: object | None = None,
+    live_mba: object | None = None,
+) -> ResidualSourceHandoffFacts:
+    """Collect all discovery-only residual handoff facts for ``source_block``."""
+    source_has_state_write = (
+        block_has_state_var_write(
+            analysis_mba,
+            source_block,
+            state_var_stkoff=state_var_stkoff,
+        )
+        or (
+            live_mba is not None
+            and analysis_mba is not live_mba
+            and block_has_state_var_write(
+                live_mba,
+                source_block,
+                state_var_stkoff=state_var_stkoff,
+            )
+        )
+    )
+
+    assignment_map_handoff = resolve_assignment_map_handoff_target(
+        dag,
+        state_machine,
+        source_block,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+    )
+    projected_snapshot_handoff = resolve_projected_snapshot_handoff_target(
+        dag,
+        projected_flow_graph,
+        source_block,
+        state_var_stkoff=state_var_stkoff,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+    )
+    immediate_handoff = resolve_immediate_handoff_target(
+        dag,
+        analysis_mba,
+        source_block,
+        state_var_stkoff=state_var_stkoff,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+    )
+
+    synthesized_handoff = None
+    if immediate_handoff is None:
+        if len(current_preds) == 1:
+            synthesized_handoff = resolve_synthesized_handoff_target(
+                dag,
+                analysis_mba,
+                source_block,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+                via_pred=current_preds[0],
+            )
+        if synthesized_handoff is None:
+            synthesized_handoff = resolve_synthesized_handoff_target(
+                dag,
+                analysis_mba,
+                source_block,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+            )
+
+    live_immediate_handoff = None
+    live_synthesized_handoff = None
+    if live_mba is not None and analysis_mba is not live_mba:
+        live_immediate_handoff = resolve_immediate_handoff_target(
+            dag,
+            live_mba,
+            source_block,
+            state_var_stkoff=state_var_stkoff,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+        )
+        if live_immediate_handoff is None:
+            if len(current_preds) == 1:
+                live_synthesized_handoff = resolve_synthesized_handoff_target(
+                    dag,
+                    live_mba,
+                    source_block,
+                    state_var_stkoff=state_var_stkoff,
+                    bst_node_blocks=bst_node_blocks,
+                    dispatcher=dispatcher,
+                    via_pred=current_preds[0],
+                )
+            if live_synthesized_handoff is None:
+                live_synthesized_handoff = resolve_synthesized_handoff_target(
+                    dag,
+                    live_mba,
+                    source_block,
+                    state_var_stkoff=state_var_stkoff,
+                    bst_node_blocks=bst_node_blocks,
+                    dispatcher=dispatcher,
+                )
+
+    source_level_handoff = (
+        immediate_handoff
+        or synthesized_handoff
+        or live_immediate_handoff
+        or live_synthesized_handoff
+    )
+    projected_path_handoff = None
+    if not (
+        source_has_state_write
+        and len(current_preds) > 1
+        and source_level_handoff is None
+    ):
+        projected_path_handoff = resolve_projected_path_tail_target(
+            dag,
+            source_block=source_block,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            predecessor_hints=current_preds if current_preds else None,
+        )
+
+    handoff = (
+        assignment_map_handoff
+        or projected_snapshot_handoff
+        or source_level_handoff
+        or projected_path_handoff
+    )
+    return ResidualSourceHandoffFacts(
+        source_block=int(source_block),
+        current_preds=tuple(int(pred) for pred in current_preds),
+        source_has_state_write=bool(source_has_state_write),
+        assignment_map_handoff=assignment_map_handoff,
+        projected_snapshot_handoff=projected_snapshot_handoff,
+        immediate_handoff=immediate_handoff,
+        synthesized_handoff=synthesized_handoff,
+        live_immediate_handoff=live_immediate_handoff,
+        live_synthesized_handoff=live_synthesized_handoff,
+        source_level_handoff=source_level_handoff,
+        projected_path_handoff=projected_path_handoff,
+        handoff=handoff,
+    )
+
+
 __all__ = [
+    "ResidualSourceHandoffFacts",
+    "collect_residual_source_handoff_facts",
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
     "block_has_state_var_write",
