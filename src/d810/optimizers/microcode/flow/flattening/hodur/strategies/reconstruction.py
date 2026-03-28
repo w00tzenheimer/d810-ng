@@ -104,8 +104,6 @@ from d810.recon.flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
     TerminalFamilySeedProbe,
-    build_terminal_family_candidates,
-    candidate_shared_suffix_entries,
     collect_linear_terminal_path,
     find_last_terminal_write,
     find_prev_terminal_write_to_locator,
@@ -116,12 +114,14 @@ from d810.recon.flow.terminal_family import (
     resolve_terminal_edge_entry,
     resolve_terminal_source_arm_entry,
     resolve_terminal_value_chain,
-    seed_terminal_family_probes,
     terminal_candidate_key,
     terminal_locator_key,
     terminal_source_signature,
     terminal_value_family_signature,
     terminal_write_signature,
+)
+from d810.recon.flow.terminal_family_collection import (
+    collect_terminal_family_candidates,
 )
 from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
 from d810.recon.flow.transition_builder import (
@@ -1193,15 +1193,7 @@ class StateWriteReconstructionStrategy:
         return terminal_candidate_key(candidate)
 
     @classmethod
-    def _candidate_shared_suffix_entries(
-        cls,
-        candidates: tuple[TerminalFamilyCandidate, ...],
-    ) -> dict[tuple[int, int | None, int, tuple[int, ...]], int]:
-        return candidate_shared_suffix_entries(candidates)
-
-
-    @classmethod
-    def _seed_terminal_family_candidates(
+    def _collect_terminal_family_candidates(
         cls,
         dag: LinearizedStateDag,
         *,
@@ -1209,16 +1201,19 @@ class StateWriteReconstructionStrategy:
         projected_flow_graph,
         dispatcher_region: set[int],
         reachable_blocks: set[int],
+        state_var_stkoff: int | None,
         mba,
-    ) -> tuple[TerminalFamilySeedProbe, ...]:
-        probes = seed_terminal_family_probes(
+    ) -> tuple[TerminalFamilyCandidate, ...]:
+        collection = collect_terminal_family_candidates(
             dag,
             base_flow_graph=base_flow_graph,
             projected_flow_graph=projected_flow_graph,
             dispatcher_region=dispatcher_region,
             reachable_blocks=reachable_blocks,
+            state_var_stkoff=state_var_stkoff,
         )
-        for probe in probes:
+        seed_probes = collection.seed_probes
+        for probe in seed_probes:
             seed = probe.seed
             logger.info(
                 "RECON RETURN: terminal-family seed src=%s%s origins=%s "
@@ -1238,7 +1233,7 @@ class StateWriteReconstructionStrategy:
                 blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
                 probe.rejection_reason,
                 probe.path,
-                )
+            )
             if probe.rejection_reason == "source_unreachable":
                 cls._log_source_unreachable_diagnostic(
                     int(seed.source_block),
@@ -1247,38 +1242,9 @@ class StateWriteReconstructionStrategy:
                     dispatcher_region=dispatcher_region,
                     mba=mba,
                 )
-        return probes
 
-    @classmethod
-    def _collect_terminal_family_candidates(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        dispatcher_region: set[int],
-        reachable_blocks: set[int],
-        state_var_stkoff: int | None,
-        mba,
-    ) -> tuple[TerminalFamilyCandidate, ...]:
-        seed_probes = cls._seed_terminal_family_candidates(
-            dag,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-            reachable_blocks=reachable_blocks,
-            mba=mba,
-        )
-        candidates = list(
-            build_terminal_family_candidates(
-                seed_probes,
-                projected_flow_graph=projected_flow_graph,
-                state_var_stkoff=state_var_stkoff,
-            )
-        )
-
-        candidate_suffix_entries = cls._candidate_shared_suffix_entries(tuple(candidates))
-        for candidate in candidates:
+        candidate_suffix_entries = collection.candidate_suffix_entries
+        for candidate in collection.candidates:
             candidate_key = cls._terminal_candidate_key(candidate)
             logger.info(
                 "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
@@ -1306,7 +1272,7 @@ class StateWriteReconstructionStrategy:
                 [hex(ea) for ea in candidate.lineage_eas],
             )
 
-        return tuple(candidates)
+        return collection.candidates
 
     @classmethod
     def _emit_terminal_family_splits(
