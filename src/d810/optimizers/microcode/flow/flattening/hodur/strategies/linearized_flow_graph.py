@@ -58,6 +58,7 @@ from d810.recon.flow.exit_transition_discovery import (
 )
 from d810.recon.flow.residual_handoff_discovery import (
     block_has_state_var_write,
+    collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
     is_raw_state_label,
@@ -2778,138 +2779,31 @@ class LinearizedFlowGraphStrategy:
             if source_block in claimed_1way:
                 continue
             current_preds = tuple(int(pred) for pred in getattr(block, "preds", ()))
-            source_has_state_write = (
-                cls._block_has_state_var_write(
-                    analysis_mba,
-                    source_block,
-                    state_var_stkoff=state_var_stkoff,
-                )
-                or (
-                    mba is not None
-                    and analysis_mba is not mba
-                    and cls._block_has_state_var_write(
-                        mba,
-                        source_block,
-                        state_var_stkoff=state_var_stkoff,
-                    )
-                )
-            )
-
-            assignment_map_handoff = cls._resolve_assignment_map_handoff_target(
+            handoff_facts = collect_residual_source_handoff_facts(
                 dag,
-                state_machine,
-                source_block,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-            )
-            projected_snapshot_handoff = cls._resolve_projected_snapshot_handoff_target(
-                dag,
-                projected_flow_graph,
-                source_block,
-                state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-            )
-            immediate_handoff = cls._resolve_immediate_handoff_target(
-                dag,
-                analysis_mba,
-                source_block,
+                state_machine=state_machine,
+                projected_flow_graph=projected_flow_graph,
+                source_block=source_block,
+                current_preds=current_preds,
                 state_var_stkoff=state_var_stkoff,
                 bst_node_blocks=bst_node_blocks,
                 dispatcher_lookup=dispatcher_lookup,
                 dispatcher=dispatcher,
-            )
-            synthesized_handoff = None
-            if immediate_handoff is None:
-                if len(current_preds) == 1:
-                    synthesized_handoff = cls._resolve_synthesized_handoff_target(
-                        dag,
-                        analysis_mba,
-                        source_block,
-                        state_var_stkoff=state_var_stkoff,
-                        bst_node_blocks=bst_node_blocks,
-                        dispatcher=dispatcher,
-                        via_pred=current_preds[0],
-                    )
-                if synthesized_handoff is None:
-                    synthesized_handoff = cls._resolve_synthesized_handoff_target(
-                        dag,
-                        analysis_mba,
-                        source_block,
-                        state_var_stkoff=state_var_stkoff,
-                        bst_node_blocks=bst_node_blocks,
-                        dispatcher=dispatcher,
-                    )
-            live_immediate_handoff = None
-            live_synthesized_handoff = None
-            if mba is not None and analysis_mba is not mba:
-                live_immediate_handoff = cls._resolve_immediate_handoff_target(
-                    dag,
-                    mba,
-                    source_block,
-                    state_var_stkoff=state_var_stkoff,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher_lookup=dispatcher_lookup,
-                    dispatcher=dispatcher,
-                )
-                if live_immediate_handoff is None:
-                    if len(current_preds) == 1:
-                        live_synthesized_handoff = cls._resolve_synthesized_handoff_target(
-                            dag,
-                            mba,
-                            source_block,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                            via_pred=current_preds[0],
-                        )
-                    if live_synthesized_handoff is None:
-                        live_synthesized_handoff = cls._resolve_synthesized_handoff_target(
-                            dag,
-                            mba,
-                            source_block,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                        )
-            source_level_handoff = (
-                immediate_handoff
-                or synthesized_handoff
-                or live_immediate_handoff
-                or live_synthesized_handoff
-            )
-            projected_path_handoff = None
-            if not (
-                source_has_state_write
-                and len(current_preds) > 1
-                and source_level_handoff is None
-            ):
-                projected_path_handoff = cls._resolve_projected_path_tail_target(
-                    dag,
-                    source_block=source_block,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher=dispatcher,
-                    predecessor_hints=current_preds if current_preds else None,
-                )
-            handoff = (
-                assignment_map_handoff
-                or
-                projected_snapshot_handoff
-                or source_level_handoff
-                or projected_path_handoff
+                analysis_mba=analysis_mba,
+                live_mba=(mba if mba is not None else None),
             )
             logger.info(
                 "LFG DAG DEBUG residual %s: assignment_map=%s projected_snapshot=%s projected=%s state_write=%s immediate=%s synthesized=%s live_immediate=%s live_synthesized=%s preds=%s succs=%s",
                 blk_label(mba, source_block),
-                assignment_map_handoff,
-                projected_snapshot_handoff,
-                projected_path_handoff,
-                source_has_state_write,
-                immediate_handoff,
-                synthesized_handoff,
-                live_immediate_handoff,
-                live_synthesized_handoff,
-                current_preds,
+                handoff_facts.assignment_map_handoff,
+                handoff_facts.projected_snapshot_handoff,
+                handoff_facts.projected_path_handoff,
+                handoff_facts.source_has_state_write,
+                handoff_facts.immediate_handoff,
+                handoff_facts.synthesized_handoff,
+                handoff_facts.live_immediate_handoff,
+                handoff_facts.live_synthesized_handoff,
+                handoff_facts.current_preds,
                 succs,
             )
             prefix_redirected = False
@@ -3003,11 +2897,11 @@ class LinearizedFlowGraphStrategy:
                 prefix_redirected = True
             if prefix_redirected:
                 continue
-            if handoff is None:
+            if handoff_facts.handoff is None:
                 pred_split_attempts: list[ResidualPredSplitAttempt] = []
                 for via_pred in current_preds:
                     pred_handoff = None
-                    if source_has_state_write:
+                    if handoff_facts.source_has_state_write:
                         pred_handoff = cls._resolve_synthesized_handoff_target(
                             dag,
                             analysis_mba,
@@ -3140,7 +3034,7 @@ class LinearizedFlowGraphStrategy:
                     redirected += 1
                 continue
 
-            state_value, target_entry = handoff
+            state_value, target_entry = handoff_facts.handoff
 
             allow_family_fallback_tail = can_rewrite_shared_suffix_family_fallback(
                 dag,

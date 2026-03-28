@@ -14,6 +14,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateRedirectAnchor,
 )
 from d810.recon.flow.residual_handoff_discovery import (
+    collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
     resolve_assignment_map_handoff_target,
@@ -323,3 +324,58 @@ class TestResidualTargetDiscovery:
             )
             == (0x33, 24)
         )
+
+    def test_collects_residual_source_handoff_facts(self, monkeypatch) -> None:
+        dag = _dag((), ())
+
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            lambda mba, block_serial, **kwargs: mba == "analysis",
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            lambda *args, **kwargs: (0x11, 24),
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            lambda *args, **kwargs: (0x22, 25),
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            lambda dag, mba, source_block, **kwargs: (
+                (0x33, 26) if mba == "analysis" else (0x44, 27)
+            ),
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            lambda *args, **kwargs: (0x55, 28),
+        )
+
+        facts = collect_residual_source_handoff_facts(
+            dag,
+            state_machine=object(),
+            projected_flow_graph=object(),
+            source_block=10,
+            current_preds=(7,),
+            state_var_stkoff=0x88,
+            bst_node_blocks={2, 6},
+            dispatcher_lookup=None,
+            dispatcher=object(),
+            analysis_mba="analysis",
+            live_mba="live",
+        )
+
+        assert facts.source_block == 10
+        assert facts.current_preds == (7,)
+        assert facts.source_has_state_write is True
+        assert facts.assignment_map_handoff == (0x11, 24)
+        assert facts.projected_snapshot_handoff == (0x22, 25)
+        assert facts.immediate_handoff == (0x33, 26)
+        assert facts.live_immediate_handoff == (0x44, 27)
+        assert facts.source_level_handoff == (0x33, 26)
+        assert facts.projected_path_handoff == (0x55, 28)
+        assert facts.handoff == (0x11, 24)
