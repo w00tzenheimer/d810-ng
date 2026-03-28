@@ -49,6 +49,9 @@ from d810.recon.flow.graph_reachability import (
     compute_reachable_blocks,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
+from d810.recon.flow.exit_transition_discovery import (
+    collect_exit_transition_candidates,
+)
 from d810.recon.flow.residual_handoff_discovery import (
     block_has_state_var_write,
     dispatcher_exact_state_target,
@@ -4430,420 +4433,130 @@ class LinearizedFlowGraphStrategy:
         mba = snapshot.mba
         if mba is None:
             return 0
-
-        # Build inverted map: state_value -> correct handler entry serial.
-        # handler_state_map shape: {handler_serial: state_value}
-        state_to_entry: dict[int, int] = {
-            v: k for k, v in handler_state_map.items()
-        }
-        # Also store the dispatcher reference for fallback lookup on
-        # states that are only reachable via wide BST range intervals.
-        _exit_dispatcher = getattr(bst_result, "dispatcher", None)
-
-        # Resolve state variable stkoff (same logic as _nop_state_variable_writes).
-        stkoff: int | None = None
-        detector = snapshot.detector
-        if detector is not None:
-            try:
-                stkoff = _get_state_var_stkoff(detector)
-            except Exception:
-                pass
-        if stkoff is None and sm.state_var is not None:
-            try:
-                if sm.state_var.t == ida_hexrays.mop_S:
-                    stkoff = sm.state_var.s.off
-            except Exception:
-                pass
-
-        if stkoff is None:
-            logger.info(
-                "LFG EXIT: cannot resolve state_var stkoff, skipping"
-            )
-            return 0
-
-        # Identify states with outgoing transitions.
-        states_with_outgoing: set[int] = {
-            t.from_state for t in sm.transitions
-            if t.from_state is not None
-        }
-
-        # Also exclude self-loop-skipped states: states where the only
-        # transitions have from_block == target_entry (already skipped in
-        # main loop).
-        self_loop_only: set[int] = set()
-        for state_val, handler in sm.handlers.items():
-            if state_val not in states_with_outgoing:
-                continue
-            handler_transitions = [
-                t for t in sm.transitions if t.from_state == state_val
-            ]
-            all_self_loop = True
-            for t in handler_transitions:
-                target = resolve_target_via_bst(bst_result, t.to_state)
-                if target is None or t.from_block != target:
-                    all_self_loop = False
-                    break
-            if all_self_loop and handler_transitions:
-                self_loop_only.add(state_val)
-
-        # Find EXIT states: handlers with no outgoing transition (or only
-        # self-loops that were skipped).
-        exit_states: list[int] = []
-        for state_val in sm.handlers:
-            if state_val in states_with_outgoing and state_val not in self_loop_only:
-                continue
-            exit_states.append(state_val)
-
-        if not exit_states:
-            logger.info("LFG EXIT: no EXIT states found")
-            return 0
-
-        logger.info(
-            "LFG EXIT: found %d EXIT states: %s",
-            len(exit_states),
-            ["0x%X" % s for s in exit_states],
+        candidates = collect_exit_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=bst_result,
+            handler_state_map=handler_state_map,
+            bst_node_blocks=bst_node_blocks,
         )
+        if not candidates:
+            return 0
 
         resolved_count = 0
-        max_bfs_depth = 6
-
-        for state_val in exit_states:
-            handler = sm.handlers[state_val]
-            correct_entry = state_to_entry.get(state_val)
-            # Fallback: use IntervalDispatcher for range-matched states.
-            if correct_entry is None and _exit_dispatcher is not None:
-                correct_entry = _exit_dispatcher.lookup(state_val)
-                if correct_entry is not None:
-                    logger.info(
-                        "LFG EXIT: DISP_LOOKUP state 0x%X -> %s "
-                        "(via IntervalDispatcher)",
-                        state_val,
-                        blk_label(mba, correct_entry),
-                    )
-            if correct_entry is None:
-                if state_val in self_loop_only:
-                    logger.info(
-                        "LFG EXIT: skipping self-loop state 0x%X "
-                        "(not in handler_state_map)",
-                        state_val,
-                    )
-                    continue
-                # BST boundary state — try direct BST walk to find target block.
-                dispatcher_serial = snapshot.bst_dispatcher_serial
-                if dispatcher_serial >= 0 and bst_node_blocks:
-                    target_serial = resolve_via_bst_walk(
-                        mba, dispatcher_serial, state_val, bst_node_blocks,
-                    )
-                    if target_serial is not None:
-                        # Find from_block: look for a transition that writes
-                        # this state value so we know the exit block.
-                        from_block: int | None = None
-                        for t in sm.transitions:
-                            if t.to_state == state_val:
-                                from_block = t.from_block
-                                break
-                        if from_block is None:
-                            # Fallback: use handler's check/entry block.
-                            from_block = (
-                                handler.handler_blocks[0]
-                                if handler.handler_blocks
-                                else handler.check_block
-                            )
-                        if from_block in bst_node_blocks:
-                            logger.info(
-                                "LFG EXIT: BST walk skipping state 0x%X "
-                                "— from_block %s is BST node",
-                                state_val,
-                                blk_label(mba, from_block),
-                            )
-                            continue
-                        if from_block != target_serial:
-                            emit_key = (from_block, target_serial)
-                            if emit_key not in emitted:
-                                emitted.add(emit_key)
-                                from_nsucc = builder.block_nsucc_map.get(
-                                    from_block, 1,
-                                )
-                                if from_nsucc == 2:
-                                    bst_old_target: int | None = None
-                                    from_succs = builder.block_succ_map.get(
-                                        from_block, (),
-                                    )
-                                    for succ_serial in from_succs:
-                                        if succ_serial in bst_node_blocks:
-                                            bst_old_target = succ_serial
-                                            break
-                                    if bst_old_target is None:
-                                        for succ_serial in from_succs:
-                                            if succ_serial not in owned_blocks:
-                                                bst_old_target = succ_serial
-                                                break
-                                    if bst_old_target is None:
-                                        for succ_serial in from_succs:
-                                            if succ_serial in dispatcher_region:
-                                                bst_old_target = succ_serial
-                                                break
-                                    if bst_old_target is None:
-                                        for succ_serial in from_succs:
-                                            if succ_serial != target_serial:
-                                                bst_old_target = succ_serial
-                                                break
-                                    if bst_old_target is not None:
-                                        mod = builder.edge_redirect(
-                                            source_block=from_block,
-                                            target_block=target_serial,
-                                            old_target=bst_old_target,
-                                        )
-                                        modifications.append(mod)
-                                        owned_edges.add(
-                                            (from_block, target_serial),
-                                        )
-                                        resolved_count += 1
-                                        logger.info(
-                                            "LFG EXIT: BST walk resolved "
-                                            "state 0x%X: %s -> %s "
-                                            "(2-way, old_target=%s)",
-                                            state_val,
-                                            blk_label(mba, from_block),
-                                            blk_label(mba, target_serial),
-                                            blk_label(mba, bst_old_target),
-                                        )
-                                        continue
-                                else:
-                                    if from_block in claimed_1way:
-                                        first_target = claimed_1way[from_block]
-                                        if first_target != target_serial:
-                                            logger.info(
-                                                "LFG EXIT: BST walk CONFLICT "
-                                                "on 1-way %s: already "
-                                                "-> %s, skipping "
-                                                "-> %s",
-                                                blk_label(mba, from_block),
-                                                blk_label(mba, first_target),
-                                                blk_label(mba, target_serial),
-                                            )
-                                            continue
-                                        else:
-                                            continue
-                                    mod = builder.goto_redirect(
-                                        source_block=from_block,
-                                        target_block=target_serial,
-                                    )
-                                    claimed_1way[from_block] = target_serial
-                                    modifications.append(mod)
-                                    owned_edges.add(
-                                        (from_block, target_serial),
-                                    )
-                                    resolved_count += 1
-                                    logger.info(
-                                        "LFG EXIT: BST walk resolved "
-                                        "state 0x%X: %s -> %s "
-                                        "(1-way)",
-                                        state_val,
-                                        blk_label(mba, from_block),
-                                        blk_label(mba, target_serial),
-                                    )
-                                    continue
-                logger.info(
-                    "LFG EXIT: state 0x%X not in handler_state_map "
-                    "and BST walk failed, skipping",
-                    state_val,
-                )
+        for candidate in candidates:
+            state_val = int(candidate.state_value)
+            from_block = int(candidate.from_block)
+            target_entry = int(candidate.target_entry)
+            emit_key = (from_block, target_entry)
+            if emit_key in emitted:
                 continue
+            emitted.add(emit_key)
 
-            current_entry = handler.handler_blocks[0] if handler.handler_blocks else handler.check_block
-
-            logger.info(
-                "LFG EXIT: state 0x%X: handler entry %s, "
-                "correct entry %s%s",
-                state_val,
-                blk_label(mba, current_entry),
-                blk_label(mba, correct_entry),
-                " (MISMATCH)" if current_entry != correct_entry else "",
-            )
-
-            # BFS from the correct entry block to find m_mov #const, state_var.
-            visited: set[int] = set()
-            queue: list[tuple[int, int]] = [(correct_entry, 0)]  # (serial, depth)
-            found_writes: list[tuple[int, int, int]] = []  # (blk_serial, insn_ea, const_value)
-
-            while queue:
-                blk_serial, depth = queue.pop(0)
-                if blk_serial in visited:
-                    continue
-                visited.add(blk_serial)
-
-                # Skip BST nodes -- they compare the state var, not write it.
-                if blk_serial in bst_node_blocks:
-                    continue
-
-                try:
-                    blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
-                except (AttributeError, IndexError):
-                    continue
-                if blk is None:
-                    continue
-
-                # Walk all instructions in this block looking for
-                # m_mov #const, state_var.
-                insn = blk.head
-                while insn is not None:
-                    if insn.opcode == ida_hexrays.m_mov:
-                        d = insn.d
-                        if (
-                            d is not None
-                            and d.t == ida_hexrays.mop_S
-                            and d.s is not None
-                            and d.s.off == stkoff
-                            and insn.l is not None
-                            and insn.l.t == ida_hexrays.mop_n
-                        ):
-                            const_val = insn.l.nnn.value
-                            found_writes.append(
-                                (blk_serial, insn.ea, const_val)
-                            )
-                            logger.info(
-                                "LFG EXIT: state 0x%X: found m_mov #0x%X, "
-                                "state_var in %s",
-                                state_val,
-                                const_val,
-                                blk_label(mba, blk_serial),
-                            )
-                    insn = insn.next
-
-                # Continue BFS to successors within depth limit.
-                if depth < max_bfs_depth:
-                    try:
-                        nsucc = blk.nsucc()
-                        for i in range(nsucc):
-                            succ_serial = blk.succ(i)
-                            if succ_serial not in visited:
-                                queue.append((succ_serial, depth + 1))
-                    except Exception:
-                        pass
-
-            if not found_writes:
-                logger.info(
-                    "LFG EXIT: state 0x%X: no state var writes found via "
-                    "BFS from %s (depth %d, visited %d blocks)",
-                    state_val,
-                    blk_label(mba, correct_entry),
-                    max_bfs_depth,
-                    len(visited),
-                )
-                continue
-
-            # For each found write, resolve the target handler and emit a
-            # redirect from the write block back to the correct handler.
-            for write_blk, write_ea, exit_state_value in found_writes:
-                target_entry = resolve_target_via_bst(
-                    bst_result, exit_state_value
-                )
-                if target_entry is None:
-                    logger.info(
-                        "LFG EXIT: state 0x%X: exit value 0x%X from "
-                        "%s resolves to None, skipping",
-                        state_val,
-                        exit_state_value,
-                        blk_label(mba, write_blk),
-                    )
-                    continue
-
-                # Skip self-loop redirects.
-                if write_blk == target_entry:
-                    logger.info(
-                        "LFG EXIT: state 0x%X: skipping self-loop "
-                        "%s -> %s",
-                        state_val,
-                        blk_label(mba, write_blk),
-                        blk_label(mba, target_entry),
-                    )
-                    continue
-
-                emit_key = (write_blk, target_entry)
-                if emit_key in emitted:
-                    continue
-                emitted.add(emit_key)
-
-                # Determine from_block: the block that writes the exit
-                # state and needs its successor redirected.  For 1-way
-                # blocks this is the write block itself.  For 2-way
-                # blocks we find the dispatcher-bound successor leg.
-                from_block = write_blk
-                from_nsucc = builder.block_nsucc_map.get(from_block, 1)
-
-                if from_nsucc == 2:
-                    bst_old_target: int | None = None
-                    from_succs = builder.block_succ_map.get(
-                        from_block, ()
-                    )
+            from_nsucc = builder.block_nsucc_map.get(from_block, 1)
+            if from_nsucc == 2:
+                bst_old_target: int | None = None
+                from_succs = builder.block_succ_map.get(from_block, ())
+                for succ_serial in from_succs:
+                    if succ_serial in bst_node_blocks:
+                        bst_old_target = succ_serial
+                        break
+                if bst_old_target is None:
                     for succ_serial in from_succs:
-                        if succ_serial in bst_node_blocks:
+                        if succ_serial not in owned_blocks:
                             bst_old_target = succ_serial
                             break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial not in owned_blocks:
-                                bst_old_target = succ_serial
-                                break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial in dispatcher_region:
-                                bst_old_target = succ_serial
-                                break
-                    if bst_old_target is None:
-                        for succ_serial in from_succs:
-                            if succ_serial != target_entry:
-                                bst_old_target = succ_serial
-                                break
+                if bst_old_target is None:
+                    for succ_serial in from_succs:
+                        if succ_serial in dispatcher_region:
+                            bst_old_target = succ_serial
+                            break
+                if bst_old_target is None:
+                    for succ_serial in from_succs:
+                        if succ_serial != target_entry:
+                            bst_old_target = succ_serial
+                            break
 
-                    if bst_old_target is None:
-                        logger.info(
-                            "LFG EXIT: state 0x%X: cannot determine "
-                            "old_target for 2-way %s, skipping",
-                            state_val,
-                            blk_label(mba, from_block),
-                        )
-                        continue
+                if bst_old_target is None:
+                    logger.info(
+                        "LFG EXIT: state 0x%X: cannot determine old_target for 2-way %s, skipping",
+                        state_val,
+                        blk_label(mba, from_block),
+                    )
+                    continue
 
-                    mod = builder.edge_redirect(
+                modifications.append(
+                    builder.edge_redirect(
                         source_block=from_block,
                         target_block=target_entry,
                         old_target=bst_old_target,
                     )
-                else:
-                    # 1-way: check for shared tail conflict.
-                    if from_block in claimed_1way:
-                        first_target = claimed_1way[from_block]
-                        if first_target != target_entry:
-                            logger.info(
-                                "LFG EXIT: CONFLICT on 1-way %s: "
-                                "already -> %s, skipping -> %s",
-                                blk_label(mba, from_block),
-                                blk_label(mba, first_target),
-                                blk_label(mba, target_entry),
-                            )
-                            continue
-                        else:
-                            continue  # already emitted
-                    mod = builder.goto_redirect(
-                        source_block=from_block,
-                        target_block=target_entry,
-                    )
-                    claimed_1way[from_block] = target_entry
-
-                modifications.append(mod)
+                )
                 owned_edges.add((from_block, target_entry))
-                owned_transitions.add((state_val, exit_state_value))
                 resolved_count += 1
+                if candidate.discovery_kind == "bst_walk":
+                    logger.info(
+                        "LFG EXIT: BST walk resolved state 0x%X: %s -> %s (2-way, old_target=%s)",
+                        state_val,
+                        blk_label(mba, from_block),
+                        blk_label(mba, target_entry),
+                        blk_label(mba, bst_old_target),
+                    )
+                else:
+                    logger.info(
+                        "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X, 2-way)",
+                        state_val,
+                        blk_label(mba, from_block),
+                        blk_label(mba, target_entry),
+                        int(candidate.exit_state_value or 0),
+                    )
+                continue
 
+            if from_block in claimed_1way:
+                first_target = claimed_1way[from_block]
+                if first_target != target_entry:
+                    if candidate.discovery_kind == "bst_walk":
+                        logger.info(
+                            "LFG EXIT: BST walk CONFLICT on 1-way %s: already -> %s, skipping -> %s",
+                            blk_label(mba, from_block),
+                            blk_label(mba, first_target),
+                            blk_label(mba, target_entry),
+                        )
+                    else:
+                        logger.info(
+                            "LFG EXIT: CONFLICT on 1-way %s: already -> %s, skipping -> %s",
+                            blk_label(mba, from_block),
+                            blk_label(mba, first_target),
+                            blk_label(mba, target_entry),
+                        )
+                continue
+
+            claimed_1way[from_block] = target_entry
+            modifications.append(
+                builder.goto_redirect(
+                    source_block=from_block,
+                    target_block=target_entry,
+                )
+            )
+            owned_edges.add((from_block, target_entry))
+            if candidate.exit_state_value is not None:
+                owned_transitions.add((state_val, int(candidate.exit_state_value)))
+            resolved_count += 1
+
+            if candidate.discovery_kind == "bst_walk":
                 logger.info(
-                    "LFG EXIT: resolved state 0x%X: %s -> %s "
-                    "(exit value 0x%X)",
+                    "LFG EXIT: BST walk resolved state 0x%X: %s -> %s (1-way)",
                     state_val,
                     blk_label(mba, from_block),
                     blk_label(mba, target_entry),
-                    exit_state_value,
+                )
+            else:
+                logger.info(
+                    "LFG EXIT: resolved state 0x%X: %s -> %s (exit value 0x%X)",
+                    state_val,
+                    blk_label(mba, from_block),
+                    blk_label(mba, target_entry),
+                    int(candidate.exit_state_value or 0),
                 )
 
         logger.info(
