@@ -3,6 +3,7 @@ from __future__ import annotations
 import ida_hexrays
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from d810.recon.flow.linearized_state_dag import (
     RedirectSourceKind,
@@ -17,6 +18,7 @@ from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    resolve_effective_target_entry,
     resolve_assignment_map_handoff_target,
     resolve_immediate_handoff_target,
     resolve_nonexact_dispatch_target,
@@ -280,6 +282,96 @@ class TestResidualTargetDiscovery:
             )
             == (0x33, 24)
         )
+
+    def test_effective_target_prefers_normalized_nonexact_over_same_corridor_handoff(self) -> None:
+        target = _node(entry=30, handler=30, state=0x33)
+        edge = _edge(
+            source_handler=10,
+            target_key=target.key,
+            target_entry=30,
+            target_state=0x33,
+            target_label="0x00000033",
+            ordered_path=(8, 10),
+        )
+        dag = _dag((target,), (edge,))
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x30, hi=0x40, target=2),),
+        )
+
+        with (
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
+                return_value=30,
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
+                return_value=40,
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+                return_value=(0x55, 8),
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_cover_fallback_entry_for_state",
+                return_value=None,
+            ),
+        ):
+            resolution = resolve_effective_target_entry(
+                dag,
+                edge,
+                bst_node_blocks={2, 6},
+                state_var_stkoff=0x20,
+                dispatcher_lookup=None,
+                dispatcher=dispatcher,
+                mba=object(),
+            )
+
+        assert resolution.target_entry == 40
+
+    def test_effective_target_preserves_dag_target_for_nonexact_state_conflict(self) -> None:
+        target = _node(entry=30, handler=30, state=0x33)
+        edge = _edge(
+            source_handler=10,
+            target_key=target.key,
+            target_entry=30,
+            target_state=0x33,
+            target_label="0x00000033",
+            ordered_path=(8, 10),
+        )
+        dag = _dag((target,), (edge,))
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x30, hi=0x40, target=2),),
+        )
+
+        with (
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
+                return_value=30,
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
+                return_value=None,
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+                return_value=(0x33, 40),
+            ),
+            patch(
+                "d810.recon.flow.residual_handoff_discovery.resolve_dag_entry_for_state",
+                return_value=31,
+            ),
+        ):
+            resolution = resolve_effective_target_entry(
+                dag,
+                edge,
+                bst_node_blocks={2, 6},
+                state_var_stkoff=0x20,
+                dispatcher_lookup=None,
+                dispatcher=dispatcher,
+                mba=object(),
+            )
+
+        assert resolution.target_entry == 30
 
     def test_resolves_immediate_and_projected_snapshot_handoff_targets(self) -> None:
         target = _node(entry=24, handler=24, state=0x33)
