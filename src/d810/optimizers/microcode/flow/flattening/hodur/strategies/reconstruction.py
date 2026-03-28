@@ -29,10 +29,7 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.shared_corridor import (
-    first_boundary_index,
-    first_shared_block_index,
     is_backward_same_corridor_target,
-    is_shared_block,
     resolve_old_target,
 )
 from d810.cfg.lowering_selector import (
@@ -70,7 +67,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
-    RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateDagNode,
@@ -78,13 +74,10 @@ from d810.recon.flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.graph_reachability import (
-    collect_dispatcher_predecessors,
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
-    graph_reaches_block,
-    pick_deepest_rescue_frontier,
 )
-from d810.recon.flow.dag_index import build_dag_node_maps, resolve_target_node
+from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
 from d810.recon.flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
@@ -107,7 +100,6 @@ from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_candidates,
     collect_terminal_source_unreachable_diagnostic,
 )
-from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
 from d810.recon.flow.transition_builder import TransitionResult
 
 logger = logging.getLogger(
@@ -144,29 +136,6 @@ class StateWriteReconstructionStrategy:
     def family(self) -> str:
         return FAMILY_DIRECT
 
-    @staticmethod
-    def _resolve_state_var_stkoff(snapshot, state_machine) -> int | None:
-        return resolve_state_var_stkoff(
-            detector=getattr(snapshot, "detector", None),
-            state_var=getattr(state_machine, "state_var", None),
-        )
-
-    @staticmethod
-    def _shared_suffix_blocks(dag: LinearizedStateDag) -> set[int]:
-        return collect_shared_suffix_blocks(dag)
-
-    @staticmethod
-    def _classify_artifact_return_blocks(
-        flow_graph,
-        state_var_stkoff: int,
-        state_constants: set[int],
-    ) -> set[int]:
-        return classify_artifact_return_blocks(
-            flow_graph,
-            state_var_stkoff=state_var_stkoff,
-            state_constants=state_constants,
-        )
-
     @classmethod
     def _make_edge_metadata(
         cls,
@@ -191,261 +160,6 @@ class StateWriteReconstructionStrategy:
             rejection_reason=rejection_reason,
         )
 
-    @staticmethod
-    def _node_maps(
-        dag: LinearizedStateDag,
-    ) -> tuple[
-        dict[StateDagNodeKey, StateDagNode],
-        dict[StateDagNodeKey, tuple[StateDagEdge, ...]],
-        dict[int, tuple[StateDagNode, ...]],
-    ]:
-        maps = build_dag_node_maps(dag)
-        return (
-            maps.node_by_key,
-            maps.outgoing_by_key,
-            maps.nodes_by_entry_anchor,
-        )
-
-    @staticmethod
-    def _resolve_target_node(
-        edge: StateDagEdge,
-        *,
-        node_by_key: dict[StateDagNodeKey, StateDagNode],
-        nodes_by_entry_anchor: dict[int, tuple[StateDagNode, ...]],
-    ) -> StateDagNode | None:
-        return resolve_target_node(
-            edge,
-            node_by_key=node_by_key,
-            nodes_by_entry_anchor=nodes_by_entry_anchor,
-        )
-
-    @classmethod
-    def _select_single_relay_edge(
-        cls,
-        node: StateDagNode,
-        *,
-        flow_graph,
-        outgoing_by_key: dict[StateDagNodeKey, tuple[StateDagEdge, ...]],
-    ) -> StateDagEdge | None:
-        if int(node.entry_anchor) != int(node.handler_serial):
-            return None
-        if node.local_edges or node.shared_suffix_blocks:
-            return None
-
-        entry_snapshot = flow_graph.get_block(int(node.entry_anchor))
-        if entry_snapshot is None or entry_snapshot.npred != 1 or entry_snapshot.nsucc != 1:
-            return None
-
-        relay_edges = tuple(
-            edge
-            for edge in outgoing_by_key.get(node.key, ())
-            if edge.kind in (
-                SemanticEdgeKind.TRANSITION,
-                SemanticEdgeKind.CONDITIONAL_TRANSITION,
-            )
-            and edge.target_entry_anchor is not None
-            and edge.source_anchor.kind == RedirectSourceKind.UNCONDITIONAL
-            and int(edge.source_anchor.block_serial) == int(node.entry_anchor)
-        )
-        if len(relay_edges) != 1:
-            return None
-        return relay_edges[0]
-
-    @classmethod
-    def _resolve_edge_target_entry(
-        cls,
-        edge: StateDagEdge,
-        *,
-        flow_graph,
-        node_by_key: dict[StateDagNodeKey, StateDagNode],
-        outgoing_by_key: dict[StateDagNodeKey, tuple[StateDagEdge, ...]],
-        nodes_by_entry_anchor: dict[int, tuple[StateDagNode, ...]],
-        dispatcher_region: set[int],
-    ) -> tuple[int | None, str | None]:
-        resolution = resolve_edge_target_entry(
-            edge,
-            node_by_key=node_by_key,
-            dispatcher_region=dispatcher_region,
-        )
-        if (
-            resolution.target_entry is not None
-            and resolution.original_dispatcher_entry is not None
-        ):
-            logger.info(
-                "RECON DAG: dispatcher_target_entry resolved non-BST "
-                "entry blk[%d] (original blk[%d] in dispatcher region)",
-                resolution.target_entry,
-                resolution.original_dispatcher_entry,
-            )
-        if resolution.target_entry is None:
-            return None, resolution.rejection_reason
-
-        # DISABLED: relay collapsing causes handler orphaning — wire to immediate target.
-        # The relay-following loop below would chase chains A->B->C and collapse
-        # to A->C, orphaning B.  With relay collapsing off, we always wire to
-        # the immediate DAG edge target.
-        #
-        # current_node = cls._resolve_target_node(
-        #     edge,
-        #     node_by_key=node_by_key,
-        #     nodes_by_entry_anchor=nodes_by_entry_anchor,
-        # )
-        # visited_keys: set[StateDagNodeKey] = set()
-        # relay_hops = 0
-        # while current_node is not None:
-        #     if current_node.key in visited_keys:
-        #         return None, "target_relay_cycle"
-        #     visited_keys.add(current_node.key)
-        #
-        #     relay_edge = cls._select_single_relay_edge(
-        #         current_node,
-        #         flow_graph=flow_graph,
-        #         outgoing_by_key=outgoing_by_key,
-        #     )
-        #     if relay_edge is None:
-        #         break
-        #
-        #     next_entry = relay_edge.target_entry_anchor
-        #     if next_entry is None:
-        #         return None, "target_relay_missing_entry"
-        #     next_entry = int(next_entry)
-        #     if next_entry in dispatcher_region:
-        #         return None, "target_relay_dispatcher_entry"
-        #
-        #     target_entry = next_entry
-        #     relay_hops += 1
-        #     if relay_hops > 8:
-        #         return None, "target_relay_depth"
-        #     current_node = cls._resolve_target_node(
-        #         relay_edge,
-        #         node_by_key=node_by_key,
-        #         nodes_by_entry_anchor=nodes_by_entry_anchor,
-        #     )
-        return resolution.target_entry, None
-
-    @staticmethod
-    def _resolve_old_target(
-        flow_graph,
-        source_block: int,
-        ordered_path: tuple[int, ...],
-    ) -> int | None:
-        return resolve_old_target(flow_graph, source_block, ordered_path)
-
-    @staticmethod
-    def _is_shared_block(
-        flow_graph,
-        block_serial: int,
-        *,
-        shared_suffix_blocks: set[int],
-    ) -> bool:
-        return is_shared_block(
-            flow_graph,
-            block_serial,
-            shared_suffix_blocks=shared_suffix_blocks,
-        )
-
-    @classmethod
-    def _first_shared_block_index(
-        cls,
-        flow_graph,
-        ordered_path: tuple[int, ...],
-        *,
-        start_index: int,
-        shared_suffix_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> int | None:
-        return first_shared_block_index(
-            flow_graph,
-            ordered_path,
-            start_index=start_index,
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-
-    @classmethod
-    def _first_boundary_index(
-        cls,
-        flow_graph,
-        ordered_path: tuple[int, ...],
-        *,
-        start_index: int,
-        shared_suffix_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> int | None:
-        return first_boundary_index(
-            flow_graph,
-            ordered_path,
-            start_index=start_index,
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-
-    @staticmethod
-    def _compute_reachable_blocks(
-        flow_graph: object,
-        *,
-        start_serial: int | None,
-        limit: int = 4096,
-    ) -> set[int] | None:
-        return compute_reachable_blocks(
-            flow_graph,
-            start_serial=start_serial,
-            limit=limit,
-        )
-
-    @staticmethod
-    def _collect_dispatcher_predecessors(
-        flow_graph: object,
-        dispatcher_serial: int,
-        *,
-        bst_node_blocks: set[int],
-    ) -> tuple[int, ...]:
-        return collect_dispatcher_predecessors(
-            flow_graph,
-            dispatcher_serial,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _collect_residual_dispatcher_predecessors(
-        cls,
-        flow_graph: object,
-        dispatcher_serial: int,
-        *,
-        bst_node_blocks: set[int],
-        reachable_from_serial: int | None = None,
-    ) -> tuple[int, ...]:
-        return collect_residual_dispatcher_predecessors(
-            flow_graph,
-            dispatcher_serial,
-            bst_node_blocks=bst_node_blocks,
-            reachable_from_serial=reachable_from_serial,
-        )
-
-    @classmethod
-    def _graph_reaches_block(
-        cls,
-        flow_graph: object,
-        *,
-        source_block: int,
-        target_block: int,
-        limit: int = 512,
-    ) -> bool:
-        return graph_reaches_block(
-            flow_graph,
-            source_block=source_block,
-            target_block=target_block,
-            limit=limit,
-        )
-
-    @classmethod
-    def _pick_deepest_rescue_frontier(
-        cls,
-        flow_graph: object,
-        candidates: tuple[int, ...],
-    ) -> int | None:
-        return pick_deepest_rescue_frontier(flow_graph, candidates)
-
     @classmethod
     def _emit_entry_island_rescues(
         cls,
@@ -462,7 +176,7 @@ class StateWriteReconstructionStrategy:
         emitted = 0
 
         while True:
-            reachable_blocks = cls._compute_reachable_blocks(
+            reachable_blocks = compute_reachable_blocks(
                 current_projected_flow_graph,
                 start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
             )
@@ -491,7 +205,7 @@ class StateWriteReconstructionStrategy:
                 reachable_blocks=reachable_blocks,
                 dispatcher_region=dispatcher_region,
                 claimed_sources=claimed_sources,
-                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
                     flow_graph,
                     start_serial=getattr(flow_graph, "entry_serial", None),
                 ),
@@ -546,7 +260,7 @@ class StateWriteReconstructionStrategy:
         emitted = 0
 
         while True:
-            reachable_blocks = cls._compute_reachable_blocks(
+            reachable_blocks = compute_reachable_blocks(
                 current_projected_flow_graph,
                 start_serial=getattr(
                     current_projected_flow_graph, "entry_serial", None,
@@ -588,7 +302,7 @@ class StateWriteReconstructionStrategy:
                 reachable_blocks=reachable_blocks,
                 dispatcher_region=dispatcher_region,
                 claimed_sources=claimed_sources,
-                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
                     flow_graph,
                     start_serial=getattr(flow_graph, "entry_serial", None),
                 ),
@@ -620,7 +334,7 @@ class StateWriteReconstructionStrategy:
         # Diagnostic: if no rescue fired, dump dispatcher rows for
         # unreachable non-dispatcher blocks with BST-only predecessors.
         if emitted == 0 and dispatcher is not None:
-            reachable_blocks = cls._compute_reachable_blocks(
+            reachable_blocks = compute_reachable_blocks(
                 current_projected_flow_graph,
                 start_serial=getattr(
                     current_projected_flow_graph, "entry_serial", None,
@@ -763,7 +477,7 @@ class StateWriteReconstructionStrategy:
         emitted = 0
 
         while True:
-            reachable_blocks = cls._compute_reachable_blocks(
+            reachable_blocks = compute_reachable_blocks(
                 current_projected_flow_graph,
                 start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
             )
@@ -803,7 +517,7 @@ class StateWriteReconstructionStrategy:
                 projected_flow_graph=current_projected_flow_graph,
                 builder=builder,
                 modifications=modifications,
-                compute_reachable_blocks=lambda flow_graph: cls._compute_reachable_blocks(
+                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
                     flow_graph,
                     start_serial=getattr(flow_graph, "entry_serial", None),
                 ),
@@ -851,19 +565,6 @@ class StateWriteReconstructionStrategy:
                 )
 
         return emitted
-
-    @staticmethod
-    def _is_backward_same_corridor_target(
-        ordered_path: tuple[int, ...],
-        *,
-        rewrite_block: int,
-        target_entry: int,
-    ) -> bool:
-        return is_backward_same_corridor_target(
-            ordered_path,
-            rewrite_block=rewrite_block,
-            target_entry=target_entry,
-        )
 
     @classmethod
     def _build_candidate(
@@ -921,7 +622,7 @@ class StateWriteReconstructionStrategy:
                 seed.original_dispatcher_entry,
             )
 
-        if cls._is_backward_same_corridor_target(
+        if is_backward_same_corridor_target(
             ordered_path,
             rewrite_block=horizon_block,
             target_entry=target_entry,
@@ -1056,7 +757,7 @@ class StateWriteReconstructionStrategy:
         rejected_metadata: list[dict[str, int | str | None]],
     ) -> bool:
         ordered_path = tuple(int(serial) for serial in candidate.edge.ordered_path)
-        old_target = cls._resolve_old_target(
+        old_target = resolve_old_target(
             flow_graph,
             candidate.horizon_block,
             ordered_path,
@@ -1267,7 +968,7 @@ class StateWriteReconstructionStrategy:
             )
             return 0
 
-        old_target = cls._resolve_old_target(
+        old_target = resolve_old_target(
             flow_graph,
             shared_block,
             tuple(int(serial) for serial in candidates[0].edge.ordered_path),
@@ -1351,7 +1052,10 @@ class StateWriteReconstructionStrategy:
             return False
         if not sm.handlers:
             return False
-        return self._resolve_state_var_stkoff(snapshot, sm) is not None
+        return resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(sm, "state_var", None),
+        ) is not None
 
     def plan(self, snapshot):
         if not self.is_applicable(snapshot):
@@ -1365,7 +1069,10 @@ class StateWriteReconstructionStrategy:
         assert bst_result is not None
         assert flow_graph is not None
 
-        state_var_stkoff = self._resolve_state_var_stkoff(snapshot, sm)
+        state_var_stkoff = resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(sm, "state_var", None),
+        )
         if state_var_stkoff is None:
             return None
 
@@ -1466,8 +1173,11 @@ class StateWriteReconstructionStrategy:
         dispatcher_region = set(dag.bst_node_blocks)
         if dag.dispatcher_entry_serial >= 0:
             dispatcher_region.add(int(dag.dispatcher_entry_serial))
-        shared_suffix_blocks = self._shared_suffix_blocks(dag)
-        node_by_key, outgoing_by_key, nodes_by_entry_anchor = self._node_maps(dag)
+        shared_suffix_blocks = collect_shared_suffix_blocks(dag)
+        dag_maps = build_dag_node_maps(dag)
+        node_by_key = dag_maps.node_by_key
+        outgoing_by_key = dag_maps.outgoing_by_key
+        nodes_by_entry_anchor = dag_maps.nodes_by_entry_anchor
 
         dispatcher_serial = int(dag.dispatcher_entry_serial)
 
@@ -1699,7 +1409,7 @@ class StateWriteReconstructionStrategy:
                 except Exception:
                     projected_flow_graph = flow_graph
 
-            residual_dispatcher_preds = self._collect_residual_dispatcher_predecessors(
+            residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
                 projected_flow_graph,
                 dispatcher_serial,
                 bst_node_blocks=dispatcher_region,
@@ -2215,8 +1925,10 @@ class StateWriteReconstructionStrategy:
                     state_var_stkoff, len(flow_graph.blocks),
                     len(_state_consts),
                 )
-                artifact_return_blocks = self._classify_artifact_return_blocks(
-                    flow_graph, state_var_stkoff, _state_consts,
+                artifact_return_blocks = classify_artifact_return_blocks(
+                    flow_graph,
+                    state_var_stkoff=state_var_stkoff,
+                    state_constants=_state_consts,
                 )
                 if artifact_return_blocks:
                     logger.info(
@@ -2622,7 +2334,7 @@ class StateWriteReconstructionStrategy:
                         projected_flow_graph = flow_graph
 
                 residual_dispatcher_preds = (
-                    self._collect_residual_dispatcher_predecessors(
+                    collect_residual_dispatcher_predecessors(
                         projected_flow_graph,
                         dispatcher_serial,
                         bst_node_blocks=dispatcher_region,
