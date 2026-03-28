@@ -49,6 +49,13 @@ from d810.recon.flow.graph_reachability import (
     compute_reachable_blocks,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
+from d810.recon.flow.residual_handoff_discovery import (
+    dispatcher_exact_state_target,
+    dispatcher_has_exact_state_row,
+    resolve_path_lead_entry_from_node,
+    resolve_redirect_safe_entry_from_node,
+    resolve_redirect_safe_target_entry,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -2654,50 +2661,20 @@ class LinearizedFlowGraphStrategy:
         state_value: int | None,
         dispatcher: object | None = None,
     ) -> bool:
-        if state_value is None or dispatcher is None:
-            return False
-
-        rows = getattr(dispatcher, "_rows", None)
-        if not rows:
-            return False
-
-        for row in rows:
-            lo = getattr(row, "lo", None)
-            hi = getattr(row, "hi", None)
-            if lo is None or hi is None:
-                continue
-            lo = int(lo) & 0xFFFFFFFF
-            hi = int(hi) & 0xFFFFFFFF
-            if lo > state_value:
-                break
-            if lo == state_value and hi - lo == 1:
-                return True
-        return False
+        return dispatcher_has_exact_state_row(
+            state_value,
+            dispatcher=dispatcher,
+        )
 
     @staticmethod
     def _dispatcher_exact_state_target(
         state_value: int | None,
         dispatcher: object | None = None,
     ) -> int | None:
-        if state_value is None or dispatcher is None:
-            return None
-
-        rows = getattr(dispatcher, "_rows", None)
-        if not rows:
-            return None
-
-        for row in rows:
-            lo = getattr(row, "lo", None)
-            hi = getattr(row, "hi", None)
-            if lo is None or hi is None:
-                continue
-            lo = int(lo) & 0xFFFFFFFF
-            hi = int(hi) & 0xFFFFFFFF
-            if lo > state_value:
-                break
-            if lo == state_value and hi - lo == 1:
-                return int(getattr(row, "target", 0))
-        return None
+        return dispatcher_exact_state_target(
+            state_value,
+            dispatcher=dispatcher,
+        )
 
     @staticmethod
     def _resolve_path_lead_entry_from_node(
@@ -2706,32 +2683,11 @@ class LinearizedFlowGraphStrategy:
         *,
         bst_node_blocks: set[int],
     ) -> int | None:
-        outgoing_paths = tuple(
-            edge.ordered_path
-            for edge in dag.edges
-            if edge.source_key == node.key and edge.ordered_path
+        return resolve_path_lead_entry_from_node(
+            dag,
+            node,
+            bst_node_blocks=bst_node_blocks,
         )
-        if not outgoing_paths:
-            return None
-
-        blocks_on_outgoing_paths = {
-            block_serial
-            for path in outgoing_paths
-            for block_serial in path
-        }
-        if node.entry_anchor in blocks_on_outgoing_paths:
-            return None
-
-        path_starts = sorted(
-            {
-                path[0]
-                for path in outgoing_paths
-                if path[0] not in bst_node_blocks
-            }
-        )
-        if len(path_starts) != 1:
-            return None
-        return path_starts[0]
 
     @classmethod
     def _resolve_redirect_safe_entry_from_node(
@@ -2741,23 +2697,11 @@ class LinearizedFlowGraphStrategy:
         dag: LinearizedStateDag | None = None,
         bst_node_blocks: set[int],
     ) -> int | None:
-        if dag is not None:
-            path_lead_entry = cls._resolve_path_lead_entry_from_node(
-                dag,
-                node,
-                bst_node_blocks=bst_node_blocks,
-            )
-            if path_lead_entry is not None:
-                return path_lead_entry
-        candidates = (
-            node.entry_anchor,
-            *node.exclusive_blocks,
-            *node.owned_blocks,
+        return resolve_redirect_safe_entry_from_node(
+            node,
+            dag=dag,
+            bst_node_blocks=bst_node_blocks,
         )
-        for block_serial in candidates:
-            if block_serial not in bst_node_blocks:
-                return block_serial
-        return node.entry_anchor if node.entry_anchor not in bst_node_blocks else None
 
     @classmethod
     def _resolve_redirect_safe_target_entry(
@@ -2767,70 +2711,11 @@ class LinearizedFlowGraphStrategy:
         *,
         bst_node_blocks: set[int],
     ) -> int | None:
-        target_entry = edge.target_entry_anchor
-        explicit_target_entry = (
-            target_entry
-            if target_entry is not None and target_entry not in bst_node_blocks
-            else None
+        return resolve_redirect_safe_target_entry(
+            dag,
+            edge,
+            bst_node_blocks=bst_node_blocks,
         )
-        target_node = build_dag_node_maps(dag).node_by_key.get(edge.target_key) if edge.target_key is not None else None
-        labeled_entry = None
-        if edge.target_label:
-            labeled_matches = [
-                node for node in dag.nodes if node.state_label == edge.target_label
-            ]
-            if len(labeled_matches) == 1:
-                labeled_entry = cls._resolve_redirect_safe_entry_from_node(
-                    labeled_matches[0],
-                    dag=dag,
-                    bst_node_blocks=bst_node_blocks,
-                )
-        if (
-            labeled_entry is not None
-            and edge.target_label
-            and edge.target_label.endswith("_fallback")
-        ):
-            return labeled_entry
-        if target_node is not None:
-            safe_target_entry = cls._resolve_redirect_safe_entry_from_node(
-                target_node,
-                dag=dag,
-                bst_node_blocks=bst_node_blocks,
-            )
-            if (
-                explicit_target_entry is not None
-                and safe_target_entry is not None
-                and explicit_target_entry != safe_target_entry
-            ):
-                if explicit_target_entry in edge.ordered_path:
-                    return safe_target_entry
-                return explicit_target_entry
-            if safe_target_entry is not None:
-                if edge.target_state in {0x45B18E82, 0x24E2E77A}:
-                    logger.info(
-                        "LFG DAG DEBUG: edge target_state=0x%X target_key=%s target_label=%s explicit=%s target_node=%s safe_target=%s labeled=%s",
-                        edge.target_state,
-                        edge.target_key,
-                        edge.target_label,
-                        explicit_target_entry,
-                        getattr(target_node, "state_label", None),
-                        safe_target_entry,
-                        labeled_entry,
-                    )
-                return safe_target_entry
-        if labeled_entry is not None:
-            if edge.target_state in {0x45B18E82, 0x24E2E77A}:
-                logger.info(
-                    "LFG DAG DEBUG: edge target_state=0x%X chose labeled fallback target_label=%s labeled=%s explicit=%s",
-                    edge.target_state,
-                    edge.target_label,
-                    labeled_entry,
-                    explicit_target_entry,
-                )
-            return labeled_entry
-        if explicit_target_entry is None:
-            return None
-        return explicit_target_entry
 
     @classmethod
     def _resolve_effective_target_entry(
