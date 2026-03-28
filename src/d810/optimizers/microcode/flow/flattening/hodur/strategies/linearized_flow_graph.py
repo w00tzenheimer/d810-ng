@@ -50,23 +50,33 @@ from d810.recon.flow.graph_reachability import (
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.residual_handoff_discovery import (
+    block_has_state_var_write,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
     is_raw_state_label,
     iter_residual_prefix_handoffs,
+    iter_live_block_insns,
+    mop_const_value,
+    mop_stkoff,
+    resolve_assignment_map_handoff_target,
     resolve_contextual_dag_entry_for_state,
     resolve_cover_fallback_entry_for_state,
     resolve_dag_entry_for_state,
+    resolve_evaluated_handoff_state_via_pred,
+    resolve_immediate_handoff_target,
     resolve_loopback_alias_fallback_entry,
     resolve_nonexact_dispatch_target,
     resolve_nonlocal_state_entry,
     resolve_normalized_alias_entry_for_state,
     resolve_owner_family_fallback_entry,
     resolve_owner_semantic_entry_for_blocks,
+    resolve_projected_snapshot_handoff_target,
     resolve_projected_path_tail_target,
     resolve_path_lead_entry_from_node,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
+    resolve_singleton_state_write_value,
+    resolve_synthesized_handoff_target,
     state_has_semantic_support,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -2526,107 +2536,15 @@ class LinearizedFlowGraphStrategy:
         dispatcher_lookup: object | None,
         dispatcher: object | None = None,
     ) -> tuple[int, int] | None:
-        if mba is None or state_var_stkoff is None:
-            return None
-        try:
-            block = mba.get_mblock(block_serial)
-        except Exception:
-            return None
-        if block is None:
-            return None
-
-        written_states: set[int] = set()
-        insn = block.head
-        while insn is not None:
-            if insn.opcode == ida_hexrays.m_mov:
-                d = insn.d
-                l = insn.l
-                if (
-                    d is not None
-                    and d.t == ida_hexrays.mop_S
-                    and cls._mop_stkoff(d) == state_var_stkoff
-                    and l is not None
-                    and l.t == ida_hexrays.mop_n
-                ):
-                    value = cls._mop_const_value(l)
-                    if value is not None:
-                        written_states.add(int(value) & 0xFFFFFFFF)
-            insn = insn.next
-
-        if len(written_states) != 1:
-            return None
-
-        state_value = next(iter(written_states))
-        exact_dispatcher_target = cls._dispatcher_exact_state_target(
-            state_value,
-            dispatcher=dispatcher,
-        )
-        if exact_dispatcher_target == block_serial:
-            return None
-        direct_entry = cls._resolve_dag_entry_for_state(
+        return resolve_immediate_handoff_target(
             dag,
-            state_value,
+            mba,
+            block_serial,
+            state_var_stkoff=state_var_stkoff,
             bst_node_blocks=bst_node_blocks,
-        )
-        exact_dispatcher_row = cls._dispatcher_has_exact_state_row(
-            state_value,
-            dispatcher=dispatcher,
-        )
-        if (
-            dispatcher is not None
-            and exact_dispatcher_row
-            and direct_entry == block_serial
-        ):
-            # Exact dispatcher-entry asserts are not handoffs. Re-targeting
-            # them as if they were "state = X; goto dispatcher" collapses the
-            # current state's local corridor onto a sibling exact state during
-            # same-maturity reruns.
-            return None
-        if exact_dispatcher_row:
-            if direct_entry is None or direct_entry == block_serial:
-                return None
-            return (state_value, direct_entry)
-
-        normalized_alias_target = cls._resolve_normalized_alias_entry_for_state(
-            dag,
-            state_value,
-            source_block=block_serial,
-            bst_node_blocks=bst_node_blocks,
-        )
-        nonexact_target = cls._resolve_nonexact_dispatch_target(
-            dag,
-            state_value,
-            source_block=block_serial,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
             dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
         )
-        contextual_target = cls._resolve_contextual_dag_entry_for_state(
-            dag,
-            state_value,
-            source_block=block_serial,
-            bst_node_blocks=bst_node_blocks,
-        )
-        target_entry = (
-            direct_entry
-            or nonexact_target
-            or normalized_alias_target
-            or contextual_target
-        )
-        if target_entry is not None and state_value in {0x45B18E82, 0x24E2E77A}:
-            logger.info(
-                "LFG DAG DEBUG: immediate handoff blk=%s state=0x%X direct=%s nonexact=%s contextual=%s normalized_alias=%s chosen=%s",
-                blk_label(mba, block_serial),
-                state_value,
-                direct_entry,
-                nonexact_target,
-                contextual_target,
-                normalized_alias_target,
-                target_entry,
-            )
-        if target_entry is None or target_entry == block_serial:
-            return None
-        return (state_value, target_entry)
 
     @classmethod
     def _resolve_projected_snapshot_handoff_target(
@@ -2639,48 +2557,14 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         dispatcher: object | None,
     ) -> tuple[int, int] | None:
-        if flow_graph is None or state_var_stkoff is None:
-            return None
-        try:
-            block = flow_graph.get_block(block_serial)
-        except Exception:
-            return None
-        if block is None:
-            return None
-
-        written_states: set[int] = set()
-        for insn in tuple(getattr(block, "insn_snapshots", ())):
-            if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
-                continue
-            dest = getattr(insn, "d", None)
-            src = getattr(insn, "l", None)
-            if not cls._is_state_var_dest(dest, state_var_stkoff):
-                continue
-            value = cls._mop_const_value(src)
-            if value is None:
-                return None
-            written_states.add(int(value) & 0xFFFFFFFF)
-
-        if len(written_states) != 1:
-            return None
-
-        state_value = next(iter(written_states))
-        exact_dispatcher_target = cls._dispatcher_exact_state_target(
-            state_value,
+        return resolve_projected_snapshot_handoff_target(
+            dag,
+            flow_graph,
+            block_serial,
+            state_var_stkoff=state_var_stkoff,
+            bst_node_blocks=bst_node_blocks,
             dispatcher=dispatcher,
         )
-        if exact_dispatcher_target == block_serial:
-            return None
-        direct_entry = cls._resolve_dag_entry_for_state(
-            dag,
-            state_value,
-            bst_node_blocks=bst_node_blocks,
-        )
-        if cls._dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
-            if direct_entry is None or direct_entry == block_serial:
-                return None
-            return (state_value, direct_entry)
-        return None
 
     @classmethod
     def _resolve_assignment_map_handoff_target(
@@ -2692,117 +2576,29 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         dispatcher: object | None,
     ) -> tuple[int, int] | None:
-        if state_machine is None:
-            return None
-        assignment_map = getattr(state_machine, "assignment_map", None) or {}
-        insns = assignment_map.get(block_serial)
-        if not insns:
-            return None
-
-        state_value: int | None = None
-        for insn in insns:
-            if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
-                continue
-            src = getattr(insn, "l", None)
-            if src is None or getattr(src, "t", None) != ida_hexrays.mop_n:
-                continue
-            try:
-                value = int(src.nnn.value) & 0xFFFFFFFF
-            except Exception:
-                value = cls._mop_const_value(src)
-                if value is not None:
-                    value &= 0xFFFFFFFF
-            if value is None:
-                continue
-            if state_value is None:
-                state_value = value
-            elif state_value != value:
-                return None
-
-        if state_value is None:
-            return None
-
-        exact_dispatcher_target = cls._dispatcher_exact_state_target(
-            state_value,
+        return resolve_assignment_map_handoff_target(
+            dag,
+            state_machine,
+            block_serial,
+            bst_node_blocks=bst_node_blocks,
             dispatcher=dispatcher,
         )
-        if exact_dispatcher_target == block_serial:
-            return None
-        direct_entry = cls._resolve_dag_entry_for_state(
-            dag,
-            state_value,
-            bst_node_blocks=bst_node_blocks,
-        )
-        if cls._dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
-            if direct_entry is None or direct_entry == block_serial:
-                return None
-            return (state_value, direct_entry)
-        return None
 
     @staticmethod
     def _iter_live_block_insns(block: object):
-        insn = getattr(block, "head", None)
-        seen = 0
-        while insn is not None and seen < 4096:
-            yield insn
-            insn = getattr(insn, "next", None)
-            seen += 1
+        return iter_live_block_insns(block)
 
     @staticmethod
     def _mop_stkoff(mop: object | None) -> int | None:
-        if mop is None:
-            return None
-        stack_ref = getattr(mop, "s", None)
-        if stack_ref is not None:
-            off = getattr(stack_ref, "off", None)
-            if callable(off):
-                try:
-                    off = off()
-                except Exception:
-                    off = None
-            if off is not None:
-                return int(off)
-        stkoff = getattr(mop, "stkoff", None)
-        if callable(stkoff):
-            try:
-                stkoff = stkoff()
-            except Exception:
-                stkoff = None
-        if stkoff is not None:
-            return int(stkoff)
-        return None
+        return mop_stkoff(mop)
 
     @staticmethod
     def _mop_const_value(mop: object | None) -> int | None:
-        if mop is None:
-            return None
-        nnn = getattr(mop, "nnn", None)
-        if nnn is not None:
-            value = getattr(nnn, "value", None)
-            if callable(value):
-                try:
-                    value = value()
-                except Exception:
-                    value = None
-            if value is not None:
-                return int(value)
-        value = getattr(mop, "value", None)
-        if callable(value):
-            try:
-                value = value()
-            except Exception:
-                value = None
-        if value is not None:
-            return int(value)
-        return None
+        return mop_const_value(mop)
 
     @staticmethod
     def _is_state_var_dest(dest: object | None, state_var_stkoff: int) -> bool:
-        if dest is None:
-            return False
-        if getattr(dest, "t", None) != ida_hexrays.mop_S:
-            return False
-        return LinearizedFlowGraphStrategy._mop_stkoff(dest) == state_var_stkoff
+        return is_state_var_dest(dest, state_var_stkoff)
 
     @classmethod
     def _resolve_singleton_state_write_value(
@@ -2812,66 +2608,16 @@ class LinearizedFlowGraphStrategy:
         *,
         state_var_stkoff: int | None,
     ) -> int | None:
-        if mba is None or state_var_stkoff is None:
-            return None
         try:
-            block = mba.get_mblock(block_serial)
+            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
         except Exception:
-            return None
-        if block is None:
-            return None
-
-        resolved_values: set[int] = set()
-        stk_map: dict[int, int] = {}
-        reg_map: dict[int, int] = {}
-        state_write_seen = False
-        for insn in cls._iter_live_block_insns(block):
-            dest = getattr(insn, "d", None)
-            is_state_dest = cls._is_state_var_dest(dest, state_var_stkoff)
-            if is_state_dest:
-                state_write_seen = True
-                if insn.opcode == ida_hexrays.m_mov:
-                    source = getattr(insn, "l", None)
-                    value = cls._mop_const_value(source)
-                    if value is not None:
-                        resolved_values.add(value & 0xFFFFFFFF)
-                        continue
-            try:
-                resolved = _forward_eval_insn(
-                    insn,
-                    stk_map,
-                    reg_map,
-                    state_var_stkoff,
-                    mba=mba,
-                )
-            except Exception:
-                resolved = None
-            if is_state_dest and resolved is not None:
-                resolved_values.add(int(resolved) & 0xFFFFFFFF)
-                continue
-            if not is_state_dest:
-                continue
-            # ``resolve_state_via_valranges`` only works on live Hex-Rays mops;
-            # projected CFG views carry ``MopSnapshot`` operands with ``stkoff``
-            # instead of ``.s.off``.
-            if not hasattr(dest, "s") or not hasattr(mba, "vars"):
-                continue
-            try:
-                from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-            except Exception:
-                continue
-            try:
-                resolved = resolve_state_via_valranges(block, dest, insn)
-            except Exception:
-                resolved = None
-            if resolved is not None:
-                resolved_values.add(int(resolved) & 0xFFFFFFFF)
-
-        if not state_write_seen:
-            return None
-        if len(resolved_values) != 1:
-            return None
-        return next(iter(resolved_values))
+            resolve_state_via_valranges = None
+        return resolve_singleton_state_write_value(
+            mba,
+            block_serial,
+            state_var_stkoff=state_var_stkoff,
+            resolve_state_via_valranges=resolve_state_via_valranges,
+        )
 
     @classmethod
     def _block_has_state_var_write(
@@ -2881,19 +2627,11 @@ class LinearizedFlowGraphStrategy:
         *,
         state_var_stkoff: int | None,
     ) -> bool:
-        if mba is None or state_var_stkoff is None:
-            return False
-        try:
-            block = mba.get_mblock(block_serial)
-        except Exception:
-            return False
-        if block is None:
-            return False
-
-        for insn in cls._iter_live_block_insns(block):
-            if cls._is_state_var_dest(getattr(insn, "d", None), state_var_stkoff):
-                return True
-        return False
+        return block_has_state_var_write(
+            mba,
+            block_serial,
+            state_var_stkoff=state_var_stkoff,
+        )
 
     @classmethod
     def _resolve_evaluated_handoff_state_via_pred(
@@ -2904,39 +2642,12 @@ class LinearizedFlowGraphStrategy:
         source_block: int,
         state_var_stkoff: int | None,
     ) -> int | None:
-        if mba is None or state_var_stkoff is None:
-            return None
-        try:
-            pred_blk = mba.get_mblock(via_pred)
-            src_blk = mba.get_mblock(source_block)
-        except Exception:
-            return None
-        if pred_blk is None or src_blk is None:
-            return None
-
-        stk_map: dict[int, int] = {}
-        reg_map: dict[int, int] = {}
-        final_value: int | None = None
-        for blk in (pred_blk, src_blk):
-            for insn in cls._iter_live_block_insns(blk):
-                try:
-                    resolved = _forward_eval_insn(
-                        insn,
-                        stk_map,
-                        reg_map,
-                        state_var_stkoff,
-                        mba=mba,
-                    )
-                except Exception:
-                    resolved = None
-                if resolved is not None:
-                    final_value = int(resolved) & 0xFFFFFFFF
-        if final_value is not None:
-            return final_value
-        resolved = stk_map.get(state_var_stkoff)
-        if resolved is None:
-            return None
-        return int(resolved) & 0xFFFFFFFF
+        return resolve_evaluated_handoff_state_via_pred(
+            mba,
+            via_pred=via_pred,
+            source_block=source_block,
+            state_var_stkoff=state_var_stkoff,
+        )
 
     @classmethod
     def _resolve_synthesized_handoff_target(
@@ -2950,155 +2661,20 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         via_pred: int | None = None,
     ) -> tuple[int, int] | None:
-        state_value = cls._resolve_singleton_state_write_value(
+        try:
+            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
+        except Exception:
+            resolve_state_via_valranges = None
+        return resolve_synthesized_handoff_target(
+            dag,
             mba,
             block_serial,
             state_var_stkoff=state_var_stkoff,
-        )
-        if state_value is None and via_pred is not None:
-            state_value = cls._resolve_evaluated_handoff_state_via_pred(
-                mba,
-                via_pred=via_pred,
-                source_block=block_serial,
-                state_var_stkoff=state_var_stkoff,
-        )
-        if state_value is None:
-            return None
-        exact_dispatcher_target = cls._dispatcher_exact_state_target(
-            state_value,
-            dispatcher=dispatcher,
-        )
-        if exact_dispatcher_target == block_serial:
-            return None
-        direct_entry = cls._resolve_dag_entry_for_state(
-            dag,
-            state_value,
-            bst_node_blocks=bst_node_blocks,
-        )
-        exact_dispatcher_row = cls._dispatcher_has_exact_state_row(
-            state_value,
-            dispatcher=dispatcher,
-        )
-        if exact_dispatcher_row:
-            if direct_entry is None or direct_entry == block_serial:
-                return None
-            return (state_value, direct_entry)
-        contextual_source = via_pred if via_pred is not None else block_serial
-        target_entry = cls._resolve_contextual_dag_entry_for_state(
-            dag,
-            state_value,
-            source_block=contextual_source,
-            bst_node_blocks=bst_node_blocks,
-        )
-        normalized_alias_target = cls._resolve_normalized_alias_entry_for_state(
-            dag,
-            state_value,
-            source_block=contextual_source,
-            bst_node_blocks=bst_node_blocks,
-        )
-        if normalized_alias_target is not None:
-            target_entry = normalized_alias_target
-        if target_entry is not None and via_pred is not None and target_entry == via_pred:
-            fallback_target = cls._resolve_loopback_alias_fallback_entry(
-                dag,
-                state_value,
-                source_block=block_serial,
-                via_pred=via_pred,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-            )
-            if fallback_target is not None:
-                target_entry = fallback_target
-        debug_direct_entry = None
-        debug_has_support = False
-        if state_value in {0x2A5E29F6, 0x6CAA9521, 0x6E958F9A}:
-            debug_has_support = cls._state_has_semantic_support(dag, state_value)
-            debug_direct_entry = cls._resolve_dag_entry_for_state(
-                dag,
-                state_value,
-                bst_node_blocks=bst_node_blocks,
-            )
-            logger.info(
-                "LFG DAG DEBUG synthesized blk=%s via=%s state=0x%X contextual_source=%s contextual_target=%s normalized_alias=%s has_support=%s direct_entry=%s",
-                blk_label(mba, block_serial),
-                blk_label(mba, via_pred) if via_pred is not None else "<none>",
-                state_value,
-                contextual_source,
-                target_entry,
-                normalized_alias_target,
-                debug_has_support,
-                debug_direct_entry,
-            )
-        if target_entry is not None and target_entry != block_serial:
-            return (state_value, target_entry)
-
-        if dispatcher is None or debug_has_support or cls._state_has_semantic_support(dag, state_value):
-            target_entry = (
-                debug_direct_entry
-                if debug_direct_entry is not None
-                else cls._resolve_dag_entry_for_state(
-                    dag,
-                    state_value,
-                    bst_node_blocks=bst_node_blocks,
-                )
-            )
-            if target_entry is not None and target_entry != block_serial:
-                return (state_value, target_entry)
-
-        cover_fallback_entry = cls._resolve_cover_fallback_entry_for_state(
-            dag,
-            state_value,
-            source_block=contextual_source,
             bst_node_blocks=bst_node_blocks,
             dispatcher=dispatcher,
+            via_pred=via_pred,
+            resolve_state_via_valranges=resolve_state_via_valranges,
         )
-        if cover_fallback_entry is not None and cover_fallback_entry != block_serial:
-            return (state_value, cover_fallback_entry)
-
-        owner_entry = cls._resolve_owner_semantic_entry_for_blocks(
-            dag,
-            anchor_candidates=(
-                (contextual_source,)
-                if via_pred is not None
-                else (block_serial,)
-            ),
-            source_block=block_serial,
-            bst_node_blocks=bst_node_blocks,
-        )
-        if owner_entry is not None and owner_entry != block_serial:
-            return (state_value, owner_entry)
-
-        if dispatcher is not None and not (debug_has_support or cls._state_has_semantic_support(dag, state_value)):
-            if state_value in {0x2A5E29F6, 0x6CAA9521, 0x6E958F9A}:
-                logger.info(
-                    "LFG DAG DEBUG synthesized blk=%s via=%s state=0x%X refusing raw dispatcher fallback without semantic support",
-                    blk_label(mba, block_serial),
-                    blk_label(mba, via_pred) if via_pred is not None else "<none>",
-                    state_value,
-                )
-            return None
-
-        target_entry = cls._resolve_nonexact_dispatch_target(
-            dag,
-            state_value,
-            source_block=block_serial,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-            dispatcher_lookup=(
-                getattr(dispatcher, "lookup", None) if dispatcher is not None else None
-            ),
-        )
-        if state_value in {0x2A5E29F6, 0x6CAA9521, 0x6E958F9A}:
-            logger.info(
-                "LFG DAG DEBUG synthesized blk=%s via=%s state=0x%X nonexact_target=%s",
-                blk_label(mba, block_serial),
-                blk_label(mba, via_pred) if via_pred is not None else "<none>",
-                state_value,
-                target_entry,
-            )
-        if target_entry is not None:
-            return (state_value, target_entry)
-        return None
 
     @staticmethod
     def _is_backward_same_corridor_target(
