@@ -61,6 +61,7 @@ from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    resolve_effective_target_entry as discover_effective_target_entry,
     is_raw_state_label,
     iter_residual_prefix_handoffs,
     iter_live_block_insns,
@@ -1907,191 +1908,21 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         mba: object,
     ) -> int | None:
-        target_entry = resolve_redirect_safe_target_entry(
+        try:
+            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
+        except Exception:
+            resolve_state_via_valranges = None
+        resolution = discover_effective_target_entry(
             dag,
             edge,
             bst_node_blocks=bst_node_blocks,
-        )
-        source_block = (
-            edge.ordered_path[-1] if edge.ordered_path else edge.source_anchor.block_serial
-        )
-        normalized_nonexact_target = None
-        if (
-            edge.target_state is not None
-            and dispatcher is not None
-            and not dispatcher_has_exact_state_row(
-                edge.target_state,
-                dispatcher=dispatcher,
-            )
-            and is_raw_state_label(edge.target_label or "", edge.target_state)
-        ):
-            normalized_nonexact_target = resolve_nonexact_dispatch_target(
-                dag,
-                edge.target_state,
-                source_block=source_block,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-                dispatcher_lookup=dispatcher_lookup,
-            )
-            if (
-                normalized_nonexact_target is not None
-                and normalized_nonexact_target != source_block
-                and normalized_nonexact_target != target_entry
-            ):
-                target_entry = normalized_nonexact_target
-        if source_block in {69, 104}:
-            logger.info(
-                "LFG DAG DEBUG source=%s target_state=%s target_label=%s target_key=%s initial_target=%s path=%s source_anchor=%s arm=%s",
-                blk_label(mba, source_block),
-                (
-                    f"0x{edge.target_state:08X}"
-                    if edge.target_state is not None
-                    else "<none>"
-                ),
-                edge.target_label,
-                edge.target_key,
-                blk_label(mba, target_entry) if target_entry is not None else "<none>",
-                list(edge.ordered_path),
-                blk_label(mba, edge.source_anchor.block_serial),
-                edge.source_anchor.branch_arm,
-            )
-        immediate_handoff = resolve_immediate_handoff_target(
-            dag,
-            mba,
-            source_block,
             state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
+            mba=mba,
+            resolve_state_via_valranges=resolve_state_via_valranges,
         )
-        synthesized_handoff = None
-        if immediate_handoff is None:
-            via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
-            synthesized_handoff = cls._resolve_synthesized_handoff_target(
-                dag,
-                mba,
-                source_block,
-                state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-                via_pred=via_pred,
-            )
-        selected_handoff = immediate_handoff or synthesized_handoff
-        if selected_handoff is not None:
-            immediate_state, immediate_target_entry = selected_handoff
-            immediate_direct_entry = resolve_dag_entry_for_state(
-                dag,
-                immediate_state,
-                bst_node_blocks=bst_node_blocks,
-            )
-            if (
-                edge.target_state is not None
-                and dispatcher is not None
-                and not dispatcher_has_exact_state_row(
-                    edge.target_state,
-                    dispatcher=dispatcher,
-                )
-                and immediate_state == (edge.target_state & 0xFFFFFFFF)
-                and target_entry is not None
-                and target_entry not in bst_node_blocks
-                and immediate_target_entry != target_entry
-            ):
-                if (
-                    immediate_direct_entry is not None
-                    and immediate_direct_entry == immediate_target_entry
-                ):
-                    logger.info(
-                        "LFG DAG: preferring direct semantic entry %s for non-exact state 0x%X instead of contextual target %s",
-                        blk_label(mba, immediate_target_entry),
-                        immediate_state,
-                        blk_label(mba, target_entry),
-                    )
-                else:
-                    logger.info(
-                        "LFG DAG: preserving concrete DAG target %s for non-exact state 0x%X instead of handoff target %s",
-                        blk_label(mba, target_entry),
-                        immediate_state,
-                        blk_label(mba, immediate_target_entry),
-                    )
-                    return target_entry
-            if cls._is_backward_same_corridor_target(
-                edge,
-                source_block=source_block,
-                target_entry=immediate_target_entry,
-            ):
-                fallback_target_entry = resolve_cover_fallback_entry_for_state(
-                    dag,
-                    immediate_state,
-                    source_block=source_block,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher=dispatcher,
-                )
-                if (
-                    fallback_target_entry is not None
-                    and not cls._is_backward_same_corridor_target(
-                        edge,
-                        source_block=source_block,
-                        target_entry=fallback_target_entry,
-                    )
-                ):
-                    logger.info(
-                        "LFG DAG: handoff block %s writes 0x%X; using cover fallback entry %s instead of same-corridor %s",
-                        blk_label(mba, source_block),
-                        immediate_state,
-                        blk_label(mba, fallback_target_entry),
-                        blk_label(mba, immediate_target_entry),
-                    )
-                    immediate_target_entry = fallback_target_entry
-                elif (
-                    normalized_nonexact_target is not None
-                    and not cls._is_backward_same_corridor_target(
-                        edge,
-                        source_block=source_block,
-                        target_entry=normalized_nonexact_target,
-                    )
-                ):
-                    logger.info(
-                        "LFG DAG: handoff block %s writes 0x%X; using normalized non-exact target %s instead of same-corridor immediate target %s",
-                        blk_label(mba, source_block),
-                        immediate_state,
-                        blk_label(mba, normalized_nonexact_target),
-                        blk_label(mba, immediate_target_entry),
-                    )
-                    return normalized_nonexact_target
-                elif (
-                    target_entry is not None
-                    and not cls._is_backward_same_corridor_target(
-                        edge,
-                        source_block=source_block,
-                        target_entry=target_entry,
-                    )
-                ):
-                    logger.info(
-                        "LFG DAG: handoff block %s writes 0x%X; preserving DAG target %s instead of same-corridor immediate target %s",
-                        blk_label(mba, source_block),
-                        immediate_state,
-                        blk_label(mba, target_entry),
-                        blk_label(mba, immediate_target_entry),
-                    )
-                    return target_entry
-            if target_entry != immediate_target_entry:
-                logger.info(
-                    "LFG DAG: handoff block %s writes 0x%X; using semantic entry %s instead of %s",
-                    blk_label(mba, source_block),
-                    immediate_state,
-                    blk_label(mba, immediate_target_entry),
-                    blk_label(mba, target_entry) if target_entry is not None else "<none>",
-                )
-            target_entry = immediate_target_entry
-        if source_block in {69, 104}:
-            logger.info(
-                "LFG DAG DEBUG resolved source=%s final_target=%s immediate=%s synthesized=%s",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry) if target_entry is not None else "<none>",
-                immediate_handoff,
-                synthesized_handoff,
-            )
-        return target_entry
+        return resolution.target_entry
 
     @staticmethod
     def _resolve_edge_old_target(

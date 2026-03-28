@@ -39,6 +39,17 @@ class ResidualSourceHandoffFacts:
     handoff: tuple[int, int] | None
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveTargetEntryResolution:
+    """Pure discovery result for one residual redirect target."""
+
+    source_block: int
+    target_entry: int | None
+    normalized_nonexact_target: int | None
+    immediate_handoff: tuple[int, int] | None
+    synthesized_handoff: tuple[int, int] | None
+
+
 def dispatcher_has_exact_state_row(
     state_value: int | None,
     *,
@@ -1446,6 +1457,183 @@ def resolve_synthesized_handoff_target(
     return None
 
 
+def _is_backward_same_corridor_target(
+    edge: StateDagEdge,
+    *,
+    source_block: int,
+    target_entry: int,
+) -> bool:
+    if not edge.ordered_path:
+        return False
+    try:
+        source_index = edge.ordered_path.index(source_block)
+        target_index = edge.ordered_path.index(target_entry)
+    except ValueError:
+        return False
+    return target_index <= source_index
+
+
+def resolve_effective_target_entry(
+    dag: LinearizedStateDag,
+    edge: StateDagEdge,
+    *,
+    bst_node_blocks: set[int],
+    state_var_stkoff: int | None,
+    dispatcher_lookup: object | None,
+    dispatcher: object | None,
+    mba: object,
+    resolve_state_via_valranges: object | None = None,
+) -> EffectiveTargetEntryResolution:
+    """Resolve the best semantic target for one residual handoff edge."""
+    target_entry = resolve_redirect_safe_target_entry(
+        dag,
+        edge,
+        bst_node_blocks=bst_node_blocks,
+    )
+    source_block = (
+        edge.ordered_path[-1] if edge.ordered_path else edge.source_anchor.block_serial
+    )
+    normalized_nonexact_target = None
+    if (
+        edge.target_state is not None
+        and dispatcher is not None
+        and not dispatcher_has_exact_state_row(
+            edge.target_state,
+            dispatcher=dispatcher,
+        )
+        and is_raw_state_label(edge.target_label or "", edge.target_state)
+    ):
+        normalized_nonexact_target = resolve_nonexact_dispatch_target(
+            dag,
+            edge.target_state,
+            source_block=source_block,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            dispatcher_lookup=dispatcher_lookup,
+        )
+        if (
+            normalized_nonexact_target is not None
+            and normalized_nonexact_target != source_block
+            and normalized_nonexact_target != target_entry
+        ):
+            target_entry = normalized_nonexact_target
+
+    immediate_handoff = resolve_immediate_handoff_target(
+        dag,
+        mba,
+        source_block,
+        state_var_stkoff=state_var_stkoff,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+    )
+    synthesized_handoff = None
+    if immediate_handoff is None:
+        via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
+        synthesized_handoff = resolve_synthesized_handoff_target(
+            dag,
+            mba,
+            source_block,
+            state_var_stkoff=state_var_stkoff,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            via_pred=via_pred,
+            resolve_state_via_valranges=resolve_state_via_valranges,
+        )
+
+    selected_handoff = immediate_handoff or synthesized_handoff
+    if selected_handoff is not None:
+        immediate_state, immediate_target_entry = selected_handoff
+        immediate_direct_entry = resolve_dag_entry_for_state(
+            dag,
+            immediate_state,
+            bst_node_blocks=bst_node_blocks,
+        )
+        if (
+            edge.target_state is not None
+            and dispatcher is not None
+            and not dispatcher_has_exact_state_row(
+                edge.target_state,
+                dispatcher=dispatcher,
+            )
+            and immediate_state == (edge.target_state & 0xFFFFFFFF)
+            and target_entry is not None
+            and target_entry not in bst_node_blocks
+            and immediate_target_entry != target_entry
+        ):
+            if not (
+                immediate_direct_entry is not None
+                and immediate_direct_entry == immediate_target_entry
+            ):
+                return EffectiveTargetEntryResolution(
+                    source_block=int(source_block),
+                    target_entry=target_entry,
+                    normalized_nonexact_target=normalized_nonexact_target,
+                    immediate_handoff=immediate_handoff,
+                    synthesized_handoff=synthesized_handoff,
+                )
+        if _is_backward_same_corridor_target(
+            edge,
+            source_block=source_block,
+            target_entry=immediate_target_entry,
+        ):
+            fallback_target_entry = resolve_cover_fallback_entry_for_state(
+                dag,
+                immediate_state,
+                source_block=source_block,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+            )
+            if (
+                fallback_target_entry is not None
+                and not _is_backward_same_corridor_target(
+                    edge,
+                    source_block=source_block,
+                    target_entry=fallback_target_entry,
+                )
+            ):
+                immediate_target_entry = fallback_target_entry
+            elif (
+                normalized_nonexact_target is not None
+                and not _is_backward_same_corridor_target(
+                    edge,
+                    source_block=source_block,
+                    target_entry=normalized_nonexact_target,
+                )
+            ):
+                return EffectiveTargetEntryResolution(
+                    source_block=int(source_block),
+                    target_entry=normalized_nonexact_target,
+                    normalized_nonexact_target=normalized_nonexact_target,
+                    immediate_handoff=immediate_handoff,
+                    synthesized_handoff=synthesized_handoff,
+                )
+            elif (
+                target_entry is not None
+                and not _is_backward_same_corridor_target(
+                    edge,
+                    source_block=source_block,
+                    target_entry=target_entry,
+                )
+            ):
+                return EffectiveTargetEntryResolution(
+                    source_block=int(source_block),
+                    target_entry=target_entry,
+                    normalized_nonexact_target=normalized_nonexact_target,
+                    immediate_handoff=immediate_handoff,
+                    synthesized_handoff=synthesized_handoff,
+                )
+        target_entry = immediate_target_entry
+
+    return EffectiveTargetEntryResolution(
+        source_block=int(source_block),
+        target_entry=target_entry,
+        normalized_nonexact_target=normalized_nonexact_target,
+        immediate_handoff=immediate_handoff,
+        synthesized_handoff=synthesized_handoff,
+    )
+
+
 def collect_residual_source_handoff_facts(
     dag: LinearizedStateDag,
     *,
@@ -1601,6 +1789,7 @@ def collect_residual_source_handoff_facts(
 
 
 __all__ = [
+    "EffectiveTargetEntryResolution",
     "ResidualSourceHandoffFacts",
     "collect_residual_source_handoff_facts",
     "dispatcher_exact_state_target",
@@ -1618,6 +1807,7 @@ __all__ = [
     "resolve_cover_fallback_entry_for_state",
     "resolve_dag_entry_for_state",
     "resolve_evaluated_handoff_state_via_pred",
+    "resolve_effective_target_entry",
     "resolve_immediate_handoff_target",
     "resolve_loopback_alias_fallback_entry",
     "resolve_nonexact_dispatch_target",
