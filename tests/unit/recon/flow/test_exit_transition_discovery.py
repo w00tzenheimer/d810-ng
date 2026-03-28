@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.recon.flow.exit_transition_discovery import (
+    collect_bst_default_transition_candidates,
     collect_exit_transition_candidates,
 )
 
@@ -111,3 +112,65 @@ class TestCollectExitTransitionCandidates:
         assert candidates[0].target_entry == 88
         assert candidates[0].exit_state_value is None
         assert candidates[0].discovery_kind == "bst_walk"
+
+
+class TestCollectBstDefaultTransitionCandidates:
+    def test_collects_path_eval_candidates(self, monkeypatch) -> None:
+        snapshot = SimpleNamespace(
+            mba=_DummyMba({}),
+            detector=None,
+        )
+        sm = SimpleNamespace(
+            state_var=SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x30)),
+        )
+        bst_result = SimpleNamespace()
+
+        seen_calls: list[tuple[int, int, frozenset[int]]] = []
+
+        def fake_evaluate_handler_paths(
+            *,
+            mba,
+            entry_serial,
+            incoming_state,
+            bst_node_blocks,
+            state_var_stkoff,
+            handler_entry_blocks,
+        ):
+            assert mba is snapshot.mba
+            assert state_var_stkoff == 0x30
+            seen_calls.append(
+                (
+                    int(entry_serial),
+                    int(incoming_state),
+                    frozenset(int(v) for v in handler_entry_blocks),
+                )
+            )
+            return [
+                SimpleNamespace(exit_block=24, final_state=0x22),
+                SimpleNamespace(exit_block=30, final_state=None),
+            ]
+
+        monkeypatch.setattr(
+            "d810.recon.flow.exit_transition_discovery.evaluate_handler_paths",
+            fake_evaluate_handler_paths,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.exit_transition_discovery.resolve_target_via_bst",
+            lambda bst, state: 88 if state == 0x22 else None,
+        )
+
+        candidates = collect_bst_default_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=bst_result,
+            handler_state_map={24: 0x11},
+            bst_node_blocks={2, 6},
+        )
+
+        assert seen_calls == [(0x11, 24, frozenset({0x11}))]
+        assert len(candidates) == 1
+        assert candidates[0].handler_state == 24
+        assert candidates[0].handler_entry == 0x11
+        assert candidates[0].from_block == 24
+        assert candidates[0].target_entry == 88
+        assert candidates[0].final_state == 0x22
