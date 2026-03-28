@@ -102,28 +102,10 @@ from d810.recon.flow.reconstruction_discovery import (
     discover_reconstruction_candidate_seed,
     resolve_state_var_stkoff,
 )
-from d810.recon.flow.terminal_family import (
-    TerminalFamilyCandidate,
-    TerminalFamilySeed,
-    TerminalFamilySeedProbe,
-    collect_linear_terminal_path,
-    find_last_terminal_write,
-    find_prev_terminal_write_to_locator,
-    insn_is_copy_like,
-    is_projected_only_block,
-    is_state_var_dest,
-    probe_terminal_family_seed,
-    resolve_terminal_edge_entry,
-    resolve_terminal_source_arm_entry,
-    resolve_terminal_value_chain,
-    terminal_candidate_key,
-    terminal_locator_key,
-    terminal_source_signature,
-    terminal_value_family_signature,
-    terminal_write_signature,
-)
+from d810.recon.flow.terminal_family import TerminalFamilyCandidate, terminal_candidate_key
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_candidates,
+    collect_terminal_source_unreachable_diagnostic,
 )
 from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
 from d810.recon.flow.transition_builder import TransitionResult
@@ -664,224 +646,6 @@ class StateWriteReconstructionStrategy:
 
         return emitted
 
-    @staticmethod
-    def _terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
-        return terminal_locator_key(mop)
-
-    @classmethod
-    def _terminal_source_signature(cls, mop: object | None) -> tuple[object, ...]:
-        return terminal_source_signature(mop)
-
-    @classmethod
-    def _terminal_write_signature(cls, insn: object) -> tuple[object, ...]:
-        return terminal_write_signature(insn)
-
-    @staticmethod
-    def _insn_is_copy_like(insn: object) -> bool:
-        return insn_is_copy_like(insn)
-
-    @staticmethod
-    def _is_state_var_dest(insn: object, state_var_stkoff: int | None) -> bool:
-        return is_state_var_dest(insn, state_var_stkoff)
-
-    @classmethod
-    def _resolve_terminal_source_arm_entry(
-        cls,
-        source_serial: int,
-        branch_arm: int | None,
-        *,
-        projected_flow_graph,
-        dispatcher_region: set[int],
-    ) -> int | None:
-        return resolve_terminal_source_arm_entry(
-            source_serial,
-            branch_arm,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-        )
-
-    @staticmethod
-    def _is_projected_only_block(
-        block_serial: int,
-        *,
-        base_flow_graph,
-    ) -> bool:
-        return is_projected_only_block(
-            block_serial,
-            base_flow_graph=base_flow_graph,
-        )
-
-    @classmethod
-    def _probe_terminal_family_seed(
-        cls,
-        seed: TerminalFamilySeed,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        dispatcher_region: set[int],
-        reachable_blocks: set[int],
-    ) -> TerminalFamilySeedProbe:
-        return probe_terminal_family_seed(
-            seed,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-            reachable_blocks=reachable_blocks,
-        )
-
-    @classmethod
-    def _log_source_unreachable_diagnostic(
-        cls,
-        source_serial: int,
-        *,
-        projected_flow_graph,
-        reachable_blocks: set[int],
-        dispatcher_region: set[int],
-        mba,
-    ) -> None:
-        """Log diagnostic context when a terminal-family seed source is unreachable."""
-        source_snap = projected_flow_graph.get_block(source_serial)
-        if source_snap is None:
-            logger.info(
-                "RECON RETURN: source_unreachable diagnostic %s: "
-                "not in projected flow graph",
-                blk_label(mba, source_serial),
-            )
-            return
-
-        preds = sorted(int(p) for p in source_snap.preds)
-        pred_info = []
-        for p in preds:
-            if p in reachable_blocks:
-                status = "reachable"
-            elif p in dispatcher_region:
-                status = "dispatcher"
-            else:
-                status = "unreachable"
-            pred_info.append(f"blk[{p}]={status}")
-
-        # BFS backward through non-dispatcher preds to map the island.
-        visited: set[int] = set()
-        queue: list[int] = [source_serial]
-        frontier: int | None = None
-        while queue and len(visited) < 64:
-            current = queue.pop(0)
-            if current in visited:
-                continue
-            visited.add(current)
-            if current != source_serial and current in reachable_blocks:
-                frontier = current
-                break
-            snap = projected_flow_graph.get_block(current)
-            if snap is None:
-                continue
-            for pred in sorted(int(p) for p in snap.preds):
-                if pred not in visited and pred not in dispatcher_region:
-                    queue.append(pred)
-
-        island_blocks = sorted(visited - {source_serial})
-
-        logger.info(
-            "RECON RETURN: source_unreachable diagnostic %s "
-            "preds=[%s] nearest_reachable=%s island_blocks=%s",
-            blk_label(mba, source_serial),
-            ", ".join(pred_info),
-            blk_label(mba, frontier) if frontier is not None else "None",
-            [blk_label(mba, b) for b in island_blocks],
-        )
-
-    @classmethod
-    def _resolve_terminal_edge_entry(
-        cls,
-        edge: StateDagEdge,
-        *,
-        projected_flow_graph,
-        dispatcher_region: set[int],
-    ) -> int | None:
-        return resolve_terminal_edge_entry(
-            edge,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-        )
-
-    @classmethod
-    def _collect_linear_terminal_path(
-        cls,
-        projected_flow_graph,
-        *,
-        start_block: int,
-        dispatcher_region: set[int],
-        limit: int = 64,
-    ) -> tuple[int, ...] | None:
-        return collect_linear_terminal_path(
-            projected_flow_graph,
-            start_block=start_block,
-            dispatcher_region=dispatcher_region,
-            limit=limit,
-        )
-
-    @classmethod
-    def _find_last_terminal_write(
-        cls,
-        projected_flow_graph,
-        *,
-        path: tuple[int, ...],
-        state_var_stkoff: int | None,
-    ) -> tuple[int, int, object] | None:
-        return find_last_terminal_write(
-            projected_flow_graph,
-            path=path,
-            state_var_stkoff=state_var_stkoff,
-        )
-
-    @classmethod
-    def _find_prev_terminal_write_to_locator(
-        cls,
-        projected_flow_graph,
-        *,
-        path: tuple[int, ...],
-        locator: tuple[object, ...],
-        before_block: int,
-        before_insn_index: int,
-        state_var_stkoff: int | None,
-    ) -> tuple[int, int, object] | None:
-        return find_prev_terminal_write_to_locator(
-            projected_flow_graph,
-            path=path,
-            locator=locator,
-            before_block=before_block,
-            before_insn_index=before_insn_index,
-            state_var_stkoff=state_var_stkoff,
-        )
-
-    @classmethod
-    def _resolve_terminal_value_chain(
-        cls,
-        projected_flow_graph,
-        *,
-        path: tuple[int, ...],
-        state_var_stkoff: int | None,
-    ) -> tuple[tuple[int, int, object], ...]:
-        return resolve_terminal_value_chain(
-            projected_flow_graph,
-            path=path,
-            state_var_stkoff=state_var_stkoff,
-        )
-
-    @classmethod
-    def _terminal_value_family_signature(
-        cls,
-        chain: tuple[tuple[int, int, object], ...],
-    ) -> tuple[object, ...]:
-        return terminal_value_family_signature(chain)
-
-    @classmethod
-    def _terminal_candidate_key(
-        cls,
-        candidate: TerminalFamilyCandidate,
-    ) -> tuple[int, int | None, int, tuple[int, ...]]:
-        return terminal_candidate_key(candidate)
-
     @classmethod
     def _collect_terminal_family_candidates(
         cls,
@@ -925,17 +689,35 @@ class StateWriteReconstructionStrategy:
                 probe.path,
             )
             if probe.rejection_reason == "source_unreachable":
-                cls._log_source_unreachable_diagnostic(
-                    int(seed.source_block),
+                diagnostic = collect_terminal_source_unreachable_diagnostic(
                     projected_flow_graph=projected_flow_graph,
+                    source_serial=int(seed.source_block),
                     reachable_blocks=reachable_blocks,
                     dispatcher_region=dispatcher_region,
-                    mba=mba,
                 )
+                if diagnostic is None:
+                    logger.info(
+                        "RECON RETURN: source_unreachable diagnostic %s: "
+                        "not in projected flow graph",
+                        blk_label(mba, int(seed.source_block)),
+                    )
+                else:
+                    logger.info(
+                        "RECON RETURN: source_unreachable diagnostic %s "
+                        "preds=[%s] nearest_reachable=%s island_blocks=%s",
+                        blk_label(mba, diagnostic.source_block),
+                        ", ".join(diagnostic.pred_info),
+                        (
+                            blk_label(mba, diagnostic.nearest_reachable)
+                            if diagnostic.nearest_reachable is not None
+                            else "None"
+                        ),
+                        [blk_label(mba, b) for b in diagnostic.island_blocks],
+                    )
 
         candidate_suffix_entries = collection.candidate_suffix_entries
         for candidate in collection.candidates:
-            candidate_key = cls._terminal_candidate_key(candidate)
+            candidate_key = terminal_candidate_key(candidate)
             logger.info(
                 "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
                 "shared_suffix_entry=%s writer=%s materializer=%s "
