@@ -337,9 +337,9 @@ class LinearizedFlowGraphStrategy:
             )
             if state_value is None:
                 continue
-            if not cls._dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
+            if not dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
                 continue
-            target = cls._dispatcher_exact_state_target(state_value, dispatcher=dispatcher)
+            target = dispatcher_exact_state_target(state_value, dispatcher=dispatcher)
             if target is None or target == block_serial:
                 continue
             return True
@@ -566,7 +566,7 @@ class LinearizedFlowGraphStrategy:
                 for edge in self._select_plannable_edges(dag_latest):
                     safe_target_entry = None
                     if edge.target_entry_anchor is not None:
-                        safe_target_entry = self._resolve_redirect_safe_target_entry(
+                        safe_target_entry = resolve_redirect_safe_target_entry(
                             dag_latest,
                             edge,
                             bst_node_blocks=dag_bst_node_blocks,
@@ -623,7 +623,7 @@ class LinearizedFlowGraphStrategy:
                         dag_skipped_count += 1
 
             dag_initial_entry = (
-                self._resolve_dag_entry_for_state(
+                resolve_dag_entry_for_state(
                     dag_latest,
                     sm.initial_state,
                     bst_node_blocks=dag_bst_node_blocks,
@@ -1936,265 +1936,6 @@ class LinearizedFlowGraphStrategy:
             )
         )
 
-    @staticmethod
-    def _resolve_dag_entry_for_state(
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        bst_node_blocks: set[int] | None = None,
-    ) -> int | None:
-        return resolve_dag_entry_for_state(
-            dag,
-            state_value,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @staticmethod
-    def _state_has_semantic_support(
-        dag: LinearizedStateDag,
-        state_value: int | None,
-    ) -> bool:
-        return state_has_semantic_support(dag, state_value)
-
-    @classmethod
-    def _resolve_contextual_dag_entry_for_state(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        source_block: int,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_contextual_dag_entry_for_state(
-            dag,
-            state_value,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_nonlocal_state_entry(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        forbidden_blocks: set[int],
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_nonlocal_state_entry(
-            dag,
-            state_value,
-            forbidden_blocks=forbidden_blocks,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @staticmethod
-    def _is_raw_state_label(label: str, state_value: int) -> bool:
-        return is_raw_state_label(label, state_value)
-
-    @classmethod
-    def _resolve_normalized_alias_entry_for_state(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        source_block: int | None,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_normalized_alias_entry_for_state(
-            dag,
-            state_value,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_nonexact_dispatch_target(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        source_block: int,
-        bst_node_blocks: set[int],
-        dispatcher: object | None,
-        dispatcher_lookup: object | None = None,
-    ) -> int | None:
-        return resolve_nonexact_dispatch_target(
-            dag,
-            state_value,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-            dispatcher_lookup=dispatcher_lookup,
-        )
-
-    @classmethod
-    def _resolve_owner_semantic_entry_for_blocks(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        anchor_candidates: tuple[int, ...],
-        source_block: int,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_owner_semantic_entry_for_blocks(
-            dag,
-            anchor_candidates=anchor_candidates,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_owner_family_fallback_entry(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        via_pred: int,
-        source_block: int,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_owner_family_fallback_entry(
-            dag,
-            via_pred=via_pred,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_loopback_alias_fallback_entry(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int,
-        *,
-        source_block: int,
-        via_pred: int | None,
-        bst_node_blocks: set[int],
-        dispatcher: object | None,
-    ) -> int | None:
-        return resolve_loopback_alias_fallback_entry(
-            dag,
-            state_value,
-            source_block=source_block,
-            via_pred=via_pred,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-        )
-
-    @classmethod
-    def _resolve_projected_path_tail_target(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        source_block: int,
-        bst_node_blocks: set[int],
-        dispatcher: object | None = None,
-        predecessor_hints: tuple[int, ...] | None = None,
-        require_predecessor_match: bool = False,
-    ) -> tuple[int | None, int] | None:
-        return resolve_projected_path_tail_target(
-            dag,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-            predecessor_hints=predecessor_hints,
-            require_predecessor_match=require_predecessor_match,
-        )
-
-    @classmethod
-    def _iter_residual_prefix_handoffs(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        source_block: int,
-        bst_node_blocks: set[int],
-        dispatcher: object | None = None,
-    ) -> list[tuple[StateDagEdge, int, int]]:
-        return iter_residual_prefix_handoffs(
-            dag,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-        )
-
-    @classmethod
-    def _resolve_cover_fallback_entry_for_state(
-        cls,
-        dag: LinearizedStateDag,
-        state_value: int | None,
-        *,
-        source_block: int,
-        bst_node_blocks: set[int],
-        dispatcher: object | None = None,
-    ) -> int | None:
-        return resolve_cover_fallback_entry_for_state(
-            dag,
-            state_value,
-            source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-        )
-
-    @staticmethod
-    def _dispatcher_has_exact_state_row(
-        state_value: int | None,
-        dispatcher: object | None = None,
-    ) -> bool:
-        return dispatcher_has_exact_state_row(
-            state_value,
-            dispatcher=dispatcher,
-        )
-
-    @staticmethod
-    def _dispatcher_exact_state_target(
-        state_value: int | None,
-        dispatcher: object | None = None,
-    ) -> int | None:
-        return dispatcher_exact_state_target(
-            state_value,
-            dispatcher=dispatcher,
-        )
-
-    @staticmethod
-    def _resolve_path_lead_entry_from_node(
-        dag: LinearizedStateDag,
-        node: StateDagNode,
-        *,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_path_lead_entry_from_node(
-            dag,
-            node,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_redirect_safe_entry_from_node(
-        cls,
-        node,
-        *,
-        dag: LinearizedStateDag | None = None,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_redirect_safe_entry_from_node(
-            node,
-            dag=dag,
-            bst_node_blocks=bst_node_blocks,
-        )
-
-    @classmethod
-    def _resolve_redirect_safe_target_entry(
-        cls,
-        dag: LinearizedStateDag,
-        edge: StateDagEdge,
-        *,
-        bst_node_blocks: set[int],
-    ) -> int | None:
-        return resolve_redirect_safe_target_entry(
-            dag,
-            edge,
-            bst_node_blocks=bst_node_blocks,
-        )
-
     @classmethod
     def _resolve_effective_target_entry(
         cls,
@@ -2207,7 +1948,7 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         mba: object,
     ) -> int | None:
-        target_entry = cls._resolve_redirect_safe_target_entry(
+        target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
             bst_node_blocks=bst_node_blocks,
@@ -2219,13 +1960,13 @@ class LinearizedFlowGraphStrategy:
         if (
             edge.target_state is not None
             and dispatcher is not None
-            and not cls._dispatcher_has_exact_state_row(
+            and not dispatcher_has_exact_state_row(
                 edge.target_state,
                 dispatcher=dispatcher,
             )
-            and cls._is_raw_state_label(edge.target_label or "", edge.target_state)
+            and is_raw_state_label(edge.target_label or "", edge.target_state)
         ):
-            normalized_nonexact_target = cls._resolve_nonexact_dispatch_target(
+            normalized_nonexact_target = resolve_nonexact_dispatch_target(
                 dag,
                 edge.target_state,
                 source_block=source_block,
@@ -2255,7 +1996,7 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, edge.source_anchor.block_serial),
                 edge.source_anchor.branch_arm,
             )
-        immediate_handoff = cls._resolve_immediate_handoff_target(
+        immediate_handoff = resolve_immediate_handoff_target(
             dag,
             mba,
             source_block,
@@ -2279,7 +2020,7 @@ class LinearizedFlowGraphStrategy:
         selected_handoff = immediate_handoff or synthesized_handoff
         if selected_handoff is not None:
             immediate_state, immediate_target_entry = selected_handoff
-            immediate_direct_entry = cls._resolve_dag_entry_for_state(
+            immediate_direct_entry = resolve_dag_entry_for_state(
                 dag,
                 immediate_state,
                 bst_node_blocks=bst_node_blocks,
@@ -2287,7 +2028,7 @@ class LinearizedFlowGraphStrategy:
             if (
                 edge.target_state is not None
                 and dispatcher is not None
-                and not cls._dispatcher_has_exact_state_row(
+                and not dispatcher_has_exact_state_row(
                     edge.target_state,
                     dispatcher=dispatcher,
                 )
@@ -2319,7 +2060,7 @@ class LinearizedFlowGraphStrategy:
                 source_block=source_block,
                 target_entry=immediate_target_entry,
             ):
-                fallback_target_entry = cls._resolve_cover_fallback_entry_for_state(
+                fallback_target_entry = resolve_cover_fallback_entry_for_state(
                     dag,
                     immediate_state,
                     source_block=source_block,
@@ -2698,39 +2439,6 @@ class LinearizedFlowGraphStrategy:
             return False
         return target_index <= source_index
 
-    @staticmethod
-    def _target_reaches_source(
-        flow_graph: object,
-        *,
-        target_entry: int,
-        source_block: int,
-        limit: int = 256,
-    ) -> bool:
-        return target_reaches_source_ignoring_blocks(
-            flow_graph,
-            target_entry=target_entry,
-            source_block=source_block,
-            ignored_blocks=set(),
-            limit=limit,
-        )
-
-    @staticmethod
-    def _target_reaches_source_ignoring_blocks(
-        flow_graph: object,
-        *,
-        target_entry: int,
-        source_block: int,
-        ignored_blocks: set[int],
-        limit: int = 256,
-    ) -> bool:
-        return target_reaches_source_ignoring_blocks(
-            flow_graph,
-            target_entry=target_entry,
-            source_block=source_block,
-            ignored_blocks=ignored_blocks,
-            limit=limit,
-        )
-
     @classmethod
     def _emit_residual_dispatcher_handoffs(
         cls,
@@ -2808,7 +2516,7 @@ class LinearizedFlowGraphStrategy:
             )
             prefix_redirected = False
             prefix_attempts: list[ResidualPrefixAttempt] = []
-            for edge, via_pred, prefix_target in cls._iter_residual_prefix_handoffs(
+            for edge, via_pred, prefix_target in iter_residual_prefix_handoffs(
                 dag,
                 source_block=source_block,
                 bst_node_blocks=bst_node_blocks,
@@ -2851,7 +2559,7 @@ class LinearizedFlowGraphStrategy:
                             ordered_path=tuple(int(node) for node in edge.ordered_path),
                             dispatcher_serial=dispatcher_serial,
                             bst_node_blocks=frozenset(bst_node_blocks),
-                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                            target_reaches_branch=target_reaches_source_ignoring_blocks(
                                 projected_flow_graph,
                                 target_entry=prefix_target,
                                 source_block=branch_source,
@@ -2926,7 +2634,7 @@ class LinearizedFlowGraphStrategy:
                                 via_pred=via_pred,
                             )
                     if pred_handoff is None:
-                        pred_handoff = cls._resolve_projected_path_tail_target(
+                        pred_handoff = resolve_projected_path_tail_target(
                             dag,
                             source_block=source_block,
                             bst_node_blocks=bst_node_blocks,
@@ -2955,7 +2663,7 @@ class LinearizedFlowGraphStrategy:
                             via_pred=via_pred,
                         )
                     if pred_handoff is None:
-                        pred_handoff = cls._resolve_immediate_handoff_target(
+                        pred_handoff = resolve_immediate_handoff_target(
                             dag,
                             analysis_mba,
                             via_pred,
@@ -3068,7 +2776,7 @@ class LinearizedFlowGraphStrategy:
                                 bst_node_blocks=bst_node_blocks,
                                 dispatcher=dispatcher,
                             ),
-                            target_reaches_source=cls._target_reaches_source_ignoring_blocks(
+                            target_reaches_source=target_reaches_source_ignoring_blocks(
                                 projected_flow_graph,
                                 target_entry=target_entry,
                                 source_block=source_block,
@@ -3146,7 +2854,7 @@ class LinearizedFlowGraphStrategy:
                 continue
 
             prefix_attempts = []
-            for edge, via_pred, prefix_target in cls._iter_residual_prefix_handoffs(
+            for edge, via_pred, prefix_target in iter_residual_prefix_handoffs(
                 dag,
                 source_block=source_block,
                 bst_node_blocks=bst_node_blocks,
@@ -3163,7 +2871,7 @@ class LinearizedFlowGraphStrategy:
                     target_entry=prefix_target,
                     dispatcher_serial=dispatcher_serial,
                     bst_node_blocks=frozenset(bst_node_blocks),
-                    target_reaches_pred=cls._target_reaches_source_ignoring_blocks(
+                    target_reaches_pred=target_reaches_source_ignoring_blocks(
                         projected_flow_graph,
                         target_entry=prefix_target,
                         source_block=via_pred,
@@ -3210,7 +2918,7 @@ class LinearizedFlowGraphStrategy:
                             ordered_path=tuple(int(node) for node in edge.ordered_path),
                             dispatcher_serial=dispatcher_serial,
                             bst_node_blocks=frozenset(bst_node_blocks),
-                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                            target_reaches_branch=target_reaches_source_ignoring_blocks(
                                 projected_flow_graph,
                                 target_entry=prefix_target,
                                 source_block=branch_source,
@@ -3343,7 +3051,7 @@ class LinearizedFlowGraphStrategy:
                             ordered_path=tuple(int(node) for node in edge.ordered_path),
                             dispatcher_serial=dispatcher_serial,
                             bst_node_blocks=frozenset(bst_node_blocks),
-                            target_reaches_branch=cls._target_reaches_source_ignoring_blocks(
+                            target_reaches_branch=target_reaches_source_ignoring_blocks(
                                 projected_flow_graph,
                                 target_entry=prefix_target,
                                 source_block=branch_source,
@@ -3412,7 +3120,7 @@ class LinearizedFlowGraphStrategy:
             if len(succs) != 1:
                 continue
             current_target = succs[0]
-            projected_handoff = cls._resolve_projected_path_tail_target(
+            projected_handoff = resolve_projected_path_tail_target(
                 dag,
                 source_block=source_block,
                 bst_node_blocks=bst_node_blocks,
@@ -3422,7 +3130,7 @@ class LinearizedFlowGraphStrategy:
             _, target_entry = projected_handoff
             if target_entry == source_block or target_entry == current_target:
                 continue
-            if cls._target_reaches_source_ignoring_blocks(
+            if target_reaches_source_ignoring_blocks(
                 projected_flow_graph,
                 target_entry=target_entry,
                 source_block=source_block,
@@ -3568,7 +3276,7 @@ class LinearizedFlowGraphStrategy:
         )
         if (
             not allow_semantic_handoff
-            and cls._target_reaches_source_ignoring_blocks(
+            and target_reaches_source_ignoring_blocks(
                 flow_graph,
                 target_entry=target_entry,
                 source_block=source_block,
@@ -3581,7 +3289,7 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, target_entry),
             )
             return False
-        if allow_semantic_handoff and cls._target_reaches_source_ignoring_blocks(
+        if allow_semantic_handoff and target_reaches_source_ignoring_blocks(
             flow_graph,
             target_entry=target_entry,
             source_block=source_block,
@@ -3620,7 +3328,7 @@ class LinearizedFlowGraphStrategy:
         npreds = len(tuple(source_snapshot.preds))
         shared_handoff = None
         if npreds > 1:
-            shared_handoff = cls._resolve_immediate_handoff_target(
+            shared_handoff = resolve_immediate_handoff_target(
                 dag,
                 mba,
                 source_block,
@@ -3937,7 +3645,7 @@ class LinearizedFlowGraphStrategy:
         )
         if (
             not allow_semantic_handoff
-            and cls._target_reaches_source_ignoring_blocks(
+            and target_reaches_source_ignoring_blocks(
                 flow_graph,
                 target_entry=target_entry,
                 source_block=source_block,
@@ -3950,7 +3658,7 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, target_entry),
             )
             return False
-        if allow_semantic_handoff and cls._target_reaches_source_ignoring_blocks(
+        if allow_semantic_handoff and target_reaches_source_ignoring_blocks(
             flow_graph,
             target_entry=target_entry,
             source_block=source_block,
@@ -4068,7 +3776,7 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         mba: object | None,
     ) -> bool:
-        immediate_handoff = cls._resolve_immediate_handoff_target(
+        immediate_handoff = resolve_immediate_handoff_target(
             dag,
             mba,
             source_block,
