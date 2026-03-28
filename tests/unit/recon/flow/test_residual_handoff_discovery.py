@@ -14,7 +14,9 @@ from d810.recon.flow.linearized_state_dag import (
 from d810.recon.flow.residual_handoff_discovery import (
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    resolve_nonexact_dispatch_target,
     resolve_path_lead_entry_from_node,
+    resolve_projected_path_tail_target,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
 )
@@ -45,6 +47,7 @@ def _node(
 def _edge(
     *,
     source_handler: int,
+    source_state: int | None = None,
     target_key: StateDagNodeKey | None,
     target_entry: int | None,
     target_state: int | None,
@@ -53,7 +56,10 @@ def _edge(
 ) -> StateDagEdge:
     return StateDagEdge(
         kind=SemanticEdgeKind.TRANSITION,
-        source_key=StateDagNodeKey(handler_serial=source_handler, state_const=source_handler),
+        source_key=StateDagNodeKey(
+            handler_serial=source_handler,
+            state_const=source_handler if source_state is None else source_state,
+        ),
         target_key=target_key,
         target_state=target_state,
         target_entry_anchor=target_entry,
@@ -92,6 +98,7 @@ class TestRedirectSafeEntryResolution:
         node = _node(entry=2, handler=10, state=0x11, exclusive=(24,))
         edge = _edge(
             source_handler=10,
+            source_state=0x11,
             target_key=node.key,
             target_entry=2,
             target_state=0x11,
@@ -180,4 +187,46 @@ class TestRedirectSafeEntryResolution:
                 bst_node_blocks={2, 6},
             )
             == 30
+        )
+
+
+class TestResidualTargetDiscovery:
+    def test_resolves_nonexact_dispatch_target_via_dispatcher_lookup(self) -> None:
+        edge_node = _node(entry=24, handler=24, state=0x33)
+        dag = _dag((edge_node,), ())
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x30, hi=0x40, target=2),),
+            lookup=lambda state: 24 if state == 0x33 else None,
+        )
+
+        assert (
+            resolve_nonexact_dispatch_target(
+                dag,
+                0x33,
+                source_block=10,
+                bst_node_blocks={2, 6},
+                dispatcher=dispatcher,
+            )
+            == 24
+        )
+
+    def test_resolves_projected_path_tail_target(self) -> None:
+        target = _node(entry=24, handler=24, state=0x33)
+        edge = _edge(
+            source_handler=10,
+            target_key=target.key,
+            target_entry=24,
+            target_state=0x33,
+            ordered_path=(8, 10),
+        )
+        dag = _dag((target,), (edge,))
+
+        assert (
+            resolve_projected_path_tail_target(
+                dag,
+                source_block=10,
+                bst_node_blocks={2, 6},
+                predecessor_hints=(8,),
+            )
+            == (0x33, 24)
         )
