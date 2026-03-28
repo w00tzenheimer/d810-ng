@@ -48,6 +48,9 @@ from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
+from d810.recon.flow.handler_state_map_discovery import (
+    collect_unique_interval_handler_backfills,
+)
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.exit_transition_discovery import (
     collect_bst_default_transition_candidates,
@@ -830,27 +833,19 @@ class LinearizedFlowGraphStrategy:
         # default discovery, DOT graph, coverage checks).
         # handler_state_map shape: {handler_serial: state_value}
         _dispatcher = getattr(bst_result, "dispatcher", None)
-        if _dispatcher is not None:
-            _existing_handler_serials = set(handler_state_map.keys())
-            # Count how many rows map to each target.  Targets that
-            # appear in multiple disjoint intervals are catch-all /
-            # default blocks, NOT real handlers -- skip them.
-            from collections import Counter as _Counter
-            _target_freq: dict[int, int] = _Counter(
-                r.target for r in _dispatcher._rows
+        for _backfill in collect_unique_interval_handler_backfills(
+            handler_state_map,
+            _dispatcher,
+        ):
+            handler_state_map[_backfill.target] = _backfill.lo
+            logger.info(
+                "LFG: INTERVAL_BACKFILL %s <- state 0x%X "
+                "(range [0x%X, 0x%X))",
+                blk_label(mba, _backfill.target),
+                _backfill.lo,
+                _backfill.lo,
+                _backfill.hi,
             )
-            for _row in _dispatcher._rows:
-                if _row.target in _existing_handler_serials:
-                    continue
-                if _target_freq[_row.target] > 1:
-                    continue  # catch-all / default block
-                # Use lo as representative state value for this range.
-                handler_state_map[_row.target] = _row.lo
-                logger.info(
-                    "LFG: INTERVAL_BACKFILL %s <- state 0x%X "
-                    "(range [0x%X, 0x%X))",
-                    blk_label(mba, _row.target), _row.lo, _row.lo, _row.hi,
-                )
         pre_header_serial: int | None = getattr(
             bst_result, "pre_header_serial", None
         )
