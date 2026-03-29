@@ -18,7 +18,18 @@ from d810.core.diag.snapshot import (
     snapshot_dag,
     snapshot_mba,
     snapshot_modifications,
+    snapshot_rendered_program,
     snapshot_reachability,
+)
+from d810.recon.flow.linearized_state_dag import (
+    BoundaryInlineMode,
+    LabelRenderMode,
+    ProgramCommentMode,
+    ProgramRenderStrategy,
+    RenderOrderStrategy,
+    RenderedProgramLine,
+    RenderedProgramNode,
+    RenderedProgramSnapshot,
 )
 
 
@@ -462,6 +473,104 @@ class TestSnapshotReachability:
         assert len(rows) == 3
         # All defaults: not bst, not reachable, not gutted, not claimed
         assert all(row[1:] == (0, 0, 0, 0) for row in rows)
+
+
+class TestSnapshotRenderedProgram:
+    def test_writes_rendered_program_rows(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+        program = RenderedProgramSnapshot(
+            variant_name="semantic_reference_like",
+            order_strategy=RenderOrderStrategy.SEMANTIC.value,
+            program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE.value,
+            label_render_mode=LabelRenderMode.STATE_FAMILY.name.lower(),
+            boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL.name.lower(),
+            comment_mode=ProgramCommentMode.MINIMAL.name.lower(),
+            nodes=(
+                RenderedProgramNode(
+                    node_index=0,
+                    label_text="STATE_DEADBEEF",
+                    node_kind="state_family",
+                    line_start=3,
+                    line_end=5,
+                    state_label="STATE_DEADBEEF",
+                    handler_serial=12,
+                    entry_anchor=12,
+                ),
+            ),
+            lines=(
+                RenderedProgramLine(1, "=== LINEARIZED STATE PROGRAM ===", None, 0, "statement"),
+                RenderedProgramLine(2, "", None, 0, "blank"),
+                RenderedProgramLine(3, "STATE_DEADBEEF:", 0, 0, "label"),
+                RenderedProgramLine(4, "    x = 1", 0, 1, "statement"),
+                RenderedProgramLine(5, "    goto STATE_FEEDC0DE;", 0, 1, "goto", "STATE_FEEDC0DE"),
+            ),
+        )
+
+        snapshot_rendered_program(conn, 1, program)
+
+        meta = conn.execute(
+            "SELECT variant_name, line_count, node_count FROM rendered_programs "
+            "WHERE snapshot_id=1"
+        ).fetchone()
+        assert meta == ("semantic_reference_like", 5, 1)
+
+        node = conn.execute(
+            "SELECT label_text, node_kind, handler_serial, line_start, line_end "
+            "FROM rendered_program_nodes WHERE snapshot_id=1 AND variant_name='semantic_reference_like'"
+        ).fetchone()
+        assert node == ("STATE_DEADBEEF", "state_family", 12, 3, 5)
+
+        line = conn.execute(
+            "SELECT line_kind, target_label, text FROM rendered_program_lines "
+            "WHERE snapshot_id=1 AND variant_name='semantic_reference_like' AND line_no=5"
+        ).fetchone()
+        assert line == ("goto", "STATE_FEEDC0DE", "    goto STATE_FEEDC0DE;")
+
+    def test_replaces_existing_variant_rows(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+        program_a = RenderedProgramSnapshot(
+            variant_name="semantic_reference_like",
+            order_strategy="semantic",
+            program_strategy="local_boundary_selective",
+            label_render_mode="state_family",
+            boundary_inline_mode="inline_single_level",
+            comment_mode="minimal",
+            nodes=(RenderedProgramNode(0, "STATE_A", "state_family", 1, 2),),
+            lines=(
+                RenderedProgramLine(1, "STATE_A:", 0, 0, "label"),
+                RenderedProgramLine(2, "    goto EXIT_ROUTINE;", 0, 1, "goto", "EXIT_ROUTINE"),
+            ),
+        )
+        program_b = RenderedProgramSnapshot(
+            variant_name="semantic_reference_like",
+            order_strategy="semantic",
+            program_strategy="local_boundary_selective",
+            label_render_mode="state_family",
+            boundary_inline_mode="inline_single_level",
+            comment_mode="minimal",
+            nodes=(RenderedProgramNode(0, "STATE_B", "state_family", 1, 1),),
+            lines=(RenderedProgramLine(1, "STATE_B:", 0, 0, "label"),),
+        )
+
+        snapshot_rendered_program(conn, 1, program_a)
+        snapshot_rendered_program(conn, 1, program_b)
+
+        counts = conn.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM rendered_program_nodes WHERE snapshot_id=1 AND variant_name='semantic_reference_like'), "
+            "(SELECT COUNT(*) FROM rendered_program_lines WHERE snapshot_id=1 AND variant_name='semantic_reference_like')"
+        ).fetchone()
+        assert counts == (1, 1)
 
 
 class TestDual:

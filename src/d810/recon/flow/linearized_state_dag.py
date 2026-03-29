@@ -39,6 +39,8 @@ _SIMPLE_COMPARE_RE = re.compile(
     r"(?P<op>==|!=|>=u|<=u|>u|<u|>=s|<=s|>s|<s)\s+"
     r"(?P<rhs>.+?)\s*$"
 )
+_PROGRAM_LABEL_RE = re.compile(r"^(?P<label>[A-Za-z_][A-Za-z0-9_]*)\:$")
+_PROGRAM_GOTO_RE = re.compile(r"\bgoto\s+(?P<label>[A-Za-z_][A-Za-z0-9_]*)\s*;")
 
 
 class StateNodeKind(Enum):
@@ -201,6 +203,158 @@ class ProgramLabel:
     base: str
     entry_anchor: int
     label_num: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedProgramNode:
+    """One rendered label block in the linearized program."""
+
+    node_index: int
+    label_text: str
+    node_kind: str
+    line_start: int
+    line_end: int
+    state_label: str | None = None
+    handler_serial: int | None = None
+    entry_anchor: int | None = None
+    label_num: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedProgramLine:
+    """One rendered output line with lightweight query metadata."""
+
+    line_no: int
+    text: str
+    node_index: int | None
+    indent_level: int
+    line_kind: str
+    target_label: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedProgramSnapshot:
+    """Structured snapshot of one rendered linearized program variant."""
+
+    variant_name: str
+    order_strategy: str
+    program_strategy: str
+    label_render_mode: str
+    boundary_inline_mode: str
+    comment_mode: str
+    nodes: tuple[RenderedProgramNode, ...]
+    lines: tuple[RenderedProgramLine, ...]
+
+
+class _RenderedProgramBuilder:
+    """Collect rendered program lines and node spans directly during emission."""
+
+    def __init__(self) -> None:
+        self._nodes: list[RenderedProgramNode] = []
+        self._lines: list[RenderedProgramLine] = []
+        self._current_node_index: int | None = None
+
+    def __len__(self) -> int:
+        return len(self._lines)
+
+    def __iter__(self):
+        for line in self._lines:
+            yield line.text
+
+    def _finalize_open_node(self) -> None:
+        if self._current_node_index is None:
+            return
+        node = self._nodes[self._current_node_index]
+        self._nodes[self._current_node_index] = RenderedProgramNode(
+            node_index=node.node_index,
+            label_text=node.label_text,
+            node_kind=node.node_kind,
+            line_start=node.line_start,
+            line_end=len(self._lines),
+            state_label=node.state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=node.entry_anchor,
+            label_num=node.label_num,
+        )
+
+    def begin_node(
+        self,
+        label_text: str,
+        *,
+        node_kind: str,
+        state_label: str | None = None,
+        handler_serial: int | None = None,
+        entry_anchor: int | None = None,
+        label_num: int | None = None,
+    ) -> None:
+        self._finalize_open_node()
+        node_index = len(self._nodes)
+        self._nodes.append(
+            RenderedProgramNode(
+                node_index=node_index,
+                label_text=label_text,
+                node_kind=node_kind,
+                line_start=len(self._lines) + 1,
+                line_end=len(self._lines) + 1,
+                state_label=state_label,
+                handler_serial=handler_serial,
+                entry_anchor=entry_anchor,
+                label_num=label_num,
+            )
+        )
+        self._current_node_index = node_index
+        self.append(f"{label_text}:")
+
+    def append(self, text: str) -> None:
+        stripped = text.strip()
+        if not stripped:
+            line_kind = "blank"
+        elif _PROGRAM_LABEL_RE.match(text):
+            line_kind = "label"
+        elif stripped.startswith("//"):
+            line_kind = "comment"
+        elif stripped.startswith("goto "):
+            line_kind = "goto"
+        elif stripped.startswith("if "):
+            line_kind = "if"
+        elif stripped.startswith("return "):
+            line_kind = "return"
+        else:
+            line_kind = "statement"
+        goto_match = _PROGRAM_GOTO_RE.search(text)
+        indent_level = max(0, (len(text) - len(text.lstrip(" "))) // 4)
+        self._lines.append(
+            RenderedProgramLine(
+                line_no=len(self._lines) + 1,
+                text=text,
+                node_index=self._current_node_index,
+                indent_level=indent_level,
+                line_kind=line_kind,
+                target_label=goto_match.group("label") if goto_match else None,
+            )
+        )
+
+    def build_snapshot(
+        self,
+        *,
+        variant_name: str,
+        order_strategy: str,
+        program_strategy: str,
+        label_render_mode: str,
+        boundary_inline_mode: str,
+        comment_mode: str,
+    ) -> RenderedProgramSnapshot:
+        self._finalize_open_node()
+        return RenderedProgramSnapshot(
+            variant_name=variant_name,
+            order_strategy=order_strategy,
+            program_strategy=program_strategy,
+            label_render_mode=label_render_mode,
+            boundary_inline_mode=boundary_inline_mode,
+            comment_mode=comment_mode,
+            nodes=tuple(self._nodes),
+            lines=tuple(self._lines),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4736,8 +4890,8 @@ def _render_explicit_local_segment_program(
     order_strategy: RenderOrderStrategy,
     label_render_mode: LabelRenderMode,
     block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
-) -> str:
-    lines: list[str] = []
+) -> _RenderedProgramBuilder:
+    lines = _RenderedProgramBuilder()
     node_by_key = {node.key: node for node in dag.nodes}
     label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
         dag,
@@ -4765,8 +4919,15 @@ def _render_explicit_local_segment_program(
     emitted_exit_routine = False
     for node_key in ordered_keys:
         node = node_by_key[node_key]
-        node_label = label_by_key[node_key].rendered
-        lines.append(f"{node_label}:")
+        program_label = label_by_key[node_key]
+        lines.begin_node(
+            program_label.rendered,
+            node_kind="state_family",
+            state_label=node.state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=node.entry_anchor,
+            label_num=program_label.label_num,
+        )
         _emit_program_state_family_comment(
             lines,
             node,
@@ -4818,7 +4979,7 @@ def _render_explicit_local_segment_program(
             lines.append("")
             continue
 
-        segment_labels = _build_program_segment_labels(node, node_label)
+        segment_labels = _build_program_segment_labels(node, program_label.rendered)
         entry_segment_id = _find_entry_segment_id(node)
         if entry_segment_id is not None:
             lines.append(f"    goto {segment_labels[entry_segment_id]};")
@@ -4840,7 +5001,10 @@ def _render_explicit_local_segment_program(
         segment_by_id = {segment.segment_id: segment for segment in node.local_segments}
         for segment_id in _local_segment_render_order(node):
             segment = segment_by_id[segment_id]
-            lines.append(f"{segment_labels[segment_id]}:")
+            lines.begin_node(
+                segment_labels[segment_id],
+                node_kind="local_boundary",
+            )
             blocks = ", ".join(f"blk[{blk}]" for blk in segment.blocks)
             lines.append(
                 f"    // {segment.kind.name.lower()} segment: {segment.segment_id}"
@@ -4966,11 +5130,11 @@ def _render_explicit_local_segment_program(
             lines.append("")
 
     if emitted_exit_routine:
-        lines.append("EXIT_ROUTINE:")
+        lines.begin_node("EXIT_ROUTINE", node_kind="exit_routine")
         lines.append("    return result;")
         lines.append("")
 
-    return "\n".join(lines)
+    return lines
 
 
 def _render_selective_local_boundary_program(
@@ -4981,8 +5145,8 @@ def _render_selective_local_boundary_program(
     label_render_mode: LabelRenderMode,
     comment_mode: ProgramCommentMode,
     block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
-) -> str:
-    lines: list[str] = []
+) -> _RenderedProgramBuilder:
+    lines = _RenderedProgramBuilder()
     node_by_key = {node.key: node for node in dag.nodes}
     label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
         dag,
@@ -5020,8 +5184,15 @@ def _render_selective_local_boundary_program(
     emitted_exit_routine = False
     for node_key in ordered_keys:
         node = node_by_key[node_key]
-        node_label = label_by_key[node_key].rendered
-        lines.append(f"{node_label}:")
+        program_label = label_by_key[node_key]
+        lines.begin_node(
+            program_label.rendered,
+            node_kind="state_family",
+            state_label=node.state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=node.entry_anchor,
+            label_num=program_label.label_num,
+        )
         _emit_program_state_family_comment(
             lines,
             node,
@@ -5088,7 +5259,7 @@ def _render_selective_local_boundary_program(
             continue
 
         segment_by_id = {segment.segment_id: segment for segment in node.local_segments}
-        segment_labels = _build_program_segment_labels(node, node_label)
+        segment_labels = _build_program_segment_labels(node, program_label.rendered)
         segment_id_by_label = {label: segment_id for segment_id, label in segment_labels.items()}
         entry_segment_id = _find_entry_segment_id(node)
 
@@ -5834,7 +6005,10 @@ def _render_selective_local_boundary_program(
         for segment_id in visible_segments:
             if segment_id in inlined_segments:
                 continue
-            lines.append(f"{segment_labels[segment_id]}:")
+            lines.begin_node(
+                segment_labels[segment_id],
+                node_kind="local_boundary",
+            )
             render_boundary_body(
                 segment_id,
                 indent="    ",
@@ -5843,11 +6017,11 @@ def _render_selective_local_boundary_program(
             lines.append("")
 
     if emitted_exit_routine:
-        lines.append("EXIT_ROUTINE:")
+        lines.begin_node("EXIT_ROUTINE", node_kind="exit_routine")
         lines.append("    return result;")
         lines.append("")
 
-    return "\n".join(lines)
+    return lines
 
 
 def _render_collapsed_linearized_state_program(
@@ -5856,14 +6030,14 @@ def _render_collapsed_linearized_state_program(
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
     label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
     block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
-) -> str:
+) -> _RenderedProgramBuilder:
     """Render the state DAG as a label-preserving linearized program.
 
     This intentionally preserves explicit state-family labels and semantic
     redirects instead of asking Hex-Rays to rediscover a structured CFG from
     later graph rewrites.
     """
-    lines: list[str] = []
+    lines = _RenderedProgramBuilder()
     node_by_key = {node.key: node for node in dag.nodes}
     label_by_key, labels_by_base, labels_by_base_and_entry = _build_program_labels(
         dag,
@@ -5891,7 +6065,15 @@ def _render_collapsed_linearized_state_program(
     emitted_exit_routine = False
     for node_key in ordered_keys:
         node = node_by_key[node_key]
-        lines.append(f"{label_by_key[node_key].rendered}:")
+        node_label = label_by_key[node_key]
+        lines.begin_node(
+            node_label.rendered,
+            node_kind="state_family",
+            state_label=node.state_label,
+            handler_serial=node.handler_serial,
+            entry_anchor=node.entry_anchor,
+            label_num=node_label.label_num,
+        )
         _emit_program_state_family_comment(
             lines,
             node,
@@ -5991,14 +6173,209 @@ def _render_collapsed_linearized_state_program(
         lines.append("")
 
     if emitted_exit_routine:
-        lines.append("EXIT_ROUTINE:")
+        lines.begin_node("EXIT_ROUTINE", node_kind="exit_routine")
         lines.append("    return result;")
         lines.append("")
 
-    return "\n".join(lines)
+    return lines
 
 
-def render_linearized_state_program(
+def linearized_program_variant_name(
+    *,
+    order_strategy: RenderOrderStrategy,
+    program_strategy: ProgramRenderStrategy,
+    label_render_mode: LabelRenderMode,
+    boundary_inline_mode: BoundaryInlineMode,
+    comment_mode: ProgramCommentMode,
+) -> str:
+    """Return a stable variant name for a rendered program configuration."""
+    if (
+        order_strategy == RenderOrderStrategy.SEMANTIC
+        and program_strategy == ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE
+        and label_render_mode == LabelRenderMode.STATE_FAMILY
+        and boundary_inline_mode == BoundaryInlineMode.INLINE_SINGLE_LEVEL
+        and comment_mode == ProgramCommentMode.MINIMAL
+    ):
+        return "semantic_reference_like"
+    if (
+        order_strategy == RenderOrderStrategy.SEMANTIC
+        and program_strategy == ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE
+        and label_render_mode == LabelRenderMode.STATE_FAMILY
+        and boundary_inline_mode == BoundaryInlineMode.INLINE_SINGLE_LEVEL
+        and comment_mode == ProgramCommentMode.DEBUG_METADATA
+    ):
+        return "semantic_local_boundaries"
+    if (
+        order_strategy == RenderOrderStrategy.SEMANTIC
+        and program_strategy == ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE
+        and label_render_mode == LabelRenderMode.IDA_BLOCK_SERIAL
+        and boundary_inline_mode == BoundaryInlineMode.INLINE_SINGLE_LEVEL
+        and comment_mode == ProgramCommentMode.DEBUG_METADATA
+    ):
+        return "semantic_local_boundaries_ida_labels"
+    if (
+        order_strategy == RenderOrderStrategy.SEMANTIC
+        and program_strategy == ProgramRenderStrategy.LOCAL_SEGMENT_COLLAPSING
+        and label_render_mode == LabelRenderMode.STATE_FAMILY
+        and boundary_inline_mode == BoundaryInlineMode.LABELS_ONLY
+        and comment_mode == ProgramCommentMode.DEBUG_METADATA
+    ):
+        return "semantic"
+    if (
+        order_strategy == RenderOrderStrategy.CATALOG
+        and program_strategy == ProgramRenderStrategy.LOCAL_SEGMENT_COLLAPSING
+        and label_render_mode == LabelRenderMode.STATE_FAMILY
+        and boundary_inline_mode == BoundaryInlineMode.LABELS_ONLY
+        and comment_mode == ProgramCommentMode.DEBUG_METADATA
+    ):
+        return "catalog"
+    return "_".join(
+        (
+            order_strategy.value,
+            program_strategy.value,
+            label_render_mode.name.lower(),
+            boundary_inline_mode.name.lower(),
+            comment_mode.name.lower(),
+        )
+    )
+
+
+def _rendered_program_line_kind(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return "blank"
+    if _PROGRAM_LABEL_RE.match(text):
+        return "label"
+    if stripped.startswith("//"):
+        return "comment"
+    if stripped.startswith("goto "):
+        return "goto"
+    if stripped.startswith("if "):
+        return "if"
+    if stripped.startswith("return "):
+        return "return"
+    return "statement"
+
+
+def build_rendered_program_snapshot(
+    dag: LinearizedStateDag,
+    rendered_program: str,
+    *,
+    order_strategy: RenderOrderStrategy,
+    program_strategy: ProgramRenderStrategy,
+    label_render_mode: LabelRenderMode,
+    boundary_inline_mode: BoundaryInlineMode,
+    comment_mode: ProgramCommentMode,
+) -> RenderedProgramSnapshot:
+    """Convert rendered text into a queryable program snapshot."""
+    node_by_key = {node.key: node for node in dag.nodes}
+    label_by_key, _labels_by_base, _labels_by_base_and_entry = _build_program_labels(
+        dag,
+        label_render_mode=label_render_mode,
+    )
+    top_level_meta = {
+        label.rendered: (node_by_key[key], label)
+        for key, label in label_by_key.items()
+    }
+
+    raw_lines = rendered_program.splitlines()
+    node_spans: list[tuple[str, int, int]] = []
+    current_label: str | None = None
+    current_start: int | None = None
+    for line_no, text in enumerate(raw_lines, 1):
+        match = _PROGRAM_LABEL_RE.match(text)
+        if match is None:
+            continue
+        label_text = match.group("label")
+        if current_label is not None and current_start is not None:
+            node_spans.append((current_label, current_start, line_no - 1))
+        current_label = label_text
+        current_start = line_no
+    if current_label is not None and current_start is not None:
+        node_spans.append((current_label, current_start, len(raw_lines)))
+
+    nodes: list[RenderedProgramNode] = []
+    label_to_index: dict[str, int] = {}
+    for node_index, (label_text, line_start, line_end) in enumerate(node_spans):
+        label_to_index[label_text] = node_index
+        if label_text == "EXIT_ROUTINE":
+            nodes.append(
+                RenderedProgramNode(
+                    node_index=node_index,
+                    label_text=label_text,
+                    node_kind="exit_routine",
+                    line_start=line_start,
+                    line_end=line_end,
+                )
+            )
+            continue
+
+        meta = top_level_meta.get(label_text)
+        if meta is None:
+            nodes.append(
+                RenderedProgramNode(
+                    node_index=node_index,
+                    label_text=label_text,
+                    node_kind="local_boundary",
+                    line_start=line_start,
+                    line_end=line_end,
+                )
+            )
+            continue
+
+        dag_node, program_label = meta
+        nodes.append(
+            RenderedProgramNode(
+                node_index=node_index,
+                label_text=label_text,
+                node_kind="state_family",
+                line_start=line_start,
+                line_end=line_end,
+                state_label=dag_node.state_label,
+                handler_serial=dag_node.handler_serial,
+                entry_anchor=dag_node.entry_anchor,
+                label_num=program_label.label_num,
+            )
+        )
+
+    lines: list[RenderedProgramLine] = []
+    current_node_index: int | None = None
+    for line_no, text in enumerate(raw_lines, 1):
+        match = _PROGRAM_LABEL_RE.match(text)
+        if match is not None:
+            current_node_index = label_to_index.get(match.group("label"))
+        goto_match = _PROGRAM_GOTO_RE.search(text)
+        indent_level = max(0, (len(text) - len(text.lstrip(" "))) // 4)
+        lines.append(
+            RenderedProgramLine(
+                line_no=line_no,
+                text=text,
+                node_index=current_node_index,
+                indent_level=indent_level,
+                line_kind=_rendered_program_line_kind(text),
+                target_label=goto_match.group("label") if goto_match else None,
+            )
+        )
+
+    return RenderedProgramSnapshot(
+        variant_name=linearized_program_variant_name(
+            order_strategy=order_strategy,
+            program_strategy=program_strategy,
+            label_render_mode=label_render_mode,
+            boundary_inline_mode=boundary_inline_mode,
+            comment_mode=comment_mode,
+        ),
+        order_strategy=order_strategy.value,
+        program_strategy=program_strategy.value,
+        label_render_mode=label_render_mode.name.lower(),
+        boundary_inline_mode=boundary_inline_mode.name.lower(),
+        comment_mode=comment_mode.name.lower(),
+        nodes=tuple(nodes),
+        lines=tuple(lines),
+    )
+
+
+def build_linearized_state_program(
     dag: LinearizedStateDag,
     *,
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
@@ -6007,8 +6384,8 @@ def render_linearized_state_program(
     boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
     comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
     block_payload_by_serial: Mapping[int, tuple[str, ...]] | None = None,
-) -> str:
-    """Render the state DAG as a label-preserving linearized program.
+) -> RenderedProgramSnapshot:
+    """Build the structured linearized-program IR for one state DAG.
 
     ``LOCAL_SEGMENT_COLLAPSING`` preserves family labels and semantic exits while
     collapsing the intra-family local segment graph into comments.
@@ -6021,8 +6398,9 @@ def render_linearized_state_program(
     local sublabels for meaningful local boundary points. Straight-line corridor
     chains are collapsed back into direct gotos.
     """
+    builder: _RenderedProgramBuilder
     if program_strategy == ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE:
-        return _render_selective_local_boundary_program(
+        builder = _render_selective_local_boundary_program(
             dag,
             order_strategy=order_strategy,
             boundary_inline_mode=boundary_inline_mode,
@@ -6030,19 +6408,41 @@ def render_linearized_state_program(
             comment_mode=comment_mode,
             block_payload_by_serial=block_payload_by_serial,
         )
-    if program_strategy == ProgramRenderStrategy.LOCAL_SEGMENT_EXPLICIT:
-        return _render_explicit_local_segment_program(
+    elif program_strategy == ProgramRenderStrategy.LOCAL_SEGMENT_EXPLICIT:
+        builder = _render_explicit_local_segment_program(
             dag,
             order_strategy=order_strategy,
             label_render_mode=label_render_mode,
             block_payload_by_serial=block_payload_by_serial,
         )
-    return _render_collapsed_linearized_state_program(
-        dag,
-        order_strategy=order_strategy,
-        label_render_mode=label_render_mode,
-        block_payload_by_serial=block_payload_by_serial,
+    else:
+        builder = _render_collapsed_linearized_state_program(
+            dag,
+            order_strategy=order_strategy,
+            label_render_mode=label_render_mode,
+            block_payload_by_serial=block_payload_by_serial,
+        )
+    return builder.build_snapshot(
+        variant_name=linearized_program_variant_name(
+            order_strategy=order_strategy,
+            program_strategy=program_strategy,
+            label_render_mode=label_render_mode,
+            boundary_inline_mode=boundary_inline_mode,
+            comment_mode=comment_mode,
+        ),
+        order_strategy=order_strategy.value,
+        program_strategy=program_strategy.value,
+        label_render_mode=label_render_mode.name.lower(),
+        boundary_inline_mode=boundary_inline_mode.name.lower(),
+        comment_mode=comment_mode.name.lower(),
     )
+
+
+def render_linearized_state_program(
+    program: RenderedProgramSnapshot,
+) -> str:
+    """Render a built linearized-program IR to text."""
+    return "\n".join(line.text for line in program.lines)
 
 
 __all__ = [
@@ -6053,6 +6453,9 @@ __all__ = [
     "LocalSegmentKind",
     "ProgramCommentMode",
     "ProgramLabel",
+    "RenderedProgramLine",
+    "RenderedProgramNode",
+    "RenderedProgramSnapshot",
     "ProgramRenderStrategy",
     "RenderOrderStrategy",
     "RedirectSourceKind",
@@ -6064,8 +6467,11 @@ __all__ = [
     "StateLocalSegment",
     "StateNodeKind",
     "StateRedirectAnchor",
+    "build_linearized_state_program",
+    "build_rendered_program_snapshot",
     "build_live_linearized_state_dag_from_graph",
     "build_linearized_state_dag_from_graph",
+    "linearized_program_variant_name",
     "render_linearized_state_program",
     "render_linearized_state_dag",
     "render_linearized_state_dag_dot",

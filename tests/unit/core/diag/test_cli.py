@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.diag.__main__ import main
+from d810.core.diag.snapshot import _dual
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
@@ -161,6 +162,126 @@ class TestSnapshotResolution:
         assert rc == 0
         out = capsys.readouterr().out
         assert "blk[131]" in out
+
+    def test_resolve_snapshot_by_maturity_and_phase(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        conn = sqlite3.connect(str(loaded_db_path))
+        fh, fi = _dual(0x180012B60)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(2, 'maturity_MMAT_GLBOPT1_post_d810', ?, ?, 'MMAT_GLBOPT1', 'post_d810', 0, 0.0)",
+            (fh, fi),
+        )
+        conn.execute(
+            "INSERT INTO rendered_programs VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "semantic_reference_like",
+                "semantic",
+                "local_boundary_selective",
+                "state_family",
+                "inline_single_level",
+                "minimal",
+                1,
+                1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO rendered_program_nodes VALUES (2, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "semantic_reference_like",
+                "STATE_GLBOPT1_POST",
+                "state_family",
+                "STATE_GLBOPT1_POST",
+                7,
+                7,
+                None,
+                1,
+                1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO rendered_program_lines VALUES (2, ?, 1, 0, 0, 'label', NULL, ?)",
+            ("semantic_reference_like", "STATE_GLBOPT1_POST:"),
+        )
+        conn.commit()
+        conn.close()
+
+        rc = main(
+            [
+                "program",
+                "--db",
+                str(loaded_db_path),
+                "--maturity",
+                "GLBOPT1",
+                "--phase",
+                "post_d810",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "snapshot 2 [MMAT_GLBOPT1 / post_d810]" in out
+        assert "STATE_GLBOPT1_POST:" in out
+
+    def test_resolve_snapshot_by_phase_only(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        conn = sqlite3.connect(str(loaded_db_path))
+        fh, fi = _dual(0x180012B60)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(2, 'maturity_MMAT_GLBOPT1_post_d810', ?, ?, 'MMAT_GLBOPT1', 'post_d810', 0, 0.0)",
+            (fh, fi),
+        )
+        conn.commit()
+        conn.close()
+
+        rc = main(["block", "--db", str(loaded_db_path), "--phase", "post_d810", "206"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "snapshot 2 [MMAT_GLBOPT1 / post_d810]" in out
+
+    def test_resolve_snapshot_selector_missing_exits(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    "program",
+                    "--db",
+                    str(loaded_db_path),
+                    "--maturity",
+                    "GLBOPT1",
+                    "--phase",
+                    "post_d810",
+                ]
+            )
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "no snapshot matches maturity=MMAT_GLBOPT1 phase=post_d810" in err
+
+
+class TestRenderedProgramCommand:
+    def test_program_text(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+        rc = main(["program", "--db", str(loaded_db_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "STATE_139F2922:" in out
+        assert "goto STATE_16F7FF74;" in out
+
+    def test_program_nodes(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+        rc = main(["program", "--db", str(loaded_db_path), "--nodes"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "STATE_139F2922" in out
+        assert "state_family" in out
+        assert "handler=blk[136]" in out
+
+    def test_program_variants(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+        rc = main(["program-variants", "--db", str(loaded_db_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "semantic_reference_like" in out
 
 
 # ---------------------------------------------------------------------------

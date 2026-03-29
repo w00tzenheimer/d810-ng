@@ -159,5 +159,45 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
             (serial, is_bst, is_gutted),
         )
 
+    conn.execute(
+        "INSERT INTO rendered_programs VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "semantic_reference_like",
+            "semantic",
+            "local_boundary_selective",
+            "state_family",
+            "inline_single_level",
+            "minimal",
+            6,
+            1,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO rendered_program_nodes VALUES (1, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "semantic_reference_like",
+            "STATE_139F2922",
+            "state_family",
+            "STATE_139F2922",
+            136,
+            136,
+            None,
+            3,
+            6,
+        ),
+    )
+    rendered_lines = [
+        (1, "semantic_reference_like", 1, None, 0, "statement", None, "=== LINEARIZED STATE PROGRAM (starting from 0x5D0AEBD3) ==="),
+        (1, "semantic_reference_like", 2, None, 0, "blank", None, ""),
+        (1, "semantic_reference_like", 3, 0, 0, "label", None, "STATE_139F2922:"),
+        (1, "semantic_reference_like", 4, 0, 1, "statement", None, "    v56 = v135 + v136 + v137;"),
+        (1, "semantic_reference_like", 5, 0, 1, "if", None, "    if (v56 == 0)"),
+        (1, "semantic_reference_like", 6, 0, 2, "goto", "STATE_16F7FF74", "        goto STATE_16F7FF74;"),
+    ]
+    conn.executemany(
+        "INSERT INTO rendered_program_lines VALUES (?,?,?,?,?,?,?,?)",
+        rendered_lines,
+    )
+
     conn.commit()
     return 1

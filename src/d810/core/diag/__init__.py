@@ -23,6 +23,36 @@ _current_conn: sqlite3.Connection | None = None
 _current_func_ea: int | None = None
 
 
+def _resolve_log_dir(log_dir: str | None = None) -> Path:
+    return Path(log_dir or os.path.expanduser("~/.idapro/logs/d810_logs"))
+
+
+def find_latest_diag_db_path(func_ea: int = 0, log_dir: str | None = None) -> Path | None:
+    """Return the newest non-empty diag DB path for a function, if any."""
+    base = _resolve_log_dir(log_dir)
+    if not base.exists():
+        return None
+    pattern = f"{int(func_ea):016x}_*.diag.sqlite3" if func_ea else "*.diag.sqlite3"
+    candidates = sorted(base.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+    best_with_snapshots: Path | None = None
+    for path in candidates:
+        try:
+            conn = sqlite3.connect(str(path))
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()
+                count = int(row[0]) if row is not None and row[0] is not None else 0
+            finally:
+                conn.close()
+        except Exception:
+            continue
+        if count > 0:
+            best_with_snapshots = path
+            break
+    if best_with_snapshots is not None:
+        return best_with_snapshots
+    return candidates[0] if candidates else None
+
+
 def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     """Open a diag DB for this decompilation pass.
 
@@ -33,11 +63,10 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     if not _DIAG_ENABLED:
         return
     close_diag_session()  # close any stale session
-    if log_dir is None:
-        log_dir = os.path.expanduser("~/.idapro/logs/d810_logs")
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    resolved_log_dir = _resolve_log_dir(log_dir)
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{os.getpid()}"
-    db_path = Path(log_dir) / f"{func_ea:016x}_{run_id}.diag.sqlite3"
+    db_path = resolved_log_dir / f"{func_ea:016x}_{run_id}.diag.sqlite3"
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     create_tables(conn)
@@ -68,13 +97,18 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
         return None
     if _current_conn is not None:
         return _current_conn
+    latest_path = find_latest_diag_db_path(func_ea, log_dir=log_dir)
+    if latest_path is not None:
+        conn = sqlite3.connect(str(latest_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        create_tables(conn)
+        return conn
     # Fallback: no session open — create a one-off DB (test harness path)
-    if log_dir is None:
-        log_dir = os.path.expanduser("~/.idapro/logs/d810_logs")
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    resolved_log_dir = _resolve_log_dir(log_dir)
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{os.getpid()}"
     ea = func_ea if func_ea else 0
-    db_path = Path(log_dir) / f"{ea:016x}_{run_id}.diag.sqlite3"
+    db_path = resolved_log_dir / f"{ea:016x}_{run_id}.diag.sqlite3"
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
     create_tables(conn)

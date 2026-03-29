@@ -375,6 +375,94 @@ def snapshot_modifications(
     conn.commit()
 
 
+def snapshot_rendered_program(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    program,
+) -> None:
+    """Snapshot a rendered linearized program into SQLite.
+
+    The *program* object is expected to expose:
+    ``variant_name``, ``order_strategy``, ``program_strategy``,
+    ``label_render_mode``, ``boundary_inline_mode``, ``comment_mode``,
+    ``nodes`` and ``lines``. Each node should expose ``node_index``,
+    ``label_text``, ``node_kind``, ``state_label``, ``handler_serial``,
+    ``entry_anchor``, ``label_num``, ``line_start``, and ``line_end``.
+    Each line should expose ``line_no``, ``text``, ``node_index``,
+    ``indent_level``, ``line_kind``, and ``target_label``.
+    """
+    variant_name = str(program.variant_name)
+    conn.execute(
+        "DELETE FROM rendered_program_lines WHERE snapshot_id=? AND variant_name=?",
+        (snapshot_id, variant_name),
+    )
+    conn.execute(
+        "DELETE FROM rendered_program_nodes WHERE snapshot_id=? AND variant_name=?",
+        (snapshot_id, variant_name),
+    )
+    conn.execute(
+        "DELETE FROM rendered_programs WHERE snapshot_id=? AND variant_name=?",
+        (snapshot_id, variant_name),
+    )
+    conn.execute(
+        "INSERT INTO rendered_programs VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            snapshot_id,
+            variant_name,
+            str(program.order_strategy),
+            str(program.program_strategy),
+            str(program.label_render_mode),
+            str(program.boundary_inline_mode),
+            str(program.comment_mode),
+            len(program.lines),
+            len(program.nodes),
+        ),
+    )
+
+    node_rows = [
+        (
+            snapshot_id,
+            variant_name,
+            int(node.node_index),
+            str(node.label_text),
+            str(node.node_kind),
+            node.state_label,
+            _safe_int(node.handler_serial),
+            _safe_int(node.entry_anchor),
+            _safe_int(node.label_num),
+            int(node.line_start),
+            int(node.line_end),
+        )
+        for node in program.nodes
+    ]
+    if node_rows:
+        conn.executemany(
+            "INSERT INTO rendered_program_nodes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            node_rows,
+        )
+
+    line_rows = [
+        (
+            snapshot_id,
+            variant_name,
+            int(line.line_no),
+            _safe_int(line.node_index),
+            int(line.indent_level),
+            str(line.line_kind),
+            line.target_label,
+            str(line.text),
+        )
+        for line in program.lines
+    ]
+    if line_rows:
+        conn.executemany(
+            "INSERT INTO rendered_program_lines VALUES (?,?,?,?,?,?,?,?)",
+            line_rows,
+        )
+
+    conn.commit()
+
+
 def snapshot_reachability(
     conn: sqlite3.Connection,
     snapshot_id: int,
