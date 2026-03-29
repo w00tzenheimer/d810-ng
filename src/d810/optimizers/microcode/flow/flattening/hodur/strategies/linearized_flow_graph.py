@@ -44,6 +44,9 @@ from d810.cfg.residual_handoff_planning import (
     ResidualPredSplitAttempt,
     plan_residual_handoff,
 )
+from d810.cfg.residual_handoff_modification_planning import (
+    plan_residual_branch_anchor_emission,
+)
 from d810.cfg.plan import compile_patch_plan
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
@@ -1463,55 +1466,39 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=ignored_blocks,
         )
-        decision = plan_residual_handoff(
-            ResidualHandoffPlanningContext(
-                mode=ResidualHandoffMode.PREFIX,
-                prefix_attempts=(
-                    ResidualPrefixAttempt(
-                        via_pred=int(via_pred),
-                        prefix_target=int(prefix_target),
-                        claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-                        owned_transition=(
-                            (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                            if edge.source_key.state_const is not None and edge.target_state is not None
-                            else None
-                        ),
-                        edge_kind_name=edge.kind.name.lower(),
-                        branch_context=ResidualBranchAnchorContext(
-                            is_conditional_branch_source=(
-                                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                            ),
-                            branch_source=branch_source,
-                            source_block=source_block,
-                            via_pred=via_pred,
-                            prefix_target=prefix_target,
-                            branch_succs=branch_succs,
-                            old_target=old_target,
-                            ordered_path=tuple(int(node) for node in edge.ordered_path),
-                            dispatcher_serial=dispatcher_serial,
-                            bst_node_blocks=frozenset(bst_node_blocks),
-                            target_reaches_branch=target_reaches_source_ignoring_blocks(
-                                projected_flow_graph,
-                                target_entry=prefix_target,
-                                source_block=branch_source,
-                                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
-                            ),
-                        ),
-                    ),
-                ),
-            )
+        decision = plan_residual_branch_anchor_emission(
+            is_conditional_branch_source=(
+                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            ),
+            branch_source=int(branch_source),
+            source_block=int(source_block),
+            via_pred=int(via_pred),
+            prefix_target=int(prefix_target),
+            branch_succs=branch_succs,
+            old_target=int(old_target),
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
+            dispatcher_serial=int(dispatcher_serial),
+            bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+            target_reaches_branch=target_reaches_source_ignoring_blocks(
+                projected_flow_graph,
+                target_entry=prefix_target,
+                source_block=branch_source,
+                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+            ),
+            claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+            owned_transition=(
+                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                if edge.source_key.state_const is not None and edge.target_state is not None
+                else None
+            ),
+            edge_kind_name=edge.kind.name.lower(),
         )
-        if not decision.accepted or decision.kind != ResidualHandoffMode.BRANCH_ANCHOR:
+        if not decision.accepted:
             return False
         if decision.already_claimed:
             return True
-        modifications.append(
-            builder.edge_redirect(
-                source_block=int(decision.branch_source),
-                target_block=int(decision.prefix_target),
-                old_target=int(decision.old_target),
-            )
-        )
+        assert decision.modification is not None
+        modifications.append(decision.modification)
         claimed_2way[(int(decision.branch_source), int(decision.old_target))] = int(
             decision.prefix_target
         )
