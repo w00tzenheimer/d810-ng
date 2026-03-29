@@ -57,7 +57,8 @@ from d810.cfg.residual_handoff_modification_planning import (
 )
 from d810.cfg.path_tail_modification_planning import (
     PathTailEmissionKind,
-    plan_path_tail_emission,
+    PathTailRedirectContext,
+    plan_path_tail_redirect,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.projected_alias_normalization_planning import (
@@ -1664,42 +1665,17 @@ class LinearizedFlowGraphStrategy:
             claimed_1way = {}
         if not edge.ordered_path or edge.target_entry_anchor is None:
             return False
-        if edge.source_key.handler_serial in report_exit_handlers:
-            return False
-        if edge.ordered_path and edge.ordered_path[0] in report_exit_handlers:
-            return False
-
         source_block = edge.ordered_path[-1]
-        if source_block == target_entry:
-            return False
         foreign_exact_owner = find_foreign_exact_entry_owner(
             dag,
             source_key=edge.source_key,
             source_block=source_block,
         )
-        if foreign_exact_owner is not None:
-            logger.info(
-                "LFG DAG: skipping %s -> %s because %s is the exact entry for %s, not source corridor %s",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-                blk_label(mba, source_block),
-                foreign_exact_owner.state_label,
-                edge.source_key.state_const
-                if edge.source_key.state_const is not None
-                else edge.source_key.handler_serial,
-            )
-            return False
-        if is_backward_same_corridor_target(
+        backward_same_corridor = is_backward_same_corridor_target(
             ordered_path=tuple(int(node) for node in edge.ordered_path),
             source_block=source_block,
             target_entry=target_entry,
-        ):
-            logger.info(
-                "LFG DAG: skipping %s -> %s because target is earlier in the same corridor",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-            )
-            return False
+        )
         allow_semantic_handoff = is_semantic_handoff_redirect(
             dag,
             edge,
@@ -1710,42 +1686,20 @@ class LinearizedFlowGraphStrategy:
             dispatcher=dispatcher,
             mba=mba,
         )
-        if (
-            not allow_semantic_handoff
-            and target_reaches_source_ignoring_blocks(
-                flow_graph,
-                target_entry=target_entry,
-                source_block=source_block,
-                ignored_blocks=set(dispatcher_region) | set(bst_node_blocks),
-            )
-        ):
-            logger.info(
-                "LFG DAG: skipping %s -> %s because target already reaches source",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-            )
-            return False
-        if allow_semantic_handoff and target_reaches_source_ignoring_blocks(
+        target_reaches_source = target_reaches_source_ignoring_blocks(
             flow_graph,
             target_entry=target_entry,
             source_block=source_block,
             ignored_blocks=set(dispatcher_region) | set(bst_node_blocks),
-        ):
+        )
+        if allow_semantic_handoff and target_reaches_source:
             logger.info(
                 "LFG DAG: allowing semantic handoff %s -> %s despite existing backreach",
                 blk_label(mba, source_block),
                 blk_label(mba, target_entry),
             )
-        if source_block in report_exit_owned_blocks:
-            return False
-        if source_block in blocked_sources:
-            return False
-        if source_block in terminal_protected_blocks:
-            return False
 
         source_snapshot = flow_graph.get_block(source_block)
-        if source_snapshot is None or source_snapshot.nsucc != 1:
-            return False
 
         old_target = resolve_redirect_old_target(
             source_block,
@@ -1767,14 +1721,10 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=dispatcher_region,
         )
-        if old_target is None or old_target == target_entry:
-            return False
 
         emit_key = (source_block, target_entry)
-        if emit_key in emitted:
-            return False
 
-        npreds = len(tuple(source_snapshot.preds))
+        npreds = len(tuple(source_snapshot.preds)) if source_snapshot is not None else 0
         shared_handoff = None
         if npreds > 1:
             shared_handoff = cls._resolve_immediate_handoff_target(
@@ -1786,52 +1736,109 @@ class LinearizedFlowGraphStrategy:
                 dispatcher_lookup=dispatcher_lookup,
                 dispatcher=dispatcher,
             )
-        if npreds > 1 and shared_handoff is not None and shared_handoff[1] != target_entry:
-            logger.info(
-                "LFG DAG: skipping %s -> %s because %s already proves concrete shared handoff %s for state 0x%X",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-                blk_label(mba, source_block),
-                blk_label(mba, shared_handoff[1]),
-                shared_handoff[0],
-            )
-            return False
         via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
         other_preds = tuple(
-            pred for pred in tuple(source_snapshot.preds)
+            pred for pred in tuple(getattr(source_snapshot, "preds", ()))
             if pred != via_pred
         )
-        plan = plan_path_tail_emission(
-            source_block=int(source_block),
-            target_entry=int(target_entry),
-            old_target=int(old_target),
-            npreds=int(npreds),
-            shared_handoff_target=(
-                int(shared_handoff[1]) if shared_handoff is not None else None
-            ),
-            existing_exit_target=claimed_exits.get(source_block),
-            existing_1way_target=claimed_1way.get(source_block),
-            via_pred=(int(via_pred) if via_pred is not None else None),
-            existing_path_edge_target=(
-                claimed_path_edges.get((source_block, via_pred))
-                if via_pred is not None
-                else None
-            ),
-            via_pred_blocked=(via_pred in blocked_sources if via_pred is not None else False),
-            via_pred_terminal_protected=(
-                via_pred in terminal_protected_blocks if via_pred is not None else False
-            ),
-            source_succs=tuple(getattr(source_snapshot, "succs", ())),
-            via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
-            source_is_conditional_branch=(
-                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-            ),
-            source_anchor_block=edge.source_anchor.block_serial,
-            source_branch_arm=edge.source_anchor.branch_arm,
-            other_preds=tuple(int(pred) for pred in other_preds),
+        decision = plan_path_tail_redirect(
+            PathTailRedirectContext(
+                source_block=int(source_block),
+                target_entry=int(target_entry),
+                source_handler_is_report_exit=(
+                    edge.source_key.handler_serial in report_exit_handlers
+                ),
+                ordered_path_head_is_report_exit=(
+                    bool(edge.ordered_path) and edge.ordered_path[0] in report_exit_handlers
+                ),
+                source_in_report_exit_owned=(source_block in report_exit_owned_blocks),
+                source_blocked=(source_block in blocked_sources),
+                source_terminal_protected=(source_block in terminal_protected_blocks),
+                foreign_exact_owner_label=(
+                    foreign_exact_owner.state_label
+                    if foreign_exact_owner is not None
+                    else None
+                ),
+                backward_same_corridor=bool(backward_same_corridor),
+                allow_semantic_handoff=bool(allow_semantic_handoff),
+                target_reaches_source=bool(target_reaches_source),
+                source_nsucc=(
+                    int(source_snapshot.nsucc)
+                    if source_snapshot is not None
+                    else None
+                ),
+                source_npred=(
+                    int(npreds)
+                    if source_snapshot is not None
+                    else None
+                ),
+                source_succs=tuple(int(succ) for succ in getattr(source_snapshot, "succs", ())),
+                source_preds=tuple(int(pred) for pred in getattr(source_snapshot, "preds", ())),
+                old_target=(int(old_target) if old_target is not None else None),
+                emitted_already=(emit_key in emitted),
+                shared_handoff_target=(
+                    int(shared_handoff[1]) if shared_handoff is not None else None
+                ),
+                via_pred=(int(via_pred) if via_pred is not None else None),
+                via_pred_succs=tuple(int(succ) for succ in builder.block_succ_map.get(via_pred, ())),
+                existing_exit_target=claimed_exits.get(source_block),
+                existing_1way_target=claimed_1way.get(source_block),
+                existing_path_edge_target=(
+                    claimed_path_edges.get((source_block, via_pred))
+                    if via_pred is not None
+                    else None
+                ),
+                via_pred_blocked=(via_pred in blocked_sources if via_pred is not None else False),
+                via_pred_terminal_protected=(
+                    via_pred in terminal_protected_blocks if via_pred is not None else False
+                ),
+                source_is_conditional_branch=(
+                    edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                ),
+                source_anchor_block=int(edge.source_anchor.block_serial),
+                source_branch_arm=(
+                    int(edge.source_anchor.branch_arm)
+                    if edge.source_anchor.branch_arm is not None
+                    else None
+                ),
+                other_preds=tuple(int(pred) for pred in other_preds),
+            )
         )
-        if not plan.accepted or plan.modification is None:
+        if not decision.accepted or decision.emission_plan is None:
+            if decision.rejection_reason == "foreign_exact_entry_owner" and foreign_exact_owner is not None:
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because %s is the exact entry for %s, not source corridor %s",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                    blk_label(mba, source_block),
+                    foreign_exact_owner.state_label,
+                    edge.source_key.state_const
+                    if edge.source_key.state_const is not None
+                    else edge.source_key.handler_serial,
+                )
+            elif decision.rejection_reason == "backward_same_corridor":
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because target is earlier in the same corridor",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                )
+            elif decision.rejection_reason == "target_reaches_source":
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because target already reaches source",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                )
+            elif decision.rejection_reason == "shared_handoff_conflict" and shared_handoff is not None:
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because %s already proves concrete shared handoff %s for state 0x%X",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                    blk_label(mba, source_block),
+                    blk_label(mba, shared_handoff[1]),
+                    shared_handoff[0],
+                )
             return False
+        plan = decision.emission_plan
         modifications.append(plan.modification)
         emitted.add(emit_key)
         owned_blocks.add(source_block)

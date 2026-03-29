@@ -7,7 +7,9 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.path_tail_modification_planning import (
     PathTailEmissionKind,
+    PathTailRedirectContext,
     plan_path_tail_emission,
+    plan_path_tail_redirect,
 )
 
 
@@ -120,3 +122,82 @@ class TestPlanPathTailEmission:
             source_serial=20,
             per_pred_targets=((11, 6), (10, 30)),
         )
+
+
+class TestPlanPathTailRedirect:
+    def test_rejects_foreign_exact_entry_owner(self):
+        decision = plan_path_tail_redirect(
+            PathTailRedirectContext(
+                source_block=20,
+                target_entry=30,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_in_report_exit_owned=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                foreign_exact_owner_label="0xDEADBEEF",
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_nsucc=1,
+                source_npred=1,
+                source_succs=(6,),
+                source_preds=(10,),
+                old_target=6,
+                emitted_already=False,
+                shared_handoff_target=None,
+                via_pred=None,
+                via_pred_succs=(),
+                existing_exit_target=None,
+                existing_1way_target=None,
+                existing_path_edge_target=None,
+                via_pred_blocked=False,
+                via_pred_terminal_protected=False,
+                source_is_conditional_branch=False,
+                source_anchor_block=20,
+                source_branch_arm=None,
+                other_preds=(),
+            )
+        )
+
+        assert not decision.accepted
+        assert decision.rejection_reason == "foreign_exact_entry_owner"
+
+    def test_wraps_direct_goto_plan(self):
+        decision = plan_path_tail_redirect(
+            PathTailRedirectContext(
+                source_block=20,
+                target_entry=30,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_in_report_exit_owned=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                foreign_exact_owner_label=None,
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_nsucc=1,
+                source_npred=1,
+                source_succs=(6,),
+                source_preds=(10,),
+                old_target=6,
+                emitted_already=False,
+                shared_handoff_target=None,
+                via_pred=None,
+                via_pred_succs=(),
+                existing_exit_target=None,
+                existing_1way_target=None,
+                existing_path_edge_target=None,
+                via_pred_blocked=False,
+                via_pred_terminal_protected=False,
+                source_is_conditional_branch=False,
+                source_anchor_block=20,
+                source_branch_arm=None,
+                other_preds=(),
+            )
+        )
+
+        assert decision.accepted
+        assert decision.emission_plan is not None
+        assert decision.emission_plan.kind == PathTailEmissionKind.DIRECT_GOTO
