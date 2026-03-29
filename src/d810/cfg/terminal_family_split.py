@@ -36,6 +36,21 @@ class TerminalFamilySplitSelection:
     primary_signature: tuple[object, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySplitIteration:
+    report: object
+    split_candidates: tuple[TerminalFamilySplitCandidate, ...]
+    selected: TerminalFamilySplitSelection | None
+    selected_candidates: tuple[object, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySplitRun:
+    projected_flow_graph: object
+    emitted_count: int
+    iterations: tuple[TerminalFamilySplitIteration, ...]
+
+
 def _candidate_key(
     candidate: TerminalFamilySplitCandidate,
 ) -> tuple[int, int | None, int, tuple[int, ...]]:
@@ -154,6 +169,26 @@ def build_terminal_family_split_proposals(
     return tuple(proposals)
 
 
+def build_terminal_family_split_candidates(
+    candidates: tuple[object, ...],
+) -> tuple[TerminalFamilySplitCandidate, ...]:
+    return tuple(
+        TerminalFamilySplitCandidate(
+            source_block=int(candidate.source_block),
+            branch_arm=(
+                int(candidate.branch_arm)
+                if getattr(candidate, "branch_arm", None) is not None
+                else None
+            ),
+            family_entry=int(candidate.family_entry),
+            path=tuple(int(s) for s in candidate.path),
+            value_family_signature=tuple(candidate.value_family_signature),
+            lineage_eas=tuple(int(ea) for ea in candidate.lineage_eas),
+        )
+        for candidate in candidates
+    )
+
+
 def build_terminal_family_split_modification(
     *,
     builder,
@@ -240,11 +275,84 @@ def select_terminal_family_split(
     return None
 
 
+def plan_terminal_family_splits(
+    *,
+    dag,
+    base_flow_graph,
+    projected_flow_graph,
+    dispatcher_region: set[int],
+    state_var_stkoff: int | None,
+    builder,
+    modifications: list,
+    collect_report,
+    compute_reachable_blocks: Callable[[object], set[int] | None],
+) -> TerminalFamilySplitRun:
+    current_projected_flow_graph = projected_flow_graph
+    emitted = 0
+    iterations: list[TerminalFamilySplitIteration] = []
+
+    while True:
+        reachable_blocks = compute_reachable_blocks(current_projected_flow_graph)
+        if not reachable_blocks:
+            break
+
+        report = collect_report(
+            dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=current_projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            reachable_blocks=reachable_blocks,
+            state_var_stkoff=state_var_stkoff,
+        )
+        split_candidates = build_terminal_family_split_candidates(
+            tuple(report.collection.candidates)
+        )
+        selected = None
+        selected_candidates: tuple[object, ...] = ()
+        if len(split_candidates) >= 2:
+            selected = select_terminal_family_split(
+                split_candidates,
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=current_projected_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                compute_reachable_blocks=compute_reachable_blocks,
+            )
+            if selected is not None:
+                selected_candidates = tuple(
+                    report.collection.candidates[index]
+                    for index in selected.selected_candidate_indexes
+                )
+        iterations.append(
+            TerminalFamilySplitIteration(
+                report=report,
+                split_candidates=split_candidates,
+                selected=selected,
+                selected_candidates=selected_candidates,
+            )
+        )
+        if selected is None:
+            break
+        modifications.append(selected.modification)
+        current_projected_flow_graph = selected.projected_flow_graph
+        emitted += 1
+
+    return TerminalFamilySplitRun(
+        projected_flow_graph=current_projected_flow_graph,
+        emitted_count=emitted,
+        iterations=tuple(iterations),
+    )
+
+
 __all__ = [
+    "TerminalFamilySplitIteration",
+    "TerminalFamilySplitRun",
     "TerminalFamilySplitCandidate",
     "TerminalFamilySplitProposal",
     "TerminalFamilySplitSelection",
+    "build_terminal_family_split_candidates",
     "build_terminal_family_split_modification",
     "build_terminal_family_split_proposals",
+    "plan_terminal_family_splits",
     "select_terminal_family_split",
 ]
