@@ -18,8 +18,8 @@ from d810.cfg.dag_redirect_execution import (
     DagRedirectMutableState,
     execute_dag_redirect_fallback,
 )
-from d810.cfg.dispatcher_backedge_disconnect_planning import (
-    plan_dispatcher_backedge_disconnects,
+from d810.cfg.dispatcher_backedge_disconnect_execution import (
+    execute_dispatcher_backedge_disconnects,
 )
 from d810.cfg.exit_transition_planning import (
     ExitRedirectAttempt,
@@ -38,21 +38,18 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     LinearizedFlowGraphPlanningContext,
     execute_linearized_flow_graph_planning,
 )
-from d810.cfg.lowering_selector import (
-    resolve_redirect_old_target,
-    target_reaches_source_ignoring_blocks,
-)
 from d810.cfg.residual_dispatcher_handoff_execution import (
     ResidualDispatcherHandoffExecutionContext,
     ResidualDispatcherHandoffMutableState,
     execute_residual_dispatcher_handoffs,
 )
+from d810.cfg.residual_branch_anchor_execution import (
+    ResidualBranchAnchorExecutionContext,
+    ResidualBranchAnchorMutableState,
+    execute_residual_branch_anchor_handoff,
+)
 from d810.cfg.residual_dispatcher_source_planning import (
     ResidualDispatcherSourcePlanKind,
-)
-from d810.cfg.residual_handoff_modification_planning import (
-    apply_residual_branch_anchor_emission_plan,
-    plan_residual_branch_anchor_emission,
 )
 from d810.cfg.path_tail_redirect_execution import (
     PathTailRedirectExecutionContext,
@@ -140,7 +137,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
-    RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateNodeKind,
@@ -360,79 +356,45 @@ class LinearizedFlowGraphStrategy:
         residual_ignored_blocks: set[int],
         mba: object | None,
     ) -> bool:
-        source_anchor = edge.source_anchor
-        branch_source = source_anchor.block_serial
-        branch_block = projected_flow_graph.get_block(branch_source)
-        if branch_block is None:
-            return False
-        branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-        old_target = resolve_redirect_old_target(
-            branch_source,
-            source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
-            ordered_path=tuple(int(node) for node in edge.ordered_path),
-            target_entry_anchor=(
-                int(edge.target_entry_anchor)
-                if edge.target_entry_anchor is not None
-                else None
+        result = execute_residual_branch_anchor_handoff(
+            ResidualBranchAnchorExecutionContext(
+                edge=edge,
+                source_block=int(source_block),
+                via_pred=int(via_pred),
+                prefix_target=int(prefix_target),
+                projected_flow_graph=projected_flow_graph,
+                bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+                dispatcher_serial=int(dispatcher_serial),
+                block_succ_map=builder.block_succ_map,
+                ignored_blocks=frozenset(int(block) for block in ignored_blocks),
+                residual_ignored_blocks=frozenset(
+                    int(block) for block in residual_ignored_blocks
+                ),
             ),
-            source_branch_arm=(
-                int(edge.source_anchor.branch_arm)
-                if edge.source_anchor.branch_arm is not None
-                else None
+            state=ResidualBranchAnchorMutableState(
+                modifications=modifications,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                emitted=emitted,
+                claimed_2way=claimed_2way,
             ),
-            source_is_conditional_branch=(
-                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-            ),
-            bst_node_blocks=bst_node_blocks,
-            dispatcher_region=ignored_blocks,
         )
-        decision = plan_residual_branch_anchor_emission(
-            is_conditional_branch_source=(
-                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-            ),
-            branch_source=int(branch_source),
-            source_block=int(source_block),
-            via_pred=int(via_pred),
-            prefix_target=int(prefix_target),
-            branch_succs=branch_succs,
-            old_target=int(old_target),
-            ordered_path=tuple(int(node) for node in edge.ordered_path),
-            dispatcher_serial=int(dispatcher_serial),
-            bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
-            target_reaches_branch=target_reaches_source_ignoring_blocks(
-                projected_flow_graph,
-                target_entry=prefix_target,
-                source_block=branch_source,
-                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
-            ),
-            claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-            owned_transition=(
-                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                if edge.source_key.state_const is not None and edge.target_state is not None
-                else None
-            ),
-            edge_kind_name=edge.kind.name.lower(),
-        )
-        if not decision.accepted:
+        if not result.accepted:
             return False
-        if decision.already_claimed:
+        if result.already_claimed:
             return True
-        apply_residual_branch_anchor_emission_plan(
-            decision,
-            modifications=modifications,
-            claimed_2way=claimed_2way,
-            emitted=emitted,
-            owned_blocks=owned_blocks,
-            owned_edges=owned_edges,
-            owned_transitions=owned_transitions,
-        )
+        assert result.branch_source is not None
+        assert result.prefix_target is not None
+        assert result.via_pred is not None
+        assert result.edge_kind_name is not None
         logger.info(
             "LFG DAG: residual branch handoff %s -> %s (bypassing %s -> %s via %s)",
-            blk_label(mba, int(decision.branch_source)),
-            blk_label(mba, int(decision.prefix_target)),
-            blk_label(mba, int(decision.via_pred)),
+            blk_label(mba, int(result.branch_source)),
+            blk_label(mba, int(result.prefix_target)),
+            blk_label(mba, int(result.via_pred)),
             blk_label(mba, source_block),
-            decision.edge_kind_name,
+            result.edge_kind_name,
         )
         return True
 
@@ -1595,19 +1557,16 @@ class LinearizedFlowGraphStrategy:
         Returns:
             Number of blocks disconnected from the dispatcher.
         """
-        plans = plan_dispatcher_backedge_disconnects(
+        result = execute_dispatcher_backedge_disconnects(
             block_nsucc_map=builder.block_nsucc_map,
             block_succ_map=builder.block_succ_map,
             dispatcher_serial=int(dispatcher_serial),
             bst_node_blocks={int(block) for block in bst_node_blocks},
             emitted=emitted,
+            convert_to_goto=builder.convert_to_goto,
+            modifications=modifications,
         )
-
-        for plan in plans:
-            emitted.add((int(plan.source_block), int(plan.keep_target)))
-            modifications.append(
-                builder.convert_to_goto(int(plan.source_block), int(plan.keep_target))
-            )
+        for plan in result.plans:
             logger.info(
                 "BST_DISCONNECT: %s (%s) 2-way -> 1-way goto "
                 "%s (removed dispatcher back-edge to %s)",
@@ -1616,5 +1575,4 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, int(plan.keep_target)) if mba else f"blk[{int(plan.keep_target)}]",
                 blk_label(mba, dispatcher_serial) if mba else f"blk[{dispatcher_serial}]",
             )
-
-        return len(plans)
+        return result.count
