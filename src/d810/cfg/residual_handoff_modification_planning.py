@@ -25,6 +25,17 @@ class ResidualBranchAnchorEmissionPlan:
     edge_kind_name: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectedAliasNormalizationPlan:
+    accepted: bool
+    modification: GraphModification | None = None
+    replace_index: int | None = None
+    replaced_target: int | None = None
+    source_block: int | None = None
+    target_entry: int | None = None
+    rejection_reason: str = ""
+
+
 def plan_residual_branch_anchor_emission(
     *,
     is_conditional_branch_source: bool,
@@ -111,7 +122,59 @@ def plan_residual_branch_anchor_emission(
     )
 
 
+def plan_projected_alias_handoff_normalization(
+    *,
+    source_block: int,
+    current_target: int,
+    target_entry: int,
+    existing_redirect_index: int | None,
+    existing_redirect_old_target: int | None,
+    existing_redirect_target: int | None,
+    already_emitted: bool,
+) -> ProjectedAliasNormalizationPlan:
+    if existing_redirect_target is not None:
+        if int(existing_redirect_target) == int(target_entry):
+            return ProjectedAliasNormalizationPlan(
+                accepted=False,
+                rejection_reason="existing_redirect_matches_target",
+            )
+        if existing_redirect_index is None or existing_redirect_old_target is None:
+            return ProjectedAliasNormalizationPlan(
+                accepted=False,
+                rejection_reason="incomplete_existing_redirect",
+            )
+        return ProjectedAliasNormalizationPlan(
+            accepted=True,
+            modification=RedirectGoto(
+                from_serial=int(source_block),
+                old_target=int(existing_redirect_old_target),
+                new_target=int(target_entry),
+            ),
+            replace_index=int(existing_redirect_index),
+            replaced_target=int(existing_redirect_target),
+            source_block=int(source_block),
+            target_entry=int(target_entry),
+        )
+    if already_emitted:
+        return ProjectedAliasNormalizationPlan(
+            accepted=False,
+            rejection_reason="already_emitted",
+        )
+    return ProjectedAliasNormalizationPlan(
+        accepted=True,
+        modification=RedirectGoto(
+            from_serial=int(source_block),
+            old_target=int(current_target),
+            new_target=int(target_entry),
+        ),
+        source_block=int(source_block),
+        target_entry=int(target_entry),
+    )
+
+
 __all__ = [
+    "ProjectedAliasNormalizationPlan",
+    "plan_projected_alias_handoff_normalization",
     "ResidualBranchAnchorEmissionPlan",
     "plan_residual_branch_anchor_emission",
 ]
