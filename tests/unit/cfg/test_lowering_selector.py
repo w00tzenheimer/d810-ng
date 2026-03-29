@@ -12,12 +12,16 @@ from d810.cfg.lowering_selector import (
     SharedGroupCandidate,
     SharedGroupContext,
     can_peel_predecessor_edge,
+    is_backward_same_corridor_target,
+    is_live_oneway_noop,
+    is_valid_pred_split_pair,
     enumerate_shared_feeder_candidates,
     plan_residual_branch_anchor_handoff,
     plan_residual_goto_handoff,
     plan_residual_pred_split,
     plan_residual_prefix_peel,
     plan_shared_group_duplication,
+    resolve_redirect_old_target,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
@@ -122,6 +126,97 @@ class TestCanPeelPredecessorEdge:
             bst_node_blocks=frozenset(),
             target_reaches_pred=True,
             )
+        )
+
+
+class TestResolveRedirectOldTarget:
+    def test_prefers_branch_arm_target_when_conditional(self):
+        assert (
+            resolve_redirect_old_target(
+                14,
+                source_succs=(6, 16),
+                ordered_path=(12, 14),
+                target_entry_anchor=16,
+                source_branch_arm=0,
+                source_is_conditional_branch=True,
+                bst_node_blocks=frozenset(),
+                dispatcher_region=frozenset({6}),
+            )
+            == 6
+        )
+
+    def test_prefers_ordered_path_successor(self):
+        assert (
+            resolve_redirect_old_target(
+                14,
+                source_succs=(20, 16),
+                ordered_path=(12, 14, 20),
+                target_entry_anchor=16,
+                source_branch_arm=None,
+                source_is_conditional_branch=False,
+                bst_node_blocks=frozenset(),
+                dispatcher_region=frozenset({6}),
+            )
+            == 20
+        )
+
+    def test_falls_back_to_dispatcher_region_then_non_target(self):
+        assert (
+            resolve_redirect_old_target(
+                14,
+                source_succs=(6, 16),
+                ordered_path=(12, 14),
+                target_entry_anchor=16,
+                source_branch_arm=None,
+                source_is_conditional_branch=False,
+                bst_node_blocks=frozenset(),
+                dispatcher_region=frozenset({6}),
+            )
+            == 6
+        )
+
+
+class TestResidualRedirectHelpers:
+    def test_valid_pred_split_pair_requires_oneway_chain(self):
+        assert is_valid_pred_split_pair(
+            14,
+            via_pred=12,
+            source_succs=(20,),
+            via_pred_succs=(14,),
+        )
+        assert not is_valid_pred_split_pair(
+            14,
+            via_pred=12,
+            source_succs=(20, 30),
+            via_pred_succs=(14,),
+        )
+        assert not is_valid_pred_split_pair(
+            14,
+            via_pred=12,
+            source_succs=(20,),
+            via_pred_succs=(18,),
+        )
+
+    def test_live_oneway_noop_detects_matching_target(self):
+        assert is_live_oneway_noop(source_succs=(16,), target_entry=16)
+        assert not is_live_oneway_noop(source_succs=(20,), target_entry=16)
+        assert not is_live_oneway_noop(source_succs=(16, 20), target_entry=16)
+
+    def test_backward_same_corridor_target_detects_on_path_backreach(self):
+        assert is_backward_same_corridor_target(
+            ordered_path=(12, 14, 16),
+            source_block=16,
+            target_entry=14,
+        )
+        assert not is_backward_same_corridor_target(
+            ordered_path=(12, 14, 16),
+            source_block=14,
+            target_entry=16,
+        )
+        assert not is_backward_same_corridor_target(
+            ordered_path=(12, 14, 16),
+            source_block=16,
+            target_entry=30,
         )
 
 

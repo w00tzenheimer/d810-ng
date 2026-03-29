@@ -277,6 +277,90 @@ def target_reaches_source_ignoring_blocks(
     return False
 
 
+def resolve_redirect_old_target(
+    source_block: int,
+    *,
+    source_succs: tuple[int, ...],
+    ordered_path: tuple[int, ...],
+    target_entry_anchor: int | None,
+    source_branch_arm: int | None,
+    source_is_conditional_branch: bool,
+    bst_node_blocks: set[int] | frozenset[int],
+    dispatcher_region: set[int] | frozenset[int],
+) -> int | None:
+    """Resolve the CFG edge being replaced by a redirect."""
+    succs = tuple(int(succ) for succ in source_succs)
+    if not succs:
+        return None
+    if (
+        source_is_conditional_branch
+        and source_branch_arm is not None
+        and 0 <= source_branch_arm < len(succs)
+    ):
+        return succs[source_branch_arm]
+
+    if source_block in ordered_path:
+        path_index = ordered_path.index(source_block)
+        if path_index + 1 < len(ordered_path):
+            candidate = int(ordered_path[path_index + 1])
+            if candidate in succs:
+                return candidate
+
+    for succ in succs:
+        if succ in bst_node_blocks:
+            return succ
+    for succ in succs:
+        if succ in dispatcher_region:
+            return succ
+    if target_entry_anchor is not None:
+        for succ in succs:
+            if succ != target_entry_anchor:
+                return succ
+    return succs[0]
+
+
+def is_valid_pred_split_pair(
+    source_block: int,
+    *,
+    via_pred: int | None,
+    source_succs: tuple[int, ...],
+    via_pred_succs: tuple[int, ...],
+) -> bool:
+    """Return whether ``via_pred -> source_block`` is a legal 1-way pred split."""
+    if via_pred is None:
+        return False
+    if len(source_succs) != 1:
+        return False
+    return len(via_pred_succs) == 1 and int(via_pred_succs[0]) == source_block
+
+
+def is_live_oneway_noop(
+    *,
+    source_succs: tuple[int, ...],
+    target_entry: int,
+) -> bool:
+    """Return whether a 1-way redirect would be a no-op on the live CFG."""
+    succs = tuple(int(succ) for succ in source_succs)
+    return len(succs) == 1 and succs[0] == target_entry
+
+
+def is_backward_same_corridor_target(
+    *,
+    ordered_path: tuple[int, ...],
+    source_block: int,
+    target_entry: int,
+) -> bool:
+    """Return whether ``target_entry`` is on or before ``source_block`` on-path."""
+    if not ordered_path:
+        return False
+    try:
+        source_index = ordered_path.index(source_block)
+        target_index = ordered_path.index(target_entry)
+    except ValueError:
+        return False
+    return target_index <= source_index
+
+
 def can_peel_predecessor_edge(context: PredecessorPeelContext) -> bool:
     """Return True when a predecessor edge can be peeled instead of cloning."""
     if context.via_pred is None:
@@ -684,11 +768,15 @@ __all__ = [
     "ResidualPrefixPeelPlan",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
+    "is_backward_same_corridor_target",
+    "is_live_oneway_noop",
+    "is_valid_pred_split_pair",
     "plan_shared_group_duplication",
     "plan_residual_branch_anchor_handoff",
     "plan_residual_goto_handoff",
     "plan_residual_pred_split",
     "plan_residual_prefix_peel",
+    "resolve_redirect_old_target",
     "select_shared_feeder_lowering",
     "target_reaches_source_ignoring_blocks",
 ]
