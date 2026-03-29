@@ -19,8 +19,7 @@ import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.entry_island_rescue_planning import (
-    EntryIslandRescuePlanningSeed,
-    select_entry_island_rescue,
+    plan_entry_island_rescues,
 )
 from d810.cfg.graph_modification import (
     NopInstructions,
@@ -147,55 +146,43 @@ class StateWriteReconstructionStrategy:
         dispatcher_region: set[int],
         mba,
     ) -> int:
-        current_projected_flow_graph = projected_flow_graph
-        emitted = 0
-
-        while True:
-            reachable_blocks = compute_reachable_blocks(
-                current_projected_flow_graph,
-                start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
-            )
-            if not reachable_blocks:
-                break
-
-            claimed_sources, claimed_targets = collect_mod_claims(modifications)
-            seeds = tuple(
-                EntryIslandRescuePlanningSeed(
-                    source_block=int(seed.source_block),
-                    lifted_entry=int(seed.lifted_entry),
-                )
-                for seed in collect_entry_island_rescue_seeds(
-                    dag,
-                    reachable_blocks=reachable_blocks,
-                    dispatcher_region=dispatcher_region,
-                    claimed_targets=claimed_targets,
-                )
-            )
-            selection = select_entry_island_rescue(
-                seeds=seeds,
-                current_projected_flow_graph=current_projected_flow_graph,
-                base_flow_graph=base_flow_graph,
-                builder=builder,
-                modifications=modifications,
+        def _collect_seeds(
+            _dag,
+            *,
+            projected_flow_graph,
+            reachable_blocks: set[int],
+            dispatcher_region: set[int],
+        ):
+            _claimed_sources, claimed_targets = collect_mod_claims(modifications)
+            return collect_entry_island_rescue_seeds(
+                _dag,
                 reachable_blocks=reachable_blocks,
                 dispatcher_region=dispatcher_region,
-                claimed_sources=claimed_sources,
-                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
-                    flow_graph,
-                    start_serial=getattr(flow_graph, "entry_serial", None),
-                ),
+                claimed_targets=claimed_targets,
             )
+
+        run = plan_entry_island_rescues(
+            dag=dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            builder=builder,
+            modifications=modifications,
+            dispatcher_region=dispatcher_region,
+            collect_seeds=_collect_seeds,
+            compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
+                flow_graph,
+                start_serial=getattr(flow_graph, "entry_serial", None),
+            ),
+        )
+
+        for iteration in run.iterations:
+            selection = iteration.selection
             if (
                 not selection.accepted
                 or selection.option is None
-                or selection.modification is None
-                or selection.projected_flow_graph is None
+                or selection.score is None
             ):
-                break
-
-            modifications.append(selection.modification)
-            current_projected_flow_graph = selection.projected_flow_graph
-            emitted += 1
+                continue
             logger.info(
                 "RECON DAG: entry-island rescue %s -> %s%s (delta=%+d)",
                 blk_label(mba, selection.option.source_block),
@@ -208,7 +195,7 @@ class StateWriteReconstructionStrategy:
                 selection.score[0] if selection.score is not None else 0,
             )
 
-        return emitted
+        return run.emitted_count
 
     @classmethod
     def _emit_late_island_rescues(
@@ -231,27 +218,36 @@ class StateWriteReconstructionStrategy:
         non-dispatcher successors, then wires them from reachable blocks
         identified via DAG edge paths or the IntervalDispatcher.
         """
-        current_projected_flow_graph = projected_flow_graph
-        emitted = 0
-
-        while True:
-            reachable_blocks = compute_reachable_blocks(
-                current_projected_flow_graph,
-                start_serial=getattr(
-                    current_projected_flow_graph, "entry_serial", None,
-                ),
-            )
-            if not reachable_blocks:
-                break
-
-            claimed_sources, _claimed_targets = collect_mod_claims(modifications)
-            late_seeds = collect_late_entry_island_rescue_seeds(
-                dag,
-                projected_flow_graph=current_projected_flow_graph,
+        def _collect_seeds(
+            _dag,
+            *,
+            projected_flow_graph,
+            reachable_blocks: set[int],
+            dispatcher_region: set[int],
+        ):
+            return collect_late_entry_island_rescue_seeds(
+                _dag,
+                projected_flow_graph=projected_flow_graph,
                 reachable_blocks=reachable_blocks,
                 dispatcher_region=dispatcher_region,
             )
-            for seed in late_seeds:
+
+        run = plan_entry_island_rescues(
+            dag=dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            builder=builder,
+            modifications=modifications,
+            dispatcher_region=dispatcher_region,
+            collect_seeds=_collect_seeds,
+            compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
+                flow_graph,
+                start_serial=getattr(flow_graph, "entry_serial", None),
+            ),
+        )
+
+        for iteration in run.iterations:
+            for seed in iteration.raw_seeds:
                 if seed.source_block is None:
                     logger.info(
                         "RECON DAG: late island rescue: no reachable "
@@ -261,38 +257,13 @@ class StateWriteReconstructionStrategy:
                         seed.lifted_entry,
                         blk_label(mba, seed.edge_source_block),
                     )
-            selection = select_entry_island_rescue(
-                seeds=tuple(
-                    EntryIslandRescuePlanningSeed(
-                        source_block=int(seed.source_block),
-                        lifted_entry=int(seed.lifted_entry),
-                    )
-                    for seed in late_seeds
-                    if seed.source_block is not None
-                ),
-                current_projected_flow_graph=current_projected_flow_graph,
-                base_flow_graph=base_flow_graph,
-                builder=builder,
-                modifications=modifications,
-                reachable_blocks=reachable_blocks,
-                dispatcher_region=dispatcher_region,
-                claimed_sources=claimed_sources,
-                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
-                    flow_graph,
-                    start_serial=getattr(flow_graph, "entry_serial", None),
-                ),
-            )
             if (
-                not selection.accepted
-                or selection.option is None
-                or selection.modification is None
-                or selection.projected_flow_graph is None
+                not iteration.selection.accepted
+                or iteration.selection.option is None
+                or iteration.selection.score is None
             ):
-                break
-
-            modifications.append(selection.modification)
-            current_projected_flow_graph = selection.projected_flow_graph
-            emitted += 1
+                continue
+            selection = iteration.selection
             logger.info(
                 "RECON DAG: late island rescue %s -> %s%s "
                 "via BST passthrough (delta=%+d)",
@@ -308,15 +279,15 @@ class StateWriteReconstructionStrategy:
 
         # Diagnostic: if no rescue fired, dump dispatcher rows for
         # unreachable non-dispatcher blocks with BST-only predecessors.
-        if emitted == 0 and dispatcher is not None:
+        if run.emitted_count == 0 and dispatcher is not None:
             reachable_blocks = compute_reachable_blocks(
-                current_projected_flow_graph,
+                run.projected_flow_graph,
                 start_serial=getattr(
-                    current_projected_flow_graph, "entry_serial", None,
+                    run.projected_flow_graph, "entry_serial", None,
                 ),
             ) or set()
             for diagnostic in collect_late_entry_island_diagnostics(
-                current_projected_flow_graph,
+                run.projected_flow_graph,
                 reachable_blocks=reachable_blocks,
                 dispatcher_region=dispatcher_region,
                 dispatcher=dispatcher,
@@ -333,7 +304,7 @@ class StateWriteReconstructionStrategy:
                     ),
                 )
 
-        return emitted
+        return run.emitted_count
 
     @classmethod
     def _emit_terminal_family_splits(

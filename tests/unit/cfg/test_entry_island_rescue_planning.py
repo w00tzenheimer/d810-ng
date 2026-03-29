@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import d810.cfg.entry_island_rescue_planning as rescue_mod
 from d810.cfg.entry_island_rescue import EntryIslandRescueOption
 from d810.cfg.entry_island_rescue_planning import (
     EntryIslandRescuePlanningSeed,
+    plan_entry_island_rescues,
     score_entry_island_rescue_option,
     select_entry_island_rescue,
 )
@@ -38,14 +40,22 @@ class _DummyFlowGraph:
         return self._mapping.get(int(serial))
 
 
+class _RawSeed:
+    def __init__(self, source_block: int | None, lifted_entry: int):
+        self.source_block = source_block
+        self.lifted_entry = lifted_entry
+
+
 class TestScoreEntryIslandRescueOption:
     def test_rejects_when_lifted_entry_not_reachable(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.compile_patch_plan",
+            rescue_mod,
+            "compile_patch_plan",
             lambda modifications, flow_graph: ("plan", tuple(modifications)),
         )
         monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.project_post_state",
+            rescue_mod,
+            "project_post_state",
             lambda flow_graph, patch_plan: object(),
         )
 
@@ -70,7 +80,8 @@ class TestSelectEntryIslandRescue:
         })
 
         monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.compile_patch_plan",
+            rescue_mod,
+            "compile_patch_plan",
             lambda modifications, flow_graph: tuple(modifications),
         )
 
@@ -80,10 +91,7 @@ class TestSelectEntryIslandRescue:
                 return "fg-40"
             return "fg-50"
 
-        monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.project_post_state",
-            _project_post_state,
-        )
+        monkeypatch.setattr(rescue_mod, "project_post_state", _project_post_state)
 
         selection = select_entry_island_rescue(
             seeds=(
@@ -119,11 +127,13 @@ class TestSelectEntryIslandRescue:
         })
 
         monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.compile_patch_plan",
+            rescue_mod,
+            "compile_patch_plan",
             lambda modifications, flow_graph: tuple(modifications),
         )
         monkeypatch.setattr(
-            "d810.cfg.entry_island_rescue_planning.project_post_state",
+            rescue_mod,
+            "project_post_state",
             lambda flow_graph, patch_plan: object(),
         )
 
@@ -141,3 +151,46 @@ class TestSelectEntryIslandRescue:
 
         assert selection.accepted is False
         assert selection.option is None
+
+
+class TestPlanEntryIslandRescues:
+    def test_runs_until_selection_rejected(self, monkeypatch) -> None:
+        flow_graph = _DummyFlowGraph({
+            40: ((12,), (6,)),
+        })
+        modifications = []
+        call_count = {"value": 0}
+
+        monkeypatch.setattr(
+            rescue_mod,
+            "compile_patch_plan",
+            lambda modifications, flow_graph: tuple(modifications),
+        )
+        monkeypatch.setattr(
+            rescue_mod,
+            "project_post_state",
+            lambda flow_graph, patch_plan: flow_graph,
+        )
+
+        def collect_seeds(*args, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                return (_RawSeed(40, 90),)
+            return (_RawSeed(None, 90),)
+
+        run = plan_entry_island_rescues(
+            dag=object(),
+            base_flow_graph=flow_graph,
+            projected_flow_graph=flow_graph,
+            builder=_DummyBuilder(),
+            modifications=modifications,
+            dispatcher_region={6},
+            collect_seeds=collect_seeds,
+            compute_reachable_blocks=lambda projected: {6, 12, 40, 90},
+        )
+
+        assert run.emitted_count == 1
+        assert len(run.iterations) == 2
+        assert run.iterations[0].selection.accepted is True
+        assert run.iterations[1].selection.accepted is False
+        assert modifications == [("goto", 40, 90, 6)]

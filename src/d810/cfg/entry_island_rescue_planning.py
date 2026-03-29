@@ -30,6 +30,19 @@ class EntryIslandRescueSelection:
     projected_flow_graph: object | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class EntryIslandRescueIteration:
+    raw_seeds: tuple[object, ...]
+    selection: EntryIslandRescueSelection
+
+
+@dataclass(frozen=True, slots=True)
+class EntryIslandRescueRun:
+    projected_flow_graph: object
+    emitted_count: int
+    iterations: tuple[EntryIslandRescueIteration, ...]
+
+
 def score_entry_island_rescue_option(
     option: EntryIslandRescueOption,
     *,
@@ -141,8 +154,87 @@ def select_entry_island_rescue(
     )
 
 
+def plan_entry_island_rescues(
+    *,
+    dag,
+    base_flow_graph,
+    projected_flow_graph,
+    builder,
+    modifications: list,
+    dispatcher_region: set[int],
+    collect_seeds,
+    compute_reachable_blocks,
+) -> EntryIslandRescueRun:
+    current_projected_flow_graph = projected_flow_graph
+    emitted = 0
+    iterations: list[EntryIslandRescueIteration] = []
+
+    while True:
+        reachable_blocks = compute_reachable_blocks(current_projected_flow_graph)
+        if not reachable_blocks:
+            break
+
+        raw_seeds = tuple(
+            collect_seeds(
+                dag,
+                projected_flow_graph=current_projected_flow_graph,
+                reachable_blocks=reachable_blocks,
+                dispatcher_region=dispatcher_region,
+            )
+        )
+        planning_seeds = tuple(
+            EntryIslandRescuePlanningSeed(
+                source_block=int(seed.source_block),
+                lifted_entry=int(seed.lifted_entry),
+            )
+            for seed in raw_seeds
+            if getattr(seed, "source_block", None) is not None
+        )
+        claimed_sources = {
+            int(getattr(mod, "from_serial"))
+            for mod in modifications
+            if getattr(mod, "from_serial", None) is not None
+        }
+        selection = select_entry_island_rescue(
+            seeds=planning_seeds,
+            current_projected_flow_graph=current_projected_flow_graph,
+            base_flow_graph=base_flow_graph,
+            builder=builder,
+            modifications=modifications,
+            reachable_blocks=reachable_blocks,
+            dispatcher_region=dispatcher_region,
+            claimed_sources=claimed_sources,
+            compute_reachable_blocks=compute_reachable_blocks,
+        )
+        iterations.append(
+            EntryIslandRescueIteration(
+                raw_seeds=raw_seeds,
+                selection=selection,
+            )
+        )
+        if (
+            not selection.accepted
+            or selection.modification is None
+            or selection.projected_flow_graph is None
+        ):
+            break
+
+        modifications.append(selection.modification)
+        current_projected_flow_graph = selection.projected_flow_graph
+        emitted += 1
+
+    return EntryIslandRescueRun(
+        projected_flow_graph=current_projected_flow_graph,
+        emitted_count=emitted,
+        iterations=tuple(iterations),
+    )
+
+
 __all__ = [
+    "EntryIslandRescueIteration",
     "EntryIslandRescuePlanningSeed",
+    "EntryIslandRescueRun",
+    "plan_entry_island_rescues",
     "EntryIslandRescueSelection",
     "score_entry_island_rescue_option",
     "select_entry_island_rescue",
