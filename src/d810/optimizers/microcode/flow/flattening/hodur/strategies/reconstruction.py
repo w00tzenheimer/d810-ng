@@ -13,7 +13,7 @@ rewrite that still removes the dispatcher handoff:
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import ida_hexrays
 
@@ -29,7 +29,6 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.shared_corridor import (
-    is_backward_same_corridor_target,
     resolve_old_target,
 )
 from d810.cfg.lowering_selector import (
@@ -39,11 +38,8 @@ from d810.cfg.lowering_selector import (
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.reconstruction_planning import (
-    ReconstructionEmissionMode,
     ReconstructionLoweringContext,
     ReconstructionLoweringKind,
-    ReconstructionPlanningContext,
-    plan_reconstruction_candidate,
     plan_reconstruction_lowering,
 )
 from d810.cfg.reconstruction_lowering import (
@@ -84,16 +80,15 @@ from d810.recon.flow.entry_island_rescue_discovery import (
     collect_late_entry_island_diagnostics,
     collect_late_entry_island_rescue_seeds,
 )
-from d810.recon.flow.state_machine_analysis import (
-    SnapshotConstantFixpointResult,
-    StateWriteSite,
-    run_snapshot_constant_fixpoint,
-)
+from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_shared_suffix_blocks,
-    discover_reconstruction_candidate_seed,
     resolve_state_var_stkoff,
+)
+from d810.recon.flow.reconstruction_candidate_builder import (
+    ReconstructionCandidate,
+    build_reconstruction_candidate,
 )
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
@@ -106,21 +101,6 @@ logger = logging.getLogger(
 )
 
 __all__ = ["StateWriteReconstructionStrategy"]
-
-
-@dataclass(frozen=True, slots=True)
-class ReconstructionCandidate:
-    """One proven semantic corridor that can be rebuilt without the dispatcher."""
-
-    edge: StateDagEdge
-    horizon_block: int
-    site: StateWriteSite
-    target_entry: int
-    first_shared_block: int | None
-    via_pred: int | None
-    emission_mode: str
-
-
 class StateWriteReconstructionStrategy:
     """Reconstruct proven semantic corridors from state-write horizons."""
 
@@ -533,164 +513,6 @@ class StateWriteReconstructionStrategy:
                 )
 
         return emitted
-
-    @classmethod
-    def _build_candidate(
-        cls,
-        edge: StateDagEdge,
-        *,
-        flow_graph,
-        node_by_key: dict[StateDagNodeKey, StateDagNode],
-        outgoing_by_key: dict[StateDagNodeKey, tuple[StateDagEdge, ...]],
-        nodes_by_entry_anchor: dict[int, tuple[StateDagNode, ...]],
-        state_var_stkoff: int,
-        constant_result: SnapshotConstantFixpointResult,
-        shared_suffix_blocks: set[int],
-        dispatcher_region: set[int],
-        dispatcher_serial: int = -1,
-    ) -> tuple[ReconstructionCandidate | None, dict[str, int | str | None] | None]:
-        if edge.kind not in (
-            SemanticEdgeKind.TRANSITION,
-            SemanticEdgeKind.CONDITIONAL_TRANSITION,
-        ):
-            return None, cls._make_edge_metadata(
-                edge,
-                rejection_reason="unsupported_edge_kind",
-            )
-
-        if edge.target_state is None:
-            return None, cls._make_edge_metadata(
-                edge,
-                rejection_reason="missing_target_state",
-            )
-
-        ordered_path = tuple(int(serial) for serial in edge.ordered_path)
-        seed, seed_rejection = discover_reconstruction_candidate_seed(
-            edge,
-            flow_graph=flow_graph,
-            node_by_key=node_by_key,
-            state_var_stkoff=state_var_stkoff,
-            constant_result=constant_result,
-            dispatcher_region=dispatcher_region,
-        )
-        if seed is None:
-            return None, cls._make_edge_metadata(
-                edge,
-                rejection_reason=seed_rejection,
-            )
-
-        horizon_block = seed.horizon_block
-        site = seed.site
-        target_entry = seed.target_entry
-        if seed.original_dispatcher_entry is not None:
-            logger.info(
-                "RECON DAG: dispatcher_target_entry resolved non-BST "
-                "entry blk[%d] (original blk[%d] in dispatcher region)",
-                target_entry,
-                seed.original_dispatcher_entry,
-            )
-
-        if is_backward_same_corridor_target(
-            ordered_path,
-            rewrite_block=horizon_block,
-            target_entry=target_entry,
-        ):
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                target_entry=target_entry,
-                rejection_reason="backward_same_corridor_target",
-            )
-
-        try:
-            horizon_index = ordered_path.index(int(horizon_block))
-        except ValueError:
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                target_entry=target_entry,
-                rejection_reason="horizon_not_on_path",
-            )
-
-        planning_decision = plan_reconstruction_candidate(
-            flow_graph,
-            ReconstructionPlanningContext(
-                ordered_path=ordered_path,
-                horizon_block=int(horizon_block),
-                target_entry=int(target_entry),
-                source_anchor_block=int(edge.source_anchor.block_serial),
-                source_branch_arm=(
-                    int(edge.source_anchor.branch_arm)
-                    if edge.source_anchor.branch_arm is not None
-                    else None
-                ),
-                is_conditional_transition=(
-                    edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
-                ),
-                shared_suffix_blocks=frozenset(int(block) for block in shared_suffix_blocks),
-                dispatcher_region=frozenset(int(block) for block in dispatcher_region),
-                has_unsafe_trailing_insns=bool(site.unsafe_trailing_insn_eas),
-            ),
-        )
-
-        if not planning_decision.accepted:
-            return None, cls._make_edge_metadata(
-                edge,
-                horizon_block=horizon_block,
-                site=site,
-                target_entry=target_entry,
-                first_shared_block=planning_decision.first_shared_block,
-                via_pred=planning_decision.via_pred,
-                rejection_reason=planning_decision.rejection_reason,
-            )
-
-        if planning_decision.emission_mode == ReconstructionEmissionMode.DIRECT:
-            return (
-                ReconstructionCandidate(
-                    edge=edge,
-                    horizon_block=int(horizon_block),
-                    site=site,
-                    target_entry=int(target_entry),
-                    first_shared_block=planning_decision.first_shared_block,
-                    via_pred=None,
-                    emission_mode="direct",
-                ),
-                None,
-            )
-
-        if planning_decision.emission_mode == ReconstructionEmissionMode.CONDITIONAL_ARM:
-            logger.info(
-                "RECON DAG: conditional_arm candidate: horizon=%d, branch_arm=%d",
-                int(horizon_block),
-                int(edge.source_anchor.branch_arm),
-            )
-            return (
-                ReconstructionCandidate(
-                    edge=edge,
-                    horizon_block=int(horizon_block),
-                    site=site,
-                    target_entry=int(target_entry),
-                    first_shared_block=None,
-                    via_pred=None,
-                    emission_mode="conditional_arm",
-                ),
-                None,
-            )
-
-        return (
-            ReconstructionCandidate(
-                edge=edge,
-                horizon_block=int(horizon_block),
-                site=site,
-                target_entry=int(target_entry),
-                first_shared_block=planning_decision.first_shared_block,
-                via_pred=int(planning_decision.via_pred),
-                emission_mode="pred_split",
-            ),
-            None,
-        )
 
     @classmethod
     def _record_accept(
@@ -1144,9 +966,6 @@ class StateWriteReconstructionStrategy:
         shared_suffix_blocks = collect_shared_suffix_blocks(dag)
         dag_maps = build_dag_node_maps(dag)
         node_by_key = dag_maps.node_by_key
-        outgoing_by_key = dag_maps.outgoing_by_key
-        nodes_by_entry_anchor = dag_maps.nodes_by_entry_anchor
-
         dispatcher_serial = int(dag.dispatcher_entry_serial)
 
         raw_candidates: list[ReconstructionCandidate] = []
@@ -1159,17 +978,14 @@ class StateWriteReconstructionStrategy:
             ", ".join(f"{k}={v}" for k, v in edge_kind_counts.most_common()),
         )
         for edge in dag.edges:
-            candidate, rejection = self._build_candidate(
+            candidate, rejection = build_reconstruction_candidate(
                 edge,
                 flow_graph=flow_graph,
                 node_by_key=node_by_key,
-                outgoing_by_key=outgoing_by_key,
-                nodes_by_entry_anchor=nodes_by_entry_anchor,
                 state_var_stkoff=state_var_stkoff,
                 constant_result=constant_result,
                 shared_suffix_blocks=shared_suffix_blocks,
                 dispatcher_region=dispatcher_region,
-                dispatcher_serial=dispatcher_serial,
             )
             if candidate is not None:
                 raw_candidates.append(candidate)
