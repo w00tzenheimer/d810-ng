@@ -44,8 +44,7 @@ from d810.cfg.reconstruction_modification_planning import (
     plan_shared_group_reconstruction_modifications,
 )
 from d810.cfg.terminal_family_split import (
-    TerminalFamilySplitCandidate,
-    select_terminal_family_split,
+    plan_terminal_family_splits,
 )
 from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.core import logging
@@ -349,25 +348,23 @@ class StateWriteReconstructionStrategy:
         state_var_stkoff: int | None,
         mba,
     ) -> int:
-        current_projected_flow_graph = projected_flow_graph
-        emitted = 0
+        run = plan_terminal_family_splits(
+            dag=dag,
+            base_flow_graph=base_flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_region=dispatcher_region,
+            state_var_stkoff=state_var_stkoff,
+            builder=builder,
+            modifications=modifications,
+            collect_report=collect_terminal_family_report,
+            compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
+                flow_graph,
+                start_serial=getattr(flow_graph, "entry_serial", None),
+            ),
+        )
 
-        while True:
-            reachable_blocks = compute_reachable_blocks(
-                current_projected_flow_graph,
-                start_serial=getattr(current_projected_flow_graph, "entry_serial", None),
-            )
-            if not reachable_blocks:
-                break
-
-            report = collect_terminal_family_report(
-                dag,
-                base_flow_graph=base_flow_graph,
-                projected_flow_graph=current_projected_flow_graph,
-                dispatcher_region=dispatcher_region,
-                reachable_blocks=reachable_blocks,
-                state_var_stkoff=state_var_stkoff,
-            )
+        for iteration in run.iterations:
+            report = iteration.report
             for seed_report in report.seed_reports:
                 probe = seed_report.probe
                 seed = probe.seed
@@ -411,7 +408,6 @@ class StateWriteReconstructionStrategy:
                             ),
                             [blk_label(mba, b) for b in diagnostic.island_blocks],
                         )
-            candidates = report.collection.candidates
             for candidate_report in report.candidate_reports:
                 candidate = candidate_report.candidate
                 logger.info(
@@ -439,49 +435,14 @@ class StateWriteReconstructionStrategy:
                     candidate.path,
                     [hex(ea) for ea in candidate.lineage_eas],
                 )
-            if len(candidates) < 2:
-                break
-
-            split_candidates = tuple(
-                TerminalFamilySplitCandidate(
-                    source_block=int(candidate.source_block),
-                    branch_arm=(
-                        int(candidate.branch_arm)
-                        if candidate.branch_arm is not None
-                        else None
-                    ),
-                    family_entry=int(candidate.family_entry),
-                    path=tuple(int(s) for s in candidate.path),
-                    value_family_signature=candidate.value_family_signature,
-                    lineage_eas=tuple(int(ea) for ea in candidate.lineage_eas),
-                )
-                for candidate in candidates
-            )
-            selected = select_terminal_family_split(
-                split_candidates,
-                base_flow_graph=base_flow_graph,
-                projected_flow_graph=current_projected_flow_graph,
-                builder=builder,
-                modifications=modifications,
-                compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
-                    flow_graph,
-                    start_serial=getattr(flow_graph, "entry_serial", None),
-                ),
-            )
+            selected = iteration.selected
             if selected is None:
-                break
+                continue
 
-            candidate_mod = selected.modification
-            candidate_projected = selected.projected_flow_graph
             suffix_serials = selected.suffix_serials
             selected_anchors = selected.selected_anchors
-            selected_candidates = tuple(
-                candidates[index] for index in selected.selected_candidate_indexes
-            )
+            selected_candidates = iteration.selected_candidates
             primary_signature = selected.primary_signature
-            modifications.append(candidate_mod)
-            current_projected_flow_graph = candidate_projected
-            emitted += 1
             logger.info(
                 "RECON RETURN: terminal-family split shared_entry=%s stop=%s anchors=%s keep_signature=%s",
                 blk_label(mba, int(suffix_serials[0])),
@@ -510,7 +471,7 @@ class StateWriteReconstructionStrategy:
                     [hex(ea) for ea in candidate.lineage_eas],
                 )
 
-        return emitted
+        return run.emitted_count
 
     @classmethod
     def _record_accept(

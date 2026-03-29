@@ -3,8 +3,10 @@ from __future__ import annotations
 import d810.cfg.terminal_family_split as split_mod
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
+    build_terminal_family_split_candidates,
     build_terminal_family_split_modification,
     build_terminal_family_split_proposals,
+    plan_terminal_family_splits,
     select_terminal_family_split,
 )
 
@@ -65,6 +67,37 @@ class _DummyBuilder:
         )
 
 
+class _RawCandidate:
+    def __init__(
+        self,
+        *,
+        source_block: int,
+        branch_arm: int | None,
+        family_entry: int,
+        path: tuple[int, ...],
+        value_family_signature: tuple[object, ...],
+        lineage_eas: tuple[int, ...],
+    ):
+        self.source_block = source_block
+        self.branch_arm = branch_arm
+        self.family_entry = family_entry
+        self.path = path
+        self.value_family_signature = value_family_signature
+        self.lineage_eas = lineage_eas
+
+
+class _Collection:
+    def __init__(self, candidates):
+        self.candidates = tuple(candidates)
+
+
+class _Report:
+    def __init__(self, candidates):
+        self.collection = _Collection(candidates)
+        self.seed_reports = ()
+        self.candidate_reports = ()
+
+
 class TestBuildTerminalFamilySplitProposals:
     def test_selects_non_primary_bucket_anchor_for_shared_suffix(self):
         candidates = (
@@ -113,6 +146,33 @@ class TestBuildTerminalFamilySplitProposals:
         assert build_expected.selected_candidate_indexes == (1,)
         assert build_expected.selected_anchors == (21,)
         assert build_expected.primary_signature == ("keep",)
+
+
+class TestBuildTerminalFamilySplitCandidates:
+    def test_adapts_raw_candidate_objects(self):
+        candidates = build_terminal_family_split_candidates(
+            (
+                _RawCandidate(
+                    source_block=11,
+                    branch_arm=1,
+                    family_entry=21,
+                    path=(21, 30, 40),
+                    value_family_signature=("split",),
+                    lineage_eas=(0x2000,),
+                ),
+            )
+        )
+
+        assert candidates == (
+            TerminalFamilySplitCandidate(
+                source_block=11,
+                branch_arm=1,
+                family_entry=21,
+                path=(21, 30, 40),
+                value_family_signature=("split",),
+                lineage_eas=(0x2000,),
+            ),
+        )
 
 
 class TestBuildTerminalFamilySplitModification:
@@ -183,3 +243,70 @@ class TestSelectTerminalFamilySplit:
         assert selection.selected_candidate_indexes == (1,)
         assert selection.selected_anchors == (21,)
         assert selection.suffix_serials == (30, 40)
+
+
+class TestPlanTerminalFamilySplits:
+    def test_runs_one_split_iteration_and_applies_modification(self):
+        raw_candidates = (
+            _RawCandidate(
+                source_block=10,
+                branch_arm=None,
+                family_entry=20,
+                path=(20, 30, 40),
+                value_family_signature=("keep",),
+                lineage_eas=(0x1000,),
+            ),
+            _RawCandidate(
+                source_block=11,
+                branch_arm=None,
+                family_entry=21,
+                path=(21, 30, 40),
+                value_family_signature=("split",),
+                lineage_eas=(0x2000,),
+            ),
+        )
+        base_flow_graph = _DummyFlowGraph({
+            20: (30,),
+            21: (30,),
+            30: (40,),
+            40: (),
+        })
+        projected_flow_graph = base_flow_graph
+        modifications = []
+        call_count = {"value": 0}
+
+        def collect_report(*args, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                return _Report(raw_candidates)
+            return _Report((raw_candidates[0],))
+
+        original_compile = split_mod.compile_patch_plan
+        original_project = split_mod.project_post_state
+        try:
+            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
+
+            run = plan_terminal_family_splits(
+                dag=object(),
+                base_flow_graph=base_flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                dispatcher_region=set(),
+                state_var_stkoff=None,
+                builder=_DummyBuilder(),
+                modifications=modifications,
+                collect_report=collect_report,
+                compute_reachable_blocks=lambda fg: set(fg._mapping),
+            )
+        finally:
+            split_mod.compile_patch_plan = original_compile
+            split_mod.project_post_state = original_project
+
+        assert run.emitted_count == 1
+        assert len(run.iterations) == 2
+        assert run.iterations[0].selected is not None
+        assert run.iterations[0].selected_candidates == (raw_candidates[1],)
+        assert run.iterations[1].selected is None
+        assert modifications == [
+            ("pts", 21, 30, 40, (30, 40), "terminal_family_split"),
+        ]
