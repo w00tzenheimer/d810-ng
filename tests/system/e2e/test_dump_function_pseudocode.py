@@ -39,6 +39,7 @@ from d810.recon.flow.linearized_state_dag import (
     RenderOrderStrategy,
 )
 from d810.recon.microcode_dump import (
+    build_live_linearized_program,
     dump_dispatcher_tree,
     dump_function_microcode,
     dump_linearized_dag,
@@ -361,6 +362,7 @@ class TestDumpFunctionPseudocode:
                         )
                         mba = cfunc_raw.mba if cfunc_raw else None
                         mba_source = "decompile(LVARS)"
+                    rendered_programs_to_snapshot = []
                     if mba:
                         # Find dispatcher entry (block with most predecessors, typically blk[2])
                         max_preds = 0
@@ -419,54 +421,64 @@ class TestDumpFunctionPseudocode:
                                 print("=" * 88)
                             except Exception as e:
                                 print(f"\n[linearized DAG dump failed: {e}]")
+                            dump_all_linearized_programs = (
+                                os.environ.get("D810_DUMP_ALL_LINEARIZED_PROGRAMS")
+                                == "1"
+                            )
+                            if dump_all_linearized_programs:
+                                try:
+                                    linearized_program = build_live_linearized_program(
+                                        mba,
+                                        dispatcher_serial,
+                                        state_var_stkoff=hodur_stkoff,
+                                    )
+                                    rendered_programs_to_snapshot.append(linearized_program)
+                                    print(f"\n--- LINEARIZED PROGRAM ({mba_source}) ---")
+                                    print(dump_linearized_program(linearized_program))
+                                    print("=" * 88)
+                                except Exception as e:
+                                    print(f"\n[linearized program dump failed: {e}]")
+                                try:
+                                    semantic_program = build_live_linearized_program(
+                                        mba,
+                                        dispatcher_serial,
+                                        state_var_stkoff=hodur_stkoff,
+                                        order_strategy=RenderOrderStrategy.SEMANTIC,
+                                    )
+                                    rendered_programs_to_snapshot.append(semantic_program)
+                                    print(
+                                        f"\n--- LINEARIZED PROGRAM SEMANTIC ({mba_source}) ---"
+                                    )
+                                    print(dump_linearized_program(semantic_program))
+                                    print("=" * 88)
+                                except Exception as e:
+                                    print(
+                                        f"\n[linearized semantic program dump failed: {e}]"
+                                    )
+                                try:
+                                    semantic_boundary_program = build_live_linearized_program(
+                                        mba,
+                                        dispatcher_serial,
+                                        state_var_stkoff=hodur_stkoff,
+                                        order_strategy=RenderOrderStrategy.SEMANTIC,
+                                        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                                        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                                    )
+                                    rendered_programs_to_snapshot.append(
+                                        semantic_boundary_program
+                                    )
+                                    print(
+                                        f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES ({mba_source}) ---"
+                                    )
+                                    print(dump_linearized_program(semantic_boundary_program))
+                                    print("=" * 88)
+                                except Exception as e:
+                                    print(
+                                        "\n[linearized semantic local-boundary program dump failed: "
+                                        f"{e}]"
+                                    )
                             try:
-                                linearized_program = dump_linearized_program(
-                                    mba,
-                                    dispatcher_serial,
-                                    state_var_stkoff=hodur_stkoff,
-                                )
-                                print(f"\n--- LINEARIZED PROGRAM ({mba_source}) ---")
-                                print(linearized_program)
-                                print("=" * 88)
-                            except Exception as e:
-                                print(f"\n[linearized program dump failed: {e}]")
-                            try:
-                                semantic_program = dump_linearized_program(
-                                    mba,
-                                    dispatcher_serial,
-                                    state_var_stkoff=hodur_stkoff,
-                                    order_strategy=RenderOrderStrategy.SEMANTIC,
-                                )
-                                print(
-                                    f"\n--- LINEARIZED PROGRAM SEMANTIC ({mba_source}) ---"
-                                )
-                                print(semantic_program)
-                                print("=" * 88)
-                            except Exception as e:
-                                print(
-                                    f"\n[linearized semantic program dump failed: {e}]"
-                                )
-                            try:
-                                semantic_boundary_program = dump_linearized_program(
-                                    mba,
-                                    dispatcher_serial,
-                                    state_var_stkoff=hodur_stkoff,
-                                    order_strategy=RenderOrderStrategy.SEMANTIC,
-                                    program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
-                                    boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
-                                )
-                                print(
-                                    f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES ({mba_source}) ---"
-                                )
-                                print(semantic_boundary_program)
-                                print("=" * 88)
-                            except Exception as e:
-                                print(
-                                    "\n[linearized semantic local-boundary program dump failed: "
-                                    f"{e}]"
-                                )
-                            try:
-                                reference_like_program = dump_linearized_program(
+                                reference_like_program = build_live_linearized_program(
                                     mba,
                                     dispatcher_serial,
                                     state_var_stkoff=hodur_stkoff,
@@ -475,36 +487,39 @@ class TestDumpFunctionPseudocode:
                                     boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                                     comment_mode=ProgramCommentMode.MINIMAL,
                                 )
+                                rendered_programs_to_snapshot.append(reference_like_program)
                                 print(
                                     f"\n--- LINEARIZED PROGRAM SEMANTIC REFERENCE-LIKE ({mba_source}) ---"
                                 )
-                                print(reference_like_program)
+                                print(dump_linearized_program(reference_like_program))
                                 print("=" * 88)
                             except Exception as e:
                                 print(
                                     "\n[linearized semantic reference-like program dump failed: "
                                     f"{e}]"
                                 )
-                            try:
-                                ida_label_program = dump_linearized_program(
-                                    mba,
-                                    dispatcher_serial,
-                                    state_var_stkoff=hodur_stkoff,
-                                    order_strategy=RenderOrderStrategy.SEMANTIC,
-                                    program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
-                                    label_render_mode=LabelRenderMode.IDA_BLOCK_SERIAL,
-                                    boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
-                                )
-                                print(
-                                    f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES IDA LABELS ({mba_source}) ---"
-                                )
-                                print(ida_label_program)
-                                print("=" * 88)
-                            except Exception as e:
-                                print(
-                                    "\n[linearized semantic local-boundary program dump with IDA labels failed: "
-                                    f"{e}]"
-                                )
+                            if dump_all_linearized_programs:
+                                try:
+                                    ida_label_program = build_live_linearized_program(
+                                        mba,
+                                        dispatcher_serial,
+                                        state_var_stkoff=hodur_stkoff,
+                                        order_strategy=RenderOrderStrategy.SEMANTIC,
+                                        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                                        label_render_mode=LabelRenderMode.IDA_BLOCK_SERIAL,
+                                        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                                    )
+                                    rendered_programs_to_snapshot.append(ida_label_program)
+                                    print(
+                                        f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES IDA LABELS ({mba_source}) ---"
+                                    )
+                                    print(dump_linearized_program(ida_label_program))
+                                    print("=" * 88)
+                                except Exception as e:
+                                    print(
+                                        "\n[linearized semantic local-boundary program dump with IDA labels failed: "
+                                        f"{e}]"
+                                    )
                             try:
                                 dag_dot_dir = os.environ.get(
                                     "D810_DUMP_DIR", "/work/.tmp"
@@ -572,13 +587,16 @@ class TestDumpFunctionPseudocode:
                     if mba:
                         from d810.core.diag import get_diag_db
                         from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                        from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                        from d810.core.diag.snapshot import (
+                            snapshot_mba as _snap_mba,
+                            snapshot_rendered_program as _snap_rendered_program,
+                        )
 
                         _bst_mat = _bst_maturity_name.upper() if _bst_maturity_name else "LVARS"
                         _diag_conn = get_diag_db(func_ea)
                         if _diag_conn is not None:
                             _snap_blocks = mba_to_block_snapshots(mba)
-                            _snap_mba(
+                            _bst_snap_id = _snap_mba(
                                 _diag_conn,
                                 _snap_blocks,
                                 label=f"dump_bst_{function_name}_{_bst_mat}",
@@ -586,6 +604,12 @@ class TestDumpFunctionPseudocode:
                                 maturity=f"MMAT_{_bst_mat}",
                                 phase="pre_d810",
                             )
+                            for _rendered_program in rendered_programs_to_snapshot:
+                                _snap_rendered_program(
+                                    _diag_conn,
+                                    _bst_snap_id,
+                                    _rendered_program,
+                                )
                             _diag_conn.close()
                             print("[diag snapshot written]")
                 except Exception:
@@ -813,6 +837,39 @@ class TestDumpFunctionPseudocode:
                                 if insn.get("r"):
                                     parts.append(f"{insn['r']}")
                             print(" ".join(parts))
+
+                    try:
+                        from d810.core.diag import get_diag_db
+                        from d810.core.diag.query import rendered_program_text
+
+                        _diag_conn = get_diag_db(func_ea)
+                        if _diag_conn is not None:
+                            _snap_label = f"maturity_MMAT_{d810_mat_name}_post_d810"
+                            _row = _diag_conn.execute(
+                                "SELECT MAX(id) FROM snapshots WHERE label=?",
+                                (_snap_label,),
+                            ).fetchone()
+                            _snap_id = (
+                                int(_row[0])
+                                if _row is not None and _row[0] is not None
+                                else None
+                            )
+                            if _snap_id is not None:
+                                _program = rendered_program_text(
+                                    _diag_conn,
+                                    _snap_id,
+                                    "semantic_reference_like",
+                                )
+                                if _program:
+                                    print(
+                                        f"\n--- LINEARIZED PROGRAM SEMANTIC REFERENCE-LIKE "
+                                        f"(post_d810 MMAT_{d810_mat_name}) ---"
+                                    )
+                                    print(_program)
+                                    print("=" * 88)
+                            _diag_conn.close()
+                    except Exception:
+                        pass
                     print("=" * 88)
         if maturity_names:
             # Raw (pre-d810) microcode mode using gen_microcode()

@@ -25,8 +25,9 @@ from d810.recon.flow.linearized_state_dag import (
     _normalize_entry_anchors_to_unique_path_starts,
     _resolve_owner_family_fallback,
     build_live_linearized_state_dag_from_graph,
+    build_linearized_state_program,
     build_linearized_state_dag_from_graph,
-    render_linearized_state_program,
+    render_linearized_state_program as _render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
@@ -47,6 +48,14 @@ from d810.recon.flow.transition_report import (
     TransitionSummary,
     build_dispatcher_transition_report_from_graph,
 )
+
+
+def render_linearized_state_program(
+    dag: LinearizedStateDag,
+    **kwargs,
+) -> str:
+    program = build_linearized_state_program(dag, **kwargs)
+    return _render_linearized_state_program(program)
 
 
 def _make_branch_flow_graph() -> FlowGraph:
