@@ -34,6 +34,8 @@ class DagRedirectFallbackContext:
 class DagRedirectEmissionPlan:
     accepted: bool
     modification: GraphModification | None = None
+    source_block: int | None = None
+    target_entry: int | None = None
     claim_1way_target: int | None = None
     claim_2way_key: tuple[int, int] | None = None
     claim_2way_target: int | None = None
@@ -184,6 +186,8 @@ def plan_dag_redirect_fallback_emission(
                 old_target=int(old_target),
                 new_target=int(target_entry),
             ),
+            source_block=int(source_block),
+            target_entry=int(target_entry),
             claim_2way_key=(int(source_block), int(old_target)),
             claim_2way_target=int(target_entry),
         )
@@ -220,11 +224,48 @@ def plan_dag_redirect_fallback_emission(
             old_target=resolved_old_target,
             new_target=int(target_entry),
         ),
+        source_block=int(source_block),
+        target_entry=int(target_entry),
         claim_1way_target=int(target_entry),
     )
 
 
+def apply_dag_redirect_emission_plan(
+    emission_plan: DagRedirectEmissionPlan,
+    *,
+    modifications: list[GraphModification],
+    claimed_1way: dict[int, int],
+    claimed_2way: dict[tuple[int, int], int],
+    emitted: set[tuple[int, int]],
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    owned_transitions: set[tuple[int, int]],
+    owned_transition: tuple[int, int] | None = None,
+) -> None:
+    if emission_plan.modification is None:
+        raise ValueError("dag redirect emission plan has no modification")
+    if emission_plan.source_block is None or emission_plan.target_entry is None:
+        raise ValueError("dag redirect emission plan is missing source block or target entry")
+
+    source_block = int(emission_plan.source_block)
+    target_entry = int(emission_plan.target_entry)
+    modifications.append(emission_plan.modification)
+    if emission_plan.claim_2way_key is not None and emission_plan.claim_2way_target is not None:
+        claimed_2way[
+            (int(emission_plan.claim_2way_key[0]), int(emission_plan.claim_2way_key[1]))
+        ] = int(emission_plan.claim_2way_target)
+    if emission_plan.claim_1way_target is not None:
+        claimed_1way[source_block] = int(emission_plan.claim_1way_target)
+
+    emitted.add((source_block, target_entry))
+    owned_blocks.add(source_block)
+    owned_edges.add((source_block, target_entry))
+    if owned_transition is not None:
+        owned_transitions.add((int(owned_transition[0]), int(owned_transition[1])))
+
+
 __all__ = [
+    "apply_dag_redirect_emission_plan",
     "DagRedirectDecision",
     "DagRedirectFallbackContext",
     "DagRedirectEmissionPlan",
