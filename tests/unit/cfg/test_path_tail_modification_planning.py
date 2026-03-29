@@ -8,6 +8,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.path_tail_modification_planning import (
     PathTailEmissionKind,
     PathTailRedirectContext,
+    apply_path_tail_emission_plan,
     plan_path_tail_emission,
     plan_path_tail_redirect,
 )
@@ -201,3 +202,60 @@ class TestPlanPathTailRedirect:
         assert decision.accepted
         assert decision.emission_plan is not None
         assert decision.emission_plan.kind == PathTailEmissionKind.DIRECT_GOTO
+
+
+class TestApplyPathTailEmissionPlan:
+    def test_applies_duplicate_claims_and_owned_blocks(self):
+        plan = plan_path_tail_emission(
+            source_block=20,
+            target_entry=30,
+            old_target=6,
+            npreds=2,
+            shared_handoff_target=None,
+            existing_exit_target=None,
+            existing_1way_target=None,
+            via_pred=10,
+            existing_path_edge_target=None,
+            via_pred_blocked=False,
+            via_pred_terminal_protected=False,
+            source_succs=(6,),
+            via_pred_succs=(99, 20),
+            source_is_conditional_branch=True,
+            source_anchor_block=10,
+            source_branch_arm=1,
+            other_preds=(11,),
+        )
+
+        modifications = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        owned_transitions: set[tuple[int, int]] = set()
+        emitted: set[tuple[int, int]] = set()
+        claimed_1way: dict[int, int] = {}
+        claimed_exits: dict[int, int] = {}
+        claimed_path_edges: dict[tuple[int, int], int] = {}
+        blocked_sources: set[int] = set()
+
+        apply_path_tail_emission_plan(
+            plan,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            claimed_exits=claimed_exits,
+            claimed_path_edges=claimed_path_edges,
+            blocked_sources=blocked_sources,
+            owned_transition=(0x11, 0x22),
+        )
+
+        assert modifications == [plan.modification]
+        assert emitted == {(20, 30)}
+        assert owned_blocks == {20, 10, 11}
+        assert owned_edges == {(20, 30)}
+        assert owned_transitions == {(0x11, 0x22)}
+        assert claimed_1way == {}
+        assert claimed_exits == {}
+        assert claimed_path_edges == {}
+        assert blocked_sources == {10}

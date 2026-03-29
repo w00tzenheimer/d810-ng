@@ -28,6 +28,7 @@ class PathTailEmissionPlan:
     via_pred: int | None = None
     blocked_pred: int | None = None
     path_edge_key: tuple[int, int] | None = None
+    extra_owned_blocks: tuple[int, ...] = ()
     rejection_reason: str = ""
 
 
@@ -164,6 +165,7 @@ def plan_path_tail_emission(
             via_pred=int(via_pred),
             blocked_pred=int(via_pred),
             path_edge_key=(int(source_block), int(via_pred)),
+            extra_owned_blocks=(int(via_pred),),
         )
 
     if via_pred is not None and can_duplicate_path_tail(
@@ -185,19 +187,22 @@ def plan_path_tail_emission(
         if other_preds:
             return PathTailEmissionPlan(
                 accepted=True,
-                kind=PathTailEmissionKind.DUPLICATE,
-                modification=DuplicateAndRedirect(
-                    source_serial=int(source_block),
-                    per_pred_targets=(
-                        (int(other_preds[0]), int(old_target)),
+            kind=PathTailEmissionKind.DUPLICATE,
+            modification=DuplicateAndRedirect(
+                source_serial=int(source_block),
+                per_pred_targets=(
+                    (int(other_preds[0]), int(old_target)),
                         (int(via_pred), int(target_entry)),
                     ),
                 ),
-                block_source=int(source_block),
-                target_entry=int(target_entry),
-                via_pred=int(via_pred),
-                blocked_pred=int(via_pred),
-            )
+            block_source=int(source_block),
+            target_entry=int(target_entry),
+            via_pred=int(via_pred),
+            blocked_pred=int(via_pred),
+            extra_owned_blocks=(int(via_pred),) + tuple(
+                int(pred) for pred in other_preds
+            ),
+        )
 
     return PathTailEmissionPlan(
         accepted=False,
@@ -319,7 +324,57 @@ def plan_path_tail_redirect(
     )
 
 
+def apply_path_tail_emission_plan(
+    emission_plan: PathTailEmissionPlan,
+    *,
+    modifications: list[GraphModification],
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    owned_transitions: set[tuple[int, int]],
+    emitted: set[tuple[int, int]],
+    claimed_1way: dict[int, int],
+    claimed_exits: dict[int, int],
+    claimed_path_edges: dict[tuple[int, int], int],
+    blocked_sources: set[int],
+    owned_transition: tuple[int, int] | None = None,
+) -> None:
+    if emission_plan.modification is None:
+        raise ValueError("path-tail emission plan has no modification")
+    if emission_plan.block_source is None or emission_plan.target_entry is None:
+        raise ValueError("path-tail emission plan is missing block source or target entry")
+
+    source_block = int(emission_plan.block_source)
+    target_entry = int(emission_plan.target_entry)
+    modifications.append(emission_plan.modification)
+    emitted.add((source_block, target_entry))
+    owned_blocks.add(source_block)
+    owned_edges.add((source_block, target_entry))
+
+    for owned_block in emission_plan.extra_owned_blocks:
+        owned_blocks.add(int(owned_block))
+
+    if owned_transition is not None:
+        owned_transitions.add((int(owned_transition[0]), int(owned_transition[1])))
+
+    if emission_plan.kind in (
+        PathTailEmissionKind.SHARED_GOTO,
+        PathTailEmissionKind.DIRECT_GOTO,
+    ):
+        claimed_exits[source_block] = target_entry
+        claimed_1way[source_block] = target_entry
+    elif emission_plan.kind == PathTailEmissionKind.PRED_SPLIT:
+        if emission_plan.path_edge_key is None:
+            raise ValueError("pred-split path-tail emission plan missing path edge key")
+        claimed_path_edges[
+            (int(emission_plan.path_edge_key[0]), int(emission_plan.path_edge_key[1]))
+        ] = target_entry
+
+    if emission_plan.blocked_pred is not None:
+        blocked_sources.add(int(emission_plan.blocked_pred))
+
+
 __all__ = [
+    "apply_path_tail_emission_plan",
     "PathTailEmissionKind",
     "PathTailEmissionPlan",
     "PathTailRedirectContext",
