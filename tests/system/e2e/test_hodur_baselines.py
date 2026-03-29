@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import sqlite3
 
 import pytest
 
@@ -146,3 +147,79 @@ class TestHodurBaselines:
                 f"{func_name}: {metric} regression: "
                 f"expected={expected_val}, actual={actual_val}"
             )
+
+
+# Key semantic markers that must appear in the rendered program.
+# These are handler-body fragments that prove semantic recovery.
+SUB_7FFD_SEMANTIC_MARKERS = [
+    "sub_1800164E0",      # API call: C2 communication
+    "0xFFFFFFFFFFFFFF02",  # MBA-resolved constant in conditional
+    "unk_180018E95",       # Data reference in handler
+]
+
+
+class TestSemanticReferenceRegression:
+    """Regression: semantic_reference_like program must exist at GLBOPT1/post_d810.
+
+    This prevents silent regression of Hodur's semantic recovery quality.
+    The rendered linearized state program is the primary semantic artifact —
+    if it loses handler bodies or API calls, the unflattening regressed.
+    """
+
+    binary_name = _get_default_binary()
+
+    def test_sub_7FFD_semantic_reference_exists(
+        self,
+        libobfuscated_setup,
+        d810_state,
+        monkeypatch,
+    ):
+        """sub_7FFD must produce a semantic_reference_like program with key markers."""
+        func_ea = _get_func_ea("sub_7FFD3338C040")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("sub_7FFD3338C040 not found")
+
+        # Enable diagnostic snapshots for this decompilation
+        monkeypatch.setenv("D810_DIAG_SNAPSHOT", "1")
+
+        with d810_state() as state:
+            with state.for_project("hodur_flag2.json"):
+                state.stats.reset()
+                state.start_d810()
+                cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+                if cfunc is None:
+                    pytest.fail("sub_7FFD3338C040 decompile returned None")
+
+        # Find the diag DB created during decompilation
+        from d810.core.diag import get_diag_db
+        from d810.core.diag.query import rendered_program_text
+
+        diag_conn = get_diag_db(func_ea)
+        if diag_conn is None:
+            pytest.skip("Diagnostic DB not available (D810_DIAG_SNAPSHOT not active)")
+
+        # Find GLBOPT1/post_d810 snapshot
+        snap_id = None
+        for row in diag_conn.execute("SELECT id, label FROM snapshots"):
+            if "GLBOPT1" in row[1] and "post_d810" in row[1]:
+                snap_id = row[0]
+                break
+
+        assert snap_id is not None, (
+            "No MMAT_GLBOPT1/post_d810 snapshot found in diag DB"
+        )
+
+        program = rendered_program_text(diag_conn, snap_id, "semantic_reference_like")
+        assert program is not None and len(program) > 100, (
+            f"semantic_reference_like program missing or too short "
+            f"(snap_id={snap_id}, len={len(program) if program else 0})"
+        )
+
+        # Check key semantic markers
+        for marker in SUB_7FFD_SEMANTIC_MARKERS:
+            assert marker in program, (
+                f"Semantic marker '{marker}' missing from rendered program — "
+                f"handler body may have been lost during unflattening"
+            )
+
+        diag_conn.close()
