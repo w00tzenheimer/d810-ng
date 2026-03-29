@@ -13,6 +13,7 @@ class TestPlanDagRedirectFallbackEmission:
             target_entry=18,
             nsucc=2,
             old_target=14,
+            source_succs=(14, 20),
             edge_is_transition=True,
             live_oneway_noop=False,
             claimed_1way_target=None,
@@ -28,6 +29,7 @@ class TestPlanDagRedirectFallbackEmission:
             target_entry=18,
             nsucc=2,
             old_target=14,
+            source_succs=(14, 20),
             edge_is_transition=False,
             live_oneway_noop=False,
             claimed_1way_target=None,
@@ -49,6 +51,7 @@ class TestPlanDagRedirectFallbackEmission:
             target_entry=18,
             nsucc=1,
             old_target=6,
+            source_succs=(6,),
             edge_is_transition=False,
             live_oneway_noop=False,
             claimed_1way_target=20,
@@ -65,6 +68,7 @@ class TestPlanDagRedirectFallbackEmission:
             target_entry=18,
             nsucc=1,
             old_target=6,
+            source_succs=(6,),
             edge_is_transition=False,
             live_oneway_noop=False,
             claimed_1way_target=None,
@@ -78,3 +82,39 @@ class TestPlanDagRedirectFallbackEmission:
             new_target=18,
         )
         assert plan.claim_1way_target == 18
+
+    def test_inferrs_oneway_old_target_from_live_successor(self):
+        plan = plan_dag_redirect_fallback_emission(
+            source_block=12,
+            target_entry=18,
+            nsucc=1,
+            old_target=None,
+            source_succs=(6,),
+            edge_is_transition=False,
+            live_oneway_noop=False,
+            claimed_1way_target=None,
+            claimed_2way_target=None,
+        )
+
+        assert plan.accepted
+        assert plan.modification == RedirectGoto(
+            from_serial=12,
+            old_target=6,
+            new_target=18,
+        )
+
+    def test_rejects_oneway_when_old_target_cannot_be_inferred(self):
+        plan = plan_dag_redirect_fallback_emission(
+            source_block=12,
+            target_entry=18,
+            nsucc=1,
+            old_target=None,
+            source_succs=(),
+            edge_is_transition=False,
+            live_oneway_noop=False,
+            claimed_1way_target=None,
+            claimed_2way_target=None,
+        )
+
+        assert not plan.accepted
+        assert plan.rejection_reason == "unknown_old_target"

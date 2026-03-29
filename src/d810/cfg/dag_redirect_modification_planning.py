@@ -22,6 +22,7 @@ def plan_dag_redirect_fallback_emission(
     target_entry: int,
     nsucc: int,
     old_target: int | None,
+    source_succs: tuple[int, ...],
     edge_is_transition: bool,
     live_oneway_noop: bool,
     claimed_1way_target: int | None,
@@ -73,11 +74,25 @@ def plan_dag_redirect_fallback_emission(
             rejection_reason="oneway_conflict",
             existing_target=int(claimed_1way_target),
         )
+    resolved_old_target = (
+        int(old_target)
+        if old_target is not None
+        else (
+            int(source_succs[0])
+            if len(tuple(int(succ) for succ in source_succs)) == 1
+            else None
+        )
+    )
+    if resolved_old_target is None:
+        return DagRedirectEmissionPlan(
+            accepted=False,
+            rejection_reason="unknown_old_target",
+        )
     return DagRedirectEmissionPlan(
         accepted=True,
         modification=RedirectGoto(
             from_serial=int(source_block),
-            old_target=(int(old_target) if old_target is not None else 0),
+            old_target=resolved_old_target,
             new_target=int(target_entry),
         ),
         claim_1way_target=int(target_entry),
