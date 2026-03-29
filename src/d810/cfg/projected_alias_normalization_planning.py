@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.cfg.graph_modification import RedirectGoto
 from d810.cfg.lowering_selector import target_reaches_source_ignoring_blocks
 from d810.cfg.residual_handoff_modification_planning import (
     plan_projected_alias_handoff_normalization,
@@ -66,10 +67,10 @@ def collect_projected_alias_normalization_actions(
         existing_mod_target = None
         for idx in range(len(modifications) - 1, -1, -1):
             mod = modifications[idx]
-            if mod.__class__.__name__ == "RedirectGoto" and getattr(mod, "from_serial", None) == source_block:
+            if isinstance(mod, RedirectGoto) and mod.from_serial == source_block:
                 existing_index = idx
-                existing_mod_old_target = int(getattr(mod, "old_target"))
-                existing_mod_target = int(getattr(mod, "new_target"))
+                existing_mod_old_target = int(mod.old_target)
+                existing_mod_target = int(mod.new_target)
                 break
 
         plan = plan_projected_alias_handoff_normalization(
