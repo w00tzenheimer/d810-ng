@@ -34,32 +34,19 @@ from d810.cfg.graph_modification import (
 from d810.cfg.lowering_selector import (
     is_backward_same_corridor_target,
     is_live_oneway_noop,
-    is_valid_pred_split_pair,
     resolve_redirect_old_target,
     target_reaches_source_ignoring_blocks,
 )
-from d810.cfg.residual_dispatcher_attempt_building import (
-    ResidualGotoAttemptBuildContext,
-    ResidualPredSplitAttemptBuildContext,
-    ResidualPrefixAttemptBuildContext,
-    build_residual_goto_attempt,
-    build_residual_pred_split_attempt,
-    build_residual_prefix_attempt,
+from d810.cfg.residual_dispatcher_handoff_execution import (
+    ResidualDispatcherHandoffExecutionContext,
+    ResidualDispatcherHandoffMutableState,
+    execute_residual_dispatcher_handoffs,
 )
 from d810.cfg.residual_dispatcher_source_planning import (
-    ResidualDispatcherSourceContext,
     ResidualDispatcherSourcePlanKind,
-    apply_residual_dispatcher_source_plan,
-    plan_residual_dispatcher_source,
-)
-from d810.cfg.residual_handoff_planning import (
-    ResidualGotoAttempt,
-    ResidualPrefixAttempt,
-    ResidualPredSplitAttempt,
 )
 from d810.cfg.residual_handoff_modification_planning import (
     apply_residual_branch_anchor_emission_plan,
-    plan_projected_alias_handoff_normalization,
     plan_residual_branch_anchor_emission,
 )
 from d810.cfg.path_tail_modification_planning import (
@@ -1128,358 +1115,56 @@ class LinearizedFlowGraphStrategy:
         mba: object | None = None,
         redirected_blocks: set[int] | None = None,
     ) -> int:
-        redirected = 0
-        ignored_blocks = set(bst_node_blocks)
-        ignored_blocks.add(dispatcher_serial)
-        pred_split_emitted: set[tuple[int, int, int]] = set()
-        prefix_emitted: set[tuple[int, int, int]] = set()
         residual_preds = cls._collect_residual_dispatcher_predecessors(
             projected_flow_graph,
             dispatcher_serial,
             bst_node_blocks=bst_node_blocks,
             reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
         )
-        residual_ignored_blocks = ignored_blocks | set(residual_preds)
         residual_mba_view = build_mba_view_from_flow_graph(projected_flow_graph)
         analysis_mba = residual_mba_view if residual_mba_view is not None else mba
-
-        for source_block in residual_preds:
-            block = projected_flow_graph.get_block(source_block)
-            if block is None:
-                continue
-            succs = tuple(getattr(block, "succs", ()))
-            if succs != (dispatcher_serial,):
-                continue
-            if source_block in claimed_1way:
-                continue
-            current_preds = tuple(int(pred) for pred in getattr(block, "preds", ()))
-            handoff_facts = collect_residual_source_handoff_facts(
-                dag,
+        result = execute_residual_dispatcher_handoffs(
+            ResidualDispatcherHandoffExecutionContext(
+                dag=dag,
                 state_machine=state_machine,
                 projected_flow_graph=projected_flow_graph,
-                source_block=source_block,
-                current_preds=current_preds,
+                dispatcher_serial=int(dispatcher_serial),
+                bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+                residual_preds=tuple(int(pred) for pred in residual_preds),
+                block_succ_map={
+                    int(block): tuple(int(succ) for succ in succs)
+                    for block, succs in builder.block_succ_map.items()
+                },
                 state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
                 dispatcher_lookup=dispatcher_lookup,
                 dispatcher=dispatcher,
                 analysis_mba=analysis_mba,
                 live_mba=(mba if mba is not None else None),
-            )
-            logger.info(
-                "LFG DAG DEBUG residual %s: assignment_map=%s projected_snapshot=%s projected=%s state_write=%s immediate=%s synthesized=%s live_immediate=%s live_synthesized=%s preds=%s succs=%s",
-                blk_label(mba, source_block),
-                handoff_facts.assignment_map_handoff,
-                handoff_facts.projected_snapshot_handoff,
-                handoff_facts.projected_path_handoff,
-                handoff_facts.source_has_state_write,
-                handoff_facts.immediate_handoff,
-                handoff_facts.synthesized_handoff,
-                handoff_facts.live_immediate_handoff,
-                handoff_facts.live_synthesized_handoff,
-                handoff_facts.current_preds,
-                succs,
-            )
+                collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
+                iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
+                can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,
+                has_prior_branch_cut_for_state=has_prior_branch_cut_for_state,
+                is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail,
+                pred_split_target_reaches_via_pred=pred_split_target_reaches_via_pred,
+                resolve_synthesized_handoff_target=cls._resolve_synthesized_handoff_target,
+                resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
+                resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
+            ),
+            state=ResidualDispatcherHandoffMutableState(
+                modifications=modifications,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                emitted=emitted,
+                claimed_1way=claimed_1way,
+                claimed_2way=claimed_2way,
+                redirected_blocks=redirected_blocks,
+            ),
+        )
 
-            prefix_before_attempts: list[ResidualPrefixAttempt] = []
-            for edge, via_pred, prefix_target in iter_residual_prefix_handoffs(
-                dag,
-                source_block=source_block,
-                bst_node_blocks=bst_node_blocks,
-                dispatcher=dispatcher,
-            ):
-                source_anchor = edge.source_anchor
-                branch_source = source_anchor.block_serial
-                branch_block = projected_flow_graph.get_block(branch_source)
-                if branch_block is None:
-                    continue
-                branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-                old_target = resolve_redirect_old_target(
-                    branch_source,
-                    source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
-                    ordered_path=tuple(int(node) for node in edge.ordered_path),
-                    target_entry_anchor=(
-                        int(edge.target_entry_anchor)
-                        if edge.target_entry_anchor is not None
-                        else None
-                    ),
-                    source_branch_arm=(
-                        int(edge.source_anchor.branch_arm)
-                        if edge.source_anchor.branch_arm is not None
-                        else None
-                    ),
-                    source_is_conditional_branch=(
-                        edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                    ),
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher_region=ignored_blocks,
-                )
-                prefix_before_attempts.append(
-                    build_residual_prefix_attempt(
-                        ResidualPrefixAttemptBuildContext(
-                            via_pred=int(via_pred),
-                            prefix_target=int(prefix_target),
-                            claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-                            owned_transition=(
-                                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                                if edge.source_key.state_const is not None and edge.target_state is not None
-                                else None
-                            ),
-                            edge_kind_name=edge.kind.name.lower(),
-                            is_conditional_branch_source=(
-                                source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                            ),
-                            branch_source=branch_source,
-                            source_block=source_block,
-                            branch_succs=branch_succs,
-                            old_target=old_target,
-                            ordered_path=tuple(int(node) for node in edge.ordered_path),
-                            dispatcher_serial=dispatcher_serial,
-                            bst_node_blocks=frozenset(bst_node_blocks),
-                            target_reaches_branch=target_reaches_source_ignoring_blocks(
-                                projected_flow_graph,
-                                target_entry=prefix_target,
-                                source_block=branch_source,
-                                ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
-                            ),
-                        )
-                    )
-                )
-
-            pred_split_attempts: list[ResidualPredSplitAttempt] = []
-            goto_attempt: ResidualGotoAttempt | None = None
-            prefix_after_attempts: list[ResidualPrefixAttempt] = []
-
-            if handoff_facts.handoff is None:
-                for via_pred in current_preds:
-                    pred_handoff = None
-                    if handoff_facts.source_has_state_write:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
-                            dag,
-                            analysis_mba,
-                            source_block,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                            via_pred=via_pred,
-                        )
-                        if pred_handoff is None and mba is not None and analysis_mba is not mba:
-                            pred_handoff = cls._resolve_synthesized_handoff_target(
-                                dag,
-                                mba,
-                                source_block,
-                                state_var_stkoff=state_var_stkoff,
-                                bst_node_blocks=bst_node_blocks,
-                                dispatcher=dispatcher,
-                                via_pred=via_pred,
-                            )
-                    if pred_handoff is None:
-                        pred_handoff = cls._resolve_projected_path_tail_target(
-                            dag,
-                            source_block=source_block,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                            predecessor_hints=(via_pred,),
-                            require_predecessor_match=True,
-                        )
-                    if pred_handoff is None:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
-                            dag,
-                            analysis_mba,
-                            source_block,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                            via_pred=via_pred,
-                        )
-                    if pred_handoff is None and mba is not None and analysis_mba is not mba:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
-                            dag,
-                            mba,
-                            source_block,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                            via_pred=via_pred,
-                        )
-                    if pred_handoff is None:
-                        pred_handoff = cls._resolve_immediate_handoff_target(
-                            dag,
-                            analysis_mba,
-                            via_pred,
-                            state_var_stkoff=state_var_stkoff,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher_lookup=(
-                                getattr(dispatcher, "lookup", None)
-                                if dispatcher is not None
-                                else dispatcher_lookup
-                            ),
-                            dispatcher=dispatcher,
-                        )
-                    if pred_handoff is None:
-                        continue
-                    state_value, target_entry = pred_handoff
-                    emit_key = (source_block, via_pred, target_entry)
-                    pred_split_attempts.append(
-                        build_residual_pred_split_attempt(
-                            ResidualPredSplitAttemptBuildContext(
-                                via_pred=int(via_pred),
-                                target_entry=int(target_entry),
-                                state_value=int(state_value),
-                                source_block=int(source_block),
-                                dispatcher_serial=int(dispatcher_serial),
-                                bst_node_blocks=frozenset(bst_node_blocks),
-                                valid_pair=is_valid_pred_split_pair(
-                                    source_block,
-                                    via_pred=via_pred,
-                                    source_succs=tuple(builder.block_succ_map.get(source_block, ())),
-                                    via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
-                                ),
-                                target_reaches_via_pred=pred_split_target_reaches_via_pred(
-                                    projected_flow_graph,
-                                    target_entry=target_entry,
-                                    via_pred=via_pred,
-                                    source_block=source_block,
-                                    ignored_blocks=residual_ignored_blocks,
-                                ),
-                                already_emitted=emit_key in pred_split_emitted,
-                            )
-                        )
-                    )
-            else:
-                state_value, target_entry = handoff_facts.handoff
-                allow_family_fallback_tail = can_rewrite_shared_suffix_family_fallback(
-                    dag,
-                    source_block=source_block,
-                    target_entry=target_entry,
-                    current_preds=current_preds,
-                    bst_node_blocks=bst_node_blocks,
-                    flow_graph=projected_flow_graph,
-                )
-                goto_attempt = build_residual_goto_attempt(
-                    ResidualGotoAttemptBuildContext(
-                        target_entry=int(target_entry),
-                        state_value=int(state_value),
-                        source_block=int(source_block),
-                        dispatcher_serial=int(dispatcher_serial),
-                        bst_node_blocks=frozenset(bst_node_blocks),
-                        allow_family_fallback_tail=allow_family_fallback_tail,
-                        is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail(
-                            dag,
-                            source_block=source_block,
-                        ),
-                        has_prior_branch_cut=has_prior_branch_cut_for_state(
-                            dag,
-                            source_block=source_block,
-                            state_value=state_value,
-                            bst_node_blocks=bst_node_blocks,
-                            dispatcher=dispatcher,
-                        ),
-                        target_reaches_source=target_reaches_source_ignoring_blocks(
-                            projected_flow_graph,
-                            target_entry=target_entry,
-                            source_block=source_block,
-                            ignored_blocks=residual_ignored_blocks,
-                        ),
-                        already_emitted=(source_block, target_entry) in emitted,
-                        live_oneway_noop=is_live_oneway_noop(
-                            source_succs=tuple(builder.block_succ_map.get(source_block, ())),
-                            target_entry=target_entry,
-                        ),
-                    )
-                )
-
-                for edge, via_pred, prefix_target in iter_residual_prefix_handoffs(
-                    dag,
-                    source_block=source_block,
-                    bst_node_blocks=bst_node_blocks,
-                    dispatcher=dispatcher,
-                ):
-                    pred_block = projected_flow_graph.get_block(via_pred)
-                    if pred_block is None:
-                        continue
-                    pred_succs = tuple(getattr(pred_block, "succs", ()))
-                    prefix_key = (via_pred, source_block, prefix_target)
-                    source_anchor = edge.source_anchor
-                    branch_source = source_anchor.block_serial
-                    branch_block = projected_flow_graph.get_block(branch_source)
-                    branch_succs = (
-                        tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-                        if branch_block is not None
-                        else ()
-                    )
-                    old_target = resolve_redirect_old_target(
-                        branch_source,
-                        source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
-                        ordered_path=tuple(int(node) for node in edge.ordered_path),
-                        target_entry_anchor=(
-                            int(edge.target_entry_anchor)
-                            if edge.target_entry_anchor is not None
-                            else None
-                        ),
-                        source_branch_arm=(
-                            int(edge.source_anchor.branch_arm)
-                            if edge.source_anchor.branch_arm is not None
-                            else None
-                        ),
-                        source_is_conditional_branch=(
-                            edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                        ),
-                        bst_node_blocks=bst_node_blocks,
-                        dispatcher_region=ignored_blocks,
-                    )
-                    prefix_after_attempts.append(
-                        build_residual_prefix_attempt(
-                            ResidualPrefixAttemptBuildContext(
-                                via_pred=int(via_pred),
-                                prefix_target=int(prefix_target),
-                                claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-                                owned_transition=(
-                                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                                    if edge.source_key.state_const is not None and edge.target_state is not None
-                                    else None
-                                ),
-                                edge_kind_name=edge.kind.name.lower(),
-                                is_conditional_branch_source=(
-                                    source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-                                ),
-                                branch_source=(branch_source if branch_block is not None else None),
-                                source_block=source_block,
-                                branch_succs=branch_succs,
-                                old_target=old_target,
-                                ordered_path=tuple(int(node) for node in edge.ordered_path),
-                                dispatcher_serial=dispatcher_serial,
-                                bst_node_blocks=frozenset(bst_node_blocks),
-                                target_reaches_branch=target_reaches_source_ignoring_blocks(
-                                    projected_flow_graph,
-                                    target_entry=prefix_target,
-                                    source_block=branch_source,
-                                    ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
-                                ) if branch_block is not None else False,
-                                via_pred_succs=tuple(int(succ) for succ in pred_succs),
-                                target_reaches_pred=target_reaches_source_ignoring_blocks(
-                                    projected_flow_graph,
-                                    target_entry=prefix_target,
-                                    source_block=via_pred,
-                                    ignored_blocks=residual_ignored_blocks | {source_block},
-                                ),
-                                already_emitted=prefix_key in prefix_emitted,
-                                existing_target=claimed_1way.get(via_pred),
-                                via_pred_succ_count=len(pred_succs),
-                            )
-                        )
-                    )
-
-            source_plan = plan_residual_dispatcher_source(
-                ResidualDispatcherSourceContext(
-                    source_block=int(source_block),
-                    dispatcher_serial=int(dispatcher_serial),
-                    prefix_before_attempts=tuple(prefix_before_attempts),
-                    pred_split_attempts=tuple(pred_split_attempts),
-                    goto_attempt=goto_attempt,
-                    prefix_after_attempts=tuple(prefix_after_attempts),
-                )
-            )
+        for outcome in result.outcomes:
+            source_block = int(outcome.source_block)
+            source_plan = outcome.source_plan
             if not source_plan.accepted:
                 if source_plan.rejection_reason == "shared_suffix_conditional_tail":
                     logger.info(
@@ -1509,20 +1194,6 @@ class LinearizedFlowGraphStrategy:
                     )
                 continue
 
-            apply_residual_dispatcher_source_plan(
-                source_plan,
-                modifications=modifications,
-                claimed_1way=claimed_1way,
-                claimed_2way=claimed_2way,
-                emitted=emitted,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                owned_transitions=owned_transitions,
-                pred_split_emitted=pred_split_emitted,
-                prefix_emitted=prefix_emitted,
-                redirected_blocks=redirected_blocks,
-            )
-
             if source_plan.kind == ResidualDispatcherSourcePlanKind.PRED_SPLIT:
                 for selection in source_plan.pred_splits:
                     logger.info(
@@ -1548,9 +1219,7 @@ class LinearizedFlowGraphStrategy:
                     source_plan.edge_kind_name,
                 )
 
-            redirected += int(source_plan.redirected_count)
-
-        return redirected
+        return int(result.redirected_count)
 
     @classmethod
     def _normalize_projected_alias_handoffs(
