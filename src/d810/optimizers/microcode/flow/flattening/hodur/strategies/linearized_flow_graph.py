@@ -31,16 +31,19 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.lowering_selector import (
-    PredecessorPeelContext,
-    ResidualBranchAnchorContext,
-    ResidualGotoHandoffContext,
-    ResidualPredSplitContext,
-    ResidualPrefixPeelContext,
     is_backward_same_corridor_target,
     is_live_oneway_noop,
     is_valid_pred_split_pair,
     resolve_redirect_old_target,
     target_reaches_source_ignoring_blocks,
+)
+from d810.cfg.residual_dispatcher_attempt_building import (
+    ResidualGotoAttemptBuildContext,
+    ResidualPredSplitAttemptBuildContext,
+    ResidualPrefixAttemptBuildContext,
+    build_residual_goto_attempt,
+    build_residual_pred_split_attempt,
+    build_residual_prefix_attempt,
 )
 from d810.cfg.residual_dispatcher_source_planning import (
     ResidualDispatcherSourceContext,
@@ -1205,24 +1208,22 @@ class LinearizedFlowGraphStrategy:
                     dispatcher_region=ignored_blocks,
                 )
                 prefix_before_attempts.append(
-                    ResidualPrefixAttempt(
-                        via_pred=int(via_pred),
-                        prefix_target=int(prefix_target),
-                        claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-                        owned_transition=(
-                            (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                            if edge.source_key.state_const is not None and edge.target_state is not None
-                            else None
-                        ),
-                        edge_kind_name=edge.kind.name.lower(),
-                        branch_context=ResidualBranchAnchorContext(
+                    build_residual_prefix_attempt(
+                        ResidualPrefixAttemptBuildContext(
+                            via_pred=int(via_pred),
+                            prefix_target=int(prefix_target),
+                            claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+                            owned_transition=(
+                                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                                if edge.source_key.state_const is not None and edge.target_state is not None
+                                else None
+                            ),
+                            edge_kind_name=edge.kind.name.lower(),
                             is_conditional_branch_source=(
                                 source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
                             ),
                             branch_source=branch_source,
                             source_block=source_block,
-                            via_pred=via_pred,
-                            prefix_target=prefix_target,
                             branch_succs=branch_succs,
                             old_target=old_target,
                             ordered_path=tuple(int(node) for node in edge.ordered_path),
@@ -1234,7 +1235,7 @@ class LinearizedFlowGraphStrategy:
                                 source_block=branch_source,
                                 ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
                             ),
-                        ),
+                        )
                     )
                 )
 
@@ -1313,15 +1314,13 @@ class LinearizedFlowGraphStrategy:
                     state_value, target_entry = pred_handoff
                     emit_key = (source_block, via_pred, target_entry)
                     pred_split_attempts.append(
-                        ResidualPredSplitAttempt(
-                            via_pred=int(via_pred),
-                            target_entry=int(target_entry),
-                            state_value=int(state_value),
-                            context=ResidualPredSplitContext(
-                                source_block=source_block,
-                                via_pred=via_pred,
-                                target_entry=target_entry,
-                                dispatcher_serial=dispatcher_serial,
+                        build_residual_pred_split_attempt(
+                            ResidualPredSplitAttemptBuildContext(
+                                via_pred=int(via_pred),
+                                target_entry=int(target_entry),
+                                state_value=int(state_value),
+                                source_block=int(source_block),
+                                dispatcher_serial=int(dispatcher_serial),
                                 bst_node_blocks=frozenset(bst_node_blocks),
                                 valid_pair=is_valid_pred_split_pair(
                                     source_block,
@@ -1337,7 +1336,7 @@ class LinearizedFlowGraphStrategy:
                                     ignored_blocks=residual_ignored_blocks,
                                 ),
                                 already_emitted=emit_key in pred_split_emitted,
-                            ),
+                            )
                         )
                     )
             else:
@@ -1350,13 +1349,12 @@ class LinearizedFlowGraphStrategy:
                     bst_node_blocks=bst_node_blocks,
                     flow_graph=projected_flow_graph,
                 )
-                goto_attempt = ResidualGotoAttempt(
-                    target_entry=int(target_entry),
-                    state_value=int(state_value),
-                    context=ResidualGotoHandoffContext(
-                        source_block=source_block,
-                        target_entry=target_entry,
-                        dispatcher_serial=dispatcher_serial,
+                goto_attempt = build_residual_goto_attempt(
+                    ResidualGotoAttemptBuildContext(
+                        target_entry=int(target_entry),
+                        state_value=int(state_value),
+                        source_block=int(source_block),
+                        dispatcher_serial=int(dispatcher_serial),
                         bst_node_blocks=frozenset(bst_node_blocks),
                         allow_family_fallback_tail=allow_family_fallback_tail,
                         is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail(
@@ -1381,7 +1379,7 @@ class LinearizedFlowGraphStrategy:
                             source_succs=tuple(builder.block_succ_map.get(source_block, ())),
                             target_entry=target_entry,
                         ),
-                    ),
+                    )
                 )
 
                 for edge, via_pred, prefix_target in iter_residual_prefix_handoffs(
@@ -1394,20 +1392,6 @@ class LinearizedFlowGraphStrategy:
                     if pred_block is None:
                         continue
                     pred_succs = tuple(getattr(pred_block, "succs", ()))
-                    peel_context = PredecessorPeelContext(
-                        via_pred=via_pred,
-                        via_pred_succs=tuple(int(succ) for succ in pred_succs),
-                        source_block=source_block,
-                        target_entry=prefix_target,
-                        dispatcher_serial=dispatcher_serial,
-                        bst_node_blocks=frozenset(bst_node_blocks),
-                        target_reaches_pred=target_reaches_source_ignoring_blocks(
-                            projected_flow_graph,
-                            target_entry=prefix_target,
-                            source_block=via_pred,
-                            ignored_blocks=residual_ignored_blocks | {source_block},
-                        ),
-                    )
                     prefix_key = (via_pred, source_block, prefix_target)
                     source_anchor = edge.source_anchor
                     branch_source = source_anchor.block_serial
@@ -1438,24 +1422,22 @@ class LinearizedFlowGraphStrategy:
                         dispatcher_region=ignored_blocks,
                     )
                     prefix_after_attempts.append(
-                        ResidualPrefixAttempt(
-                            via_pred=int(via_pred),
-                            prefix_target=int(prefix_target),
-                            claimed_branch_target=claimed_2way.get((branch_source, old_target)),
-                            owned_transition=(
-                                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                                if edge.source_key.state_const is not None and edge.target_state is not None
-                                else None
-                            ),
-                            edge_kind_name=edge.kind.name.lower(),
-                            branch_context=ResidualBranchAnchorContext(
+                        build_residual_prefix_attempt(
+                            ResidualPrefixAttemptBuildContext(
+                                via_pred=int(via_pred),
+                                prefix_target=int(prefix_target),
+                                claimed_branch_target=claimed_2way.get((branch_source, old_target)),
+                                owned_transition=(
+                                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+                                    if edge.source_key.state_const is not None and edge.target_state is not None
+                                    else None
+                                ),
+                                edge_kind_name=edge.kind.name.lower(),
                                 is_conditional_branch_source=(
                                     source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
                                 ),
-                                branch_source=branch_source,
+                                branch_source=(branch_source if branch_block is not None else None),
                                 source_block=source_block,
-                                via_pred=via_pred,
-                                prefix_target=prefix_target,
                                 branch_succs=branch_succs,
                                 old_target=old_target,
                                 ordered_path=tuple(int(node) for node in edge.ordered_path),
@@ -1466,15 +1448,18 @@ class LinearizedFlowGraphStrategy:
                                     target_entry=prefix_target,
                                     source_block=branch_source,
                                     ignored_blocks=(residual_ignored_blocks | {source_block, via_pred}),
+                                ) if branch_block is not None else False,
+                                via_pred_succs=tuple(int(succ) for succ in pred_succs),
+                                target_reaches_pred=target_reaches_source_ignoring_blocks(
+                                    projected_flow_graph,
+                                    target_entry=prefix_target,
+                                    source_block=via_pred,
+                                    ignored_blocks=residual_ignored_blocks | {source_block},
                                 ),
-                            ) if branch_block is not None else None,
-                            peel_context=ResidualPrefixPeelContext(
-                                peel_context=peel_context,
                                 already_emitted=prefix_key in prefix_emitted,
                                 existing_target=claimed_1way.get(via_pred),
-                                prefix_target=prefix_target,
                                 via_pred_succ_count=len(pred_succs),
-                            ),
+                            )
                         )
                     )
 
