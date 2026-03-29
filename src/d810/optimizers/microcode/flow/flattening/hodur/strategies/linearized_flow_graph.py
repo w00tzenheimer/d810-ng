@@ -2104,6 +2104,7 @@ class LinearizedFlowGraphStrategy:
             target_entry=int(target_entry),
             nsucc=int(nsucc),
             old_target=(int(old_target) if old_target is not None else None),
+            source_succs=tuple(int(succ) for succ in builder.block_succ_map.get(source_block, ())),
             edge_is_transition=(edge.kind == SemanticEdgeKind.TRANSITION),
             live_oneway_noop=is_live_oneway_noop(
                 source_succs=tuple(builder.block_succ_map.get(source_block, ())),

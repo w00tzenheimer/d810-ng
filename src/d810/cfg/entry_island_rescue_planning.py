@@ -7,6 +7,7 @@ from d810.cfg.entry_island_rescue import (
     build_entry_island_rescue_modification,
     build_entry_island_rescue_options,
 )
+from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flow.edit_simulator import project_post_state
 
@@ -190,11 +191,7 @@ def plan_entry_island_rescues(
             for seed in raw_seeds
             if getattr(seed, "source_block", None) is not None
         )
-        claimed_sources = {
-            int(getattr(mod, "from_serial"))
-            for mod in modifications
-            if getattr(mod, "from_serial", None) is not None
-        }
+        claimed_sources, _claimed_targets = collect_mod_claims(modifications)
         selection = select_entry_island_rescue(
             seeds=planning_seeds,
             current_projected_flow_graph=current_projected_flow_graph,
