@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from d810.cfg.dag_redirect_modification_planning import (
     DagRedirectFallbackContext,
+    apply_dag_redirect_emission_plan,
     plan_dag_redirect_fallback,
     plan_dag_redirect_fallback_emission,
 )
@@ -44,6 +45,8 @@ class TestPlanDagRedirectFallbackEmission:
             old_target=14,
             new_target=18,
         )
+        assert plan.source_block == 12
+        assert plan.target_entry == 18
         assert plan.claim_2way_key == (12, 14)
         assert plan.claim_2way_target == 18
 
@@ -83,6 +86,8 @@ class TestPlanDagRedirectFallbackEmission:
             old_target=6,
             new_target=18,
         )
+        assert plan.source_block == 12
+        assert plan.target_entry == 18
         assert plan.claim_1way_target == 18
 
     def test_inferrs_oneway_old_target_from_live_successor(self):
@@ -217,3 +222,46 @@ class TestPlanDagRedirectFallback:
             old_target=6,
             new_target=18,
         )
+
+
+class TestApplyDagRedirectEmissionPlan:
+    def test_applies_branch_claims_and_ownership(self):
+        plan = plan_dag_redirect_fallback_emission(
+            source_block=12,
+            target_entry=18,
+            nsucc=2,
+            old_target=14,
+            source_succs=(14, 20),
+            edge_is_transition=False,
+            live_oneway_noop=False,
+            claimed_1way_target=None,
+            claimed_2way_target=None,
+        )
+
+        modifications = []
+        claimed_1way: dict[int, int] = {}
+        claimed_2way: dict[tuple[int, int], int] = {}
+        emitted: set[tuple[int, int]] = set()
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        owned_transitions: set[tuple[int, int]] = set()
+
+        apply_dag_redirect_emission_plan(
+            plan,
+            modifications=modifications,
+            claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            owned_transition=(0x11, 0x22),
+        )
+
+        assert modifications == [plan.modification]
+        assert claimed_1way == {}
+        assert claimed_2way == {(12, 14): 18}
+        assert emitted == {(12, 18)}
+        assert owned_blocks == {12}
+        assert owned_edges == {(12, 18)}
+        assert owned_transitions == {(0x11, 0x22)}

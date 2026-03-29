@@ -15,6 +15,7 @@ import ida_hexrays
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.dag_redirect_modification_planning import (
     DagRedirectFallbackContext,
+    apply_dag_redirect_emission_plan,
     plan_dag_redirect_fallback,
 )
 from d810.cfg.dispatcher_backedge_disconnect_planning import (
@@ -2103,19 +2104,21 @@ class LinearizedFlowGraphStrategy:
             return False
 
         emission_plan = decision.emission_plan
-        modifications.append(emission_plan.modification)
-        if emission_plan.claim_2way_key is not None and emission_plan.claim_2way_target is not None:
-            claimed_2way[emission_plan.claim_2way_key] = emission_plan.claim_2way_target
-        if emission_plan.claim_1way_target is not None:
-            claimed_1way[source_block] = emission_plan.claim_1way_target
-
-        emitted.add(emit_key)
-        owned_blocks.add(source_block)
-        owned_edges.add((source_block, target_entry))
-        if edge.source_key.state_const is not None and edge.target_state is not None:
-            owned_transitions.add(
+        apply_dag_redirect_emission_plan(
+            emission_plan,
+            modifications=modifications,
+            claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            owned_transition=(
                 (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-            )
+                if edge.source_key.state_const is not None and edge.target_state is not None
+                else None
+            ),
+        )
         logger.info(
             "LFG DAG: resolved %s -> %s via %s (%s)",
             blk_label(mba, source_block),
