@@ -228,7 +228,43 @@ def plan_residual_prefix_peel_emission(
     )
 
 
+def apply_residual_branch_anchor_emission_plan(
+    plan: ResidualBranchAnchorEmissionPlan,
+    *,
+    modifications: list[GraphModification],
+    claimed_2way: dict[tuple[int, int], int],
+    emitted: set[tuple[int, int]],
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    owned_transitions: set[tuple[int, int]],
+) -> None:
+    if plan.modification is None:
+        raise ValueError("residual branch-anchor emission plan has no modification")
+    if (
+        plan.branch_source is None
+        or plan.prefix_target is None
+        or plan.old_target is None
+    ):
+        raise ValueError(
+            "residual branch-anchor emission plan is missing source, old target, or prefix target"
+        )
+
+    branch_source = int(plan.branch_source)
+    prefix_target = int(plan.prefix_target)
+    old_target = int(plan.old_target)
+    modifications.append(plan.modification)
+    claimed_2way[(branch_source, old_target)] = prefix_target
+    emitted.add((branch_source, prefix_target))
+    owned_blocks.add(branch_source)
+    owned_edges.add((branch_source, prefix_target))
+    if plan.owned_transition is not None:
+        owned_transitions.add(
+            (int(plan.owned_transition[0]), int(plan.owned_transition[1]))
+        )
+
+
 __all__ = [
+    "apply_residual_branch_anchor_emission_plan",
     "ProjectedAliasNormalizationPlan",
     "plan_residual_goto_emission",
     "plan_residual_pred_split_emissions",

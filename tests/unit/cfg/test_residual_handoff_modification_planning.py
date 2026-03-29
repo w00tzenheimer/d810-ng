@@ -6,6 +6,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.residual_handoff_modification_planning import (
+    apply_residual_branch_anchor_emission_plan,
     plan_residual_goto_emission,
     plan_residual_pred_split_emissions,
     plan_residual_prefix_peel_emission,
@@ -61,6 +62,50 @@ class TestPlanResidualBranchAnchorEmission:
 
         assert not plan.accepted
         assert plan.modification is None
+
+
+class TestApplyResidualBranchAnchorEmissionPlan:
+    def test_updates_claims_and_ownership(self):
+        plan = plan_residual_branch_anchor_emission(
+            is_conditional_branch_source=True,
+            branch_source=12,
+            source_block=14,
+            via_pred=10,
+            prefix_target=18,
+            branch_succs=(14, 20),
+            old_target=14,
+            ordered_path=(12, 14),
+            dispatcher_serial=6,
+            bst_node_blocks=frozenset({6}),
+            target_reaches_branch=False,
+            claimed_branch_target=None,
+            owned_transition=(0x11111111, 0x22222222),
+            edge_kind_name="transition",
+        )
+
+        modifications = []
+        claimed_2way: dict[tuple[int, int], int] = {}
+        emitted: set[tuple[int, int]] = set()
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        owned_transitions: set[tuple[int, int]] = set()
+
+        apply_residual_branch_anchor_emission_plan(
+            plan,
+            modifications=modifications,
+            claimed_2way=claimed_2way,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+        )
+
+        assert modifications == [plan.modification]
+        assert claimed_2way == {(12, 14): 18}
+        assert emitted == {(12, 18)}
+        assert owned_blocks == {12}
+        assert owned_edges == {(12, 18)}
+        assert owned_transitions == {(0x11111111, 0x22222222)}
 
 
 class TestPlanProjectedAliasHandoffNormalization:
