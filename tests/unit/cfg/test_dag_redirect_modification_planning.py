@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from d810.cfg.dag_redirect_modification_planning import (
+    DagRedirectFallbackContext,
+    plan_dag_redirect_fallback,
     plan_dag_redirect_fallback_emission,
 )
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
@@ -118,3 +120,100 @@ class TestPlanDagRedirectFallbackEmission:
 
         assert not plan.accepted
         assert plan.rejection_reason == "unknown_old_target"
+
+
+class TestPlanDagRedirectFallback:
+    def test_rejects_backwards_corridor_before_emission(self):
+        decision = plan_dag_redirect_fallback(
+            DagRedirectFallbackContext(
+                source_block=12,
+                target_entry=18,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_equals_target=False,
+                backward_same_corridor=True,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                source_in_report_exit_owned=False,
+                source_in_terminal_source_owned_transition=False,
+                ordered_path_ends_at_source=True,
+                emitted_already=False,
+                nsucc=1,
+                old_target=6,
+                source_succs=(6,),
+                edge_is_transition=False,
+                live_oneway_noop=False,
+                claimed_1way_target=None,
+                claimed_2way_target=None,
+            )
+        )
+
+        assert not decision.accepted
+        assert decision.rejection_reason == "backward_same_corridor"
+
+    def test_rejects_target_backreach_without_semantic_handoff(self):
+        decision = plan_dag_redirect_fallback(
+            DagRedirectFallbackContext(
+                source_block=12,
+                target_entry=18,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_equals_target=False,
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=True,
+                source_blocked=False,
+                source_terminal_protected=False,
+                source_in_report_exit_owned=False,
+                source_in_terminal_source_owned_transition=False,
+                ordered_path_ends_at_source=True,
+                emitted_already=False,
+                nsucc=1,
+                old_target=6,
+                source_succs=(6,),
+                edge_is_transition=False,
+                live_oneway_noop=False,
+                claimed_1way_target=None,
+                claimed_2way_target=None,
+            )
+        )
+
+        assert not decision.accepted
+        assert decision.rejection_reason == "target_reaches_source"
+
+    def test_accepts_and_wraps_emission_plan(self):
+        decision = plan_dag_redirect_fallback(
+            DagRedirectFallbackContext(
+                source_block=12,
+                target_entry=18,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_equals_target=False,
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                source_in_report_exit_owned=False,
+                source_in_terminal_source_owned_transition=False,
+                ordered_path_ends_at_source=True,
+                emitted_already=False,
+                nsucc=1,
+                old_target=6,
+                source_succs=(6,),
+                edge_is_transition=False,
+                live_oneway_noop=False,
+                claimed_1way_target=None,
+                claimed_2way_target=None,
+            )
+        )
+
+        assert decision.accepted
+        assert decision.emission_plan is not None
+        assert decision.emission_plan.modification == RedirectGoto(
+            from_serial=12,
+            old_target=6,
+            new_target=18,
+        )

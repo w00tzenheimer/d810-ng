@@ -6,6 +6,31 @@ from d810.cfg.graph_modification import GraphModification, RedirectBranch, Redir
 
 
 @dataclass(frozen=True, slots=True)
+class DagRedirectFallbackContext:
+    source_block: int
+    target_entry: int
+    source_handler_is_report_exit: bool
+    ordered_path_head_is_report_exit: bool
+    source_equals_target: bool
+    backward_same_corridor: bool
+    allow_semantic_handoff: bool
+    target_reaches_source: bool
+    source_blocked: bool
+    source_terminal_protected: bool
+    source_in_report_exit_owned: bool
+    source_in_terminal_source_owned_transition: bool
+    ordered_path_ends_at_source: bool
+    emitted_already: bool
+    nsucc: int
+    old_target: int | None
+    source_succs: tuple[int, ...]
+    edge_is_transition: bool
+    live_oneway_noop: bool
+    claimed_1way_target: int | None
+    claimed_2way_target: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class DagRedirectEmissionPlan:
     accepted: bool
     modification: GraphModification | None = None
@@ -14,6 +39,106 @@ class DagRedirectEmissionPlan:
     claim_2way_target: int | None = None
     rejection_reason: str = ""
     existing_target: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DagRedirectDecision:
+    accepted: bool
+    emission_plan: DagRedirectEmissionPlan | None = None
+    rejection_reason: str = ""
+
+
+def plan_dag_redirect_fallback(
+    context: DagRedirectFallbackContext,
+) -> DagRedirectDecision:
+    if context.source_handler_is_report_exit:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="report_exit_source_handler",
+        )
+    if context.ordered_path_head_is_report_exit:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="report_exit_path_head",
+        )
+    if context.source_equals_target:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="source_equals_target",
+        )
+    if context.backward_same_corridor:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="backward_same_corridor",
+        )
+    if context.target_reaches_source and not context.allow_semantic_handoff:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="target_reaches_source",
+        )
+    if context.source_blocked:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="blocked_source",
+        )
+    if context.source_terminal_protected:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="terminal_protected_source",
+        )
+    if context.source_in_report_exit_owned:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="report_exit_owned_source",
+        )
+    if context.source_in_terminal_source_owned_transition:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="terminal_source_owned_transition",
+        )
+    if not context.ordered_path_ends_at_source:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="ordered_path_source_mismatch",
+        )
+    if context.emitted_already:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason="already_emitted",
+        )
+    emission_plan = plan_dag_redirect_fallback_emission(
+        source_block=int(context.source_block),
+        target_entry=int(context.target_entry),
+        nsucc=int(context.nsucc),
+        old_target=(
+            int(context.old_target)
+            if context.old_target is not None
+            else None
+        ),
+        source_succs=tuple(int(succ) for succ in context.source_succs),
+        edge_is_transition=bool(context.edge_is_transition),
+        live_oneway_noop=bool(context.live_oneway_noop),
+        claimed_1way_target=(
+            int(context.claimed_1way_target)
+            if context.claimed_1way_target is not None
+            else None
+        ),
+        claimed_2way_target=(
+            int(context.claimed_2way_target)
+            if context.claimed_2way_target is not None
+            else None
+        ),
+    )
+    if not emission_plan.accepted or emission_plan.modification is None:
+        return DagRedirectDecision(
+            accepted=False,
+            rejection_reason=emission_plan.rejection_reason,
+            emission_plan=emission_plan,
+        )
+    return DagRedirectDecision(
+        accepted=True,
+        emission_plan=emission_plan,
+    )
 
 
 def plan_dag_redirect_fallback_emission(
@@ -100,6 +225,9 @@ def plan_dag_redirect_fallback_emission(
 
 
 __all__ = [
+    "DagRedirectDecision",
+    "DagRedirectFallbackContext",
     "DagRedirectEmissionPlan",
+    "plan_dag_redirect_fallback",
     "plan_dag_redirect_fallback_emission",
 ]
