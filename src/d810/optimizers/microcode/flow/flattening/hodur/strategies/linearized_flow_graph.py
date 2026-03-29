@@ -125,6 +125,9 @@ from d810.recon.flow.shared_suffix_discovery import (
     is_shared_suffix_conditional_tail,
     pred_split_target_reaches_via_pred,
 )
+from d810.recon.flow.resolved_graph_reporting import (
+    build_resolved_state_machine_dot_report,
+)
 from d810.recon.flow.exit_transition_discovery import (
     resolve_state_var_stkoff as discover_state_var_stkoff,
 )
@@ -2166,171 +2169,26 @@ class LinearizedFlowGraphStrategy:
         if not logger.info_on:
             return
 
-        # Build reverse map: state_value -> handler serial (entry block)
-        state_to_serial: dict[int, int] = {}
-        for serial, state_val in handler_state_map.items():
-            state_to_serial[state_val] = serial
-
-        # Classify each handler and collect edges
-        #
-        # Categories:
-        #   resolved   - has at least one successfully redirected transition
-        #   exit       - terminal handler (no outgoing transitions)
-        #   unresolved - has transitions but none were resolved
-        #   conditional - has 2+ distinct to_states (branching handler)
-
-        # Group transitions by from_state
-        transitions_by_from: dict[int, list] = {}
-        for t in sm.transitions:
-            if t.from_state is not None:
-                transitions_by_from.setdefault(t.from_state, []).append(t)
-
-        # Track per-handler resolution status
-        node_states: set[int] = set()  # all handler state values
-        resolved_edges: list[tuple[int, int, bool]] = []  # (from_state, to_state, is_conditional)
-        exit_states: set[int] = set()
-        unresolved_states: set[int] = set()
-
-        # Collect the range_map for fallback resolution (same logic as plan())
-        range_map: dict[int, tuple[int | None, int | None]] = getattr(
-            bst_result, "handler_range_map", {}
-        ) or {}
-
-        for state_val, handler in sm.handlers.items():
-            node_states.add(state_val)
-            handler_transitions = transitions_by_from.get(state_val, [])
-
-            if not handler_transitions:
-                exit_states.add(state_val)
-                continue
-
-            has_resolved = False
-            for t in handler_transitions:
-                # Resolve to_state the same way plan() does
-                target_entry = resolve_target_via_bst(bst_result, t.to_state)
-                if target_entry is None:
-                    for serial, (low, high) in range_map.items():
-                        lo = low if low is not None else 0
-                        hi = high if high is not None else 0xFFFFFFFF
-                        if lo <= t.to_state <= hi:
-                            target_entry = serial
-                            break
-
-                if target_entry is not None:
-                    # Map target serial back to state value
-                    target_state = handler_state_map.get(target_entry)
-                    if target_state is not None:
-                        resolved_edges.append(
-                            (state_val, target_state, t.is_conditional)
-                        )
-                        has_resolved = True
-                    else:
-                        # Target is a known block but not in handler_state_map
-                        # (could be a non-handler block). Still mark as resolved.
-                        has_resolved = True
-
-            if not has_resolved:
-                unresolved_states.add(state_val)
-
-        # Deduplicate edges (same from/to pair may appear from multiple transitions)
-        seen_edges: set[tuple[int, int, bool]] = set()
-        unique_edges: list[tuple[int, int, bool]] = []
-        for edge in resolved_edges:
-            if edge not in seen_edges:
-                seen_edges.add(edge)
-                unique_edges.append(edge)
-
-        # Count conditional nodes (handlers with 2+ distinct targets)
-        targets_per_handler: dict[int, set[int]] = {}
-        for from_s, to_s, _ in unique_edges:
-            targets_per_handler.setdefault(from_s, set()).add(to_s)
-        conditional_states: set[int] = {
-            s for s, targets in targets_per_handler.items() if len(targets) >= 2
-        }
-
-        # Build DOT lines
-        dot: list[str] = []
-        dot.append("digraph resolved_state_machine {")
-        dot.append("    rankdir=LR;")
-        dot.append("    node [shape=record];")
-
-        # START node
-        initial_state = sm.initial_state
-        if initial_state is not None:
-            dot.append("")
-            dot.append("    START [shape=point];")
-            dot.append('    START -> "0x%08X";' % initial_state)
-
-        # Node declarations
-        dot.append("")
-        for state_val in sorted(node_states):
-            serial = state_to_serial.get(state_val, -1)
-            label_parts = ["0x%08X" % state_val, "blk[%d]" % serial]
-
-            if state_val in exit_states:
-                label_parts.append("EXIT")
-                dot.append(
-                    '    "0x%08X" [label="%s" style=filled fillcolor=lightgreen];'
-                    % (state_val, "\\n".join(label_parts))
-                )
-            elif state_val in unresolved_states:
-                label_parts.append("UNRESOLVED")
-                dot.append(
-                    '    "0x%08X" [label="%s" style=filled fillcolor=orange];'
-                    % (state_val, "\\n".join(label_parts))
-                )
-            elif state_val in conditional_states:
-                label_parts.append("BRANCH")
-                dot.append(
-                    '    "0x%08X" [label="%s" style=filled fillcolor=lightskyblue];'
-                    % (state_val, "\\n".join(label_parts))
-                )
-            else:
-                dot.append(
-                    '    "0x%08X" [label="%s"];'
-                    % (state_val, "\\n".join(label_parts))
-                )
-
-        # Edges
-        dot.append("")
-        for from_s, to_s, is_cond in unique_edges:
-            if is_cond:
-                dot.append(
-                    '    "0x%08X" -> "0x%08X" [color=blue];'
-                    % (from_s, to_s)
-                )
-            else:
-                dot.append(
-                    '    "0x%08X" -> "0x%08X";' % (from_s, to_s)
-                )
-
-        # Self-loop for unresolved states
-        for state_val in sorted(unresolved_states):
-            dot.append(
-                '    "0x%08X" -> "0x%08X" [style=dashed color=red];'
-                % (state_val, state_val)
-            )
-
-        dot.append("}")
-
-        # Summary counts
-        n_resolved = len(node_states) - len(exit_states) - len(unresolved_states)
-        n_edges = len(unique_edges)
+        report = build_resolved_state_machine_dot_report(
+            sm,
+            bst_result,
+            handler_state_map,
+        )
 
         logger.info(
             "LFG resolved graph: %d nodes, %d edges, %d resolved, "
             "%d unresolved, %d exits, %d conditional",
-            len(node_states),
-            n_edges,
-            n_resolved,
-            len(unresolved_states),
-            len(exit_states),
-            len(conditional_states),
+            report.node_count,
+            report.edge_count,
+            report.resolved_count,
+            report.unresolved_count,
+            report.exit_count,
+            report.conditional_count,
         )
 
         # Emit DOT graph
         logger.info("LFG_RESOLVED_GRAPH_DOT_START")
-        for line in dot:
+        for line in report.dot_lines:
             logger.info(line)
         logger.info("LFG_RESOLVED_GRAPH_DOT_END")
 
