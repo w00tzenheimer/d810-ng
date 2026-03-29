@@ -79,6 +79,66 @@ class ResidualDispatcherHandoffExecutionResult:
     outcomes: tuple[ResidualDispatcherSourceOutcome, ...]
 
 
+def build_residual_dispatcher_handoff_execution_context(
+    *,
+    dag: object,
+    state_machine: object | None,
+    projected_flow_graph: object,
+    dispatcher_serial: int,
+    bst_node_blocks: set[int],
+    block_succ_map: Mapping[int, tuple[int, ...]],
+    state_var_stkoff: int | None,
+    dispatcher_lookup: object | None,
+    dispatcher: object | None,
+    mba: object | None,
+    collect_residual_dispatcher_predecessors: Callable[..., tuple[int, ...]],
+    build_projected_mba: Callable[[object], object | None],
+    collect_residual_source_handoff_facts: Callable[..., object],
+    iter_residual_prefix_handoffs: Callable[..., tuple],
+    can_rewrite_shared_suffix_family_fallback: Callable[..., bool],
+    has_prior_branch_cut_for_state: Callable[..., bool],
+    is_shared_suffix_conditional_tail: Callable[..., bool],
+    pred_split_target_reaches_via_pred: Callable[..., bool],
+    resolve_synthesized_handoff_target: Callable[..., tuple[int, int] | None],
+    resolve_projected_path_tail_target: Callable[..., tuple[int, int] | None],
+    resolve_immediate_handoff_target: Callable[..., tuple[int, int] | None],
+) -> ResidualDispatcherHandoffExecutionContext:
+    residual_preds = collect_residual_dispatcher_predecessors(
+        projected_flow_graph,
+        int(dispatcher_serial),
+        bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
+    )
+    residual_mba_view = build_projected_mba(projected_flow_graph)
+    analysis_mba = residual_mba_view if residual_mba_view is not None else mba
+    return ResidualDispatcherHandoffExecutionContext(
+        dag=dag,
+        state_machine=state_machine,
+        projected_flow_graph=projected_flow_graph,
+        dispatcher_serial=int(dispatcher_serial),
+        bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+        residual_preds=tuple(int(pred) for pred in residual_preds),
+        block_succ_map={
+            int(block): tuple(int(succ) for succ in succs)
+            for block, succs in block_succ_map.items()
+        },
+        state_var_stkoff=state_var_stkoff,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+        analysis_mba=analysis_mba,
+        live_mba=(mba if mba is not None else None),
+        collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
+        iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
+        can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,
+        has_prior_branch_cut_for_state=has_prior_branch_cut_for_state,
+        is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail,
+        pred_split_target_reaches_via_pred=pred_split_target_reaches_via_pred,
+        resolve_synthesized_handoff_target=resolve_synthesized_handoff_target,
+        resolve_projected_path_tail_target=resolve_projected_path_tail_target,
+        resolve_immediate_handoff_target=resolve_immediate_handoff_target,
+    )
+
+
 def execute_residual_dispatcher_handoffs(
     context: ResidualDispatcherHandoffExecutionContext,
     *,
@@ -471,6 +531,7 @@ def execute_residual_dispatcher_handoffs(
 
 
 __all__ = [
+    "build_residual_dispatcher_handoff_execution_context",
     "ResidualDispatcherHandoffExecutionContext",
     "ResidualDispatcherHandoffExecutionResult",
     "ResidualDispatcherHandoffMutableState",
