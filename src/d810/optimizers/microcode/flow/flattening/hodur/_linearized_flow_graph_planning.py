@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.linearized_flow_graph_fragment_planning import (
+    LinearizedFlowGraphPlanningCallbacks,
     LinearizedFlowGraphPlanningContext,
     LinearizedFlowGraphPlanningResult,
 )
@@ -139,6 +140,131 @@ def build_linearized_flow_graph_planning_context(
     )
 
 
+def build_linearized_flow_graph_planning_callbacks(
+    *,
+    snapshot: object,
+    state_machine: object,
+    bst_result: object,
+    mba: object | None,
+    setup: LinearizedFlowGraphPlanSetup,
+    build_round_summary: object,
+    build_projected_mba: object,
+    project_flow_graph: object,
+    resolve_redirect_safe_target_entry: object,
+    resolve_initial_entry: object,
+    emit_dag_redirect: object,
+    collect_residual_dispatcher_predecessors: object,
+    emit_residual_dispatcher_handoffs: object,
+    disconnect_bst_comparison_nodes: object,
+) -> LinearizedFlowGraphPlanningCallbacks:
+    return LinearizedFlowGraphPlanningCallbacks(
+        build_round_summary=lambda current_flow_graph, dag_round_mba: build_round_summary(
+            snapshot=snapshot,
+            state_machine=state_machine,
+            bst_result=bst_result,
+            transition_result=setup.transition_result,
+            current_flow_graph=current_flow_graph,
+            dag_round_mba=dag_round_mba,
+            dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+            state_var_stkoff=setup.state_var_stkoff,
+            pre_header_serial=setup.pre_header_serial,
+            bst_node_blocks=setup.bst_node_blocks,
+        ),
+        build_projected_mba=build_projected_mba,
+        project_flow_graph=project_flow_graph,
+        resolve_redirect_safe_target_entry=lambda dag, edge, bst_node_blocks: resolve_redirect_safe_target_entry(
+            dag,
+            edge,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        ),
+        resolve_initial_entry=lambda dag, initial_state, bst_node_blocks: resolve_initial_entry(
+            dag,
+            initial_state,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        ),
+        emit_dag_redirect=lambda *,
+            edge,
+            dag,
+            flow_graph,
+            state,
+            report_exit_handlers,
+            report_exit_owned_blocks,
+            terminal_source_keys,
+            terminal_source_handlers,
+            terminal_source_owned_blocks,
+            terminal_protected_blocks: emit_dag_redirect(
+                edge=edge,
+                dag=dag,
+                builder=setup.builder,
+                modifications=state.modifications,
+                owned_blocks=state.owned_blocks,
+                owned_edges=state.owned_edges,
+                owned_transitions=state.owned_transitions,
+                emitted=state.emitted,
+                claimed_1way=state.claimed_1way,
+                claimed_2way=state.claimed_2way,
+                claimed_exits=state.claimed_exits,
+                claimed_path_edges=state.claimed_path_edges,
+                blocked_sources=state.blocked_sources,
+                terminal_source_keys=set(terminal_source_keys),
+                terminal_source_handlers=set(terminal_source_handlers),
+                terminal_source_owned_blocks=set(terminal_source_owned_blocks),
+                terminal_protected_blocks=set(terminal_protected_blocks),
+                report_exit_handlers=set(report_exit_handlers),
+                report_exit_owned_blocks=set(report_exit_owned_blocks),
+                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                dispatcher_region=set(int(block) for block in setup.dispatcher_region),
+                flow_graph=flow_graph,
+                state_var_stkoff=setup.state_var_stkoff,
+                dispatcher_lookup=(
+                    setup.dispatcher.lookup if setup.dispatcher is not None else None
+                ),
+                dispatcher=setup.dispatcher,
+                mba=mba,
+            ),
+        collect_residual_dispatcher_predecessors=lambda current_flow_graph, dispatcher_serial, bst_node_blocks, reachable_from_serial: collect_residual_dispatcher_predecessors(
+            current_flow_graph,
+            dispatcher_serial,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            reachable_from_serial=reachable_from_serial,
+        ),
+        emit_residual_dispatcher_handoffs=lambda *,
+            dag,
+            projected_flow_graph,
+            state,
+            redirected_blocks: emit_residual_dispatcher_handoffs(
+                dag=dag,
+                state_machine=state_machine,
+                projected_flow_graph=projected_flow_graph,
+                dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                builder=setup.builder,
+                modifications=state.modifications,
+                owned_blocks=state.owned_blocks,
+                owned_edges=state.owned_edges,
+                owned_transitions=state.owned_transitions,
+                emitted=state.emitted,
+                claimed_1way=state.claimed_1way,
+                claimed_2way=state.claimed_2way,
+                state_var_stkoff=setup.state_var_stkoff,
+                dispatcher_lookup=(
+                    setup.dispatcher.lookup if setup.dispatcher is not None else None
+                ),
+                dispatcher=setup.dispatcher,
+                mba=mba,
+                redirected_blocks=redirected_blocks,
+            ),
+        disconnect_bst_comparison_nodes=lambda bst_node_blocks, dispatcher_serial, state: disconnect_bst_comparison_nodes(
+            set(int(block) for block in bst_node_blocks),
+            dispatcher_serial,
+            setup.builder,
+            state.modifications,
+            state.emitted,
+            mba=mba,
+        ),
+    )
+
+
 def log_linearized_flow_graph_plan_result(
     logger: object,
     *,
@@ -226,6 +352,7 @@ def build_linearized_flow_graph_plan_fragment(
 __all__ = [
     "LinearizedFlowGraphPlanSetup",
     "build_linearized_flow_graph_plan_fragment",
+    "build_linearized_flow_graph_planning_callbacks",
     "build_linearized_flow_graph_planning_context",
     "log_linearized_flow_graph_plan_result",
     "prepare_linearized_flow_graph_plan_setup",
