@@ -28,22 +28,20 @@ from d810.cfg.graph_modification import (
     PrivateTerminalSuffixGroup,
 )
 from d810.cfg.mod_claims import collect_mod_claims
-from d810.cfg.shared_corridor import (
-    resolve_old_target,
-)
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
     select_shared_feeder_lowering,
     target_reaches_source_ignoring_blocks,
 )
-from d810.cfg.reconstruction_planning import (
-    ReconstructionLoweringContext,
-    ReconstructionLoweringKind,
-    plan_reconstruction_lowering,
-)
 from d810.cfg.reconstruction_lowering import (
     SharedGroupEmissionCandidate,
+)
+from d810.cfg.reconstruction_modification_planning import (
+    plan_conditional_arm_reconstruction_modifications,
+    plan_direct_reconstruction_modifications,
+    plan_passthrough_reconstruction_modifications,
+    plan_shared_group_reconstruction_modifications,
 )
 from d810.cfg.terminal_family_split import (
     TerminalFamilySplitCandidate,
@@ -532,308 +530,6 @@ class StateWriteReconstructionStrategy:
             )
         )
 
-    @classmethod
-    def _emit_direct_candidate(
-        cls,
-        candidate: ReconstructionCandidate,
-        *,
-        flow_graph,
-        mba,
-        builder: ModificationBuilder,
-        modifications: list,
-        owned_blocks: set[int],
-        owned_edges: set[tuple[int, int]],
-        accepted_metadata: list[dict[str, int | str | None]],
-        rejected_metadata: list[dict[str, int | str | None]],
-    ) -> bool:
-        ordered_path = tuple(int(serial) for serial in candidate.edge.ordered_path)
-        old_target = resolve_old_target(
-            flow_graph,
-            candidate.horizon_block,
-            ordered_path,
-        )
-        lowering_decision = plan_reconstruction_lowering(
-            flow_graph=flow_graph,
-            context=ReconstructionLoweringContext(
-                kind=ReconstructionLoweringKind.DIRECT,
-                target_entry=int(candidate.target_entry),
-                old_target=(int(old_target) if old_target is not None else None),
-                horizon_block=int(candidate.horizon_block),
-            ),
-        )
-        if not lowering_decision.accepted:
-            rejected_metadata.append(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=candidate.first_shared_block,
-                    rejection_reason="noop_or_missing_old_target",
-                )
-            )
-            return False
-
-        state_write_ea = int(candidate.site.insn_ea)
-        # DISABLED: state-write NOPing is display-only — IDA DCE handles at later maturity
-        # modifications.append(
-        #     NopInstructions(
-        #         block_serial=int(candidate.horizon_block),
-        #         insn_eas=(state_write_ea,),
-        #     )
-        # )
-        modifications.append(
-            builder.goto_redirect(
-                source_block=int(lowering_decision.redirects[0].source_block),
-                target_block=int(lowering_decision.redirects[0].target_block),
-                old_target=int(lowering_decision.redirects[0].old_target),
-            )
-        )
-        owned_blocks.add(int(candidate.horizon_block))
-        owned_edges.add((int(candidate.horizon_block), int(candidate.target_entry)))
-        cls._record_accept(accepted_metadata, candidate)
-        logger.info(
-            "RECON DAG: direct %s state=0x%08X -> %s (nopped=%d)",
-            blk_label(mba, candidate.horizon_block),
-            candidate.site.state_value & 0xFFFFFFFF,
-            blk_label(mba, candidate.target_entry),
-            1,  # single state-write NOP
-        )
-        return True
-
-    @classmethod
-    def _emit_conditional_arm_candidate(
-        cls,
-        candidate: ReconstructionCandidate,
-        flow_graph,
-        builder: ModificationBuilder,
-        *,
-        node_by_key: dict[StateDagNodeKey, StateDagNode],
-        dispatcher_serial: int,
-    ) -> tuple[list, int]:
-        """Emit modifications for a conditional-arm candidate.
-
-        NOPs the state-write instruction and redirects the transition arm
-        to the resolved target handler entry. When the passthrough arm also
-        targets the dispatcher, redirects it to the current state's entry
-        anchor.
-        """
-        modifications: list = []
-        count = 0
-        edge = candidate.edge
-        branch_arm = edge.source_anchor.branch_arm
-        horizon_block = candidate.horizon_block
-
-        block = flow_graph.get_block(horizon_block)
-        if block is None:
-            return modifications, 0
-
-        # DISABLED: state-write NOPing is display-only — IDA DCE handles at later maturity
-        # state_write_ea = int(candidate.site.insn_ea)
-        # modifications.append(
-        #     NopInstructions(
-        #         block_serial=horizon_block,
-        #         insn_eas=(state_write_ea,),
-        #     )
-        # )
-
-        # Resolve current state entry for passthrough arm
-        current_entry: int | None = None
-        other_arm = 1 - branch_arm
-        if 0 <= other_arm < block.nsucc and int(block.succs[other_arm]) == dispatcher_serial:
-            source_node = node_by_key.get(edge.source_key)
-            if source_node is not None and edge.source_key.state_const is not None:
-                current_entry = source_node.entry_anchor
-
-        lowering_decision = plan_reconstruction_lowering(
-            flow_graph=flow_graph,
-            context=ReconstructionLoweringContext(
-                kind=ReconstructionLoweringKind.CONDITIONAL_ARM,
-                target_entry=int(candidate.target_entry),
-                horizon_block=int(horizon_block),
-                block_succs=tuple(int(succ) for succ in block.succs),
-                branch_arm=int(branch_arm),
-                dispatcher_serial=int(dispatcher_serial),
-                current_entry=(
-                    int(current_entry) if current_entry is not None else None
-                ),
-            ),
-        )
-        if not lowering_decision.accepted:
-            return modifications, 0
-        for redirect in lowering_decision.redirects:
-            modifications.append(
-                builder.edge_redirect(
-                    source_block=int(redirect.source_block),
-                    target_block=int(redirect.target_block),
-                    old_target=int(redirect.old_target),
-                )
-            )
-            count += 1
-
-        return modifications, count
-
-    @classmethod
-    def _resolve_passthrough_blocks(
-        cls,
-        candidate: ReconstructionCandidate,
-        flow_graph,
-        builder: ModificationBuilder,
-        *,
-        dispatcher_serial: int,
-        current_state_entry: int | None,
-    ) -> list:
-        """Redirect dispatcher-pointing arms of passthrough blocks on corridor path.
-
-        Intermediate blocks on the ordered_path (between the source anchor and the
-        horizon) may have edges that point back to the dispatcher with an unchanged
-        state variable.  For 1-way blocks this emits a goto redirect; for 2-way
-        blocks with arm=1 pointing to the dispatcher it emits an edge redirect.
-        """
-        lowering_decision = plan_reconstruction_lowering(
-            flow_graph=flow_graph,
-            context=ReconstructionLoweringContext(
-                kind=ReconstructionLoweringKind.PASSTHROUGH,
-                ordered_path=tuple(int(serial) for serial in candidate.edge.ordered_path),
-                horizon_block=int(candidate.horizon_block),
-                dispatcher_serial=int(dispatcher_serial),
-                current_entry=(
-                    int(current_state_entry) if current_state_entry is not None else None
-                ),
-            ),
-        )
-        modifications: list = []
-        for redirect in lowering_decision.redirects:
-            block = flow_graph.get_block(int(redirect.source_block))
-            if block is None:
-                continue
-            if block.nsucc == 1:
-                modifications.append(
-                    builder.goto_redirect(
-                        source_block=int(redirect.source_block),
-                        target_block=int(redirect.target_block),
-                        old_target=int(redirect.old_target),
-                    )
-                )
-            elif block.nsucc == 2:
-                modifications.append(
-                    builder.edge_redirect(
-                        source_block=int(redirect.source_block),
-                        target_block=int(redirect.target_block),
-                        old_target=int(redirect.old_target),
-                    )
-                )
-        return modifications
-
-    @classmethod
-    def _emit_shared_group(
-        cls,
-        shared_block: int,
-        candidates: list[ReconstructionCandidate],
-        *,
-        flow_graph,
-        dispatcher_serial: int,
-        bst_node_blocks: set[int],
-        mba,
-        builder: ModificationBuilder,
-        modifications: list,
-        owned_blocks: set[int],
-        owned_edges: set[tuple[int, int]],
-        accepted_metadata: list[dict[str, int | str | None]],
-        rejected_metadata: list[dict[str, int | str | None]],
-    ) -> int:
-        shared_snapshot = flow_graph.get_block(shared_block)
-        if shared_snapshot is None:
-            rejected_metadata.extend(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason="missing_shared_block",
-                )
-                for candidate in candidates
-            )
-            return 0
-
-        old_target = resolve_old_target(
-            flow_graph,
-            shared_block,
-            tuple(int(serial) for serial in candidates[0].edge.ordered_path),
-        )
-        lowering_decision = plan_reconstruction_lowering(
-            flow_graph=flow_graph,
-            context=ReconstructionLoweringContext(
-                kind=ReconstructionLoweringKind.SHARED_GROUP,
-                shared_block=int(shared_block),
-                shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
-                old_target=(int(old_target) if old_target is not None else None),
-                shared_candidates=tuple(
-                    SharedGroupEmissionCandidate(
-                        via_pred=int(candidate.via_pred),
-                        target_entry=int(candidate.target_entry),
-                    )
-                    for candidate in candidates
-                    if candidate.via_pred is not None
-                ),
-            ),
-        )
-        if not lowering_decision.accepted:
-            ordered_candidates = tuple(
-                candidate
-                for candidate in candidates
-                if candidate.via_pred is not None
-            )
-            rejected_metadata.extend(
-                cls._make_edge_metadata(
-                    candidate.edge,
-                    horizon_block=candidate.horizon_block,
-                    site=candidate.site,
-                    target_entry=candidate.target_entry,
-                    first_shared_block=shared_block,
-                    via_pred=candidate.via_pred,
-                    rejection_reason=lowering_decision.rejection_reason,
-                )
-                for candidate in ordered_candidates
-            )
-            return 0
-        by_pred = {
-            int(candidate.via_pred): candidate
-            for candidate in candidates
-            if candidate.via_pred is not None
-        }
-        ordered_candidates = [
-            by_pred[int(candidate.via_pred)]
-            for candidate in lowering_decision.ordered_candidates
-        ]
-        per_pred_targets = list(lowering_decision.per_pred_targets)
-
-        modifications.append(
-            builder.duplicate_and_redirect(
-                source_block=shared_block,
-                per_pred_targets=per_pred_targets,
-            )
-        )
-        owned_blocks.add(int(shared_block))
-        for _, target_entry in per_pred_targets:
-            owned_edges.add((int(shared_block), int(target_entry)))
-        for candidate in ordered_candidates:
-            cls._record_accept(
-                accepted_metadata,
-                replace(candidate, emission_mode="duplicate_and_redirect"),
-            )
-        logger.info(
-            "RECON DAG: duplicate-and-redirect %s preds=%s",
-            blk_label(mba, shared_block),
-            [
-                (blk_label(mba, pred), blk_label(mba, target))
-                for pred, target in per_pred_targets
-            ],
-        )
-        return len(ordered_candidates)
-
     def is_applicable(self, snapshot) -> bool:
         sm = snapshot.state_machine
         flow_graph = snapshot.flow_graph
@@ -1029,30 +725,33 @@ class StateWriteReconstructionStrategy:
                 shared_groups[int(candidate.first_shared_block)].append(candidate)
 
         for candidate in conditional_arm_candidates:
-            mods, count = self._emit_conditional_arm_candidate(
-                candidate,
-                flow_graph,
-                builder,
-                node_by_key=node_by_key,
+            source_node = node_by_key.get(candidate.edge.source_key)
+            pt_entry: int | None = None
+            if source_node is not None and candidate.edge.source_key.state_const is not None:
+                pt_entry = source_node.entry_anchor
+
+            cond_plan = plan_conditional_arm_reconstruction_modifications(
+                flow_graph=flow_graph,
+                horizon_block=int(candidate.horizon_block),
+                target_entry=int(candidate.target_entry),
+                branch_arm=int(candidate.edge.source_anchor.branch_arm or 0),
                 dispatcher_serial=dispatcher_serial,
+                current_entry=pt_entry,
             )
-            if mods:
-                modifications.extend(mods)
+            if cond_plan.modifications:
+                modifications.extend(cond_plan.modifications)
                 owned_blocks.add(int(candidate.horizon_block))
                 owned_edges.add((int(candidate.horizon_block), int(candidate.target_entry)))
                 self._record_accept(accepted_metadata, candidate)
 
-                # Resolve passthrough blocks on the corridor path
-                source_node = node_by_key.get(candidate.edge.source_key)
-                pt_entry: int | None = None
-                if source_node is not None and candidate.edge.source_key.state_const is not None:
-                    pt_entry = source_node.entry_anchor
-                pt_mods = self._resolve_passthrough_blocks(
-                    candidate, flow_graph, builder,
+                pt_plan = plan_passthrough_reconstruction_modifications(
+                    flow_graph=flow_graph,
+                    ordered_path=tuple(int(serial) for serial in candidate.edge.ordered_path),
+                    horizon_block=int(candidate.horizon_block),
                     dispatcher_serial=dispatcher_serial,
                     current_state_entry=pt_entry,
                 )
-                modifications.extend(pt_mods)
+                modifications.extend(pt_plan.modifications)
 
                 logger.info(
                     "RECON DAG: conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
@@ -1060,8 +759,8 @@ class StateWriteReconstructionStrategy:
                     candidate.site.state_value & 0xFFFFFFFF,
                     blk_label(mba, candidate.target_entry),
                     candidate.edge.source_anchor.branch_arm or 0,
-                    count,
-                    len(pt_mods),
+                    len(cond_plan.modifications),
+                    len(pt_plan.modifications),
                 )
 
         for horizon_block in sorted(direct_groups):
@@ -1081,16 +780,34 @@ class StateWriteReconstructionStrategy:
                 )
                 continue
             direct_candidate = group[0]
-            self._emit_direct_candidate(
-                direct_candidate,
+            direct_plan = plan_direct_reconstruction_modifications(
                 flow_graph=flow_graph,
-                mba=mba,
-                builder=builder,
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                accepted_metadata=accepted_metadata,
-                rejected_metadata=rejected_metadata,
+                horizon_block=int(direct_candidate.horizon_block),
+                target_entry=int(direct_candidate.target_entry),
+                ordered_path=tuple(int(serial) for serial in direct_candidate.edge.ordered_path),
+            )
+            if not direct_plan.accepted:
+                rejected_metadata.append(
+                    self._make_edge_metadata(
+                        direct_candidate.edge,
+                        horizon_block=direct_candidate.horizon_block,
+                        site=direct_candidate.site,
+                        target_entry=direct_candidate.target_entry,
+                        first_shared_block=direct_candidate.first_shared_block,
+                        rejection_reason="noop_or_missing_old_target",
+                    )
+                )
+                continue
+            modifications.extend(direct_plan.modifications)
+            owned_blocks.add(int(direct_candidate.horizon_block))
+            owned_edges.add((int(direct_candidate.horizon_block), int(direct_candidate.target_entry)))
+            self._record_accept(accepted_metadata, direct_candidate)
+            logger.info(
+                "RECON DAG: direct %s state=0x%08X -> %s (nopped=%d)",
+                blk_label(mba, direct_candidate.horizon_block),
+                direct_candidate.site.state_value & 0xFFFFFFFF,
+                blk_label(mba, direct_candidate.target_entry),
+                1,
             )
             # Resolve passthrough blocks for CONDITIONAL_TRANSITION direct candidates
             if direct_candidate.edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
@@ -1101,27 +818,70 @@ class StateWriteReconstructionStrategy:
                     and direct_candidate.edge.source_key.state_const is not None
                 ):
                     pt_entry_d = source_node.entry_anchor
-                pt_mods_d = self._resolve_passthrough_blocks(
-                    direct_candidate, flow_graph, builder,
+                pt_plan_d = plan_passthrough_reconstruction_modifications(
+                    flow_graph=flow_graph,
+                    ordered_path=tuple(int(serial) for serial in direct_candidate.edge.ordered_path),
+                    horizon_block=int(direct_candidate.horizon_block),
                     dispatcher_serial=dispatcher_serial,
                     current_state_entry=pt_entry_d,
                 )
-                modifications.extend(pt_mods_d)
+                modifications.extend(pt_plan_d.modifications)
 
         for shared_block in sorted(shared_groups):
-            self._emit_shared_group(
-                shared_block,
-                shared_groups[shared_block],
+            group = shared_groups[shared_block]
+            ordered_input_candidates = tuple(
+                SharedGroupEmissionCandidate(
+                    via_pred=int(candidate.via_pred),
+                    target_entry=int(candidate.target_entry),
+                )
+                for candidate in group
+                if candidate.via_pred is not None
+            )
+            shared_plan = plan_shared_group_reconstruction_modifications(
                 flow_graph=flow_graph,
-                dispatcher_serial=dispatcher_serial,
-                bst_node_blocks=dispatcher_region,
-                mba=mba,
-                builder=builder,
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                accepted_metadata=accepted_metadata,
-                rejected_metadata=rejected_metadata,
+                shared_block=int(shared_block),
+                ordered_path=tuple(int(serial) for serial in group[0].edge.ordered_path),
+                shared_candidates=ordered_input_candidates,
+            )
+            if not shared_plan.accepted:
+                rejected_metadata.extend(
+                    self._make_edge_metadata(
+                        candidate.edge,
+                        horizon_block=candidate.horizon_block,
+                        site=candidate.site,
+                        target_entry=candidate.target_entry,
+                        first_shared_block=shared_block,
+                        via_pred=candidate.via_pred,
+                        rejection_reason=shared_plan.rejection_reason,
+                    )
+                    for candidate in group
+                    if candidate.via_pred is not None
+                )
+                continue
+            by_pred = {
+                int(candidate.via_pred): candidate
+                for candidate in group
+                if candidate.via_pred is not None
+            }
+            ordered_candidates = [
+                by_pred[int(via_pred)] for via_pred in shared_plan.ordered_via_preds
+            ]
+            modifications.extend(shared_plan.modifications)
+            owned_blocks.add(int(shared_block))
+            for _, target_entry in shared_plan.per_pred_targets:
+                owned_edges.add((int(shared_block), int(target_entry)))
+            for candidate in ordered_candidates:
+                self._record_accept(
+                    accepted_metadata,
+                    replace(candidate, emission_mode="duplicate_and_redirect"),
+                )
+            logger.info(
+                "RECON DAG: duplicate-and-redirect %s preds=%s",
+                blk_label(mba, shared_block),
+                [
+                    (blk_label(mba, pred), blk_label(mba, target))
+                    for pred, target in shared_plan.per_pred_targets
+                ],
             )
 
         if not modifications:
