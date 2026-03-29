@@ -29,6 +29,10 @@ from d810.cfg.lowering_selector import (
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
     ResidualPrefixPeelContext,
+    is_backward_same_corridor_target,
+    is_live_oneway_noop,
+    is_valid_pred_split_pair,
+    resolve_redirect_old_target,
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.residual_handoff_planning import (
@@ -890,68 +894,6 @@ class LinearizedFlowGraphStrategy:
         return resolution.target_entry
 
     @staticmethod
-    def _resolve_edge_old_target(
-        source_block: int,
-        edge: StateDagEdge,
-        builder: ModificationBuilder,
-        *,
-        bst_node_blocks: set[int],
-        dispatcher_region: set[int],
-    ) -> int | None:
-        succs = tuple(builder.block_succ_map.get(source_block, ()))
-        if not succs:
-            return None
-        if (
-            edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
-            and edge.source_anchor.branch_arm is not None
-            and edge.source_anchor.branch_arm < len(succs)
-        ):
-            return succs[edge.source_anchor.branch_arm]
-
-        if source_block in edge.ordered_path:
-            path_index = edge.ordered_path.index(source_block)
-            if path_index + 1 < len(edge.ordered_path):
-                candidate = edge.ordered_path[path_index + 1]
-                if candidate in succs:
-                    return candidate
-
-        for succ in succs:
-            if succ in bst_node_blocks:
-                return succ
-        for succ in succs:
-            if succ in dispatcher_region:
-                return succ
-        if edge.target_entry_anchor is not None:
-            for succ in succs:
-                if succ != edge.target_entry_anchor:
-                    return succ
-        return succs[0]
-
-    @staticmethod
-    def _is_valid_pred_split_pair(
-        source_block: int,
-        via_pred: int | None,
-        builder: ModificationBuilder,
-    ) -> bool:
-        if via_pred is None:
-            return False
-        if builder.block_nsucc_map.get(source_block, 1) != 1:
-            return False
-        if builder.block_nsucc_map.get(via_pred, 1) != 1:
-            return False
-        succs = tuple(builder.block_succ_map.get(via_pred, ()))
-        return len(succs) == 1 and succs[0] == source_block
-
-    @staticmethod
-    def _is_live_oneway_noop(
-        source_block: int,
-        target_entry: int,
-        builder: ModificationBuilder,
-    ) -> bool:
-        succs = tuple(builder.block_succ_map.get(source_block, ()))
-        return len(succs) == 1 and succs[0] == target_entry
-
-    @staticmethod
     def _can_duplicate_path_tail(
         source_block: int,
         via_pred: int | None,
@@ -1072,22 +1014,6 @@ class LinearizedFlowGraphStrategy:
             resolve_state_via_valranges=resolve_state_via_valranges,
         )
 
-    @staticmethod
-    def _is_backward_same_corridor_target(
-        edge: StateDagEdge,
-        *,
-        source_block: int,
-        target_entry: int,
-    ) -> bool:
-        if not edge.ordered_path:
-            return False
-        try:
-            source_index = edge.ordered_path.index(source_block)
-            target_index = edge.ordered_path.index(target_entry)
-        except ValueError:
-            return False
-        return target_index <= source_index
-
     @classmethod
     def _emit_residual_dispatcher_handoffs(
         cls,
@@ -1177,10 +1103,24 @@ class LinearizedFlowGraphStrategy:
                 if branch_block is None:
                     continue
                 branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-                old_target = cls._resolve_edge_old_target(
+                old_target = resolve_redirect_old_target(
                     branch_source,
-                    edge,
-                    builder,
+                    source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
+                    ordered_path=tuple(int(node) for node in edge.ordered_path),
+                    target_entry_anchor=(
+                        int(edge.target_entry_anchor)
+                        if edge.target_entry_anchor is not None
+                        else None
+                    ),
+                    source_branch_arm=(
+                        int(edge.source_anchor.branch_arm)
+                        if edge.source_anchor.branch_arm is not None
+                        else None
+                    ),
+                    source_is_conditional_branch=(
+                        edge.source_anchor.kind
+                        == RedirectSourceKind.CONDITIONAL_BRANCH
+                    ),
                     bst_node_blocks=bst_node_blocks,
                     dispatcher_region=ignored_blocks,
                 )
@@ -1340,10 +1280,15 @@ class LinearizedFlowGraphStrategy:
                                 target_entry=target_entry,
                                 dispatcher_serial=dispatcher_serial,
                                 bst_node_blocks=frozenset(bst_node_blocks),
-                                valid_pair=cls._is_valid_pred_split_pair(
+                                valid_pair=is_valid_pred_split_pair(
                                     source_block,
-                                    via_pred,
-                                    builder,
+                                    via_pred=via_pred,
+                                    source_succs=tuple(
+                                        builder.block_succ_map.get(source_block, ())
+                                    ),
+                                    via_pred_succs=tuple(
+                                        builder.block_succ_map.get(via_pred, ())
+                                    ),
                                 ),
                                 target_reaches_via_pred=pred_split_target_reaches_via_pred(
                                     projected_flow_graph,
@@ -1432,10 +1377,11 @@ class LinearizedFlowGraphStrategy:
                                 ignored_blocks=residual_ignored_blocks,
                             ),
                             already_emitted=(source_block, target_entry) in emitted,
-                            live_oneway_noop=cls._is_live_oneway_noop(
-                                source_block,
-                                target_entry,
-                                builder,
+                            live_oneway_noop=is_live_oneway_noop(
+                                source_succs=tuple(
+                                    builder.block_succ_map.get(source_block, ())
+                                ),
+                                target_entry=target_entry,
                             ),
                         ),
                     ),
@@ -1536,10 +1482,24 @@ class LinearizedFlowGraphStrategy:
                     if branch_block is not None
                     else ()
                 )
-                old_target = cls._resolve_edge_old_target(
+                old_target = resolve_redirect_old_target(
                     branch_source,
-                    edge,
-                    builder,
+                    source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
+                    ordered_path=tuple(int(node) for node in edge.ordered_path),
+                    target_entry_anchor=(
+                        int(edge.target_entry_anchor)
+                        if edge.target_entry_anchor is not None
+                        else None
+                    ),
+                    source_branch_arm=(
+                        int(edge.source_anchor.branch_arm)
+                        if edge.source_anchor.branch_arm is not None
+                        else None
+                    ),
+                    source_is_conditional_branch=(
+                        edge.source_anchor.kind
+                        == RedirectSourceKind.CONDITIONAL_BRANCH
+                    ),
                     bst_node_blocks=bst_node_blocks,
                     dispatcher_region=ignored_blocks,
                 )
@@ -1666,10 +1626,23 @@ class LinearizedFlowGraphStrategy:
         if branch_block is None:
             return False
         branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
-        old_target = cls._resolve_edge_old_target(
+        old_target = resolve_redirect_old_target(
             branch_source,
-            edge,
-            builder,
+            source_succs=tuple(builder.block_succ_map.get(branch_source, ())),
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
+            target_entry_anchor=(
+                int(edge.target_entry_anchor)
+                if edge.target_entry_anchor is not None
+                else None
+            ),
+            source_branch_arm=(
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            ),
+            source_is_conditional_branch=(
+                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            ),
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=ignored_blocks,
         )
@@ -1902,8 +1875,8 @@ class LinearizedFlowGraphStrategy:
                 else edge.source_key.handler_serial,
             )
             return False
-        if cls._is_backward_same_corridor_target(
-            edge,
+        if is_backward_same_corridor_target(
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
             source_block=source_block,
             target_entry=target_entry,
         ):
@@ -1960,10 +1933,23 @@ class LinearizedFlowGraphStrategy:
         if source_snapshot is None or source_snapshot.nsucc != 1:
             return False
 
-        old_target = cls._resolve_edge_old_target(
+        old_target = resolve_redirect_old_target(
             source_block,
-            edge,
-            builder,
+            source_succs=tuple(builder.block_succ_map.get(source_block, ())),
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
+            target_entry_anchor=(
+                int(edge.target_entry_anchor)
+                if edge.target_entry_anchor is not None
+                else None
+            ),
+            source_branch_arm=(
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            ),
+            source_is_conditional_branch=(
+                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            ),
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=dispatcher_region,
         )
@@ -2071,7 +2057,12 @@ class LinearizedFlowGraphStrategy:
             return True
 
         via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
-        if cls._is_valid_pred_split_pair(source_block, via_pred, builder):
+        if is_valid_pred_split_pair(
+            source_block,
+            via_pred=via_pred,
+            source_succs=tuple(builder.block_succ_map.get(source_block, ())),
+            via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
+        ):
             assert via_pred is not None
             if via_pred in blocked_sources:
                 return False
@@ -2271,8 +2262,8 @@ class LinearizedFlowGraphStrategy:
             return False
         if source_block == target_entry:
             return False
-        if cls._is_backward_same_corridor_target(
-            edge,
+        if is_backward_same_corridor_target(
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
             source_block=source_block,
             target_entry=target_entry,
         ):
@@ -2339,10 +2330,23 @@ class LinearizedFlowGraphStrategy:
         nsucc = builder.block_nsucc_map.get(source_block, 1)
         if nsucc == 2 and edge.kind == SemanticEdgeKind.TRANSITION:
             return False
-        old_target = cls._resolve_edge_old_target(
+        old_target = resolve_redirect_old_target(
             source_block,
-            edge,
-            builder,
+            source_succs=tuple(builder.block_succ_map.get(source_block, ())),
+            ordered_path=tuple(int(node) for node in edge.ordered_path),
+            target_entry_anchor=(
+                int(edge.target_entry_anchor)
+                if edge.target_entry_anchor is not None
+                else None
+            ),
+            source_branch_arm=(
+                int(edge.source_anchor.branch_arm)
+                if edge.source_anchor.branch_arm is not None
+                else None
+            ),
+            source_is_conditional_branch=(
+                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            ),
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=dispatcher_region,
         )
@@ -2371,7 +2375,10 @@ class LinearizedFlowGraphStrategy:
             )
             claimed_2way[branch_key] = target_entry
         else:
-            if cls._is_live_oneway_noop(source_block, target_entry, builder):
+            if is_live_oneway_noop(
+                source_succs=tuple(builder.block_succ_map.get(source_block, ())),
+                target_entry=target_entry,
+            ):
                 logger.info(
                     "LFG DAG: skipping %s -> %s because live CFG already has that 1-way handoff",
                     blk_label(mba, source_block),
