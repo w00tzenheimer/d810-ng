@@ -63,6 +63,7 @@ from d810.cfg.residual_handoff_modification_planning import (
 from d810.cfg.path_tail_modification_planning import (
     PathTailEmissionKind,
     PathTailRedirectContext,
+    apply_path_tail_emission_plan,
     plan_path_tail_redirect,
 )
 from d810.cfg.plan import compile_patch_plan
@@ -1818,29 +1819,23 @@ class LinearizedFlowGraphStrategy:
                 )
             return False
         plan = decision.emission_plan
-        modifications.append(plan.modification)
-        emitted.add(emit_key)
-        owned_blocks.add(source_block)
-        owned_edges.add((source_block, target_entry))
-        if edge.source_key.state_const is not None and edge.target_state is not None:
-            owned_transitions.add(
+        apply_path_tail_emission_plan(
+            plan,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            claimed_exits=claimed_exits,
+            claimed_path_edges=claimed_path_edges,
+            blocked_sources=blocked_sources,
+            owned_transition=(
                 (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-            )
-        if plan.kind in (PathTailEmissionKind.SHARED_GOTO, PathTailEmissionKind.DIRECT_GOTO):
-            claimed_exits[source_block] = target_entry
-            claimed_1way[source_block] = target_entry
-        elif plan.kind == PathTailEmissionKind.PRED_SPLIT:
-            assert plan.path_edge_key is not None
-            assert plan.blocked_pred is not None
-            claimed_path_edges[plan.path_edge_key] = target_entry
-            blocked_sources.add(plan.blocked_pred)
-            owned_blocks.add(plan.blocked_pred)
-        elif plan.kind == PathTailEmissionKind.DUPLICATE:
-            assert plan.blocked_pred is not None
-            blocked_sources.add(plan.blocked_pred)
-            owned_blocks.add(plan.blocked_pred)
-            for pred in other_preds:
-                owned_blocks.add(int(pred))
+                if edge.source_key.state_const is not None and edge.target_state is not None
+                else None
+            ),
+        )
 
         if plan.kind == PathTailEmissionKind.SHARED_GOTO:
             logger.info(
