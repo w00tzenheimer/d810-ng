@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from d810.cfg.graph_modification import RedirectGoto
 from d810.cfg.projected_alias_normalization_planning import (
     ProjectedAliasNormalizationAction,
+    apply_projected_alias_normalization_actions,
     collect_projected_alias_normalization_actions,
 )
 
@@ -68,3 +69,36 @@ def test_collect_projected_alias_normalization_actions_replaces_existing_redirec
             replaced_target=160,
         ),
     )
+
+
+def test_apply_projected_alias_normalization_actions_updates_claims_and_replaces_old_emit() -> None:
+    actions = (
+        ProjectedAliasNormalizationAction(
+            source_block=95,
+            current_target=160,
+            target_entry=202,
+            modification=RedirectGoto(from_serial=95, old_target=2, new_target=202),
+            replace_index=0,
+            replaced_target=160,
+        ),
+    )
+    modifications = [RedirectGoto(from_serial=95, old_target=2, new_target=160)]
+    emitted = {(95, 160)}
+    owned_blocks: set[int] = set()
+    owned_edges: set[tuple[int, int]] = set()
+    claimed_1way: dict[int, int] = {}
+
+    apply_projected_alias_normalization_actions(
+        actions,
+        modifications=modifications,
+        emitted=emitted,
+        owned_blocks=owned_blocks,
+        owned_edges=owned_edges,
+        claimed_1way=claimed_1way,
+    )
+
+    assert modifications == [RedirectGoto(from_serial=95, old_target=2, new_target=202)]
+    assert emitted == {(95, 202)}
+    assert owned_blocks == {95}
+    assert owned_edges == {(95, 202)}
+    assert claimed_1way == {95: 202}

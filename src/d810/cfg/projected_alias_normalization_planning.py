@@ -99,7 +99,30 @@ def collect_projected_alias_normalization_actions(
     return tuple(actions)
 
 
+def apply_projected_alias_normalization_actions(
+    actions: tuple[ProjectedAliasNormalizationAction, ...],
+    *,
+    modifications: list,
+    emitted: set[tuple[int, int]],
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    claimed_1way: dict[int, int],
+) -> None:
+    for action in actions:
+        if action.replace_index is not None:
+            modifications[action.replace_index] = action.modification
+            if action.replaced_target is not None:
+                emitted.discard((int(action.source_block), int(action.replaced_target)))
+        else:
+            modifications.append(action.modification)
+        claimed_1way[int(action.source_block)] = int(action.target_entry)
+        emitted.add((int(action.source_block), int(action.target_entry)))
+        owned_blocks.add(int(action.source_block))
+        owned_edges.add((int(action.source_block), int(action.target_entry)))
+
+
 __all__ = [
+    "apply_projected_alias_normalization_actions",
     "ProjectedAliasNormalizationAction",
     "collect_projected_alias_normalization_actions",
 ]

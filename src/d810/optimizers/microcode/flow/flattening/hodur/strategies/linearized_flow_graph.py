@@ -69,6 +69,7 @@ from d810.cfg.path_tail_modification_planning import (
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.projected_alias_normalization_planning import (
+    apply_projected_alias_normalization_actions,
     collect_projected_alias_normalization_actions,
 )
 from d810.core import logging
@@ -1579,17 +1580,16 @@ class LinearizedFlowGraphStrategy:
             resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
         )
 
+        apply_projected_alias_normalization_actions(
+            actions,
+            modifications=modifications,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            claimed_1way=claimed_1way,
+        )
+
         for action in actions:
-            if action.replace_index is not None:
-                modifications[action.replace_index] = action.modification
-                if action.replaced_target is not None:
-                    emitted.discard((int(action.source_block), int(action.replaced_target)))
-            else:
-                modifications.append(action.modification)
-            claimed_1way[int(action.source_block)] = int(action.target_entry)
-            emitted.add((int(action.source_block), int(action.target_entry)))
-            owned_blocks.add(int(action.source_block))
-            owned_edges.add((int(action.source_block), int(action.target_entry)))
             logger.info(
                 "LFG DAG: normalized projected residual handoff %s -> %s (was %s)",
                 blk_label(mba, int(action.source_block)),
