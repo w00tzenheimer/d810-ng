@@ -18,6 +18,7 @@ from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    has_live_exact_residual_handoff,
     resolve_effective_target_entry,
     resolve_assignment_map_handoff_target,
     resolve_immediate_handoff_target,
@@ -112,6 +113,39 @@ class TestDispatcherExactRows:
         assert dispatcher_has_exact_state_row(0x20, dispatcher=dispatcher) is False
         assert dispatcher_exact_state_target(0x10, dispatcher=dispatcher) == 24
         assert dispatcher_exact_state_target(0x21, dispatcher=dispatcher) is None
+
+    def test_has_live_exact_residual_handoff_respects_exact_rows(self) -> None:
+        dispatcher = SimpleNamespace(
+            _rows=(
+                SimpleNamespace(lo=0x10, hi=0x11, target=24),
+                SimpleNamespace(lo=0x20, hi=0x22, target=30),
+            )
+        )
+        with patch(
+            "d810.recon.flow.residual_handoff_discovery.resolve_singleton_state_write_value",
+            side_effect=[None, 0x10],
+        ):
+            assert has_live_exact_residual_handoff(
+                object(),
+                (7, 8),
+                state_var_stkoff=0x3C,
+                dispatcher=dispatcher,
+            )
+
+    def test_has_live_exact_residual_handoff_rejects_self_target(self) -> None:
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x10, hi=0x11, target=8),)
+        )
+        with patch(
+            "d810.recon.flow.residual_handoff_discovery.resolve_singleton_state_write_value",
+            return_value=0x10,
+        ):
+            assert not has_live_exact_residual_handoff(
+                object(),
+                (8,),
+                state_var_stkoff=0x3C,
+                dispatcher=dispatcher,
+            )
 
 
 class TestRedirectSafeEntryResolution:
