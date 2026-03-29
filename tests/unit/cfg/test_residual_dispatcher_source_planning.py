@@ -10,6 +10,8 @@ from d810.cfg.lowering_selector import (
 )
 from d810.cfg.residual_dispatcher_source_planning import (
     ResidualDispatcherSourceContext,
+    apply_residual_dispatcher_source_plan,
+    ResidualDispatcherSourcePlan,
     ResidualDispatcherSourcePlanKind,
     plan_residual_dispatcher_source,
 )
@@ -197,3 +199,54 @@ class TestPlanResidualDispatcherSource:
 
         assert not plan.accepted
         assert plan.rejection_reason == "shared_suffix_conditional_tail"
+
+    def test_apply_source_plan_updates_all_virtual_claims(self):
+        plan = ResidualDispatcherSourcePlan(
+            accepted=True,
+            kind=ResidualDispatcherSourcePlanKind.GOTO,
+            modifications=(RedirectGoto(from_serial=14, old_target=6, new_target=18),),
+            emitted_edges=((14, 18),),
+            owned_blocks=(14, 10),
+            owned_edges=((14, 18),),
+            owned_transitions=((0x1111, 0x2222),),
+            claimed_1way_updates=((14, 18),),
+            claimed_2way_updates=((((12, 14), 20)),),
+            pred_split_keys=((14, 10, 18),),
+            prefix_keys=((10, 14, 22),),
+            redirect_blocks=(14,),
+        )
+        modifications: list = []
+        claimed_1way: dict[int, int] = {}
+        claimed_2way: dict[tuple[int, int], int] = {}
+        emitted: set[tuple[int, int]] = set()
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        owned_transitions: set[tuple[int, int]] = set()
+        pred_split_emitted: set[tuple[int, int, int]] = set()
+        prefix_emitted: set[tuple[int, int, int]] = set()
+        redirected_blocks: set[int] = set()
+
+        apply_residual_dispatcher_source_plan(
+            plan,
+            modifications=modifications,
+            claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            pred_split_emitted=pred_split_emitted,
+            prefix_emitted=prefix_emitted,
+            redirected_blocks=redirected_blocks,
+        )
+
+        assert modifications == [RedirectGoto(from_serial=14, old_target=6, new_target=18)]
+        assert claimed_1way == {14: 18}
+        assert claimed_2way == {(12, 14): 20}
+        assert emitted == {(14, 18)}
+        assert owned_blocks == {14, 10}
+        assert owned_edges == {(14, 18)}
+        assert owned_transitions == {(0x1111, 0x2222)}
+        assert pred_split_emitted == {(14, 10, 18)}
+        assert prefix_emitted == {(10, 14, 22)}
+        assert redirected_blocks == {14}
