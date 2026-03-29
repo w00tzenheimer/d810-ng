@@ -50,6 +50,12 @@ from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
 )
+from d810.optimizers.microcode.flow.flattening.hodur._residual_handoff_bridge import (
+    is_semantic_handoff_redirect,
+    resolve_effective_target_entry,
+    resolve_singleton_state_write_value,
+    resolve_synthesized_handoff_target,
+)
 from d810.recon.flow.bst_analysis import _forward_eval_insn, analyze_bst_dispatcher
 from d810.recon.flow.graph_reachability import (
     collect_dispatcher_predecessors,
@@ -57,12 +63,15 @@ from d810.recon.flow.graph_reachability import (
     compute_reachable_blocks,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
+from d810.recon.flow.dag_redirect_discovery import (
+    find_foreign_exact_entry_owner,
+    select_plannable_dag_edges,
+)
 from d810.recon.flow.residual_handoff_discovery import (
     block_has_state_var_write,
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
-    resolve_effective_target_entry as discover_effective_target_entry,
     is_raw_state_label,
     iter_residual_prefix_handoffs,
     iter_live_block_insns,
@@ -85,8 +94,6 @@ from d810.recon.flow.residual_handoff_discovery import (
     resolve_path_lead_entry_from_node,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
-    resolve_singleton_state_write_value,
-    resolve_synthesized_handoff_target,
     state_has_semantic_support,
 )
 from d810.recon.flow.shared_suffix_discovery import (
@@ -332,7 +339,7 @@ class LinearizedFlowGraphStrategy:
         if state_var_stkoff is None or dispatcher is None:
             return False
         for block_serial in residual_preds:
-            state_value = cls._resolve_singleton_state_write_value(
+            state_value = resolve_singleton_state_write_value(
                 mba,
                 block_serial,
                 state_var_stkoff=state_var_stkoff,
@@ -565,7 +572,7 @@ class LinearizedFlowGraphStrategy:
             dag_round_unresolved_bst_targets = 0
             dag_round_start = len(dag_modifications)
             if not same_maturity_rerun:
-                for edge in self._select_plannable_edges(dag_latest):
+                for edge in select_plannable_dag_edges(dag_latest):
                     safe_target_entry = None
                     if edge.target_entry_anchor is not None:
                         safe_target_entry = resolve_redirect_safe_target_entry(
@@ -827,73 +834,6 @@ class LinearizedFlowGraphStrategy:
             },
         )
     @staticmethod
-    def _edge_priority(edge: StateDagEdge) -> int:
-        if edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH:
-            return 0
-        if edge.source_anchor.kind == RedirectSourceKind.EXIT_BLOCK:
-            return 1
-        return 2
-
-    @classmethod
-    def _select_plannable_edges(
-        cls,
-        dag: LinearizedStateDag,
-    ) -> tuple[StateDagEdge, ...]:
-        return tuple(
-            sorted(
-                (
-                    edge
-                    for edge in dag.edges
-                    if edge.kind
-                    in (
-                        SemanticEdgeKind.TRANSITION,
-                        SemanticEdgeKind.CONDITIONAL_TRANSITION,
-                    )
-                    and edge.target_entry_anchor is not None
-                ),
-                key=lambda edge: (
-                    0 if edge.kind == SemanticEdgeKind.TRANSITION else 1,
-                    -(len(edge.ordered_path)),
-                    edge.source_anchor.block_serial,
-                    -1
-                    if edge.source_anchor.branch_arm is None
-                    else edge.source_anchor.branch_arm,
-                    edge.kind.value,
-                    edge.target_entry_anchor if edge.target_entry_anchor is not None else -1,
-                    cls._edge_priority(edge),
-                ),
-            )
-        )
-
-    @classmethod
-    def _resolve_effective_target_entry(
-        cls,
-        dag: LinearizedStateDag,
-        edge: StateDagEdge,
-        *,
-        bst_node_blocks: set[int],
-        state_var_stkoff: int | None,
-        dispatcher_lookup: object | None,
-        dispatcher: object | None,
-        mba: object,
-    ) -> int | None:
-        try:
-            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-        except Exception:
-            resolve_state_via_valranges = None
-        resolution = discover_effective_target_entry(
-            dag,
-            edge,
-            bst_node_blocks=bst_node_blocks,
-            state_var_stkoff=state_var_stkoff,
-            dispatcher_lookup=dispatcher_lookup,
-            dispatcher=dispatcher,
-            mba=mba,
-            resolve_state_via_valranges=resolve_state_via_valranges,
-        )
-        return resolution.target_entry
-
-    @staticmethod
     def _can_duplicate_path_tail(
         source_block: int,
         via_pred: int | None,
@@ -967,52 +907,6 @@ class LinearizedFlowGraphStrategy:
                         resolved_targets.add(int(resolved))
             insn = insn.next
         return resolved_targets == {target_entry}
-
-    @classmethod
-    def _resolve_singleton_state_write_value(
-        cls,
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-    ) -> int | None:
-        try:
-            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-        except Exception:
-            resolve_state_via_valranges = None
-        return resolve_singleton_state_write_value(
-            mba,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-            resolve_state_via_valranges=resolve_state_via_valranges,
-        )
-
-    @classmethod
-    def _resolve_synthesized_handoff_target(
-        cls,
-        dag: LinearizedStateDag,
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-        bst_node_blocks: set[int],
-        dispatcher: object | None,
-        via_pred: int | None = None,
-    ) -> tuple[int, int] | None:
-        try:
-            from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-        except Exception:
-            resolve_state_via_valranges = None
-        return resolve_synthesized_handoff_target(
-            dag,
-            mba,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher=dispatcher,
-            via_pred=via_pred,
-            resolve_state_via_valranges=resolve_state_via_valranges,
-        )
 
     @classmethod
     def _emit_residual_dispatcher_handoffs(
@@ -1199,7 +1093,7 @@ class LinearizedFlowGraphStrategy:
                 for via_pred in current_preds:
                     pred_handoff = None
                     if handoff_facts.source_has_state_write:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
+                        pred_handoff = resolve_synthesized_handoff_target(
                             dag,
                             analysis_mba,
                             source_block,
@@ -1213,7 +1107,7 @@ class LinearizedFlowGraphStrategy:
                             and mba is not None
                             and analysis_mba is not mba
                         ):
-                            pred_handoff = cls._resolve_synthesized_handoff_target(
+                            pred_handoff = resolve_synthesized_handoff_target(
                                 dag,
                                 mba,
                                 source_block,
@@ -1232,7 +1126,7 @@ class LinearizedFlowGraphStrategy:
                             require_predecessor_match=True,
                         )
                     if pred_handoff is None:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
+                        pred_handoff = resolve_synthesized_handoff_target(
                             dag,
                             analysis_mba,
                             source_block,
@@ -1242,7 +1136,7 @@ class LinearizedFlowGraphStrategy:
                             via_pred=via_pred,
                         )
                     if pred_handoff is None and mba is not None and analysis_mba is not mba:
-                        pred_handoff = cls._resolve_synthesized_handoff_target(
+                        pred_handoff = resolve_synthesized_handoff_target(
                             dag,
                             mba,
                             source_block,
@@ -1835,7 +1729,7 @@ class LinearizedFlowGraphStrategy:
         mba: object | None = None,
     ) -> bool:
         if target_entry is None:
-            target_entry = cls._resolve_effective_target_entry(
+            target_entry = resolve_effective_target_entry(
                 dag,
                 edge,
                 bst_node_blocks=bst_node_blocks,
@@ -1858,7 +1752,7 @@ class LinearizedFlowGraphStrategy:
         source_block = edge.ordered_path[-1]
         if source_block == target_entry:
             return False
-        foreign_exact_owner = cls._find_foreign_exact_entry_owner(
+        foreign_exact_owner = find_foreign_exact_entry_owner(
             dag,
             source_key=edge.source_key,
             source_block=source_block,
@@ -1886,7 +1780,7 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, target_entry),
             )
             return False
-        allow_semantic_handoff = cls._is_semantic_handoff_redirect(
+        allow_semantic_handoff = is_semantic_handoff_redirect(
             dag,
             edge,
             source_block=source_block,
@@ -2139,24 +2033,6 @@ class LinearizedFlowGraphStrategy:
         return False
 
     @classmethod
-    def _find_foreign_exact_entry_owner(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        source_key: StateDagNodeKey,
-        source_block: int,
-    ) -> StateDagNode | None:
-        for node in dag.nodes:
-            if node.kind is not StateNodeKind.EXACT:
-                continue
-            if node.entry_anchor != source_block:
-                continue
-            if node.key == source_key:
-                return None
-            return node
-        return None
-
-    @classmethod
     def _emit_dag_redirect(
         cls,
         *,
@@ -2188,7 +2064,7 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None = None,
     ) -> bool:
         target_node = build_dag_node_maps(dag).node_by_key.get(edge.target_key) if edge.target_key is not None else None
-        target_entry = cls._resolve_effective_target_entry(
+        target_entry = resolve_effective_target_entry(
             dag,
             edge,
             bst_node_blocks=bst_node_blocks,
@@ -2273,7 +2149,7 @@ class LinearizedFlowGraphStrategy:
                 blk_label(mba, target_entry),
             )
             return False
-        allow_semantic_handoff = cls._is_semantic_handoff_redirect(
+        allow_semantic_handoff = is_semantic_handoff_redirect(
             dag,
             edge,
             source_block=source_block,
@@ -2418,42 +2294,6 @@ class LinearizedFlowGraphStrategy:
             edge.source_anchor.kind.name.lower(),
         )
         return True
-
-    @classmethod
-    def _is_semantic_handoff_redirect(
-        cls,
-        dag: LinearizedStateDag,
-        edge: StateDagEdge,
-        *,
-        source_block: int,
-        target_entry: int,
-        state_var_stkoff: int | None,
-        dispatcher_lookup: object | None,
-        dispatcher: object | None,
-        mba: object | None,
-    ) -> bool:
-        immediate_handoff = resolve_immediate_handoff_target(
-            dag,
-            mba,
-            source_block,
-            state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=set(),
-            dispatcher_lookup=dispatcher_lookup,
-            dispatcher=dispatcher,
-        )
-        if immediate_handoff is not None and immediate_handoff[1] == target_entry:
-            return True
-        via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
-        synthesized_handoff = cls._resolve_synthesized_handoff_target(
-            dag,
-            mba,
-            source_block,
-            state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=set(),
-            dispatcher=dispatcher,
-            via_pred=via_pred,
-        )
-        return synthesized_handoff is not None and synthesized_handoff[1] == target_entry
 
     # ------------------------------------------------------------------
     # Resolved state machine DOT graph
