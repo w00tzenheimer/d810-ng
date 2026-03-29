@@ -148,3 +148,49 @@ def return_paths(
             "hops": hops,
         })
     return results
+
+
+def rendered_program_text(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    variant_name: str,
+) -> str | None:
+    """Return the exact rendered program text for one stored variant."""
+    cur = conn.execute(
+        "SELECT text FROM rendered_program_lines "
+        "WHERE snapshot_id=? AND variant_name=? ORDER BY line_no",
+        (snapshot_id, variant_name),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return None
+    texts = [row[0] if not isinstance(row, dict) else row["text"] for row in rows]
+    return "\n".join(texts)
+
+
+def rendered_program_nodes(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    variant_name: str,
+) -> list[dict[str, Any]]:
+    """Return rendered label blocks for one stored program variant."""
+    conn.row_factory = _dict_factory
+    cur = conn.execute(
+        "SELECT * FROM rendered_program_nodes "
+        "WHERE snapshot_id=? AND variant_name=? ORDER BY node_index",
+        (snapshot_id, variant_name),
+    )
+    return cur.fetchall()
+
+
+def rendered_program_variants(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+) -> list[dict[str, Any]]:
+    """Return stored rendered-program variants for a snapshot."""
+    conn.row_factory = _dict_factory
+    cur = conn.execute(
+        "SELECT * FROM rendered_programs WHERE snapshot_id=? ORDER BY variant_name",
+        (snapshot_id,),
+    )
+    return cur.fetchall()

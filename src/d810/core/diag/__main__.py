@@ -5,8 +5,27 @@ Usage::
     python -m d810.core.diag chain --db path.sqlite3 131 174 176 200 23 32 62 206 207 218
     python -m d810.core.diag var-writes --db path.sqlite3 0x7F0
     python -m d810.core.diag block --db path.sqlite3 206 --insns
-    python -m d810.core.diag return-paths --db path.sqlite3
+    python -m d810.core.diag return-paths --db path.sqlite3 --snapshot -1
+    python -m d810.core.diag program --db path.sqlite3 --snapshot -1
+    python -m d810.core.diag program --db path.sqlite3 --snapshot -1 --nodes
+    python -m d810.core.diag program --db path.sqlite3 --snapshot 12 --variant semantic_reference_like
+    python -m d810.core.diag program --db path.sqlite3 --maturity GLBOPT1 --phase post_d810
+    PYTHONPATH=src python3 -m d810.core.diag program \\
+      --db /Users/mahmoud/src/idapro/d810/.worktrees/state-label-linearization/.tmp/logs/d810_logs/0000000180012b60_1774805543_33.diag.sqlite3 \\
+      --maturity GLBOPT1 \\
+      --phase post_d810 \\
+      --variant semantic_reference_like
+    python -m d810.core.diag program-variants --db path.sqlite3 --snapshot -1
     python -m d810.core.diag ea-trace --db path.sqlite3 0x1800134A5
+
+Notes::
+
+    --snapshot -1 resolves to the latest snapshot in the database.
+    --maturity accepts GLBOPT1 or MMAT_GLBOPT1 forms.
+    when --maturity and/or --phase are provided, they take precedence over
+    --snapshot and resolve the newest matching snapshot.
+    program variants are stored rendered linearized-program views, such as
+    semantic_reference_like.
 """
 from __future__ import annotations
 
@@ -15,11 +34,71 @@ import json
 import sqlite3
 import sys
 
-from d810.core.diag.query import block_detail, chain, return_paths, var_writes
+from d810.core.diag.query import (
+    block_detail,
+    chain,
+    rendered_program_nodes,
+    rendered_program_text,
+    rendered_program_variants,
+    return_paths,
+    var_writes,
+)
 
 
-def _resolve_snapshot_id(conn: sqlite3.Connection, snapshot: int) -> int:
-    """Resolve snapshot argument: -1 means latest (max id)."""
+def _normalize_maturity_name(maturity: str | None) -> str | None:
+    if maturity is None:
+        return None
+    mat = maturity.strip().upper()
+    if not mat:
+        return None
+    if not mat.startswith("MMAT_"):
+        mat = f"MMAT_{mat}"
+    return mat
+
+
+def _resolve_snapshot_id(
+    conn: sqlite3.Connection,
+    snapshot: int,
+    *,
+    maturity: str | None = None,
+    phase: str | None = None,
+) -> int:
+    """Resolve snapshot selector.
+
+    Priority:
+    1. `--maturity` / `--phase` selector when provided
+    2. explicit snapshot id when >= 0
+    3. latest snapshot (`-1`)
+    """
+    mat = _normalize_maturity_name(maturity)
+    if mat is not None or phase is not None:
+        if mat is not None and phase is not None:
+            row = conn.execute(
+                "SELECT MAX(id) FROM snapshots WHERE maturity=? AND phase=?",
+                (mat, phase),
+            ).fetchone()
+        elif mat is not None:
+            row = conn.execute(
+                "SELECT MAX(id) FROM snapshots WHERE maturity=?",
+                (mat,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT MAX(id) FROM snapshots WHERE phase=?",
+                (phase,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            selector = []
+            if mat is not None:
+                selector.append(f"maturity={mat}")
+            if phase is not None:
+                selector.append(f"phase={phase}")
+            print(
+                f"ERROR: no snapshot matches {' '.join(selector)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return int(row[0])
     if snapshot >= 0:
         return snapshot
     row = conn.execute("SELECT MAX(id) FROM snapshots").fetchone()
@@ -123,6 +202,44 @@ def _format_return_paths(paths: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_rendered_program_nodes(nodes: list[dict]) -> str:
+    """Format rendered program node metadata."""
+    if not nodes:
+        return "(rendered program not found)"
+    lines: list[str] = []
+    for node in nodes:
+        parts = [
+            f"[{node['node_index']}]",
+            node["label_text"],
+            node["node_kind"],
+            f"lines={node['line_start']}-{node['line_end']}",
+        ]
+        if node.get("state_label"):
+            parts.append(f"state={node['state_label']}")
+        if node.get("handler_serial") is not None:
+            parts.append(f"handler=blk[{node['handler_serial']}]")
+        if node.get("entry_anchor") is not None:
+            parts.append(f"entry=blk[{node['entry_anchor']}]")
+        lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def _format_rendered_program_variants(variants: list[dict]) -> str:
+    """Format available rendered-program variants for a snapshot."""
+    if not variants:
+        return "(no rendered programs stored)"
+    lines: list[str] = []
+    for variant in variants:
+        lines.append(
+            f"{variant['variant_name']}: "
+            f"{variant['line_count']} lines, {variant['node_count']} nodes, "
+            f"{variant['order_strategy']}/{variant['program_strategy']}/"
+            f"{variant['label_render_mode']}/{variant['boundary_inline_mode']}/"
+            f"{variant['comment_mode']}"
+        )
+    return "\n".join(lines)
+
+
 def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> str:
     """Trace EA(s) across all snapshots and format output."""
     lines: list[str] = []
@@ -212,7 +329,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     common.add_argument(
         "--snapshot", type=int, default=-1,
-        help="Snapshot ID (-1 = latest, default: -1)",
+        help="Snapshot ID (-1 = latest). Ignored when --maturity/--phase are supplied.",
+    )
+    common.add_argument(
+        "--maturity",
+        help="Resolve snapshot by maturity (for example: GLBOPT1 or MMAT_GLBOPT1)",
+    )
+    common.add_argument(
+        "--phase",
+        help="Resolve snapshot by phase (for example: post_d810, pre_d810, post_apply)",
     )
 
     parser = argparse.ArgumentParser(
@@ -235,6 +360,29 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("return-paths", parents=[common],
                    help="Show return path hop status")
 
+    p_program = sub.add_parser(
+        "program",
+        parents=[common],
+        help="Show a stored rendered linearized-program variant "
+        "(optionally resolved by --maturity/--phase)",
+    )
+    p_program.add_argument(
+        "--variant",
+        default="semantic_reference_like",
+        help="Rendered program variant name (default: semantic_reference_like)",
+    )
+    p_program.add_argument(
+        "--nodes",
+        action="store_true",
+        help="Show rendered label nodes instead of full text",
+    )
+
+    sub.add_parser(
+        "program-variants",
+        parents=[common],
+        help="List stored rendered-program variants for a snapshot",
+    )
+
     p_ea = sub.add_parser(
         "ea-trace", parents=[common],
         help="Trace an EA across all snapshots (block lineage)",
@@ -251,7 +399,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     conn = sqlite3.connect(args.db)
-    snap_id = _resolve_snapshot_id(conn, args.snapshot)
+    snap_id = _resolve_snapshot_id(
+        conn,
+        args.snapshot,
+        maturity=getattr(args, "maturity", None),
+        phase=getattr(args, "phase", None),
+    )
 
     if args.command == "chain":
         print(_snapshot_header(conn, snap_id))
@@ -267,6 +420,20 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "return-paths":
         result = return_paths(conn, snap_id)
         print(_format_return_paths(result))
+    elif args.command == "program":
+        print(_snapshot_header(conn, snap_id))
+        if args.nodes:
+            print(
+                _format_rendered_program_nodes(
+                    rendered_program_nodes(conn, snap_id, args.variant)
+                )
+            )
+        else:
+            result = rendered_program_text(conn, snap_id, args.variant)
+            print(result if result is not None else "(rendered program not found)")
+    elif args.command == "program-variants":
+        print(_snapshot_header(conn, snap_id))
+        print(_format_rendered_program_variants(rendered_program_variants(conn, snap_id)))
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
 

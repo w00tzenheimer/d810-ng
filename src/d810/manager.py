@@ -259,6 +259,7 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
+        snapshot_id: int | None = None,
     ) -> None:
         """Write post-maturity MBA snapshot when configured via environment."""
         capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
@@ -283,6 +284,139 @@ class D810Manager:
             )
         except Exception:
             logger.exception("Post-D810 capture failed")
+
+    def _resolve_post_d810_linearization_context(
+        self,
+        mba: typing.Any,
+        target_maturity: int,
+    ) -> tuple[int | None, int | None]:
+        """Resolve dispatcher/state-var context for post-D810 rendering."""
+        entry_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        candidates = [
+            rule
+            for rule in getattr(self.block_optimizer, "cfg_rules", ())
+            if type(rule).__name__ == "HodurUnflattener"
+            and int(getattr(rule, "_last_func_ea", 0) or 0) == entry_ea
+        ]
+
+        def _try_rules(rules: list[typing.Any]) -> tuple[int | None, int | None]:
+            for rule in rules:
+                dispatcher_serial: int | None = None
+                dispatcher_ea = int(getattr(rule, "_last_dispatcher_ea", 0) or 0)
+                if dispatcher_ea:
+                    for i in range(int(getattr(mba, "qty", 0) or 0)):
+                        blk = mba.get_mblock(i)
+                        if blk is not None and int(getattr(blk, "start", 0) or 0) == dispatcher_ea:
+                            dispatcher_serial = int(getattr(blk, "serial", i))
+                            break
+                if dispatcher_serial is None:
+                    raw_serial = int(getattr(rule, "_last_dispatcher_serial", -1) or -1)
+                    if 0 <= raw_serial < int(getattr(mba, "qty", 0) or 0):
+                        dispatcher_serial = raw_serial
+
+                if dispatcher_serial is None:
+                    continue
+
+                state_var_stkoff: int | None = None
+                try:
+                    state_machine = getattr(rule, "state_machine", None)
+                    state_var_stkoff = rule._get_effective_state_var_stkoff(state_machine)
+                except Exception:
+                    state_var_stkoff = None
+                return dispatcher_serial, state_var_stkoff
+            return None, None
+
+        exact_maturity = [
+            rule
+            for rule in candidates
+            if getattr(rule, "_current_tracked_maturity", None) is None
+            or int(getattr(rule, "_current_tracked_maturity", 0)) == int(target_maturity)
+        ]
+        dispatcher_serial, state_var_stkoff = _try_rules(exact_maturity)
+        if dispatcher_serial is not None:
+            return dispatcher_serial, state_var_stkoff
+        dispatcher_serial, state_var_stkoff = _try_rules(candidates)
+        if dispatcher_serial is not None:
+            return dispatcher_serial, state_var_stkoff
+        return None, None
+
+    def attach_post_d810_rendered_program(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot_id: int | None = None,
+    ) -> None:
+        """Attach a rendered linearized program to a post-D810 snapshot."""
+        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
+        if not capture_mat_str:
+            return
+        try:
+            target_mat = int(capture_mat_str)
+        except ValueError:
+            return
+        if int(maturity) != target_mat:
+            return
+        if int(getattr(mba, "qty", 0) or 0) <= 0:
+            return
+
+        try:
+            from d810.core.diag import get_diag_db
+            from d810.core.diag.snapshot import snapshot_rendered_program
+            from d810.recon.flow.linearized_state_dag import (
+                BoundaryInlineMode,
+                ProgramCommentMode,
+                ProgramRenderStrategy,
+                RenderOrderStrategy,
+            )
+            from d810.recon.microcode_dump import (
+                build_live_linearized_program,
+                resolve_dispatcher_context_for_linearized_program,
+            )
+
+            diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+            if diag_db is None:
+                return
+
+            snap_id = snapshot_id
+            if snap_id is None:
+                snap_row = diag_db.execute(
+                    "SELECT MAX(id) FROM snapshots WHERE func_ea=? AND maturity=? AND phase='post_d810'",
+                    (int(getattr(mba, "entry_ea", 0) or 0), _maturity_name(int(maturity))),
+                ).fetchone()
+                if snap_row is None or snap_row[0] is None:
+                    return
+                snap_id = int(snap_row[0])
+
+            dispatcher_serial, state_var_stkoff = self._resolve_post_d810_linearization_context(
+                mba,
+                int(maturity),
+            )
+            if dispatcher_serial is None:
+                dispatcher_serial, state_var_stkoff = (
+                    resolve_dispatcher_context_for_linearized_program(mba)
+                )
+
+            if dispatcher_serial is None or dispatcher_serial < 0:
+                logger.debug(
+                    "post_d810 linearized program skipped: no trusted dispatcher context "
+                    "for func=0x%x maturity=%s",
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    _maturity_name(int(maturity)),
+                )
+                return
+
+            program = build_live_linearized_program(
+                mba,
+                dispatcher_serial,
+                state_var_stkoff=state_var_stkoff,
+                order_strategy=RenderOrderStrategy.SEMANTIC,
+                program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+                boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+                comment_mode=ProgramCommentMode.MINIMAL,
+            )
+            snapshot_rendered_program(diag_db, snap_id, program)
+        except Exception:
+            logger.debug("post_d810 rendered program attach failed", exc_info=True)
 
     def start(self):
         if self._started:
@@ -680,6 +814,9 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_mba
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.attach_post_d810_rendered_program
         )
 
         self.instruction_optimizer.event_emitter = self.event_emitter

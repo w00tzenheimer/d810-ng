@@ -20,6 +20,9 @@ def test_create_tables_creates_all_expected_tables():
     assert "dag_nodes" in tables
     assert "modifications" in tables
     assert "block_classification" in tables
+    assert "rendered_programs" in tables
+    assert "rendered_program_nodes" in tables
+    assert "rendered_program_lines" in tables
 
 
 def test_create_tables_idempotent():
