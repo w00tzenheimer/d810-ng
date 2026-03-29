@@ -110,6 +110,25 @@ class StateWriteReconstructionStrategy:
     def family(self) -> str:
         return FAMILY_DIRECT
 
+    @staticmethod
+    def _resolve_state_var_stkoff(snapshot, state_machine) -> int | None:
+        return resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(state_machine, "state_var", None),
+        )
+
+    @staticmethod
+    def _classify_artifact_return_blocks(
+        flow_graph,
+        state_var_stkoff: int,
+        state_constants: set[int],
+    ) -> set[int]:
+        return classify_artifact_return_blocks(
+            flow_graph,
+            state_var_stkoff=state_var_stkoff,
+            state_constants=state_constants,
+        )
+
     @classmethod
     def _make_edge_metadata(
         cls,
@@ -461,6 +480,85 @@ class StateWriteReconstructionStrategy:
                 emission_mode=candidate.emission_mode,
             )
         )
+
+    @classmethod
+    def _emit_shared_group(
+        cls,
+        shared_block: int,
+        candidates: list[ReconstructionCandidate],
+        *,
+        flow_graph,
+        dispatcher_serial: int,
+        bst_node_blocks: set[int],
+        mba,
+        builder: ModificationBuilder,
+        modifications: list,
+        owned_blocks: set[int],
+        owned_edges: set[tuple[int, int]],
+        accepted_metadata: list[dict[str, int | str | None]],
+        rejected_metadata: list[dict[str, int | str | None]],
+    ) -> int:
+        del dispatcher_serial, bst_node_blocks, builder
+
+        ordered_input_candidates = tuple(
+            SharedGroupEmissionCandidate(
+                via_pred=int(candidate.via_pred),
+                target_entry=int(candidate.target_entry),
+            )
+            for candidate in candidates
+            if candidate.via_pred is not None
+        )
+        if not ordered_input_candidates:
+            return 0
+
+        shared_plan = plan_shared_group_reconstruction_modifications(
+            flow_graph=flow_graph,
+            shared_block=int(shared_block),
+            ordered_path=tuple(int(serial) for serial in candidates[0].edge.ordered_path),
+            shared_candidates=ordered_input_candidates,
+        )
+        if not shared_plan.accepted:
+            rejected_metadata.extend(
+                cls._make_edge_metadata(
+                    candidate.edge,
+                    horizon_block=candidate.horizon_block,
+                    site=candidate.site,
+                    target_entry=candidate.target_entry,
+                    first_shared_block=shared_block,
+                    via_pred=candidate.via_pred,
+                    rejection_reason=shared_plan.rejection_reason,
+                )
+                for candidate in candidates
+                if candidate.via_pred is not None
+            )
+            return 0
+
+        by_pred = {
+            int(candidate.via_pred): candidate
+            for candidate in candidates
+            if candidate.via_pred is not None
+        }
+        ordered_candidates = [
+            by_pred[int(via_pred)] for via_pred in shared_plan.ordered_via_preds
+        ]
+        modifications.extend(shared_plan.modifications)
+        owned_blocks.add(int(shared_block))
+        for _, target_entry in shared_plan.per_pred_targets:
+            owned_edges.add((int(shared_block), int(target_entry)))
+        for candidate in ordered_candidates:
+            cls._record_accept(
+                accepted_metadata,
+                replace(candidate, emission_mode="duplicate_and_redirect"),
+            )
+        logger.info(
+            "RECON DAG: duplicate-and-redirect %s preds=%s",
+            blk_label(mba, shared_block),
+            [
+                (blk_label(mba, pred), blk_label(mba, target))
+                for pred, target in shared_plan.per_pred_targets
+            ],
+        )
+        return len(ordered_candidates)
 
     def is_applicable(self, snapshot) -> bool:
         sm = snapshot.state_machine
