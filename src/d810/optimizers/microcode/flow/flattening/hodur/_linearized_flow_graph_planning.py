@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.linearized_flow_graph_fragment_planning import (
+    LinearizedDagPlannableEdge,
+    LinearizedDagRoundSummary,
     LinearizedFlowGraphPlanningCallbacks,
     LinearizedFlowGraphPlanningContext,
     LinearizedFlowGraphPlanningResult,
@@ -147,7 +149,8 @@ def build_linearized_flow_graph_planning_callbacks(
     bst_result: object,
     mba: object | None,
     setup: LinearizedFlowGraphPlanSetup,
-    build_round_summary: object,
+    round_summary_adapter: object,
+    discover_round_summary: object,
     build_projected_mba: object,
     project_flow_graph: object,
     resolve_redirect_safe_target_entry: object,
@@ -156,10 +159,12 @@ def build_linearized_flow_graph_planning_callbacks(
     collect_residual_dispatcher_predecessors: object,
     emit_residual_dispatcher_handoffs: object,
     disconnect_bst_comparison_nodes: object,
+    build_live_dag: object,
+    build_transition_report: object,
+    select_plannable_edges: object,
 ) -> LinearizedFlowGraphPlanningCallbacks:
     return LinearizedFlowGraphPlanningCallbacks(
-        build_round_summary=lambda current_flow_graph, dag_round_mba: build_round_summary(
-            snapshot=snapshot,
+        build_round_summary=lambda current_flow_graph, dag_round_mba: round_summary_adapter(
             state_machine=state_machine,
             bst_result=bst_result,
             transition_result=setup.transition_result,
@@ -169,6 +174,10 @@ def build_linearized_flow_graph_planning_callbacks(
             state_var_stkoff=setup.state_var_stkoff,
             pre_header_serial=setup.pre_header_serial,
             bst_node_blocks=setup.bst_node_blocks,
+            build_round_summary=discover_round_summary,
+            build_live_dag=build_live_dag,
+            build_transition_report=build_transition_report,
+            select_plannable_edges=select_plannable_edges,
         ),
         build_projected_mba=build_projected_mba,
         project_flow_graph=project_flow_graph,
@@ -265,6 +274,80 @@ def build_linearized_flow_graph_planning_callbacks(
     )
 
 
+def build_linearized_dag_round_summary_adapter(
+    *,
+    state_machine: object,
+    bst_result: object,
+    transition_result: object,
+    current_flow_graph: object,
+    dag_round_mba: object | None,
+    dispatcher_serial: int,
+    state_var_stkoff: int | None,
+    pre_header_serial: int | None,
+    bst_node_blocks: frozenset[int],
+    build_round_summary: object,
+    build_live_dag: object,
+    build_transition_report: object,
+    select_plannable_edges: object,
+) -> LinearizedDagRoundSummary:
+    resolved_summary = build_round_summary(
+        current_flow_graph=current_flow_graph,
+        transition_result=transition_result,
+        dispatcher_serial=dispatcher_serial,
+        state_var_stkoff=state_var_stkoff,
+        pre_header_serial=pre_header_serial,
+        initial_state=state_machine.initial_state,
+        handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+        bst_node_blocks=tuple(sorted(bst_node_blocks)),
+        diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+        dispatcher=getattr(bst_result, "dispatcher", None),
+        mba=dag_round_mba,
+        handlers=state_machine.handlers,
+        build_live_dag=build_live_dag,
+        build_transition_report=build_transition_report,
+        select_plannable_edges=select_plannable_edges,
+    )
+    plannable_edges = tuple(
+        LinearizedDagPlannableEdge(
+            edge=entry.edge,
+            source_anchor_block=int(entry.source_anchor_block),
+            ordered_path=tuple(int(node) for node in entry.ordered_path),
+            target_entry_anchor=(
+                int(entry.target_entry_anchor)
+                if entry.target_entry_anchor is not None
+                else None
+            ),
+            is_conditional_transition=bool(entry.is_conditional_transition),
+            requires_safe_target_resolution=bool(
+                entry.requires_safe_target_resolution
+            ),
+        )
+        for entry in resolved_summary.plannable_edges
+    )
+    return LinearizedDagRoundSummary(
+        dag=resolved_summary.dag,
+        plannable_edges=plannable_edges,
+        report_exit_handlers=frozenset(
+            int(handler) for handler in resolved_summary.report_exit_handlers
+        ),
+        report_exit_owned_blocks=frozenset(
+            int(block) for block in resolved_summary.report_exit_owned_blocks
+        ),
+        terminal_source_keys=frozenset(resolved_summary.terminal_source_keys),
+        terminal_source_handlers=frozenset(
+            int(handler) for handler in resolved_summary.terminal_source_handlers
+        ),
+        terminal_source_owned_blocks=frozenset(
+            int(block) for block in resolved_summary.terminal_source_owned_blocks
+        ),
+        terminal_protected_blocks=frozenset(
+            int(block) for block in resolved_summary.terminal_protected_blocks
+        ),
+        terminal_skipped=int(resolved_summary.terminal_skipped),
+        unknown_skipped=int(resolved_summary.unknown_skipped),
+    )
+
+
 def log_linearized_flow_graph_plan_result(
     logger: object,
     *,
@@ -351,6 +434,7 @@ def build_linearized_flow_graph_plan_fragment(
 
 __all__ = [
     "LinearizedFlowGraphPlanSetup",
+    "build_linearized_dag_round_summary_adapter",
     "build_linearized_flow_graph_plan_fragment",
     "build_linearized_flow_graph_planning_callbacks",
     "build_linearized_flow_graph_planning_context",
