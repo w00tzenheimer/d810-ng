@@ -16,6 +16,9 @@ from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.dag_redirect_modification_planning import (
     plan_dag_redirect_fallback_emission,
 )
+from d810.cfg.dispatcher_backedge_disconnect_planning import (
+    plan_dispatcher_backedge_disconnects,
+)
 from d810.cfg.exit_transition_planning import (
     ExitRedirectAttempt,
     plan_exit_redirects,
@@ -64,6 +67,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._residual_handoff_bridge import (
+    _resolve_state_via_valranges,
     is_semantic_handoff_redirect,
     resolve_effective_target_entry,
     resolve_singleton_state_write_value,
@@ -85,6 +89,7 @@ from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
+    has_live_exact_residual_handoff,
     is_raw_state_label,
     iter_residual_prefix_handoffs,
     resolve_assignment_map_handoff_target,
@@ -598,23 +603,13 @@ class LinearizedFlowGraphStrategy:
             return False
         state_var_stkoff = cls._resolve_state_var_stkoff(snapshot, sm)
         dispatcher = getattr(bst_result, "dispatcher", None)
-        if state_var_stkoff is None or dispatcher is None:
-            return False
-        for block_serial in residual_preds:
-            state_value = resolve_singleton_state_write_value(
-                mba,
-                block_serial,
-                state_var_stkoff=state_var_stkoff,
-            )
-            if state_value is None:
-                continue
-            if not dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
-                continue
-            target = dispatcher_exact_state_target(state_value, dispatcher=dispatcher)
-            if target is None or target == block_serial:
-                continue
-            return True
-        return False
+        return has_live_exact_residual_handoff(
+            mba,
+            residual_preds,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher=dispatcher,
+            resolve_state_via_valranges=_resolve_state_via_valranges(),
+        )
 
     # ------------------------------------------------------------------
     # Plan
@@ -2427,58 +2422,26 @@ class LinearizedFlowGraphStrategy:
         Returns:
             Number of blocks disconnected from the dispatcher.
         """
-        if dispatcher_serial < 0:
-            return 0
+        plans = plan_dispatcher_backedge_disconnects(
+            block_nsucc_map=builder.block_nsucc_map,
+            block_succ_map=builder.block_succ_map,
+            dispatcher_serial=int(dispatcher_serial),
+            bst_node_blocks={int(block) for block in bst_node_blocks},
+            emitted=emitted,
+        )
 
-        # Build set of block serials that already have a redirect from
-        # the main handler-linearization pass.  These blocks must NOT
-        # receive a second conflicting redirect.
-        already_redirected: set[int] = {src for src, _ in emitted}
-
-        disconnect_count = 0
-        # Scan ALL blocks in the flow graph, not just BST nodes.
-        for serial in sorted(builder.block_nsucc_map):
-            # Skip the dispatcher itself.
-            if serial == dispatcher_serial:
-                continue
-            # Skip blocks already handled by the main redirect pass.
-            if serial in already_redirected:
-                continue
-
-            nsucc = builder.block_nsucc_map.get(serial, 0)
-            if nsucc != 2:
-                continue
-
-            succs = list(builder.block_succ_map.get(serial, ()))
-            if len(succs) != 2:
-                continue
-
-            succ0, succ1 = succs[0], succs[1]
-
-            # Check if either successor is the dispatcher.
-            if succ0 != dispatcher_serial and succ1 != dispatcher_serial:
-                continue
-
-            # Keep the non-dispatcher successor.
-            keep_serial = succ1 if succ0 == dispatcher_serial else succ0
-
-            emit_key = (serial, keep_serial)
-            if emit_key in emitted:
-                continue
-            emitted.add(emit_key)
-
-            mod = builder.convert_to_goto(serial, keep_serial)
-            modifications.append(mod)
-            disconnect_count += 1
-
-            is_bst = serial in bst_node_blocks
+        for plan in plans:
+            emitted.add((int(plan.source_block), int(plan.keep_target)))
+            modifications.append(
+                builder.convert_to_goto(int(plan.source_block), int(plan.keep_target))
+            )
             logger.info(
                 "BST_DISCONNECT: %s (%s) 2-way -> 1-way goto "
                 "%s (removed dispatcher back-edge to %s)",
-                blk_label(mba, serial) if mba else f"blk[{serial}]",
-                "BST" if is_bst else "handler",
-                blk_label(mba, keep_serial) if mba else f"blk[{keep_serial}]",
+                blk_label(mba, int(plan.source_block)) if mba else f"blk[{int(plan.source_block)}]",
+                "BST" if plan.is_bst else "handler",
+                blk_label(mba, int(plan.keep_target)) if mba else f"blk[{int(plan.keep_target)}]",
                 blk_label(mba, dispatcher_serial) if mba else f"blk[{dispatcher_serial}]",
             )
 
-        return disconnect_count
+        return len(plans)

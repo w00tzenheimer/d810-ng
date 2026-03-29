@@ -104,6 +104,36 @@ def dispatcher_exact_state_target(
     return None
 
 
+def has_live_exact_residual_handoff(
+    mba: object,
+    residual_preds: tuple[int, ...],
+    *,
+    state_var_stkoff: int | None,
+    dispatcher: object | None,
+    resolve_state_via_valranges: object | None = None,
+) -> bool:
+    """Return whether any residual predecessor already writes an exact dispatcher row."""
+    if mba is None or dispatcher is None or state_var_stkoff is None:
+        return False
+
+    for block_serial in residual_preds:
+        state_value = resolve_singleton_state_write_value(
+            mba,
+            int(block_serial),
+            state_var_stkoff=state_var_stkoff,
+            resolve_state_via_valranges=resolve_state_via_valranges,
+        )
+        if state_value is None:
+            continue
+        if not dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
+            continue
+        target = dispatcher_exact_state_target(state_value, dispatcher=dispatcher)
+        if target is None or int(target) == int(block_serial):
+            continue
+        return True
+    return False
+
+
 def resolve_path_lead_entry_from_node(
     dag: LinearizedStateDag,
     node: StateDagNode,
@@ -1794,6 +1824,7 @@ __all__ = [
     "collect_residual_source_handoff_facts",
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
+    "has_live_exact_residual_handoff",
     "block_has_state_var_write",
     "is_raw_state_label",
     "is_state_var_dest",
