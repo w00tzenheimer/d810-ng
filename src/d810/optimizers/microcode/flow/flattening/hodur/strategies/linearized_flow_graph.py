@@ -58,6 +58,7 @@ from d810.cfg.residual_handoff_planning import (
     ResidualPredSplitAttempt,
 )
 from d810.cfg.residual_handoff_modification_planning import (
+    apply_residual_branch_anchor_emission_plan,
     plan_projected_alias_handoff_normalization,
     plan_residual_branch_anchor_emission,
 )
@@ -422,16 +423,15 @@ class LinearizedFlowGraphStrategy:
             return False
         if decision.already_claimed:
             return True
-        assert decision.modification is not None
-        modifications.append(decision.modification)
-        claimed_2way[(int(decision.branch_source), int(decision.old_target))] = int(
-            decision.prefix_target
+        apply_residual_branch_anchor_emission_plan(
+            decision,
+            modifications=modifications,
+            claimed_2way=claimed_2way,
+            emitted=emitted,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
         )
-        emitted.add((int(decision.branch_source), int(decision.prefix_target)))
-        owned_blocks.add(int(decision.branch_source))
-        owned_edges.add((int(decision.branch_source), int(decision.prefix_target)))
-        if decision.owned_transition is not None:
-            owned_transitions.add(decision.owned_transition)
         logger.info(
             "LFG DAG: residual branch handoff %s -> %s (bypassing %s -> %s via %s)",
             blk_label(mba, int(decision.branch_source)),
