@@ -60,6 +60,9 @@ from d810.cfg.path_tail_modification_planning import (
     plan_path_tail_emission,
 )
 from d810.cfg.plan import compile_patch_plan
+from d810.cfg.projected_alias_normalization_planning import (
+    collect_projected_alias_normalization_actions,
+)
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
@@ -1583,80 +1586,36 @@ class LinearizedFlowGraphStrategy:
         claimed_1way: dict[int, int],
         mba: object,
     ) -> int:
-        normalized = 0
-        ignored_blocks = set(bst_node_blocks)
-        ignored_blocks.add(dispatcher_serial)
+        actions = collect_projected_alias_normalization_actions(
+            dag=dag,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_serial=int(dispatcher_serial),
+            redirected_blocks={int(block) for block in redirected_blocks},
+            bst_node_blocks={int(block) for block in bst_node_blocks},
+            modifications=modifications,
+            emitted=emitted,
+            resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
+        )
 
-        for source_block in sorted(redirected_blocks):
-            block = projected_flow_graph.get_block(source_block)
-            if block is None or tuple(getattr(block, "succs", ())) is None:
-                continue
-            succs = tuple(getattr(block, "succs", ()))
-            if len(succs) != 1:
-                continue
-            current_target = succs[0]
-            projected_handoff = cls._resolve_projected_path_tail_target(
-                dag,
-                source_block=source_block,
-                bst_node_blocks=bst_node_blocks,
-            )
-            if projected_handoff is None:
-                continue
-            _, target_entry = projected_handoff
-            if target_entry == source_block or target_entry == current_target:
-                continue
-            if target_reaches_source_ignoring_blocks(
-                projected_flow_graph,
-                target_entry=target_entry,
-                source_block=source_block,
-                ignored_blocks=ignored_blocks,
-            ):
-                continue
-            emit_key = (source_block, target_entry)
-
-            existing_index = None
-            existing_mod_old_target = None
-            existing_mod_target = None
-            for idx in range(len(modifications) - 1, -1, -1):
-                mod = modifications[idx]
-                if isinstance(mod, RedirectGoto) and mod.from_serial == source_block:
-                    existing_index = idx
-                    existing_mod_old_target = int(mod.old_target)
-                    existing_mod_target = int(mod.new_target)
-                    break
-
-            plan = plan_projected_alias_handoff_normalization(
-                source_block=int(source_block),
-                current_target=int(current_target),
-                target_entry=int(target_entry),
-                existing_redirect_index=(
-                    int(existing_index) if existing_index is not None else None
-                ),
-                existing_redirect_old_target=existing_mod_old_target,
-                existing_redirect_target=existing_mod_target,
-                already_emitted=(emit_key in emitted),
-            )
-            if not plan.accepted or plan.modification is None:
-                continue
-            if plan.replace_index is not None:
-                modifications[plan.replace_index] = plan.modification
-                if plan.replaced_target is not None:
-                    emitted.discard((source_block, int(plan.replaced_target)))
+        for action in actions:
+            if action.replace_index is not None:
+                modifications[action.replace_index] = action.modification
+                if action.replaced_target is not None:
+                    emitted.discard((int(action.source_block), int(action.replaced_target)))
             else:
-                modifications.append(plan.modification)
-            claimed_1way[source_block] = target_entry
-            emitted.add(emit_key)
-            owned_blocks.add(source_block)
-            owned_edges.add((source_block, target_entry))
+                modifications.append(action.modification)
+            claimed_1way[int(action.source_block)] = int(action.target_entry)
+            emitted.add((int(action.source_block), int(action.target_entry)))
+            owned_blocks.add(int(action.source_block))
+            owned_edges.add((int(action.source_block), int(action.target_entry)))
             logger.info(
                 "LFG DAG: normalized projected residual handoff %s -> %s (was %s)",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-                blk_label(mba, current_target),
+                blk_label(mba, int(action.source_block)),
+                blk_label(mba, int(action.target_entry)),
+                blk_label(mba, int(action.current_target)),
             )
-            normalized += 1
 
-        return normalized
+        return len(actions)
 
     @classmethod
     def _emit_path_tail_redirect(
