@@ -14,7 +14,8 @@ import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.dag_redirect_modification_planning import (
-    plan_dag_redirect_fallback_emission,
+    DagRedirectFallbackContext,
+    plan_dag_redirect_fallback,
 )
 from d810.cfg.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
@@ -1995,23 +1996,6 @@ class LinearizedFlowGraphStrategy:
             )
 
         source_block = edge.source_anchor.block_serial
-        if edge.source_key.handler_serial in report_exit_handlers:
-            return False
-        if edge.ordered_path and edge.ordered_path[0] in report_exit_handlers:
-            return False
-        if source_block == target_entry:
-            return False
-        if is_backward_same_corridor_target(
-            ordered_path=tuple(int(node) for node in edge.ordered_path),
-            source_block=source_block,
-            target_entry=target_entry,
-        ):
-            logger.info(
-                "LFG DAG: skipping %s -> %s because target is earlier in the same corridor",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-            )
-            return False
         allow_semantic_handoff = is_semantic_handoff_redirect(
             dag,
             edge,
@@ -2022,49 +2006,20 @@ class LinearizedFlowGraphStrategy:
             dispatcher=dispatcher,
             mba=mba,
         )
-        if (
-            not allow_semantic_handoff
-            and target_reaches_source_ignoring_blocks(
-                flow_graph,
-                target_entry=target_entry,
-                source_block=source_block,
-                ignored_blocks=set(dispatcher_region) | set(bst_node_blocks),
-            )
-        ):
-            logger.info(
-                "LFG DAG: skipping %s -> %s because target already reaches source",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-            )
-            return False
-        if allow_semantic_handoff and target_reaches_source_ignoring_blocks(
+        target_reaches_source = target_reaches_source_ignoring_blocks(
             flow_graph,
             target_entry=target_entry,
             source_block=source_block,
             ignored_blocks=set(dispatcher_region) | set(bst_node_blocks),
-        ):
+        )
+        if allow_semantic_handoff and target_reaches_source:
             logger.info(
                 "LFG DAG: allowing semantic handoff %s -> %s despite existing backreach",
                 blk_label(mba, source_block),
                 blk_label(mba, target_entry),
             )
-        if source_block in blocked_sources:
-            return False
-        if source_block in terminal_protected_blocks:
-            return False
-        if source_block in report_exit_owned_blocks:
-            return False
-        if (
-            edge.kind == SemanticEdgeKind.TRANSITION
-            and source_block in terminal_source_owned_blocks
-        ):
-            return False
-        if edge.ordered_path and source_block != edge.ordered_path[-1]:
-            return False
 
         emit_key = (source_block, target_entry)
-        if emit_key in emitted:
-            return False
 
         nsucc = builder.block_nsucc_map.get(source_block, 1)
         old_target = resolve_redirect_old_target(
@@ -2092,49 +2047,89 @@ class LinearizedFlowGraphStrategy:
             if nsucc == 2 and old_target is not None
             else None
         )
-        emission_plan = plan_dag_redirect_fallback_emission(
-            source_block=int(source_block),
-            target_entry=int(target_entry),
-            nsucc=int(nsucc),
-            old_target=(int(old_target) if old_target is not None else None),
-            source_succs=tuple(int(succ) for succ in builder.block_succ_map.get(source_block, ())),
-            edge_is_transition=(edge.kind == SemanticEdgeKind.TRANSITION),
-            live_oneway_noop=is_live_oneway_noop(
-                source_succs=tuple(builder.block_succ_map.get(source_block, ())),
-                target_entry=target_entry,
-            ),
-            claimed_1way_target=claimed_1way.get(source_block),
-            claimed_2way_target=(
-                claimed_2way.get(branch_key)
-                if branch_key is not None
-                else None
-            ),
+        decision = plan_dag_redirect_fallback(
+            DagRedirectFallbackContext(
+                source_block=int(source_block),
+                target_entry=int(target_entry),
+                source_handler_is_report_exit=(
+                    edge.source_key.handler_serial in report_exit_handlers
+                ),
+                ordered_path_head_is_report_exit=(
+                    bool(edge.ordered_path) and edge.ordered_path[0] in report_exit_handlers
+                ),
+                source_equals_target=(int(source_block) == int(target_entry)),
+                backward_same_corridor=is_backward_same_corridor_target(
+                    ordered_path=tuple(int(node) for node in edge.ordered_path),
+                    source_block=source_block,
+                    target_entry=target_entry,
+                ),
+                allow_semantic_handoff=bool(allow_semantic_handoff),
+                target_reaches_source=bool(target_reaches_source),
+                source_blocked=(source_block in blocked_sources),
+                source_terminal_protected=(source_block in terminal_protected_blocks),
+                source_in_report_exit_owned=(source_block in report_exit_owned_blocks),
+                source_in_terminal_source_owned_transition=(
+                    edge.kind == SemanticEdgeKind.TRANSITION
+                    and source_block in terminal_source_owned_blocks
+                ),
+                ordered_path_ends_at_source=(
+                    not edge.ordered_path or source_block == edge.ordered_path[-1]
+                ),
+                emitted_already=(emit_key in emitted),
+                nsucc=int(nsucc),
+                old_target=(int(old_target) if old_target is not None else None),
+                source_succs=tuple(int(succ) for succ in builder.block_succ_map.get(source_block, ())),
+                edge_is_transition=(edge.kind == SemanticEdgeKind.TRANSITION),
+                live_oneway_noop=is_live_oneway_noop(
+                    source_succs=tuple(builder.block_succ_map.get(source_block, ())),
+                    target_entry=target_entry,
+                ),
+                claimed_1way_target=claimed_1way.get(source_block),
+                claimed_2way_target=(
+                    claimed_2way.get(branch_key)
+                    if branch_key is not None
+                    else None
+                ),
+            )
         )
-        if not emission_plan.accepted or emission_plan.modification is None:
-            if emission_plan.rejection_reason == "live_oneway_noop":
+        if not decision.accepted or decision.emission_plan is None:
+            if decision.rejection_reason == "backward_same_corridor":
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because target is earlier in the same corridor",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                )
+            elif decision.rejection_reason == "target_reaches_source":
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because target already reaches source",
+                    blk_label(mba, source_block),
+                    blk_label(mba, target_entry),
+                )
+            elif decision.rejection_reason == "live_oneway_noop":
                 logger.info(
                     "LFG DAG: skipping %s -> %s because live CFG already has that 1-way handoff",
                     blk_label(mba, source_block),
                     blk_label(mba, target_entry),
                 )
-            elif emission_plan.rejection_reason == "branch_conflict":
+            elif decision.rejection_reason == "branch_conflict":
                 assert old_target is not None
                 logger.info(
                     "LFG DAG: conflict on 2-way %s old=%s: already -> %s, skipping -> %s",
                     blk_label(mba, source_block),
                     blk_label(mba, old_target),
-                    blk_label(mba, emission_plan.existing_target),
+                    blk_label(mba, decision.emission_plan.existing_target),
                     blk_label(mba, target_entry),
                 )
-            elif emission_plan.rejection_reason == "oneway_conflict":
+            elif decision.rejection_reason == "oneway_conflict":
                 logger.info(
                     "LFG DAG: conflict on 1-way %s: already -> %s, skipping -> %s",
                     blk_label(mba, source_block),
-                    blk_label(mba, emission_plan.existing_target),
+                    blk_label(mba, decision.emission_plan.existing_target),
                     blk_label(mba, target_entry),
                 )
             return False
 
+        emission_plan = decision.emission_plan
         modifications.append(emission_plan.modification)
         if emission_plan.claim_2way_key is not None and emission_plan.claim_2way_target is not None:
             claimed_2way[emission_plan.claim_2way_key] = emission_plan.claim_2way_target
