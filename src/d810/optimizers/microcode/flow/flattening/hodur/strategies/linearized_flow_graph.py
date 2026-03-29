@@ -13,6 +13,9 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.dag_redirect_modification_planning import (
+    plan_dag_redirect_fallback_emission,
+)
 from d810.cfg.exit_transition_planning import (
     ExitRedirectAttempt,
     plan_exit_redirects,
@@ -2071,8 +2074,6 @@ class LinearizedFlowGraphStrategy:
             return False
 
         nsucc = builder.block_nsucc_map.get(source_block, 1)
-        if nsucc == 2 and edge.kind == SemanticEdgeKind.TRANSITION:
-            return False
         old_target = resolve_redirect_old_target(
             source_block,
             source_succs=tuple(builder.block_succ_map.get(source_block, ())),
@@ -2093,58 +2094,58 @@ class LinearizedFlowGraphStrategy:
             bst_node_blocks=bst_node_blocks,
             dispatcher_region=dispatcher_region,
         )
-        if nsucc == 2:
-            if old_target is None or old_target == target_entry:
-                return False
-            branch_key = (source_block, old_target)
-            existing_target = claimed_2way.get(branch_key)
-            if existing_target is not None:
-                if existing_target == target_entry:
-                    return False
-                logger.info(
-                    "LFG DAG: conflict on 2-way %s old=%s: already -> %s, skipping -> %s",
-                    blk_label(mba, source_block),
-                    blk_label(mba, old_target),
-                    blk_label(mba, existing_target),
-                    blk_label(mba, target_entry),
-                )
-                return False
-            modifications.append(
-                builder.edge_redirect(
-                    source_block=source_block,
-                    target_block=target_entry,
-                    old_target=old_target,
-                )
-            )
-            claimed_2way[branch_key] = target_entry
-        else:
-            if is_live_oneway_noop(
+        branch_key = (
+            (source_block, int(old_target))
+            if nsucc == 2 and old_target is not None
+            else None
+        )
+        emission_plan = plan_dag_redirect_fallback_emission(
+            source_block=int(source_block),
+            target_entry=int(target_entry),
+            nsucc=int(nsucc),
+            old_target=(int(old_target) if old_target is not None else None),
+            edge_is_transition=(edge.kind == SemanticEdgeKind.TRANSITION),
+            live_oneway_noop=is_live_oneway_noop(
                 source_succs=tuple(builder.block_succ_map.get(source_block, ())),
                 target_entry=target_entry,
-            ):
+            ),
+            claimed_1way_target=claimed_1way.get(source_block),
+            claimed_2way_target=(
+                claimed_2way.get(branch_key)
+                if branch_key is not None
+                else None
+            ),
+        )
+        if not emission_plan.accepted or emission_plan.modification is None:
+            if emission_plan.rejection_reason == "live_oneway_noop":
                 logger.info(
                     "LFG DAG: skipping %s -> %s because live CFG already has that 1-way handoff",
                     blk_label(mba, source_block),
                     blk_label(mba, target_entry),
                 )
-                return False
-            existing_target = claimed_1way.get(source_block)
-            if existing_target is not None and existing_target != target_entry:
+            elif emission_plan.rejection_reason == "branch_conflict":
+                assert old_target is not None
+                logger.info(
+                    "LFG DAG: conflict on 2-way %s old=%s: already -> %s, skipping -> %s",
+                    blk_label(mba, source_block),
+                    blk_label(mba, old_target),
+                    blk_label(mba, emission_plan.existing_target),
+                    blk_label(mba, target_entry),
+                )
+            elif emission_plan.rejection_reason == "oneway_conflict":
                 logger.info(
                     "LFG DAG: conflict on 1-way %s: already -> %s, skipping -> %s",
                     blk_label(mba, source_block),
-                    blk_label(mba, existing_target),
+                    blk_label(mba, emission_plan.existing_target),
                     blk_label(mba, target_entry),
                 )
-                return False
-            modifications.append(
-                builder.goto_redirect(
-                    source_block=source_block,
-                    target_block=target_entry,
-                    old_target=old_target,
-                )
-            )
-            claimed_1way[source_block] = target_entry
+            return False
+
+        modifications.append(emission_plan.modification)
+        if emission_plan.claim_2way_key is not None and emission_plan.claim_2way_target is not None:
+            claimed_2way[emission_plan.claim_2way_key] = emission_plan.claim_2way_target
+        if emission_plan.claim_1way_target is not None:
+            claimed_1way[source_block] = emission_plan.claim_1way_target
 
         emitted.add(emit_key)
         owned_blocks.add(source_block)
