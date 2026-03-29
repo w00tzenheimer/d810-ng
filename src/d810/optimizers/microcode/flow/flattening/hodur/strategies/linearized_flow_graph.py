@@ -44,6 +44,7 @@ from d810.cfg.residual_handoff_planning import (
     plan_residual_handoff,
 )
 from d810.cfg.residual_handoff_modification_planning import (
+    plan_projected_alias_handoff_normalization,
     plan_residual_branch_anchor_emission,
 )
 from d810.cfg.path_tail_modification_planning import (
@@ -1569,33 +1570,35 @@ class LinearizedFlowGraphStrategy:
             emit_key = (source_block, target_entry)
 
             existing_index = None
-            existing_mod = None
+            existing_mod_old_target = None
+            existing_mod_target = None
             for idx in range(len(modifications) - 1, -1, -1):
                 mod = modifications[idx]
                 if isinstance(mod, RedirectGoto) and mod.from_serial == source_block:
                     existing_index = idx
-                    existing_mod = mod
+                    existing_mod_old_target = int(mod.old_target)
+                    existing_mod_target = int(mod.new_target)
                     break
 
-            if existing_mod is not None:
-                if existing_mod.new_target == target_entry:
-                    continue
-                modifications[existing_index] = RedirectGoto(
-                    from_serial=source_block,
-                    old_target=existing_mod.old_target,
-                    new_target=target_entry,
-                )
-                emitted.discard((source_block, existing_mod.new_target))
-            elif emit_key in emitted:
+            plan = plan_projected_alias_handoff_normalization(
+                source_block=int(source_block),
+                current_target=int(current_target),
+                target_entry=int(target_entry),
+                existing_redirect_index=(
+                    int(existing_index) if existing_index is not None else None
+                ),
+                existing_redirect_old_target=existing_mod_old_target,
+                existing_redirect_target=existing_mod_target,
+                already_emitted=(emit_key in emitted),
+            )
+            if not plan.accepted or plan.modification is None:
                 continue
+            if plan.replace_index is not None:
+                modifications[plan.replace_index] = plan.modification
+                if plan.replaced_target is not None:
+                    emitted.discard((source_block, int(plan.replaced_target)))
             else:
-                modifications.append(
-                    builder.goto_redirect(
-                        source_block=source_block,
-                        target_block=target_entry,
-                        old_target=current_target,
-                    )
-                )
+                modifications.append(plan.modification)
             claimed_1way[source_block] = target_entry
             emitted.add(emit_key)
             owned_blocks.add(source_block)
