@@ -29,7 +29,6 @@ from d810.cfg.lowering_selector import (
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
     ResidualPrefixPeelContext,
-    can_duplicate_path_tail,
     is_backward_same_corridor_target,
     is_live_oneway_noop,
     is_valid_pred_split_pair,
@@ -46,6 +45,10 @@ from d810.cfg.residual_handoff_planning import (
 )
 from d810.cfg.residual_handoff_modification_planning import (
     plan_residual_branch_anchor_emission,
+)
+from d810.cfg.path_tail_modification_planning import (
+    PathTailEmissionKind,
+    plan_path_tail_emission,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.core import logging
@@ -1786,127 +1789,31 @@ class LinearizedFlowGraphStrategy:
                 shared_handoff[0],
             )
             return False
-        if (
-            npreds > 1
-            and shared_handoff is not None
-            and shared_handoff[1] == target_entry
-        ):
-            existing_target = claimed_exits.get(source_block)
-            if existing_target is not None:
-                if existing_target == target_entry:
-                    return False
-                return False
-            existing_1way_target = claimed_1way.get(source_block)
-            if existing_1way_target is not None:
-                if existing_1way_target == target_entry:
-                    return False
-                return False
-            modifications.append(
-                builder.goto_redirect(
-                    source_block=source_block,
-                    target_block=target_entry,
-                    old_target=old_target,
-                )
-            )
-            claimed_exits[source_block] = target_entry
-            claimed_1way[source_block] = target_entry
-            emitted.add(emit_key)
-            owned_blocks.add(source_block)
-            owned_edges.add((source_block, target_entry))
-            if edge.source_key.state_const is not None and edge.target_state is not None:
-                owned_transitions.add(
-                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                )
-            logger.info(
-                "LFG DAG: shared tail redirect %s -> %s via %s",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-                edge.kind.name.lower(),
-            )
-            return True
-
-        if npreds <= 1:
-            existing_target = claimed_exits.get(source_block)
-            if existing_target is not None:
-                if existing_target == target_entry:
-                    return False
-                return False
-            existing_1way_target = claimed_1way.get(source_block)
-            if existing_1way_target is not None:
-                if existing_1way_target == target_entry:
-                    return False
-                return False
-            modifications.append(
-                builder.goto_redirect(
-                    source_block=source_block,
-                    target_block=target_entry,
-                    old_target=old_target,
-                )
-            )
-            claimed_exits[source_block] = target_entry
-            claimed_1way[source_block] = target_entry
-            emitted.add(emit_key)
-            owned_blocks.add(source_block)
-            owned_edges.add((source_block, target_entry))
-            if edge.source_key.state_const is not None and edge.target_state is not None:
-                owned_transitions.add(
-                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                )
-            logger.info(
-                "LFG DAG: path-tail redirect %s -> %s via %s",
-                blk_label(mba, source_block),
-                blk_label(mba, target_entry),
-                edge.kind.name.lower(),
-            )
-            return True
-
         via_pred = edge.ordered_path[-2] if len(edge.ordered_path) >= 2 else None
-        if is_valid_pred_split_pair(
-            source_block,
-            via_pred=via_pred,
-            source_succs=tuple(builder.block_succ_map.get(source_block, ())),
-            via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
-        ):
-            assert via_pred is not None
-            if via_pred in blocked_sources:
-                return False
-            if via_pred in terminal_protected_blocks:
-                return False
-            edge_key = (source_block, via_pred)
-            existing_target = claimed_path_edges.get(edge_key)
-            if existing_target is not None:
-                if existing_target == target_entry:
-                    return False
-                return False
-            modifications.append(
-                builder.edge_redirect(
-                    source_block=source_block,
-                    target_block=target_entry,
-                    old_target=old_target,
-                    via_pred=via_pred,
-                )
-            )
-            claimed_path_edges[edge_key] = target_entry
-            blocked_sources.add(via_pred)
-            emitted.add(emit_key)
-            owned_blocks.add(source_block)
-            owned_blocks.add(via_pred)
-            owned_edges.add((source_block, target_entry))
-            if edge.source_key.state_const is not None and edge.target_state is not None:
-                owned_transitions.add(
-                    (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                )
-            logger.info(
-                "LFG DAG: path-tail pred-split %s via %s -> %s",
-                blk_label(mba, source_block),
-                blk_label(mba, via_pred),
-                blk_label(mba, target_entry),
-            )
-            return True
-
-        if can_duplicate_path_tail(
-            source_block,
-            via_pred=via_pred,
+        other_preds = tuple(
+            pred for pred in tuple(source_snapshot.preds)
+            if pred != via_pred
+        )
+        plan = plan_path_tail_emission(
+            source_block=int(source_block),
+            target_entry=int(target_entry),
+            old_target=int(old_target),
+            npreds=int(npreds),
+            shared_handoff_target=(
+                int(shared_handoff[1]) if shared_handoff is not None else None
+            ),
+            existing_exit_target=claimed_exits.get(source_block),
+            existing_1way_target=claimed_1way.get(source_block),
+            via_pred=(int(via_pred) if via_pred is not None else None),
+            existing_path_edge_target=(
+                claimed_path_edges.get((source_block, via_pred))
+                if via_pred is not None
+                else None
+            ),
+            via_pred_blocked=(via_pred in blocked_sources if via_pred is not None else False),
+            via_pred_terminal_protected=(
+                via_pred in terminal_protected_blocks if via_pred is not None else False
+            ),
             source_succs=tuple(getattr(source_snapshot, "succs", ())),
             via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
             source_is_conditional_branch=(
@@ -1914,43 +1821,65 @@ class LinearizedFlowGraphStrategy:
             ),
             source_anchor_block=edge.source_anchor.block_serial,
             source_branch_arm=edge.source_anchor.branch_arm,
-        ):
-            assert via_pred is not None
-            if via_pred in blocked_sources:
-                return False
-            other_preds = [
-                pred for pred in tuple(source_snapshot.preds)
-                if pred != via_pred
-            ]
-            if other_preds:
-                modifications.append(
-                    builder.duplicate_and_redirect(
-                        source_block=source_block,
-                        per_pred_targets=[
-                            (other_preds[0], old_target),
-                            (via_pred, target_entry),
-                        ],
-                    )
-                )
-                blocked_sources.add(via_pred)
-                emitted.add(emit_key)
-                owned_blocks.add(source_block)
-                owned_blocks.add(via_pred)
-                owned_blocks.add(other_preds[0])
-                owned_edges.add((source_block, target_entry))
-                if edge.source_key.state_const is not None and edge.target_state is not None:
-                    owned_transitions.add(
-                        (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
-                    )
-                logger.info(
-                    "LFG DAG: path-tail duplicate %s via %s -> %s",
-                    blk_label(mba, source_block),
-                    blk_label(mba, via_pred),
-                    blk_label(mba, target_entry),
-                )
-                return True
+            other_preds=tuple(int(pred) for pred in other_preds),
+        )
+        if not plan.accepted or plan.modification is None:
+            return False
+        modifications.append(plan.modification)
+        emitted.add(emit_key)
+        owned_blocks.add(source_block)
+        owned_edges.add((source_block, target_entry))
+        if edge.source_key.state_const is not None and edge.target_state is not None:
+            owned_transitions.add(
+                (edge.source_key.state_const, edge.target_state & 0xFFFFFFFF)
+            )
+        if plan.kind in (PathTailEmissionKind.SHARED_GOTO, PathTailEmissionKind.DIRECT_GOTO):
+            claimed_exits[source_block] = target_entry
+            claimed_1way[source_block] = target_entry
+        elif plan.kind == PathTailEmissionKind.PRED_SPLIT:
+            assert plan.path_edge_key is not None
+            assert plan.blocked_pred is not None
+            claimed_path_edges[plan.path_edge_key] = target_entry
+            blocked_sources.add(plan.blocked_pred)
+            owned_blocks.add(plan.blocked_pred)
+        elif plan.kind == PathTailEmissionKind.DUPLICATE:
+            assert plan.blocked_pred is not None
+            blocked_sources.add(plan.blocked_pred)
+            owned_blocks.add(plan.blocked_pred)
+            for pred in other_preds:
+                owned_blocks.add(int(pred))
 
-        return False
+        if plan.kind == PathTailEmissionKind.SHARED_GOTO:
+            logger.info(
+                "LFG DAG: shared tail redirect %s -> %s via %s",
+                blk_label(mba, source_block),
+                blk_label(mba, target_entry),
+                edge.kind.name.lower(),
+            )
+        elif plan.kind == PathTailEmissionKind.DIRECT_GOTO:
+            logger.info(
+                "LFG DAG: path-tail redirect %s -> %s via %s",
+                blk_label(mba, source_block),
+                blk_label(mba, target_entry),
+                edge.kind.name.lower(),
+            )
+        elif plan.kind == PathTailEmissionKind.PRED_SPLIT:
+            assert via_pred is not None
+            logger.info(
+                "LFG DAG: path-tail pred-split %s via %s -> %s",
+                blk_label(mba, source_block),
+                blk_label(mba, via_pred),
+                blk_label(mba, target_entry),
+            )
+        elif plan.kind == PathTailEmissionKind.DUPLICATE:
+            assert via_pred is not None
+            logger.info(
+                "LFG DAG: path-tail duplicate %s via %s -> %s",
+                blk_label(mba, source_block),
+                blk_label(mba, via_pred),
+                blk_label(mba, target_entry),
+            )
+        return True
 
     @classmethod
     def _emit_dag_redirect(
