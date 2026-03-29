@@ -11,6 +11,7 @@ from d810.cfg.lowering_selector import (
     SharedFeederLoweringKind,
     SharedGroupCandidate,
     SharedGroupContext,
+    can_duplicate_path_tail,
     can_peel_predecessor_edge,
     is_backward_same_corridor_target,
     is_live_oneway_noop,
@@ -173,6 +174,39 @@ class TestResolveRedirectOldTarget:
                 dispatcher_region=frozenset({6}),
             )
             == 6
+        )
+
+
+class TestCanDuplicatePathTail:
+    def test_accepts_single_successor_source_and_two_way_branch_pred(self):
+        assert can_duplicate_path_tail(
+            14,
+            via_pred=12,
+            source_succs=(20,),
+            via_pred_succs=(6, 14),
+            source_is_conditional_branch=True,
+            source_anchor_block=12,
+            source_branch_arm=1,
+        )
+
+    def test_rejects_nonmatching_branch_shape(self):
+        assert not can_duplicate_path_tail(
+            14,
+            via_pred=12,
+            source_succs=(20,),
+            via_pred_succs=(6, 14),
+            source_is_conditional_branch=False,
+            source_anchor_block=12,
+            source_branch_arm=1,
+        )
+        assert not can_duplicate_path_tail(
+            14,
+            via_pred=12,
+            source_succs=(20, 30),
+            via_pred_succs=(6, 14),
+            source_is_conditional_branch=True,
+            source_anchor_block=12,
+            source_branch_arm=1,
         )
 
 
