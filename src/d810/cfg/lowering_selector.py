@@ -240,6 +240,34 @@ class SharedFeederContext:
         )
 
 
+def can_duplicate_path_tail(
+    source_block: int,
+    *,
+    via_pred: int | None,
+    source_succs: tuple[int, ...],
+    via_pred_succs: tuple[int, ...],
+    source_is_conditional_branch: bool,
+    source_anchor_block: int,
+    source_branch_arm: int | None,
+) -> bool:
+    """Return whether shared path-tail duplication is structurally valid."""
+    if via_pred is None:
+        return False
+    if len(source_succs) != 1:
+        return False
+    if len(via_pred_succs) == 1:
+        return tuple(via_pred_succs) == (source_block,)
+    if len(via_pred_succs) != 2:
+        return False
+    if (
+        not source_is_conditional_branch
+        or source_anchor_block != via_pred
+        or source_branch_arm != 1
+    ):
+        return False
+    return tuple(via_pred_succs)[1] == source_block
+
+
 def target_reaches_source_ignoring_blocks(
     flow_graph: object,
     *,
@@ -766,6 +794,7 @@ __all__ = [
     "ResidualPredSplitPlan",
     "ResidualPrefixPeelContext",
     "ResidualPrefixPeelPlan",
+    "can_duplicate_path_tail",
     "can_peel_predecessor_edge",
     "enumerate_shared_feeder_candidates",
     "is_backward_same_corridor_target",

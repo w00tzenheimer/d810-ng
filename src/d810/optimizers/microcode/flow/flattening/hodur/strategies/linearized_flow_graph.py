@@ -29,6 +29,7 @@ from d810.cfg.lowering_selector import (
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
     ResidualPrefixPeelContext,
+    can_duplicate_path_tail,
     is_backward_same_corridor_target,
     is_live_oneway_noop,
     is_valid_pred_split_pair,
@@ -74,9 +75,6 @@ from d810.recon.flow.residual_handoff_discovery import (
     dispatcher_has_exact_state_row,
     is_raw_state_label,
     iter_residual_prefix_handoffs,
-    iter_live_block_insns,
-    mop_const_value,
-    mop_stkoff,
     resolve_assignment_map_handoff_target,
     resolve_contextual_dag_entry_for_state,
     resolve_cover_fallback_entry_for_state,
@@ -833,81 +831,6 @@ class LinearizedFlowGraphStrategy:
                 "safeguard_min_required": 1,
             },
         )
-    @staticmethod
-    def _can_duplicate_path_tail(
-        source_block: int,
-        via_pred: int | None,
-        edge: StateDagEdge,
-        flow_graph: object,
-    ) -> bool:
-        if via_pred is None:
-            return False
-        src_snapshot = flow_graph.get_block(source_block)
-        pred_snapshot = flow_graph.get_block(via_pred)
-        if src_snapshot is None or pred_snapshot is None:
-            return False
-        if src_snapshot.nsucc != 1:
-            return False
-        if pred_snapshot.nsucc == 1:
-            return tuple(pred_snapshot.succs) == (source_block,)
-        if pred_snapshot.nsucc != 2:
-            return False
-        if (
-            edge.source_anchor.kind != RedirectSourceKind.CONDITIONAL_BRANCH
-            or edge.source_anchor.block_serial != via_pred
-            or edge.source_anchor.branch_arm != 1
-        ):
-            return False
-        succs = tuple(pred_snapshot.succs)
-        return len(succs) == 2 and succs[1] == source_block
-
-    @staticmethod
-    def _block_writes_redirected_state(
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-        dispatcher_lookup: object | None,
-        target_entry: int,
-    ) -> bool:
-        if (
-            mba is None
-            or state_var_stkoff is None
-            or dispatcher_lookup is None
-            or not callable(dispatcher_lookup)
-        ):
-            return False
-        try:
-            block = mba.get_mblock(block_serial)
-        except Exception:
-            return False
-        if block is None:
-            return False
-
-        resolved_targets: set[int] = set()
-        insn = block.head
-        while insn is not None:
-            if insn.opcode == ida_hexrays.m_mov:
-                d = insn.d
-                l = insn.l
-                if (
-                    d is not None
-                    and d.t == ida_hexrays.mop_S
-                    and mop_stkoff(d) == state_var_stkoff
-                    and l is not None
-                    and l.t == ida_hexrays.mop_n
-                ):
-                    try:
-                        resolved = dispatcher_lookup(
-                            mop_const_value(l)
-                        )
-                    except Exception:
-                        resolved = None
-                    if resolved is not None:
-                        resolved_targets.add(int(resolved))
-            insn = insn.next
-        return resolved_targets == {target_entry}
-
     @classmethod
     def _emit_residual_dispatcher_handoffs(
         cls,
@@ -1994,7 +1917,17 @@ class LinearizedFlowGraphStrategy:
             )
             return True
 
-        if cls._can_duplicate_path_tail(source_block, via_pred, edge, flow_graph):
+        if can_duplicate_path_tail(
+            source_block,
+            via_pred=via_pred,
+            source_succs=tuple(getattr(source_snapshot, "succs", ())),
+            via_pred_succs=tuple(builder.block_succ_map.get(via_pred, ())),
+            source_is_conditional_branch=(
+                edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+            ),
+            source_anchor_block=edge.source_anchor.block_serial,
+            source_branch_arm=edge.source_anchor.branch_arm,
+        ):
             assert via_pred is not None
             if via_pred in blocked_sources:
                 return False
