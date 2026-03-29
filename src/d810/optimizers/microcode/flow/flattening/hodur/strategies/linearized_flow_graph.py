@@ -48,6 +48,7 @@ from d810.cfg.residual_dispatcher_attempt_building import (
 from d810.cfg.residual_dispatcher_source_planning import (
     ResidualDispatcherSourceContext,
     ResidualDispatcherSourcePlanKind,
+    apply_residual_dispatcher_source_plan,
     plan_residual_dispatcher_source,
 )
 from d810.cfg.residual_handoff_planning import (
@@ -1505,30 +1506,19 @@ class LinearizedFlowGraphStrategy:
                     )
                 continue
 
-            modifications.extend(source_plan.modifications)
-            for claim_source, claim_target in source_plan.claimed_1way_updates:
-                claimed_1way[int(claim_source)] = int(claim_target)
-            for claim_key, claim_target in source_plan.claimed_2way_updates:
-                claimed_2way[(int(claim_key[0]), int(claim_key[1]))] = int(claim_target)
-            for emitted_edge in source_plan.emitted_edges:
-                emitted.add((int(emitted_edge[0]), int(emitted_edge[1])))
-            for owned_block in source_plan.owned_blocks:
-                owned_blocks.add(int(owned_block))
-            for owned_edge in source_plan.owned_edges:
-                owned_edges.add((int(owned_edge[0]), int(owned_edge[1])))
-            for owned_transition in source_plan.owned_transitions:
-                owned_transitions.add((int(owned_transition[0]), int(owned_transition[1])))
-            for pred_split_key in source_plan.pred_split_keys:
-                pred_split_emitted.add(
-                    (int(pred_split_key[0]), int(pred_split_key[1]), int(pred_split_key[2]))
-                )
-            for prefix_key in source_plan.prefix_keys:
-                prefix_emitted.add(
-                    (int(prefix_key[0]), int(prefix_key[1]), int(prefix_key[2]))
-                )
-            if redirected_blocks is not None:
-                for redirected_block in source_plan.redirect_blocks:
-                    redirected_blocks.add(int(redirected_block))
+            apply_residual_dispatcher_source_plan(
+                source_plan,
+                modifications=modifications,
+                claimed_1way=claimed_1way,
+                claimed_2way=claimed_2way,
+                emitted=emitted,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                pred_split_emitted=pred_split_emitted,
+                prefix_emitted=prefix_emitted,
+                redirected_blocks=redirected_blocks,
+            )
 
             if source_plan.kind == ResidualDispatcherSourcePlanKind.PRED_SPLIT:
                 for selection in source_plan.pred_splits:
