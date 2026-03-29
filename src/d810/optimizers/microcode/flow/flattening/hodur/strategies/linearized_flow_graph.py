@@ -130,6 +130,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_planning import (
+    build_linearized_dag_round_summary_adapter,
     build_linearized_flow_graph_plan_fragment,
     build_linearized_flow_graph_planning_callbacks,
     build_linearized_flow_graph_planning_context,
@@ -589,78 +590,6 @@ class LinearizedFlowGraphStrategy:
             resolve_state_via_valranges=_resolve_state_via_valranges(),
         )
 
-    @classmethod
-    def _build_dag_round_summary(
-        cls,
-        *,
-        snapshot: AnalysisSnapshot,
-        state_machine: DispatcherStateMachine,
-        bst_result: object,
-        transition_result: TransitionResult,
-        current_flow_graph: object,
-        dag_round_mba: object | None,
-        dispatcher_serial: int,
-        state_var_stkoff: int | None,
-        pre_header_serial: int | None,
-        bst_node_blocks: frozenset[int],
-    ) -> LinearizedDagRoundSummary:
-        resolved_summary = build_linearized_dag_round_summary(
-            current_flow_graph=current_flow_graph,
-            transition_result=transition_result,
-            dispatcher_serial=dispatcher_serial,
-            state_var_stkoff=state_var_stkoff,
-            pre_header_serial=pre_header_serial,
-            initial_state=state_machine.initial_state,
-            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
-            bst_node_blocks=tuple(sorted(bst_node_blocks)),
-            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
-            dispatcher=getattr(bst_result, "dispatcher", None),
-            mba=dag_round_mba,
-            handlers=state_machine.handlers,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
-            build_transition_report=build_dispatcher_transition_report_from_graph,
-            select_plannable_edges=select_plannable_dag_edges,
-        )
-        plannable_edges = tuple(
-            LinearizedDagPlannableEdge(
-                edge=entry.edge,
-                source_anchor_block=int(entry.source_anchor_block),
-                ordered_path=tuple(int(node) for node in entry.ordered_path),
-                target_entry_anchor=(
-                    int(entry.target_entry_anchor)
-                    if entry.target_entry_anchor is not None
-                    else None
-                ),
-                is_conditional_transition=bool(entry.is_conditional_transition),
-                requires_safe_target_resolution=bool(
-                    entry.requires_safe_target_resolution
-                ),
-            )
-            for entry in resolved_summary.plannable_edges
-        )
-        return LinearizedDagRoundSummary(
-            dag=resolved_summary.dag,
-            plannable_edges=plannable_edges,
-            report_exit_handlers=frozenset(
-                int(handler) for handler in resolved_summary.report_exit_handlers
-            ),
-            report_exit_owned_blocks=frozenset(
-                int(block) for block in resolved_summary.report_exit_owned_blocks
-            ),
-            terminal_source_keys=frozenset(resolved_summary.terminal_source_keys),
-            terminal_source_handlers=frozenset(
-                int(handler) for handler in resolved_summary.terminal_source_handlers
-            ),
-            terminal_source_owned_blocks=frozenset(
-                int(block) for block in resolved_summary.terminal_source_owned_blocks
-            ),
-            terminal_protected_blocks=frozenset(
-                int(block) for block in resolved_summary.terminal_protected_blocks
-            ),
-            terminal_skipped=int(resolved_summary.terminal_skipped),
-            unknown_skipped=int(resolved_summary.unknown_skipped),
-        )
-
     # ------------------------------------------------------------------
     # Plan
     # ------------------------------------------------------------------
@@ -734,7 +663,8 @@ class LinearizedFlowGraphStrategy:
                 bst_result=bst_result,
                 mba=mba,
                 setup=dag_setup,
-                build_round_summary=self._build_dag_round_summary,
+                round_summary_adapter=build_linearized_dag_round_summary_adapter,
+                discover_round_summary=build_linearized_dag_round_summary,
                 build_projected_mba=build_mba_view_from_flow_graph,
                 project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
                     base_flow_graph,
@@ -746,6 +676,9 @@ class LinearizedFlowGraphStrategy:
                 collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
                 emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
                 disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
+                build_live_dag=build_live_linearized_state_dag_from_graph,
+                build_transition_report=build_dispatcher_transition_report_from_graph,
+                select_plannable_edges=select_plannable_dag_edges,
             ),
         )
 
