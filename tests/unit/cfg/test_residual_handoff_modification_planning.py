@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.cfg.graph_modification import (
+    EdgeRedirectViaPredSplit,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.cfg.residual_handoff_modification_planning import (
+    plan_residual_goto_emission,
+    plan_residual_pred_split_emissions,
+    plan_residual_prefix_peel_emission,
     plan_projected_alias_handoff_normalization,
     plan_residual_branch_anchor_emission,
 )
@@ -123,3 +130,70 @@ class TestPlanProjectedAliasHandoffNormalization:
 
         assert not plan.accepted
         assert plan.rejection_reason == "already_emitted"
+
+
+class TestResidualDispatcherEmissionPlanning:
+    def test_pred_split_emits_edge_redirects(self):
+        plans = plan_residual_pred_split_emissions(
+            source_block=14,
+            dispatcher_serial=6,
+            pred_splits=((10, 18), (11, 20)),
+        )
+
+        assert plans == (
+            EdgeRedirectViaPredSplit(
+                src_block=14,
+                old_target=6,
+                new_target=18,
+                via_pred=10,
+                rule_priority=550,
+            ),
+            EdgeRedirectViaPredSplit(
+                src_block=14,
+                old_target=6,
+                new_target=20,
+                via_pred=11,
+                rule_priority=550,
+            ),
+        )
+
+    def test_goto_emits_redirect_goto(self):
+        plan = plan_residual_goto_emission(
+            source_block=14,
+            dispatcher_serial=6,
+            target_entry=18,
+        )
+
+        assert plan == RedirectGoto(
+            from_serial=14,
+            old_target=6,
+            new_target=18,
+        )
+
+    def test_prefix_peel_emits_branch_for_two_way_pred(self):
+        plan = plan_residual_prefix_peel_emission(
+            via_pred=12,
+            prefix_target=18,
+            old_target=14,
+            via_pred_succs=(14, 20),
+        )
+
+        assert plan == RedirectBranch(
+            from_serial=12,
+            old_target=14,
+            new_target=18,
+        )
+
+    def test_prefix_peel_emits_goto_for_one_way_pred(self):
+        plan = plan_residual_prefix_peel_emission(
+            via_pred=12,
+            prefix_target=18,
+            old_target=14,
+            via_pred_succs=(14,),
+        )
+
+        assert plan == RedirectGoto(
+            from_serial=12,
+            old_target=14,
+            new_target=18,
+        )

@@ -44,6 +44,9 @@ from d810.cfg.residual_handoff_planning import (
     plan_residual_handoff,
 )
 from d810.cfg.residual_handoff_modification_planning import (
+    plan_residual_goto_emission,
+    plan_residual_pred_split_emissions,
+    plan_residual_prefix_peel_emission,
     plan_projected_alias_handoff_normalization,
     plan_residual_branch_anchor_emission,
 )
@@ -1133,19 +1136,24 @@ class LinearizedFlowGraphStrategy:
                 )
                 if not pred_split_decision.accepted:
                     continue
-                for selection in pred_split_decision.pred_splits:
+                pred_split_modifications = plan_residual_pred_split_emissions(
+                    source_block=int(source_block),
+                    dispatcher_serial=int(dispatcher_serial),
+                    pred_splits=tuple(
+                        (int(selection.via_pred), int(selection.target_entry))
+                        for selection in pred_split_decision.pred_splits
+                    ),
+                )
+                for selection, modification in zip(
+                    pred_split_decision.pred_splits,
+                    pred_split_modifications,
+                    strict=True,
+                ):
                     via_pred = int(selection.via_pred)
                     target_entry = int(selection.target_entry)
                     state_value = int(selection.state_value)
                     emit_key = (source_block, via_pred, target_entry)
-                    modifications.append(
-                        builder.edge_redirect(
-                            source_block=source_block,
-                            target_block=target_entry,
-                            old_target=dispatcher_serial,
-                            via_pred=via_pred,
-                        )
-                    )
+                    modifications.append(modification)
                     pred_split_emitted.add(emit_key)
                     emitted.add((source_block, target_entry))
                     owned_blocks.add(source_block)
@@ -1251,10 +1259,10 @@ class LinearizedFlowGraphStrategy:
                 continue
             if goto_decision.accepted:
                 modifications.append(
-                    builder.goto_redirect(
-                        source_block=source_block,
-                        target_block=target_entry,
-                        old_target=dispatcher_serial,
+                    plan_residual_goto_emission(
+                        source_block=int(source_block),
+                        dispatcher_serial=int(dispatcher_serial),
+                        target_entry=int(target_entry),
                     )
                 )
                 claimed_1way[source_block] = target_entry
@@ -1394,11 +1402,18 @@ class LinearizedFlowGraphStrategy:
                         owned_transitions.add(prefix_decision.owned_transition)
                 redirected += 1
                 continue
+            via_pred_block = projected_flow_graph.get_block(int(prefix_decision.via_pred))
+            via_pred_succs = (
+                tuple(int(succ) for succ in getattr(via_pred_block, "succs", ()))
+                if via_pred_block is not None
+                else ()
+            )
             modifications.append(
-                builder.edge_redirect(
-                    source_block=int(prefix_decision.via_pred),
-                    target_block=int(prefix_decision.prefix_target),
-                    old_target=source_block,
+                plan_residual_prefix_peel_emission(
+                    via_pred=int(prefix_decision.via_pred),
+                    prefix_target=int(prefix_decision.prefix_target),
+                    old_target=int(source_block),
+                    via_pred_succs=via_pred_succs,
                 )
             )
             prefix_key = (int(prefix_decision.via_pred), source_block, int(prefix_decision.prefix_target))

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.cfg.graph_modification import (
+    EdgeRedirectViaPredSplit,
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.cfg.residual_handoff_planning import (
     ResidualBranchAnchorContext,
     ResidualHandoffMode,
@@ -172,8 +177,62 @@ def plan_projected_alias_handoff_normalization(
     )
 
 
+def plan_residual_pred_split_emissions(
+    *,
+    source_block: int,
+    dispatcher_serial: int,
+    pred_splits: tuple[tuple[int, int], ...],
+) -> tuple[GraphModification, ...]:
+    return tuple(
+        EdgeRedirectViaPredSplit(
+            src_block=int(source_block),
+            old_target=int(dispatcher_serial),
+            new_target=int(target_entry),
+            via_pred=int(via_pred),
+            rule_priority=550,
+        )
+        for via_pred, target_entry in pred_splits
+    )
+
+
+def plan_residual_goto_emission(
+    *,
+    source_block: int,
+    dispatcher_serial: int,
+    target_entry: int,
+) -> GraphModification:
+    return RedirectGoto(
+        from_serial=int(source_block),
+        old_target=int(dispatcher_serial),
+        new_target=int(target_entry),
+    )
+
+
+def plan_residual_prefix_peel_emission(
+    *,
+    via_pred: int,
+    prefix_target: int,
+    old_target: int,
+    via_pred_succs: tuple[int, ...],
+) -> GraphModification:
+    if len(tuple(int(succ) for succ in via_pred_succs)) == 2:
+        return RedirectBranch(
+            from_serial=int(via_pred),
+            old_target=int(old_target),
+            new_target=int(prefix_target),
+        )
+    return RedirectGoto(
+        from_serial=int(via_pred),
+        old_target=int(old_target),
+        new_target=int(prefix_target),
+    )
+
+
 __all__ = [
     "ProjectedAliasNormalizationPlan",
+    "plan_residual_goto_emission",
+    "plan_residual_pred_split_emissions",
+    "plan_residual_prefix_peel_emission",
     "plan_projected_alias_handoff_normalization",
     "ResidualBranchAnchorEmissionPlan",
     "plan_residual_branch_anchor_emission",
