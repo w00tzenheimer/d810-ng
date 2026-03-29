@@ -95,10 +95,8 @@ from d810.recon.flow.reconstruction_discovery import (
     discover_reconstruction_candidate_seed,
     resolve_state_var_stkoff,
 )
-from d810.recon.flow.terminal_family import TerminalFamilyCandidate, terminal_candidate_key
 from d810.recon.flow.terminal_family_collection import (
-    collect_terminal_family_candidates,
-    collect_terminal_source_unreachable_diagnostic,
+    collect_terminal_family_report,
 )
 from d810.recon.flow.transition_builder import TransitionResult
 
@@ -361,106 +359,6 @@ class StateWriteReconstructionStrategy:
         return emitted
 
     @classmethod
-    def _collect_terminal_family_candidates(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        dispatcher_region: set[int],
-        reachable_blocks: set[int],
-        state_var_stkoff: int | None,
-        mba,
-    ) -> tuple[TerminalFamilyCandidate, ...]:
-        collection = collect_terminal_family_candidates(
-            dag,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            dispatcher_region=dispatcher_region,
-            reachable_blocks=reachable_blocks,
-            state_var_stkoff=state_var_stkoff,
-        )
-        seed_probes = collection.seed_probes
-        for probe in seed_probes:
-            seed = probe.seed
-            logger.info(
-                "RECON RETURN: terminal-family seed src=%s%s origins=%s "
-                "source_reachable=%s source_nsucc=%s arm_target=%s arm_target_origin=%s "
-                "family_entry=%s family_entry_origin=%s projected_path=%s stop=%s "
-                "rejection=%s path=%s",
-                blk_label(mba, int(seed.source_block)),
-                f".arm{seed.branch_arm}" if seed.branch_arm is not None else "",
-                list(probe.seed_origins),
-                probe.source_reachable,
-                probe.source_nsucc,
-                blk_label(mba, probe.arm_target) if probe.arm_target is not None else "None",
-                "projected_only" if probe.arm_target_projected_only else "base",
-                blk_label(mba, probe.family_entry) if probe.family_entry is not None else "None",
-                "projected_only" if probe.family_entry_projected_only else "base",
-                [blk_label(mba, serial) for serial in probe.path_projected_only_blocks],
-                blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
-                probe.rejection_reason,
-                probe.path,
-            )
-            if probe.rejection_reason == "source_unreachable":
-                diagnostic = collect_terminal_source_unreachable_diagnostic(
-                    projected_flow_graph=projected_flow_graph,
-                    source_serial=int(seed.source_block),
-                    reachable_blocks=reachable_blocks,
-                    dispatcher_region=dispatcher_region,
-                )
-                if diagnostic is None:
-                    logger.info(
-                        "RECON RETURN: source_unreachable diagnostic %s: "
-                        "not in projected flow graph",
-                        blk_label(mba, int(seed.source_block)),
-                    )
-                else:
-                    logger.info(
-                        "RECON RETURN: source_unreachable diagnostic %s "
-                        "preds=[%s] nearest_reachable=%s island_blocks=%s",
-                        blk_label(mba, diagnostic.source_block),
-                        ", ".join(diagnostic.pred_info),
-                        (
-                            blk_label(mba, diagnostic.nearest_reachable)
-                            if diagnostic.nearest_reachable is not None
-                            else "None"
-                        ),
-                        [blk_label(mba, b) for b in diagnostic.island_blocks],
-                    )
-
-        candidate_suffix_entries = collection.candidate_suffix_entries
-        for candidate in collection.candidates:
-            candidate_key = terminal_candidate_key(candidate)
-            logger.info(
-                "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
-                "shared_suffix_entry=%s writer=%s materializer=%s "
-                "materializer_chain=%s stop=%s signature=%s rejection=accepted "
-                "path=%s lineage=%s",
-                blk_label(mba, candidate.source_block),
-                (
-                    f".arm{candidate.branch_arm}"
-                    if candidate.branch_arm is not None
-                    else ""
-                ),
-                blk_label(mba, candidate.family_entry),
-                (
-                    blk_label(mba, candidate_suffix_entries[candidate_key])
-                    if candidate_key in candidate_suffix_entries
-                    else "None"
-                ),
-                blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
-                blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
-                [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
-                blk_label(mba, candidate.stop_block),
-                candidate.value_family_signature,
-                candidate.path,
-                [hex(ea) for ea in candidate.lineage_eas],
-            )
-
-        return collection.candidates
-
-    @classmethod
     def _emit_terminal_family_splits(
         cls,
         dag: LinearizedStateDag,
@@ -484,15 +382,85 @@ class StateWriteReconstructionStrategy:
             if not reachable_blocks:
                 break
 
-            candidates = cls._collect_terminal_family_candidates(
+            report = collect_terminal_family_report(
                 dag,
                 base_flow_graph=base_flow_graph,
                 projected_flow_graph=current_projected_flow_graph,
                 dispatcher_region=dispatcher_region,
                 reachable_blocks=reachable_blocks,
                 state_var_stkoff=state_var_stkoff,
-                mba=mba,
             )
+            for seed_report in report.seed_reports:
+                probe = seed_report.probe
+                seed = probe.seed
+                logger.info(
+                    "RECON RETURN: terminal-family seed src=%s%s origins=%s "
+                    "source_reachable=%s source_nsucc=%s arm_target=%s arm_target_origin=%s "
+                    "family_entry=%s family_entry_origin=%s projected_path=%s stop=%s "
+                    "rejection=%s path=%s",
+                    blk_label(mba, int(seed.source_block)),
+                    f".arm{seed.branch_arm}" if seed.branch_arm is not None else "",
+                    list(probe.seed_origins),
+                    probe.source_reachable,
+                    probe.source_nsucc,
+                    blk_label(mba, probe.arm_target) if probe.arm_target is not None else "None",
+                    "projected_only" if probe.arm_target_projected_only else "base",
+                    blk_label(mba, probe.family_entry) if probe.family_entry is not None else "None",
+                    "projected_only" if probe.family_entry_projected_only else "base",
+                    [blk_label(mba, serial) for serial in probe.path_projected_only_blocks],
+                    blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
+                    probe.rejection_reason,
+                    probe.path,
+                )
+                if probe.rejection_reason == "source_unreachable":
+                    diagnostic = seed_report.unreachable_diagnostic
+                    if diagnostic is None:
+                        logger.info(
+                            "RECON RETURN: source_unreachable diagnostic %s: "
+                            "not in projected flow graph",
+                            blk_label(mba, int(seed.source_block)),
+                        )
+                    else:
+                        logger.info(
+                            "RECON RETURN: source_unreachable diagnostic %s "
+                            "preds=[%s] nearest_reachable=%s island_blocks=%s",
+                            blk_label(mba, diagnostic.source_block),
+                            ", ".join(diagnostic.pred_info),
+                            (
+                                blk_label(mba, diagnostic.nearest_reachable)
+                                if diagnostic.nearest_reachable is not None
+                                else "None"
+                            ),
+                            [blk_label(mba, b) for b in diagnostic.island_blocks],
+                        )
+            candidates = report.collection.candidates
+            for candidate_report in report.candidate_reports:
+                candidate = candidate_report.candidate
+                logger.info(
+                    "RECON RETURN: terminal-family inspect src=%s%s family_entry=%s "
+                    "shared_suffix_entry=%s writer=%s materializer=%s "
+                    "materializer_chain=%s stop=%s signature=%s rejection=accepted "
+                    "path=%s lineage=%s",
+                    blk_label(mba, candidate.source_block),
+                    (
+                        f".arm{candidate.branch_arm}"
+                        if candidate.branch_arm is not None
+                        else ""
+                    ),
+                    blk_label(mba, candidate.family_entry),
+                    (
+                        blk_label(mba, candidate_report.shared_suffix_entry)
+                        if candidate_report.shared_suffix_entry is not None
+                        else "None"
+                    ),
+                    blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
+                    blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
+                    [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
+                    blk_label(mba, candidate.stop_block),
+                    candidate.value_family_signature,
+                    candidate.path,
+                    [hex(ea) for ea in candidate.lineage_eas],
+                )
             if len(candidates) < 2:
                 break
 

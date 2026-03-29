@@ -15,6 +15,7 @@ from d810.recon.flow.terminal_family import (
     build_terminal_family_candidates,
     candidate_shared_suffix_entries,
     seed_terminal_family_probes,
+    terminal_candidate_key,
 )
 
 
@@ -35,6 +36,31 @@ class TerminalSourceUnreachableDiagnostic:
     pred_info: tuple[str, ...]
     nearest_reachable: int | None
     island_blocks: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilySeedReport:
+    """Collected seed facts plus any unreachable-source diagnostic."""
+
+    probe: TerminalFamilySeedProbe
+    unreachable_diagnostic: TerminalSourceUnreachableDiagnostic | None
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilyCandidateReport:
+    """Collected candidate facts plus its shared suffix entry, if any."""
+
+    candidate: TerminalFamilyCandidate
+    shared_suffix_entry: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFamilyReport:
+    """Full terminal-family discovery report for one projected CFG snapshot."""
+
+    collection: TerminalFamilyCollection
+    seed_reports: tuple[TerminalFamilySeedReport, ...]
+    candidate_reports: tuple[TerminalFamilyCandidateReport, ...]
 
 
 def collect_terminal_family_candidates(
@@ -117,9 +143,64 @@ def collect_terminal_source_unreachable_diagnostic(
     )
 
 
+def collect_terminal_family_report(
+    dag: LinearizedStateDag,
+    *,
+    base_flow_graph,
+    projected_flow_graph,
+    dispatcher_region: set[int],
+    reachable_blocks: set[int],
+    state_var_stkoff: int | None,
+) -> TerminalFamilyReport:
+    """Collect terminal-family candidates plus seed/candidate diagnostics."""
+
+    collection = collect_terminal_family_candidates(
+        dag,
+        base_flow_graph=base_flow_graph,
+        projected_flow_graph=projected_flow_graph,
+        dispatcher_region=dispatcher_region,
+        reachable_blocks=reachable_blocks,
+        state_var_stkoff=state_var_stkoff,
+    )
+    seed_reports = tuple(
+        TerminalFamilySeedReport(
+            probe=probe,
+            unreachable_diagnostic=(
+                collect_terminal_source_unreachable_diagnostic(
+                    projected_flow_graph,
+                    source_serial=int(probe.seed.source_block),
+                    reachable_blocks=reachable_blocks,
+                    dispatcher_region=dispatcher_region,
+                )
+                if probe.rejection_reason == "source_unreachable"
+                else None
+            ),
+        )
+        for probe in collection.seed_probes
+    )
+    candidate_reports = tuple(
+        TerminalFamilyCandidateReport(
+            candidate=candidate,
+            shared_suffix_entry=collection.candidate_suffix_entries.get(
+                terminal_candidate_key(candidate)
+            ),
+        )
+        for candidate in collection.candidates
+    )
+    return TerminalFamilyReport(
+        collection=collection,
+        seed_reports=seed_reports,
+        candidate_reports=candidate_reports,
+    )
+
+
 __all__ = [
     "TerminalFamilyCollection",
+    "TerminalFamilyCandidateReport",
+    "TerminalFamilyReport",
+    "TerminalFamilySeedReport",
     "TerminalSourceUnreachableDiagnostic",
     "collect_terminal_family_candidates",
+    "collect_terminal_family_report",
     "collect_terminal_source_unreachable_diagnostic",
 ]
