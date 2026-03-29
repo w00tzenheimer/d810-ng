@@ -91,6 +91,9 @@ from d810.recon.flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
 )
+from d810.recon.flow.linearized_dag_round_discovery import (
+    build_linearized_dag_round_summary,
+)
 from d810.recon.flow.residual_handoff_discovery import (
     block_has_state_var_write,
     collect_residual_source_handoff_facts,
@@ -635,10 +638,10 @@ class LinearizedFlowGraphStrategy:
         pre_header_serial: int | None,
         bst_node_blocks: frozenset[int],
     ) -> LinearizedDagRoundSummary:
-        dag = build_live_linearized_state_dag_from_graph(
-            current_flow_graph,
-            transition_result,
-            dispatcher_entry_serial=dispatcher_serial,
+        resolved_summary = build_linearized_dag_round_summary(
+            current_flow_graph=current_flow_graph,
+            transition_result=transition_result,
+            dispatcher_serial=dispatcher_serial,
             state_var_stkoff=state_var_stkoff,
             pre_header_serial=pre_header_serial,
             initial_state=state_machine.initial_state,
@@ -647,122 +650,49 @@ class LinearizedFlowGraphStrategy:
             diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
             dispatcher=getattr(bst_result, "dispatcher", None),
             mba=dag_round_mba,
-            prefer_local_corridors=True,
-        )
-        dag_report = build_dispatcher_transition_report_from_graph(
-            current_flow_graph,
-            transition_result,
-            dispatcher_entry_serial=dispatcher_serial,
-            state_var_stkoff=state_var_stkoff,
-            pre_header_serial=pre_header_serial,
-            initial_state=state_machine.initial_state,
-            handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
-            bst_node_blocks=tuple(sorted(bst_node_blocks)),
-            diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
-        )
-        report_exit_handlers = {
-            row.handler_serial
-            for row in dag_report.rows
-            if row.kind == TransitionKind.EXIT
-        }
-        dag_nonterminal_source_handlers = {
-            edge.source_key.handler_serial
-            for edge in dag.edges
-            if edge.kind
-            in (
-                SemanticEdgeKind.TRANSITION,
-                SemanticEdgeKind.CONDITIONAL_TRANSITION,
-            )
-        }
-        report_exit_handlers -= dag_nonterminal_source_handlers
-        report_exit_owned_blocks = {
-            block_serial
-            for handler in state_machine.handlers.values()
-            if handler.check_block in report_exit_handlers
-            for block_serial in {handler.check_block, *handler.handler_blocks}
-        }
-        terminal_source_keys = {
-            edge.source_key
-            for edge in dag.edges
-            if edge.kind
-            in (
-                SemanticEdgeKind.CONDITIONAL_RETURN,
-                SemanticEdgeKind.EXIT_ROUTINE,
-                SemanticEdgeKind.UNKNOWN,
-            )
-        }
-        terminal_source_handlers = {
-            edge.source_key.handler_serial
-            for edge in dag.edges
-            if edge.kind
-            in (
-                SemanticEdgeKind.CONDITIONAL_RETURN,
-                SemanticEdgeKind.EXIT_ROUTINE,
-                SemanticEdgeKind.UNKNOWN,
-            )
-        }
-        terminal_source_owned_blocks = {
-            block_serial
-            for node in dag.nodes
-            if node.handler_serial in terminal_source_handlers
-            for block_serial in node.owned_blocks
-        }
-        terminal_protected_blocks = {
-            block_serial
-            for edge in dag.edges
-            if edge.kind
-            in (
-                SemanticEdgeKind.CONDITIONAL_RETURN,
-                SemanticEdgeKind.EXIT_ROUTINE,
-                SemanticEdgeKind.UNKNOWN,
-            )
-            for block_serial in edge.ordered_path
-        }
-        terminal_skipped = sum(
-            1
-            for edge in dag.edges
-            if edge.kind
-            in (SemanticEdgeKind.CONDITIONAL_RETURN, SemanticEdgeKind.EXIT_ROUTINE)
-        )
-        unknown_skipped = sum(
-            1 for edge in dag.edges if edge.kind == SemanticEdgeKind.UNKNOWN
+            handlers=state_machine.handlers,
+            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_transition_report=build_dispatcher_transition_report_from_graph,
+            select_plannable_edges=select_plannable_dag_edges,
         )
         plannable_edges = tuple(
             LinearizedDagPlannableEdge(
-                edge=edge,
-                source_anchor_block=int(edge.source_anchor.block_serial),
-                ordered_path=tuple(int(node) for node in edge.ordered_path),
+                edge=entry.edge,
+                source_anchor_block=int(entry.source_anchor_block),
+                ordered_path=tuple(int(node) for node in entry.ordered_path),
                 target_entry_anchor=(
-                    int(edge.target_entry_anchor)
-                    if edge.target_entry_anchor is not None
+                    int(entry.target_entry_anchor)
+                    if entry.target_entry_anchor is not None
                     else None
                 ),
-                is_conditional_transition=(
-                    edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
+                is_conditional_transition=bool(entry.is_conditional_transition),
+                requires_safe_target_resolution=bool(
+                    entry.requires_safe_target_resolution
                 ),
-                requires_safe_target_resolution=edge.target_entry_anchor is not None,
             )
-            for edge in select_plannable_dag_edges(dag)
+            for entry in resolved_summary.plannable_edges
         )
         return LinearizedDagRoundSummary(
-            dag=dag,
+            dag=resolved_summary.dag,
             plannable_edges=plannable_edges,
-            report_exit_handlers=frozenset(int(handler) for handler in report_exit_handlers),
-            report_exit_owned_blocks=frozenset(
-                int(block) for block in report_exit_owned_blocks
+            report_exit_handlers=frozenset(
+                int(handler) for handler in resolved_summary.report_exit_handlers
             ),
-            terminal_source_keys=frozenset(terminal_source_keys),
+            report_exit_owned_blocks=frozenset(
+                int(block) for block in resolved_summary.report_exit_owned_blocks
+            ),
+            terminal_source_keys=frozenset(resolved_summary.terminal_source_keys),
             terminal_source_handlers=frozenset(
-                int(handler) for handler in terminal_source_handlers
+                int(handler) for handler in resolved_summary.terminal_source_handlers
             ),
             terminal_source_owned_blocks=frozenset(
-                int(block) for block in terminal_source_owned_blocks
+                int(block) for block in resolved_summary.terminal_source_owned_blocks
             ),
             terminal_protected_blocks=frozenset(
-                int(block) for block in terminal_protected_blocks
+                int(block) for block in resolved_summary.terminal_protected_blocks
             ),
-            terminal_skipped=int(terminal_skipped),
-            unknown_skipped=int(unknown_skipped),
+            terminal_skipped=int(resolved_summary.terminal_skipped),
+            unknown_skipped=int(resolved_summary.unknown_skipped),
         )
 
     # ------------------------------------------------------------------
