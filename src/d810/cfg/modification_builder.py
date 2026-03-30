@@ -1,4 +1,4 @@
-"""Strategy-side helpers for emitting GraphModification intents."""
+"""Snapshot-backed helpers for emitting GraphModification intents."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,7 +73,7 @@ def _infer_old_target(
     return None
 
 
-from d810.cfg.lowering_scope import (  # noqa: E402 — re-export for backward compat
+from d810.cfg.lowering_scope import (  # noqa: E402
     LoweringScope,
     derive_edge_predecessor,
     requires_pred_scoped_lowering,

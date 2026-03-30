@@ -39,7 +39,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
 )
 from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
-from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 if TYPE_CHECKING:

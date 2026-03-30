@@ -20,7 +20,7 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.cfg.graph_modification import DuplicateAndRedirect
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
-from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (

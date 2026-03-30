@@ -446,7 +446,7 @@ def test_modification_builder_has_no_remove_edge_method():
     not expose a ``remove_edge`` helper.  If one is added, this test forces a
     conscious review of executor/edit-simulator support.
 
-    Uses source inspection to avoid cross-layer import from hodur into cfg tests.
+    Uses source inspection to avoid importing the builder into this contract test.
     """
     from pathlib import Path
 
@@ -454,12 +454,8 @@ def test_modification_builder_has_no_remove_edge_method():
         Path(__file__).resolve().parents[3]
         / "src"
         / "d810"
-        / "optimizers"
-        / "microcode"
-        / "flow"
-        / "flattening"
-        / "hodur"
-        / "_modification_bridge.py"
+        / "cfg"
+        / "modification_builder.py"
     )
     assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"
     source = bridge_path.read_text()
