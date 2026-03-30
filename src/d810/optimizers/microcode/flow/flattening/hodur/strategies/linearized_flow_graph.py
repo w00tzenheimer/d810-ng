@@ -13,6 +13,11 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.dag_redirect_execution import (
+    DagRedirectExecutionContext,
+    DagRedirectMutableState,
+    execute_dag_redirect_fallback,
+)
 from d810.cfg.graph_modification import (
     RedirectGoto,
 )
@@ -23,11 +28,19 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     execute_linearized_flow_graph_planning,
 )
 from d810.cfg.plan import compile_patch_plan
+from d810.cfg.path_tail_redirect_execution import (
+    PathTailRedirectExecutionContext,
+    PathTailRedirectMutableState,
+    execute_path_tail_redirect,
+)
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    blk_label,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._residual_handoff_bridge import (
     is_semantic_handoff_redirect,
@@ -75,15 +88,15 @@ from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_plan
     execute_linearized_flow_graph_strategy_plan,
     prepare_linearized_flow_graph_plan_setup,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_redirects import (
-    emit_dag_redirect as execute_lfg_dag_redirect,
-    emit_path_tail_redirect as execute_lfg_path_tail_redirect,
-)
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_residuals import (
     disconnect_bst_comparison_nodes as execute_lfg_bst_disconnects,
     emit_residual_branch_anchor_handoff as execute_lfg_residual_branch_anchor_handoff,
     emit_residual_dispatcher_handoffs as execute_lfg_residual_dispatcher_handoffs,
     normalize_projected_alias_handoffs as execute_lfg_alias_normalization,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_reporting import (
+    log_dag_redirect_fallback_outcome,
+    log_path_tail_redirect_outcome,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_rerun import (
     allow_same_maturity_rerun,
@@ -577,35 +590,44 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None = None,
         mba: object | None = None,
     ) -> bool:
-        return execute_lfg_path_tail_redirect(
+        result = execute_path_tail_redirect(
+            PathTailRedirectExecutionContext(
+                edge=edge,
+                dag=dag,
+                target_entry=target_entry,
+                flow_graph=flow_graph,
+                block_succ_map=builder.block_succ_map,
+                report_exit_handlers=frozenset(report_exit_handlers),
+                report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
+                terminal_protected_blocks=frozenset(terminal_protected_blocks),
+                bst_node_blocks=frozenset(bst_node_blocks),
+                dispatcher_region=frozenset(dispatcher_region),
+                state_var_stkoff=state_var_stkoff,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+                mba=mba,
+                resolve_effective_target_entry=cls._resolve_effective_target_entry,
+                resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
+                find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
+                is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+            ),
+            state=PathTailRedirectMutableState(
+                modifications=modifications,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                emitted=emitted,
+                claimed_1way=claimed_1way,
+                claimed_exits=claimed_exits,
+                claimed_path_edges=claimed_path_edges,
+                blocked_sources=blocked_sources,
+            ),
+        )
+        return log_path_tail_redirect_outcome(
             logger,
-            edge=edge,
-            target_entry=target_entry,
-            dag=dag,
-            builder=builder,
-            modifications=modifications,
-            owned_blocks=owned_blocks,
-            owned_edges=owned_edges,
-            owned_transitions=owned_transitions,
-            emitted=emitted,
-            claimed_1way=claimed_1way,
-            claimed_exits=claimed_exits,
-            claimed_path_edges=claimed_path_edges,
-            blocked_sources=blocked_sources,
-            terminal_protected_blocks=terminal_protected_blocks,
-            report_exit_handlers=report_exit_handlers,
-            report_exit_owned_blocks=report_exit_owned_blocks,
-            bst_node_blocks=bst_node_blocks,
-            dispatcher_region=dispatcher_region,
-            flow_graph=flow_graph,
-            state_var_stkoff=state_var_stkoff,
-            dispatcher_lookup=dispatcher_lookup,
-            dispatcher=dispatcher,
             mba=mba,
-            resolve_effective_target_entry=cls._resolve_effective_target_entry,
-            resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
-            find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
-            is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+            edge=edge,
+            result=result,
         )
 
     @classmethod
@@ -639,9 +661,44 @@ class LinearizedFlowGraphStrategy:
         mba: object,
         dispatcher: object | None = None,
     ) -> bool:
-        return execute_lfg_dag_redirect(
-            logger,
+        target_node = (
+            build_dag_node_maps(dag).node_by_key.get(edge.target_key)
+            if edge.target_key is not None
+            else None
+        )
+        target_entry = cls._resolve_effective_target_entry(
+            dag,
+            edge,
+            bst_node_blocks=bst_node_blocks,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+            mba=mba,
+        )
+        if (
+            target_node is not None
+            and target_entry is not None
+            and edge.target_entry_anchor is not None
+            and target_entry != edge.target_entry_anchor
+        ):
+            logger.info(
+                "LFG DAG: retargeted stale BST entry %s -> semantic entry %s for %s",
+                blk_label(mba, edge.target_entry_anchor),
+                blk_label(mba, target_entry),
+                target_node.state_label,
+            )
+        if target_entry is None:
+            if edge.target_entry_anchor is not None:
+                logger.info(
+                    "LFG DAG: skipping %s -> %s because target remains inside BST region",
+                    blk_label(mba, edge.source_anchor.block_serial),
+                    blk_label(mba, edge.target_entry_anchor),
+                )
+            return False
+
+        if cls._emit_path_tail_redirect(
             edge=edge,
+            target_entry=target_entry,
             dag=dag,
             builder=builder,
             modifications=modifications,
@@ -650,7 +707,6 @@ class LinearizedFlowGraphStrategy:
             owned_transitions=owned_transitions,
             emitted=emitted,
             claimed_1way=claimed_1way,
-            claimed_2way=claimed_2way,
             claimed_exits=claimed_exits,
             claimed_path_edges=claimed_path_edges,
             blocked_sources=blocked_sources,
@@ -667,10 +723,52 @@ class LinearizedFlowGraphStrategy:
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
             mba=mba,
-            build_dag_node_maps=build_dag_node_maps,
-            resolve_effective_target_entry=cls._resolve_effective_target_entry,
-            emit_path_tail_redirect=cls._emit_path_tail_redirect,
-            is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+        ):
+            return True
+
+        if edge.target_entry_anchor is not None and target_entry != edge.target_entry_anchor:
+            logger.info(
+                "LFG DAG: skipping stale raw target %s in favor of semantic entry %s",
+                blk_label(mba, edge.target_entry_anchor),
+                blk_label(mba, target_entry),
+            )
+
+        result = execute_dag_redirect_fallback(
+            DagRedirectExecutionContext(
+                edge=edge,
+                dag=dag,
+                target_entry=int(target_entry),
+                flow_graph=flow_graph,
+                block_succ_map=builder.block_succ_map,
+                block_nsucc_map=builder.block_nsucc_map,
+                report_exit_handlers=frozenset(report_exit_handlers),
+                report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
+                terminal_source_owned_blocks=frozenset(terminal_source_owned_blocks),
+                terminal_protected_blocks=frozenset(terminal_protected_blocks),
+                blocked_sources=frozenset(blocked_sources),
+                bst_node_blocks=frozenset(bst_node_blocks),
+                dispatcher_region=frozenset(dispatcher_region),
+                state_var_stkoff=state_var_stkoff,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+                mba=mba,
+                is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+            ),
+            state=DagRedirectMutableState(
+                modifications=modifications,
+                owned_blocks=owned_blocks,
+                owned_edges=owned_edges,
+                owned_transitions=owned_transitions,
+                emitted=emitted,
+                claimed_1way=claimed_1way,
+                claimed_2way=claimed_2way,
+            ),
+        )
+        return log_dag_redirect_fallback_outcome(
+            logger,
+            mba=mba,
+            edge=edge,
+            result=result,
         )
 
     # ------------------------------------------------------------------
