@@ -16,12 +16,10 @@ from collections import Counter
 
 import ida_hexrays
 
-from d810.cfg.graph_modification import (
-    PrivateTerminalSuffix,
-    PrivateTerminalSuffixGroup,
-)
-from d810.cfg.plan import is_block_creating_modification
 from d810.core import logging
+from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_fragments import (
+    finalize_reconstruction_fragment,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_postprocess import (
     run_reconstruction_postprocess as execute_reconstruction_postprocess,
 )
@@ -34,6 +32,10 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_rescues imp
     emit_entry_island_rescues as execute_reconstruction_entry_island_rescues,
     emit_late_island_rescues as execute_reconstruction_late_island_rescues,
 )
+from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
+    snapshot_reconstruction_dag,
+    snapshot_reconstruction_post_apply,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_terminal_families import (
     emit_terminal_family_splits as execute_reconstruction_terminal_family_splits,
 )
@@ -42,9 +44,6 @@ from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
-    BenefitMetrics,
-    OwnershipScope,
-    PlanFragment,
 )
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -311,57 +310,12 @@ class StateWriteReconstructionStrategy:
             state_var_stkoff,
         )
 
-        # --- Early DAG-only diagnostic snapshot (fires even if no modifications) ---
-        try:
-            from d810.core.diag import get_diag_db
-            diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-            if diag_db is not None:
-                from d810.core.diag.snapshot import (
-                    DagEdge,
-                    DagNode,
-                    snapshot_dag,
-                    snapshot_mba,
-                )
-                import json as _json
-
-                _early_snap_id = snapshot_mba(
-                    diag_db,
-                    [],
-                    label=f"{self.name}_state_write_reconstruction_dag",
-                    func_ea=mba.entry_ea if mba is not None else 0,
-                    maturity="MMAT_GLBOPT1",
-                    phase="post_apply",
-                )
-
-                _early_dag_nodes = []
-                for node in dag.nodes:
-                    _early_dag_nodes.append(DagNode(
-                        state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                        state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
-                        entry_block=int(node.entry_anchor),
-                        classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
-                        shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
-                    ))
-
-                _early_dag_edges = []
-                for eidx, edge in enumerate(dag.edges):
-                    _early_dag_edges.append(DagEdge(
-                        edge_id=eidx,
-                        source_state=int(edge.source_key.state_const) if edge.source_key.state_const is not None else None,
-                        target_state=int(edge.target_key.state_const) if edge.target_key is not None and edge.target_key.state_const is not None else None,
-                        edge_kind=str(edge.kind.name) if hasattr(edge.kind, "name") else str(edge.kind),
-                        source_block=int(edge.source_anchor.block_serial) if edge.source_anchor is not None else None,
-                        source_arm=edge.source_anchor.branch_arm if edge.source_anchor is not None else None,
-                        target_entry=int(edge.target_entry_anchor) if edge.target_entry_anchor is not None else None,
-                        ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
-                    ))
-
-                snapshot_dag(diag_db, _early_snap_id, _early_dag_nodes, _early_dag_edges)
-        except Exception:
-            logger.warning(
-                "Early diagnostic DAG snapshot failed (non-critical)",
-                exc_info=True,
-            )
+        snapshot_reconstruction_dag(
+            logger,
+            dag=dag,
+            mba=mba,
+            strategy_name=self.name,
+        )
 
         # Phase 1 uses dag (stale augmented — identical to baseline) so
         # that corridor redirect targets are unchanged.  Late phases below
@@ -505,126 +459,23 @@ class StateWriteReconstructionStrategy:
             )
             return None
 
-        # --- Diagnostic snapshot: DAG + modifications (gated behind D810_DIAG_SNAPSHOT=1) ---
-        try:
-            from d810.core.diag import get_diag_db
-            diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-            if diag_db is not None:
-                from d810.core.diag.snapshot import (
-                    DagEdge,
-                    DagNode,
-                    Modification,
-                    snapshot_dag,
-                    snapshot_mba,
-                    snapshot_modifications,
-                )
-                import json as _json
-
-                # Create a snapshot anchor for this DAG
-                snap_id = snapshot_mba(
-                    diag_db,
-                    [],  # No block data here — executor captures full MBA
-                    label=f"{self.name}_state_write_reconstruction_post_apply",
-                    func_ea=mba.entry_ea if mba is not None else 0,
-                    maturity="MMAT_GLBOPT1",
-                    phase="post_apply",
-                )
-
-                # Build DAG node snapshots
-                dag_nodes = []
-                for node in dag.nodes:
-                    dag_nodes.append(DagNode(
-                        state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                        state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
-                        entry_block=int(node.entry_anchor),
-                        classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
-                        shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
-                    ))
-
-                # Build DAG edge snapshots
-                dag_edges = []
-                for eidx, edge in enumerate(dag.edges):
-                    dag_edges.append(DagEdge(
-                        edge_id=eidx,
-                        source_state=int(edge.source_key.state_const) if edge.source_key.state_const is not None else None,
-                        target_state=int(edge.target_key.state_const) if edge.target_key is not None and edge.target_key.state_const is not None else None,
-                        edge_kind=str(edge.kind.name) if hasattr(edge.kind, "name") else str(edge.kind),
-                        source_block=int(edge.source_anchor.block_serial) if edge.source_anchor is not None else None,
-                        source_arm=edge.source_anchor.branch_arm if edge.source_anchor is not None else None,
-                        target_entry=int(edge.target_entry_anchor) if edge.target_entry_anchor is not None else None,
-                        ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
-                    ))
-
-                snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
-
-                # Build modification snapshots
-                mod_snapshots = []
-                for midx, mod in enumerate(modifications):
-                    mod_type = type(mod).__name__
-                    source_block = getattr(mod, "from_serial", None) or getattr(mod, "source_block", None) or getattr(mod, "src_block", None) or getattr(mod, "block_serial", None)
-                    target_block = getattr(mod, "new_target", None) or getattr(mod, "goto_target", None) or getattr(mod, "conditional_target", None)
-                    old_target = getattr(mod, "old_target", None)
-                    mod_snapshots.append(Modification(
-                        mod_index=midx,
-                        mod_type=mod_type,
-                        source_block=int(source_block) if source_block is not None else None,
-                        target_block=int(target_block) if target_block is not None else None,
-                        old_target=int(old_target) if old_target is not None else None,
-                        status="emitted",
-                    ))
-
-                snapshot_modifications(diag_db, snap_id, mod_snapshots)
-        except Exception:
-            logger.warning(
-                "Diagnostic DAG/modifications snapshot failed (non-critical)",
-                exc_info=True,
-            )
-
-        # Split fragment when block-creating ops and PTS share a batch.
-        # Block-creating ops (duplicate_and_redirect) shift serials, making
-        # PTS suffix serials stale by the time PTS executes.  Splitting lets
-        # PTS run against the settled graph after block creators are applied.
-        _PTS_TYPES = (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)
-        pts_mods = [m for m in modifications if isinstance(m, _PTS_TYPES)]
-        has_block_creators = any(is_block_creating_modification(m) for m in modifications)
-
-        if pts_mods and has_block_creators:
-            # Drop PTS from this batch — block-creating ops shift serials,
-            # making suffix serials stale. PTS will be re-discovered on the
-            # next optimizer invocation when the planner runs against the
-            # settled post-creation flow graph with correct serials.
-            non_pts_mods = [m for m in modifications if not isinstance(m, _PTS_TYPES)]
-            logger.info(
-                "RECON: deferring %d PTS mods to next invocation "
-                "(block-creating ops would shift suffix serials)",
-                len(pts_mods),
-            )
-            modifications = non_pts_mods
-
-        return PlanFragment(
-            strategy_name=self.name,
-            family=self.family,
-            ownership=OwnershipScope(
-                blocks=frozenset(owned_blocks),
-                edges=frozenset(owned_edges),
-                transitions=frozenset(),
-            ),
-            prerequisites=[],
-            expected_benefit=BenefitMetrics(
-                handlers_resolved=len(owned_blocks),
-                transitions_resolved=len(accepted_metadata),
-                blocks_freed=len(owned_blocks),
-                conflict_density=0.0,
-            ),
-            risk_score=0.25,
-            metadata={
-                "mode": "experimental_reconstruction",
-                "reconstruction_sites": tuple(accepted_metadata),
-                "reconstruction_rejections": tuple(rejected_metadata),
-                "allow_post_apply_bst_cleanup": allow_post_apply_bst_cleanup,
-                "post_apply_bst_cleanup_reason": post_apply_bst_cleanup_reason,
-                "residual_dispatcher_preds": residual_dispatcher_preds,
-                "safeguard_min_required": 1,
-            },
+        snapshot_reconstruction_post_apply(
+            logger,
+            dag=dag,
             modifications=modifications,
+            mba=mba,
+            strategy_name=self.name,
+        )
+
+        return finalize_reconstruction_fragment(
+            logger,
+            strategy_name=self.name,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            accepted_metadata=accepted_metadata,
+            rejected_metadata=rejected_metadata,
+            allow_post_apply_bst_cleanup=allow_post_apply_bst_cleanup,
+            post_apply_bst_cleanup_reason=post_apply_bst_cleanup_reason,
+            residual_dispatcher_preds=residual_dispatcher_preds,
         )
