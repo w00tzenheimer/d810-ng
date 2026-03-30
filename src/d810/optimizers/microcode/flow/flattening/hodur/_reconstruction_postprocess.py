@@ -10,6 +10,12 @@ from d810.cfg.lowering_selector import (
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.plan import compile_patch_plan
+from d810.cfg.reconstruction_bridge_planning import (
+    collect_reconstruction_claims,
+    collect_suppressed_bridge_pairs,
+    plan_reconstruction_bridge_modifications,
+    plan_reconstruction_preheader_bridge,
+)
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.recon.flow.graph_reachability import (
@@ -109,153 +115,57 @@ def run_reconstruction_postprocess(
     _bst_set = set(dag.bst_node_blocks)
     _bst_set.add(dispatcher_serial)
 
-    if (
-        dispatcher is not None
-        and dag.pre_header_serial is not None
-        and dag.initial_state is not None
-    ):
-        resolved = dispatcher.lookup(dag.initial_state)
-        if resolved is not None and int(resolved) not in _bst_set:
-            pre_blk = flow_graph.get_block(dag.pre_header_serial)
-            if pre_blk is not None and pre_blk.nsucc == 1:
-                old = int(pre_blk.succs[0])
-                if old == dispatcher_serial or old in _bst_set:
-                    modifications.append(
-                        builder.goto_redirect(
-                            source_block=dag.pre_header_serial,
-                            target_block=int(resolved),
-                            old_target=old,
-                        )
-                    )
-                    logger.info(
-                        "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
-                        dag.pre_header_serial,
-                        int(resolved),
-                    )
-
-    claimed_targets: set[int] = set()
-    claimed_sources: set[int] = set()
-    for mod in modifications:
-        if hasattr(mod, "new_target"):
-            claimed_targets.add(int(mod.new_target))
-        if hasattr(mod, "goto_target"):
-            claimed_targets.add(int(mod.goto_target))
-        if hasattr(mod, "conditional_target"):
-            claimed_targets.add(int(mod.conditional_target))
-        if hasattr(mod, "fallthrough_target"):
-            claimed_targets.add(int(mod.fallthrough_target))
-        if hasattr(mod, "per_pred_targets"):
-            for _pred, _tgt in mod.per_pred_targets:
-                claimed_sources.add(int(_pred))
-                claimed_targets.add(int(_tgt))
-        if hasattr(mod, "from_serial"):
-            claimed_sources.add(int(mod.from_serial))
-        if hasattr(mod, "source_serial"):
-            claimed_sources.add(int(mod.source_serial))
-        if hasattr(mod, "source_block"):
-            claimed_sources.add(int(mod.source_block))
-        if hasattr(mod, "src_block"):
-            claimed_sources.add(int(mod.src_block))
-        if hasattr(mod, "block_serial"):
-            claimed_sources.add(int(mod.block_serial))
-    claimed_sources.update(int(block_serial) for block_serial in owned_blocks)
-
-    _structural_rejection_reasons = frozenset({
-        "backward_same_corridor_target",
-    })
-    suppressed_bridge_pairs: set[tuple[int, int]] = set()
-    for rej in rejected_metadata:
-        if rej.get("rejection_reason") in _structural_rejection_reasons:
-            _rej_src = rej.get("source_block")
-            _rej_tgt = rej.get("target_entry_anchor")
-            if _rej_src is not None and _rej_tgt is not None:
-                suppressed_bridge_pairs.add((int(_rej_src), int(_rej_tgt)))
-
-    bridge_mods: list = []
-    for edge in dag.edges:
-        if edge.target_entry_anchor is None:
-            continue
-        target_entry = int(edge.target_entry_anchor)
-        if target_entry in _bst_set or target_entry in claimed_targets:
-            continue
-
-        exit_block: int | None = None
-        if edge.ordered_path:
-            for serial in reversed(edge.ordered_path):
-                if serial not in _bst_set:
-                    exit_block = serial
-                    break
-        else:
-            src = int(edge.source_anchor.block_serial)
-            if src not in _bst_set:
-                exit_block = src
-
-        if exit_block is None or (exit_block, target_entry) in suppressed_bridge_pairs:
-            continue
-        if exit_block in claimed_sources:
-            continue
-
-        block = flow_graph.get_block(exit_block)
-        if block is None:
-            continue
-
-        already_wired = any(
-            int(block.succs[i]) == target_entry for i in range(block.nsucc)
+    preheader_bridge = plan_reconstruction_preheader_bridge(
+        dag=dag,
+        flow_graph=flow_graph,
+        builder=builder,
+        dispatcher_serial=dispatcher_serial,
+        bst_node_blocks=_bst_set,
+        dispatcher=dispatcher,
+    )
+    if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
+        modifications.append(preheader_bridge.modification)
+        logger.info(
+            "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
+            dag.pre_header_serial,
+            preheader_bridge.resolved_target,
         )
-        if already_wired:
-            claimed_targets.add(target_entry)
-            continue
 
-        if block.nsucc == 1:
-            old_target = int(block.succs[0])
-            if old_target == dispatcher_serial or old_target in _bst_set:
-                _bridge_tag = (
-                    "empty-path direct wire"
-                    if not edge.ordered_path
-                    else "1-way"
-                )
-                bridge_mods.append(
-                    builder.goto_redirect(
-                        source_block=exit_block,
-                        target_block=target_entry,
-                        old_target=old_target,
-                    )
-                )
-                claimed_targets.add(target_entry)
-                claimed_sources.add(exit_block)
-                logger.info(
-                    "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
-                    exit_block,
-                    target_entry,
-                    _bridge_tag,
-                )
-        elif block.nsucc == 2:
-            for arm in range(2):
-                arm_target = int(block.succs[arm])
-                if arm_target == dispatcher_serial or arm_target in _bst_set:
-                    if arm == 1:
-                        _bridge_tag_2 = (
-                            "empty-path direct wire"
-                            if not edge.ordered_path
-                            else "2-way"
-                        )
-                        bridge_mods.append(
-                            builder.edge_redirect(
-                                source_block=exit_block,
-                                target_block=target_entry,
-                                old_target=arm_target,
-                            )
-                        )
-                        claimed_targets.add(target_entry)
-                        claimed_sources.add(exit_block)
-                        logger.info(
-                            "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
-                            exit_block,
-                            arm,
-                            target_entry,
-                            _bridge_tag_2,
-                        )
-                    break
+    claimed_sources, claimed_targets = collect_reconstruction_claims(
+        modifications,
+        owned_blocks=owned_blocks,
+    )
+    suppressed_bridge_pairs = collect_suppressed_bridge_pairs(rejected_metadata)
+
+    bridge_plan = plan_reconstruction_bridge_modifications(
+        dag=dag,
+        flow_graph=flow_graph,
+        builder=builder,
+        dispatcher_serial=dispatcher_serial,
+        bst_node_blocks=_bst_set,
+        claimed_sources=claimed_sources,
+        claimed_targets=claimed_targets,
+        suppressed_bridge_pairs=suppressed_bridge_pairs,
+    )
+    bridge_mods: list = list(bridge_plan.modifications)
+    claimed_sources = set(bridge_plan.claimed_sources)
+    claimed_targets = set(bridge_plan.claimed_targets)
+    for entry in bridge_plan.log_entries:
+        if entry.branch_arm is None:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
+                entry.source_block,
+                entry.target_block,
+                entry.tag,
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.tag,
+            )
 
     if bridge_mods:
         modifications.extend(bridge_mods)
