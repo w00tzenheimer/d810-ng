@@ -10,12 +10,15 @@ from d810.cfg.lowering_selector import (
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.plan import compile_patch_plan
+from d810.cfg.terminal_family_split import plan_terminal_family_splits
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
+    compute_reachable_blocks,
 )
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.recon.flow.reconstruction_discovery import classify_artifact_return_blocks
+from d810.recon.flow.terminal_family_collection import collect_terminal_family_report
 
 
 @dataclass(frozen=True)
@@ -45,9 +48,9 @@ def run_reconstruction_postprocess(
     rejected_metadata: list[dict[str, int | str | None]],
     owned_blocks: set[int],
     mba,
+    log_terminal_family_split_run,
     emit_entry_island_rescues,
     emit_late_island_rescues,
-    emit_terminal_family_splits,
 ) -> ReconstructionPostprocessResult:
     projected_flow_graph = flow_graph
     residual_dispatcher_preds: tuple[int, ...] = ()
@@ -847,14 +850,23 @@ def run_reconstruction_postprocess(
             except Exception:
                 projected_flow_graph = flow_graph
 
-    terminal_family_split_count = emit_terminal_family_splits(
-        dag,
+    terminal_family_split_run = plan_terminal_family_splits(
+        dag=dag,
         base_flow_graph=flow_graph,
         projected_flow_graph=projected_flow_graph,
-        builder=builder,
-        modifications=modifications,
         dispatcher_region=dispatcher_region,
         state_var_stkoff=state_var_stkoff,
+        builder=builder,
+        modifications=modifications,
+        collect_report=collect_terminal_family_report,
+        compute_reachable_blocks=lambda flow_graph: compute_reachable_blocks(
+            flow_graph,
+            start_serial=getattr(flow_graph, "entry_serial", None),
+        ),
+    )
+    terminal_family_split_count = log_terminal_family_split_run(
+        logger,
+        run=terminal_family_split_run,
         mba=mba,
     )
     if terminal_family_split_count:

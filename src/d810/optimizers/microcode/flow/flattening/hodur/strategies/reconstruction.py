@@ -32,11 +32,9 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_rescues imp
     emit_late_island_rescues as execute_reconstruction_late_island_rescues,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
+    log_terminal_family_split_run,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
-)
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_terminal_families import (
-    emit_terminal_family_splits as execute_reconstruction_terminal_family_splits,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
     ModificationBuilder,
@@ -327,13 +325,11 @@ class StateWriteReconstructionStrategy:
             rejected_metadata=rejected_metadata,
             owned_blocks=owned_blocks,
             mba=mba,
+            log_terminal_family_split_run=log_terminal_family_split_run,
             emit_entry_island_rescues=lambda *args, **kwargs: execute_reconstruction_entry_island_rescues(
                 logger, *args, **kwargs
             ),
             emit_late_island_rescues=lambda *args, **kwargs: execute_reconstruction_late_island_rescues(
-                logger, *args, **kwargs
-            ),
-            emit_terminal_family_splits=lambda *args, **kwargs: execute_reconstruction_terminal_family_splits(
                 logger, *args, **kwargs
             ),
         )
