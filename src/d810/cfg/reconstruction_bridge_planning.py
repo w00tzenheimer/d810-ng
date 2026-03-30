@@ -51,6 +51,20 @@ class ReconstructionFeederPlanResult:
     claimed_targets: frozenset[int]
 
 
+@dataclass(frozen=True, slots=True)
+class ReconstructionFixpointFeederLogEntry:
+    source_block: int
+    target_block: int
+    state_value: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReconstructionFixpointFeederPlanResult:
+    modifications: tuple[object, ...]
+    log_entries: tuple[ReconstructionFixpointFeederLogEntry, ...]
+    claimed_sources: frozenset[int]
+
+
 def _edge_kind_name(edge) -> str:
     return getattr(getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None)))
 
@@ -410,14 +424,83 @@ def plan_reconstruction_feeder_modifications(
     )
 
 
+def plan_fixpoint_feeder_modifications(
+    *,
+    flow_graph,
+    builder,
+    dispatcher_serial: int,
+    bst_node_blocks: set[int],
+    claimed_sources: set[int],
+    constant_result,
+    state_var_stkoff: int | None,
+    dispatcher,
+) -> ReconstructionFixpointFeederPlanResult:
+    feeder_mods: list = []
+    log_entries: list[ReconstructionFixpointFeederLogEntry] = []
+    if (
+        constant_result is None
+        or state_var_stkoff is None
+        or not hasattr(constant_result, "out_stk_maps")
+        or dispatcher is None
+    ):
+        return ReconstructionFixpointFeederPlanResult(
+            modifications=(),
+            log_entries=(),
+            claimed_sources=frozenset(int(serial) for serial in claimed_sources),
+        )
+
+    bst_set = {int(dispatcher_serial)}
+    bst_set.update(int(block) for block in bst_node_blocks)
+    for blk_serial in flow_graph.blocks:
+        if blk_serial in claimed_sources:
+            continue
+        blk = flow_graph.get_block(blk_serial)
+        if blk is None or blk.nsucc != 1:
+            continue
+        old_target = int(blk.succs[0])
+        if old_target != dispatcher_serial and old_target not in bst_set:
+            continue
+        out_map = constant_result.out_stk_maps.get(blk_serial, {})
+        state_val = out_map.get(state_var_stkoff)
+        if state_val is None:
+            continue
+        resolved = dispatcher.lookup(state_val)
+        if resolved is None or int(resolved) in bst_set:
+            continue
+        feeder_mods.append(
+            builder.goto_redirect(
+                source_block=blk_serial,
+                target_block=int(resolved),
+                old_target=old_target,
+            )
+        )
+        claimed_sources.add(int(blk_serial))
+        log_entries.append(
+            ReconstructionFixpointFeederLogEntry(
+                source_block=int(blk_serial),
+                target_block=int(resolved),
+                state_value=int(state_val),
+            )
+        )
+
+    return ReconstructionFixpointFeederPlanResult(
+        modifications=tuple(feeder_mods),
+        log_entries=tuple(log_entries),
+        claimed_sources=frozenset(int(serial) for serial in claimed_sources),
+    )
+
+
 __all__ = [
     "ReconstructionBridgeLogEntry",
     "ReconstructionBridgePlanResult",
     "ReconstructionFeederLogEntry",
     "ReconstructionFeederPlanResult",
+    "ReconstructionFixpointFeederLogEntry",
+    "ReconstructionFixpointFeederPlanResult",
     "ReconstructionPreheaderBridgeResult",
     "collect_reconstruction_claims",
     "collect_suppressed_bridge_pairs",
+    "plan_fixpoint_feeder_modifications",
     "plan_reconstruction_bridge_modifications",
     "plan_reconstruction_feeder_modifications",
     "plan_reconstruction_preheader_bridge",

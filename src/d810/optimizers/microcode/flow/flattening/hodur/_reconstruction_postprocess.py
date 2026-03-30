@@ -7,6 +7,7 @@ from d810.cfg.plan import compile_patch_plan
 from d810.cfg.reconstruction_bridge_planning import (
     collect_reconstruction_claims,
     collect_suppressed_bridge_pairs,
+    plan_fixpoint_feeder_modifications,
     plan_reconstruction_bridge_modifications,
     plan_reconstruction_feeder_modifications,
     plan_reconstruction_preheader_bridge,
@@ -202,47 +203,30 @@ def run_reconstruction_postprocess(
                 entry.tag,
             )
 
-    if (
-        constant_result is not None
-        and state_var_stkoff is not None
-        and hasattr(constant_result, "out_stk_maps")
-        and dispatcher is not None
-    ):
-        for blk_serial in flow_graph.blocks:
-            if blk_serial in claimed_sources:
-                continue
-            blk = flow_graph.get_block(blk_serial)
-            if blk is None or blk.nsucc != 1:
-                continue
-            old = int(blk.succs[0])
-            if old != dispatcher_serial and old not in _bst_set:
-                continue
-            out_map = constant_result.out_stk_maps.get(blk_serial, {})
-            state_val = out_map.get(state_var_stkoff)
-            if state_val is None:
-                continue
-            resolved = dispatcher.lookup(state_val)
-            if resolved is None or int(resolved) in _bst_set:
-                continue
-            logger.debug(
-                "RECON FEEDER: fixpoint blk[%d] has no "
-                "last_write_site, skipping NOP",
-                blk_serial,
-            )
-            feeder_mods.append(
-                builder.goto_redirect(
-                    source_block=blk_serial,
-                    target_block=int(resolved),
-                    old_target=old,
-                )
-            )
-            claimed_sources.add(blk_serial)
-            logger.info(
-                "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
-                blk_serial,
-                int(resolved),
-                state_val,
-            )
+    fixpoint_feeder_plan = plan_fixpoint_feeder_modifications(
+        flow_graph=flow_graph,
+        builder=builder,
+        dispatcher_serial=dispatcher_serial,
+        bst_node_blocks=_bst_set,
+        claimed_sources=claimed_sources,
+        constant_result=constant_result,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher=dispatcher,
+    )
+    feeder_mods.extend(fixpoint_feeder_plan.modifications)
+    claimed_sources = set(fixpoint_feeder_plan.claimed_sources)
+    for entry in fixpoint_feeder_plan.log_entries:
+        logger.debug(
+            "RECON FEEDER: fixpoint blk[%d] has no "
+            "last_write_site, skipping NOP",
+            entry.source_block,
+        )
+        logger.info(
+            "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
+            entry.source_block,
+            entry.target_block,
+            entry.state_value,
+        )
 
     if feeder_mods:
         modifications.extend(feeder_mods)
