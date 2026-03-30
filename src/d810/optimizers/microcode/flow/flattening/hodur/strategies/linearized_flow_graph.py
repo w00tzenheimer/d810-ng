@@ -71,10 +71,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_planning import (
     build_linearized_dag_round_summary_adapter,
-    build_linearized_flow_graph_plan_fragment,
     build_linearized_flow_graph_planning_callbacks,
-    build_linearized_flow_graph_planning_context,
-    log_linearized_flow_graph_plan_result,
+    execute_linearized_flow_graph_strategy_plan,
     prepare_linearized_flow_graph_plan_setup,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_redirects import (
@@ -424,73 +422,39 @@ class LinearizedFlowGraphStrategy:
             and (func_ea, maturity) in self._applied
         )
 
-        # DAG-driven semantic planner. Rebuild against a projected CFG within
-        # this stage so later corridor edges exposed by earlier redirects can
-        # still be emitted into the same fragment.
-        dag_setup = prepare_linearized_flow_graph_plan_setup(
+        return execute_linearized_flow_graph_strategy_plan(
             snapshot=snapshot,
             state_machine=sm,
             bst_result=bst_result,
             flow_graph=flow_graph,
             mba=mba,
-            same_maturity_rerun=bool(same_maturity_rerun),
             logger=logger,
+            same_maturity_rerun=bool(same_maturity_rerun),
+            strategy_name=self.name,
+            family=self.family,
+            prerequisites=self.prerequisites,
             build_modification_builder=ModificationBuilder.from_snapshot,
             resolve_state_var_stkoff=self._resolve_state_var_stkoff,
             supports_projected_replanning=self._supports_projected_replanning,
             flow_graph_block_serials=self._flow_graph_block_serials,
             is_original_pre_header_candidate=self._is_original_pre_header_candidate,
             transition_result_cls=TransitionResult,
-        )
-        dag_result = execute_linearized_flow_graph_planning(
-            build_linearized_flow_graph_planning_context(
-                flow_graph=flow_graph,
-                mba=mba,
-                state_machine=sm,
-                dispatcher_serial=int(snapshot.bst_dispatcher_serial),
-                setup=dag_setup,
+            round_summary_adapter=build_linearized_dag_round_summary_adapter,
+            discover_round_summary=build_linearized_dag_round_summary,
+            build_projected_mba=build_mba_view_from_flow_graph,
+            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
+                base_flow_graph,
+                compile_patch_plan(modifications, base_flow_graph),
             ),
-            callbacks=build_linearized_flow_graph_planning_callbacks(
-                snapshot=snapshot,
-                state_machine=sm,
-                bst_result=bst_result,
-                mba=mba,
-                setup=dag_setup,
-                round_summary_adapter=build_linearized_dag_round_summary_adapter,
-                discover_round_summary=build_linearized_dag_round_summary,
-                build_projected_mba=build_mba_view_from_flow_graph,
-                project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                    base_flow_graph,
-                    compile_patch_plan(modifications, base_flow_graph),
-                ),
-                resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
-                resolve_initial_entry=resolve_dag_entry_for_state,
-                emit_dag_redirect=self._emit_dag_redirect,
-                collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
-                emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
-                disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-                build_live_dag=build_live_linearized_state_dag_from_graph,
-                build_transition_report=build_dispatcher_transition_report_from_graph,
-                select_plannable_edges=select_plannable_dag_edges,
-            ),
-        )
-
-        if not dag_result.accepted:
-            logger.info("LFG: DAG produced no redirect modifications")
-            return None
-
-        log_linearized_flow_graph_plan_result(
-            logger,
-            mba=mba,
-            result=dag_result,
-        )
-        return build_linearized_flow_graph_plan_fragment(
-            strategy_name=self.name,
-            family=self.family,
-            prerequisites=self.prerequisites,
-            state_machine=sm,
-            bst_node_blocks=dag_setup.bst_node_blocks,
-            result=dag_result,
+            resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
+            resolve_initial_entry=resolve_dag_entry_for_state,
+            emit_dag_redirect=self._emit_dag_redirect,
+            collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
+            emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
+            disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
+            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_transition_report=build_dispatcher_transition_report_from_graph,
+            select_plannable_edges=select_plannable_dag_edges,
         )
 
     @classmethod
