@@ -329,9 +329,182 @@ def log_late_island_rescue_run(logger, *, run, diagnostics, mba) -> int:
     return int(run.emitted_count)
 
 
+def log_reconstruction_artifact_returns(
+    logger,
+    *,
+    state_var_stkoff: int,
+    flow_graph_block_count: int,
+    state_constants_count: int,
+    artifact_return_blocks: set[int],
+) -> None:
+    logger.info(
+        "RECON RETURN: classifying artifacts: "
+        "state_var_stkoff=%s, flow_graph blocks=%d, "
+        "state_constants count=%d",
+        state_var_stkoff,
+        flow_graph_block_count,
+        state_constants_count,
+    )
+    if artifact_return_blocks:
+        logger.info(
+            "RECON RETURN: artifact return blocks: %s",
+            sorted(artifact_return_blocks),
+        )
+    else:
+        logger.info(
+            "RECON RETURN: NO artifact blocks found "
+            "(classifier returned empty set)",
+        )
+
+
+def log_reconstruction_common_return_corridor(logger, *, common_return_corridor: set[int]) -> None:
+    if common_return_corridor:
+        logger.info(
+            "RECON RETURN: common return corridor blocks: %s",
+            sorted(common_return_corridor),
+        )
+
+
+def log_reconstruction_preheader_bridge(logger, *, dag, preheader_bridge) -> None:
+    if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
+        logger.info(
+            "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
+            dag.pre_header_serial,
+            preheader_bridge.resolved_target,
+        )
+
+
+def log_reconstruction_bridge_plan(logger, *, bridge_plan) -> int:
+    for entry in bridge_plan.log_entries:
+        if entry.branch_arm is None:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
+                entry.source_block,
+                entry.target_block,
+                entry.tag,
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.tag,
+            )
+
+    emitted = len(bridge_plan.modifications)
+    if emitted:
+        logger.info(
+            "RECON BRIDGE: %d bridge edges for unclaimed handler entries",
+            emitted,
+        )
+    return emitted
+
+
+def log_reconstruction_feeder_plan(logger, *, feeder_plan, fixpoint_feeder_plan) -> int:
+    for entry in feeder_plan.log_entries:
+        if entry.branch_arm is None:
+            logger.info(
+                "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d via_pred=%s)",
+                entry.source_block,
+                entry.target_block,
+                entry.tag,
+                entry.source_pred_count,
+                entry.via_pred,
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (%s)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.tag,
+            )
+
+    for entry in fixpoint_feeder_plan.log_entries:
+        logger.debug(
+            "RECON FEEDER: fixpoint blk[%d] has no "
+            "last_write_site, skipping NOP",
+            entry.source_block,
+        )
+        logger.info(
+            "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
+            entry.source_block,
+            entry.target_block,
+            entry.state_value,
+        )
+
+    emitted = len(feeder_plan.modifications) + len(fixpoint_feeder_plan.modifications)
+    if emitted:
+        logger.info(
+            "RECON BRIDGE: %d feeder redirects for residual dispatcher feeders",
+            emitted,
+        )
+    return emitted
+
+
+def log_reconstruction_return_plan(logger, *, return_plan) -> int:
+    for entry in return_plan.log_entries:
+        if entry.tag == "fallback_1way":
+            logger.info(
+                "RECON RETURN: fallback wire blk[%d] -> blk[%d] (1-way)",
+                entry.source_block,
+                entry.target_block,
+            )
+        elif entry.tag == "fallback_2way":
+            logger.info(
+                "RECON RETURN: fallback wire blk[%d].arm%d -> blk[%d] (2-way)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+            )
+        elif entry.tag == "wire_1way":
+            logger.info(
+                "RECON RETURN: wire blk[%d] -> blk[%d] "
+                "(bypass artifact blk[%d], 1-way)",
+                entry.source_block,
+                entry.target_block,
+                entry.bypass_block,
+            )
+        elif entry.tag == "redirect_artifact":
+            logger.info(
+                "RECON RETURN: redirect artifact blk[%d] -> blk[%d]",
+                entry.source_block,
+                entry.target_block,
+            )
+        elif entry.tag == "wire_2way":
+            logger.info(
+                "RECON RETURN: wire blk[%d].arm%d -> blk[%d] "
+                "(bypass artifact blk[%d], 2-way)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.bypass_block,
+            )
+
+    logger.info(
+        "RECON RETURN: %d return path edges wired, %d skipped",
+        len(return_plan.modifications),
+        len(return_plan.skipped_entries),
+    )
+    for entry in return_plan.skipped_entries:
+        logger.info(
+            "RECON RETURN: skip blk[%d] reason=%s",
+            entry.source_block,
+            entry.reason,
+        )
+    return len(return_plan.modifications)
+
+
 __all__ = [
     "log_entry_island_rescue_run",
     "log_late_island_rescue_run",
+    "log_reconstruction_artifact_returns",
+    "log_reconstruction_bridge_plan",
+    "log_reconstruction_common_return_corridor",
+    "log_reconstruction_feeder_plan",
+    "log_reconstruction_preheader_bridge",
+    "log_reconstruction_return_plan",
     "log_terminal_family_split_run",
     "snapshot_reconstruction_dag",
     "snapshot_reconstruction_post_apply",

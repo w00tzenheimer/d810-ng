@@ -16,6 +16,12 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_entry_island_rescue_run,
     log_late_island_rescue_run,
+    log_reconstruction_artifact_returns,
+    log_reconstruction_bridge_plan,
+    log_reconstruction_common_return_corridor,
+    log_reconstruction_feeder_plan,
+    log_reconstruction_preheader_bridge,
+    log_reconstruction_return_plan,
 )
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.recon.flow.entry_island_rescue_discovery import (
@@ -136,29 +142,18 @@ def run_reconstruction_postprocess(
     artifact_return_blocks: set[int] = set()
     if state_var_stkoff is not None:
         _state_consts = state_machine.state_constants if state_machine is not None else set()
-        logger.info(
-            "RECON RETURN: classifying artifacts: "
-            "state_var_stkoff=%s, flow_graph blocks=%d, "
-            "state_constants count=%d",
-            state_var_stkoff,
-            len(flow_graph.blocks),
-            len(_state_consts),
-        )
         artifact_return_blocks = classify_artifact_return_blocks(
             flow_graph,
             state_var_stkoff=state_var_stkoff,
             state_constants=_state_consts,
         )
-        if artifact_return_blocks:
-            logger.info(
-                "RECON RETURN: artifact return blocks: %s",
-                sorted(artifact_return_blocks),
-            )
-        else:
-            logger.info(
-                "RECON RETURN: NO artifact blocks found "
-                "(classifier returned empty set)",
-            )
+        log_reconstruction_artifact_returns(
+            logger,
+            state_var_stkoff=state_var_stkoff,
+            flow_graph_block_count=len(flow_graph.blocks),
+            state_constants_count=len(_state_consts),
+            artifact_return_blocks=artifact_return_blocks,
+        )
 
     common_return_corridor = collect_common_return_corridor(
         dag,
@@ -166,11 +161,10 @@ def run_reconstruction_postprocess(
         bst_node_blocks=_bst_set,
         dispatcher_serial=dispatcher_serial,
     )
-    if common_return_corridor:
-        logger.info(
-            "RECON RETURN: common return corridor blocks: %s",
-            sorted(common_return_corridor),
-        )
+    log_reconstruction_common_return_corridor(
+        logger,
+        common_return_corridor=common_return_corridor,
+    )
 
     postprocess_plan = plan_reconstruction_postprocess_modifications(
         dag=dag,
@@ -193,133 +187,41 @@ def run_reconstruction_postprocess(
     preheader_bridge = postprocess_plan.preheader_bridge
     if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
         modifications.append(preheader_bridge.modification)
-        logger.info(
-            "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
-            dag.pre_header_serial,
-            preheader_bridge.resolved_target,
+        log_reconstruction_preheader_bridge(
+            logger,
+            dag=dag,
+            preheader_bridge=preheader_bridge,
         )
 
     bridge_plan = postprocess_plan.bridge_plan
     bridge_mods: list = list(bridge_plan.modifications)
-    for entry in bridge_plan.log_entries:
-        if entry.branch_arm is None:
-            logger.info(
-                "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
-                entry.source_block,
-                entry.target_block,
-                entry.tag,
-            )
-        else:
-            logger.info(
-                "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-                entry.tag,
-            )
-
     if bridge_mods:
         modifications.extend(bridge_mods)
-        logger.info(
-            "RECON BRIDGE: %d bridge edges for unclaimed handler entries",
-            len(bridge_mods),
-        )
+    log_reconstruction_bridge_plan(
+        logger,
+        bridge_plan=bridge_plan,
+    )
 
     feeder_plan = postprocess_plan.feeder_plan
     feeder_mods: list = list(feeder_plan.modifications)
-    for entry in feeder_plan.log_entries:
-        if entry.branch_arm is None:
-            logger.info(
-                "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d via_pred=%s)",
-                entry.source_block,
-                entry.target_block,
-                entry.tag,
-                entry.source_pred_count,
-                entry.via_pred,
-            )
-        else:
-            logger.info(
-                "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (%s)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-                entry.tag,
-            )
-
     fixpoint_feeder_plan = postprocess_plan.fixpoint_feeder_plan
     feeder_mods.extend(fixpoint_feeder_plan.modifications)
-    for entry in fixpoint_feeder_plan.log_entries:
-        logger.debug(
-            "RECON FEEDER: fixpoint blk[%d] has no "
-            "last_write_site, skipping NOP",
-            entry.source_block,
-        )
-        logger.info(
-            "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
-            entry.source_block,
-            entry.target_block,
-            entry.state_value,
-        )
-
     if feeder_mods:
         modifications.extend(feeder_mods)
-        logger.info(
-            "RECON BRIDGE: %d feeder redirects for residual dispatcher feeders",
-            len(feeder_mods),
-        )
+    log_reconstruction_feeder_plan(
+        logger,
+        feeder_plan=feeder_plan,
+        fixpoint_feeder_plan=fixpoint_feeder_plan,
+    )
 
     return_plan = postprocess_plan.return_plan
     return_mods: list = list(return_plan.modifications)
     if return_mods:
         modifications.extend(return_mods)
-    for entry in return_plan.log_entries:
-        if entry.tag == "fallback_1way":
-            logger.info(
-                "RECON RETURN: fallback wire blk[%d] -> blk[%d] (1-way)",
-                entry.source_block,
-                entry.target_block,
-            )
-        elif entry.tag == "fallback_2way":
-            logger.info(
-                "RECON RETURN: fallback wire blk[%d].arm%d -> blk[%d] (2-way)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-            )
-        elif entry.tag == "wire_1way":
-            logger.info(
-                "RECON RETURN: wire blk[%d] -> blk[%d] "
-                "(bypass artifact blk[%d], 1-way)",
-                entry.source_block,
-                entry.target_block,
-                entry.bypass_block,
-            )
-        elif entry.tag == "redirect_artifact":
-            logger.info(
-                "RECON RETURN: redirect artifact blk[%d] -> blk[%d]",
-                entry.source_block,
-                entry.target_block,
-            )
-        elif entry.tag == "wire_2way":
-            logger.info(
-                "RECON RETURN: wire blk[%d].arm%d -> blk[%d] "
-                "(bypass artifact blk[%d], 2-way)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-                entry.bypass_block,
-            )
-    logger.info(
-        "RECON RETURN: %d return path edges wired, %d skipped",
-        len(return_mods),
-        len(return_plan.skipped_entries),
+    log_reconstruction_return_plan(
+        logger,
+        return_plan=return_plan,
     )
-    for entry in return_plan.skipped_entries:
-        logger.info(
-            "RECON RETURN: skip blk[%d] reason=%s",
-            entry.source_block,
-            entry.reason,
-        )
 
     force_wire_mods: list = []
 
