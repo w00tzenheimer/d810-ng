@@ -7,8 +7,7 @@ module only injects ``resolve_state_via_valranges`` when available.
 
 from __future__ import annotations
 
-import importlib
-
+from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
 from d810.recon.flow.linearized_state_dag import LinearizedStateDag, StateDagEdge
 from d810.recon.flow.residual_handoff_discovery import (
     has_live_exact_residual_handoff as discover_has_live_exact_residual_handoff,
@@ -20,11 +19,6 @@ from d810.recon.flow.residual_handoff_discovery import (
 
 
 def _resolve_state_via_valranges():
-    try:
-        module = importlib.import_module("d810.evaluator.hexrays_microcode.valranges")
-        resolve_state_via_valranges = getattr(module, "resolve_state_via_valranges", None)
-    except Exception:
-        resolve_state_via_valranges = None
     return resolve_state_via_valranges
 
 
