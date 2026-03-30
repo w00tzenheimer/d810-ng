@@ -12,13 +12,15 @@ from d810.cfg.reconstruction_bridge_planning import (
     plan_reconstruction_feeder_modifications,
     plan_reconstruction_preheader_bridge,
 )
+from d810.cfg.reconstruction_return_planning import (
+    plan_reconstruction_return_modifications,
+)
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.recon.flow.reconstruction_discovery import classify_artifact_return_blocks
 from d810.recon.flow.return_corridor_discovery import collect_common_return_corridor
 from d810.recon.flow.terminal_family_collection import collect_terminal_family_report
@@ -263,8 +265,6 @@ def run_reconstruction_postprocess(
                 "(classifier returned empty set)",
             )
 
-    return_mods: list = []
-    return_skipped: list[tuple[int, str]] = []
     common_return_corridor = collect_common_return_corridor(
         dag,
         flow_graph,
@@ -277,232 +277,69 @@ def run_reconstruction_postprocess(
             sorted(common_return_corridor),
         )
 
-    for edge in dag.edges:
-        if edge.kind != SemanticEdgeKind.CONDITIONAL_RETURN:
-            continue
-
-        src_serial = int(edge.source_anchor.block_serial)
-        src_arm = edge.source_anchor.branch_arm
-        if not edge.ordered_path:
-            return_skipped.append((src_serial, "empty_ordered_path"))
-            continue
-
-        ordered = tuple(int(s) for s in edge.ordered_path)
-        if len(ordered) < 2:
-            return_skipped.append((src_serial, "path_too_short"))
-            continue
-
-        source_node = node_by_key.get(edge.source_key)
-        node_shared_suffix: set[int] = set()
-        if source_node is not None:
-            node_shared_suffix = {int(b) for b in source_node.shared_suffix_blocks}
-
-        suffix_entry_serial: int | None = None
-        anchor_serial: int | None = None
-        if len(ordered) >= 2:
-            terminal = ordered[-1]
-            corridor_candidates = sorted(
-                b for b in common_return_corridor if b != terminal
+    return_plan = plan_reconstruction_return_modifications(
+        dag=dag,
+        flow_graph=flow_graph,
+        builder=builder,
+        claimed_sources=claimed_sources,
+        dispatcher_serial=dispatcher_serial,
+        bst_node_blocks=_bst_set,
+        common_return_corridor=common_return_corridor,
+        artifact_return_blocks=artifact_return_blocks,
+        node_by_key=node_by_key,
+    )
+    return_mods: list = list(return_plan.modifications)
+    claimed_sources = set(return_plan.claimed_sources)
+    if return_mods:
+        modifications.extend(return_mods)
+    for entry in return_plan.log_entries:
+        if entry.tag == "fallback_1way":
+            logger.info(
+                "RECON RETURN: fallback wire blk[%d] -> blk[%d] (1-way)",
+                entry.source_block,
+                entry.target_block,
             )
-            if not corridor_candidates:
-                corridor_candidates = sorted(
-                    b
-                    for b in node_shared_suffix
-                    if b != terminal and b not in _bst_set and b != dispatcher_serial
-                )
-            if corridor_candidates:
-                suffix_entry_serial = corridor_candidates[0]
-            anchor_serial = src_serial
-
-        if suffix_entry_serial is None:
-            fallback_emitted = False
-            for hop_idx in range(len(ordered) - 1):
-                from_serial = ordered[hop_idx]
-                expected_next = ordered[hop_idx + 1]
-                if from_serial in _bst_set or from_serial in claimed_sources:
-                    continue
-                from_block = flow_graph.get_block(from_serial)
-                if from_block is None:
-                    continue
-                if from_block.nsucc == 1:
-                    old_target = int(from_block.succs[0])
-                    if old_target == expected_next:
-                        continue
-                    return_mods.append(
-                        builder.goto_redirect(
-                            source_block=from_serial,
-                            target_block=expected_next,
-                            old_target=old_target,
-                        )
-                    )
-                    claimed_sources.add(from_serial)
-                    logger.info(
-                        "RECON RETURN: fallback wire blk[%d] -> blk[%d] (1-way)",
-                        from_serial,
-                        expected_next,
-                    )
-                    fallback_emitted = True
-                    break
-                elif from_block.nsucc == 2:
-                    check_arms = (
-                        [src_arm]
-                        if from_serial == src_serial and src_arm is not None
-                        else [0, 1]
-                    )
-                    for arm in check_arms:
-                        if arm >= from_block.nsucc:
-                            continue
-                        arm_target = int(from_block.succs[arm])
-                        if arm_target == expected_next:
-                            fallback_emitted = True
-                            break
-                        return_mods.append(
-                            builder.edge_redirect(
-                                source_block=from_serial,
-                                target_block=expected_next,
-                                old_target=arm_target,
-                            )
-                        )
-                        claimed_sources.add(from_serial)
-                        logger.info(
-                            "RECON RETURN: fallback wire blk[%d].arm%d -> blk[%d] (2-way)",
-                            from_serial,
-                            arm,
-                            expected_next,
-                        )
-                        fallback_emitted = True
-                        break
-                    if fallback_emitted:
-                        break
-            if not fallback_emitted:
-                return_skipped.append((src_serial, "no_suffix_fallback_exhausted"))
-            continue
-
-        logger.info(
-            "RECON RETURN: path-local edge src=blk[%d] path=%s "
-            "suffix_entry=blk[%d] anchor=blk[%d]",
-            src_serial,
-            ordered,
-            suffix_entry_serial,
-            anchor_serial,
-        )
-
-        if anchor_serial in _bst_set:
-            return_skipped.append((anchor_serial, "anchor_in_bst"))
-            continue
-        if anchor_serial in claimed_sources:
-            return_skipped.append((anchor_serial, "anchor_claimed"))
-            continue
-
-        anchor_block = flow_graph.get_block(anchor_serial)
-        if anchor_block is None:
-            return_skipped.append((anchor_serial, "anchor_block_not_found"))
-            continue
-
-        if anchor_block.nsucc == 1:
-            old_target = int(anchor_block.succs[0])
-            if old_target == suffix_entry_serial:
-                logger.info(
-                    "RECON RETURN: blk[%d] already points to "
-                    "suffix entry blk[%d]",
-                    anchor_serial,
-                    suffix_entry_serial,
-                )
-                continue
-            return_mods.append(
-                builder.goto_redirect(
-                    source_block=anchor_serial,
-                    target_block=suffix_entry_serial,
-                    old_target=old_target,
-                )
+        elif entry.tag == "fallback_2way":
+            logger.info(
+                "RECON RETURN: fallback wire blk[%d].arm%d -> blk[%d] (2-way)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
             )
-            claimed_sources.add(anchor_serial)
+        elif entry.tag == "wire_1way":
             logger.info(
                 "RECON RETURN: wire blk[%d] -> blk[%d] "
                 "(bypass artifact blk[%d], 1-way)",
-                anchor_serial,
-                suffix_entry_serial,
-                old_target,
+                entry.source_block,
+                entry.target_block,
+                entry.bypass_block,
             )
-        elif anchor_block.nsucc == 2:
-            if anchor_serial == src_serial and src_arm is not None:
-                check_arms = [src_arm]
-            else:
-                check_arms = [0, 1]
-
-            wired = False
-            for arm in check_arms:
-                if arm >= anchor_block.nsucc:
-                    continue
-                arm_target = int(anchor_block.succs[arm])
-                if arm_target == suffix_entry_serial:
-                    wired = True
-                    break
-                if arm == 0:
-                    artifact_blk = flow_graph.get_block(arm_target)
-                    if (
-                        artifact_blk is not None
-                        and artifact_blk.nsucc == 1
-                        and arm_target in artifact_return_blocks
-                        and arm_target not in claimed_sources
-                    ):
-                        artifact_old = int(artifact_blk.succs[0])
-                        return_mods.append(
-                            builder.goto_redirect(
-                                source_block=arm_target,
-                                target_block=suffix_entry_serial,
-                                old_target=artifact_old,
-                            )
-                        )
-                        claimed_sources.add(arm_target)
-                        logger.info(
-                            "RECON RETURN: redirect artifact blk[%d] -> blk[%d]",
-                            arm_target,
-                            suffix_entry_serial,
-                        )
-                        wired = True
-                        break
-                    logger.info(
-                        "RECON RETURN: skip arm0 blk[%d] (real return writer)",
-                        arm_target,
-                    )
-                    wired = True
-                    break
-                else:
-                    return_mods.append(
-                        builder.edge_redirect(
-                            source_block=anchor_serial,
-                            target_block=suffix_entry_serial,
-                            old_target=arm_target,
-                        )
-                    )
-                claimed_sources.add(anchor_serial)
-                logger.info(
-                    "RECON RETURN: wire blk[%d].arm%d -> blk[%d] "
-                    "(bypass artifact blk[%d], 2-way)",
-                    anchor_serial,
-                    arm,
-                    suffix_entry_serial,
-                    arm_target,
-                )
-                wired = True
-                break
-            if not wired:
-                return_skipped.append((anchor_serial, "no_eligible_arm"))
-        else:
-            return_skipped.append(
-                (anchor_serial, f"unexpected_nsucc_{anchor_block.nsucc}")
+        elif entry.tag == "redirect_artifact":
+            logger.info(
+                "RECON RETURN: redirect artifact blk[%d] -> blk[%d]",
+                entry.source_block,
+                entry.target_block,
             )
-
-    if return_mods:
-        modifications.extend(return_mods)
+        elif entry.tag == "wire_2way":
+            logger.info(
+                "RECON RETURN: wire blk[%d].arm%d -> blk[%d] "
+                "(bypass artifact blk[%d], 2-way)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.bypass_block,
+            )
     logger.info(
         "RECON RETURN: %d return path edges wired, %d skipped",
         len(return_mods),
-        len(return_skipped),
+        len(return_plan.skipped_entries),
     )
-    for blk_ser, reason in return_skipped:
-        logger.info("RECON RETURN: skip blk[%d] reason=%s", blk_ser, reason)
+    for entry in return_plan.skipped_entries:
+        logger.info(
+            "RECON RETURN: skip blk[%d] reason=%s",
+            entry.source_block,
+            entry.reason,
+        )
 
     force_wire_mods: list = []
 
