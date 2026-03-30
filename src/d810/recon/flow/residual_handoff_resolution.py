@@ -1,9 +1,17 @@
-"""Hodur-local bridge for residual handoff discovery requiring Hex-Rays helpers."""
+"""Residual handoff resolution with optional evaluator-backed state recovery.
+
+This module is the narrow enriched layer above
+``d810.recon.flow.residual_handoff_discovery``. Discovery stays pure; this
+module only injects ``resolve_state_via_valranges`` when available.
+"""
 
 from __future__ import annotations
 
+import importlib
+
 from d810.recon.flow.linearized_state_dag import LinearizedStateDag, StateDagEdge
 from d810.recon.flow.residual_handoff_discovery import (
+    has_live_exact_residual_handoff as discover_has_live_exact_residual_handoff,
     resolve_effective_target_entry as discover_effective_target_entry,
     resolve_immediate_handoff_target,
     resolve_singleton_state_write_value as discover_singleton_state_write_value,
@@ -13,10 +21,27 @@ from d810.recon.flow.residual_handoff_discovery import (
 
 def _resolve_state_via_valranges():
     try:
-        from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
+        module = importlib.import_module("d810.evaluator.hexrays_microcode.valranges")
+        resolve_state_via_valranges = getattr(module, "resolve_state_via_valranges", None)
     except Exception:
         resolve_state_via_valranges = None
     return resolve_state_via_valranges
+
+
+def has_live_exact_residual_handoff_with_valranges(
+    mba: object,
+    residual_preds: tuple[int, ...],
+    *,
+    state_var_stkoff: int | None,
+    dispatcher: object | None,
+) -> bool:
+    return discover_has_live_exact_residual_handoff(
+        mba,
+        residual_preds,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher=dispatcher,
+        resolve_state_via_valranges=_resolve_state_via_valranges(),
+    )
 
 
 def resolve_singleton_state_write_value(
@@ -114,6 +139,7 @@ def is_semantic_handoff_redirect(
 
 
 __all__ = [
+    "has_live_exact_residual_handoff_with_valranges",
     "is_semantic_handoff_redirect",
     "resolve_effective_target_entry",
     "resolve_singleton_state_write_value",

@@ -60,8 +60,8 @@ from d810.cfg.modification_builder import (
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._residual_handoff_bridge import (
-    _resolve_state_via_valranges,
+from d810.recon.flow.residual_handoff_resolution import (
+    has_live_exact_residual_handoff_with_valranges,
     is_semantic_handoff_redirect,
     resolve_effective_target_entry,
     resolve_singleton_state_write_value,
@@ -81,7 +81,6 @@ from d810.recon.flow.linearized_dag_round_discovery import (
     build_linearized_dag_round_summary,
 )
 from d810.recon.flow.residual_handoff_discovery import (
-    has_live_exact_residual_handoff,
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
     resolve_assignment_map_handoff_target,
@@ -703,12 +702,11 @@ class LinearizedFlowGraphStrategy:
             return False
         state_var_stkoff = cls._resolve_state_var_stkoff(snapshot, state_machine)
         dispatcher = getattr(bst_result, "dispatcher", None)
-        return has_live_exact_residual_handoff(
+        return has_live_exact_residual_handoff_with_valranges(
             mba,
             residual_preds,
             state_var_stkoff=state_var_stkoff,
             dispatcher=dispatcher,
-            resolve_state_via_valranges=_resolve_state_via_valranges(),
         )
 
     # ------------------------------------------------------------------
