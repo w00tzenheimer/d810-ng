@@ -18,6 +18,7 @@ from d810.cfg.dag_redirect_execution import (
     DagRedirectMutableState,
     execute_dag_redirect_fallback,
 )
+from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.dispatcher_backedge_disconnect_execution import (
     execute_dispatcher_backedge_disconnects,
 )
@@ -60,12 +61,16 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._residual_handoff_bridge import (
+    _resolve_state_via_valranges,
     is_semantic_handoff_redirect,
     resolve_effective_target_entry,
+    resolve_singleton_state_write_value,
     resolve_synthesized_handoff_target,
 )
 from d810.recon.flow.graph_reachability import (
     collect_dispatcher_predecessors,
+    collect_residual_dispatcher_predecessors,
+    compute_reachable_blocks,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.dag_redirect_discovery import (
@@ -76,6 +81,7 @@ from d810.recon.flow.linearized_dag_round_discovery import (
     build_linearized_dag_round_summary,
 )
 from d810.recon.flow.residual_handoff_discovery import (
+    has_live_exact_residual_handoff,
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
     resolve_assignment_map_handoff_target,
@@ -88,6 +94,9 @@ from d810.recon.flow.residual_handoff_discovery import (
     resolve_projected_path_tail_target,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
+)
+from d810.recon.flow.exit_transition_discovery import (
+    resolve_state_var_stkoff as discover_state_var_stkoff,
 )
 from d810.recon.flow.shared_suffix_discovery import (
     can_rewrite_shared_suffix_family_fallback,
@@ -105,19 +114,6 @@ from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_repo
     log_dag_redirect_fallback_outcome,
     log_path_tail_redirect_outcome,
     log_residual_dispatcher_handoff_outcomes,
-)
-from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_rerun import (
-    allow_same_maturity_rerun,
-)
-from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_utils import (
-    collect_dead_dispatcher_root_cleanup_modifications as collect_dead_dispatcher_root_cleanup_modifications_impl,
-    collect_lfg_residual_dispatcher_predecessors,
-    flow_graph_block_serials as flow_graph_block_serials_impl,
-    has_live_exact_lfg_residual_handoff,
-    is_original_pre_header_candidate as is_original_pre_header_candidate_impl,
-    resolve_lfg_singleton_state_write_value,
-    resolve_state_var_stkoff as resolve_state_var_stkoff_impl,
-    supports_projected_replanning as supports_projected_replanning_impl,
 )
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -330,15 +326,24 @@ class LinearizedFlowGraphStrategy:
         snapshot: AnalysisSnapshot,
         sm: DispatcherStateMachine,
     ) -> int | None:
-        return resolve_state_var_stkoff_impl(snapshot, sm)
+        return discover_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(sm, "state_var", None),
+        )
 
     @staticmethod
     def _supports_projected_replanning(flow_graph: object) -> bool:
-        return supports_projected_replanning_impl(flow_graph)
+        return isinstance(flow_graph, FlowGraph)
 
     @staticmethod
     def _flow_graph_block_serials(flow_graph: object) -> set[int]:
-        return flow_graph_block_serials_impl(flow_graph)
+        blocks = getattr(flow_graph, "blocks", None)
+        if blocks is None:
+            return set()
+        try:
+            return set(blocks.keys())
+        except Exception:
+            return set()
 
     @classmethod
     def _resolve_singleton_state_write_value(
@@ -348,7 +353,7 @@ class LinearizedFlowGraphStrategy:
         *,
         state_var_stkoff: int | None,
     ) -> int | None:
-        return resolve_lfg_singleton_state_write_value(
+        return resolve_singleton_state_write_value(
             mba,
             block_serial,
             state_var_stkoff=state_var_stkoff,
@@ -363,12 +368,49 @@ class LinearizedFlowGraphStrategy:
         original_stop_serial: int | None,
         original_blocks: set[int],
     ) -> list[RedirectGoto]:
-        return collect_dead_dispatcher_root_cleanup_modifications_impl(
+        del cls
+        if not projected_flow_graph.blocks:
+            return []
+        if dispatcher_serial < 0 or original_stop_serial is None:
+            return []
+        stop_serial = int(original_stop_serial)
+        entry_serial = getattr(projected_flow_graph, "entry_serial", None)
+        reachable_blocks = compute_reachable_blocks(
             projected_flow_graph,
-            dispatcher_serial=dispatcher_serial,
-            original_stop_serial=original_stop_serial,
-            original_blocks=original_blocks,
+            start_serial=entry_serial,
         )
+        filtered: list[RedirectGoto] = []
+        for block_serial in sorted(projected_flow_graph.blocks.keys()):
+            if block_serial not in original_blocks:
+                continue
+            if block_serial in {dispatcher_serial, stop_serial}:
+                continue
+            if reachable_blocks is not None and block_serial in reachable_blocks:
+                continue
+            block = projected_flow_graph.get_block(block_serial)
+            if block is None:
+                continue
+            if tuple(getattr(block, "preds", ())) != ():
+                continue
+            if getattr(block, "block_type", None) == ida_hexrays.BLT_2WAY:
+                continue
+            succs = tuple(getattr(block, "succs", ()))
+            if len(succs) != 1:
+                continue
+            old_target = int(succs[0])
+            if old_target == stop_serial:
+                continue
+            if old_target != dispatcher_serial:
+                continue
+            filtered.append(
+                RedirectGoto(
+                    from_serial=int(block_serial),
+                    old_target=old_target,
+                    new_target=stop_serial,
+                )
+            )
+        filtered.sort(key=lambda mod: mod.from_serial)
+        return filtered
 
     @classmethod
     def _collect_residual_dispatcher_predecessors(
@@ -379,7 +421,8 @@ class LinearizedFlowGraphStrategy:
         bst_node_blocks: set[int],
         reachable_from_serial: int | None = None,
     ) -> tuple[int, ...]:
-        return collect_lfg_residual_dispatcher_predecessors(
+        del cls
+        return collect_residual_dispatcher_predecessors(
             flow_graph,
             dispatcher_serial,
             bst_node_blocks=bst_node_blocks,
@@ -501,11 +544,18 @@ class LinearizedFlowGraphStrategy:
         pre_header_serial: int | None,
         entry_serial: int | None,
     ) -> bool:
-        return is_original_pre_header_candidate_impl(
-            flow_graph,
-            pre_header_serial=pre_header_serial,
-            entry_serial=entry_serial,
-        )
+        if flow_graph is None or pre_header_serial is None or entry_serial is None:
+            return False
+        if pre_header_serial == entry_serial:
+            return True
+        try:
+            entry_block = flow_graph.get_block(entry_serial)
+        except Exception:
+            return False
+        if entry_block is None:
+            return False
+        succs = tuple(getattr(entry_block, "succs", ()))
+        return len(succs) == 1 and succs[0] == pre_header_serial
 
     @classmethod
     def _allow_same_maturity_rerun(
@@ -521,16 +571,85 @@ class LinearizedFlowGraphStrategy:
         token is only consumed from ``plan()`` so the second check does not
         spend the allowance before a fragment is actually built.
         """
-        return allow_same_maturity_rerun(
-            snapshot=snapshot,
-            consume_retry=consume_retry,
-            logger=logger,
-            collect_residual_dispatcher_predecessors=cls._collect_residual_dispatcher_predecessors,
-            collect_dispatcher_predecessors=collect_dispatcher_predecessors,
-            has_live_exact_residual_handoff=cls._has_live_exact_residual_handoff,
-            last_successful_residual_dispatcher_pred_counts=cls._last_successful_residual_dispatcher_pred_counts,
-            same_count_exact_rerun_used=cls._same_count_exact_rerun_used,
+        mba = snapshot.mba
+        flow_graph = snapshot.flow_graph
+        bst_result = snapshot.bst_result
+        if mba is None or flow_graph is None or bst_result is None:
+            return False
+        func_ea = mba.entry_ea
+        maturity = mba.maturity
+        key = (func_ea, maturity)
+        bst_node_blocks = set(getattr(bst_result, "bst_node_blocks", ()) or ())
+        residual_preds = cls._collect_residual_dispatcher_predecessors(
+            flow_graph,
+            snapshot.bst_dispatcher_serial,
+            bst_node_blocks=bst_node_blocks,
+            reachable_from_serial=getattr(flow_graph, "entry_serial", None),
         )
+        raw_residual_preds = collect_dispatcher_predecessors(
+            flow_graph,
+            snapshot.bst_dispatcher_serial,
+            bst_node_blocks=bst_node_blocks,
+        )
+        effective_residual_preds = raw_residual_preds or residual_preds
+        if not effective_residual_preds:
+            logger.info(
+                "LFG: already applied for func 0x%X at maturity %d",
+                func_ea,
+                maturity,
+            )
+            return False
+        previous_residual_count = cls._last_successful_residual_dispatcher_pred_counts.get(key)
+        if (
+            previous_residual_count is not None
+            and len(effective_residual_preds) >= previous_residual_count
+        ):
+            if (
+                key not in cls._same_count_exact_rerun_used
+                and cls._has_live_exact_residual_handoff(
+                    snapshot,
+                    effective_residual_preds,
+                )
+            ):
+                if consume_retry:
+                    cls._same_count_exact_rerun_used.add(key)
+                logger.info(
+                    "LFG: allowing one same-count rerun for func 0x%X at maturity %d because live residual exact handoffs remain: %s",
+                    func_ea,
+                    maturity,
+                    effective_residual_preds,
+                )
+                return True
+            if (
+                key not in cls._same_count_exact_rerun_used
+                and len(effective_residual_preds) == previous_residual_count
+                and effective_residual_preds
+            ):
+                if consume_retry:
+                    cls._same_count_exact_rerun_used.add(key)
+                logger.info(
+                    "LFG: allowing one exploratory same-count rerun for func 0x%X at maturity %d because residual dispatcher preds remain: %s",
+                    func_ea,
+                    maturity,
+                    effective_residual_preds,
+                )
+                return True
+            logger.info(
+                "LFG: suppressing same-maturity rerun for func 0x%X at maturity %d "
+                "because residual dispatcher preds did not improve (%d -> %d)",
+                func_ea,
+                maturity,
+                previous_residual_count,
+                len(effective_residual_preds),
+            )
+            return False
+        cls._same_count_exact_rerun_used.discard(key)
+        logger.info(
+            "LFG: allowing same-maturity rerun for func 0x%X with residual dispatcher preds %s",
+            func_ea,
+            effective_residual_preds,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Applicability
@@ -577,10 +696,19 @@ class LinearizedFlowGraphStrategy:
         snapshot: AnalysisSnapshot,
         residual_preds: tuple[int, ...],
     ) -> bool:
-        return has_live_exact_lfg_residual_handoff(
-            snapshot,
+        mba = getattr(snapshot, "mba", None)
+        bst_result = getattr(snapshot, "bst_result", None)
+        state_machine = getattr(snapshot, "state_machine", None)
+        if mba is None or bst_result is None or state_machine is None:
+            return False
+        state_var_stkoff = cls._resolve_state_var_stkoff(snapshot, state_machine)
+        dispatcher = getattr(bst_result, "dispatcher", None)
+        return has_live_exact_residual_handoff(
+            mba,
             residual_preds,
-            resolve_state_var_stkoff_fn=cls._resolve_state_var_stkoff,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher=dispatcher,
+            resolve_state_via_valranges=_resolve_state_via_valranges(),
         )
 
     # ------------------------------------------------------------------
