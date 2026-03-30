@@ -27,10 +27,6 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_recovery im
     emit_primary_reconstruction_modifications as execute_reconstruction_primary_recovery,
     emit_shared_group_modifications as execute_reconstruction_shared_group,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_rescues import (
-    emit_entry_island_rescues as execute_reconstruction_entry_island_rescues,
-    emit_late_island_rescues as execute_reconstruction_late_island_rescues,
-)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_terminal_family_split_run,
     snapshot_reconstruction_dag,
@@ -326,12 +322,6 @@ class StateWriteReconstructionStrategy:
             owned_blocks=owned_blocks,
             mba=mba,
             log_terminal_family_split_run=log_terminal_family_split_run,
-            emit_entry_island_rescues=lambda *args, **kwargs: execute_reconstruction_entry_island_rescues(
-                logger, *args, **kwargs
-            ),
-            emit_late_island_rescues=lambda *args, **kwargs: execute_reconstruction_late_island_rescues(
-                logger, *args, **kwargs
-            ),
         )
         projected_flow_graph = postprocess.projected_flow_graph
         residual_dispatcher_preds = postprocess.residual_dispatcher_preds

@@ -7,8 +7,22 @@ from d810.cfg.plan import compile_patch_plan
 from d810.cfg.reconstruction_postprocess_planning import (
     plan_reconstruction_postprocess_modifications,
 )
+from d810.cfg.reconstruction_rescue_execution import (
+    execute_reconstruction_entry_island_rescues,
+    execute_reconstruction_late_island_rescues,
+)
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
+    log_entry_island_rescue_run,
+    log_late_island_rescue_run,
+)
+from d810.cfg.mod_claims import collect_mod_claims
+from d810.recon.flow.entry_island_rescue_discovery import (
+    collect_entry_island_rescue_seeds,
+    collect_late_entry_island_diagnostics,
+    collect_late_entry_island_rescue_seeds,
+)
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
@@ -46,8 +60,6 @@ def run_reconstruction_postprocess(
     owned_blocks: set[int],
     mba,
     log_terminal_family_split_run,
-    emit_entry_island_rescues,
-    emit_late_island_rescues,
 ) -> ReconstructionPostprocessResult:
     projected_flow_graph = flow_graph
     residual_dispatcher_preds: tuple[int, ...] = ()
@@ -68,14 +80,29 @@ def run_reconstruction_postprocess(
     except Exception:
         projected_flow_graph = flow_graph
 
-    entry_island_rescue_count = emit_entry_island_rescues(
-        corrected_dag,
+    entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
+        dag=corrected_dag,
         base_flow_graph=flow_graph,
         projected_flow_graph=projected_flow_graph,
         builder=builder,
         modifications=modifications,
         dispatcher_region=dispatcher_region,
+        collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
+            dag,
+            reachable_blocks=kwargs["reachable_blocks"],
+            dispatcher_region=kwargs["dispatcher_region"],
+            claimed_targets=collect_mod_claims(modifications)[1],
+        ),
+        compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+            fg,
+            start_serial=getattr(fg, "entry_serial", None),
+        ),
+    )
+    entry_island_rescue_count = log_entry_island_rescue_run(
+        logger,
+        run=entry_island_rescue_run,
         mba=mba,
+        prefix="entry-island rescue",
     )
     if entry_island_rescue_count:
         logger.info(
@@ -305,14 +332,29 @@ def run_reconstruction_postprocess(
         except Exception:
             projected_flow_graph = flow_graph
 
-        late_entry_island_rescue_count = emit_entry_island_rescues(
-            dag,
+        late_entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
+            dag=dag,
             base_flow_graph=flow_graph,
             projected_flow_graph=projected_flow_graph,
             builder=builder,
             modifications=modifications,
             dispatcher_region=dispatcher_region,
+            collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
+                dag,
+                reachable_blocks=kwargs["reachable_blocks"],
+                dispatcher_region=kwargs["dispatcher_region"],
+                claimed_targets=collect_mod_claims(modifications)[1],
+            ),
+            compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+                fg,
+                start_serial=getattr(fg, "entry_serial", None),
+            ),
+        )
+        late_entry_island_rescue_count = log_entry_island_rescue_run(
+            logger,
+            run=late_entry_island_rescue_run,
             mba=mba,
+            prefix="post-bridge entry-island rescue",
         )
         if late_entry_island_rescue_count:
             logger.info(
@@ -344,14 +386,30 @@ def run_reconstruction_postprocess(
                 [blk_label(mba, s) for s in residual_dispatcher_preds],
             )
 
-        late_island_rescue_count = emit_late_island_rescues(
-            dag,
+        late_island_rescue_result = execute_reconstruction_late_island_rescues(
+            dag=dag,
             base_flow_graph=flow_graph,
             projected_flow_graph=projected_flow_graph,
             builder=builder,
             modifications=modifications,
             dispatcher_region=dispatcher_region,
             dispatcher=getattr(bst_result, "dispatcher", None),
+            collect_seeds=lambda dag, **kwargs: collect_late_entry_island_rescue_seeds(
+                dag,
+                projected_flow_graph=kwargs["projected_flow_graph"],
+                reachable_blocks=kwargs["reachable_blocks"],
+                dispatcher_region=kwargs["dispatcher_region"],
+            ),
+            collect_diagnostics=collect_late_entry_island_diagnostics,
+            compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+                fg,
+                start_serial=getattr(fg, "entry_serial", None),
+            ),
+        )
+        late_island_rescue_count = log_late_island_rescue_run(
+            logger,
+            run=late_island_rescue_result.run,
+            diagnostics=late_island_rescue_result.diagnostics,
             mba=mba,
         )
         if late_island_rescue_count:
