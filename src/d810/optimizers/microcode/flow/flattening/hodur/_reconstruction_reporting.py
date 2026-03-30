@@ -496,6 +496,115 @@ def log_reconstruction_return_plan(logger, *, return_plan) -> int:
     return len(return_plan.modifications)
 
 
+def log_reconstruction_postprocess_result(logger, *, result, dag, mba) -> None:
+    if result.entry_island_rescue_run is not None:
+        entry_island_rescue_count = log_entry_island_rescue_run(
+            logger,
+            run=result.entry_island_rescue_run,
+            mba=mba,
+            prefix="entry-island rescue",
+        )
+        if entry_island_rescue_count:
+            logger.info(
+                "RECON DAG: entry-island rescue emitted %d redirects",
+                entry_island_rescue_count,
+            )
+
+    if result.initial_residual_dispatcher_preds:
+        logger.info(
+            "RECON DAG: preserving post-apply BST cleanup because residual non-BST dispatcher predecessors remain: %s",
+            [blk_label(mba, serial) for serial in result.initial_residual_dispatcher_preds],
+        )
+
+    if result.state_var_stkoff is not None:
+        log_reconstruction_artifact_returns(
+            logger,
+            state_var_stkoff=result.state_var_stkoff,
+            flow_graph_block_count=result.flow_graph_block_count,
+            state_constants_count=result.state_constants_count,
+            artifact_return_blocks=set(result.artifact_return_blocks),
+        )
+
+    log_reconstruction_common_return_corridor(
+        logger,
+        common_return_corridor=set(result.common_return_corridor),
+    )
+
+    postprocess_plan = result.postprocess_plan
+    if postprocess_plan is not None:
+        preheader_bridge = postprocess_plan.preheader_bridge
+        if (
+            preheader_bridge.modification is not None
+            and preheader_bridge.resolved_target is not None
+        ):
+            log_reconstruction_preheader_bridge(
+                logger,
+                dag=dag,
+                preheader_bridge=preheader_bridge,
+            )
+        log_reconstruction_bridge_plan(
+            logger,
+            bridge_plan=postprocess_plan.bridge_plan,
+        )
+        log_reconstruction_feeder_plan(
+            logger,
+            feeder_plan=postprocess_plan.feeder_plan,
+            fixpoint_feeder_plan=postprocess_plan.fixpoint_feeder_plan,
+        )
+        log_reconstruction_return_plan(
+            logger,
+            return_plan=postprocess_plan.return_plan,
+        )
+
+    if result.late_entry_island_rescue_run is not None:
+        late_entry_island_rescue_count = log_entry_island_rescue_run(
+            logger,
+            run=result.late_entry_island_rescue_run,
+            mba=mba,
+            prefix="post-bridge entry-island rescue",
+        )
+        if late_entry_island_rescue_count:
+            logger.info(
+                "RECON DAG: post-bridge entry-island rescue emitted %d redirects",
+                late_entry_island_rescue_count,
+            )
+        if not result.residual_dispatcher_preds:
+            logger.info(
+                "RECON BRIDGE: cleared all residual dispatcher feeders — BST cleanup enabled",
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: residual still has %d feeders: %s",
+                len(result.residual_dispatcher_preds),
+                [blk_label(mba, s) for s in result.residual_dispatcher_preds],
+            )
+
+    if result.late_island_rescue_result is not None:
+        late_island_rescue_count = log_late_island_rescue_run(
+            logger,
+            run=result.late_island_rescue_result.run,
+            diagnostics=result.late_island_rescue_result.diagnostics,
+            mba=mba,
+        )
+        if late_island_rescue_count:
+            logger.info(
+                "RECON DAG: late island rescue emitted %d redirects",
+                late_island_rescue_count,
+            )
+
+    if result.terminal_family_split_run is not None:
+        terminal_family_split_count = log_terminal_family_split_run(
+            logger,
+            run=result.terminal_family_split_run,
+            mba=mba,
+        )
+        if terminal_family_split_count:
+            logger.info(
+                "RECON RETURN: late terminal-family split emitted %d privatizations",
+                terminal_family_split_count,
+            )
+
+
 __all__ = [
     "log_entry_island_rescue_run",
     "log_late_island_rescue_run",
@@ -503,6 +612,7 @@ __all__ = [
     "log_reconstruction_bridge_plan",
     "log_reconstruction_common_return_corridor",
     "log_reconstruction_feeder_plan",
+    "log_reconstruction_postprocess_result",
     "log_reconstruction_preheader_bridge",
     "log_reconstruction_return_plan",
     "log_terminal_family_split_run",

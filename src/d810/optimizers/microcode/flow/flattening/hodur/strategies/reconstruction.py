@@ -22,17 +22,17 @@ from d810.cfg.reconstruction_execution import (
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
 )
+from d810.cfg.reconstruction_postprocess_execution import (
+    execute_reconstruction_postprocess,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_fragments import (
     finalize_reconstruction_fragment,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_postprocess import (
-    run_reconstruction_postprocess as execute_reconstruction_postprocess,
-)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
-    log_terminal_family_split_run,
+    log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
 )
@@ -53,6 +53,21 @@ from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_shared_suffix_blocks,
     resolve_state_var_stkoff,
+)
+from d810.recon.flow.entry_island_rescue_discovery import (
+    collect_entry_island_rescue_seeds,
+    collect_late_entry_island_diagnostics,
+    collect_late_entry_island_rescue_seeds,
+)
+from d810.recon.flow.graph_reachability import (
+    collect_residual_dispatcher_predecessors,
+    compute_reachable_blocks,
+)
+from d810.recon.flow.return_corridor_discovery import (
+    collect_common_return_corridor,
+)
+from d810.recon.flow.terminal_family_collection import (
+    collect_terminal_family_report,
 )
 from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
@@ -109,6 +124,19 @@ class StateWriteReconstructionStrategy:
             state_var_stkoff=state_var_stkoff,
             state_constants=state_constants,
         )
+
+    def is_applicable(self, snapshot) -> bool:
+        sm = snapshot.state_machine
+        flow_graph = snapshot.flow_graph
+        bst_result = snapshot.bst_result
+        if sm is None or flow_graph is None or bst_result is None:
+            return False
+        if not sm.handlers:
+            return False
+        return resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(sm, "state_var", None),
+        ) is not None
 
     @classmethod
     def _emit_shared_group(
@@ -167,19 +195,6 @@ class StateWriteReconstructionStrategy:
             ],
         )
         return len(shared_result.accepted_candidates)
-
-    def is_applicable(self, snapshot) -> bool:
-        sm = snapshot.state_machine
-        flow_graph = snapshot.flow_graph
-        bst_result = snapshot.bst_result
-        if sm is None or flow_graph is None or bst_result is None:
-            return False
-        if not sm.handlers:
-            return False
-        return resolve_state_var_stkoff(
-            detector=getattr(snapshot, "detector", None),
-            state_var=getattr(sm, "state_var", None),
-        ) is not None
 
     def plan(self, snapshot):
         if not self.is_applicable(snapshot):
@@ -419,7 +434,6 @@ class StateWriteReconstructionStrategy:
                     )
 
         postprocess = execute_reconstruction_postprocess(
-            logger,
             dag=dag,
             corrected_dag=corrected_dag,
             flow_graph=flow_graph,
@@ -432,11 +446,22 @@ class StateWriteReconstructionStrategy:
             state_var_stkoff=state_var_stkoff,
             constant_result=constant_result,
             node_by_key=node_by_key,
-            shared_suffix_blocks=shared_suffix_blocks,
             rejected_metadata=rejected_metadata,
             owned_blocks=owned_blocks,
+            collect_entry_island_rescue_seeds=collect_entry_island_rescue_seeds,
+            collect_late_entry_island_diagnostics=collect_late_entry_island_diagnostics,
+            collect_late_entry_island_rescue_seeds=collect_late_entry_island_rescue_seeds,
+            collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
+            compute_reachable_blocks=compute_reachable_blocks,
+            classify_artifact_return_blocks=classify_artifact_return_blocks,
+            collect_common_return_corridor=collect_common_return_corridor,
+            collect_terminal_family_report=collect_terminal_family_report,
+        )
+        log_reconstruction_postprocess_result(
+            logger,
+            result=postprocess,
+            dag=dag,
             mba=mba,
-            log_terminal_family_split_run=log_terminal_family_split_run,
         )
         projected_flow_graph = postprocess.projected_flow_graph
         residual_dispatcher_preds = postprocess.residual_dispatcher_preds
