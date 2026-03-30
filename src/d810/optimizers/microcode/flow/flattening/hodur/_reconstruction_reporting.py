@@ -256,7 +256,82 @@ def log_terminal_family_split_run(logger, *, run, mba) -> int:
     return int(run.emitted_count)
 
 
+def log_entry_island_rescue_run(logger, *, run, mba, prefix: str) -> int:
+    for iteration in run.iterations:
+        selection = iteration.selection
+        if (
+            not selection.accepted
+            or selection.option is None
+            or selection.score is None
+        ):
+            continue
+        logger.info(
+            "RECON DAG: %s %s -> %s%s (delta=%+d)",
+            prefix,
+            blk_label(mba, selection.option.source_block),
+            blk_label(mba, selection.option.lifted_entry),
+            (
+                f" via_pred={blk_label(mba, selection.option.via_pred)}"
+                if selection.option.via_pred is not None
+                else ""
+            ),
+            selection.score[0] if selection.score is not None else 0,
+        )
+
+    return int(run.emitted_count)
+
+
+def log_late_island_rescue_run(logger, *, run, diagnostics, mba) -> int:
+    for iteration in run.iterations:
+        for seed in iteration.raw_seeds:
+            if getattr(seed, "source_block", None) is None:
+                logger.info(
+                    "RECON DAG: late island rescue: no reachable "
+                    "frontier for BST passthrough blk[%d] -> "
+                    "blk[%d] (edge src=%s)",
+                    seed.passthrough_block,
+                    seed.lifted_entry,
+                    blk_label(mba, seed.edge_source_block),
+                )
+        selection = iteration.selection
+        if (
+            not selection.accepted
+            or selection.option is None
+            or selection.score is None
+        ):
+            continue
+        logger.info(
+            "RECON DAG: late island rescue %s -> %s%s "
+            "via BST passthrough (delta=%+d)",
+            blk_label(mba, selection.option.source_block),
+            blk_label(mba, selection.option.lifted_entry),
+            (
+                f" via_pred={blk_label(mba, selection.option.via_pred)}"
+                if selection.option.via_pred is not None
+                else ""
+            ),
+            selection.score[0] if selection.score is not None else 0,
+        )
+
+    for diagnostic in diagnostics:
+        logger.info(
+            "RECON DAG: late island rescue diagnostic: "
+            "unreachable blk[%d] bst_preds=%s dispatcher_rows=[%s]",
+            diagnostic.block_serial,
+            list(diagnostic.bst_preds),
+            (
+                ", ".join(diagnostic.dispatcher_rows)
+                if diagnostic.dispatcher_rows
+                else "none"
+            ),
+        )
+
+    return int(run.emitted_count)
+
+
 __all__ = [
+    "log_entry_island_rescue_run",
+    "log_late_island_rescue_run",
     "log_terminal_family_split_run",
     "snapshot_reconstruction_dag",
     "snapshot_reconstruction_post_apply",
