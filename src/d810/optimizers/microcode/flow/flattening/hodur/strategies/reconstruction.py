@@ -26,7 +26,6 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_postprocess
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_recovery import (
     emit_primary_reconstruction_modifications as execute_reconstruction_primary_recovery,
     emit_shared_group_modifications as execute_reconstruction_shared_group,
-    record_accept_metadata as record_reconstruction_accept_metadata,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_rescues import (
     emit_entry_island_rescues as execute_reconstruction_entry_island_rescues,
@@ -46,12 +45,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
 )
 from d810.recon.flow.linearized_state_dag import (
-    LinearizedStateDag,
-    StateDagEdge,
     build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
-from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
+from d810.recon.flow.edge_metadata import edge_kind_name
 from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
@@ -84,13 +81,6 @@ class StateWriteReconstructionStrategy:
         return FAMILY_DIRECT
 
     @staticmethod
-    def _resolve_state_var_stkoff(snapshot, state_machine) -> int | None:
-        return resolve_state_var_stkoff(
-            detector=getattr(snapshot, "detector", None),
-            state_var=getattr(state_machine, "state_var", None),
-        )
-
-    @staticmethod
     def _classify_artifact_return_blocks(
         flow_graph,
         state_var_stkoff: int,
@@ -101,112 +91,6 @@ class StateWriteReconstructionStrategy:
             state_var_stkoff=state_var_stkoff,
             state_constants=state_constants,
         )
-
-    @classmethod
-    def _make_edge_metadata(
-        cls,
-        edge: StateDagEdge,
-        *,
-        horizon_block: int | None = None,
-        site: StateWriteSite | None = None,
-        target_entry: int | None = None,
-        first_shared_block: int | None = None,
-        via_pred: int | None = None,
-        emission_mode: str | None = None,
-        rejection_reason: str | None = None,
-    ) -> dict[str, int | str | None]:
-        return make_edge_metadata(
-            edge,
-            horizon_block=horizon_block,
-            site=site,
-            target_entry=target_entry,
-            first_shared_block=first_shared_block,
-            via_pred=via_pred,
-            emission_mode=emission_mode,
-            rejection_reason=rejection_reason,
-        )
-
-    @classmethod
-    def _emit_entry_island_rescues(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        builder: ModificationBuilder,
-        modifications: list,
-        dispatcher_region: set[int],
-        mba,
-    ) -> int:
-        return execute_reconstruction_entry_island_rescues(
-            logger,
-            dag=dag,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            builder=builder,
-            modifications=modifications,
-            dispatcher_region=dispatcher_region,
-            mba=mba,
-        )
-
-    @classmethod
-    def _emit_late_island_rescues(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        builder: ModificationBuilder,
-        modifications: list,
-        dispatcher_region: set[int],
-        dispatcher=None,
-        mba,
-    ) -> int:
-        return execute_reconstruction_late_island_rescues(
-            logger,
-            dag=dag,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            builder=builder,
-            modifications=modifications,
-            dispatcher_region=dispatcher_region,
-            dispatcher=dispatcher,
-            mba=mba,
-        )
-
-    @classmethod
-    def _emit_terminal_family_splits(
-        cls,
-        dag: LinearizedStateDag,
-        *,
-        base_flow_graph,
-        projected_flow_graph,
-        builder: ModificationBuilder,
-        modifications: list,
-        dispatcher_region: set[int],
-        state_var_stkoff: int | None,
-        mba,
-    ) -> int:
-        return execute_reconstruction_terminal_family_splits(
-            logger,
-            dag=dag,
-            base_flow_graph=base_flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            builder=builder,
-            modifications=modifications,
-            dispatcher_region=dispatcher_region,
-            state_var_stkoff=state_var_stkoff,
-            mba=mba,
-        )
-
-    @classmethod
-    def _record_accept(
-        cls,
-        metadata: list[dict[str, int | str | None]],
-        candidate: ReconstructionCandidate,
-    ) -> None:
-        del cls
-        record_reconstruction_accept_metadata(metadata, candidate)
 
     @classmethod
     def _emit_shared_group(
@@ -443,9 +327,15 @@ class StateWriteReconstructionStrategy:
             rejected_metadata=rejected_metadata,
             owned_blocks=owned_blocks,
             mba=mba,
-            emit_entry_island_rescues=self._emit_entry_island_rescues,
-            emit_late_island_rescues=self._emit_late_island_rescues,
-            emit_terminal_family_splits=self._emit_terminal_family_splits,
+            emit_entry_island_rescues=lambda *args, **kwargs: execute_reconstruction_entry_island_rescues(
+                logger, *args, **kwargs
+            ),
+            emit_late_island_rescues=lambda *args, **kwargs: execute_reconstruction_late_island_rescues(
+                logger, *args, **kwargs
+            ),
+            emit_terminal_family_splits=lambda *args, **kwargs: execute_reconstruction_terminal_family_splits(
+                logger, *args, **kwargs
+            ),
         )
         projected_flow_graph = postprocess.projected_flow_graph
         residual_dispatcher_preds = postprocess.residual_dispatcher_preds
