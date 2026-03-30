@@ -8,6 +8,7 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     LinearizedFlowGraphPlanningCallbacks,
     LinearizedFlowGraphPlanningContext,
     LinearizedFlowGraphPlanningResult,
+    execute_linearized_flow_graph_planning,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -432,12 +433,109 @@ def build_linearized_flow_graph_plan_fragment(
     )
 
 
+def execute_linearized_flow_graph_strategy_plan(
+    *,
+    snapshot: object,
+    state_machine: object,
+    bst_result: object,
+    flow_graph: object,
+    mba: object | None,
+    logger: object,
+    same_maturity_rerun: bool,
+    strategy_name: str,
+    family: str,
+    prerequisites: list[str],
+    build_modification_builder: object,
+    resolve_state_var_stkoff: object,
+    supports_projected_replanning: object,
+    flow_graph_block_serials: object,
+    is_original_pre_header_candidate: object,
+    transition_result_cls: object,
+    round_summary_adapter: object,
+    discover_round_summary: object,
+    build_projected_mba: object,
+    project_flow_graph: object,
+    resolve_redirect_safe_target_entry: object,
+    resolve_initial_entry: object,
+    emit_dag_redirect: object,
+    collect_residual_dispatcher_predecessors: object,
+    emit_residual_dispatcher_handoffs: object,
+    disconnect_bst_comparison_nodes: object,
+    build_live_dag: object,
+    build_transition_report: object,
+    select_plannable_edges: object,
+) -> PlanFragment | None:
+    dag_setup = prepare_linearized_flow_graph_plan_setup(
+        snapshot=snapshot,
+        state_machine=state_machine,
+        bst_result=bst_result,
+        flow_graph=flow_graph,
+        mba=mba,
+        same_maturity_rerun=bool(same_maturity_rerun),
+        logger=logger,
+        build_modification_builder=build_modification_builder,
+        resolve_state_var_stkoff=resolve_state_var_stkoff,
+        supports_projected_replanning=supports_projected_replanning,
+        flow_graph_block_serials=flow_graph_block_serials,
+        is_original_pre_header_candidate=is_original_pre_header_candidate,
+        transition_result_cls=transition_result_cls,
+    )
+    dag_result = execute_linearized_flow_graph_planning(
+        build_linearized_flow_graph_planning_context(
+            flow_graph=flow_graph,
+            mba=mba,
+            state_machine=state_machine,
+            dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+            setup=dag_setup,
+        ),
+        callbacks=build_linearized_flow_graph_planning_callbacks(
+            snapshot=snapshot,
+            state_machine=state_machine,
+            bst_result=bst_result,
+            mba=mba,
+            setup=dag_setup,
+            round_summary_adapter=round_summary_adapter,
+            discover_round_summary=discover_round_summary,
+            build_projected_mba=build_projected_mba,
+            project_flow_graph=project_flow_graph,
+            resolve_redirect_safe_target_entry=resolve_redirect_safe_target_entry,
+            resolve_initial_entry=resolve_initial_entry,
+            emit_dag_redirect=emit_dag_redirect,
+            collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
+            emit_residual_dispatcher_handoffs=emit_residual_dispatcher_handoffs,
+            disconnect_bst_comparison_nodes=disconnect_bst_comparison_nodes,
+            build_live_dag=build_live_dag,
+            build_transition_report=build_transition_report,
+            select_plannable_edges=select_plannable_edges,
+        ),
+    )
+
+    if not dag_result.accepted:
+        logger.info("LFG: DAG produced no redirect modifications")
+        return None
+
+    log_linearized_flow_graph_plan_result(
+        logger,
+        mba=mba,
+        result=dag_result,
+    )
+    return build_linearized_flow_graph_plan_fragment(
+        strategy_name=strategy_name,
+        family=family,
+        prerequisites=prerequisites,
+        state_machine=state_machine,
+        bst_node_blocks=dag_setup.bst_node_blocks,
+        result=dag_result,
+    )
+
+
 __all__ = [
     "LinearizedFlowGraphPlanSetup",
     "build_linearized_dag_round_summary_adapter",
     "build_linearized_flow_graph_plan_fragment",
     "build_linearized_flow_graph_planning_callbacks",
     "build_linearized_flow_graph_planning_context",
+    "execute_linearized_flow_graph_strategy_plan",
     "log_linearized_flow_graph_plan_result",
     "prepare_linearized_flow_graph_plan_setup",
 ]
