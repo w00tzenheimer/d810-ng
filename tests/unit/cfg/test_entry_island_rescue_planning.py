@@ -51,6 +51,11 @@ class _ClaimedSourceMod:
         self.source_serial = source_serial
 
 
+class _ClaimedSrcBlockMod:
+    def __init__(self, src_block: int):
+        self.src_block = src_block
+
+
 class TestScoreEntryIslandRescueOption:
     def test_rejects_when_lifted_entry_not_reachable(self, monkeypatch) -> None:
         monkeypatch.setattr(
@@ -234,3 +239,38 @@ class TestPlanEntryIslandRescues:
         assert len(modifications) == 1
         assert isinstance(modifications[0], _ClaimedSourceMod)
         assert modifications[0].source_serial == 40
+
+    def test_respects_claims_from_src_block_modifications(self, monkeypatch) -> None:
+        flow_graph = _DummyFlowGraph({
+            40: ((12,), (6,)),
+        })
+        modifications = [_ClaimedSrcBlockMod(40)]
+
+        monkeypatch.setattr(
+            rescue_mod,
+            "compile_patch_plan",
+            lambda modifications, flow_graph: tuple(modifications),
+        )
+        monkeypatch.setattr(
+            rescue_mod,
+            "project_post_state",
+            lambda flow_graph, patch_plan: flow_graph,
+        )
+
+        run = plan_entry_island_rescues(
+            dag=object(),
+            base_flow_graph=flow_graph,
+            projected_flow_graph=flow_graph,
+            builder=_DummyBuilder(),
+            modifications=modifications,
+            dispatcher_region={6},
+            collect_seeds=lambda *args, **kwargs: (_RawSeed(40, 90),),
+            compute_reachable_blocks=lambda projected: {6, 12, 40, 90},
+        )
+
+        assert run.emitted_count == 0
+        assert len(run.iterations) == 1
+        assert run.iterations[0].selection.accepted is False
+        assert len(modifications) == 1
+        assert isinstance(modifications[0], _ClaimedSrcBlockMod)
+        assert modifications[0].src_block == 40
