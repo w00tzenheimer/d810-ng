@@ -13,19 +13,23 @@ rewrite that still removes the dispatcher handoff:
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 
 import ida_hexrays
 
 from d810.core import logging
+from d810.cfg.reconstruction_execution import (
+    execute_primary_reconstruction_modifications,
+    execute_shared_group_reconstruction,
+)
+from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+    blk_label,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_fragments import (
     finalize_reconstruction_fragment,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_postprocess import (
     run_reconstruction_postprocess as execute_reconstruction_postprocess,
-)
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_recovery import (
-    emit_primary_reconstruction_modifications as execute_reconstruction_primary_recovery,
-    emit_shared_group_modifications as execute_reconstruction_shared_group,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_terminal_family_split_run,
@@ -42,6 +46,7 @@ from d810.recon.flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
+from d810.recon.flow.edge_metadata import make_edge_metadata
 from d810.recon.flow.edge_metadata import edge_kind_name
 from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
@@ -61,6 +66,25 @@ logger = logging.getLogger(
 )
 
 __all__ = ["StateWriteReconstructionStrategy"]
+
+
+def _record_accept_metadata(
+    metadata: list[dict[str, int | str | None]],
+    candidate,
+) -> None:
+    metadata.append(
+        make_edge_metadata(
+            candidate.edge,
+            horizon_block=candidate.horizon_block,
+            site=candidate.site,
+            target_entry=candidate.target_entry,
+            first_shared_block=candidate.first_shared_block,
+            via_pred=candidate.via_pred,
+            emission_mode=candidate.emission_mode,
+        )
+    )
+
+
 class StateWriteReconstructionStrategy:
     """Reconstruct proven semantic corridors from state-write horizons."""
 
@@ -104,18 +128,45 @@ class StateWriteReconstructionStrategy:
         rejected_metadata: list[dict[str, int | str | None]],
     ) -> int:
         del cls, dispatcher_serial, bst_node_blocks, builder
-        return execute_reconstruction_shared_group(
-            logger,
-            shared_block,
-            candidates,
+        shared_result = execute_shared_group_reconstruction(
+            shared_block=int(shared_block),
+            candidates=candidates,
             flow_graph=flow_graph,
-            mba=mba,
             modifications=modifications,
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
-            accepted_metadata=accepted_metadata,
-            rejected_metadata=rejected_metadata,
         )
+        if not shared_result.accepted_candidates and not shared_result.rejected_candidates:
+            return 0
+
+        if shared_result.rejected_candidates:
+            rejected_metadata.extend(
+                make_edge_metadata(
+                    candidate.edge,
+                    horizon_block=candidate.horizon_block,
+                    site=candidate.site,
+                    target_entry=candidate.target_entry,
+                    first_shared_block=shared_block,
+                    via_pred=candidate.via_pred,
+                    rejection_reason=shared_result.rejection_reason,
+                )
+                for candidate in shared_result.rejected_candidates
+            )
+            return 0
+        for candidate in shared_result.accepted_candidates:
+            _record_accept_metadata(
+                accepted_metadata,
+                replace(candidate, emission_mode="duplicate_and_redirect"),
+            )
+        logger.info(
+            "RECON DAG: duplicate-and-redirect %s preds=%s",
+            blk_label(mba, shared_block),
+            [
+                (blk_label(mba, pred), blk_label(mba, target))
+                for pred, target in shared_result.per_pred_targets
+            ],
+        )
+        return len(shared_result.accepted_candidates)
 
     def is_applicable(self, snapshot) -> bool:
         sm = snapshot.state_machine
@@ -254,19 +305,83 @@ class StateWriteReconstructionStrategy:
             # Fall through to Bridge Builder and Feeder redirect sections
             # which can wire edges rejected by the strict corridor emitter.
 
-        execute_reconstruction_primary_recovery(
-            logger,
+        run = execute_primary_reconstruction_modifications(
             raw_candidates=raw_candidates,
             flow_graph=flow_graph,
             node_by_key=node_by_key,
             dispatcher_serial=dispatcher_serial,
-            mba=mba,
             modifications=modifications,
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
-            accepted_metadata=accepted_metadata,
-            rejected_metadata=rejected_metadata,
         )
+        for result in run.conditional_results:
+            candidate = result.candidate
+            _record_accept_metadata(accepted_metadata, candidate)
+            logger.info(
+                "RECON DAG: conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
+                blk_label(mba, candidate.horizon_block),
+                candidate.site.state_value & 0xFFFFFFFF,
+                blk_label(mba, candidate.target_entry),
+                candidate.edge.source_anchor.branch_arm or 0,
+                result.redirect_count,
+                result.passthrough_count,
+            )
+
+        for result in run.direct_results:
+            if result.accepted_candidate is not None:
+                candidate = result.accepted_candidate
+                _record_accept_metadata(accepted_metadata, candidate)
+                logger.info(
+                    "RECON DAG: direct %s state=0x%08X -> %s (nopped=%d)",
+                    blk_label(mba, candidate.horizon_block),
+                    candidate.site.state_value & 0xFFFFFFFF,
+                    blk_label(mba, candidate.target_entry),
+                    1,
+                )
+                continue
+
+            rejected_metadata.extend(
+                make_edge_metadata(
+                    candidate.edge,
+                    horizon_block=candidate.horizon_block,
+                    site=candidate.site,
+                    target_entry=candidate.target_entry,
+                    first_shared_block=candidate.first_shared_block,
+                    rejection_reason=result.rejection_reason,
+                )
+                for candidate in result.rejected_candidates
+            )
+
+        for result in run.shared_group_results:
+            if result.rejected_candidates:
+                rejected_metadata.extend(
+                    make_edge_metadata(
+                        candidate.edge,
+                        horizon_block=candidate.horizon_block,
+                        site=candidate.site,
+                        target_entry=candidate.target_entry,
+                        first_shared_block=result.shared_block,
+                        via_pred=candidate.via_pred,
+                        rejection_reason=result.rejection_reason,
+                    )
+                    for candidate in result.rejected_candidates
+                )
+                continue
+            if not result.accepted_candidates:
+                continue
+            for candidate in result.accepted_candidates:
+                _record_accept_metadata(
+                    accepted_metadata,
+                    replace(candidate, emission_mode="duplicate_and_redirect"),
+                )
+            logger.info(
+                "RECON DAG: duplicate-and-redirect %s preds=%s",
+                blk_label(mba, result.shared_block),
+                [
+                    (blk_label(mba, pred), blk_label(mba, target))
+                    for pred, target in result.per_pred_targets
+                ],
+            )
 
         if not modifications:
             logger.info(
