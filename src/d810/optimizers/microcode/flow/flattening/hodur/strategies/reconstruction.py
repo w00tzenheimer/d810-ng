@@ -28,19 +28,24 @@ from d810.cfg.reconstruction_postprocess_execution import (
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_fragments import (
-    finalize_reconstruction_fragment,
-)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
 )
+from d810.cfg.graph_modification import (
+    PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
+)
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
+from d810.cfg.plan import is_block_creating_modification
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    BenefitMetrics,
     FAMILY_DIRECT,
+    OwnershipScope,
+    PlanFragment,
 )
 from d810.recon.flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
@@ -97,6 +102,62 @@ def _record_accept_metadata(
             via_pred=candidate.via_pred,
             emission_mode=candidate.emission_mode,
         )
+    )
+
+
+def _finalize_reconstruction_fragment(
+    *,
+    strategy_name: str,
+    modifications: list,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    accepted_metadata: list[dict[str, int | str | None]],
+    rejected_metadata: list[dict[str, int | str | None]],
+    allow_post_apply_bst_cleanup: bool,
+    post_apply_bst_cleanup_reason: str | None,
+    residual_dispatcher_preds: tuple[int, ...],
+) -> PlanFragment:
+    pts_types = (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)
+    pts_mods = [mod for mod in modifications if isinstance(mod, pts_types)]
+    has_block_creators = any(
+        is_block_creating_modification(mod) for mod in modifications
+    )
+
+    if pts_mods and has_block_creators:
+        non_pts_mods = [mod for mod in modifications if not isinstance(mod, pts_types)]
+        logger.info(
+            "RECON: deferring %d PTS mods to next invocation "
+            "(block-creating ops would shift suffix serials)",
+            len(pts_mods),
+        )
+        modifications = non_pts_mods
+
+    return PlanFragment(
+        strategy_name=strategy_name,
+        family=FAMILY_DIRECT,
+        ownership=OwnershipScope(
+            blocks=frozenset(owned_blocks),
+            edges=frozenset(owned_edges),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(
+            handlers_resolved=len(owned_blocks),
+            transitions_resolved=len(accepted_metadata),
+            blocks_freed=len(owned_blocks),
+            conflict_density=0.0,
+        ),
+        risk_score=0.25,
+        metadata={
+            "mode": "experimental_reconstruction",
+            "reconstruction_sites": tuple(accepted_metadata),
+            "reconstruction_rejections": tuple(rejected_metadata),
+            "allow_post_apply_bst_cleanup": allow_post_apply_bst_cleanup,
+            "post_apply_bst_cleanup_reason": post_apply_bst_cleanup_reason,
+            "residual_dispatcher_preds": residual_dispatcher_preds,
+            "safeguard_min_required": 1,
+        },
+        modifications=modifications,
     )
 
 
@@ -483,8 +544,7 @@ class StateWriteReconstructionStrategy:
             strategy_name=self.name,
         )
 
-        return finalize_reconstruction_fragment(
-            logger,
+        return _finalize_reconstruction_fragment(
             strategy_name=self.name,
             modifications=modifications,
             owned_blocks=owned_blocks,
