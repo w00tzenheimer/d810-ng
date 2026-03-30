@@ -27,7 +27,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     find_terminal_exit_target_snapshot,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
@@ -98,7 +98,7 @@ class PrivateTerminalSuffixStrategy:
 
     Runs AFTER direct linearization.  Identifies terminal handler paths
     that share a common epilogue suffix, classifies carriers, and emits
-    :class:`~d810.optimizers.microcode.flow.flattening.hodur._modification_bridge.PrivateTerminalSuffix`
+    :class:`~d810.cfg.modification_builder.PrivateTerminalSuffix`
     modifications for eligible suffix groups.
 
     Eligibility (all must be true per suffix group):

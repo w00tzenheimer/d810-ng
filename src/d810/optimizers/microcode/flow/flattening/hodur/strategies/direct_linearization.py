@@ -29,7 +29,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     resolve_exit_via_bst_default_snapshot,
 )
 from d810.cfg.graph_modification import RedirectBranch
-from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (

@@ -19,7 +19,7 @@ Infrastructure dependencies (kept intact, dead unless called):
 - ``INSN_ZERO_STATE_WRITE`` / ``queue_zero_state_write`` / ``_apply_zero_state_write``
   in ``d810.hexrays.mutation.deferred_modifier``
 - ``PatchZeroStateWrite`` translator case in ``d810.hexrays.mutation.ir_translator``
-- ``zero_state_write()`` bridge method in ``hodur._modification_bridge``
+- ``zero_state_write()`` bridge method in ``d810.cfg.modification_builder``
 """
 from __future__ import annotations
 

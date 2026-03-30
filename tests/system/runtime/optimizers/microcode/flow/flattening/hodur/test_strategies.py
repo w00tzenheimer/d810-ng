@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     StateHandler,
     StateTransition,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._modification_bridge import (
+from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 import d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph as lfg_module
