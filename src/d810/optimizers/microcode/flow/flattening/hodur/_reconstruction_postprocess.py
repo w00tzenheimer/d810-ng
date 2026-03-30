@@ -4,16 +4,8 @@ from dataclasses import dataclass
 
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.plan import compile_patch_plan
-from d810.cfg.reconstruction_bridge_planning import (
-    collect_reconstruction_claims,
-    collect_suppressed_bridge_pairs,
-    plan_fixpoint_feeder_modifications,
-    plan_reconstruction_bridge_modifications,
-    plan_reconstruction_feeder_modifications,
-    plan_reconstruction_preheader_bridge,
-)
-from d810.cfg.reconstruction_return_planning import (
-    plan_reconstruction_return_modifications,
+from d810.cfg.reconstruction_postprocess_planning import (
+    plan_reconstruction_postprocess_modifications,
 )
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
@@ -114,130 +106,6 @@ def run_reconstruction_postprocess(
     _bst_set = set(dag.bst_node_blocks)
     _bst_set.add(dispatcher_serial)
 
-    preheader_bridge = plan_reconstruction_preheader_bridge(
-        dag=dag,
-        flow_graph=flow_graph,
-        builder=builder,
-        dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=_bst_set,
-        dispatcher=dispatcher,
-    )
-    if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
-        modifications.append(preheader_bridge.modification)
-        logger.info(
-            "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
-            dag.pre_header_serial,
-            preheader_bridge.resolved_target,
-        )
-
-    claimed_sources, claimed_targets = collect_reconstruction_claims(
-        modifications,
-        owned_blocks=owned_blocks,
-    )
-    suppressed_bridge_pairs = collect_suppressed_bridge_pairs(rejected_metadata)
-
-    bridge_plan = plan_reconstruction_bridge_modifications(
-        dag=dag,
-        flow_graph=flow_graph,
-        builder=builder,
-        dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=_bst_set,
-        claimed_sources=claimed_sources,
-        claimed_targets=claimed_targets,
-        suppressed_bridge_pairs=suppressed_bridge_pairs,
-    )
-    bridge_mods: list = list(bridge_plan.modifications)
-    claimed_sources = set(bridge_plan.claimed_sources)
-    claimed_targets = set(bridge_plan.claimed_targets)
-    for entry in bridge_plan.log_entries:
-        if entry.branch_arm is None:
-            logger.info(
-                "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
-                entry.source_block,
-                entry.target_block,
-                entry.tag,
-            )
-        else:
-            logger.info(
-                "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-                entry.tag,
-            )
-
-    if bridge_mods:
-        modifications.extend(bridge_mods)
-        logger.info(
-            "RECON BRIDGE: %d bridge edges for unclaimed handler entries",
-            len(bridge_mods),
-        )
-
-    feeder_plan = plan_reconstruction_feeder_modifications(
-        dag=dag,
-        flow_graph=flow_graph,
-        projected_flow_graph=projected_flow_graph,
-        builder=builder,
-        dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=_bst_set,
-        claimed_sources=claimed_sources,
-        claimed_targets=claimed_targets,
-        suppressed_bridge_pairs=suppressed_bridge_pairs,
-    )
-    feeder_mods: list = list(feeder_plan.modifications)
-    claimed_sources = set(feeder_plan.claimed_sources)
-    claimed_targets = set(feeder_plan.claimed_targets)
-    for entry in feeder_plan.log_entries:
-        if entry.branch_arm is None:
-            logger.info(
-                "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d via_pred=%s)",
-                entry.source_block,
-                entry.target_block,
-                entry.tag,
-                entry.source_pred_count,
-                entry.via_pred,
-            )
-        else:
-            logger.info(
-                "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (%s)",
-                entry.source_block,
-                entry.branch_arm,
-                entry.target_block,
-                entry.tag,
-            )
-
-    fixpoint_feeder_plan = plan_fixpoint_feeder_modifications(
-        flow_graph=flow_graph,
-        builder=builder,
-        dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=_bst_set,
-        claimed_sources=claimed_sources,
-        constant_result=constant_result,
-        state_var_stkoff=state_var_stkoff,
-        dispatcher=dispatcher,
-    )
-    feeder_mods.extend(fixpoint_feeder_plan.modifications)
-    claimed_sources = set(fixpoint_feeder_plan.claimed_sources)
-    for entry in fixpoint_feeder_plan.log_entries:
-        logger.debug(
-            "RECON FEEDER: fixpoint blk[%d] has no "
-            "last_write_site, skipping NOP",
-            entry.source_block,
-        )
-        logger.info(
-            "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
-            entry.source_block,
-            entry.target_block,
-            entry.state_value,
-        )
-
-    if feeder_mods:
-        modifications.extend(feeder_mods)
-        logger.info(
-            "RECON BRIDGE: %d feeder redirects for residual dispatcher feeders",
-            len(feeder_mods),
-        )
-
     artifact_return_blocks: set[int] = set()
     if state_var_stkoff is not None:
         _state_consts = state_machine.state_constants if state_machine is not None else set()
@@ -277,19 +145,104 @@ def run_reconstruction_postprocess(
             sorted(common_return_corridor),
         )
 
-    return_plan = plan_reconstruction_return_modifications(
+    postprocess_plan = plan_reconstruction_postprocess_modifications(
         dag=dag,
         flow_graph=flow_graph,
+        projected_flow_graph=projected_flow_graph,
         builder=builder,
-        claimed_sources=claimed_sources,
         dispatcher_serial=dispatcher_serial,
         bst_node_blocks=_bst_set,
-        common_return_corridor=common_return_corridor,
+        dispatcher=dispatcher,
+        modifications=modifications,
+        owned_blocks=owned_blocks,
+        rejected_metadata=rejected_metadata,
+        constant_result=constant_result,
+        state_var_stkoff=state_var_stkoff,
         artifact_return_blocks=artifact_return_blocks,
+        common_return_corridor=common_return_corridor,
         node_by_key=node_by_key,
     )
+
+    preheader_bridge = postprocess_plan.preheader_bridge
+    if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
+        modifications.append(preheader_bridge.modification)
+        logger.info(
+            "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
+            dag.pre_header_serial,
+            preheader_bridge.resolved_target,
+        )
+
+    bridge_plan = postprocess_plan.bridge_plan
+    bridge_mods: list = list(bridge_plan.modifications)
+    for entry in bridge_plan.log_entries:
+        if entry.branch_arm is None:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d] -> blk[%d] (%s)",
+                entry.source_block,
+                entry.target_block,
+                entry.tag,
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: wire blk[%d].arm%d -> blk[%d] (%s)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.tag,
+            )
+
+    if bridge_mods:
+        modifications.extend(bridge_mods)
+        logger.info(
+            "RECON BRIDGE: %d bridge edges for unclaimed handler entries",
+            len(bridge_mods),
+        )
+
+    feeder_plan = postprocess_plan.feeder_plan
+    feeder_mods: list = list(feeder_plan.modifications)
+    for entry in feeder_plan.log_entries:
+        if entry.branch_arm is None:
+            logger.info(
+                "RECON BRIDGE: feeder blk[%d] -> blk[%d] (%s npred=%d via_pred=%s)",
+                entry.source_block,
+                entry.target_block,
+                entry.tag,
+                entry.source_pred_count,
+                entry.via_pred,
+            )
+        else:
+            logger.info(
+                "RECON BRIDGE: feeder blk[%d].arm%d -> blk[%d] (%s)",
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.tag,
+            )
+
+    fixpoint_feeder_plan = postprocess_plan.fixpoint_feeder_plan
+    feeder_mods.extend(fixpoint_feeder_plan.modifications)
+    for entry in fixpoint_feeder_plan.log_entries:
+        logger.debug(
+            "RECON FEEDER: fixpoint blk[%d] has no "
+            "last_write_site, skipping NOP",
+            entry.source_block,
+        )
+        logger.info(
+            "RECON BRIDGE: fixpoint feeder blk[%d] -> blk[%d] (state=0x%x)",
+            entry.source_block,
+            entry.target_block,
+            entry.state_value,
+        )
+
+    if feeder_mods:
+        modifications.extend(feeder_mods)
+        logger.info(
+            "RECON BRIDGE: %d feeder redirects for residual dispatcher feeders",
+            len(feeder_mods),
+        )
+
+    return_plan = postprocess_plan.return_plan
     return_mods: list = list(return_plan.modifications)
-    claimed_sources = set(return_plan.claimed_sources)
     if return_mods:
         modifications.extend(return_mods)
     for entry in return_plan.log_entries:
