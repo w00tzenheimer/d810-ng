@@ -20,6 +20,7 @@ from d810.recon.flow.graph_reachability import (
 )
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.recon.flow.reconstruction_discovery import classify_artifact_return_blocks
+from d810.recon.flow.return_corridor_discovery import collect_common_return_corridor
 from d810.recon.flow.terminal_family_collection import collect_terminal_family_report
 
 
@@ -264,49 +265,12 @@ def run_reconstruction_postprocess(
 
     return_mods: list = []
     return_skipped: list[tuple[int, str]] = []
-    _ret_paths: list[set[int]] = []
-    for _e in dag.edges:
-        if _e.kind == SemanticEdgeKind.CONDITIONAL_RETURN and _e.ordered_path:
-            _ret_paths.append({int(s) for s in _e.ordered_path})
-    common_return_corridor: set[int] = set()
-    if _ret_paths:
-        common_return_corridor = _ret_paths[0]
-        for _p in _ret_paths[1:]:
-            common_return_corridor &= _p
-    if common_return_corridor:
-        earliest = min(common_return_corridor)
-        _walk_serial = earliest
-        for _ in range(5):
-            _walk_blk = flow_graph.get_block(_walk_serial)
-            if _walk_blk is None:
-                break
-            preds = list(flow_graph.predecessors(_walk_serial))
-            logger.info(
-                "RECON RETURN: corridor backward walk blk[%d] "
-                "preds=%s shared_suffix_blocks=%s",
-                _walk_serial,
-                preds,
-                sorted(shared_suffix_blocks),
-            )
-            extended = False
-            best_pred: int | None = None
-            for pred_serial in sorted(preds, reverse=True):
-                pred_blk = flow_graph.get_block(pred_serial)
-                if (
-                    pred_blk is not None
-                    and pred_blk.nsucc == 1
-                    and pred_serial not in _bst_set
-                    and pred_serial != dispatcher_serial
-                    and pred_serial not in common_return_corridor
-                ):
-                    best_pred = pred_serial
-                    break
-            if best_pred is not None:
-                common_return_corridor.add(best_pred)
-                _walk_serial = best_pred
-                extended = True
-            if not extended:
-                break
+    common_return_corridor = collect_common_return_corridor(
+        dag,
+        flow_graph,
+        bst_node_blocks=_bst_set,
+        dispatcher_serial=dispatcher_serial,
+    )
     if common_return_corridor:
         logger.info(
             "RECON RETURN: common return corridor blocks: %s",
