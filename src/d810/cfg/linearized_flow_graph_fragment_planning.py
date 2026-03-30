@@ -40,6 +40,23 @@ class LinearizedDagRoundSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class LinearizedFlowGraphPlanSetup:
+    """Precomputed strategy-owned inputs for cfg planning."""
+
+    builder: object
+    state_var_stkoff: int | None
+    dispatcher: object | None
+    blocked_sources: frozenset[int]
+    dispatcher_region: frozenset[int]
+    bst_node_blocks: frozenset[int]
+    original_blocks: frozenset[int]
+    transition_result: object
+    pre_header_serial: int | None
+    projectable: bool
+    round_limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class LinearizedFlowGraphPlanningContext:
     """Structured request for main LFG fragment planning."""
 
@@ -117,6 +134,246 @@ class LinearizedFlowGraphPlanningResult:
     residual_dispatcher_normalized_count: int
     dead_island_cleanup_count: int
     unresolved_bst_targets: int
+
+
+def build_linearized_flow_graph_planning_context(
+    *,
+    flow_graph: object,
+    mba: object | None,
+    state_machine: object,
+    dispatcher_serial: int,
+    setup: LinearizedFlowGraphPlanSetup,
+) -> LinearizedFlowGraphPlanningContext:
+    dispatcher = setup.dispatcher
+    return LinearizedFlowGraphPlanningContext(
+        flow_graph=flow_graph,
+        builder=setup.builder,
+        mba=mba,
+        state_machine=state_machine,
+        dispatcher_serial=int(dispatcher_serial),
+        bst_node_blocks=setup.bst_node_blocks,
+        dispatcher_region=setup.dispatcher_region,
+        state_var_stkoff=setup.state_var_stkoff,
+        dispatcher_lookup=(dispatcher.lookup if dispatcher is not None else None),
+        dispatcher=dispatcher,
+        pre_header_serial=setup.pre_header_serial,
+        original_blocks=setup.original_blocks,
+        same_maturity_rerun=bool(setup.round_limit == 1),
+        projectable=bool(setup.projectable),
+        round_limit=int(setup.round_limit),
+        initial_state=(
+            int(state_machine.initial_state)
+            if state_machine.initial_state is not None
+            else None
+        ),
+        blocked_sources=setup.blocked_sources,
+    )
+
+
+def adapt_linearized_dag_round_summary(
+    *,
+    state_machine: object,
+    bst_result: object,
+    transition_result: object,
+    current_flow_graph: object,
+    dag_round_mba: object | None,
+    dispatcher_serial: int,
+    state_var_stkoff: int | None,
+    pre_header_serial: int | None,
+    bst_node_blocks: frozenset[int],
+    build_round_summary: object,
+    build_live_dag: object,
+    build_transition_report: object,
+    select_plannable_edges: object,
+) -> LinearizedDagRoundSummary:
+    resolved_summary = build_round_summary(
+        current_flow_graph=current_flow_graph,
+        transition_result=transition_result,
+        dispatcher_serial=dispatcher_serial,
+        state_var_stkoff=state_var_stkoff,
+        pre_header_serial=pre_header_serial,
+        initial_state=state_machine.initial_state,
+        handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
+        bst_node_blocks=tuple(sorted(bst_node_blocks)),
+        diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+        dispatcher=getattr(bst_result, "dispatcher", None),
+        mba=dag_round_mba,
+        handlers=state_machine.handlers,
+        build_live_dag=build_live_dag,
+        build_transition_report=build_transition_report,
+        select_plannable_edges=select_plannable_edges,
+    )
+    plannable_edges = tuple(
+        LinearizedDagPlannableEdge(
+            edge=entry.edge,
+            source_anchor_block=int(entry.source_anchor_block),
+            ordered_path=tuple(int(node) for node in entry.ordered_path),
+            target_entry_anchor=(
+                int(entry.target_entry_anchor)
+                if entry.target_entry_anchor is not None
+                else None
+            ),
+            is_conditional_transition=bool(entry.is_conditional_transition),
+            requires_safe_target_resolution=bool(
+                entry.requires_safe_target_resolution
+            ),
+        )
+        for entry in resolved_summary.plannable_edges
+    )
+    return LinearizedDagRoundSummary(
+        dag=resolved_summary.dag,
+        plannable_edges=plannable_edges,
+        report_exit_handlers=frozenset(
+            int(handler) for handler in resolved_summary.report_exit_handlers
+        ),
+        report_exit_owned_blocks=frozenset(
+            int(block) for block in resolved_summary.report_exit_owned_blocks
+        ),
+        terminal_source_keys=frozenset(resolved_summary.terminal_source_keys),
+        terminal_source_handlers=frozenset(
+            int(handler) for handler in resolved_summary.terminal_source_handlers
+        ),
+        terminal_source_owned_blocks=frozenset(
+            int(block) for block in resolved_summary.terminal_source_owned_blocks
+        ),
+        terminal_protected_blocks=frozenset(
+            int(block) for block in resolved_summary.terminal_protected_blocks
+        ),
+        terminal_skipped=int(resolved_summary.terminal_skipped),
+        unknown_skipped=int(resolved_summary.unknown_skipped),
+    )
+
+
+def build_linearized_flow_graph_planning_callbacks(
+    *,
+    snapshot: object,
+    state_machine: object,
+    bst_result: object,
+    mba: object | None,
+    setup: LinearizedFlowGraphPlanSetup,
+    discover_round_summary: object,
+    build_projected_mba: object,
+    project_flow_graph: object,
+    resolve_redirect_safe_target_entry: object,
+    resolve_initial_entry: object,
+    emit_dag_redirect: object,
+    collect_residual_dispatcher_predecessors: object,
+    emit_residual_dispatcher_handoffs: object,
+    disconnect_bst_comparison_nodes: object,
+    build_live_dag: object,
+    build_transition_report: object,
+    select_plannable_edges: object,
+) -> LinearizedFlowGraphPlanningCallbacks:
+    return LinearizedFlowGraphPlanningCallbacks(
+        build_round_summary=lambda current_flow_graph, dag_round_mba: adapt_linearized_dag_round_summary(
+            state_machine=state_machine,
+            bst_result=bst_result,
+            transition_result=setup.transition_result,
+            current_flow_graph=current_flow_graph,
+            dag_round_mba=dag_round_mba,
+            dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+            state_var_stkoff=setup.state_var_stkoff,
+            pre_header_serial=setup.pre_header_serial,
+            bst_node_blocks=setup.bst_node_blocks,
+            build_round_summary=discover_round_summary,
+            build_live_dag=build_live_dag,
+            build_transition_report=build_transition_report,
+            select_plannable_edges=select_plannable_edges,
+        ),
+        build_projected_mba=build_projected_mba,
+        project_flow_graph=project_flow_graph,
+        resolve_redirect_safe_target_entry=lambda dag, edge, bst_node_blocks: resolve_redirect_safe_target_entry(
+            dag,
+            edge,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        ),
+        resolve_initial_entry=lambda dag, initial_state, bst_node_blocks: resolve_initial_entry(
+            dag,
+            initial_state,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        ),
+        emit_dag_redirect=lambda *,
+            edge,
+            dag,
+            flow_graph,
+            state,
+            report_exit_handlers,
+            report_exit_owned_blocks,
+            terminal_source_keys,
+            terminal_source_handlers,
+            terminal_source_owned_blocks,
+            terminal_protected_blocks: emit_dag_redirect(
+                edge=edge,
+                dag=dag,
+                builder=setup.builder,
+                modifications=state.modifications,
+                owned_blocks=state.owned_blocks,
+                owned_edges=state.owned_edges,
+                owned_transitions=state.owned_transitions,
+                emitted=state.emitted,
+                claimed_1way=state.claimed_1way,
+                claimed_2way=state.claimed_2way,
+                claimed_exits=state.claimed_exits,
+                claimed_path_edges=state.claimed_path_edges,
+                blocked_sources=state.blocked_sources,
+                terminal_source_keys=set(terminal_source_keys),
+                terminal_source_handlers=set(terminal_source_handlers),
+                terminal_source_owned_blocks=set(terminal_source_owned_blocks),
+                terminal_protected_blocks=set(terminal_protected_blocks),
+                report_exit_handlers=set(report_exit_handlers),
+                report_exit_owned_blocks=set(report_exit_owned_blocks),
+                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                dispatcher_region=set(int(block) for block in setup.dispatcher_region),
+                flow_graph=flow_graph,
+                state_var_stkoff=setup.state_var_stkoff,
+                dispatcher_lookup=(
+                    setup.dispatcher.lookup if setup.dispatcher is not None else None
+                ),
+                dispatcher=setup.dispatcher,
+                mba=mba,
+            ),
+        collect_residual_dispatcher_predecessors=lambda current_flow_graph, dispatcher_serial, bst_node_blocks, reachable_from_serial: collect_residual_dispatcher_predecessors(
+            current_flow_graph,
+            dispatcher_serial,
+            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            reachable_from_serial=reachable_from_serial,
+        ),
+        emit_residual_dispatcher_handoffs=lambda *,
+            dag,
+            projected_flow_graph,
+            state,
+            redirected_blocks: emit_residual_dispatcher_handoffs(
+                dag=dag,
+                state_machine=state_machine,
+                projected_flow_graph=projected_flow_graph,
+                dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                builder=setup.builder,
+                modifications=state.modifications,
+                owned_blocks=state.owned_blocks,
+                owned_edges=state.owned_edges,
+                owned_transitions=state.owned_transitions,
+                emitted=state.emitted,
+                claimed_1way=state.claimed_1way,
+                claimed_2way=state.claimed_2way,
+                state_var_stkoff=setup.state_var_stkoff,
+                dispatcher_lookup=(
+                    setup.dispatcher.lookup if setup.dispatcher is not None else None
+                ),
+                dispatcher=setup.dispatcher,
+                mba=mba,
+                redirected_blocks=redirected_blocks,
+            ),
+        disconnect_bst_comparison_nodes=lambda bst_node_blocks, dispatcher_serial, state: disconnect_bst_comparison_nodes(
+            set(int(block) for block in bst_node_blocks),
+            dispatcher_serial,
+            setup.builder,
+            state.modifications,
+            state.emitted,
+            mba=mba,
+        ),
+    )
+
 
 def execute_linearized_flow_graph_planning(
     context: LinearizedFlowGraphPlanningContext,
@@ -359,9 +616,13 @@ def execute_linearized_flow_graph_planning(
 __all__ = [
     "LinearizedDagPlannableEdge",
     "LinearizedDagRoundSummary",
+    "LinearizedFlowGraphPlanSetup",
     "LinearizedFlowGraphPlanningCallbacks",
     "LinearizedFlowGraphPlanningContext",
     "LinearizedFlowGraphPlanningResult",
     "LinearizedFlowGraphPlanningState",
+    "adapt_linearized_dag_round_summary",
+    "build_linearized_flow_graph_planning_callbacks",
+    "build_linearized_flow_graph_planning_context",
     "execute_linearized_flow_graph_planning",
 ]

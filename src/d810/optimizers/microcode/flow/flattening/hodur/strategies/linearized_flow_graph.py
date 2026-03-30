@@ -25,9 +25,9 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.linearized_flow_graph_fragment_planning import (
-    LinearizedDagPlannableEdge,
-    LinearizedDagRoundSummary,
-    LinearizedFlowGraphPlanningContext,
+    LinearizedFlowGraphPlanSetup,
+    build_linearized_flow_graph_planning_callbacks,
+    build_linearized_flow_graph_planning_context,
     execute_linearized_flow_graph_planning,
 )
 from d810.cfg.plan import compile_patch_plan
@@ -96,14 +96,10 @@ from d810.recon.flow.shared_suffix_discovery import (
     pred_split_target_reaches_via_pred,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+    BenefitMetrics,
     FAMILY_DIRECT,
+    OwnershipScope,
     PlanFragment,
-)
-from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_planning import (
-    build_linearized_dag_round_summary_adapter,
-    build_linearized_flow_graph_planning_callbacks,
-    execute_linearized_flow_graph_strategy_plan,
-    prepare_linearized_flow_graph_plan_setup,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_reporting import (
     log_dag_redirect_fallback_outcome,
@@ -146,6 +142,166 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
 
 __all__ = ["LinearizedFlowGraphStrategy"]
+
+
+def _prepare_linearized_flow_graph_plan_setup(
+    *,
+    snapshot: object,
+    state_machine: object,
+    bst_result: object,
+    flow_graph: object,
+    mba: object | None,
+    same_maturity_rerun: bool,
+) -> LinearizedFlowGraphPlanSetup:
+    bst_node_blocks = frozenset(
+        int(block)
+        for block in (getattr(bst_result, "bst_node_blocks", set()) or set())
+    )
+    builder = ModificationBuilder.from_snapshot(snapshot)
+    state_var_stkoff = LinearizedFlowGraphStrategy._resolve_state_var_stkoff(
+        snapshot,
+        state_machine,
+    )
+    dispatcher = getattr(bst_result, "dispatcher", None)
+    blocked_sources = frozenset(
+        int(serial)
+        for serial in (getattr(snapshot, "lfg_redirected_blocks", ()) or ())
+    )
+    dispatcher_region = bst_node_blocks
+    original_blocks = frozenset(
+        int(block)
+        for block in LinearizedFlowGraphStrategy._flow_graph_block_serials(flow_graph)
+    )
+    transition_result = TransitionResult(
+        transitions=list(state_machine.transitions),
+        handlers=dict(state_machine.handlers),
+        assignment_map=dict(state_machine.assignment_map),
+        initial_state=state_machine.initial_state,
+        pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+        strategy_name="linearized_flow_graph",
+        resolved_count=len(state_machine.transitions),
+    )
+
+    raw_pre_header = (
+        None if same_maturity_rerun else getattr(bst_result, "pre_header_serial", None)
+    )
+    entry_serial = getattr(getattr(snapshot, "reachability", None), "entry_serial", None)
+    pre_header_serial = (
+        raw_pre_header
+        if LinearizedFlowGraphStrategy._is_original_pre_header_candidate(
+            flow_graph,
+            pre_header_serial=raw_pre_header,
+            entry_serial=entry_serial,
+        )
+        else None
+    )
+    if raw_pre_header is not None and pre_header_serial is None:
+        logger.info(
+            "LFG DAG: suppressing non-entry pre-header candidate %s (entry=%s)",
+            blk_label(mba, raw_pre_header),
+            blk_label(mba, entry_serial) if entry_serial is not None else "<none>",
+        )
+
+    projectable = bool(
+        LinearizedFlowGraphStrategy._supports_projected_replanning(flow_graph)
+    )
+    round_limit = 1 if same_maturity_rerun else 2
+    return LinearizedFlowGraphPlanSetup(
+        builder=builder,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher=dispatcher,
+        blocked_sources=blocked_sources,
+        dispatcher_region=dispatcher_region,
+        bst_node_blocks=bst_node_blocks,
+        original_blocks=original_blocks,
+        transition_result=transition_result,
+        pre_header_serial=pre_header_serial,
+        projectable=projectable,
+        round_limit=round_limit,
+    )
+
+
+def _log_linearized_flow_graph_plan_result(
+    *,
+    mba: object | None,
+    result: object,
+) -> None:
+    if result.unresolved_bst_targets:
+        logger.info(
+            "LFG DAG: preserving BST cleanup because %d targets still resolve only inside BST region",
+            result.unresolved_bst_targets,
+        )
+    if result.cleanup_gate_reason == "residual_dispatcher_predecessors":
+        logger.info(
+            "LFG DAG: preserving post-apply BST cleanup because residual non-BST dispatcher predecessors remain: %s",
+            [blk_label(mba, serial) for serial in result.residual_dispatcher_preds],
+        )
+
+    logger.info(
+        "LFG DAG: emitted %d redirects (%d unconditional, %d conditional); "
+        "%d terminal edges ignored, %d unknown edges ignored, %d skipped conflicts; "
+        "%d BST disconnects",
+        result.transition_count + result.conditional_count,
+        result.transition_count,
+        result.conditional_count,
+        result.terminal_skipped,
+        result.unknown_skipped,
+        result.skipped_count,
+        result.disconnect_count,
+    )
+
+
+def _build_linearized_flow_graph_plan_fragment(
+    *,
+    strategy_name: str,
+    family: str,
+    prerequisites: list[str],
+    state_machine: object,
+    bst_node_blocks: frozenset[int],
+    result: object,
+) -> PlanFragment:
+    ownership = OwnershipScope(
+        blocks=result.owned_blocks,
+        edges=result.owned_edges,
+        transitions=result.owned_transitions,
+    )
+    benefit = BenefitMetrics(
+        handlers_resolved=len(state_machine.handlers),
+        transitions_resolved=result.transition_count + result.conditional_count,
+        blocks_freed=len(bst_node_blocks),
+        conflict_density=0.0,
+    )
+    return PlanFragment(
+        strategy_name=strategy_name,
+        family=family,
+        modifications=list(result.modifications),
+        ownership=ownership,
+        prerequisites=prerequisites,
+        expected_benefit=benefit,
+        risk_score=0.1,
+        metadata={
+            "handlers_visited": len(state_machine.handlers),
+            "resolved_count": result.transition_count + result.conditional_count,
+            "dag_transition_count": result.transition_count,
+            "dag_conditional_count": result.conditional_count,
+            "dag_terminal_skipped": result.terminal_skipped,
+            "dag_unknown_skipped": result.unknown_skipped,
+            "skipped_count": result.skipped_count,
+            "disconnect_count": result.disconnect_count,
+            "allow_post_apply_bst_cleanup": result.cleanup_gate_reason is None,
+            "post_apply_bst_cleanup_reason": result.cleanup_gate_reason,
+            "residual_dispatcher_preds": result.residual_dispatcher_preds,
+            "residual_dispatcher_redirect_count": result.residual_dispatcher_redirect_count,
+            "residual_dispatcher_normalized_count": result.residual_dispatcher_normalized_count,
+            "dead_island_cleanup_count": result.dead_island_cleanup_count,
+            "unresolved_bst_targets": result.unresolved_bst_targets,
+            "bst_convert_count": 0,
+            "goto_nop_count": 0,
+            "goto_skip_count": 0,
+            "nop_state_values": {},
+            "safeguard_min_required": 1,
+        },
+    )
 
 
 class LinearizedFlowGraphStrategy:
@@ -468,39 +624,60 @@ class LinearizedFlowGraphStrategy:
             and (func_ea, maturity) in self._applied
         )
 
-        return execute_linearized_flow_graph_strategy_plan(
+        dag_setup = _prepare_linearized_flow_graph_plan_setup(
             snapshot=snapshot,
             state_machine=sm,
             bst_result=bst_result,
             flow_graph=flow_graph,
             mba=mba,
-            logger=logger,
             same_maturity_rerun=bool(same_maturity_rerun),
+        )
+        dag_result = execute_linearized_flow_graph_planning(
+            build_linearized_flow_graph_planning_context(
+                flow_graph=flow_graph,
+                mba=mba,
+                state_machine=sm,
+                dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+                setup=dag_setup,
+            ),
+            callbacks=build_linearized_flow_graph_planning_callbacks(
+                snapshot=snapshot,
+                state_machine=sm,
+                bst_result=bst_result,
+                mba=mba,
+                setup=dag_setup,
+                discover_round_summary=build_linearized_dag_round_summary,
+                build_projected_mba=build_mba_view_from_flow_graph,
+                project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
+                    base_flow_graph,
+                    compile_patch_plan(modifications, base_flow_graph),
+                ),
+                resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
+                resolve_initial_entry=resolve_dag_entry_for_state,
+                emit_dag_redirect=self._emit_dag_redirect,
+                collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
+                emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
+                disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
+                build_live_dag=build_live_linearized_state_dag_from_graph,
+                build_transition_report=build_dispatcher_transition_report_from_graph,
+                select_plannable_edges=select_plannable_dag_edges,
+            ),
+        )
+        if not dag_result.accepted:
+            logger.info("LFG: DAG produced no redirect modifications")
+            return None
+
+        _log_linearized_flow_graph_plan_result(
+            mba=mba,
+            result=dag_result,
+        )
+        return _build_linearized_flow_graph_plan_fragment(
             strategy_name=self.name,
             family=self.family,
             prerequisites=self.prerequisites,
-            build_modification_builder=ModificationBuilder.from_snapshot,
-            resolve_state_var_stkoff=self._resolve_state_var_stkoff,
-            supports_projected_replanning=self._supports_projected_replanning,
-            flow_graph_block_serials=self._flow_graph_block_serials,
-            is_original_pre_header_candidate=self._is_original_pre_header_candidate,
-            transition_result_cls=TransitionResult,
-            round_summary_adapter=build_linearized_dag_round_summary_adapter,
-            discover_round_summary=build_linearized_dag_round_summary,
-            build_projected_mba=build_mba_view_from_flow_graph,
-            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                base_flow_graph,
-                compile_patch_plan(modifications, base_flow_graph),
-            ),
-            resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
-            resolve_initial_entry=resolve_dag_entry_for_state,
-            emit_dag_redirect=self._emit_dag_redirect,
-            collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
-            emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
-            disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
-            build_transition_report=build_dispatcher_transition_report_from_graph,
-            select_plannable_edges=select_plannable_dag_edges,
+            state_machine=sm,
+            bst_node_blocks=dag_setup.bst_node_blocks,
+            result=dag_result,
         )
 
     @classmethod
