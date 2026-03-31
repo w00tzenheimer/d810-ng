@@ -143,7 +143,7 @@ def _tail_opcode(blk) -> int:
     insn_snapshots = getattr(blk, "insn_snapshots", ())
     if insn_snapshots:
         return int(insn_snapshots[-1].opcode)
-    return int(getattr(ida_hexrays, "m_nop", 0))
+    return ida_hexrays.m_nop
 
 
 def _is_snapshot_block(blk) -> bool:
@@ -182,7 +182,7 @@ def _mop_is_mblock(op) -> bool:
             return bool(checker())
         except Exception:
             return False
-    return int(getattr(op, "t", -1)) == int(getattr(ida_hexrays, "mop_b"))
+    return int(getattr(op, "t", -1)) == ida_hexrays.mop_b
 
 
 def _is_conditional_jump_opcode(opcode: int) -> bool:
@@ -234,17 +234,17 @@ def _block_type_name(blk_type: int) -> str:
 
 
 def _expected_successor_count(blk_type: int, nsucc: int) -> int | None:
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_STOP", -2)):
+    if int(blk_type) == ida_hexrays.BLT_STOP:
         return 0
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_XTRN", -2)):
+    if int(blk_type) == ida_hexrays.BLT_XTRN:
         return 0
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_0WAY", -2)):
+    if int(blk_type) == ida_hexrays.BLT_0WAY:
         return 0
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_1WAY", -2)):
+    if int(blk_type) == ida_hexrays.BLT_1WAY:
         return 1
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_2WAY", -2)):
+    if int(blk_type) == ida_hexrays.BLT_2WAY:
         return 2
-    if int(blk_type) == int(getattr(ida_hexrays, "BLT_NWAY", -2)):
+    if int(blk_type) == ida_hexrays.BLT_NWAY:
         return int(nsucc)
     return None
 
@@ -266,7 +266,7 @@ def _tail_is_noret_call(tail) -> bool:
     if not callable(probe):
         return False
 
-    no_analysis = int(getattr(ida_hexrays, "NORET_FORBID_ANALYSIS", 0))
+    no_analysis = ida_hexrays.NORET_FORBID_ANALYSIS
     signatures = (
         (),
         (no_analysis,),
@@ -477,7 +477,7 @@ def block_type_vs_tail(
             continue
 
         blk_type = _blk_type(blk)
-        if blk_type == int(getattr(ida_hexrays, "BLT_NONE", -1)):
+        if blk_type == ida_hexrays.BLT_NONE:
             continue
 
         nsucc = _nsucc(blk)
@@ -498,9 +498,9 @@ def block_type_vs_tail(
             )
             continue
 
-        is_nway = blk_type == int(getattr(ida_hexrays, "BLT_NWAY", -1))
+        is_nway = blk_type == ida_hexrays.BLT_NWAY
         is_jtbl = tail is not None and tail_opcode == int(
-            getattr(ida_hexrays, "m_jtbl", -1)
+            ida_hexrays.m_jtbl
         )
         if is_nway != is_jtbl:
             violations.append(
@@ -541,7 +541,7 @@ def block_type_vs_tail(
             )
 
         if blk_type == int(
-            getattr(ida_hexrays, "BLT_2WAY", -1)
+            ida_hexrays.BLT_2WAY
         ) and not _is_conditional_jump_opcode(tail_opcode):
             violations.append(
                 _violation(
@@ -558,7 +558,7 @@ def block_type_vs_tail(
 
         if (
             not _is_snapshot_block(blk)
-            and blk_type == int(getattr(ida_hexrays, "BLT_1WAY", -1))
+            and blk_type == ida_hexrays.BLT_1WAY
             and _is_call_block(blk)
         ):
             if _tail_is_noret_call(tail):
@@ -610,7 +610,7 @@ def successor_set_matches_tail_semantics(
             continue
 
         blk_type = _blk_type(blk)
-        if blk_type == int(getattr(ida_hexrays, "BLT_NONE", -1)):
+        if blk_type == ida_hexrays.BLT_NONE:
             continue
 
         tail = getattr(blk, "tail", None)
@@ -622,7 +622,7 @@ def successor_set_matches_tail_semantics(
             continue
 
         outs: list[int] = []
-        if tail_opcode == int(getattr(ida_hexrays, "m_jtbl", -1)):
+        if tail_opcode == ida_hexrays.m_jtbl:
             if _is_snapshot_block(blk):
                 outs = list(succs)
             else:
@@ -640,7 +640,7 @@ def successor_set_matches_tail_semantics(
                     )
                 else:
                     outs = list(targets or [])
-        elif tail_opcode == int(getattr(ida_hexrays, "m_goto", -1)):
+        elif tail_opcode == ida_hexrays.m_goto:
             if _is_snapshot_block(blk):
                 if succs:
                     outs.append(int(succs[0]))
@@ -664,11 +664,11 @@ def successor_set_matches_tail_semantics(
                         if target is not None and target not in outs:
                             outs.append(target)
         elif tail_opcode in {
-            int(getattr(ida_hexrays, "m_ijmp", -1)),
-            int(getattr(ida_hexrays, "m_ret", -1)),
+            ida_hexrays.m_ijmp,
+            ida_hexrays.m_ret,
         }:
             outs = []
-        elif tail_opcode == int(getattr(ida_hexrays, "m_ext", -1)):
+        elif tail_opcode == ida_hexrays.m_ext:
             outs = list(succs)
         elif expected_nsucc != 0:
             if _is_snapshot_block(blk):
@@ -799,12 +799,12 @@ def block_closing_opcode_at_tail(
     qty = int(mba.qty)
     closing = _closing_opcodes()
     maturity = int(getattr(mba, "maturity", 0))
-    mmat_calls = int(getattr(ida_hexrays, "MMAT_CALLS", 3))
+    mmat_calls = ida_hexrays.MMAT_CALLS
     after_calls = maturity >= mmat_calls
 
-    m_push = int(getattr(ida_hexrays, "m_push", -1))
-    m_pop = int(getattr(ida_hexrays, "m_pop", -1))
-    blt_xtrn = int(getattr(ida_hexrays, "BLT_XTRN", 6))
+    m_push = ida_hexrays.m_push
+    m_pop = ida_hexrays.m_pop
+    blt_xtrn = ida_hexrays.BLT_XTRN
 
     for serial in serials:
         blk = _safe_get_block(mba, int(serial))
@@ -880,7 +880,7 @@ def block_address_range(
     """Check start/end address invariants for non-fake blocks (verify.cpp 50869, 50870)."""
     violations: list[InvariantViolation] = []
     serials = _serials_for_scope(mba, focus_serials)
-    mbl_fake = int(getattr(ida_hexrays, "MBL_FAKE", 0x10))
+    mbl_fake = ida_hexrays.MBL_FAKE
     entry_ea = int(getattr(mba, "entry_ea", 0))
 
     # Determine function end address if available
