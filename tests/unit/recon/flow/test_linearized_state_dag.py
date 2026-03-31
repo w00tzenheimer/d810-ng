@@ -2684,6 +2684,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
         bst_node_blocks,
         state_var_stkoff,
         handler_entry_blocks,
+        **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
         return fake_paths.get((handler_serial, incoming_state), ())
 
@@ -3007,6 +3008,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
         bst_node_blocks,
         state_var_stkoff,
         handler_entry_blocks,
+        **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
         return fake_paths.get((handler_serial, incoming_state), ())
 
@@ -3210,6 +3212,7 @@ def test_live_builder_prefers_dispatcher_body_anchor_over_bst_range_root(
         bst_node_blocks,
         state_var_stkoff,
         handler_entry_blocks,
+        **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
         return fake_paths.get((handler_serial, incoming_state), ())
 
@@ -3538,6 +3541,7 @@ def test_live_builder_rejects_self_handoff_candidate_anchor(
         bst_node_blocks,
         state_var_stkoff,
         handler_entry_blocks,
+        **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
         return fake_paths.get((handler_serial, incoming_state), ())
 
@@ -4478,6 +4482,7 @@ def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_
         bst_node_blocks,
         state_var_stkoff,
         handler_entry_blocks,
+        **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
         if handler_serial == 217 and incoming_state == 0x1A9A9DD9:
             return (

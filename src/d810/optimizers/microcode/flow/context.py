@@ -28,6 +28,55 @@ if TYPE_CHECKING:
 logger = getLogger("D810.flow.context")
 
 
+def _flowgraph_from_live_mba(mba: ida_hexrays.mba_t) -> "FlowGraph":
+    """Build a minimal FlowGraph from the live mba for terminal detection.
+
+    Only captures block topology and tail instruction (opcode + right
+    operand) — enough for BST-walk and BLT_STOP reachability checks.
+    """
+    from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+
+    blocks: dict[int, BlockSnapshot] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        succs = list(blk.succset)
+        preds = list(blk.predset)
+
+        # Capture only the tail instruction.
+        insns: tuple[InsnSnapshot, ...] = ()
+        tail = blk.tail
+        if tail is not None:
+            l_snap = r_snap = None
+            if tail.l and tail.l.t != 0:
+                stkoff = None
+                if tail.l.t == 3 and hasattr(tail.l, "s") and tail.l.s:  # mop_S
+                    stkoff = tail.l.s.off
+                l_snap = MopSnapshot(t=tail.l.t, size=tail.l.size, stkoff=stkoff)
+            if tail.r and tail.r.t != 0:
+                val = None
+                if tail.r.t == 2:  # mop_n
+                    val = tail.r.nnn.value if hasattr(tail.r, "nnn") and tail.r.nnn else None
+                r_snap = MopSnapshot(t=tail.r.t, size=tail.r.size, value=val)
+            insns = (
+                InsnSnapshot(
+                    opcode=tail.opcode, ea=tail.ea, operands=(),
+                    l=l_snap, r=r_snap,
+                ),
+            )
+
+        blocks[i] = BlockSnapshot(
+            serial=i,
+            block_type=blk.type,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=blk.flags,
+            start_ea=blk.start,
+            insn_snapshots=insns,
+        )
+
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=mba.entry_ea)
+
+
 @dataclass(frozen=True)
 class FlowGateDecision:
     allowed: bool
@@ -59,6 +108,7 @@ class FlowMaturityContext:
         self._active_rule_names: tuple[str, ...] = tuple()
         self._hint_summary: FlowContextHintSummary | None = None
         self._outcome_callback: Callable[[int, object, str], None] | None = None
+        self._terminal_boundary_blocks: set[int] | None = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -98,6 +148,9 @@ class FlowMaturityContext:
         self.mba = mba
         self._profile_stats = None
         self._profile_stats_error = None
+        self._dispatcher_analysis = None
+        self._dispatcher_analysis_error = None
+        self._terminal_boundary_blocks = None
 
     def set_phase(
         self,
@@ -136,6 +189,44 @@ class FlowMaturityContext:
                 exc,
             )
             return None
+
+    def get_terminal_boundary_blocks(self) -> set[int]:
+        """Return BST comparison blocks on the terminal cleanup boundary.
+
+        Lazily computed from the dispatcher analysis.  If the BST's default
+        fallthrough reaches ``BLT_STOP``, the comparison blocks on that
+        boundary are returned.  :class:`FixPredCondJump` should avoid
+        resolving predecessors of these blocks so that terminal semantics
+        survive to later maturities.
+        """
+        if self._terminal_boundary_blocks is not None:
+            return self._terminal_boundary_blocks
+        self._terminal_boundary_blocks = set()
+
+        analysis = self.ensure_dispatcher_analysis()
+        if analysis is None or analysis.dispatcher_type != DispatcherType.CONDITIONAL_CHAIN:
+            return self._terminal_boundary_blocks
+
+        from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+        from d810.recon.flow.state_machine_analysis import (
+            detect_terminal_state_families_snapshot,
+        )
+
+        try:
+            flow_graph = _flowgraph_from_live_mba(self.mba)
+        except Exception:
+            return self._terminal_boundary_blocks
+
+        sm_blocks = set(analysis.dispatchers)
+        self._terminal_boundary_blocks = detect_terminal_state_families_snapshot(
+            flow_graph, sm_blocks,
+        )
+
+        logger.info(
+            "[TERM-GATE] result: terminal_boundary=%s",
+            self._terminal_boundary_blocks,
+        )
+        return self._terminal_boundary_blocks
 
     def get_profile_stats(self) -> FlowProfileStats | None:
         if self._profile_stats is not None:

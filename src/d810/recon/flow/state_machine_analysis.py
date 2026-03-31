@@ -583,11 +583,14 @@ def run_snapshot_constant_fixpoint(
     )
 
 
+_BLT_STOP = 1  # ida_hexrays.BLT_STOP (BLT_NONE=0, BLT_STOP=1, BLT_1WAY=2, ...)
+
+
 def can_reach_return_snapshot(
     flow_graph: FlowGraph,
     start_serial: int,
 ) -> bool:
-    """BFS to check if *start_serial* can reach an m_ret block via snapshots."""
+    """BFS to check if *start_serial* can reach a return/stop block via snapshots."""
 
     m_ret = ida_hexrays.m_ret
     visited: set[int] = set()
@@ -600,6 +603,8 @@ def can_reach_return_snapshot(
         blk = flow_graph.get_block(blk_serial)
         if blk is None:
             continue
+        if blk.block_type == _BLT_STOP:
+            return True
         if blk.tail_opcode is not None and blk.tail_opcode == m_ret:
             return True
         for succ in blk.succs:
@@ -909,6 +914,119 @@ def resolve_exit_via_bst_default_snapshot(
     return None
 
 
+def detect_terminal_state_families_snapshot(
+    flow_graph: FlowGraph,
+    dispatcher_blocks: set[int],
+) -> set[int]:
+    """Identify the **terminal cone** — dispatcher blocks whose resolution
+    would collapse branches feeding the terminal cleanup/return path.
+
+    1. Find **boundary blocks**: dispatcher blocks with a non-dispatcher arm
+       that reaches ``BLT_STOP`` via restricted BFS.
+    2. Expand to the **reverse predecessor cone**: walk backwards through
+       dispatcher-block predecessors of the boundary.  Any dispatcher block
+       that can reach a boundary block only through other dispatcher blocks
+       is part of the cone.
+
+    FixPredCondJump should skip patches for blocks in this cone.
+    """
+    # --- Step 1: find direct boundary blocks ---
+    terminal_boundary: set[int] = set()
+
+    for serial in dispatcher_blocks:
+        blk_snap = flow_graph.get_block(serial)
+        if blk_snap is None or blk_snap.nsucc != 2:
+            continue
+
+        for arm in blk_snap.succs:
+            if arm in dispatcher_blocks:
+                continue
+            if _restricted_reach_stop(flow_graph, arm, dispatcher_blocks):
+                terminal_boundary.add(serial)
+                logger.info(
+                    "[TERMINAL-FAMILY] blk[%d] arm→blk[%d] reaches "
+                    "BLT_STOP — terminal boundary",
+                    serial, arm,
+                )
+                break
+
+    if not terminal_boundary:
+        return terminal_boundary
+
+    # --- Step 2: reverse predecessor cone ---
+    # Walk backwards from boundary blocks through dispatcher predecessors.
+    # Also include dispatcher blocks that are structurally interleaved with
+    # the cone (e.g. for-loop conditions between BST nodes) to avoid leaving
+    # the CFG in an inconsistent half-resolved state.
+    cone = set(terminal_boundary)
+    queue = list(terminal_boundary)
+    while queue:
+        serial = queue.pop(0)
+        blk_snap = flow_graph.get_block(serial)
+        if blk_snap is None:
+            continue
+        for pred in blk_snap.preds:
+            if pred in cone:
+                continue
+            if pred not in dispatcher_blocks:
+                continue
+            cone.add(pred)
+            queue.append(pred)
+
+    # If the cone reached a dispatcher root (a dispatcher block with no
+    # dispatcher predecessors), the terminal chain is the primary spine of
+    # the BST.  Protect all dispatcher blocks to avoid INTERR 50858 from
+    # partially resolving interleaved control-flow blocks (e.g. m_jge loops).
+    dispatcher_roots = {
+        blk_id for blk_id in dispatcher_blocks
+        if all(
+            pred not in dispatcher_blocks
+            for pred in (flow_graph.get_block(blk_id).preds
+                         if flow_graph.get_block(blk_id) is not None else ())
+        )
+    }
+    if dispatcher_roots & cone:
+        logger.info(
+            "[TERMINAL-CONE] cone reached dispatcher root(s) %s, "
+            "guarding all %d dispatcher blocks",
+            sorted(dispatcher_roots & cone), len(dispatcher_blocks),
+        )
+        cone = set(dispatcher_blocks)
+
+    logger.info(
+        "[TERMINAL-CONE] boundary=%s cone=%s (%d blocks)",
+        sorted(terminal_boundary),
+        sorted(cone),
+        len(cone),
+    )
+    return cone
+
+
+def _restricted_reach_stop(
+    flow_graph: FlowGraph,
+    start: int,
+    forbidden: set[int],
+    max_depth: int = 80,
+) -> bool:
+    """BFS from *start* to BLT_STOP, not re-entering *forbidden* blocks."""
+    visited: set[int] = set()
+    queue = [start]
+    while queue and len(visited) < max_depth:
+        serial = queue.pop(0)
+        if serial in visited or serial in forbidden:
+            continue
+        visited.add(serial)
+        blk = flow_graph.get_block(serial)
+        if blk is None:
+            continue
+        if blk.block_type == _BLT_STOP:
+            return True
+        for s in blk.succs:
+            if s not in visited and s not in forbidden:
+                queue.append(s)
+    return False
+
+
 def detect_conditional_transitions(
     handler_entry: int,
     paths: list[HandlerPathResult],
@@ -1029,8 +1147,19 @@ def evaluate_handler_paths(
     bst_node_blocks: set[int],
     state_var_stkoff: int,
     handler_entry_blocks: set[int] | None = None,
+    *,
+    flow_graph: "FlowGraph | None" = None,
+    known_handler_states: "set[int] | None" = None,
+    bst_root_serial: "int | None" = None,
+    state_machine_blocks: "set[int] | None" = None,
 ) -> list[HandlerPathResult]:
-    """DFS forward eval of a handler, forking state at conditional branches."""
+    """DFS forward eval of a handler, forking state at conditional branches.
+
+    When *flow_graph*, *known_handler_states*, *bst_root_serial*, and
+    *state_machine_blocks* are provided, exits whose resolved BST target
+    lands outside the state machine and can reach a return are emitted as
+    **terminal** paths (``final_state=None``) rather than state handoffs.
+    """
 
     results: list[HandlerPathResult] = []
     queue: list[tuple[int, dict, dict, frozenset, list, list]] = [
@@ -1151,14 +1280,50 @@ def evaluate_handler_paths(
             elif succ_serial in bst_node_blocks:
                 final_val = stk_map.get(state_var_stkoff)
                 if final_val is not None:
-                    results.append(
-                        HandlerPathResult(
-                            exit_block=curr_serial,
-                            final_state=final_val & 0xFFFFFFFF,
-                            state_writes=cur_writes,
-                            ordered_path=list(ordered_path),
+                    masked = final_val & 0xFFFFFFFF
+                    # --- Terminal classification ---
+                    # If the exit state is NOT a known handler and we
+                    # have enough context, resolve through the BST to
+                    # check whether it reaches cleanup/return.
+                    _is_terminal = False
+                    if (
+                        known_handler_states is not None
+                        and masked not in known_handler_states
+                        and flow_graph is not None
+                        and bst_root_serial is not None
+                    ):
+                        _resolved = resolve_exit_via_bst_default_snapshot(
+                            flow_graph, bst_root_serial, masked,
                         )
-                    )
+                        _sm_blks = state_machine_blocks or bst_node_blocks
+                        if _resolved is not None and _resolved not in _sm_blks:
+                            if can_reach_return_snapshot(flow_graph, _resolved):
+                                _is_terminal = True
+                                logger.info(
+                                    "  [BST-TERMINAL] entry=%d curr=%d "
+                                    "state=0x%08X resolved=blk[%d] → terminal",
+                                    entry_serial, curr_serial, masked,
+                                    _resolved,
+                                )
+
+                    if _is_terminal:
+                        results.append(
+                            HandlerPathResult(
+                                exit_block=curr_serial,
+                                final_state=None,
+                                state_writes=list(cur_writes),
+                                ordered_path=list(ordered_path),
+                            )
+                        )
+                    else:
+                        results.append(
+                            HandlerPathResult(
+                                exit_block=curr_serial,
+                                final_state=masked,
+                                state_writes=cur_writes,
+                                ordered_path=list(ordered_path),
+                            )
+                        )
             else:
                 new_ordered = ordered_path + [succ_serial]
                 queue.append(

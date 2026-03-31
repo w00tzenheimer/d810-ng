@@ -2729,6 +2729,9 @@ def build_live_linearized_state_dag_from_graph(
                 handler_entry_blocks.add(int(dispatcher_row.target))
     state_constants = set(transition_result.handlers.keys())
     real_handler_states = state_constants | set(report.handler_state_map.values())
+    # State machine blocks = BST nodes + all handler entry blocks.
+    _sm_blocks = set(report.bst_node_blocks) | handler_entry_blocks
+    _bst_root = report.dispatcher_entry_serial if report.dispatcher_entry_serial >= 0 else None
 
     for row in report.rows:
         incoming_state = row.state_const
@@ -2764,6 +2767,10 @@ def build_live_linearized_state_dag_from_graph(
                         set(report.bst_node_blocks),
                         state_var_stkoff,
                         handler_entry_blocks,
+                        flow_graph=flow_graph,
+                        known_handler_states=real_handler_states,
+                        bst_root_serial=_bst_root,
+                        state_machine_blocks=_sm_blocks,
                     )
                 )
                 if exact_paths:
@@ -2777,6 +2784,10 @@ def build_live_linearized_state_dag_from_graph(
                 set(report.bst_node_blocks),
                 state_var_stkoff,
                 handler_entry_blocks,
+                flow_graph=flow_graph,
+                known_handler_states=real_handler_states,
+                bst_root_serial=_bst_root,
+                state_machine_blocks=_sm_blocks,
             )
         )
         handler_paths_by_handler[row.handler_serial] = paths

@@ -465,6 +465,18 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if blk.serial not in analysis.dispatchers:
             return 0
 
+        # --- Terminal boundary guard ---
+        # Skip blocks that sit on the BST-to-cleanup boundary.  Resolving
+        # their predecessors causes terminal state writes to become redundant,
+        # which IDA's DCE then removes, destroying loop-termination
+        # information needed at later maturities (LVARS) to produce returns.
+        if blk.serial in self.flow_context.get_terminal_boundary_blocks():
+            if unflat_logger.info_on:
+                unflat_logger.info(
+                    "Skipping blk[%d]: terminal boundary block", blk.serial,
+                )
+            return 0
+
         # NOTE: For CONDITIONAL_CHAIN dispatchers (nested jnz/jz comparisons),
         # this rule uses dispatcher_info=None to avoid cascading unreachability.
         # See sort_predecessors() for details on why this is necessary.
