@@ -28,21 +28,34 @@ if TYPE_CHECKING:
 logger = getLogger("D810.flow.context")
 
 
-def _flowgraph_from_live_mba(mba: ida_hexrays.mba_t) -> "FlowGraph":
-    """Build a minimal FlowGraph from the live mba for terminal detection.
+def _flowgraph_from_live_mba(
+    mba: ida_hexrays.mba_t,
+) -> tuple["FlowGraph", set[int]]:
+    """Build a minimal FlowGraph + side-effect block set from the live mba.
 
-    Only captures block topology and tail instruction (opcode + right
-    operand) — enough for BST-walk and BLT_STOP reachability checks.
+    Returns (flow_graph, side_effect_blocks) where *side_effect_blocks*
+    contains serials of blocks with at least one instruction that has
+    side effects (calls, stores — via ``minsn_t.has_side_effects()``).
     """
     from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 
     blocks: dict[int, BlockSnapshot] = {}
+    side_effect_blocks: set[int] = set()
+
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         succs = list(blk.succset)
         preds = list(blk.predset)
 
-        # Capture only the tail instruction.
+        # Check side effects across ALL instructions.
+        insn = blk.head
+        while insn is not None:
+            if insn.has_side_effects():
+                side_effect_blocks.add(i)
+                break
+            insn = insn.next
+
+        # Capture only the tail instruction (for BST-walk opcode checks).
         insns: tuple[InsnSnapshot, ...] = ()
         tail = blk.tail
         if tail is not None:
@@ -74,7 +87,7 @@ def _flowgraph_from_live_mba(mba: ida_hexrays.mba_t) -> "FlowGraph":
             insn_snapshots=insns,
         )
 
-    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=mba.entry_ea)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=mba.entry_ea), side_effect_blocks
 
 
 @dataclass(frozen=True)
@@ -213,13 +226,13 @@ class FlowMaturityContext:
         )
 
         try:
-            flow_graph = _flowgraph_from_live_mba(self.mba)
+            flow_graph, side_effect_blocks = _flowgraph_from_live_mba(self.mba)
         except Exception:
             return self._terminal_boundary_blocks
 
         sm_blocks = set(analysis.dispatchers)
         self._terminal_boundary_blocks = detect_terminal_state_families_snapshot(
-            flow_graph, sm_blocks,
+            flow_graph, sm_blocks, side_effect_blocks,
         )
 
         logger.info(

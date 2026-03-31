@@ -320,7 +320,7 @@ def is_terminal_handler(
     """
     from collections import deque
 
-    BLT_STOP = 1  # ida_hexrays.BLT_STOP
+    BLT_STOP = ida_hexrays.BLT_STOP
 
     queue: deque[int] = deque([entry_serial])
     visited: set[int] = {entry_serial}

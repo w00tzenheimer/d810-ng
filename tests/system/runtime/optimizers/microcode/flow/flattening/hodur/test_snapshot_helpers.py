@@ -98,10 +98,10 @@ def _make_diamond_cfg_with_ret() -> FlowGraph:
 
 
 def _make_no_ret_cfg() -> FlowGraph:
-    """CFG with no m_ret blocks -- only a BLT_STOP with 0 successors."""
+    """CFG with no m_ret and no BLT_STOP — only regular blocks."""
     nop_insn = InsnSnapshot(opcode=M_NOP, ea=0x2000, operands=())
     blk0 = BlockSnapshot(
-        serial=0, block_type=1, succs=(1,), preds=(),
+        serial=0, block_type=2, succs=(1,), preds=(),  # BLT_1WAY, not BLT_STOP
         flags=0, start_ea=0x1000, insn_snapshots=(),
     )
     blk1 = BlockSnapshot(
