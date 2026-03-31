@@ -1,9 +1,4 @@
-"""Unit tests for Hodur strategy classes.
-
-These tests verify that all 7 strategy classes correctly implement the
-UnflatteningStrategy protocol and have unique names, without requiring an
-IDA environment.
-"""
+"""Unit tests for Hodur strategy classes."""
 from __future__ import annotations
 from types import SimpleNamespace
 
@@ -52,7 +47,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     ALL_STRATEGIES,
     AssignmentMapFallbackStrategy,
     ConditionalForkFallbackStrategy,
-    DirectHandlerLinearizationStrategy,
     EdgeSplitConflictResolutionStrategy,
     HiddenHandlerClosureStrategy,
     PredPatchFallbackStrategy,
@@ -146,14 +140,6 @@ def test_backward_pred_collects_known_transition_source_blocks():
 class TestStrategyProperties:
     """Verify name and family for each strategy."""
 
-    def test_direct_linearization_name(self):
-        s = DirectHandlerLinearizationStrategy()
-        assert s.name == "direct_handler_linearization"
-
-    def test_direct_linearization_family(self):
-        s = DirectHandlerLinearizationStrategy()
-        assert s.family == FAMILY_DIRECT
-
     def test_hidden_handler_closure_name(self):
         s = HiddenHandlerClosureStrategy()
         assert s.name == "hidden_handler_closure"
@@ -228,10 +214,6 @@ def _empty_snapshot(**kwargs) -> AnalysisSnapshot:
 
 class TestIsApplicableEmptySnapshot:
     """All strategies should return False on a completely empty snapshot."""
-
-    def test_direct_linearization_not_applicable(self):
-        s = DirectHandlerLinearizationStrategy()
-        assert not s.is_applicable(_empty_snapshot())
 
     def test_hidden_handler_closure_not_applicable(self):
         s = HiddenHandlerClosureStrategy()
@@ -2022,9 +2004,6 @@ class TestPlanEmptySnapshot:
             f"{strategy.name}.plan() should return None on empty snapshot"
         )
 
-    def test_direct_linearization_returns_none(self):
-        self._check_none(DirectHandlerLinearizationStrategy())
-
     def test_hidden_handler_closure_returns_none(self):
         self._check_none(HiddenHandlerClosureStrategy())
 
@@ -2084,14 +2063,6 @@ class TestEdgeSplitConstructor:
 
 class TestPrerequisites:
     """Verify prerequisite declarations for each strategy."""
-
-    def test_direct_linearization_no_prereqs(self):
-        s = DirectHandlerLinearizationStrategy()
-        # Build a minimal snapshot so plan() runs.
-        fragment = s.plan(_empty_snapshot())
-        # plan returns None on empty snapshot; check via PlanFragment when applicable.
-        # Constructing a PlanFragment manually to verify prereq field behaviour.
-        assert s.name == "direct_handler_linearization"
 
     def test_hidden_handler_closure_prereqs(self):
         # Construct a plan fragment explicitly to check prerequisites field.
