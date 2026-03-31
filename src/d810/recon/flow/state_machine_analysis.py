@@ -955,9 +955,7 @@ def detect_terminal_state_families_snapshot(
 
     # --- Step 2: reverse predecessor cone ---
     # Walk backwards from boundary blocks through dispatcher predecessors.
-    # Also include dispatcher blocks that are structurally interleaved with
-    # the cone (e.g. for-loop conditions between BST nodes) to avoid leaving
-    # the CFG in an inconsistent half-resolved state.
+    # --- Step 2: reverse predecessor cone ---
     cone = set(terminal_boundary)
     queue = list(terminal_boundary)
     while queue:
@@ -973,10 +971,13 @@ def detect_terminal_state_families_snapshot(
             cone.add(pred)
             queue.append(pred)
 
-    # If the cone reached a dispatcher root (a dispatcher block with no
-    # dispatcher predecessors), the terminal chain is the primary spine of
-    # the BST.  Protect all dispatcher blocks to avoid INTERR 50858 from
-    # partially resolving interleaved control-flow blocks (e.g. m_jge loops).
+    # If the cone reached a dispatcher root, the terminal chain is the
+    # primary spine of that root's component.  Expand the cone to cover
+    # ALL dispatcher blocks reachable from that root (forward BFS within
+    # dispatchers) to avoid INTERR 50858 from partially resolving
+    # interleaved control-flow blocks (e.g. m_jge loops).
+    # Only the triggering root's component is protected — unrelated
+    # dispatcher components are left alone.
     dispatcher_roots = {
         blk_id for blk_id in dispatcher_blocks
         if all(
@@ -985,13 +986,34 @@ def detect_terminal_state_families_snapshot(
                          if flow_graph.get_block(blk_id) is not None else ())
         )
     }
-    if dispatcher_roots & cone:
+    reached_roots = dispatcher_roots & cone
+    if reached_roots:
+        # Forward BFS from each reached root through ALL edges, but only
+        # collect dispatcher blocks.  This captures interleaved non-BST
+        # dispatcher blocks (e.g. for-loop conditions between BST nodes)
+        # that are reachable via handler body intermediates.
+        component: set[int] = set()
+        visited_comp: set[int] = set()
+        comp_queue = list(reached_roots)
+        while comp_queue:
+            s = comp_queue.pop(0)
+            if s in visited_comp:
+                continue
+            visited_comp.add(s)
+            if s in dispatcher_blocks:
+                component.add(s)
+            blk_s = flow_graph.get_block(s)
+            if blk_s is None:
+                continue
+            for succ in blk_s.succs:
+                if succ not in visited_comp:
+                    comp_queue.append(succ)
+        cone = component
         logger.info(
-            "[TERMINAL-CONE] cone reached dispatcher root(s) %s, "
-            "guarding all %d dispatcher blocks",
-            sorted(dispatcher_roots & cone), len(dispatcher_blocks),
+            "[TERMINAL-CONE] cone reached root(s) %s, guarding "
+            "component of %d dispatcher blocks (total dispatchers=%d)",
+            sorted(reached_roots), len(cone), len(dispatcher_blocks),
         )
-        cone = set(dispatcher_blocks)
 
     logger.info(
         "[TERMINAL-CONE] boundary=%s cone=%s (%d blocks)",

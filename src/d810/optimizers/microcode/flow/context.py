@@ -190,14 +190,14 @@ class FlowMaturityContext:
             )
             return None
 
-    def get_terminal_boundary_blocks(self) -> set[int]:
-        """Return BST comparison blocks on the terminal cleanup boundary.
+    def get_terminal_cone_blocks(self) -> set[int]:
+        """Return the terminal cone — dispatcher blocks that FixPred must skip.
 
-        Lazily computed from the dispatcher analysis.  If the BST's default
-        fallthrough reaches ``BLT_STOP``, the comparison blocks on that
-        boundary are returned.  :class:`FixPredCondJump` should avoid
-        resolving predecessors of these blocks so that terminal semantics
-        survive to later maturities.
+        Lazily computed from the dispatcher analysis.  Identifies the
+        reverse-predecessor cone of BST comparison blocks whose non-dispatcher
+        arm reaches ``BLT_STOP``.  If the cone reaches a dispatcher root,
+        it expands to cover that root's entire reachable component to avoid
+        INTERR 50858 from partial resolution.
         """
         if self._terminal_boundary_blocks is not None:
             return self._terminal_boundary_blocks
