@@ -1,12 +1,10 @@
-"""HiddenHandlerClosureStrategy — MERGED into DirectHandlerLinearizationStrategy.
+"""HiddenHandlerClosureStrategy — retired hidden-handler placeholder.
 
-The hidden handler fixpoint closure (Pass 2) has been merged into
-DirectHandlerLinearizationStrategy.plan() as of the hodur-strategy-refactor.
-This class is kept as a no-op so that the strategy registry does not break.
-
-The original heuristic (transition-map based) has been replaced by the exact
-port from commit 4313af46: a worklist/fixpoint DFS over bst_rootwalk_targets
-collected during Pass 1, using evaluate_handler_paths + resolve_target_via_bst.
+The old direct-linearization shell that used to own the hidden-handler
+fixpoint was deleted after the terminal-corridor harvest. This class remains
+as a no-op placeholder so the current experimental pipeline shape and
+historical strategy names stay stable while the live work continues to happen
+through reconstruction/LFG.
 """
 from __future__ import annotations
 
@@ -29,13 +27,7 @@ __all__ = ["HiddenHandlerClosureStrategy"]
 
 
 class HiddenHandlerClosureStrategy:
-    """No-op placeholder — hidden handler closure is now done inside DirectHandlerLinearizationStrategy.
-
-    The second pass (worklist/fixpoint closure over BST root-walk targets) was
-    merged into G1's plan() so that the same claimed_exits / claimed_edges
-    conflict-tracking state is shared across both passes.  Keeping this class
-    ensures the strategy registry and any prerequisite references remain intact.
-    """
+    """No-op placeholder for the retired hidden-handler closure phase."""
 
     @property
     def name(self) -> str:
@@ -48,7 +40,7 @@ class HiddenHandlerClosureStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Always returns False — work is done by DirectHandlerLinearizationStrategy.
+        """Always returns False.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
@@ -59,7 +51,7 @@ class HiddenHandlerClosureStrategy:
         return False
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
-        """Return None — no-op since Pass 2 is merged into G1.
+        """Return None — no-op placeholder.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.

@@ -7,40 +7,31 @@ objects describing CFG edits without mutating the microcode directly.
 
 Available strategies (in dependency order):
 
-1. :class:`DirectHandlerLinearizationStrategy` — BST-based goto-redirect,
-   family ``direct``.
-2. :class:`ValrangeResolutionStrategy` — IDA value-range fallback for
+1. :class:`ValrangeResolutionStrategy` — IDA value-range fallback for
    unresolved exits, family ``fallback``.
-3. :class:`HiddenHandlerClosureStrategy` — second-pass for BST root-walk
-   targets, family ``direct``.
-4. :class:`EdgeSplitConflictResolutionStrategy` — conflict-driven block
+2. :class:`HiddenHandlerClosureStrategy` — retired hidden-handler placeholder,
+   family ``direct``.
+3. :class:`EdgeSplitConflictResolutionStrategy` — conflict-driven block
    duplication, family ``direct``.
-5. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
+4. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
    family ``cleanup``.
-6. :class:`PrivateTerminalSuffixStrategy` — clone shared terminal suffix
-   per handler entry for ``suffix_ambiguous`` sites, family ``direct``.
-7. :class:`DirectTerminalLoweringStrategy` — per-anchor return value
-   materialization for ``needs_direct_lowering`` sites, family ``direct``.
-8. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
+5. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
    family ``fallback``.
-9. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
+6. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
    family ``fallback``.
-10. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
+7. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
     assignment-map redirects, family ``fallback``.
-11. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
+8. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
     blocks to eliminate structurer gotos, family ``cleanup``.
-12. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
+9. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
     in BLT_STOP predecessor return paths, family ``cleanup``.
-13. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
+10. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
     the dead state variable after linearization, family ``cleanup``.
-14. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
+11. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
     semantic handoff reconstruction, family ``direct``.
 """
 from __future__ import annotations
 
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_linearization import (
-    DirectHandlerLinearizationStrategy,
-)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
@@ -62,12 +53,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.assignment_map_fallback import (
     AssignmentMapFallbackStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.private_terminal_suffix import (
-    PrivateTerminalSuffixStrategy,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.direct_terminal_lowering import (
-    DirectTerminalLoweringStrategy,
-)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
 )
@@ -88,16 +73,13 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort
 )
 
 __all__ = [
-    "DirectHandlerLinearizationStrategy",
     "ValrangeResolutionStrategy",
     "HiddenHandlerClosureStrategy",
     "EdgeSplitConflictResolutionStrategy",
     "TerminalLoopCleanupStrategy",
-    "PrivateTerminalSuffixStrategy",
     "PredPatchFallbackStrategy",
     "ConditionalForkFallbackStrategy",
     "AssignmentMapFallbackStrategy",
-    "DirectTerminalLoweringStrategy",
     "DeadStateVariableEliminationStrategy",
     "InnerMergeDuplicationStrategy",
     "StateConstantReturnFixupStrategy",
@@ -126,13 +108,10 @@ ALL_STRATEGIES: list[type] = [
 
 # Legacy pipeline preserved for reference/fallback.
 LEGACY_STRATEGIES: list[type] = [
-    DirectHandlerLinearizationStrategy,
     ValrangeResolutionStrategy,
     HiddenHandlerClosureStrategy,
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
-    PrivateTerminalSuffixStrategy,
-    DirectTerminalLoweringStrategy,
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     AssignmentMapFallbackStrategy,
