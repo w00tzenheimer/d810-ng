@@ -31,9 +31,6 @@ import d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction import (
     StateWriteReconstructionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.backward_pred_resolution import (
-    _collect_known_transition_sources,
-)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -48,7 +45,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     AssignmentMapFallbackStrategy,
     ConditionalForkFallbackStrategy,
     EdgeSplitConflictResolutionStrategy,
-    HiddenHandlerClosureStrategy,
     PredPatchFallbackStrategy,
     TerminalLoopCleanupStrategy,
 )
@@ -99,37 +95,9 @@ def test_strategy_names_unique():
 
 
 def test_strategy_count():
-    """Experimental ALL_STRATEGIES currently contains 4 active strategies."""
-    assert len(ALL_STRATEGIES) == 4
+    """Experimental ALL_STRATEGIES currently contains 3 active strategies."""
+    assert len(ALL_STRATEGIES) == 3
     assert "linearized_flow_graph" not in {cls().name for cls in ALL_STRATEGIES}
-
-
-def test_backward_pred_collects_known_transition_source_blocks():
-    sm = DispatcherStateMachine(
-        mba=None,
-        transitions=[
-            StateTransition(
-                from_state=0x2315233C,
-                to_state=0x7FDCE054,
-                from_block=35,
-                is_conditional=False,
-            ),
-            StateTransition(
-                from_state=0x6D207773,
-                to_state=0x0B2FECE0,
-                from_block=48,
-                is_conditional=False,
-            ),
-            StateTransition(
-                from_state=0x42267E66,
-                to_state=None,
-                from_block=None,
-                is_conditional=False,
-            ),
-        ],
-    )
-
-    assert _collect_known_transition_sources(sm) == {35, 48}
 
 
 # ---------------------------------------------------------------------------
@@ -139,14 +107,6 @@ def test_backward_pred_collects_known_transition_source_blocks():
 
 class TestStrategyProperties:
     """Verify name and family for each strategy."""
-
-    def test_hidden_handler_closure_name(self):
-        s = HiddenHandlerClosureStrategy()
-        assert s.name == "hidden_handler_closure"
-
-    def test_hidden_handler_closure_family(self):
-        s = HiddenHandlerClosureStrategy()
-        assert s.family == FAMILY_DIRECT
 
     def test_edge_split_name(self):
         s = EdgeSplitConflictResolutionStrategy()
@@ -214,10 +174,6 @@ def _empty_snapshot(**kwargs) -> AnalysisSnapshot:
 
 class TestIsApplicableEmptySnapshot:
     """All strategies should return False on a completely empty snapshot."""
-
-    def test_hidden_handler_closure_not_applicable(self):
-        s = HiddenHandlerClosureStrategy()
-        assert not s.is_applicable(_empty_snapshot())
 
     def test_edge_split_not_applicable(self):
         s = EdgeSplitConflictResolutionStrategy()
@@ -2004,9 +1960,6 @@ class TestPlanEmptySnapshot:
             f"{strategy.name}.plan() should return None on empty snapshot"
         )
 
-    def test_hidden_handler_closure_returns_none(self):
-        self._check_none(HiddenHandlerClosureStrategy())
-
     def test_edge_split_returns_none(self):
         self._check_none(EdgeSplitConflictResolutionStrategy())
 
@@ -2063,21 +2016,6 @@ class TestEdgeSplitConstructor:
 
 class TestPrerequisites:
     """Verify prerequisite declarations for each strategy."""
-
-    def test_hidden_handler_closure_prereqs(self):
-        # Construct a plan fragment explicitly to check prerequisites field.
-        frag = PlanFragment(
-            strategy_name="hidden_handler_closure",
-            family=FAMILY_DIRECT,
-            modifications=[],
-            ownership=OwnershipScope(
-                blocks=frozenset(), edges=frozenset(), transitions=frozenset()
-            ),
-            prerequisites=["direct_handler_linearization"],
-            expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
-            risk_score=0.2,
-        )
-        assert "direct_handler_linearization" in frag.prerequisites
 
     def test_edge_split_no_prereqs_by_design(self):
         s = EdgeSplitConflictResolutionStrategy(conflict_blocks={1})
