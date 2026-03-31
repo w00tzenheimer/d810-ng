@@ -829,14 +829,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # Notify listeners that D810 just finished running for the previous
             # maturity level. Policy decisions (capture/logging/etc.) are handled
             # by subscribers in the manager layer.
-            if self.current_maturity is not None and self.event_emitter is not None:
-                self.event_emitter.emit(
-                    DecompilationEvent.POST_D810_CAPTURE,
-                    mba,
-                    int(self.current_maturity),
-                )
-
             # --- Diagnostic: post_d810 snapshot for the PREVIOUS maturity ---
+            _post_snap_id = None
             if self.current_maturity is not None:
                 try:
                     from d810.core.diag import get_diag_db
@@ -847,7 +841,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
                     if _diag_conn is not None:
                         _snap_blocks = mba_to_block_snapshots(mba)
-                        _snap_mba(
+                        _post_snap_id = _snap_mba(
                             _diag_conn,
                             _snap_blocks,
                             label=f"maturity_{_prev_mat_name}_post_d810",
@@ -857,6 +851,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         )
                 except Exception:
                     pass  # diagnostic, never gates decompilation
+
+            if self.current_maturity is not None and self.event_emitter is not None:
+                self.event_emitter.emit(
+                    DecompilationEvent.POST_D810_CAPTURE,
+                    mba,
+                    int(self.current_maturity),
+                    _post_snap_id,
+                )
 
             self.current_maturity = mba.maturity
             self._pipeline_just_fired = False

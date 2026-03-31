@@ -52,7 +52,15 @@ from d810.recon.flow.bst_analysis import (
     analyze_bst_dispatcher,
 )
 from d810.recon.flow.linearized_state_dag import (
+    BoundaryInlineMode,
+    LabelRenderMode,
+    ProgramCommentMode,
+    ProgramRenderStrategy,
+    RenderedProgramSnapshot,
+    RenderOrderStrategy,
+    build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
+    render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
@@ -61,6 +69,7 @@ from d810.recon.flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
 )
+from d810.hexrays.utils.pseudocode_render import render_block
 
 # -----------------------------------------------------------------------------
 # Configuration & Logging
@@ -1161,6 +1170,8 @@ def dump_linearized_dag(
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int] = None,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
     """Build and render the unified state-level DAG for a dispatcher."""
     dag = _build_live_linearized_state_dag(
@@ -1168,7 +1179,173 @@ def dump_linearized_dag(
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag(dag)
+    return render_linearized_state_dag(dag, order_strategy=order_strategy)
+
+
+def _build_block_payload_by_serial(
+    mba: "idaapi.mbl_array_t",
+) -> Dict[int, Tuple[str, ...]]:
+    block_payload_by_serial: Dict[int, Tuple[str, ...]] = {}
+    for block_serial in range(mba.qty):
+        try:
+            blk = mba.get_mblock(block_serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        try:
+            block_payload_by_serial[int(blk.serial)] = tuple(render_block(blk))
+        except Exception:
+            continue
+    return block_payload_by_serial
+
+
+def resolve_dispatcher_context_for_linearized_program(
+    mba: "idaapi.mbl_array_t",
+    *,
+    max_candidates: int = 24,
+    max_depth: int = 20,
+) -> tuple[int | None, int | None]:
+    """Best-effort dispatcher/state-var resolution for diagnostic rendering.
+
+    This is intentionally diagnostic-oriented and may be more expensive than
+    normal planning. It probes plausible conditional-root blocks and scores
+    ``analyze_bst_dispatcher()`` results, which is useful for post-D810
+    maturity captures where no live Hodur rule state is available.
+    """
+    qty = int(getattr(mba, "qty", 0) or 0)
+    if qty <= 0:
+        return None, None
+
+    candidates: list[tuple[int, int, int]] = []
+    for serial in range(qty):
+        blk = mba.get_mblock(serial)
+        if blk is None:
+            continue
+        nsucc = int(getattr(blk, "nsucc", lambda: 0)() if callable(getattr(blk, "nsucc", None)) else getattr(blk, "nsucc", 0) or 0)
+        npred = int(getattr(blk, "npred", lambda: 0)() if callable(getattr(blk, "npred", None)) else getattr(blk, "npred", 0) or 0)
+        if nsucc < 2:
+            continue
+        candidates.append((serial, npred, nsucc))
+
+    candidates.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    best: tuple[tuple[int, int, int, int], int | None, int] | None = None
+    for serial, npred, _nsucc in candidates[:max_candidates]:
+        detected, detected_lvar_idx = _detect_state_var_stkoff(mba, serial, diag=False)
+        if detected is None:
+            continue
+        try:
+            result = analyze_bst_dispatcher(
+                mba,
+                serial,
+                state_var_stkoff=detected,
+                state_var_lvar_idx=detected_lvar_idx,
+                max_depth=max_depth,
+            )
+        except Exception:
+            continue
+
+        exact_handlers = len(result.handler_state_map)
+        ranged_handlers = sum(
+            1 for handler in result.handler_range_map if handler not in result.handler_state_map
+        )
+        total_handlers = exact_handlers + ranged_handlers
+        if total_handlers <= 0:
+            continue
+        score = (
+            total_handlers,
+            1 if result.initial_state is not None else 0,
+            1 if result.pre_header_serial is not None else 0,
+            len(result.bst_node_blocks),
+        )
+        if best is None or score > best[0]:
+            best = (score, detected, serial)
+
+    if best is None:
+        return None, None
+    _, state_var_stkoff, dispatcher_serial = best
+    logger.debug(
+        "resolve_dispatcher_context_for_linearized_program: selected blk[%d] "
+        "stkoff=%s score=%s",
+        dispatcher_serial,
+        f"0x{state_var_stkoff:x}" if state_var_stkoff is not None else None,
+        best[0],
+    )
+    return dispatcher_serial, state_var_stkoff
+
+
+def build_live_linearized_program(
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int] = None,
+    *,
+    order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
+    program_strategy: ProgramRenderStrategy = ProgramRenderStrategy.LOCAL_SEGMENT_COLLAPSING,
+    label_render_mode: LabelRenderMode = LabelRenderMode.STATE_FAMILY,
+    boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
+    comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
+) -> RenderedProgramSnapshot:
+    """Build the linearized-program IR for a dispatcher."""
+    dag = _build_live_linearized_state_dag(
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+    )
+    block_payload_by_serial = _build_block_payload_by_serial(mba)
+    return build_linearized_state_program(
+        dag,
+        order_strategy=order_strategy,
+        program_strategy=program_strategy,
+        label_render_mode=label_render_mode,
+        boundary_inline_mode=boundary_inline_mode,
+        comment_mode=comment_mode,
+        block_payload_by_serial=block_payload_by_serial,
+    )
+
+
+def snapshot_linearized_program(
+    mba: "idaapi.mbl_array_t",
+    program: RenderedProgramSnapshot,
+) -> int | None:
+    """Persist a built linearized-program IR into the diag DB."""
+    try:
+        from d810.core.diag import get_diag_db
+        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+        from d810.core.diag.snapshot import snapshot_rendered_program
+        from d810.core.diag.snapshot import snapshot_mba
+
+        diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+        snapshot_row = (
+            diag_db.execute("SELECT MAX(id) FROM snapshots").fetchone()
+            if diag_db is not None
+            else None
+        )
+        snapshot_id = (
+            int(snapshot_row[0])
+            if snapshot_row is not None and snapshot_row[0] is not None
+            else None
+        )
+        if diag_db is not None and snapshot_id is None:
+            maturity_name = MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN")
+            snapshot_id = snapshot_mba(
+                diag_db,
+                mba_to_block_snapshots(mba),
+                label="render_dump",
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity=maturity_name,
+                phase="post_d810",
+            )
+        if diag_db is not None and snapshot_id is not None:
+            snapshot_rendered_program(diag_db, snapshot_id, program)
+            return snapshot_id
+    except Exception:
+        logger.debug("rendered program diag snapshot failed", exc_info=True)
+    return None
+
+
+def dump_linearized_program(program: RenderedProgramSnapshot) -> str:
+    """Render a built linearized-program IR to text."""
+    return render_linearized_state_program(program)
 
 
 def dump_linearized_dag_dot(

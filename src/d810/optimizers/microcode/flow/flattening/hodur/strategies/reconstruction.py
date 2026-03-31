@@ -12,13 +12,14 @@ rewrite that still removes the dispatcher handoff:
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import replace
 
 import ida_hexrays
 
 from d810.core import logging
 from d810.cfg.reconstruction_execution import (
+    apply_shared_group_reachability_fallback,
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
 )
@@ -245,16 +246,26 @@ class StateWriteReconstructionStrategy:
         for candidate in shared_result.accepted_candidates:
             _record_accept_metadata(
                 accepted_metadata,
-                replace(candidate, emission_mode="duplicate_and_redirect"),
+                replace(candidate, emission_mode=shared_result.emission_mode),
             )
-        logger.info(
-            "RECON DAG: duplicate-and-redirect %s preds=%s",
-            blk_label(mba, shared_block),
-            [
-                (blk_label(mba, pred), blk_label(mba, target))
-                for pred, target in shared_result.per_pred_targets
-            ],
-        )
+        if shared_result.emission_mode == "per_pred_redirect":
+            logger.info(
+                "RECON DAG: per-pred-redirect %s preds=%s (clone avoided)",
+                blk_label(mba, shared_block),
+                [
+                    (blk_label(mba, pred), blk_label(mba, target))
+                    for pred, target in shared_result.per_pred_targets
+                ],
+            )
+        else:
+            logger.info(
+                "RECON DAG: duplicate-and-redirect %s preds=%s",
+                blk_label(mba, shared_block),
+                [
+                    (blk_label(mba, pred), blk_label(mba, target))
+                    for pred, target in shared_result.per_pred_targets
+                ],
+            )
         return len(shared_result.accepted_candidates)
 
     def plan(self, snapshot):
@@ -361,6 +372,13 @@ class StateWriteReconstructionStrategy:
         owned_blocks: set[int] = set()
         owned_edges: set[tuple[int, int]] = set()
         accepted_metadata: list[dict[str, int | str | None]] = []
+        shared_group_candidates_by_block: dict[int, list[ReconstructionCandidate]] = defaultdict(list)
+        for candidate in raw_candidates:
+            if (
+                candidate.emission_mode not in {"conditional_arm", "direct"}
+                and candidate.first_shared_block is not None
+            ):
+                shared_group_candidates_by_block[int(candidate.first_shared_block)].append(candidate)
 
         if not raw_candidates:
             logger.info(
@@ -428,7 +446,52 @@ class StateWriteReconstructionStrategy:
                 for candidate in result.rejected_candidates
             )
 
-        for result in run.shared_group_results:
+        postprocess = execute_reconstruction_postprocess(
+            dag=dag,
+            corrected_dag=corrected_dag,
+            flow_graph=flow_graph,
+            modifications=modifications,
+            builder=builder,
+            dispatcher_region=dispatcher_region,
+            dispatcher_serial=dispatcher_serial,
+            bst_result=bst_result,
+            state_machine=sm,
+            state_var_stkoff=state_var_stkoff,
+            constant_result=constant_result,
+            node_by_key=node_by_key,
+            rejected_metadata=rejected_metadata,
+            owned_blocks=owned_blocks,
+            collect_entry_island_rescue_seeds=collect_entry_island_rescue_seeds,
+            collect_late_entry_island_diagnostics=collect_late_entry_island_diagnostics,
+            collect_late_entry_island_rescue_seeds=collect_late_entry_island_rescue_seeds,
+            collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
+            compute_reachable_blocks=compute_reachable_blocks,
+            classify_artifact_return_blocks=classify_artifact_return_blocks,
+            collect_common_return_corridor=collect_common_return_corridor,
+            collect_terminal_family_report=collect_terminal_family_report,
+        )
+        log_reconstruction_postprocess_result(
+            logger,
+            result=postprocess,
+            dag=dag,
+            mba=mba,
+        )
+        projected_flow_graph = postprocess.projected_flow_graph
+        residual_dispatcher_preds = postprocess.residual_dispatcher_preds
+        allow_post_apply_bst_cleanup = postprocess.allow_post_apply_bst_cleanup
+        post_apply_bst_cleanup_reason = postprocess.post_apply_bst_cleanup_reason
+        final_shared_group_results = apply_shared_group_reachability_fallback(
+            shared_group_results=run.shared_group_results,
+            shared_groups=shared_group_candidates_by_block,
+            flow_graph=flow_graph,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
+            compute_reachable_blocks=compute_reachable_blocks,
+        )
+
+        for result in final_shared_group_results:
             if result.rejected_candidates:
                 rejected_metadata.extend(
                     make_edge_metadata(
@@ -448,16 +511,26 @@ class StateWriteReconstructionStrategy:
             for candidate in result.accepted_candidates:
                 _record_accept_metadata(
                     accepted_metadata,
-                    replace(candidate, emission_mode="duplicate_and_redirect"),
+                    replace(candidate, emission_mode=result.emission_mode),
                 )
-            logger.info(
-                "RECON DAG: duplicate-and-redirect %s preds=%s",
-                blk_label(mba, result.shared_block),
-                [
-                    (blk_label(mba, pred), blk_label(mba, target))
-                    for pred, target in result.per_pred_targets
-                ],
-            )
+            if result.emission_mode == "per_pred_redirect":
+                logger.info(
+                    "RECON DAG: per-pred-redirect %s preds=%s (clone avoided)",
+                    blk_label(mba, result.shared_block),
+                    [
+                        (blk_label(mba, pred), blk_label(mba, target))
+                        for pred, target in result.per_pred_targets
+                    ],
+                )
+            else:
+                logger.info(
+                    "RECON DAG: duplicate-and-redirect %s preds=%s",
+                    blk_label(mba, result.shared_block),
+                    [
+                        (blk_label(mba, pred), blk_label(mba, target))
+                        for pred, target in result.per_pred_targets
+                    ],
+                )
 
         if not modifications:
             logger.info(
@@ -493,41 +566,6 @@ class StateWriteReconstructionStrategy:
                         "  edge_kind=%s rejection_reason=%s count=%d",
                         kind, reason, count,
                     )
-
-        postprocess = execute_reconstruction_postprocess(
-            dag=dag,
-            corrected_dag=corrected_dag,
-            flow_graph=flow_graph,
-            modifications=modifications,
-            builder=builder,
-            dispatcher_region=dispatcher_region,
-            dispatcher_serial=dispatcher_serial,
-            bst_result=bst_result,
-            state_machine=sm,
-            state_var_stkoff=state_var_stkoff,
-            constant_result=constant_result,
-            node_by_key=node_by_key,
-            rejected_metadata=rejected_metadata,
-            owned_blocks=owned_blocks,
-            collect_entry_island_rescue_seeds=collect_entry_island_rescue_seeds,
-            collect_late_entry_island_diagnostics=collect_late_entry_island_diagnostics,
-            collect_late_entry_island_rescue_seeds=collect_late_entry_island_rescue_seeds,
-            collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
-            compute_reachable_blocks=compute_reachable_blocks,
-            classify_artifact_return_blocks=classify_artifact_return_blocks,
-            collect_common_return_corridor=collect_common_return_corridor,
-            collect_terminal_family_report=collect_terminal_family_report,
-        )
-        log_reconstruction_postprocess_result(
-            logger,
-            result=postprocess,
-            dag=dag,
-            mba=mba,
-        )
-        projected_flow_graph = postprocess.projected_flow_graph
-        residual_dispatcher_preds = postprocess.residual_dispatcher_preds
-        allow_post_apply_bst_cleanup = postprocess.allow_post_apply_bst_cleanup
-        post_apply_bst_cleanup_reason = postprocess.post_apply_bst_cleanup_reason
 
         # Final guard: if no modifications after all emission phases, return None.
         if not modifications:
