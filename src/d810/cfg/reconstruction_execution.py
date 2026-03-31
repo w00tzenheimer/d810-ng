@@ -3,12 +3,21 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from d810.core import logging
+from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.cfg.plan import compile_patch_plan
 from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
 from d810.cfg.reconstruction_modification_planning import (
     plan_conditional_arm_reconstruction_modifications,
     plan_direct_reconstruction_modifications,
     plan_passthrough_reconstruction_modifications,
     plan_shared_group_reconstruction_modifications,
+)
+
+logger = logging.getLogger(
+    "D810.cfg.reconstruction_execution",
+    logging.DEBUG,
 )
 
 
@@ -33,6 +42,8 @@ class SharedGroupExecutionResult:
     accepted_candidates: tuple[object, ...]
     rejected_candidates: tuple[object, ...]
     rejection_reason: str | None
+    emission_mode: str | None = None
+    modifications: tuple[object, ...] = ()
     per_pred_targets: tuple[tuple[int, int], ...] = ()
 
 
@@ -56,6 +67,8 @@ def execute_shared_group_reconstruction(
     modifications: list,
     owned_blocks: set[int],
     owned_edges: set[tuple[int, int]],
+    force_clone: bool = False,
+    allow_divergent_per_pred_redirect: bool = False,
 ) -> SharedGroupExecutionResult:
     ordered_input_candidates = tuple(
         SharedGroupEmissionCandidate(
@@ -78,6 +91,8 @@ def execute_shared_group_reconstruction(
         shared_block=int(shared_block),
         ordered_path=tuple(int(serial) for serial in candidates[0].edge.ordered_path),
         shared_candidates=ordered_input_candidates,
+        force_clone=bool(force_clone),
+        allow_divergent_per_pred_redirect=bool(allow_divergent_per_pred_redirect),
     )
     if not shared_plan.accepted:
         return SharedGroupExecutionResult(
@@ -106,11 +121,113 @@ def execute_shared_group_reconstruction(
         accepted_candidates=ordered_candidates,
         rejected_candidates=(),
         rejection_reason=None,
+        emission_mode=shared_plan.emission_mode,
+        modifications=tuple(shared_plan.modifications),
         per_pred_targets=tuple(
             (int(pred), int(target))
             for pred, target in shared_plan.per_pred_targets
         ),
     )
+
+
+def _project_primary_reconstruction_flow_graph(base_flow_graph, modifications: list):
+    patch_plan = compile_patch_plan(modifications, base_flow_graph)
+    return project_post_state(base_flow_graph, patch_plan)
+
+
+def apply_shared_group_reachability_fallback(
+    *,
+    shared_group_results: tuple[SharedGroupExecutionResult, ...],
+    shared_groups: dict[int, list],
+    flow_graph,
+    modifications: list,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    handler_entries: tuple[int, ...],
+    compute_reachable_blocks,
+    allow_divergent_per_pred_redirect: bool = True,
+) -> tuple[SharedGroupExecutionResult, ...]:
+    has_per_pred_shared_groups = any(
+        result.emission_mode == "per_pred_redirect"
+        for result in shared_group_results
+    )
+    if (
+        not has_per_pred_shared_groups
+        or not handler_entries
+        or compute_reachable_blocks is None
+    ):
+        return shared_group_results
+
+    try:
+        projected_flow_graph = _project_primary_reconstruction_flow_graph(
+            flow_graph,
+            modifications,
+        )
+        reachable_blocks = compute_reachable_blocks(
+            projected_flow_graph,
+            start_serial=getattr(projected_flow_graph, "entry_serial", None),
+        )
+        reachable_blocks = set(reachable_blocks or ())
+        unreachable_handlers = {
+            int(entry) for entry in handler_entries if int(entry) not in reachable_blocks
+        }
+        if not unreachable_handlers:
+            return shared_group_results
+
+        logger.info(
+            "RECON: per-pred redirect made %d handler entries unreachable: %s "
+            "— falling back to DuplicateAndRedirect for all shared groups",
+            len(unreachable_handlers),
+            sorted(unreachable_handlers)[:10],
+        )
+
+        per_pred_shared = {
+            int(result.shared_block)
+            for result in shared_group_results
+            if result.emission_mode == "per_pred_redirect"
+        }
+        per_pred_preds: set[int] = set()
+        for shared_block in per_pred_shared:
+            for candidate in shared_groups.get(int(shared_block), ()):
+                if getattr(candidate, "via_pred", None) is not None:
+                    per_pred_preds.add(int(candidate.via_pred))
+
+        strip_serials = per_pred_shared | per_pred_preds
+        modifications[:] = [
+            modification
+            for modification in modifications
+            if not (
+                isinstance(modification, (RedirectGoto, RedirectBranch))
+                and getattr(modification, "from_serial", None) in strip_serials
+            )
+        ]
+
+        rebuilt_results: list[SharedGroupExecutionResult] = []
+        for result in shared_group_results:
+            if result.shared_block not in per_pred_shared:
+                rebuilt_results.append(result)
+                continue
+            rebuilt_results.append(
+                execute_shared_group_reconstruction(
+                    shared_block=int(result.shared_block),
+                    candidates=shared_groups[int(result.shared_block)],
+                    flow_graph=flow_graph,
+                    modifications=modifications,
+                    owned_blocks=owned_blocks,
+                    owned_edges=owned_edges,
+                    force_clone=True,
+                    allow_divergent_per_pred_redirect=bool(
+                        allow_divergent_per_pred_redirect
+                    ),
+                )
+            )
+        return tuple(rebuilt_results)
+    except Exception:
+        logger.debug(
+            "Projected reachability check failed (non-critical)",
+            exc_info=True,
+        )
+        return shared_group_results
 
 
 def execute_primary_reconstruction_modifications(
@@ -122,6 +239,7 @@ def execute_primary_reconstruction_modifications(
     modifications: list,
     owned_blocks: set[int],
     owned_edges: set[tuple[int, int]],
+    allow_divergent_shared_group_redirects: bool = True,
 ) -> PrimaryReconstructionExecutionResult:
     direct_groups: defaultdict[int, list] = defaultdict(list)
     shared_groups: defaultdict[int, list] = defaultdict(list)
@@ -252,6 +370,9 @@ def execute_primary_reconstruction_modifications(
                 modifications=modifications,
                 owned_blocks=owned_blocks,
                 owned_edges=owned_edges,
+                allow_divergent_per_pred_redirect=bool(
+                    allow_divergent_shared_group_redirects
+                ),
             )
         )
 
@@ -267,6 +388,7 @@ __all__ = [
     "DirectExecutionResult",
     "PrimaryReconstructionExecutionResult",
     "SharedGroupExecutionResult",
+    "apply_shared_group_reachability_fallback",
     "execute_primary_reconstruction_modifications",
     "execute_shared_group_reconstruction",
 ]

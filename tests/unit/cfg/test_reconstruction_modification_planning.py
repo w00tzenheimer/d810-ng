@@ -98,6 +98,32 @@ class TestPlanPassthroughReconstructionModifications:
 
 
 class TestPlanSharedGroupReconstructionModifications:
+    def test_returns_per_pred_redirect_when_all_preds_can_be_rewritten(self):
+        flow_graph = _DummyFlowGraph({
+            8: ((), (10,)),
+            9: ((), (10,)),
+            10: ((8, 9), (24,)),
+        })
+
+        plan = plan_shared_group_reconstruction_modifications(
+            flow_graph=flow_graph,
+            shared_block=10,
+            ordered_path=(10,),
+            shared_candidates=(
+                SharedGroupEmissionCandidate(via_pred=9, target_entry=24),
+                SharedGroupEmissionCandidate(via_pred=8, target_entry=30),
+            ),
+        )
+
+        assert plan.accepted
+        assert plan.emission_mode == "per_pred_redirect"
+        assert plan.ordered_via_preds == (8, 9)
+        assert plan.modifications == (
+            RedirectGoto(from_serial=9, old_target=10, new_target=24),
+            RedirectGoto(from_serial=8, old_target=10, new_target=30),
+            RedirectGoto(from_serial=10, old_target=24, new_target=24),
+        )
+
     def test_returns_duplicate_and_redirect(self):
         flow_graph = _DummyFlowGraph({
             10: ((8, 9), (2,)),
@@ -108,16 +134,43 @@ class TestPlanSharedGroupReconstructionModifications:
             shared_block=10,
             ordered_path=(10,),
             shared_candidates=(
-                SharedGroupEmissionCandidate(via_pred=9, target_entry=2),
+                SharedGroupEmissionCandidate(via_pred=9, target_entry=30),
                 SharedGroupEmissionCandidate(via_pred=8, target_entry=24),
             ),
         )
 
         assert plan.accepted
+        assert plan.emission_mode == "duplicate_and_redirect"
         assert plan.ordered_via_preds == (8, 9)
         assert plan.modifications == (
             DuplicateAndRedirect(
                 source_serial=10,
-                per_pred_targets=((9, 2), (8, 24)),
+                per_pred_targets=((8, 24), (9, 30)),
+            ),
+        )
+
+    def test_force_clone_emits_duplicate_and_redirect(self):
+        flow_graph = _DummyFlowGraph({
+            8: ((), (10,)),
+            11: ((), (10,)),
+            10: ((8, 11), (2,)),
+        })
+
+        plan = plan_shared_group_reconstruction_modifications(
+            flow_graph=flow_graph,
+            shared_block=10,
+            ordered_path=(8, 10),
+            shared_candidates=(
+                SharedGroupEmissionCandidate(via_pred=8, target_entry=24),
+            ),
+            force_clone=True,
+        )
+
+        assert plan.accepted
+        assert plan.emission_mode == "duplicate_and_redirect"
+        assert plan.modifications == (
+            DuplicateAndRedirect(
+                source_serial=10,
+                per_pred_targets=((11, 2), (8, 24)),
             ),
         )

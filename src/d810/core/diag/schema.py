@@ -138,6 +138,55 @@ CREATE TABLE IF NOT EXISTS block_classification (
     in_claimed    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (snapshot_id, serial)
 );
+
+-- Layer 3: Rendered linearized program IR
+
+CREATE TABLE IF NOT EXISTS rendered_programs (
+    snapshot_id          INTEGER NOT NULL REFERENCES snapshots(id),
+    variant_name         TEXT NOT NULL,
+    order_strategy       TEXT NOT NULL,
+    program_strategy     TEXT NOT NULL,
+    label_render_mode    TEXT NOT NULL,
+    boundary_inline_mode TEXT NOT NULL,
+    comment_mode         TEXT NOT NULL,
+    line_count           INTEGER NOT NULL,
+    node_count           INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, variant_name)
+);
+
+CREATE TABLE IF NOT EXISTS rendered_program_nodes (
+    snapshot_id     INTEGER NOT NULL,
+    variant_name    TEXT NOT NULL,
+    node_index      INTEGER NOT NULL,
+    label_text      TEXT NOT NULL,
+    node_kind       TEXT NOT NULL,
+    state_label     TEXT,
+    handler_serial  INTEGER,
+    entry_anchor    INTEGER,
+    label_num       INTEGER,
+    line_start      INTEGER NOT NULL,
+    line_end        INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, variant_name, node_index),
+    FOREIGN KEY (snapshot_id, variant_name)
+        REFERENCES rendered_programs(snapshot_id, variant_name)
+);
+
+CREATE TABLE IF NOT EXISTS rendered_program_lines (
+    snapshot_id     INTEGER NOT NULL,
+    variant_name    TEXT NOT NULL,
+    line_no         INTEGER NOT NULL,
+    node_index      INTEGER,
+    indent_level    INTEGER NOT NULL,
+    line_kind       TEXT NOT NULL,
+    target_label    TEXT,
+    text            TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, variant_name, line_no),
+    FOREIGN KEY (snapshot_id, variant_name)
+        REFERENCES rendered_programs(snapshot_id, variant_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rendered_program_lines_variant
+    ON rendered_program_lines(snapshot_id, variant_name, node_index, line_no);
 """
 
 

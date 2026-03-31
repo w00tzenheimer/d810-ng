@@ -31,6 +31,7 @@ class SharedGroupModificationPlan:
     modifications: tuple[GraphModification, ...] = ()
     ordered_via_preds: tuple[int, ...] = ()
     per_pred_targets: tuple[tuple[int, int], ...] = ()
+    emission_mode: str = ""
     rejection_reason: str = ""
 
 
@@ -196,6 +197,8 @@ def plan_shared_group_reconstruction_modifications(
     shared_block: int,
     ordered_path: tuple[int, ...],
     shared_candidates: tuple[SharedGroupEmissionCandidate, ...],
+    force_clone: bool = False,
+    allow_divergent_per_pred_redirect: bool = False,
 ) -> SharedGroupModificationPlan:
     shared_snapshot = flow_graph.get_block(int(shared_block))
     if shared_snapshot is None:
@@ -227,24 +230,84 @@ def plan_shared_group_reconstruction_modifications(
             ),
             rejection_reason=lowering_decision.rejection_reason,
         )
+
+    per_pred_targets = tuple(
+        (int(pred), int(target))
+        for pred, target in lowering_decision.per_pred_targets
+    )
+
+    distinct_targets = {int(target) for _, target in per_pred_targets}
+    allow_per_pred_redirect = (
+        bool(allow_divergent_per_pred_redirect)
+        or
+        len(distinct_targets) <= 1 or int(old_target) in distinct_targets
+    )
+
+    if not force_clone and allow_per_pred_redirect:
+        per_pred_modifications: list[GraphModification] = []
+        can_redirect_per_pred = True
+        for pred_serial, target_serial in per_pred_targets:
+            pred_block = flow_graph.get_block(int(pred_serial))
+            if pred_block is None:
+                can_redirect_per_pred = False
+                break
+            pred_succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+            if len(pred_succs) == 1:
+                per_pred_modifications.append(
+                    _goto_redirect_for_block(
+                        flow_graph,
+                        source_block=int(pred_serial),
+                        target_block=int(target_serial),
+                        old_target=int(pred_succs[0]),
+                    )
+                )
+                continue
+            if len(pred_succs) == 2 and int(shared_block) in pred_succs:
+                per_pred_modifications.append(
+                    _edge_redirect_for_block(
+                        flow_graph,
+                        source_block=int(pred_serial),
+                        target_block=int(target_serial),
+                        old_target=int(shared_block),
+                    )
+                )
+                continue
+            can_redirect_per_pred = False
+            break
+
+        if can_redirect_per_pred and per_pred_targets:
+            per_pred_modifications.append(
+                _goto_redirect_for_block(
+                    flow_graph,
+                    source_block=int(shared_block),
+                    target_block=int(per_pred_targets[0][1]),
+                    old_target=int(old_target),
+                )
+            )
+            return SharedGroupModificationPlan(
+                accepted=True,
+                modifications=tuple(per_pred_modifications),
+                ordered_via_preds=tuple(
+                    int(candidate.via_pred)
+                    for candidate in lowering_decision.ordered_candidates
+                ),
+                per_pred_targets=per_pred_targets,
+                emission_mode="per_pred_redirect",
+            )
+
     return SharedGroupModificationPlan(
         accepted=True,
         modifications=(
             DuplicateAndRedirect(
                 source_serial=int(shared_block),
-                per_pred_targets=tuple(
-                    (int(pred), int(target))
-                    for pred, target in lowering_decision.per_pred_targets
-                ),
+                per_pred_targets=per_pred_targets,
             ),
         ),
         ordered_via_preds=tuple(
             int(candidate.via_pred) for candidate in lowering_decision.ordered_candidates
         ),
-        per_pred_targets=tuple(
-            (int(pred), int(target))
-            for pred, target in lowering_decision.per_pred_targets
-        ),
+        per_pred_targets=per_pred_targets,
+        emission_mode="duplicate_and_redirect",
     )
 
 

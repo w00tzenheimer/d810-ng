@@ -1272,12 +1272,11 @@ def test_state_write_reconstruction_rebuilds_shared_suffix_via_duplication(monke
 
     assert fragment is not None
     assert fragment.modifications == [
-        DuplicateAndRedirect(
-            source_serial=10,
-            per_pred_targets=((11, 2), (9, 24)),
-        )
+        RedirectGoto(from_serial=11, old_target=10, new_target=2),
+        RedirectGoto(from_serial=9, old_target=10, new_target=24),
+        RedirectGoto(from_serial=10, old_target=2, new_target=2),
     ]
-    assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "duplicate_and_redirect"
+    assert fragment.metadata["reconstruction_sites"][0]["emission_mode"] == "per_pred_redirect"
 
 
 def test_state_write_reconstruction_groups_multi_pred_shared_tail_duplication(
@@ -1683,14 +1682,13 @@ def test_state_write_reconstruction_groups_same_target_two_pred_shared_tail_dupl
 
     assert fragment is not None
     assert fragment.modifications == [
-        DuplicateAndRedirect(
-            source_serial=10,
-            per_pred_targets=((9, 24), (11, 24)),
-        )
+        RedirectGoto(from_serial=9, old_target=10, new_target=24),
+        RedirectGoto(from_serial=11, old_target=10, new_target=24),
+        RedirectGoto(from_serial=10, old_target=2, new_target=24),
     ]
     assert {
         site["emission_mode"] for site in fragment.metadata["reconstruction_sites"]
-    } == {"duplicate_and_redirect"}
+    } == {"per_pred_redirect"}
 
 
 def test_state_write_reconstruction_rebuilds_conditional_merge_corridor(monkeypatch):
@@ -1806,10 +1804,9 @@ def test_state_write_reconstruction_rebuilds_conditional_merge_corridor(monkeypa
 
     assert fragment is not None
     assert fragment.modifications == [
-        DuplicateAndRedirect(
-            source_serial=70,
-            per_pred_targets=((61, 2), (60, 24)),
-        )
+        RedirectGoto(from_serial=61, old_target=70, new_target=2),
+        RedirectGoto(from_serial=60, old_target=70, new_target=24),
+        RedirectGoto(from_serial=70, old_target=2, new_target=2),
     ]
 
 
