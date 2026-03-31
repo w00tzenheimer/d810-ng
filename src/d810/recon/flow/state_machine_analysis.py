@@ -583,7 +583,7 @@ def run_snapshot_constant_fixpoint(
     )
 
 
-_BLT_STOP = 1  # ida_hexrays.BLT_STOP (BLT_NONE=0, BLT_STOP=1, BLT_1WAY=2, ...)
+_BLT_STOP = ida_hexrays.BLT_STOP
 
 
 def can_reach_return_snapshot(
@@ -917,19 +917,23 @@ def resolve_exit_via_bst_default_snapshot(
 def detect_terminal_state_families_snapshot(
     flow_graph: FlowGraph,
     dispatcher_blocks: set[int],
+    side_effect_blocks: set[int] | None = None,
 ) -> set[int]:
     """Identify the **terminal cone** — dispatcher blocks whose resolution
     would collapse branches feeding the terminal cleanup/return path.
 
     1. Find **boundary blocks**: dispatcher blocks with a non-dispatcher arm
-       that reaches ``BLT_STOP`` via restricted BFS.
+       that reaches ``BLT_STOP`` via restricted BFS **and** the path
+       passes through at least one block with side effects (calls, stores).
+       This distinguishes cleanup regions (printf, CloseHandle) from simple
+       BST-to-exit fallthroughs.
     2. Expand to the **reverse predecessor cone**: walk backwards through
-       dispatcher-block predecessors of the boundary.  Any dispatcher block
-       that can reach a boundary block only through other dispatcher blocks
-       is part of the cone.
+       dispatcher-block predecessors of the boundary.
 
     FixPredCondJump should skip patches for blocks in this cone.
     """
+    _se = side_effect_blocks or set()
+
     # --- Step 1: find direct boundary blocks ---
     terminal_boundary: set[int] = set()
 
@@ -941,11 +945,13 @@ def detect_terminal_state_families_snapshot(
         for arm in blk_snap.succs:
             if arm in dispatcher_blocks:
                 continue
-            if _restricted_reach_stop(flow_graph, arm, dispatcher_blocks):
+            if _restricted_reach_stop_with_side_effects(
+                flow_graph, arm, dispatcher_blocks, _se,
+            ):
                 terminal_boundary.add(serial)
                 logger.info(
                     "[TERMINAL-FAMILY] blk[%d] arm→blk[%d] reaches "
-                    "BLT_STOP — terminal boundary",
+                    "BLT_STOP via side-effecting cleanup — terminal boundary",
                     serial, arm,
                 )
                 break
@@ -1022,6 +1028,43 @@ def detect_terminal_state_families_snapshot(
         len(cone),
     )
     return cone
+
+
+def _restricted_reach_stop_with_side_effects(
+    flow_graph: FlowGraph,
+    start: int,
+    forbidden: set[int],
+    side_effect_blocks: set[int],
+    max_depth: int = 80,
+) -> bool:
+    """BFS from *start* to BLT_STOP, requiring side effects on the path.
+
+    Returns True only if a path to BLT_STOP exists AND at least one block
+    on the path has side effects (calls, stores).  This distinguishes
+    cleanup regions (hodur_func: printf, CloseHandle) from simple
+    BST-to-exit fallthroughs (direct return, no side effects).
+    """
+    visited: set[int] = set()
+    queue = [start]
+    found_stop = False
+    found_side_effect = False
+    while queue and len(visited) < max_depth:
+        serial = queue.pop(0)
+        if serial in visited or serial in forbidden:
+            continue
+        visited.add(serial)
+        blk = flow_graph.get_block(serial)
+        if blk is None:
+            continue
+        if serial in side_effect_blocks:
+            found_side_effect = True
+        if blk.block_type == _BLT_STOP:
+            found_stop = True
+            break
+        for succ in blk.succs:
+            if succ not in visited and succ not in forbidden:
+                queue.append(succ)
+    return found_stop and found_side_effect
 
 
 def _restricted_reach_stop(

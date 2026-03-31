@@ -15,6 +15,35 @@ BLT_2WAY = 3
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _make_deep_cleanup_path(
+    start: int,
+    stop_serial: int,
+    parent_serial: int,
+) -> list[BlockSnapshot]:
+    """Build a chain of 7 blocks from *start* to BLT_STOP at *stop_serial*.
+
+    Returns blocks: start, start+1, ..., start+5, stop_serial.
+    The chain is deep enough (>=6) to pass the _MIN_CLEANUP_DEPTH filter.
+    *parent_serial* is the predecessor of the first block.
+    """
+    chain: list[BlockSnapshot] = []
+    for i in range(6):
+        s = start + i
+        nxt = start + i + 1 if i < 5 else stop_serial
+        pred = (parent_serial,) if i == 0 else (start + i - 1,)
+        chain.append(BlockSnapshot(
+            serial=s, block_type=BLT_1WAY, succs=(nxt,), preds=pred,
+            flags=0, start_ea=0x2000 + s * 0x10,
+            insn_snapshots=(InsnSnapshot(opcode=0x01, ea=0x2000 + s * 0x10, operands=()),),
+        ))
+    chain.append(BlockSnapshot(
+        serial=stop_serial, block_type=BLT_STOP, succs=(), preds=(start + 5,),
+        flags=0, start_ea=0x2000 + stop_serial * 0x10,
+        insn_snapshots=(),
+    ))
+    return chain
+
+
 def _make_insn(opcode: int = 0x01, ea: int = 0x1000) -> InsnSnapshot:
     """Minimal instruction snapshot."""
     return InsnSnapshot(opcode=opcode, ea=ea, operands=())
@@ -53,11 +82,17 @@ class TestDetectTerminalStateFamilies:
     """Tests targeting ``detect_terminal_state_families_snapshot``."""
 
     @staticmethod
-    def _detect(flow_graph: FlowGraph, dispatchers: set[int]) -> set[int]:
+    def _detect(
+        flow_graph: FlowGraph,
+        dispatchers: set[int],
+        side_effect_blocks: set[int] | None = None,
+    ) -> set[int]:
         from d810.recon.flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )
-        return detect_terminal_state_families_snapshot(flow_graph, dispatchers)
+        return detect_terminal_state_families_snapshot(
+            flow_graph, dispatchers, side_effect_blocks,
+        )
 
     def test_empty_cone_no_dispatchers(self) -> None:
         """Empty dispatcher set -> empty result."""
@@ -80,19 +115,15 @@ class TestDetectTerminalStateFamilies:
         assert result == set()
 
     def test_single_boundary_block(self) -> None:
-        """One dispatcher with a non-dispatcher arm reaching BLT_STOP."""
+        """One dispatcher with a non-dispatcher arm reaching BLT_STOP (deep)."""
         #  0 (dispatcher, 2-way) -> 1 (dispatcher), 2 (non-dispatcher)
-        #  2 -> 3 (BLT_STOP)
+        #  2 -> deep cleanup chain (>=6 blocks) -> BLT_STOP
         blk0 = _make_block(0, BLT_2WAY, succs=(1, 2), preds=())
         blk1 = _make_block(1, BLT_2WAY, succs=(), preds=(0,))
-        blk2 = _make_block(2, BLT_1WAY, succs=(3,), preds=(0,))
-        blk3 = _make_block(3, BLT_STOP, succs=(), preds=(2,))
-        fg = _make_flowgraph([blk0, blk1, blk2, blk3], entry=0)
+        cleanup = _make_deep_cleanup_path(start=2, stop_serial=99, parent_serial=0)
+        fg = _make_flowgraph([blk0, blk1] + cleanup, entry=0)
 
-        result = self._detect(fg, {0, 1})
-        # blk[0] has a non-dispatcher arm (2) that reaches BLT_STOP.
-        # blk[1] has no successors at all, so it cannot be a boundary.
-        # Majority check: cone={0} is 1/2 of dispatchers -> not >half -> no escalation.
+        result = self._detect(fg, {0, 1}, side_effect_blocks={3})
         assert 0 in result
 
     def test_reverse_predecessor_cone(self) -> None:
@@ -106,16 +137,15 @@ class TestDetectTerminalStateFamilies:
         blk13 = _make_block(13, BLT_1WAY, succs=(), preds=(10,))
         blk14 = _make_block(14, BLT_1WAY, succs=(), preds=(11,))
         blk15 = _make_block(15, BLT_1WAY, succs=(), preds=(12,))
-        # Terminal path from blk12's non-dispatcher arm.
-        blk20 = _make_block(20, BLT_1WAY, succs=(30,), preds=(12,))
-        blk30 = _make_block(30, BLT_STOP, succs=(), preds=(20,))
+        # Deep terminal path from blk12's non-dispatcher arm.
+        cleanup = _make_deep_cleanup_path(start=20, stop_serial=99, parent_serial=12)
         fg = _make_flowgraph(
-            [blk10, blk11, blk12, blk13, blk14, blk15, blk20, blk30],
+            [blk10, blk11, blk12, blk13, blk14, blk15] + cleanup,
             entry=10,
         )
 
         dispatchers = {10, 11, 12}
-        result = self._detect(fg, dispatchers)
+        result = self._detect(fg, dispatchers, side_effect_blocks={21})
         # Boundary: blk12 (arm 20 reaches BLT_STOP).
         # Reverse cone: 12's pred 11 is dispatcher -> add 11; 11's pred 10 is dispatcher -> add 10.
         # Cone = {10, 11, 12} = all 3 dispatchers.
@@ -142,18 +172,17 @@ class TestDetectTerminalStateFamilies:
         blk14 = _make_block(14, BLT_1WAY, succs=(), preds=(3,))
         blk15 = _make_block(15, BLT_1WAY, succs=(), preds=(4,))
         blk16 = _make_block(16, BLT_1WAY, succs=(), preds=(4,))
-        # Terminal path from blk2's arm.
-        blk20 = _make_block(20, BLT_1WAY, succs=(30,), preds=(2,))
-        blk30 = _make_block(30, BLT_STOP, succs=(), preds=(20,))
+        # Deep terminal path from blk2's arm.
+        cleanup = _make_deep_cleanup_path(start=20, stop_serial=99, parent_serial=2)
         fg = _make_flowgraph(
             [blk0, blk1, blk2, blk3, blk4,
-             blk10, blk11, blk12, blk13, blk14, blk15, blk16,
-             blk20, blk30],
+             blk10, blk11, blk12, blk13, blk14, blk15, blk16]
+            + cleanup,
             entry=0,
         )
 
         dispatchers = {0, 1, 2, 3, 4}
-        result = self._detect(fg, dispatchers)
+        result = self._detect(fg, dispatchers, side_effect_blocks={21})
         # Cone = {0, 1, 2}. Root 0 is in cone → escalate to root 0's
         # component {0, 1, 2}. Blocks 3 and 4 are unreachable from root 0.
         assert result == {0, 1, 2}
@@ -177,18 +206,17 @@ class TestDetectTerminalStateFamilies:
         blk111 = _make_block(111, BLT_1WAY, succs=(), preds=(101,))
         blk112 = _make_block(112, BLT_1WAY, succs=(), preds=(102,))
         blk113 = _make_block(113, BLT_1WAY, succs=(), preds=(102,))
-        # Terminal path from component A.
-        blk50 = _make_block(50, BLT_1WAY, succs=(60,), preds=(2,))
-        blk60 = _make_block(60, BLT_STOP, succs=(), preds=(50,))
+        # Deep terminal path from component A.
+        cleanup = _make_deep_cleanup_path(start=50, stop_serial=99, parent_serial=2)
 
         fg = _make_flowgraph(
             [blk0, blk1, blk2, blk100, blk101, blk102,
-             blk10, blk11, blk12, blk110, blk111, blk112, blk113,
-             blk50, blk60],
+             blk10, blk11, blk12, blk110, blk111, blk112, blk113]
+            + cleanup,
             entry=0,
         )
         dispatchers = {0, 1, 2, 100, 101, 102}
-        result = self._detect(fg, dispatchers)
+        result = self._detect(fg, dispatchers, side_effect_blocks={51})
         # Component A (root 0): {0, 1, 2} protected.
         # Component B (root 100): not in cone, not protected.
         assert result == {0, 1, 2}
@@ -210,18 +238,17 @@ class TestDetectTerminalStateFamilies:
         blk101 = _make_block(101, BLT_1WAY, succs=(), preds=(11,))
         blk102 = _make_block(102, BLT_1WAY, succs=(), preds=(20,))
         blk103 = _make_block(103, BLT_1WAY, succs=(), preds=(20,))
-        # Terminal path from blk12's arm 50.
-        blk50 = _make_block(50, BLT_1WAY, succs=(60,), preds=(12,))
-        blk60 = _make_block(60, BLT_STOP, succs=(), preds=(50,))
+        # Deep terminal path from blk12's arm 50.
+        cleanup_blks = _make_deep_cleanup_path(start=50, stop_serial=99, parent_serial=12)
 
         fg = _make_flowgraph(
             [blk10, blk11, blk12, blk20,
              blk100, blk101, blk102, blk103,
-             blk50, blk60],
+             ] + cleanup_blks,
             entry=10,
         )
         dispatchers = {10, 11, 12, 20}
-        result = self._detect(fg, dispatchers)
+        result = self._detect(fg, dispatchers, side_effect_blocks={51})
         # Cone = {10, 11, 12}. No dispatcher root in cone (all have
         # dispatcher preds within the cycle). blk20 is a root but not
         # in cone. No escalation → only cycle blocks returned.

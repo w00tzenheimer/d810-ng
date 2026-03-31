@@ -37,14 +37,14 @@ from d810.core.logging import getLogger
 
 logger = getLogger(__name__)
 
-_BLT_NONE = int(getattr(ida_hexrays, "BLT_NONE", 0))
-_BLT_STOP = int(getattr(ida_hexrays, "BLT_STOP", 1))
-_BLT_0WAY = int(getattr(ida_hexrays, "BLT_0WAY", 2))
-_BLT_1WAY = int(getattr(ida_hexrays, "BLT_1WAY", 3))
-_BLT_2WAY = int(getattr(ida_hexrays, "BLT_2WAY", 4))
-_M_NOP = int(getattr(ida_hexrays, "m_nop", 0))
-_M_GOTO = int(getattr(ida_hexrays, "m_goto", 2))
-_M_JCND = int(getattr(ida_hexrays, "m_jcnd", 3))
+_BLT_NONE = ida_hexrays.BLT_NONE
+_BLT_STOP = ida_hexrays.BLT_STOP
+_BLT_0WAY = ida_hexrays.BLT_0WAY
+_BLT_1WAY = ida_hexrays.BLT_1WAY
+_BLT_2WAY = ida_hexrays.BLT_2WAY
+_M_NOP = ida_hexrays.m_nop
+_M_GOTO = ida_hexrays.m_goto
+_M_JCND = ida_hexrays.m_jcnd
 
 
 @dataclass
