@@ -1114,7 +1114,7 @@
     },
     {
       "name": "HodurUnflattener",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {
