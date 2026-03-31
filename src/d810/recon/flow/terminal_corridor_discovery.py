@@ -4,14 +4,13 @@ import enum
 from dataclasses import dataclass
 
 import ida_hexrays
-from d810.core.typing import TYPE_CHECKING
-
-from d810.cfg.flow.terminal_return import (
+from d810.core.terminal_frontier import (
     TerminalCfgSuffixFrontier,
     TerminalLoweringAction,
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
+from d810.core.typing import TYPE_CHECKING
 from d810.recon.flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
