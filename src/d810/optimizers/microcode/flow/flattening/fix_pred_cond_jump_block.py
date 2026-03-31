@@ -470,7 +470,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         # their predecessors causes terminal state writes to become redundant,
         # which IDA's DCE then removes, destroying loop-termination
         # information needed at later maturities (LVARS) to produce returns.
-        if blk.serial in self.flow_context.get_terminal_boundary_blocks():
+        if blk.serial in self.flow_context.get_terminal_cone_blocks():
             if unflat_logger.info_on:
                 unflat_logger.info(
                     "Skipping blk[%d]: terminal boundary block", blk.serial,

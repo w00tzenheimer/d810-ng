@@ -123,11 +123,12 @@ class TestDetectTerminalStateFamilies:
         assert result == {10, 11, 12}
 
     def test_root_reach_escalation(self) -> None:
-        """When cone reaches a dispatcher root, result includes ALL dispatchers."""
+        """When cone reaches a dispatcher root, result includes the root's component."""
         # 5 dispatchers: 0, 1, 2, 3, 4.
         # Chain 0->1->2 forms cone (2 is boundary, BFS reaches BLT_STOP).
         # 0 has no dispatcher predecessors → it's a dispatcher root.
-        # Cone = {0, 1, 2} contains root 0 → escalate to all 5.
+        # Cone = {0, 1, 2} contains root 0 → escalate to root 0's component.
+        # 3 and 4 are in a separate component (not reachable from root 0).
         blk0 = _make_block(0, BLT_2WAY, succs=(1, 10), preds=())
         blk1 = _make_block(1, BLT_2WAY, succs=(2, 11), preds=(0,))
         blk2 = _make_block(2, BLT_2WAY, succs=(12, 20), preds=(1,))
@@ -153,8 +154,44 @@ class TestDetectTerminalStateFamilies:
 
         dispatchers = {0, 1, 2, 3, 4}
         result = self._detect(fg, dispatchers)
-        # Cone = {0, 1, 2}. Root 0 is in cone → escalate to all 5.
-        assert result == dispatchers
+        # Cone = {0, 1, 2}. Root 0 is in cone → escalate to root 0's
+        # component {0, 1, 2}. Blocks 3 and 4 are unreachable from root 0.
+        assert result == {0, 1, 2}
+
+    def test_two_components_only_terminal_protected(self) -> None:
+        """Two root components — only the one with the terminal cone is protected."""
+        # Component A: root 0 → 1 → 2 (boundary, arm 50 reaches BLT_STOP).
+        # Component B: root 100 → 101 → 102 (no terminal arm).
+        # Only component A should be in the result.
+        blk0 = _make_block(0, BLT_2WAY, succs=(1, 10), preds=())
+        blk1 = _make_block(1, BLT_2WAY, succs=(2, 11), preds=(0,))
+        blk2 = _make_block(2, BLT_2WAY, succs=(12, 50), preds=(1,))
+        blk100 = _make_block(100, BLT_2WAY, succs=(101, 110), preds=())
+        blk101 = _make_block(101, BLT_2WAY, succs=(102, 111), preds=(100,))
+        blk102 = _make_block(102, BLT_2WAY, succs=(112, 113), preds=(101,))
+        # Non-dispatcher leaves.
+        blk10 = _make_block(10, BLT_1WAY, succs=(), preds=(0,))
+        blk11 = _make_block(11, BLT_1WAY, succs=(), preds=(1,))
+        blk12 = _make_block(12, BLT_1WAY, succs=(), preds=(2,))
+        blk110 = _make_block(110, BLT_1WAY, succs=(), preds=(100,))
+        blk111 = _make_block(111, BLT_1WAY, succs=(), preds=(101,))
+        blk112 = _make_block(112, BLT_1WAY, succs=(), preds=(102,))
+        blk113 = _make_block(113, BLT_1WAY, succs=(), preds=(102,))
+        # Terminal path from component A.
+        blk50 = _make_block(50, BLT_1WAY, succs=(60,), preds=(2,))
+        blk60 = _make_block(60, BLT_STOP, succs=(), preds=(50,))
+
+        fg = _make_flowgraph(
+            [blk0, blk1, blk2, blk100, blk101, blk102,
+             blk10, blk11, blk12, blk110, blk111, blk112, blk113,
+             blk50, blk60],
+            entry=0,
+        )
+        dispatchers = {0, 1, 2, 100, 101, 102}
+        result = self._detect(fg, dispatchers)
+        # Component A (root 0): {0, 1, 2} protected.
+        # Component B (root 100): not in cone, not protected.
+        assert result == {0, 1, 2}
 
     def test_no_root_reach_no_escalation(self) -> None:
         """When the cone does NOT reach a dispatcher root, no escalation."""
