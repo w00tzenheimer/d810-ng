@@ -13,6 +13,12 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.cfg.flow.terminal_frontier import (
+    TerminalCfgSuffixFrontier,
+    TerminalLoweringAction,
+    classify_cfg_suffix_action,
+    compute_terminal_cfg_suffix_frontier,
+)
 from d810.cfg.flow.graph_checks import prove_terminal_sink
 from d810.recon.flow.bst_analysis import (
     find_bst_default_block_snapshot,
@@ -41,7 +47,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.cfg.flow.terminal_return import TerminalLoweringAction
 from d810.cfg.terminal_corridor_planning import (
     CarrierBucket,
     SuffixGroupDecision,

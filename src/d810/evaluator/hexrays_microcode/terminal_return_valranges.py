@@ -12,13 +12,15 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.cfg.flow.terminal_return import (
+from d810.cfg.flow.terminal_frontier import (
     TerminalCfgSuffixFrontier,
     TerminalLoweringAction,
     TerminalSemanticLoweringFrontier,
+    compute_terminal_cfg_suffix_frontier,
+)
+from d810.cfg.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSourceKind,
-    compute_terminal_cfg_suffix_frontier,
 )
 from d810.core.typing import Iterable, Optional
 from d810.evaluator.hexrays_microcode.valranges import (

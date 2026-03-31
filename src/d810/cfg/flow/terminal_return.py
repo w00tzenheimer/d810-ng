@@ -1,21 +1,8 @@
-"""Terminal return audit types and compatibility re-exports.
-
-The CFG suffix frontier model now lives in ``d810.core.terminal_frontier`` so
-both recon and cfg can consume it without a ``recon <- cfg`` dependency. This
-module keeps the audit report types plus re-exports for existing callers.
-"""
+"""Terminal return audit types."""
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-
-from d810.core.terminal_frontier import (
-    TerminalCfgSuffixFrontier,
-    TerminalLoweringAction,
-    TerminalSemanticLoweringFrontier,
-    classify_cfg_suffix_action,
-    compute_terminal_cfg_suffix_frontier,
-)
 
 
 class TerminalReturnSourceKind(str, enum.Enum):
@@ -99,9 +86,4 @@ __all__ = [
     "TerminalReturnAuditReport",
     "TerminalReturnSiteAudit",
     "TerminalReturnSourceKind",
-    "TerminalLoweringAction",
-    "TerminalCfgSuffixFrontier",
-    "TerminalSemanticLoweringFrontier",
-    "classify_cfg_suffix_action",
-    "compute_terminal_cfg_suffix_frontier",
 ]

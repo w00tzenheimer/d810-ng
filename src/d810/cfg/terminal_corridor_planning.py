@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from d810.core.terminal_frontier import TerminalLoweringAction
+from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
 
 
 class CarrierBucket(str, enum.Enum):

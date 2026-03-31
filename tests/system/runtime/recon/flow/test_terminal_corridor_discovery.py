@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.core.terminal_frontier import TerminalLoweringAction
+from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
 from d810.recon.flow.terminal_corridor_discovery import (
     CarrierSourceKind,

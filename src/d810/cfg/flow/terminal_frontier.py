@@ -1,9 +1,4 @@
-"""Terminal suffix frontier models and CFG-only lowering heuristics.
-
-These helpers are pure value objects and simple graph walkers with no IDA or
-layer-specific dependencies. They live in ``d810.core`` so both recon and cfg
-can consume them without creating a ``recon <- cfg`` dependency.
-"""
+"""Terminal suffix frontier models and CFG-only lowering heuristics."""
 from __future__ import annotations
 
 import enum

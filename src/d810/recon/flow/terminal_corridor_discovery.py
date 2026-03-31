@@ -4,7 +4,7 @@ import enum
 from dataclasses import dataclass
 
 import ida_hexrays
-from d810.core.terminal_frontier import (
+from d810.cfg.flow.terminal_frontier import (
     TerminalCfgSuffixFrontier,
     TerminalLoweringAction,
     classify_cfg_suffix_action,
