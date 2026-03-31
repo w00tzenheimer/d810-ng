@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flow.terminal_return import TerminalLoweringAction
+from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
 from d810.cfg.terminal_corridor_planning import (
     CarrierBucket,
     compute_suffix_group_decision,
@@ -67,4 +67,3 @@ def test_suffix_group_decision_marks_state_const_groups_for_dtl():
         decision=decision,
         anchors=(10, 11),
     ) == (10, 11)
-
