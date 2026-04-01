@@ -7,6 +7,7 @@ import ida_hexrays
 from d810.recon.flow.exit_transition_discovery import (
     collect_bst_default_transition_candidates,
     collect_exit_transition_candidates,
+    collect_valrange_exit_transition_candidates,
 )
 
 
@@ -174,3 +175,65 @@ class TestCollectBstDefaultTransitionCandidates:
         assert candidates[0].from_block == 24
         assert candidates[0].target_entry == 88
         assert candidates[0].final_state == 0x22
+
+
+class _DummyTailBlock:
+    def __init__(self, tail: object | None):
+        self.tail = tail
+
+
+class TestCollectValrangeExitTransitionCandidates:
+    def test_collects_unresolved_exit_candidates(self, monkeypatch) -> None:
+        tail = object()
+        snapshot = SimpleNamespace(
+            mba=_DummyMba({24: _DummyTailBlock(tail)}),
+            resolved_transitions=frozenset(),
+        )
+        transition = SimpleNamespace(from_state=0x11, to_state=0x22, from_block=24)
+        sm = SimpleNamespace(
+            state_var=SimpleNamespace(name="state"),
+            handlers={0x11: SimpleNamespace(transitions=(transition,))},
+        )
+        bst_result = SimpleNamespace()
+
+        monkeypatch.setattr(
+            "d810.recon.flow.exit_transition_discovery.resolve_target_via_bst",
+            lambda bst, state: 88 if state == 0x33 else None,
+        )
+
+        discovery = collect_valrange_exit_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=bst_result,
+            resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
+        )
+
+        assert discovery.total_unresolved == 1
+        assert len(discovery.candidates) == 1
+        assert discovery.candidates[0].from_state == 0x11
+        assert discovery.candidates[0].to_state == 0x22
+        assert discovery.candidates[0].from_block == 24
+        assert discovery.candidates[0].target_entry == 88
+        assert discovery.candidates[0].resolved_state_value == 0x33
+
+    def test_skips_already_resolved_transitions(self) -> None:
+        tail = object()
+        snapshot = SimpleNamespace(
+            mba=_DummyMba({24: _DummyTailBlock(tail)}),
+            resolved_transitions=frozenset({(0x11, 0x22)}),
+        )
+        transition = SimpleNamespace(from_state=0x11, to_state=0x22, from_block=24)
+        sm = SimpleNamespace(
+            state_var=SimpleNamespace(name="state"),
+            handlers={0x11: SimpleNamespace(transitions=(transition,))},
+        )
+
+        discovery = collect_valrange_exit_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=SimpleNamespace(),
+            resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
+        )
+
+        assert discovery.total_unresolved == 0
+        assert discovery.candidates == ()

@@ -34,6 +34,25 @@ class BstDefaultTransitionCandidate:
     final_state: int
 
 
+@dataclass(frozen=True, slots=True)
+class ValrangeExitTransitionCandidate:
+    """One unresolved exit recovered via evaluator valranges."""
+
+    from_state: int
+    to_state: int
+    from_block: int
+    target_entry: int
+    resolved_state_value: int
+
+
+@dataclass(frozen=True, slots=True)
+class ValrangeExitTransitionDiscovery:
+    """Batch result for valrange-based unresolved exit recovery."""
+
+    total_unresolved: int = 0
+    candidates: tuple[ValrangeExitTransitionCandidate, ...] = ()
+
+
 def resolve_state_var_stkoff(
     *,
     detector: object | None,
@@ -270,10 +289,77 @@ def collect_bst_default_transition_candidates(
     return tuple(candidates)
 
 
+def collect_valrange_exit_transition_candidates(
+    snapshot: object,
+    *,
+    sm: object,
+    bst_result: object,
+    resolve_state_via_valranges: object | None,
+) -> ValrangeExitTransitionDiscovery:
+    """Collect unresolved handler exits that valranges resolves to one target."""
+    mba = getattr(snapshot, "mba", None)
+    if mba is None or not callable(resolve_state_via_valranges):
+        return ValrangeExitTransitionDiscovery()
+
+    state_var = getattr(sm, "state_var", None)
+    handlers = dict(getattr(sm, "handlers", {}) or {})
+    if state_var is None or not handlers:
+        return ValrangeExitTransitionDiscovery()
+
+    already_resolved = set(getattr(snapshot, "resolved_transitions", ()) or ())
+    candidates: list[ValrangeExitTransitionCandidate] = []
+    total_unresolved = 0
+
+    for handler in handlers.values():
+        for transition in tuple(getattr(handler, "transitions", ())):
+            key = (int(transition.from_state), int(transition.to_state))
+            if key in already_resolved:
+                continue
+
+            total_unresolved += 1
+            exit_serial = int(transition.from_block)
+            try:
+                exit_blk = mba.get_mblock(exit_serial)
+            except Exception:
+                exit_blk = None
+            if exit_blk is None:
+                continue
+
+            tail_ins = getattr(exit_blk, "tail", None)
+            if tail_ins is None:
+                continue
+
+            resolved_value = resolve_state_via_valranges(exit_blk, state_var, tail_ins)
+            if resolved_value is None:
+                continue
+
+            target_entry = resolve_target_via_bst(bst_result, resolved_value)
+            if target_entry is None:
+                continue
+
+            candidates.append(
+                ValrangeExitTransitionCandidate(
+                    from_state=int(transition.from_state),
+                    to_state=int(transition.to_state),
+                    from_block=exit_serial,
+                    target_entry=int(target_entry),
+                    resolved_state_value=int(resolved_value),
+                )
+            )
+
+    return ValrangeExitTransitionDiscovery(
+        total_unresolved=total_unresolved,
+        candidates=tuple(candidates),
+    )
+
+
 __all__ = [
     "BstDefaultTransitionCandidate",
     "ExitTransitionCandidate",
+    "ValrangeExitTransitionCandidate",
+    "ValrangeExitTransitionDiscovery",
     "collect_bst_default_transition_candidates",
     "collect_exit_transition_candidates",
+    "collect_valrange_exit_transition_candidates",
     "resolve_state_var_stkoff",
 ]
