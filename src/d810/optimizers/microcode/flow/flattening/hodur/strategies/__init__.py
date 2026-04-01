@@ -17,15 +17,13 @@ Available strategies (in dependency order):
    family ``fallback``.
 5. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
    family ``fallback``.
-6. :class:`AssignmentMapFallbackStrategy` — dead state-assignment NOPs and
-    assignment-map redirects, family ``fallback``.
-7. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
+6. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
     blocks to eliminate structurer gotos, family ``cleanup``.
-8. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
+7. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
     in BLT_STOP predecessor return paths, family ``cleanup``.
-9. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
+8. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
     the dead state variable after linearization, family ``cleanup``.
-10. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
+9. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
     semantic handoff reconstruction, family ``direct``.
 """
 from __future__ import annotations
@@ -44,9 +42,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.pred_patch_fallb
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork_fallback import (
     ConditionalForkFallbackStrategy,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.assignment_map_fallback import (
-    AssignmentMapFallbackStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
@@ -73,7 +68,6 @@ __all__ = [
     "TerminalLoopCleanupStrategy",
     "PredPatchFallbackStrategy",
     "ConditionalForkFallbackStrategy",
-    "AssignmentMapFallbackStrategy",
     "DeadStateVariableEliminationStrategy",
     "InnerMergeDuplicationStrategy",
     "StateConstantReturnFixupStrategy",
@@ -105,7 +99,6 @@ LEGACY_STRATEGIES: list[type] = [
     TerminalLoopCleanupStrategy,
     PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
-    AssignmentMapFallbackStrategy,
     # InnerMergeDuplicationStrategy disabled: tail-duplication of merge blocks
     # causes IDA structurer regressions (goto proliferation) that outweigh the
     # occasional goto elimination it provides.  Keep the import so the class
