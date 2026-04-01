@@ -18,7 +18,7 @@ from d810.cfg.flow.terminal_frontier import (
     TerminalSemanticLoweringFrontier,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.cfg.flow.terminal_return import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSourceKind,
 )

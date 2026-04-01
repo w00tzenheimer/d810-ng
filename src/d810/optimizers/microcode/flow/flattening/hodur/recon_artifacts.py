@@ -20,7 +20,7 @@ from d810.cfg.flow.return_frontier import (
     ReturnSite,
     return_frontier_audit_from_dict,
 )
-from d810.cfg.flow.terminal_return import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,
