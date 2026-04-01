@@ -15,13 +15,7 @@ from __future__ import annotations
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
-from d810.cfg.graph_modification import ReorderBlocks
-
-try:
-    import ida_hexrays as _ida_hexrays
-    _BLT_2WAY: int | None = _ida_hexrays.BLT_2WAY
-except ImportError:
-    _BLT_2WAY = None
+from d810.cfg.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
@@ -29,8 +23,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
 )
 from d810.recon.flow.bst_model import resolve_target_via_bst
-
 if TYPE_CHECKING:
+    from d810.cfg.graph_modification import ReorderBlocks
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
         AnalysisSnapshot,
     )
@@ -109,165 +103,10 @@ class TopologicalSortStrategy:
     def compute_reorder_blocks(
         snapshot: AnalysisSnapshot,
     ) -> ReorderBlocks | None:
-        """Compute a :class:`ReorderBlocks` modification from the snapshot.
-
-        DFS traversal from ``initial_state`` through ``sm.transitions``
-        to collect handler body blocks in linearized order.  The result
-        can be appended to any strategy's modification list.
-
-        Args:
-            snapshot: Immutable analysis snapshot for the current function.
-
-        Returns:
-            A :class:`ReorderBlocks` instance, or ``None`` when there is
-            nothing to reorder.
-        """
-        sm = snapshot.state_machine
-        if sm is None or not sm.handlers:
-            return None
-        if sm.initial_state is None:
-            return None
-
-        bst_result = snapshot.bst_result
-        if bst_result is None:
-            return None
-
-        handler_state_map: dict[int, int] = getattr(
-            bst_result, "handler_state_map", {}
-        ) or {}
-        if not handler_state_map:
-            return None
-
-        range_map: dict[int, tuple[int | None, int | None]] = getattr(
-            bst_result, "handler_range_map", {}
-        ) or {}
-
-        initial_state = sm.initial_state
-        assert initial_state is not None
-
-        # Build reverse map: handler_entry_serial -> state_value
-        entry_to_state: dict[int, int] = {
-            serial: state for serial, state in handler_state_map.items()
-        }
-
-        # DFS from initial state through transitions
-        visited_states: set[int] = set()
-        dfs_block_order: list[int] = []
-        seen_blocks: set[int] = set()  # deduplicate shared handler blocks
-
-        def _resolve_entry(to_state: int) -> int | None:
-            """Resolve a state value to handler entry serial."""
-            target = resolve_target_via_bst(bst_result, to_state)
-            if target is not None:
-                return target
-            # Fallback: check range_map including catch-all ranges
-            for serial, (low, high) in range_map.items():
-                lo = low if low is not None else 0
-                hi = high if high is not None else 0xFFFFFFFF
-                if lo <= to_state <= hi:
-                    return serial
-            return None
-
-        def _dfs(state: int) -> None:
-            if state in visited_states:
-                return
-            if state not in sm.handlers:
-                return
-            visited_states.add(state)
-            handler = sm.handlers[state]
-            for blk_serial in handler.handler_blocks:
-                if blk_serial not in seen_blocks:
-                    seen_blocks.add(blk_serial)
-                    dfs_block_order.append(blk_serial)
-
-            # Collect transitions from this handler, unconditional first
-            handler_block_set = set(handler.handler_blocks)
-            unconditional: list[int] = []
-            conditional: list[int] = []
-
-            for trans in sm.transitions:
-                if trans.from_block not in handler_block_set:
-                    continue
-                target_entry = _resolve_entry(trans.to_state)
-                if target_entry is None:
-                    continue
-                target_state = entry_to_state.get(target_entry)
-                if target_state is None:
-                    continue
-                if trans.is_conditional:
-                    conditional.append(target_state)
-                else:
-                    unconditional.append(target_state)
-
-            # Follow unconditional transitions first (depth-first)
-            for target_state in unconditional:
-                _dfs(target_state)
-
-            # Then follow conditional transitions
-            for target_state in conditional:
-                _dfs(target_state)
-
-        _dfs(initial_state)
-
-        # Append any handlers not reached by DFS
-        for state in sm.handlers:
-            if state not in visited_states:
-                _dfs(state)
-
-        if not dfs_block_order:
-            return None
-
-        # Pre-compute which blocks are NOT BLT_2WAY and which ARE BLT_2WAY.
-        # Non-2WAY blocks are copied directly in Phase A.  2WAY blocks (handler-
-        # internal conditionals) get a copy + fallthrough trampoline pair.
-        #
-        # BST comparison nodes are excluded from the 2WAY list even if the
-        # live MBA still shows them as BLT_2WAY: the LFG strategy emits
-        # ConvertToGoto for these blocks (turning them into BLT_1WAY) but
-        # the conversion hasn't been applied yet at planning time.  Treating
-        # them as 2WAY here would create a 1WAY copy with 2 successors,
-        # triggering CFG_50856_BAD_NSUCC violations.
-        non_2way_serials: tuple[int, ...] = ()
-        two_way_serials: tuple[int, ...] = ()
-        mba = snapshot.mba
-        bst_blocks: frozenset[int] = (
-            frozenset(bst_result.bst_node_blocks)
-            if bst_result is not None and bst_result.bst_node_blocks
-            else frozenset()
-        )
-        if mba is not None and _BLT_2WAY is not None:
-            _non_2way: list[int] = []
-            _two_way: list[int] = []
-            for s in dfs_block_order:
-                blk = mba.get_mblock(s)
-                if blk is None:
-                    continue
-                if blk.type == _BLT_2WAY and s not in bst_blocks:
-                    _two_way.append(s)
-                else:
-                    _non_2way.append(s)
-            non_2way_serials = tuple(_non_2way)
-            two_way_serials = tuple(_two_way)
-        else:
-            logger.warning(
-                "TopologicalSortStrategy: cannot filter BLT_2WAY blocks "
-                "(mba=%s, _BLT_2WAY=%s), non_2way_serials over-estimated",
-                mba, _BLT_2WAY,
-            )
-            non_2way_serials = tuple(dfs_block_order)
-
-        logger.info(
-            "TopologicalSort: %d blocks in DFS order (%d non-2WAY, %d 2WAY) for %d handlers",
-            len(dfs_block_order),
-            len(non_2way_serials),
-            len(two_way_serials),
-            len(visited_states),
-        )
-
-        return ReorderBlocks(
-            dfs_block_order=tuple(dfs_block_order),
-            non_2way_serials=non_2way_serials,
-            two_way_serials=two_way_serials,
+        """Compatibility wrapper over :mod:`d810.cfg.reorder_blocks_planning`."""
+        return plan_reorder_blocks(
+            snapshot,
+            resolve_target_entry=resolve_target_via_bst,
         )
 
     # ------------------------------------------------------------------
