@@ -1,4 +1,4 @@
-"""Terminal return audit types."""
+"""Shared terminal return audit model."""
 from __future__ import annotations
 
 import enum
@@ -9,34 +9,15 @@ class TerminalReturnSourceKind(str, enum.Enum):
     """Classification of how a terminal handler reaches a return site."""
 
     DIRECT_RETURN = "direct_return"
-    """Handler path ends at a block with m_ret (BLT_STOP)."""
-
     EPILOGUE_CORRIDOR = "epilogue_corridor"
-    """Handler path reaches epilogue corridor (shared return sequence) via single-pred chain."""
-
     SHARED_EPILOGUE = "shared_epilogue"
-    """Handler path reaches shared epilogue with multiple predecessors (phi-merge point)."""
-
     UNREACHABLE = "unreachable"
-    """No path from handler exit to any return block found."""
-
     UNKNOWN = "unknown"
-    """Analysis could not classify."""
 
 
 @dataclass(frozen=True)
 class TerminalReturnSiteAudit:
-    """Audit result for a single terminal handler's return path.
-
-    Attributes:
-        handler_serial: Entry block serial of the terminal handler.
-        exit_serial: Exit block serial after linearization redirect (None if unknown).
-        source_kind: Classification of the return path.
-        return_block_serial: Serial of the BLT_STOP block if reachable (None otherwise).
-        corridor_length: Number of blocks in epilogue corridor (0 if DIRECT_RETURN or UNREACHABLE).
-        has_rax_write: Whether a rax.8 write was observed on the path (None if not analyzed).
-        notes: Free-form diagnostic note.
-    """
+    """Audit result for a single terminal handler's return path."""
 
     handler_serial: int
     exit_serial: int | None
@@ -49,14 +30,7 @@ class TerminalReturnSiteAudit:
 
 @dataclass(frozen=True)
 class TerminalReturnAuditReport:
-    """Aggregate audit report for all terminal handlers in a function.
-
-    Attributes:
-        function_ea: Function entry address.
-        total_handlers: Total handler count.
-        terminal_handlers: Count of handlers marked terminal.
-        sites: Per-handler audit results.
-    """
+    """Aggregate audit report for all terminal handlers in a function."""
 
     function_ea: int
     total_handlers: int
@@ -64,11 +38,6 @@ class TerminalReturnAuditReport:
     sites: tuple[TerminalReturnSiteAudit, ...]
 
     def summary(self) -> str:
-        """One-line summary of the audit results.
-
-        Returns:
-            String of the form "N/M terminal handlers: X direct, Y corridor, Z shared, W unreachable".
-        """
         counts: dict[TerminalReturnSourceKind, int] = {}
         for site in self.sites:
             counts[site.source_kind] = counts.get(site.source_kind, 0) + 1

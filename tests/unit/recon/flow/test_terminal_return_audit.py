@@ -4,10 +4,12 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.recon.flow.terminal_return_audit import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,
+)
+from d810.recon.flow.terminal_return_audit import (
     build_terminal_return_audit,
     from_dict,
     to_dict,

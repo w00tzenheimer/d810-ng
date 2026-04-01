@@ -18,7 +18,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from d810.cfg.flow.terminal_return import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,

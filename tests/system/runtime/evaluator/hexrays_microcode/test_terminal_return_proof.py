@@ -10,7 +10,7 @@ from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     TerminalReturnValueProof,
     prove_terminal_returns,
 )
-from d810.recon.flow.terminal_return_audit import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,

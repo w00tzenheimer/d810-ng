@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from d810.cfg.flow.terminal_return import (
+from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,

@@ -34,7 +34,7 @@ import enum
 from dataclasses import dataclass, field, replace
 from d810.core.typing import TYPE_CHECKING
 
-from d810.cfg.flow.terminal_return import TerminalReturnSourceKind
+from d810.flow.terminal_return import TerminalReturnSourceKind
 from d810.core.logging import getLogger
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
     DecisionPhase,
