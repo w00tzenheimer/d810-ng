@@ -13,17 +13,15 @@ Available strategies (in dependency order):
    duplication, family ``direct``.
 3. :class:`TerminalLoopCleanupStrategy` — break residual terminal loops,
    family ``cleanup``.
-4. :class:`PredPatchFallbackStrategy` — MopTracker predecessor patching,
+4. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
    family ``fallback``.
-5. :class:`ConditionalForkFallbackStrategy` — conditional-fork resolution,
-   family ``fallback``.
-6. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
+5. :class:`InnerMergeDuplicationStrategy` — tail-duplicate small DAG merge
     blocks to eliminate structurer gotos, family ``cleanup``.
-7. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
+6. :class:`StateConstantReturnFixupStrategy` — NOP leaked state constants
     in BLT_STOP predecessor return paths, family ``cleanup``.
-8. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
+7. :class:`DeadStateVariableEliminationStrategy` — NOP remaining reads of
     the dead state variable after linearization, family ``cleanup``.
-9. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
+8. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
     semantic handoff reconstruction, family ``direct``.
 """
 from __future__ import annotations
@@ -36,9 +34,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.edge_split_confl
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
     TerminalLoopCleanupStrategy,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.pred_patch_fallback import (
-    PredPatchFallbackStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork_fallback import (
     ConditionalForkFallbackStrategy,
@@ -66,7 +61,6 @@ __all__ = [
     "ValrangeResolutionStrategy",
     "EdgeSplitConflictResolutionStrategy",
     "TerminalLoopCleanupStrategy",
-    "PredPatchFallbackStrategy",
     "ConditionalForkFallbackStrategy",
     "DeadStateVariableEliminationStrategy",
     "InnerMergeDuplicationStrategy",
@@ -97,7 +91,6 @@ LEGACY_STRATEGIES: list[type] = [
     ValrangeResolutionStrategy,
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
-    PredPatchFallbackStrategy,
     ConditionalForkFallbackStrategy,
     # InnerMergeDuplicationStrategy disabled: tail-duplication of merge blocks
     # causes IDA structurer regressions (goto proliferation) that outweigh the

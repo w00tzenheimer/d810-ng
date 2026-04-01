@@ -184,7 +184,6 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Strategy pipeline components — disable fallback strategies until
         # rollback infrastructure is reliable (see semantic-gate-replacement plan).
         _DISABLED_STRATEGIES = {
-            "PredPatchFallbackStrategy",
             "ConditionalForkFallbackStrategy",
         }
         self._strategies = [
