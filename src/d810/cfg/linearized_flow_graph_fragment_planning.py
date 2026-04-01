@@ -136,6 +136,101 @@ class LinearizedFlowGraphPlanningResult:
     unresolved_bst_targets: int
 
 
+def flow_graph_block_serials(flow_graph: object) -> set[int]:
+    blocks = getattr(flow_graph, "blocks", None)
+    if blocks is None:
+        return set()
+    try:
+        return set(blocks.keys())
+    except Exception:
+        return set()
+
+
+def is_original_pre_header_candidate(
+    flow_graph: object | None,
+    *,
+    pre_header_serial: int | None,
+    entry_serial: int | None,
+) -> bool:
+    if flow_graph is None or pre_header_serial is None or entry_serial is None:
+        return False
+    if pre_header_serial == entry_serial:
+        return True
+    try:
+        entry_block = flow_graph.get_block(entry_serial)
+    except Exception:
+        return False
+    if entry_block is None:
+        return False
+    succs = tuple(getattr(entry_block, "succs", ()))
+    return len(succs) == 1 and succs[0] == pre_header_serial
+
+
+def prepare_linearized_flow_graph_plan_setup(
+    *,
+    snapshot: object,
+    state_machine: object,
+    bst_result: object,
+    flow_graph: object,
+    same_maturity_rerun: bool,
+    build_builder: Callable[[object], object],
+    resolve_state_var_stkoff: Callable[[object, object], int | None],
+    supports_projected_replanning: Callable[[object], bool],
+    label_block: Callable[[int | None], str],
+    transition_result: object,
+) -> LinearizedFlowGraphPlanSetup:
+    bst_node_blocks = frozenset(
+        int(block)
+        for block in (getattr(bst_result, "bst_node_blocks", set()) or set())
+    )
+    builder = build_builder(snapshot)
+    state_var_stkoff = resolve_state_var_stkoff(snapshot, state_machine)
+    dispatcher = getattr(bst_result, "dispatcher", None)
+    blocked_sources = frozenset(
+        int(serial)
+        for serial in (getattr(snapshot, "lfg_redirected_blocks", ()) or ())
+    )
+    dispatcher_region = bst_node_blocks
+    original_blocks = frozenset(
+        int(block) for block in flow_graph_block_serials(flow_graph)
+    )
+    raw_pre_header = (
+        None if same_maturity_rerun else getattr(bst_result, "pre_header_serial", None)
+    )
+    entry_serial = getattr(getattr(snapshot, "reachability", None), "entry_serial", None)
+    pre_header_serial = (
+        raw_pre_header
+        if is_original_pre_header_candidate(
+            flow_graph,
+            pre_header_serial=raw_pre_header,
+            entry_serial=entry_serial,
+        )
+        else None
+    )
+    if raw_pre_header is not None and pre_header_serial is None:
+        logger.info(
+            "LFG DAG: suppressing non-entry pre-header candidate %s (entry=%s)",
+            label_block(raw_pre_header),
+            label_block(entry_serial) if entry_serial is not None else "<none>",
+        )
+
+    projectable = bool(supports_projected_replanning(flow_graph))
+    round_limit = 1 if same_maturity_rerun else 2
+    return LinearizedFlowGraphPlanSetup(
+        builder=builder,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher=dispatcher,
+        blocked_sources=blocked_sources,
+        dispatcher_region=dispatcher_region,
+        bst_node_blocks=bst_node_blocks,
+        original_blocks=original_blocks,
+        transition_result=transition_result,
+        pre_header_serial=pre_header_serial,
+        projectable=projectable,
+        round_limit=round_limit,
+    )
+
+
 def build_linearized_flow_graph_planning_context(
     *,
     flow_graph: object,
@@ -625,4 +720,7 @@ __all__ = [
     "build_linearized_flow_graph_planning_callbacks",
     "build_linearized_flow_graph_planning_context",
     "execute_linearized_flow_graph_planning",
+    "flow_graph_block_serials",
+    "is_original_pre_header_candidate",
+    "prepare_linearized_flow_graph_plan_setup",
 ]

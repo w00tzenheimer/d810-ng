@@ -14,42 +14,35 @@ import ida_hexrays
 
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.dag_redirect_execution import (
-    DagRedirectExecutionContext,
-    DagRedirectMutableState,
-    execute_dag_redirect_fallback,
+    emit_dag_redirect,
 )
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.dispatcher_backedge_disconnect_execution import (
-    execute_dispatcher_backedge_disconnects,
+    disconnect_bst_comparison_nodes,
 )
 from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.linearized_flow_graph_fragment_planning import (
     LinearizedFlowGraphPlanSetup,
+    flow_graph_block_serials,
+    prepare_linearized_flow_graph_plan_setup,
     build_linearized_flow_graph_planning_callbacks,
     build_linearized_flow_graph_planning_context,
     execute_linearized_flow_graph_planning,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.path_tail_redirect_execution import (
-    PathTailRedirectExecutionContext,
-    PathTailRedirectMutableState,
-    execute_path_tail_redirect,
+    emit_path_tail_redirect,
 )
 from d810.cfg.projected_alias_normalization_planning import (
-    apply_projected_alias_normalization_actions,
-    collect_projected_alias_normalization_actions,
+    normalize_projected_alias_handoffs,
 )
 from d810.cfg.residual_branch_anchor_execution import (
-    ResidualBranchAnchorExecutionContext,
-    ResidualBranchAnchorMutableState,
-    execute_residual_branch_anchor_handoff,
+    emit_residual_branch_anchor_handoff,
 )
 from d810.cfg.residual_dispatcher_handoff_execution import (
-    ResidualDispatcherHandoffMutableState,
-    build_residual_dispatcher_handoff_execution_context,
-    execute_residual_dispatcher_handoffs,
+    emit_residual_dispatcher_handoffs,
 )
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
@@ -72,7 +65,6 @@ from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
@@ -148,25 +140,6 @@ def _prepare_linearized_flow_graph_plan_setup(
     mba: object | None,
     same_maturity_rerun: bool,
 ) -> LinearizedFlowGraphPlanSetup:
-    bst_node_blocks = frozenset(
-        int(block)
-        for block in (getattr(bst_result, "bst_node_blocks", set()) or set())
-    )
-    builder = ModificationBuilder.from_snapshot(snapshot)
-    state_var_stkoff = LinearizedFlowGraphStrategy._resolve_state_var_stkoff(
-        snapshot,
-        state_machine,
-    )
-    dispatcher = getattr(bst_result, "dispatcher", None)
-    blocked_sources = frozenset(
-        int(serial)
-        for serial in (getattr(snapshot, "lfg_redirected_blocks", ()) or ())
-    )
-    dispatcher_region = bst_node_blocks
-    original_blocks = frozenset(
-        int(block)
-        for block in LinearizedFlowGraphStrategy._flow_graph_block_serials(flow_graph)
-    )
     transition_result = TransitionResult(
         transitions=list(state_machine.transitions),
         handlers=dict(state_machine.handlers),
@@ -176,43 +149,17 @@ def _prepare_linearized_flow_graph_plan_setup(
         strategy_name="linearized_flow_graph",
         resolved_count=len(state_machine.transitions),
     )
-
-    raw_pre_header = (
-        None if same_maturity_rerun else getattr(bst_result, "pre_header_serial", None)
-    )
-    entry_serial = getattr(getattr(snapshot, "reachability", None), "entry_serial", None)
-    pre_header_serial = (
-        raw_pre_header
-        if LinearizedFlowGraphStrategy._is_original_pre_header_candidate(
-            flow_graph,
-            pre_header_serial=raw_pre_header,
-            entry_serial=entry_serial,
-        )
-        else None
-    )
-    if raw_pre_header is not None and pre_header_serial is None:
-        logger.info(
-            "LFG DAG: suppressing non-entry pre-header candidate %s (entry=%s)",
-            blk_label(mba, raw_pre_header),
-            blk_label(mba, entry_serial) if entry_serial is not None else "<none>",
-        )
-
-    projectable = bool(
-        LinearizedFlowGraphStrategy._supports_projected_replanning(flow_graph)
-    )
-    round_limit = 1 if same_maturity_rerun else 2
-    return LinearizedFlowGraphPlanSetup(
-        builder=builder,
-        state_var_stkoff=state_var_stkoff,
-        dispatcher=dispatcher,
-        blocked_sources=blocked_sources,
-        dispatcher_region=dispatcher_region,
-        bst_node_blocks=bst_node_blocks,
-        original_blocks=original_blocks,
+    return prepare_linearized_flow_graph_plan_setup(
+        snapshot=snapshot,
+        state_machine=state_machine,
+        bst_result=bst_result,
+        flow_graph=flow_graph,
+        same_maturity_rerun=same_maturity_rerun,
+        build_builder=ModificationBuilder.from_snapshot,
+        resolve_state_var_stkoff=LinearizedFlowGraphStrategy._resolve_state_var_stkoff,
+        supports_projected_replanning=LinearizedFlowGraphStrategy._supports_projected_replanning,
+        label_block=(lambda serial: blk_label(mba, serial) if serial is not None else "<none>"),
         transition_result=transition_result,
-        pre_header_serial=pre_header_serial,
-        projectable=projectable,
-        round_limit=round_limit,
     )
 
 
@@ -334,29 +281,8 @@ class LinearizedFlowGraphStrategy:
     def _supports_projected_replanning(flow_graph: object) -> bool:
         return isinstance(flow_graph, FlowGraph)
 
-    @staticmethod
-    def _flow_graph_block_serials(flow_graph: object) -> set[int]:
-        blocks = getattr(flow_graph, "blocks", None)
-        if blocks is None:
-            return set()
-        try:
-            return set(blocks.keys())
-        except Exception:
-            return set()
-
-    @classmethod
-    def _resolve_singleton_state_write_value(
-        cls,
-        mba: object,
-        block_serial: int,
-        *,
-        state_var_stkoff: int | None,
-    ) -> int | None:
-        return resolve_singleton_state_write_value(
-            mba,
-            block_serial,
-            state_var_stkoff=state_var_stkoff,
-        )
+    _flow_graph_block_serials = staticmethod(flow_graph_block_serials)
+    _resolve_singleton_state_write_value = staticmethod(resolve_singleton_state_write_value)
 
     @classmethod
     def _collect_dead_dispatcher_root_cleanup_modifications(
@@ -411,66 +337,40 @@ class LinearizedFlowGraphStrategy:
         filtered.sort(key=lambda mod: mod.from_serial)
         return filtered
 
-    @classmethod
-    def _collect_residual_dispatcher_predecessors(
-        cls,
-        flow_graph: object,
-        dispatcher_serial: int,
-        *,
-        bst_node_blocks: set[int],
-        reachable_from_serial: int | None = None,
-    ) -> tuple[int, ...]:
-        del cls
-        return collect_residual_dispatcher_predecessors(
-            flow_graph,
-            dispatcher_serial,
-            bst_node_blocks=bst_node_blocks,
-            reachable_from_serial=reachable_from_serial,
-        )
-
-    @classmethod
-    def _resolve_redirect_safe_entry_from_node(cls, *args, **kwargs):
-        return resolve_redirect_safe_entry_from_node(*args, **kwargs)
-
-    @classmethod
-    def _resolve_redirect_safe_target_entry(cls, *args, **kwargs):
-        return resolve_redirect_safe_target_entry(*args, **kwargs)
-
-    @classmethod
-    def _resolve_contextual_dag_entry_for_state(cls, *args, **kwargs):
-        return resolve_contextual_dag_entry_for_state(*args, **kwargs)
-
-    @classmethod
-    def _resolve_normalized_alias_entry_for_state(cls, *args, **kwargs):
-        return resolve_normalized_alias_entry_for_state(*args, **kwargs)
-
-    @classmethod
-    def _resolve_cover_fallback_entry_for_state(cls, *args, **kwargs):
-        return resolve_cover_fallback_entry_for_state(*args, **kwargs)
-
-    @classmethod
-    def _resolve_projected_path_tail_target(cls, *args, **kwargs):
-        return resolve_projected_path_tail_target(*args, **kwargs)
-
-    @classmethod
-    def _resolve_immediate_handoff_target(cls, *args, **kwargs):
-        return resolve_immediate_handoff_target(*args, **kwargs)
-
-    @classmethod
-    def _resolve_projected_snapshot_handoff_target(cls, *args, **kwargs):
-        return resolve_projected_snapshot_handoff_target(*args, **kwargs)
-
-    @classmethod
-    def _resolve_assignment_map_handoff_target(cls, *args, **kwargs):
-        return resolve_assignment_map_handoff_target(*args, **kwargs)
-
-    @classmethod
-    def _resolve_synthesized_handoff_target(cls, *args, **kwargs):
-        return resolve_synthesized_handoff_target(*args, **kwargs)
-
-    @classmethod
-    def _resolve_effective_target_entry(cls, *args, **kwargs):
-        return resolve_effective_target_entry(*args, **kwargs)
+    _collect_residual_dispatcher_predecessors = staticmethod(
+        collect_residual_dispatcher_predecessors
+    )
+    _resolve_redirect_safe_entry_from_node = staticmethod(
+        resolve_redirect_safe_entry_from_node
+    )
+    _resolve_redirect_safe_target_entry = staticmethod(
+        resolve_redirect_safe_target_entry
+    )
+    _resolve_contextual_dag_entry_for_state = staticmethod(
+        resolve_contextual_dag_entry_for_state
+    )
+    _resolve_normalized_alias_entry_for_state = staticmethod(
+        resolve_normalized_alias_entry_for_state
+    )
+    _resolve_cover_fallback_entry_for_state = staticmethod(
+        resolve_cover_fallback_entry_for_state
+    )
+    _resolve_projected_path_tail_target = staticmethod(
+        resolve_projected_path_tail_target
+    )
+    _resolve_immediate_handoff_target = staticmethod(
+        resolve_immediate_handoff_target
+    )
+    _resolve_projected_snapshot_handoff_target = staticmethod(
+        resolve_projected_snapshot_handoff_target
+    )
+    _resolve_assignment_map_handoff_target = staticmethod(
+        resolve_assignment_map_handoff_target
+    )
+    _resolve_synthesized_handoff_target = staticmethod(
+        resolve_synthesized_handoff_target
+    )
+    _resolve_effective_target_entry = staticmethod(resolve_effective_target_entry)
 
     @classmethod
     def _emit_residual_branch_anchor_handoff(
@@ -494,29 +394,23 @@ class LinearizedFlowGraphStrategy:
         residual_ignored_blocks: set[int],
         mba: object | None,
     ) -> bool:
-        result = execute_residual_branch_anchor_handoff(
-            ResidualBranchAnchorExecutionContext(
-                edge=edge,
-                source_block=int(source_block),
-                via_pred=int(via_pred),
-                prefix_target=int(prefix_target),
-                projected_flow_graph=projected_flow_graph,
-                bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
-                dispatcher_serial=int(dispatcher_serial),
-                block_succ_map=builder.block_succ_map,
-                ignored_blocks=frozenset(int(block) for block in ignored_blocks),
-                residual_ignored_blocks=frozenset(
-                    int(block) for block in residual_ignored_blocks
-                ),
-            ),
-            state=ResidualBranchAnchorMutableState(
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                owned_transitions=owned_transitions,
-                emitted=emitted,
-                claimed_2way=claimed_2way,
-            ),
+        result = emit_residual_branch_anchor_handoff(
+            edge=edge,
+            source_block=int(source_block),
+            via_pred=int(via_pred),
+            prefix_target=int(prefix_target),
+            projected_flow_graph=projected_flow_graph,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_serial=int(dispatcher_serial),
+            builder=builder,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_2way=claimed_2way,
+            ignored_blocks=ignored_blocks,
+            residual_ignored_blocks=residual_ignored_blocks,
         )
         if not result.accepted:
             return False
@@ -535,26 +429,6 @@ class LinearizedFlowGraphStrategy:
             result.edge_kind_name,
         )
         return True
-
-    @staticmethod
-    def _is_original_pre_header_candidate(
-        flow_graph: object | None,
-        *,
-        pre_header_serial: int | None,
-        entry_serial: int | None,
-    ) -> bool:
-        if flow_graph is None or pre_header_serial is None or entry_serial is None:
-            return False
-        if pre_header_serial == entry_serial:
-            return True
-        try:
-            entry_block = flow_graph.get_block(entry_serial)
-        except Exception:
-            return False
-        if entry_block is None:
-            return False
-        succs = tuple(getattr(entry_block, "succs", ()))
-        return len(succs) == 1 and succs[0] == pre_header_serial
 
     @classmethod
     def _allow_same_maturity_rerun(
@@ -829,40 +703,36 @@ class LinearizedFlowGraphStrategy:
         mba: object | None = None,
         redirected_blocks: set[int] | None = None,
     ) -> int:
-        result = execute_residual_dispatcher_handoffs(
-            build_residual_dispatcher_handoff_execution_context(
-                dag=dag,
-                state_machine=state_machine,
-                projected_flow_graph=projected_flow_graph,
-                dispatcher_serial=int(dispatcher_serial),
-                bst_node_blocks=bst_node_blocks,
-                block_succ_map=builder.block_succ_map,
-                state_var_stkoff=state_var_stkoff,
-                dispatcher_lookup=dispatcher_lookup,
-                dispatcher=dispatcher,
-                mba=mba,
-                collect_residual_dispatcher_predecessors=cls._collect_residual_dispatcher_predecessors,
-                build_projected_mba=build_mba_view_from_flow_graph,
-                collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
-                iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
-                can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,
-                has_prior_branch_cut_for_state=has_prior_branch_cut_for_state,
-                is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail,
-                pred_split_target_reaches_via_pred=pred_split_target_reaches_via_pred,
-                resolve_synthesized_handoff_target=cls._resolve_synthesized_handoff_target,
-                resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
-                resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
-            ),
-            state=ResidualDispatcherHandoffMutableState(
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                owned_transitions=owned_transitions,
-                emitted=emitted,
-                claimed_1way=claimed_1way,
-                claimed_2way=claimed_2way,
-                redirected_blocks=redirected_blocks,
-            ),
+        result = emit_residual_dispatcher_handoffs(
+            dag=dag,
+            state_machine=state_machine,
+            projected_flow_graph=projected_flow_graph,
+            dispatcher_serial=int(dispatcher_serial),
+            bst_node_blocks=bst_node_blocks,
+            builder=builder,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+            mba=mba,
+            redirected_blocks=redirected_blocks,
+            collect_residual_dispatcher_predecessors=cls._collect_residual_dispatcher_predecessors,
+            build_projected_mba=build_mba_view_from_flow_graph,
+            collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
+            iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
+            can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,
+            has_prior_branch_cut_for_state=has_prior_branch_cut_for_state,
+            is_shared_suffix_conditional_tail=is_shared_suffix_conditional_tail,
+            pred_split_target_reaches_via_pred=pred_split_target_reaches_via_pred,
+            resolve_synthesized_handoff_target=cls._resolve_synthesized_handoff_target,
+            resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
+            resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
         )
         log_residual_dispatcher_handoff_outcomes(
             logger,
@@ -888,32 +758,25 @@ class LinearizedFlowGraphStrategy:
         claimed_1way: dict[int, int],
         mba: object,
     ) -> int:
-        actions = collect_projected_alias_normalization_actions(
+        return normalize_projected_alias_handoffs(
             dag=dag,
             projected_flow_graph=projected_flow_graph,
             dispatcher_serial=int(dispatcher_serial),
-            redirected_blocks={int(block) for block in redirected_blocks},
-            bst_node_blocks={int(block) for block in bst_node_blocks},
+            redirected_blocks=redirected_blocks,
+            bst_node_blocks=bst_node_blocks,
             modifications=modifications,
-            emitted=emitted,
-            resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
-        )
-        apply_projected_alias_normalization_actions(
-            actions,
-            modifications=modifications,
-            emitted=emitted,
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
+            emitted=emitted,
             claimed_1way=claimed_1way,
-        )
-        for action in actions:
-            logger.info(
+            resolve_projected_path_tail_target=cls._resolve_projected_path_tail_target,
+            log_action=lambda action: logger.info(
                 "LFG DAG: normalized projected residual handoff %s -> %s (was %s)",
                 blk_label(mba, int(action.source_block)),
                 blk_label(mba, int(action.target_entry)),
                 blk_label(mba, int(action.current_target)),
-            )
-        return len(actions)
+            ),
+        )
 
     @classmethod
     def _emit_path_tail_redirect(
@@ -946,38 +809,34 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None = None,
         mba: object | None = None,
     ) -> bool:
-        result = execute_path_tail_redirect(
-            PathTailRedirectExecutionContext(
-                edge=edge,
-                dag=dag,
-                target_entry=target_entry,
-                flow_graph=flow_graph,
-                block_succ_map=builder.block_succ_map,
-                report_exit_handlers=frozenset(report_exit_handlers),
-                report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
-                terminal_protected_blocks=frozenset(terminal_protected_blocks),
-                bst_node_blocks=frozenset(bst_node_blocks),
-                dispatcher_region=frozenset(dispatcher_region),
-                state_var_stkoff=state_var_stkoff,
-                dispatcher_lookup=dispatcher_lookup,
-                dispatcher=dispatcher,
-                mba=mba,
-                resolve_effective_target_entry=cls._resolve_effective_target_entry,
-                resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
-                find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
-                is_semantic_handoff_redirect=is_semantic_handoff_redirect,
-            ),
-            state=PathTailRedirectMutableState(
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                owned_transitions=owned_transitions,
-                emitted=emitted,
-                claimed_1way=claimed_1way,
-                claimed_exits=claimed_exits,
-                claimed_path_edges=claimed_path_edges,
-                blocked_sources=blocked_sources,
-            ),
+        result = emit_path_tail_redirect(
+            edge=edge,
+            target_entry=target_entry,
+            dag=dag,
+            builder=builder,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            claimed_exits=claimed_exits,
+            claimed_path_edges=claimed_path_edges,
+            blocked_sources=blocked_sources,
+            report_exit_handlers=report_exit_handlers,
+            report_exit_owned_blocks=report_exit_owned_blocks,
+            terminal_protected_blocks=terminal_protected_blocks,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_region=dispatcher_region,
+            flow_graph=flow_graph,
+            state_var_stkoff=state_var_stkoff,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+            mba=mba,
+            resolve_effective_target_entry=cls._resolve_effective_target_entry,
+            resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
+            find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
+            is_semantic_handoff_redirect=is_semantic_handoff_redirect,
         )
         return log_path_tail_redirect_outcome(
             logger,
@@ -1017,44 +876,8 @@ class LinearizedFlowGraphStrategy:
         mba: object,
         dispatcher: object | None = None,
     ) -> bool:
-        target_node = (
-            build_dag_node_maps(dag).node_by_key.get(edge.target_key)
-            if edge.target_key is not None
-            else None
-        )
-        target_entry = cls._resolve_effective_target_entry(
-            dag,
-            edge,
-            bst_node_blocks=bst_node_blocks,
-            state_var_stkoff=state_var_stkoff,
-            dispatcher_lookup=dispatcher_lookup,
-            dispatcher=dispatcher,
-            mba=mba,
-        )
-        if (
-            target_node is not None
-            and target_entry is not None
-            and edge.target_entry_anchor is not None
-            and target_entry != edge.target_entry_anchor
-        ):
-            logger.info(
-                "LFG DAG: retargeted stale BST entry %s -> semantic entry %s for %s",
-                blk_label(mba, edge.target_entry_anchor),
-                blk_label(mba, target_entry),
-                target_node.state_label,
-            )
-        if target_entry is None:
-            if edge.target_entry_anchor is not None:
-                logger.info(
-                    "LFG DAG: skipping %s -> %s because target remains inside BST region",
-                    blk_label(mba, edge.source_anchor.block_serial),
-                    blk_label(mba, edge.target_entry_anchor),
-                )
-            return False
-
-        if cls._emit_path_tail_redirect(
+        accepted, result = emit_dag_redirect(
             edge=edge,
-            target_entry=target_entry,
             dag=dag,
             builder=builder,
             modifications=modifications,
@@ -1063,6 +886,7 @@ class LinearizedFlowGraphStrategy:
             owned_transitions=owned_transitions,
             emitted=emitted,
             claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
             claimed_exits=claimed_exits,
             claimed_path_edges=claimed_path_edges,
             blocked_sources=blocked_sources,
@@ -1079,47 +903,13 @@ class LinearizedFlowGraphStrategy:
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
             mba=mba,
-        ):
-            return True
-
-        if edge.target_entry_anchor is not None and target_entry != edge.target_entry_anchor:
-            logger.info(
-                "LFG DAG: skipping stale raw target %s in favor of semantic entry %s",
-                blk_label(mba, edge.target_entry_anchor),
-                blk_label(mba, target_entry),
-            )
-
-        result = execute_dag_redirect_fallback(
-            DagRedirectExecutionContext(
-                edge=edge,
-                dag=dag,
-                target_entry=int(target_entry),
-                flow_graph=flow_graph,
-                block_succ_map=builder.block_succ_map,
-                block_nsucc_map=builder.block_nsucc_map,
-                report_exit_handlers=frozenset(report_exit_handlers),
-                report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
-                terminal_source_owned_blocks=frozenset(terminal_source_owned_blocks),
-                terminal_protected_blocks=frozenset(terminal_protected_blocks),
-                blocked_sources=frozenset(blocked_sources),
-                bst_node_blocks=frozenset(bst_node_blocks),
-                dispatcher_region=frozenset(dispatcher_region),
-                state_var_stkoff=state_var_stkoff,
-                dispatcher_lookup=dispatcher_lookup,
-                dispatcher=dispatcher,
-                mba=mba,
-                is_semantic_handoff_redirect=is_semantic_handoff_redirect,
-            ),
-            state=DagRedirectMutableState(
-                modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                owned_transitions=owned_transitions,
-                emitted=emitted,
-                claimed_1way=claimed_1way,
-                claimed_2way=claimed_2way,
-            ),
+            resolve_effective_target_entry=cls._resolve_effective_target_entry,
+            resolve_immediate_handoff_target=cls._resolve_immediate_handoff_target,
+            find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
+            is_semantic_handoff_redirect=is_semantic_handoff_redirect,
         )
+        if result is None:
+            return accepted
         return log_dag_redirect_fallback_outcome(
             logger,
             mba=mba,
@@ -1165,17 +955,13 @@ class LinearizedFlowGraphStrategy:
         Returns:
             Number of blocks disconnected from the dispatcher.
         """
-        result = execute_dispatcher_backedge_disconnects(
-            block_nsucc_map=builder.block_nsucc_map,
-            block_succ_map=builder.block_succ_map,
-            dispatcher_serial=int(dispatcher_serial),
-            bst_node_blocks={int(block) for block in bst_node_blocks},
-            emitted=emitted,
-            convert_to_goto=builder.convert_to_goto,
-            modifications=modifications,
-        )
-        for plan in result.plans:
-            logger.info(
+        return disconnect_bst_comparison_nodes(
+            set(int(block) for block in bst_node_blocks),
+            int(dispatcher_serial),
+            builder,
+            modifications,
+            emitted,
+            log_plan=lambda plan: logger.info(
                 "BST_DISCONNECT: %s (%s) 2-way -> 1-way goto "
                 "%s (removed dispatcher back-edge to %s)",
                 blk_label(mba, int(plan.source_block))
@@ -1186,5 +972,5 @@ class LinearizedFlowGraphStrategy:
                 if mba
                 else f"blk[{int(plan.keep_target)}]",
                 blk_label(mba, dispatcher_serial) if mba else f"blk[{dispatcher_serial}]",
-            )
-        return result.count
+            ),
+        )

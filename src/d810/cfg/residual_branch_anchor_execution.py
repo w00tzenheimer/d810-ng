@@ -139,7 +139,53 @@ def execute_residual_branch_anchor_handoff(
     )
 
 
+def emit_residual_branch_anchor_handoff(
+    *,
+    edge: object,
+    source_block: int,
+    via_pred: int,
+    prefix_target: int,
+    projected_flow_graph: object,
+    bst_node_blocks: set[int],
+    dispatcher_serial: int,
+    builder: object,
+    modifications: list,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    owned_transitions: set[tuple[int, int]],
+    emitted: set[tuple[int, int]],
+    claimed_2way: dict[tuple[int, int], int],
+    ignored_blocks: set[int],
+    residual_ignored_blocks: set[int],
+) -> ResidualBranchAnchorExecutionResult:
+    return execute_residual_branch_anchor_handoff(
+        ResidualBranchAnchorExecutionContext(
+            edge=edge,
+            source_block=int(source_block),
+            via_pred=int(via_pred),
+            prefix_target=int(prefix_target),
+            projected_flow_graph=projected_flow_graph,
+            bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+            dispatcher_serial=int(dispatcher_serial),
+            block_succ_map=builder.block_succ_map,
+            ignored_blocks=frozenset(int(block) for block in ignored_blocks),
+            residual_ignored_blocks=frozenset(
+                int(block) for block in residual_ignored_blocks
+            ),
+        ),
+        state=ResidualBranchAnchorMutableState(
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_2way=claimed_2way,
+        ),
+    )
+
+
 __all__ = [
+    "emit_residual_branch_anchor_handoff",
     "ResidualBranchAnchorExecutionContext",
     "ResidualBranchAnchorExecutionResult",
     "ResidualBranchAnchorMutableState",
