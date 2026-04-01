@@ -15,7 +15,9 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.recon.flow.exit_transition_discovery import (
+    collect_valrange_exit_transition_candidates,
+)
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
@@ -108,91 +110,41 @@ class ValrangeResolutionStrategy:
             return None
 
         handlers = getattr(sm, "handlers", {}) or {}
-        state_var = getattr(sm, "state_var", None)
-        if not handlers or state_var is None:
+        if not handlers:
             return None
 
-        builder = ModificationBuilder.from_snapshot(snapshot)
-        modifications: list = []
-        owned_blocks: set[int] = set()
-        owned_transitions: set[tuple[int, int]] = set()
-        resolved_count = 0
-        total_unresolved = 0
-
-        # Identify already-resolved transitions
-        already_resolved = snapshot.resolved_transitions
-
-        for state_val, handler in handlers.items():
-            # Check each transition from this handler
-            for transition in handler.transitions:
-                key = (transition.from_state, transition.to_state)
-                if key in already_resolved:
-                    continue
-
-                total_unresolved += 1
-
-                # Get exit block from transition
-                exit_serial = transition.from_block
-                exit_blk = mba.get_mblock(exit_serial)
-                if exit_blk is None:
-                    continue
-
-                tail_ins = exit_blk.tail
-                if tail_ins is None:
-                    continue
-
-                # Query valranges for the state variable at exit block tail
-                val = resolve_state_via_valranges(exit_blk, state_var, tail_ins)
-                if val is None:
-                    logger.debug(
-                        "ValrangeResolution: block %d — valranges returned no "
-                        "single value for state var",
-                        exit_serial,
-                    )
-                    continue
-
-                # BST lookup to find target handler
-                target_serial = resolve_target_via_bst(bst_result, val)
-                if target_serial is None:
-                    logger.debug(
-                        "ValrangeResolution: block %d — resolved value %s but "
-                        "BST lookup found no target",
-                        exit_serial,
-                        hex(val),
-                    )
-                    continue
-
-                logger.debug(
-                    "ValrangeResolution: block %d — resolved state %s -> "
-                    "handler block %d",
-                    exit_serial,
-                    hex(val),
-                    target_serial,
-                )
-
-                modifications.append(
-                    builder.goto_redirect(
-                        source_block=exit_serial,
-                        target_block=target_serial,
-                    )
-                )
-                owned_blocks.add(exit_serial)
-                owned_transitions.add(key)
-                resolved_count += 1
+        discovery = collect_valrange_exit_transition_candidates(
+            snapshot,
+            sm=sm,
+            bst_result=bst_result,
+            resolve_state_via_valranges=resolve_state_via_valranges,
+        )
+        resolved_count = len(discovery.candidates)
 
         logger.info(
             "ValrangeResolution: resolved %d/%d unresolved exits",
             resolved_count,
-            total_unresolved,
+            discovery.total_unresolved,
         )
 
-        if not modifications:
+        if not discovery.candidates:
             return None
 
+        builder = ModificationBuilder.from_snapshot(snapshot)
+        modifications = [
+            builder.goto_redirect(
+                source_block=int(candidate.from_block),
+                target_block=int(candidate.target_entry),
+            )
+            for candidate in discovery.candidates
+        ]
         ownership = OwnershipScope(
-            blocks=frozenset(owned_blocks),
+            blocks=frozenset(int(candidate.from_block) for candidate in discovery.candidates),
             edges=frozenset(),
-            transitions=frozenset(owned_transitions),
+            transitions=frozenset(
+                (int(candidate.from_state), int(candidate.to_state))
+                for candidate in discovery.candidates
+            ),
         )
         benefit = BenefitMetrics(
             handlers_resolved=0,
