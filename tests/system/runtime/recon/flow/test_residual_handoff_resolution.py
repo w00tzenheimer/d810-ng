@@ -51,6 +51,22 @@ class _DiscoverRecorder:
         return self.result
 
 
+class _FakeTracker:
+    def __init__(self, tracked_mops, *, max_nb_block: int, max_path: int):
+        self.tracked_mops = tracked_mops
+        self.max_nb_block = max_nb_block
+        self.max_path = max_path
+        self.reset_called = False
+        self.search_args = None
+
+    def reset(self):
+        self.reset_called = True
+
+    def search_backward(self, blk, tail):
+        self.search_args = (blk, tail)
+        return ("history",)
+
+
 class TestResidualHandoffResolution:
     def test_has_live_exact_residual_handoff_injects_valrange_hook(self) -> None:
         resolver = object()
@@ -170,3 +186,25 @@ class TestResidualHandoffResolution:
                 mba=object(),
             )
         assert synthesized_called["value"] is False
+
+    def test_resolve_predecessor_state_values_uses_tracker(self) -> None:
+        tracker = _FakeTracker([object()], max_nb_block=20, max_path=15)
+        mba = SimpleNamespace(get_mblock=lambda serial: SimpleNamespace(tail="tail"))
+
+        with (
+            _replaced_attr(resolution, "_mop_tracker_cls", lambda: (lambda *args, **kwargs: tracker)),
+            _replaced_attr(
+                resolution,
+                "_all_possible_values",
+                lambda: (lambda histories, tracked: [[0x22], [None], [0x11], [0x22]]),
+            ),
+        ):
+            values = resolution.resolve_predecessor_state_values(
+                mba,
+                pred_serial=12,
+                state_var=SimpleNamespace(name="state"),
+            )
+
+        assert tracker.reset_called is True
+        assert tracker.search_args is not None
+        assert values == (0x11, 0x22)
