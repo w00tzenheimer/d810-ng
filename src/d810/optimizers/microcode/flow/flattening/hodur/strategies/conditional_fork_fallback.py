@@ -15,18 +15,22 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.hexrays.utils.hexrays_helpers import (
-    append_mop_if_not_in_list,
-    equal_mops_ignore_size,
-    get_mop_index,
+from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
+from d810.evaluator.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
 )
 from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     remove_segment_registers,
 )
-from d810.evaluator.hexrays_microcode.emulator import (
-    MicroCodeEnvironment,
-    MicroCodeInterpreter,
+from d810.cfg.modification_builder import (
+    ModificationBuilder,
+)
+from d810.hexrays.utils.hexrays_helpers import (
+    append_mop_if_not_in_list,
+    equal_mops_ignore_size,
+    get_mop_index,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
@@ -38,9 +42,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
-from d810.cfg.modification_builder import (
-    ModificationBuilder,
+from d810.recon.flow.conditional_chain_discovery import (
+    extract_check_constant_from_snapshot,
+    find_conditional_predecessor,
+    get_jump_and_fallthrough_from_snapshot,
+    get_successor_into_dispatcher,
+    resolve_conditional_chain_target,
 )
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
@@ -88,179 +95,6 @@ class ConditionalForkFallbackStrategy:
             return False
         transitions = getattr(sm, "transitions", None) or []
         return any(getattr(t, "is_conditional", False) for t in transitions)
-
-    # ------------------------------------------------------------------
-    # Private helpers (ported from HodurUnflattener)
-    # ------------------------------------------------------------------
-
-    def _find_conditional_predecessor(
-        self,
-        start_block: int,
-        flow_graph: object,
-    ) -> int | None:
-        """Walk backward along single-predecessor chains to find a 2-way block.
-
-        Only follows single-predecessor paths (npred==1) to avoid crossing
-        dispatcher boundaries. Returns the serial of the first 2-way conditional
-        block found, or None.
-
-        Port of HodurUnflattener._find_conditional_predecessor.
-        K3: fully migrated to flow_graph (TOPO + INSN_CHAIN via tail_opcode).
-        """
-        current = start_block
-        visited: set[int] = {current}
-        max_depth = flow_graph.block_count  # Safety bound
-
-        for _ in range(max_depth):
-            blk_snap = flow_graph.get_block(current)
-            if blk_snap is None or blk_snap.npred != 1:
-                return None  # Multi-predecessor or missing — bail
-
-            pred_serial = blk_snap.preds[0]
-            if pred_serial in visited:
-                return None  # Cycle
-
-            pred_snap = flow_graph.get_block(pred_serial)
-            if pred_snap is None:
-                return None
-            if (
-                pred_snap.nsucc == 2
-                and pred_snap.tail_opcode is not None
-                and pred_snap.tail_opcode
-                in (
-                    ida_hexrays.m_jcnd,
-                    ida_hexrays.m_jnz,
-                    ida_hexrays.m_jz,
-                    ida_hexrays.m_jae,
-                    ida_hexrays.m_jb,
-                    ida_hexrays.m_ja,
-                    ida_hexrays.m_jbe,
-                    ida_hexrays.m_jg,
-                    ida_hexrays.m_jge,
-                    ida_hexrays.m_jl,
-                    ida_hexrays.m_jle,
-                )
-            ):
-                return pred_serial
-
-            visited.add(pred_serial)
-            current = pred_serial
-
-        return None
-
-    @staticmethod
-    def _extract_check_constant_from_snapshot(
-        insn_snap: object,
-    ) -> tuple[int, int, int] | None:
-        """Snapshot-based equivalent of _extract_check_constant_and_opcode.
-
-        Reads InsnSnapshot.l / InsnSnapshot.r to find the numeric operand
-        and returns (normalized_opcode, constant_value, operand_size).
-        """
-        l_mop = getattr(insn_snap, "l", None)
-        r_mop = getattr(insn_snap, "r", None)
-        opcode = insn_snap.opcode
-
-        # Determine which operand is mop_n (numeric)
-        if l_mop is not None and l_mop.t == ida_hexrays.mop_n:
-            num_val = l_mop.value
-            num_size = l_mop.size
-            # Operands are reversed — swap opcode direction
-            normalized = HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands(opcode)
-        elif r_mop is not None and r_mop.t == ida_hexrays.mop_n:
-            num_val = r_mop.value
-            num_size = r_mop.size
-            normalized = opcode
-        else:
-            return None
-
-        if num_val is None:
-            return None
-        return (normalized, int(num_val), num_size)
-
-    @staticmethod
-    def _get_jump_and_fallthrough_from_snapshot(
-        blk_snap: object,
-    ) -> tuple[int | None, int | None]:
-        """Snapshot-based equivalent of _get_jump_and_fallthrough_targets.
-
-        Uses BlockSnapshot.tail.d.block_ref for jump target and
-        BlockSnapshot.succs to derive fallthrough.
-        """
-        tail = blk_snap.tail
-        if tail is None:
-            return None, None
-        d_mop = getattr(tail, "d", None)
-        if d_mop is None or d_mop.t != ida_hexrays.mop_b:
-            return None, None
-
-        jump_target = d_mop.block_ref
-        if jump_target is None:
-            return None, None
-
-        fallthrough = None
-        for succ in blk_snap.succs:
-            if succ != jump_target:
-                fallthrough = succ
-                break
-
-        if fallthrough is None and blk_snap.serial + 1 < len(blk_snap.succs) + blk_snap.serial + 1:
-            # Cannot determine fallthrough reliably from snapshot alone
-            pass
-
-        return jump_target, fallthrough
-
-    def _resolve_conditional_chain_target(
-        self,
-        start_block: int,
-        state_value: int,
-        hodur_state_check_opcodes: list,
-        detector_cls: object,
-        flow_graph: object,
-    ) -> int | None:
-        """Follow conditional-chain comparisons for a concrete state until a leaf block.
-
-        Port of HodurUnflattener._resolve_conditional_chain_target.
-        K3: fully migrated to flow_graph (tail_opcode + snapshot constant extraction).
-        """
-        visited: set[int] = set()
-        current = start_block
-
-        for _ in range(flow_graph.block_count):
-            if current in visited:
-                return None
-            visited.add(current)
-
-            blk_snap = flow_graph.get_block(current)
-            if blk_snap is None:
-                return None
-            if blk_snap.tail_opcode is None or blk_snap.tail_opcode not in hodur_state_check_opcodes:
-                return current
-
-            tail_insn = blk_snap.tail
-            if tail_insn is None:
-                return current
-            check_info = self._extract_check_constant_from_snapshot(tail_insn)
-            if check_info is None:
-                return current
-            check_opcode, check_const, check_size = check_info
-
-            jump_target, fallthrough = self._get_jump_and_fallthrough_from_snapshot(blk_snap)
-            if jump_target is None or fallthrough is None:
-                return None
-
-            jump_taken = detector_cls._is_jump_taken_for_state(
-                check_opcode,
-                int(state_value),
-                check_const,
-                check_size,
-            )
-            if jump_taken is None:
-                return None
-
-            current = jump_target if jump_taken else fallthrough
-
-        return None
 
     def _collect_ladder_use_before_def(
         self,
@@ -314,39 +148,6 @@ class ConditionalForkFallbackStrategy:
         return [
             m for m in use_before_def if m.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
         ]
-
-    def _get_successor_into_dispatcher(
-        self,
-        dispatcher_set: set[int],
-        flow_graph: object,
-        from_block_serial: int,
-    ) -> int | None:
-        """Return the successor that enters or stays in the dispatcher set.
-
-        Port of HodurUnflattener._get_successor_into_dispatcher.
-        K3: fully migrated to flow_graph (TOPO only).
-        """
-        from_snap = flow_graph.get_block(from_block_serial)
-        if from_snap is None:
-            return None
-        succs = list(from_snap.succs)
-        if not succs:
-            return None
-        if from_snap.nsucc == 1:
-            return succs[0]
-        if from_snap.nsucc == 2:
-            in_disp = [s for s in succs if s in dispatcher_set]
-            if in_disp:
-                return in_disp[0]
-            for s in succs:
-                succ_snap = flow_graph.get_block(s)
-                if succ_snap is None:
-                    continue
-                for s2 in succ_snap.succs:
-                    if s2 in dispatcher_set:
-                        return s
-            return None
-        return succs[0] if succs else None
 
     def _emulate_chain_exit(
         self,
@@ -487,7 +288,11 @@ class ConditionalForkFallbackStrategy:
                 continue
 
             # Walk backward from from_block looking for a 2-way conditional block
-            cond_block = self._find_conditional_predecessor(from_blk_serial, fg)
+            cond_block = find_conditional_predecessor(
+                from_blk_serial,
+                fg,
+                conditional_opcodes=HODUR_STATE_CHECK_OPCODES,
+            )
             if cond_block is None:
                 if logger.debug_on:
                     logger.debug(
@@ -498,11 +303,25 @@ class ConditionalForkFallbackStrategy:
 
             # Resolve which target block each state leads to through the chain
             state_a, state_b = unique_states[0], unique_states[1]
-            target_a = self._resolve_conditional_chain_target(
-                cond_block, state_a, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector, fg
+            target_a = resolve_conditional_chain_target(
+                cond_block,
+                state_a,
+                fg,
+                conditional_opcodes=HODUR_STATE_CHECK_OPCODES,
+                normalize_reversed_jump_opcode=(
+                    HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands
+                ),
+                is_jump_taken_for_state=HodurStateMachineDetector._is_jump_taken_for_state,
             )
-            target_b = self._resolve_conditional_chain_target(
-                cond_block, state_b, HODUR_STATE_CHECK_OPCODES, HodurStateMachineDetector, fg
+            target_b = resolve_conditional_chain_target(
+                cond_block,
+                state_b,
+                fg,
+                conditional_opcodes=HODUR_STATE_CHECK_OPCODES,
+                normalize_reversed_jump_opcode=(
+                    HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands
+                ),
+                is_jump_taken_for_state=HodurStateMachineDetector._is_jump_taken_for_state,
             )
 
             if target_a is None or target_b is None:
@@ -512,7 +331,7 @@ class ConditionalForkFallbackStrategy:
                         mba, dispatcher_set, cond_block,
                         flow_graph=fg,
                     )
-                    ladder_entry = self._get_successor_into_dispatcher(
+                    ladder_entry = get_successor_into_dispatcher(
                         dispatcher_set, fg, from_blk_serial,
                     )
                     if ladder_entry is not None:
@@ -562,7 +381,12 @@ class ConditionalForkFallbackStrategy:
             cond_tail = cond_snap.tail
             if cond_tail is None:
                 continue
-            check_info = self._extract_check_constant_from_snapshot(cond_tail)
+            check_info = extract_check_constant_from_snapshot(
+                cond_tail,
+                normalize_reversed_jump_opcode=(
+                    HodurStateMachineDetector._swap_jump_opcode_for_reversed_operands
+                ),
+            )
             if check_info is None:
                 continue
             check_opcode, check_const, check_size = check_info
