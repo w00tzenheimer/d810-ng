@@ -44,7 +44,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     ALL_STRATEGIES,
     ConditionalForkFallbackStrategy,
     EdgeSplitConflictResolutionStrategy,
-    PredPatchFallbackStrategy,
     TerminalLoopCleanupStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
@@ -122,14 +121,6 @@ class TestStrategyProperties:
     def test_terminal_loop_cleanup_family(self):
         s = TerminalLoopCleanupStrategy()
         assert s.family == FAMILY_CLEANUP
-
-    def test_pred_patch_fallback_name(self):
-        s = PredPatchFallbackStrategy()
-        assert s.name == "pred_patch_fallback"
-
-    def test_pred_patch_fallback_family(self):
-        s = PredPatchFallbackStrategy()
-        assert s.family == FAMILY_FALLBACK
 
     def test_conditional_fork_fallback_name(self):
         s = ConditionalForkFallbackStrategy()
@@ -1922,11 +1913,6 @@ def test_terminal_loop_cleanup_not_applicable():
     assert not s.is_applicable(_empty_snapshot())
 
 
-def test_pred_patch_fallback_not_applicable():
-    s = PredPatchFallbackStrategy()
-    assert not s.is_applicable(_empty_snapshot())
-
-
 def test_conditional_fork_fallback_not_applicable():
     s = ConditionalForkFallbackStrategy()
     assert not s.is_applicable(_empty_snapshot())
@@ -1951,9 +1937,6 @@ class TestPlanEmptySnapshot:
 
     def test_terminal_loop_cleanup_returns_none(self):
         self._check_none(TerminalLoopCleanupStrategy())
-
-    def test_pred_patch_fallback_returns_none(self):
-        self._check_none(PredPatchFallbackStrategy())
 
     def test_conditional_fork_fallback_returns_none(self):
         self._check_none(ConditionalForkFallbackStrategy())
@@ -2004,19 +1987,6 @@ class TestPrerequisites:
         frag = s.plan(_empty_snapshot())
         assert frag is None
         assert s.name == "edge_split_conflict_resolution"
-
-    def test_pred_patch_prereq_declared(self):
-        # Verify the prereq list is declared on the strategy even when
-        # plan() returns None (no resolvable targets from empty snapshot).
-        s = PredPatchFallbackStrategy()
-        snap = AnalysisSnapshot(mba=None, state_machine=None, detector=None)
-        frag = s.plan(snap)
-        # With no state machine, plan returns None — that's correct.
-        # Verify prerequisites are accessible via the strategy's protocol.
-        assert hasattr(s, "plan")
-        # Also verify via a fragment that DOES get produced (needs real SM).
-        # For now, trust the protocol test above covers prerequisite wiring.
-
 
 class TestModificationBuilder:
     """Pure-Python checks for branch-aware GraphModification emission."""
