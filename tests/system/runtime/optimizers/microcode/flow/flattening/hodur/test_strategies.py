@@ -42,7 +42,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     ALL_STRATEGIES,
-    AssignmentMapFallbackStrategy,
     ConditionalForkFallbackStrategy,
     EdgeSplitConflictResolutionStrategy,
     PredPatchFallbackStrategy,
@@ -138,14 +137,6 @@ class TestStrategyProperties:
 
     def test_conditional_fork_fallback_family(self):
         s = ConditionalForkFallbackStrategy()
-        assert s.family == FAMILY_FALLBACK
-
-    def test_assignment_map_fallback_name(self):
-        s = AssignmentMapFallbackStrategy()
-        assert s.name == "assignment_map_fallback"
-
-    def test_assignment_map_fallback_family(self):
-        s = AssignmentMapFallbackStrategy()
         assert s.family == FAMILY_FALLBACK
 
     def test_state_write_reconstruction_name(self):
@@ -1941,11 +1932,6 @@ def test_conditional_fork_fallback_not_applicable():
     assert not s.is_applicable(_empty_snapshot())
 
 
-def test_assignment_map_fallback_not_applicable():
-    s = AssignmentMapFallbackStrategy()
-    assert not s.is_applicable(_empty_snapshot())
-
-
 # ---------------------------------------------------------------------------
 # plan() returns None on empty snapshot
 # ---------------------------------------------------------------------------
@@ -1971,10 +1957,6 @@ class TestPlanEmptySnapshot:
 
     def test_conditional_fork_fallback_returns_none(self):
         self._check_none(ConditionalForkFallbackStrategy())
-
-    def test_assignment_map_fallback_returns_none(self):
-        self._check_none(AssignmentMapFallbackStrategy())
-
 
 # ---------------------------------------------------------------------------
 # EdgeSplitConflictResolutionStrategy — constructor args

@@ -186,7 +186,6 @@ class HodurUnflattener(GenericUnflatteningRule):
         _DISABLED_STRATEGIES = {
             "PredPatchFallbackStrategy",
             "ConditionalForkFallbackStrategy",
-            "AssignmentMapFallbackStrategy",
         }
         self._strategies = [
             cls()
