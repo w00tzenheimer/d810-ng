@@ -15,6 +15,9 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.linearized_flow_graph_fragment_planning import (
+    is_original_pre_header_candidate,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
     StateHandler,
@@ -2146,12 +2149,12 @@ def test_lfg_accepts_only_original_entry_pre_header_candidates():
         ]
     )
 
-    assert LinearizedFlowGraphStrategy._is_original_pre_header_candidate(
+    assert is_original_pre_header_candidate(
         flow_graph,
         pre_header_serial=1,
         entry_serial=0,
     )
-    assert not LinearizedFlowGraphStrategy._is_original_pre_header_candidate(
+    assert not is_original_pre_header_candidate(
         flow_graph,
         pre_header_serial=62,
         entry_serial=0,
