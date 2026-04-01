@@ -9,6 +9,7 @@ from d810.cfg.dag_redirect_modification_planning import (
     apply_dag_redirect_emission_plan,
     plan_dag_redirect_fallback,
 )
+from d810.cfg.path_tail_redirect_execution import emit_path_tail_redirect
 from d810.cfg.lowering_selector import (
     is_backward_same_corridor_target,
     is_live_oneway_noop,
@@ -206,7 +207,119 @@ def execute_dag_redirect_fallback(
     )
 
 
+def emit_dag_redirect(
+    *,
+    edge: object,
+    dag: object,
+    builder: object,
+    modifications: list,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    owned_transitions: set[tuple[int, int]],
+    emitted: set[tuple[int, int]],
+    claimed_1way: dict[int, int],
+    claimed_2way: dict[tuple[int, int], int],
+    claimed_exits: dict[int, int],
+    claimed_path_edges: dict[tuple[int, int], int],
+    blocked_sources: set[int],
+    terminal_source_keys: set[object],
+    terminal_source_handlers: set[int],
+    terminal_source_owned_blocks: set[int],
+    terminal_protected_blocks: set[int],
+    report_exit_handlers: set[int],
+    report_exit_owned_blocks: set[int],
+    bst_node_blocks: set[int],
+    dispatcher_region: set[int],
+    flow_graph: object,
+    state_var_stkoff: int | None,
+    dispatcher_lookup: object | None,
+    dispatcher: object | None,
+    mba: object | None,
+    resolve_effective_target_entry,
+    resolve_immediate_handoff_target,
+    find_foreign_exact_entry_owner,
+    is_semantic_handoff_redirect,
+) -> tuple[bool, DagRedirectExecutionResult | None]:
+    target_entry = resolve_effective_target_entry(
+        dag,
+        edge,
+        bst_node_blocks=bst_node_blocks,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+        mba=mba,
+    )
+    if target_entry is None:
+        return False, None
+
+    path_result = emit_path_tail_redirect(
+        edge=edge,
+        target_entry=target_entry,
+        dag=dag,
+        builder=builder,
+        modifications=modifications,
+        owned_blocks=owned_blocks,
+        owned_edges=owned_edges,
+        owned_transitions=owned_transitions,
+        emitted=emitted,
+        claimed_1way=claimed_1way,
+        claimed_exits=claimed_exits,
+        claimed_path_edges=claimed_path_edges,
+        blocked_sources=blocked_sources,
+        report_exit_handlers=report_exit_handlers,
+        report_exit_owned_blocks=report_exit_owned_blocks,
+        terminal_protected_blocks=terminal_protected_blocks,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher_region=dispatcher_region,
+        flow_graph=flow_graph,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+        mba=mba,
+        resolve_effective_target_entry=resolve_effective_target_entry,
+        resolve_immediate_handoff_target=resolve_immediate_handoff_target,
+        find_foreign_exact_entry_owner=find_foreign_exact_entry_owner,
+        is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+    )
+    if path_result.accepted:
+        return True, None
+
+    result = execute_dag_redirect_fallback(
+        DagRedirectExecutionContext(
+            edge=edge,
+            dag=dag,
+            target_entry=int(target_entry),
+            flow_graph=flow_graph,
+            block_succ_map=builder.block_succ_map,
+            block_nsucc_map=builder.block_nsucc_map,
+            report_exit_handlers=frozenset(report_exit_handlers),
+            report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
+            terminal_source_owned_blocks=frozenset(terminal_source_owned_blocks),
+            terminal_protected_blocks=frozenset(terminal_protected_blocks),
+            blocked_sources=frozenset(blocked_sources),
+            bst_node_blocks=frozenset(bst_node_blocks),
+            dispatcher_region=frozenset(dispatcher_region),
+            state_var_stkoff=state_var_stkoff,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+            mba=mba,
+            is_semantic_handoff_redirect=is_semantic_handoff_redirect,
+        ),
+        state=DagRedirectMutableState(
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            owned_transitions=owned_transitions,
+            emitted=emitted,
+            claimed_1way=claimed_1way,
+            claimed_2way=claimed_2way,
+        ),
+    )
+    return bool(result.accepted), result
+
+
 __all__ = [
+    "emit_dag_redirect",
     "DagRedirectExecutionContext",
     "DagRedirectExecutionResult",
     "DagRedirectMutableState",

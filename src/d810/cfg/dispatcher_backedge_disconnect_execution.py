@@ -44,7 +44,32 @@ def execute_dispatcher_backedge_disconnects(
     return DispatcherBackedgeDisconnectExecutionResult(plans=plans)
 
 
+def disconnect_bst_comparison_nodes(
+    bst_node_blocks: set[int],
+    dispatcher_serial: int,
+    builder: object,
+    modifications: list,
+    emitted: set[tuple[int, int]],
+    *,
+    log_plan=None,
+) -> int:
+    result = execute_dispatcher_backedge_disconnects(
+        block_nsucc_map=builder.block_nsucc_map,
+        block_succ_map=builder.block_succ_map,
+        dispatcher_serial=int(dispatcher_serial),
+        bst_node_blocks={int(block) for block in bst_node_blocks},
+        emitted=emitted,
+        convert_to_goto=builder.convert_to_goto,
+        modifications=modifications,
+    )
+    if log_plan is not None:
+        for plan in result.plans:
+            log_plan(plan)
+    return result.count
+
+
 __all__ = [
+    "disconnect_bst_comparison_nodes",
     "DispatcherBackedgeDisconnectExecutionResult",
     "execute_dispatcher_backedge_disconnects",
 ]

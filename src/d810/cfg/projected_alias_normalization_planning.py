@@ -121,8 +121,48 @@ def apply_projected_alias_normalization_actions(
         owned_edges.add((int(action.source_block), int(action.target_entry)))
 
 
+def normalize_projected_alias_handoffs(
+    *,
+    dag,
+    projected_flow_graph: object,
+    dispatcher_serial: int,
+    redirected_blocks: set[int],
+    bst_node_blocks: set[int],
+    modifications: list,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+    emitted: set[tuple[int, int]],
+    claimed_1way: dict[int, int],
+    resolve_projected_path_tail_target,
+    log_action=None,
+) -> int:
+    actions = collect_projected_alias_normalization_actions(
+        dag=dag,
+        projected_flow_graph=projected_flow_graph,
+        dispatcher_serial=int(dispatcher_serial),
+        redirected_blocks={int(block) for block in redirected_blocks},
+        bst_node_blocks={int(block) for block in bst_node_blocks},
+        modifications=modifications,
+        emitted=emitted,
+        resolve_projected_path_tail_target=resolve_projected_path_tail_target,
+    )
+    apply_projected_alias_normalization_actions(
+        actions,
+        modifications=modifications,
+        emitted=emitted,
+        owned_blocks=owned_blocks,
+        owned_edges=owned_edges,
+        claimed_1way=claimed_1way,
+    )
+    if log_action is not None:
+        for action in actions:
+            log_action(action)
+    return len(actions)
+
+
 __all__ = [
     "apply_projected_alias_normalization_actions",
     "ProjectedAliasNormalizationAction",
     "collect_projected_alias_normalization_actions",
+    "normalize_projected_alias_handoffs",
 ]
