@@ -73,14 +73,14 @@ def _get_default_binary() -> str:
 HODUR_BASELINES = [
     pytest.param(
         "hodur_func",
-        "example_hodur.json",
-        {"lines": 95, "returns": 3, "whiles": 0, "gotos": 1},
+        "example_libobfuscated.json",
+        {"lines": 113, "returns": 3, "whiles": 0, "gotos": 1},
         id="hodur_func",
     ),
     pytest.param(
         "sub_7FFD3338C040",
         "hodur_flag2.json",
-        {"lines": 354, "returns": 9, "whiles": 2, "gotos": 6},
+        {"lines": 304, "returns": 4, "whiles": 5, "gotos": 8},
         id="sub_7FFD3338C040",
     ),
 ]
