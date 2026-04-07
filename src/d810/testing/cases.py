@@ -126,6 +126,9 @@ class DeobfuscationCase:
     expected_rules: list[str] = field(default_factory=list)
     forbidden_rules: list[str] = field(default_factory=list)
 
+    # AST metrics baseline (from CodeComparator.count_ast_statements)
+    expected_ast_stats: Optional[dict[str, int]] = None
+
     # Behavior flags
     must_change: bool = True
     check_stats: bool = True
