@@ -250,6 +250,26 @@ def run_deobfuscation_test(
             )
 
         # ==========================================
+        # AST METRICS: Verify structural regression
+        # ==========================================
+        if effective_case.expected_ast_stats and code_comparator is not None:
+            actual_ast = code_comparator.count_ast_statements(code_after)
+            diffs = {}
+            for metric, expected_val in effective_case.expected_ast_stats.items():
+                actual_val = actual_ast.get(metric, 0)
+                if actual_val != expected_val:
+                    diffs[metric] = (expected_val, actual_val, actual_val - expected_val)
+            if diffs:
+                diff_lines = [
+                    f"  {m}: expected={e} actual={a} delta={d:+d}"
+                    for m, (e, a, d) in diffs.items()
+                ]
+                raise AssertionError(
+                    f"{effective_case.function}: AST metric regression:\n"
+                    + "\n".join(diff_lines)
+                )
+
+        # ==========================================
         # STATS: Verify rule firing
         # ==========================================
         if effective_case.check_stats:

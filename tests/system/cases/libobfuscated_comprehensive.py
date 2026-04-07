@@ -549,6 +549,7 @@ HODUR_CASES = [
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
         expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
+        expected_ast_stats={"statements": 38, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 7},
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
