@@ -239,6 +239,30 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     self.current_maturity,
                 )
             return 0
+        # Gate: skip FCP at MMAT_CALLS for UNKNOWN-dispatcher functions.
+        # At this early maturity the dispatcher CFG is unresolved, so FCP
+        # sees single-predecessor return blocks and folds dispatcher-state
+        # constants (e.g. 0xffffffff) into the return register before
+        # FakeJump/Hodur can reconstruct the real control flow.
+        # SWITCH_TABLE/CONDITIONAL_CHAIN dispatchers are FCP-safe.
+        if (
+            self.flow_context is not None
+            and self.current_maturity == ida_hexrays.MMAT_CALLS
+        ):
+            gate = self.flow_context.evaluate_early_fcp_gate()
+            if gate.allowed:
+                if logger.debug_on:
+                    logger.debug(
+                        "Skipping %s at MMAT_CALLS for unflatten-eligible function: %s",
+                        self.__class__.__name__,
+                        gate.reason,
+                    )
+                self._seen[mba] = (
+                    self.current_maturity,
+                    self.current_generation,
+                )
+                return 0
+
         if logger.debug_on:
             logger.debug(
                 "Running %s analysis on block %d, maturity %s (%d)",
