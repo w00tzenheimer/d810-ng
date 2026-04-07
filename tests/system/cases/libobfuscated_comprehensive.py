@@ -38,29 +38,27 @@ def _encode_expected(code: str) -> str:
 # Encoded expected_code for long deobfuscated functions (from results.toml)
 # =============================================================================
 
-# hodur_func: 4119 chars -> 1624 chars encoded
+# hodur_func (example_libobfuscated.json): 4876 chars -> 1508 chars encoded
 _HODUR_FUNC_EXPECTED = (
-    "H4sIAIleL2kC/8WXe2/bNhDA//en4AQskBLXEWWJkuoVmF5eBmhxGnfogCzVPEV2Zeth6OE5C7LPPlIP"
-    "h5ItOxkwVCjqHMk7Hu93x4fj+FGGROA481maubMgAF/jhzxx5nnkslzvqQfwd3kJ7oyJbWs3U8sE9sTQ"
-    "bGBahq3dap9+nlxPB+Dm1ppOwfWvv9xoJmAuGPBpAqzfbrRr875XmNgMBfAB8FtdGJvKWEejqpUnrZUg"
-    "qLSg0IJMC4gWJEoYQix89qOrLFtP1l7E2swVWc0lHPBMH/C7f1yp4M8BC74jalwhky/xsjyJABz1KA8r"
-    "m0YcRZ6bsVijD2zG287CdeAN3Dgk1rdQ1/dt85Xtp90MtbEgTr2rWfQQeMRgpdZ0gUjPpSPrBJOaOzzL"
-    "3J3fg2k2SzI/WoB5MMsyL/IegLf13Dzz4wi3xX8NBoPfI6YyOk3cO/6+iL+kyZo8lnnRRAqyJNm2X4bA"
-    "cgjuNvEgRTZFKOvIrIdshOFLrEMvdNeP2J2NIPaJdhEAmFczzuMEL98vxuOfH0gn/uviwqdCjVXv/Hvw"
-    "5QNgffCODDE5cAYk8AWwWDBwm08a+O1Yw224SR3tBePiHpiemzyuMxwDVgsWMYDce/B9ipffJ1Nwo0YC"
-    "GggpkiDJdJqxm9jHylQRnHNl23kfl0ZRIn2AfyiZ4xIvjYON58zWPvsyT8GdmKXXqeABah8M++Bs4WR+"
-    "6MV55oSph6NG9JoVogqihEyrchCqp9CRISfR8V3osPYhdMsS3ZJCt2yhW5bo8ij1FyQBi8AoHLvcsSTM"
-    "rOGrmAnHmA0NRUW8pn4LZug1zCyDH0Ko1g5CdJoZOskMyt3M0CFmq5LZimK2ajFblcxW/wXR8BgiRdZ4"
-    "Q0PWt0Akvaqs5LGiKYpeB7fYy7YiOswnzRIcb3YDsYPMdvmH4/+5yFy33lCbOM6wtYLHsMkjLHmEJQ+B"
-    "8AhbPMKSR/gmHkcw6AoUlTGij82j8ZT3TqcNhCVQnnwjylt1hxRjZCteXXjdOEoz4H6dJfuS8/Hz5Nbc"
-    "/8UGOQ77xLG7Wfc/fKL2j3QzPzFHuy+PdvP/U2cVTa5xolcI1H0EO5jIMnSLhqAe3VUamYvvOUw4W7Yy"
-    "91D2qs3kfUngqEzgiErgiErgOomjMomjw0n8tkSm1w+RqUFTM+gkRJ0ZXfRTWyYVYkQ5/dR0n9hjHmbZ"
-    "jBk1O2C5hYvNZntiklzF03L7ncXsJyujnfUdtVFvj04xIakL1FUXZBPsvSkru9rLSHR0nrOlc3gxG9jv"
-    "cqVrRorSc68FSO7mU6WCaImaoOtmK+BiWQ56dznQJSGRighWD39vfszcxePT4h+6Kg5VhlhUhpy3hlW3"
-    "2/p6W91vUXG/9VsFsrvo1jddv7tM3l4qdIxMJOj8WFZbvcUL6fhR/LFMse66ompJOrg+qTyJea61mpdn"
-    "n6lYWn2pPbxWa/eAwQ8q/K4iN480d10vTed5EDxSD5r6W8RZDGxNt2xnq+jm+GCO7eIjIhNJplFvwuR/"
-    "L0i9jt23Pbx9Ir/DHicJzoTYdfMkwc76EfUcKx5hpcc9ysP3h7b+rlehoNbxLBV2j8nOZyTfUoCnFGCt"
-    "UD068eb5/C8PSvukFRAAAA=="
+    "H4sIADl+1GkC/81XW2+jRhh996+YWmoEjpPMYG7eNFJ9S/tgabXbh6pKvdTB2MHGYAFmnUbpb99vADPD"
+    "xSR219KiKOZyON/lnBlmDMN2Q1VGT95s6xvzrWsKYuOlgeAw0kcRuUU3N+jBDzaXEn6awNnj5op09adJ"
+    "HidxOJ3hcIoDFLJthpHlDKPJHCaSGUZhGJXHuByEhVL5UGsGUVnWis5BVhyEBVL4QEsOwgIpuZo4yCCD"
+    "yIMUEnn2DAmGMZ8GoTl1HNSKCBaFtGttZHz68+PnochINJatXOxxgYeUeNiv6blBiMynqY9abcRg2cmw"
+    "GJfVJ+P6uBIXNx+nELWQ0/4XXuUC66zgjl7TtQ5E3RPto8c4Vh/Pysrp4BpW+Sysyv9mZcNPZcAua5VU"
+    "Gn9E44CMUSoz6gzYY4ykPKIxAxLmS2pL1P/r8+g+hsdqRxJ5UNQJj89SoHZK8UnDiIruEL5NL3S4CLaP"
+    "BtExxv2eigVh6wb2wrVmsVPGzd/p7HRDrnGzjXD2JyYE9hwJMYsYXyaTV8Ks5Zm7WABcG42b1m663jjW"
+    "temtKeWO9PuMkCPVUtI8MT02PqQ2F5oPrQn6I5z6oe0u0NyZhqFF87Z2lrkNbc+Fe97X6+vrv90mRx+n"
+    "J2HahZ3S03ravYbloaqrI0Ubj/O4Vuok1BKhyfErAB/CS7o2lInWV4fFV6gY+oT1eH/MPR/KsuMH8PML"
+    "rRzOLi9trk6exEZXCIi+3CGBngJ8KKILpKAvSICLAdyz6Q28u+/BPbjVvW1U9+lygoaW6T9vQmiP0HMW"
+    "HiLiB/RzAJ1pI4GfOMQL6E2xW6QDaQvlsfaOgSb6VuA5kWVMN7ZQwZ2K3alqAukI4LVOG11s3VVsJDLA"
+    "93ALxm/jx9Bzmei55PRcHtBzyfTMhljcJV0UlpnAVMhR5wghpaOElM8tpFwppEyFVH9kIVeJkCtOyNUB"
+    "IVc1Qq5OF7JzlJDKuYVUKoVUqJDKEULKar2QQeibm2cB+tpGzd3yH8N+XISmWZywE5HWiUjrRCSJirQ+"
+    "INK6RqT1CSIdo41Etalcvn2Htds75ZMq5aPffngGn2IN2v0blNO8yX3Xd/RrjXFRzZj0J/p+mXXhhR4a"
+    "9/qjsbHrd7uDE0d0zgjr6bLWCG5iBJczgnvACG6NEdwzG4G8xwgnbh7e8kEkl6e61Buk0KqXUuPGH+Mg"
+    "4BMRWOTbwwDpACAOD6GAQt27qzmbhlPoXAQSR1J+0UeP1wrTRfKbyWYO69c7rOwyZzX7N/o1NBfPL4v/"
+    "ik7jFm37VVu6bFPjZVvVui1bu9k1rrPtett9B+sl9sMHvxGFDfBbXuK8gw9VTXAqtfhGOaNseQ47ANgI"
+    "0C9gsDVNKwjmW8d5rliux8qxvUQ/DlUyD39lOYFVsA03RX04nOAVJOj7ILtnmlvfj7dB3N4i3lGUEyw4"
+    "t5irVoAXn+uF574Vbn2XH72sulxlL6fQkiJt8j8jZqT5F14br427Mx3fAHq1Cv8MEwAA"
 )
 
 # test_function_ollvm_fla_bcf_sub: 3031 chars -> 1468 chars encoded
@@ -550,6 +548,7 @@ HODUR_CASES = [
         project="example_libobfuscated.json",
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
+        expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
