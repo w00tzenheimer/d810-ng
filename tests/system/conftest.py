@@ -573,6 +573,72 @@ typedef int int32_t;
         except AssertionError:
             return False
 
+    def count_ast_statements(self, code: str) -> dict:
+        """Count structural metrics from the AST, ignoring formatting.
+
+        Walks the Clang AST to count statements, returns, whiles, gotos,
+        if-statements, and call expressions. These counts are
+        format-independent — function signature wrapping, whitespace,
+        and comments don't affect them.
+
+        Returns dict with keys: statements, returns, whiles, gotos, ifs, calls.
+        """
+        tu = self._parse(code, "metrics.cpp")
+        func = self._get_function_cursor(tu)
+        if func is None:
+            return {
+                "statements": 0, "returns": 0, "whiles": 0,
+                "gotos": 0, "ifs": 0, "calls": 0,
+            }
+
+        counts = {
+            "statements": 0, "returns": 0, "whiles": 0,
+            "gotos": 0, "ifs": 0, "calls": 0,
+        }
+
+        def _walk(cursor: "Cursor") -> None:
+            k = cursor.kind
+            # Count statement-level nodes
+            if k == CursorKind.COMPOUND_STMT:
+                # Don't count the compound itself, just its children
+                pass
+            elif k == CursorKind.RETURN_STMT:
+                counts["statements"] += 1
+                counts["returns"] += 1
+            elif k == CursorKind.WHILE_STMT:
+                counts["statements"] += 1
+                counts["whiles"] += 1
+            elif k == CursorKind.GOTO_STMT:
+                counts["statements"] += 1
+                counts["gotos"] += 1
+            elif k == CursorKind.IF_STMT:
+                counts["statements"] += 1
+                counts["ifs"] += 1
+            elif k == CursorKind.CALL_EXPR:
+                counts["calls"] += 1
+            elif k in (
+                CursorKind.DECL_STMT,
+                CursorKind.FOR_STMT,
+                CursorKind.DO_STMT,
+                CursorKind.SWITCH_STMT,
+                CursorKind.CASE_STMT,
+                CursorKind.DEFAULT_STMT,
+                CursorKind.BREAK_STMT,
+                CursorKind.CONTINUE_STMT,
+                CursorKind.LABEL_STMT,
+            ):
+                counts["statements"] += 1
+            elif k == CursorKind.BINARY_OPERATOR:
+                # Assignment expressions used as statements
+                # (counted when they're direct children of COMPOUND_STMT)
+                pass
+            # Recurse into children
+            for child in cursor.get_children():
+                _walk(child)
+
+        _walk(func)
+        return counts
+
 
 # =============================================================================
 # Pytest Fixtures - Basic
@@ -741,7 +807,7 @@ def _configure_hexrays():
     idaapi.change_hexrays_config("BLOCK_INDENT = 4")
     idaapi.change_hexrays_config("MAX_FUNCSIZE = 2048")
     idaapi.change_hexrays_config("MAX_NCOMMAS = 1")
-    idaapi.change_hexrays_config("COLLAPSE_LVARS = YES")
+    idaapi.change_hexrays_config("COLLAPSE_LVARS = NO")
     idaapi.change_hexrays_config("GENERATE_EA_LABELS = YES")
     idaapi.change_hexrays_config("AUTO_UNHIDE = YES")
     idaapi.change_hexrays_config("DEFAULT_RADIX = 16")

@@ -3057,6 +3057,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if not self.post_apply_const_prop:
             return
 
+        # Skip FCP sweep at MMAT_CALLS for UNKNOWN-dispatcher functions:
+        # at early maturity the dispatcher CFG is still resolvable but
+        # FCP would fold stale dispatcher-state constants into the return
+        # register (e.g. 0xffffffff) before the unflattener can finish.
+        # Use the same gate as ForwardConstantPropagationRule.optimize().
+        if (
+            self.flow_context is not None
+            and self.cur_maturity == ida_hexrays.MMAT_CALLS
+        ):
+            gate = self.flow_context.evaluate_early_fcp_gate()
+            if gate.allowed:
+                unflat_logger.debug(
+                    "Skipping post-apply FCP sweep at MMAT_CALLS for "
+                    "unflatten-eligible function: %s", gate.reason,
+                )
+                return
+
         from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import ForwardConstantPropagationRule
         from d810.cfg.lattice import LatticeMeet, BOTTOM, TOP
         from d810.optimizers.microcode.instructions.peephole.fold_rotatehelper import RotateHelperInlineRule

@@ -515,6 +515,25 @@ class TestABCF6ConstantsCharacterization:
                     f"[CHARACTERIZATION] abc_f6_sub_dispatch rules fired: {state.stats.get_fired_rule_names()}"
                 )
 
+                # Gate regression: FCP at MMAT_CALLS must not collapse
+                # the function to 'return 0xFFFFFFFF' (ticket d81-hh22).
+                after_upper = actual_after.upper()
+                assert "0XFFFFFFFF" not in after_upper, (
+                    "FCP over-propagation: abc_f6_sub_dispatch collapsed to "
+                    "return 0xFFFFFFFF — MMAT_CALLS gate not working"
+                )
+                # Verify handler logic is preserved (division-by-2).
+                # Only assert when D810 rules actually fired — the
+                # unflattener may not trigger in all IDA environments.
+                fired = state.stats.get_fired_rule_names()
+                if fired:
+                    assert any(
+                        p in actual_after for p in ("/ 2", ">> 1", "/2", ">> 1u")
+                    ), (
+                        "abc_f6_sub_dispatch: expected division-by-2 pattern in "
+                        f"deobfuscated output, got:\n{actual_after}"
+                    )
+
                 expected = load_expected_stats()
                 if expected is not None:
                     state.stats.assert_matches(
@@ -607,6 +626,26 @@ class TestABCF6ConstantsCharacterization:
                 print(
                     f"[CHARACTERIZATION] abc_f6_or_dispatch rules fired: {state.stats.get_fired_rule_names()}"
                 )
+
+                # Gate regression: FCP at MMAT_CALLS must not collapse
+                # the function to 'return 0xFFFFFFFF' (ticket d81-hh22).
+                after_upper = actual_after.upper()
+                assert "0XFFFFFFFF" not in after_upper, (
+                    "FCP over-propagation: abc_f6_or_dispatch collapsed to "
+                    "return 0xFFFFFFFF — MMAT_CALLS gate not working"
+                )
+                # Verify handler logic is preserved (OR-mask).
+                # Only assert when D810 rules actually fired — the
+                # unflattener may not trigger in all IDA environments.
+                fired = state.stats.get_fired_rule_names()
+                if fired:
+                    assert any(
+                        p in actual_after
+                        for p in ("| 0xFF", "| 0xFFu", "|0xFF", "| 255")
+                    ), (
+                        "abc_f6_or_dispatch: expected OR-mask pattern in "
+                        f"deobfuscated output, got:\n{actual_after}"
+                    )
 
                 expected = load_expected_stats()
                 if expected is not None:

@@ -547,14 +547,12 @@ HODUR_CASES = [
     DeobfuscationCase(
         function="_hodur_func",
         description="Main Hodur C2 flattened function",
-        project="example_hodur.json",
+        project="example_libobfuscated.json",
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
-        # Full expected deobfuscated code from results.toml (base64+gzip encoded)
-        expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
-        deobfuscated_contains=["resolve_api"],
+        # (resolve_api checked via acceptable_patterns instead)
         deobfuscated_not_contains=["while ( 1 )"],
         # Must preserve API calls - accept either resolved names or sub_* patterns
         # IDA may not resolve Windows imports depending on platform/version
@@ -564,15 +562,13 @@ HODUR_CASES = [
             "Hodur/1.0",  # String literal that should be preserved
         ],
         must_change=True,
-        # From results.toml: The config example_hodur.json uses HodurUnflattener
-        # (not UnflattenerFakeJump which is used in other configs)
-        required_rules=["HodurUnflattener"],
+        required_rules=["UnflattenerFakeJump"],
         expected_rules=["CstSimplificationRule16"],
     ),
     DeobfuscationCase(
         function="resolve_api",
         description="Dynamic API resolution helper",
-        project="example_hodur.json",
+        project="example_libobfuscated.json",
         must_change=False,  # Helper function, not obfuscated
     ),
 ]

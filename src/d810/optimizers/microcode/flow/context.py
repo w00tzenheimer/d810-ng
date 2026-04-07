@@ -282,6 +282,40 @@ class FlowMaturityContext:
                 max_preds = info.predecessor_count
         return max_preds
 
+    def evaluate_early_fcp_gate(self) -> FlowGateDecision:
+        """Should FCP skip at early maturities (MMAT_CALLS)?
+
+        Unlike :meth:`evaluate_unflattening_gate`, this is conservative:
+        only returns ``allowed=True`` for UNKNOWN dispatcher types where
+        the emulator cannot resolve state transitions and FCP would fold
+        stale dispatcher constants into the return register.
+
+        SWITCH_TABLE and CONDITIONAL_CHAIN dispatchers have resolvable
+        structure — FCP is safe for those.
+        """
+        analysis = self.ensure_dispatcher_analysis()
+        if analysis is None or len(analysis.dispatchers) == 0:
+            return FlowGateDecision(False, "no dispatcher candidates")
+        if analysis.dispatcher_type != DispatcherType.UNKNOWN:
+            return FlowGateDecision(
+                False,
+                f"dispatcher type {analysis.dispatcher_type.value} is FCP-safe",
+            )
+        # UNKNOWN dispatcher — check if it has real structural signals
+        strong = self._strong_dispatcher_count(analysis)
+        if strong > 0:
+            return FlowGateDecision(True, "unknown dispatcher with strong candidates")
+        profile = self.get_profile_stats()
+        if profile is not None:
+            if profile.has_nested_dispatch:
+                return FlowGateDecision(True, "unknown dispatcher with nested dispatch")
+            if profile.dispatch_scc_n >= 2 and profile.flattening_score >= 0.35:
+                return FlowGateDecision(
+                    True,
+                    f"unknown dispatcher with cyclic profile (scc={profile.dispatch_scc_n})",
+                )
+        return FlowGateDecision(False, "unknown dispatcher without strong signals")
+
     def evaluate_unflattening_gate(self) -> FlowGateDecision:
         """Evaluate whether unflattening should proceed.
 
