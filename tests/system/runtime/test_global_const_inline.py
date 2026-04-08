@@ -70,7 +70,6 @@ GLOBAL_CONST_INLINE_CASES = [
         must_change=True,
         check_stats=True,
         expected_rules=["GlobalConstantInliner"],
-        skip="Known gap: unchanged in default_instruction_only runtime harness",
     ),
     DeobfuscationCase(
         function="global_const_rva_guard",
