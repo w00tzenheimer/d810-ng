@@ -74,31 +74,32 @@ def test_temporary_hexrays_config_no_restore_if_apply_fails():
     assert shim.calls == ["COLLAPSE_LVARS = NO"]
 
 
-# ---------------------------------------------------------------------------
-# test_decompile_function_temporarily_disables_lvar_collapse
-# ---------------------------------------------------------------------------
-# Requires a loaded binary with a decompilable function.  Skip when no
-# binary is open (BADADDR lookup fails or decompile returns None).
-# ---------------------------------------------------------------------------
+class TestDecompileFunctionLvarCollapse:
+    """Needs a loaded binary to decompile a real function."""
 
-@pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
-@pytest.mark.skip(reason="requires loaded binary with a decompilable function")
-def test_decompile_function_temporarily_disables_lvar_collapse(monkeypatch):
-    import idc
+    binary_name = "libobfuscated.dll"
 
-    func_ea = idc.get_name_ea_simple("main")
-    if func_ea == idaapi.BADADDR:
-        pytest.skip("No 'main' symbol in loaded binary")
+    @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
+    def test_decompile_function_temporarily_disables_lvar_collapse(
+        self, ida_database, monkeypatch
+    ):
+        import idc
 
-    monkeypatch.setattr(
-        export_to_c,
-        "_get_collapse_lvars_restore_directive",
-        lambda: "COLLAPSE_LVARS = YES",
-    )
+        func_ea = idc.get_name_ea_simple("test_xor")
+        if func_ea == idaapi.BADADDR:
+            func_ea = idc.get_name_ea_simple("_test_xor")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("test_xor not found in loaded binary")
 
-    result = export_to_c._decompile_function(func_ea, idaapi)
+        monkeypatch.setattr(
+            export_to_c,
+            "_get_collapse_lvars_restore_directive",
+            lambda: "COLLAPSE_LVARS = YES",
+        )
 
-    assert result is not None
-    func_name, lines = result
-    assert func_name is not None
-    assert len(lines) > 0
+        result = export_to_c._decompile_function(func_ea, idaapi)
+
+        assert result is not None
+        func_name, lines = result
+        assert func_name is not None
+        assert len(lines) > 0

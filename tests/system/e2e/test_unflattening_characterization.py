@@ -120,7 +120,6 @@ class TestABCPatternCharacterization:
                         expected, check_counts=False, allow_extra_rules=True
                     )
 
-    @pytest.mark.skip(reason="OR-mask dispatcher pattern (state & 0xF) not yet supported")
     def test_abc_or_dispatch(
         self,
         libobfuscated_test_setup,
@@ -586,7 +585,6 @@ class TestABCF6ConstantsCharacterization:
                         expected, check_counts=False, allow_extra_rules=True
                     )
 
-    @pytest.mark.skip(reason="OR-mask dispatcher pattern (state & 0xF) not yet supported")
     def test_abc_f6_or_dispatch(
         self,
         libobfuscated_test_setup,
