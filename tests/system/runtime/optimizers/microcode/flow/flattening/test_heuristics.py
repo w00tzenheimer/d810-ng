@@ -175,7 +175,7 @@ class TestDispatcherHeuristics:
         import ida_hexrays
         import idaapi
 
-        func_name = "nested_while_hodur_pattern"
+        func_name = "_hodur_func"
         func_ea = self._get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"{func_name} not found in binary")
@@ -477,7 +477,7 @@ class TestEarlyExitOptimizer:
         import ida_hexrays
         import idaapi
 
-        func_name = "test_cst_simplification"
+        func_name = "_hodur_func"
         func_ea = self._get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"{func_name} not found in binary")
@@ -503,7 +503,7 @@ class TestEarlyExitOptimizer:
         import ida_hexrays
         import idaapi
 
-        func_name = "nested_while_hodur_pattern"  # Has multi-predecessor blocks
+        func_name = "_hodur_func"  # OLLVM-flattened, guaranteed high-fanin blocks
         func_ea = self._get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"{func_name} not found in binary")
