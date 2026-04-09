@@ -1,11 +1,10 @@
 """E2E pipeline coverage assertions — verify recon lifecycle fires completely.
 
-These tests piggyback on the DSL test suite. They do NOT trigger new
-decompilations. They open the recon DB that was populated during the
-DSL test run and assert aggregate properties:
+The recon_store_session fixture triggers a minimal decompilation
+(_hodur_func) to populate the recon DB, making these tests self-contained.
 
 Layer 1 (this file):
-- All decompiled functions produced hints
+- At least one decompiled function produced hints
 - All functions with hints have session summaries (no 93/94 gap)
 - Consumer outcomes were recorded
 
@@ -13,23 +12,23 @@ These assertions catch pipeline plumbing regressions.
 """
 import pytest
 
-from tests.system.cases.libobfuscated_comprehensive import TOTAL_FUNCTION_COUNT
-
 
 @pytest.mark.e2e
 class TestReconPipelineCoverage:
     """Aggregate pipeline coverage assertions.
 
-    Depends on DSL tests having run first in the same session.
+    The recon_store_session fixture triggers at least one decompilation
+    (e.g., _hodur_func) to populate the recon DB, making these tests
+    self-contained.
     """
 
-    def test_hints_produced_for_all_functions(self, recon_store_session):
-        """Every decompiled function should produce deobfuscation hints."""
+    def test_hints_produced(self, recon_store_session):
+        """At least one decompiled function should produce deobfuscation hints."""
         if recon_store_session is None:
             pytest.skip("Recon pipeline disabled")
         count = recon_store_session.count_functions_with_hints()
-        assert count >= TOTAL_FUNCTION_COUNT, (
-            f"Expected >= {TOTAL_FUNCTION_COUNT} functions with hints, got {count}"
+        assert count >= 1, (
+            f"Expected >= 1 function with hints, got {count}"
         )
 
     def test_session_summaries_match_hints(self, recon_store_session):

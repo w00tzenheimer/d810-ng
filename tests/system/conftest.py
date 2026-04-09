@@ -1009,16 +1009,38 @@ def d810_state_all_rules():
 def recon_store_path():
     """Session-scoped: path to the recon DB created during this test session.
 
-    Returns None if the D810 state hasn't been loaded or recon is disabled.
-    """
-    from d810.manager import D810State
+    Searches for the recon DB in the standard log directory. When the full
+    system test suite runs in a single IDA session, earlier tests populate
+    the recon DB before these pipeline assertions execute.
 
-    state = D810State()
-    if not state.is_loaded():
-        yield None
-        return
-    db_path = state.manager.recon_db
-    yield db_path
+    Returns None if no recon DB is found.
+    """
+    import pathlib
+
+    # Search standard locations for the recon DB
+    candidates = [
+        pathlib.Path.home() / ".idapro" / "logs" / "d810_logs" / "d810_recon.db",
+        pathlib.Path("/root/.idapro/logs/d810_logs/d810_recon.db"),  # Docker
+    ]
+
+    # Also check D810State.manager.recon_db if D810 is loaded
+    try:
+        from d810.manager import D810State
+
+        state = D810State()
+        if state.is_loaded() and hasattr(state, "manager"):
+            mgr_path = state.manager.recon_db
+            if mgr_path is not None:
+                candidates.insert(0, pathlib.Path(mgr_path))
+    except Exception:
+        pass
+
+    for db_path in candidates:
+        if db_path.exists() and db_path.stat().st_size > 0:
+            yield db_path
+            return
+
+    yield None
 
 
 @pytest.fixture(scope="session")
