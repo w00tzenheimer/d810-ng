@@ -331,7 +331,6 @@ ABC_XOR_CASES = [
         description="OR-based state manipulation with mask operations",
         project="example_libobfuscated.json",
         must_change=True,
-        skip="Pre-existing: OR-mask dispatcher pattern not yet supported",
     ),
     DeobfuscationCase(
         function="abc_mixed_dispatch",
