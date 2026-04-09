@@ -2899,7 +2899,6 @@ class HodurUnflattener(GenericUnflatteningRule):
         """
         from d810.recon.flow.switch_table_analysis import (
             analyze_switch_table_dispatcher,
-            get_switch_table_state_var_mop,
         )
         from d810.recon.flow.transition_builder import (
             StateHandler,
@@ -2907,13 +2906,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         )
         from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
 
-        handler_map = analyze_switch_table_dispatcher(mba)
-        if handler_map is None:
+        result = analyze_switch_table_dispatcher(mba)
+        if result is None:
             return None
 
-        state_var_mop = get_switch_table_state_var_mop(mba)
-        if state_var_mop is None:
-            return None
+        handler_map = result.handler_map
+        state_var_mop = result.state_var_mop
 
         unflat_logger.info(
             "Switch-table dispatcher detected: %d handlers at blk[%d]",
@@ -2921,7 +2919,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             handler_map.dispatcher_serial,
         )
 
-        # Build DispatcherStateMachine with handlers
+        # Build DispatcherStateMachine with handlers.
+        # Each handler uses its own block serial as check_block (not the
+        # shared dispatcher serial) so downstream graph analysis has
+        # distinct per-handler identities.
         sm = DispatcherStateMachine(mba=mba, state_var=state_var_mop)
         sm.state_constants = set(handler_map.handler_state_map.values())
 
@@ -2931,7 +2932,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         for handler_serial, state_const in handler_map.handler_state_map.items():
             handler = StateHandler(
                 state_value=state_const,
-                check_block=handler_map.dispatcher_serial,
+                check_block=handler_serial,
                 handler_blocks=[handler_serial],
             )
             sm.add_handler(handler)

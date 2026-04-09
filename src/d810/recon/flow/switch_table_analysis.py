@@ -6,11 +6,25 @@ Extracts handler maps from ``m_jtbl`` switch tables. The IDA-dependent
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from d810.core.logging import getLogger
 from d810.recon.flow.dispatcher_detection import DispatcherType
 from d810.recon.flow.dispatcher_handler_map import DispatcherHandlerMap
 
 logger = getLogger("D810.recon.switch_table")
+
+
+@dataclass(frozen=True)
+class SwitchTableResult:
+    """Bundled result from switch-table dispatcher analysis.
+
+    Couples the handler map with the live state variable mop so that
+    consumers don't need a second MBA scan.
+    """
+
+    handler_map: DispatcherHandlerMap
+    state_var_mop: object  # ida_hexrays.mop_t
 
 
 def build_handler_map_from_cases(
@@ -23,15 +37,26 @@ def build_handler_map_from_cases(
     """Build a DispatcherHandlerMap from (case_value, target_serial) pairs.
 
     Pure logic -- no IDA dependency.  Self-loop targets (pointing back to a
-    dispatcher block) are skipped.  When multiple case values map to the
-    same target, the first case value wins.
+    dispatcher block) are skipped.  Aliased targets (multiple case values
+    mapping to the same handler) are explicitly rejected: the first case
+    value is kept and subsequent aliases are dropped with a log warning.
+    Full alias support is deferred to Phase 2.
     """
     handler_state_map: dict[int, int] = {}
+    dropped_aliases: list[tuple[int, int]] = []
     for case_value, target_serial in cases:
         if target_serial in dispatcher_blocks:
             continue
         if target_serial not in handler_state_map:
             handler_state_map[target_serial] = case_value
+        else:
+            dropped_aliases.append((case_value, target_serial))
+    if dropped_aliases:
+        logger.debug(
+            "build_handler_map_from_cases: dropped %d aliased case(s): %s",
+            len(dropped_aliases),
+            [(hex(cv), s) for cv, s in dropped_aliases],
+        )
     return DispatcherHandlerMap(
         handler_state_map=handler_state_map,
         dispatcher_serial=dispatcher_serial,
@@ -137,15 +162,16 @@ def _extract_cases_from_mcases(
     return cases
 
 
-def analyze_switch_table_dispatcher(mba: object) -> DispatcherHandlerMap | None:
+def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
     """Walk MBA looking for m_jtbl dispatchers and extract handler maps.
 
     Scans all blocks for ``m_jtbl`` tail instructions. For the first
     qualifying switch (>= 2 cases after filtering), extracts the case-target
-    mapping and identifies the state variable.
+    mapping, identifies the state variable, and returns both the handler map
+    and the live ``mop_t`` in a single ``SwitchTableResult``.
 
     Returns:
-        ``DispatcherHandlerMap`` if a switch-table dispatcher was found,
+        ``SwitchTableResult`` if a switch-table dispatcher was found,
         None otherwise.
     """
     import ida_hexrays
@@ -159,6 +185,14 @@ def analyze_switch_table_dispatcher(mba: object) -> DispatcherHandlerMap | None:
         if stkoff is None:
             logger.debug(
                 "m_jtbl at blk[%d]: could not identify state variable stkoff",
+                serial,
+            )
+            continue
+
+        state_var_mop = _find_state_var_mop(blk.tail)
+        if state_var_mop is None:
+            logger.debug(
+                "m_jtbl at blk[%d]: could not find state variable mop",
                 serial,
             )
             continue
@@ -186,23 +220,6 @@ def analyze_switch_table_dispatcher(mba: object) -> DispatcherHandlerMap | None:
             len(handler_map.handler_state_map),
             stkoff,
         )
-        return handler_map
+        return SwitchTableResult(handler_map=handler_map, state_var_mop=state_var_mop)
 
-    return None
-
-
-def get_switch_table_state_var_mop(mba: object) -> object | None:
-    """Find the live ``mop_t`` for the state variable used by the switch dispatcher.
-
-    Scans MBA for m_jtbl blocks and returns the root mop_S.
-    """
-    import ida_hexrays
-
-    for serial in range(mba.qty):
-        blk = mba.get_mblock(serial)
-        if blk.tail is None or blk.tail.opcode != ida_hexrays.m_jtbl:
-            continue
-        mop = _find_state_var_mop(blk.tail)
-        if mop is not None:
-            return mop
     return None
