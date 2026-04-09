@@ -779,7 +779,7 @@ RESIZE_BUFFER_CFF_CASES = [
         check_stats=True,
         required_rules=["FixPredecessorOfConditionalJumpBlock"],
         expected_rules=["FixPredecessorOfConditionalJumpBlock", "FoldReadonlyDataRule"],
-        skip="deobfuscation output mismatch - golden reference needs update",
+        skip="Semantically wrong: incomplete handler resolution (0 transitions) causes variable loss via IDA DCE",
     ),
 ]
 
