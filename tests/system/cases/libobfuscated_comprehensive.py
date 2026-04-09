@@ -329,7 +329,7 @@ ABC_XOR_CASES = [
     DeobfuscationCase(
         function="abc_or_dispatch",
         description="OR-based state manipulation with mask operations",
-        project="example_libobfuscated.json",
+        project="example_libobfuscated_abc.json",
         must_change=True,
     ),
     DeobfuscationCase(
