@@ -262,7 +262,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._pass0_redirect_ledger = []
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
-            self._switch_table_map = None
+
+        # Clear per-pass switch-table state so a stale map from a prior pass
+        # cannot suppress BST analysis or inject an outdated synthetic BST.
+        self._switch_table_map = None
 
         # 1. Detect state machine
         detector = HodurStateMachineDetector(
