@@ -1015,10 +1015,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         Runs BST analysis, reachability BFS, and caches auxiliary results
         into the frozen snapshot for strategies to consume without re-computing.
         """
-        # BST analysis
+        # BST analysis — skip when switch-table map is available (the
+        # synthetic BST fallback below handles it, and probing BST from a
+        # handler block instead of a dispatcher block would be incorrect).
         bst_result = None
         bst_dispatcher_serial = -1
-        if state_machine.handlers:
+        if state_machine.handlers and self._switch_table_map is None:
             entry_serial = list(state_machine.handlers.values())[0].check_block
             bst_stkoff = self._get_effective_state_var_stkoff(state_machine)
             try:

@@ -36,8 +36,8 @@ class TestBuildHandlerMapFromCases:
         )
         assert m.initial_state == 0
 
-    def test_deduplicates_targets(self):
-        """Multiple case values mapping to same target collapse to first seen."""
+    def test_rejects_aliased_targets(self):
+        """Multiple case values mapping to same target are rejected (Phase 2)."""
         cases = [(0, 10), (1, 10), (2, 11)]
         m = build_handler_map_from_cases(
             cases=cases,
@@ -45,8 +45,7 @@ class TestBuildHandlerMapFromCases:
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
         )
-        assert m.handler_state_map[10] == 0
-        assert m.handler_state_map[11] == 2
+        assert m is None
 
     def test_skips_self_loop_targets(self):
         """Cases targeting the dispatcher itself are self-loops and skipped."""

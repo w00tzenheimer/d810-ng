@@ -33,30 +33,33 @@ def build_handler_map_from_cases(
     dispatcher_blocks: frozenset[int],
     state_var_stkoff: int,
     initial_state: int | None = None,
-) -> DispatcherHandlerMap:
+) -> DispatcherHandlerMap | None:
     """Build a DispatcherHandlerMap from (case_value, target_serial) pairs.
 
     Pure logic -- no IDA dependency.  Self-loop targets (pointing back to a
     dispatcher block) are skipped.  Aliased targets (multiple case values
-    mapping to the same handler) are explicitly rejected: the first case
-    value is kept and subsequent aliases are dropped with a log warning.
-    Full alias support is deferred to Phase 2.
+    mapping to the same handler) cause rejection (returns None) because
+    the lossy collapse would drop valid incoming/final states from
+    ``handler_state_map`` and miss transitions.  Full alias support is
+    deferred to Phase 2.
     """
     handler_state_map: dict[int, int] = {}
-    dropped_aliases: list[tuple[int, int]] = []
+    aliases_found: list[tuple[int, int]] = []
     for case_value, target_serial in cases:
         if target_serial in dispatcher_blocks:
             continue
         if target_serial not in handler_state_map:
             handler_state_map[target_serial] = case_value
         else:
-            dropped_aliases.append((case_value, target_serial))
-    if dropped_aliases:
-        logger.debug(
-            "build_handler_map_from_cases: dropped %d aliased case(s): %s",
-            len(dropped_aliases),
-            [(hex(cv), s) for cv, s in dropped_aliases],
+            aliases_found.append((case_value, target_serial))
+    if aliases_found:
+        logger.info(
+            "build_handler_map_from_cases: rejecting switch with %d aliased "
+            "case(s): %s (Phase 2 needed for alias support)",
+            len(aliases_found),
+            [(hex(cv), s) for cv, s in aliases_found],
         )
+        return None
     return DispatcherHandlerMap(
         handler_state_map=handler_state_map,
         dispatcher_serial=dispatcher_serial,
@@ -213,6 +216,8 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=stkoff,
         )
+        if handler_map is None:
+            continue
 
         logger.info(
             "Switch-table dispatcher at blk[%d]: %d handlers, stkoff=0x%X",
