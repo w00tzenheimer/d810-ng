@@ -173,6 +173,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._pass0_redirect_ledger: list[Pass0RedirectRecord] = []
         self._pass0_handler_entries: set[int] = set()
         self._last_redirect_meta: dict | None = None
+        self._switch_table_map: object | None = None  # DispatcherHandlerMap
         self._last_provenance: PipelineProvenance | None = None
         self._last_bst_serials: set[int] | None = None
         self._last_dispatcher_serial: int = -1
@@ -261,6 +262,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._pass0_redirect_ledger = []
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
+            self._switch_table_map = None
 
         # 1. Detect state machine
         detector = HodurStateMachineDetector(
@@ -278,6 +280,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             analysis = cache.analyze()
             if analysis.is_conditional_chain:
                 state_machine = self._build_state_machine_from_cache(analysis)
+
+        # Switch-table fallback: detect m_jtbl dispatchers
+        if state_machine is None:
+            state_machine = self._try_switch_table_detection(self.mba)
 
         if state_machine is None:
             unflat_logger.info("No Hodur state machine detected")
@@ -1028,6 +1034,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                     bst_dispatcher_serial = entry_serial
             except Exception:
                 bst_result = None
+
+        # Switch-table fallback: synthesize BST from handler map
+        if bst_result is None and self._switch_table_map is not None:
+            bst_result = self._switch_table_map.to_bst_result()
+            bst_dispatcher_serial = self._switch_table_map.dispatcher_serial
+            unflat_logger.debug(
+                "Using synthetic BST from switch-table analysis: "
+                "%d handlers, dispatcher=blk[%d]",
+                len(bst_result.handler_state_map),
+                bst_dispatcher_serial,
+            )
 
         # Lift virtual CFG snapshot once per pass for strategy planning.
         flow_graph = self._cfg_translator.lift(mba)
@@ -2869,3 +2886,94 @@ class HodurUnflattener(GenericUnflatteningRule):
             "in strategy-pipeline mode; returning None"
         )
         return None
+
+    def _try_switch_table_detection(
+        self, mba: "ida_hexrays.mba_t",
+    ) -> DispatcherStateMachine | None:
+        """Detect switch-table dispatchers and build a DispatcherStateMachine.
+
+        Falls back to ``analyze_switch_table_dispatcher()`` when BST and cache
+        detection both fail.  Discovers transitions via ``evaluate_handler_paths()``.
+        Stashes the ``DispatcherHandlerMap`` on ``self._switch_table_map`` for
+        ``_build_snapshot()`` to use as synthetic BST.
+        """
+        from d810.recon.flow.switch_table_analysis import (
+            analyze_switch_table_dispatcher,
+            get_switch_table_state_var_mop,
+        )
+        from d810.recon.flow.transition_builder import (
+            StateHandler,
+            StateTransition,
+        )
+        from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
+
+        handler_map = analyze_switch_table_dispatcher(mba)
+        if handler_map is None:
+            return None
+
+        state_var_mop = get_switch_table_state_var_mop(mba)
+        if state_var_mop is None:
+            return None
+
+        unflat_logger.info(
+            "Switch-table dispatcher detected: %d handlers at blk[%d]",
+            len(handler_map.handler_state_map),
+            handler_map.dispatcher_serial,
+        )
+
+        # Build DispatcherStateMachine with handlers
+        sm = DispatcherStateMachine(mba=mba, state_var=state_var_mop)
+        sm.state_constants = set(handler_map.handler_state_map.values())
+
+        handler_entry_blocks = set(handler_map.handler_state_map.keys())
+        dispatcher_blocks_set = set(handler_map.dispatcher_blocks)
+
+        for handler_serial, state_const in handler_map.handler_state_map.items():
+            handler = StateHandler(
+                state_value=state_const,
+                check_block=handler_map.dispatcher_serial,
+                handler_blocks=[handler_serial],
+            )
+            sm.add_handler(handler)
+
+        # Discover transitions via forward evaluation
+        for handler_serial, state_const in handler_map.handler_state_map.items():
+            try:
+                paths = evaluate_handler_paths(
+                    mba,
+                    entry_serial=handler_serial,
+                    incoming_state=state_const,
+                    bst_node_blocks=dispatcher_blocks_set,
+                    state_var_stkoff=handler_map.state_var_stkoff,
+                    handler_entry_blocks=handler_entry_blocks,
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "Forward eval failed for switch handler blk[%d] (state=%d)",
+                    handler_serial,
+                    state_const,
+                )
+                continue
+
+            for path_result in paths:
+                if path_result.final_state is None:
+                    continue  # Terminal path (return)
+                target = handler_map.resolve_target(path_result.final_state)
+                if target is None:
+                    continue
+                transition = StateTransition(
+                    from_state=state_const,
+                    to_state=path_result.final_state,
+                    from_block=path_result.exit_block,
+                )
+                sm.add_transition(transition)
+
+        unflat_logger.info(
+            "Switch-table state machine: %d handlers, %d transitions",
+            len(sm.handlers),
+            len(sm.transitions),
+        )
+
+        # Stash for _build_snapshot()
+        self._switch_table_map = handler_map
+        return sm
