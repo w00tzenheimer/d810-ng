@@ -126,11 +126,13 @@ class TransactionalExecutor:
         translator: IDAIRTranslator | None = None,
         allow_legacy_block_creation: bool = True,
         cfg_contract: IDACfgContract | None = None,
+        safeguard_profile: str = "engine",
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self.cfg_contract = cfg_contract
+        self.safeguard_profile = str(safeguard_profile).strip() or "engine"
         self.translator = translator or IDAIRTranslator(
             allow_legacy_block_creation=allow_legacy_block_creation,
             contract=self.cfg_contract,
@@ -168,10 +170,18 @@ class TransactionalExecutor:
                     safeguard_override,
                     fragment.strategy_name,
                 )
+            safeguard_profile = fragment.metadata.get("safeguard_profile")
+            if safeguard_profile is None:
+                safeguard_profile = fragment.metadata.get("safeguard_context")
+            safeguard_context = (
+                str(safeguard_profile).strip()
+                if safeguard_profile
+                else self.safeguard_profile
+            )
             safeguard_ok = should_apply_bulk_cfg_modifications(
                 num_modifications,
                 total_handlers,
-                "hodur",
+                safeguard_context,
                 min_required_override=safeguard_override,
             )
             if not safeguard_ok:

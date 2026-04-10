@@ -1,6 +1,8 @@
 """Unit tests for the shared engine strategy protocol types."""
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
@@ -67,6 +69,10 @@ def _make_flow_graph() -> FlowGraph:
 
 
 class TestEnginePackageApi:
+    @staticmethod
+    def _ida_runtime_available() -> bool:
+        return importlib.util.find_spec("ida_hexrays") is not None
+
     def test_engine_package_re_exports_strategy_types(self) -> None:
         assert engine.PlanFragment is PlanFragment
         assert engine.VerificationGate is VerificationGate
@@ -93,20 +99,32 @@ class TestEnginePackageApi:
         assert "PlanFragment" in namespace
         assert "SemanticGate" not in namespace
 
-    def test_semantic_gate_is_optional_without_ida(self) -> None:
+    def test_semantic_gate_availability_matches_runtime(self) -> None:
+        if self._ida_runtime_available():
+            assert engine_strategy.SemanticGate is hodur_strategy.SemanticGate
+            return
+
         with pytest.raises(AttributeError, match="unavailable without IDA"):
             _ = engine_strategy.SemanticGate
 
         with pytest.raises(AttributeError, match="unavailable without IDA"):
             _ = hodur_strategy.SemanticGate
 
-    def test_transactional_executor_is_optional_without_ida(self) -> None:
-        with pytest.raises(AttributeError, match="unavailable without IDA"):
-            _ = engine.TransactionalExecutor
-
+    def test_transactional_executor_availability_matches_runtime(self) -> None:
         from d810.optimizers.microcode.flow.flattening.hodur import (
             executor as hodur_executor,
         )
+
+        if self._ida_runtime_available():
+            assert engine.TransactionalExecutor is not None
+            assert issubclass(
+                hodur_executor.TransactionalExecutor,
+                engine.TransactionalExecutor,
+            )
+            return
+
+        with pytest.raises(AttributeError, match="unavailable without IDA"):
+            _ = engine.TransactionalExecutor
 
         with pytest.raises(AttributeError, match="unavailable without IDA"):
             _ = hodur_executor.TransactionalExecutor

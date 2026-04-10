@@ -343,25 +343,13 @@ class D810Manager:
         maturity: int,
         snapshot_id: int | None = None,
     ) -> None:
-        """Attach a rendered linearized program to a post-D810 snapshot.
-
-        Diagnostic mode expects the semantic-reference rendering to be present
-        on the GLBOPT1/post_d810 snapshot even when no explicit post-maturity
-        capture was requested.
-        """
+        """Attach a rendered linearized program to a post-D810 snapshot."""
         from d810.core.settings import get_settings
 
         _s = get_settings()
-        if _s.capture_post_maturity is not None:
-            target_mat = _s.capture_post_maturity
-        elif _s.diag_snapshots:
-            try:
-                import ida_hexrays
-            except ImportError:
-                return
-            target_mat = int(ida_hexrays.MMAT_GLBOPT1)
-        else:
+        if _s.capture_post_maturity is None:
             return
+        target_mat = _s.capture_post_maturity
         if int(maturity) != target_mat:
             return
         if int(getattr(mba, "qty", 0) or 0) <= 0:

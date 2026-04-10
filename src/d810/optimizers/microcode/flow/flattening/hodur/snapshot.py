@@ -8,6 +8,7 @@ from __future__ import annotations
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
+    StateModelSummary,
 )
 
-__all__ = ["AnalysisSnapshot", "ReachabilityInfo"]
+__all__ = ["AnalysisSnapshot", "ReachabilityInfo", "StateModelSummary"]
