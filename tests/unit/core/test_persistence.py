@@ -1,6 +1,5 @@
-"""Tests for sqlite/netnode persistence backends."""
+"""Tests for sqlite persistence backend."""
 
-import importlib.util
 import tempfile
 import pytest
 from pathlib import Path
@@ -357,9 +356,3 @@ class TestStorageBackends:
     def test_factory_rejects_unknown_backend(self, temp_db):
         with pytest.raises(ValueError, match="Unknown persistence backend"):
             create_optimization_storage(temp_db, backend="unknown")
-
-    def test_netnode_backend_requires_ida_runtime_when_unavailable(self):
-        if importlib.util.find_spec("ida_netnode") is not None:
-            pytest.skip("ida_netnode is available in this environment")
-        with pytest.raises(RuntimeError, match="ida_netnode"):
-            create_optimization_storage(None, backend="netnode")
