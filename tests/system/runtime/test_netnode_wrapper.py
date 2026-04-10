@@ -8,7 +8,12 @@ import uuid
 
 import pytest
 
-from d810.core.persistence import Netnode
+from d810.core.persistence import (
+    FunctionFingerprint,
+    Netnode,
+    NetnodeOptimizationStorage,
+    create_optimization_storage,
+)
 
 
 def _get_default_binary() -> str:
@@ -46,6 +51,19 @@ def netnode(ida_database) -> Netnode:
     finally:
         # isolate test data from the user's IDB
         node.kill()
+
+
+@pytest.fixture
+def optimization_storage(ida_database) -> NetnodeOptimizationStorage:
+    _require_ida9_netnode()
+    node_name = f"$ d810.test.optimization_storage.{uuid.uuid4().hex}"
+    storage = create_optimization_storage(node_name, backend="netnode")
+    assert isinstance(storage, NetnodeOptimizationStorage)
+    try:
+        yield storage
+    finally:
+        storage.close()
+        storage._kv.kill()
 
 
 @pytest.mark.usefixtures("configure_hexrays", "setup_libobfuscated_funcs")
@@ -94,3 +112,31 @@ class TestNetnodeWrapperRuntime:
     def test_netnode_rejects_none_value(self, netnode: Netnode) -> None:
         with pytest.raises(ValueError, match="must not be None"):
             netnode["none"] = None
+
+    def test_create_optimization_storage_uses_netnode_backend(
+        self,
+        optimization_storage: NetnodeOptimizationStorage,
+    ) -> None:
+        fingerprint = FunctionFingerprint(
+            address=0x401000,
+            size=64,
+            bytes_hash="runtime-netnode-hash",
+            block_count=3,
+            instruction_count=7,
+        )
+
+        optimization_storage.save_result(
+            function_addr=0x401000,
+            fingerprint=fingerprint,
+            maturity=5,
+            changes=2,
+            patches=[{"type": "redirect_edge", "from": 1, "to": 2}],
+        )
+
+        assert optimization_storage.has_valid_cache(0x401000, "runtime-netnode-hash") is True
+
+        result = optimization_storage.load_result(0x401000, 5)
+        assert result is not None
+        assert result.function_addr == 0x401000
+        assert result.changes_made == 2
+        assert result.patches == [{"type": "redirect_edge", "from": 1, "to": 2}]
