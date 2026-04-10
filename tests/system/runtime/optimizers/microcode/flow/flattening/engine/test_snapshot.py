@@ -5,6 +5,7 @@ from d810.optimizers.microcode.flow.flattening import engine
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
+    StateModelSummary,
 )
 from d810.optimizers.microcode.flow.flattening.hodur import snapshot as hodur_snapshot
 
@@ -18,6 +19,7 @@ class _StateMachine:
 def test_engine_package_re_exports_snapshot_types() -> None:
     assert engine.AnalysisSnapshot is AnalysisSnapshot
     assert engine.ReachabilityInfo is ReachabilityInfo
+    assert engine.StateModelSummary is StateModelSummary
 
 
 def test_hodur_snapshot_shim_points_to_engine_types() -> None:
@@ -45,3 +47,20 @@ def test_analysis_snapshot_convenience_properties() -> None:
     assert snapshot.handler_count == 1
     assert snapshot.transition_count == 2
     assert snapshot.unresolved_transition_count == 1
+
+
+def test_analysis_snapshot_supports_generic_state_summary_without_hodur_shape() -> None:
+    snapshot = AnalysisSnapshot(
+        mba=object(),
+        state_summary=StateModelSummary(
+            state_constants=frozenset({7, 9}),
+            handler_count=4,
+            transition_count=6,
+        ),
+        resolved_transitions=frozenset({(1, 2), (2, 3)}),
+    )
+
+    assert snapshot.state_constants == {7, 9}
+    assert snapshot.handler_count == 4
+    assert snapshot.transition_count == 6
+    assert snapshot.unresolved_transition_count == 4

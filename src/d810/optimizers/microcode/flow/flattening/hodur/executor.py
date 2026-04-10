@@ -43,6 +43,13 @@ def _build_compat_transactional_executor():
     base = _engine_executor.TransactionalExecutor
 
     class TransactionalExecutor(base):
+        def __init__(self, *args, safeguard_profile: str = "hodur", **kwargs):
+            super().__init__(
+                *args,
+                safeguard_profile=safeguard_profile,
+                **kwargs,
+            )
+
         def execute_pipeline(self, pipeline, total_handlers):
             with _compat_engine_globals(_engine_executor):
                 return super().execute_pipeline(pipeline, total_handlers)

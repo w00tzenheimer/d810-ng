@@ -19,7 +19,7 @@ from .provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
-from .snapshot import AnalysisSnapshot, ReachabilityInfo
+from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
 from .strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -54,6 +54,7 @@ __all__ = [
     "PlannerHintSignals",
     "PlannerInputs",
     "ReachabilityInfo",
+    "StateModelSummary",
     "StageResult",
     "UnflatteningPlanner",
     "UnflatteningStrategy",
