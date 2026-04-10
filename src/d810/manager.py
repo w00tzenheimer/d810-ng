@@ -262,16 +262,13 @@ class D810Manager:
         snapshot_id: int | None = None,
     ) -> None:
         """Write post-maturity MBA snapshot when configured via environment."""
-        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
-        if not capture_mat_str:
+        from d810.core.settings import get_settings
+        _s = get_settings()
+        if _s.capture_post_maturity is None:
             return
-        try:
-            target_mat = int(capture_mat_str)
-        except ValueError:
+        if int(maturity) != _s.capture_post_maturity:
             return
-        if int(maturity) != target_mat:
-            return
-        capture_file = os.environ.get("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt")
+        capture_file = _s.capture_post_file
         try:
             data = mba_to_dict(mba)
             with open(capture_file, "w", encoding="utf-8") as fh:
@@ -347,14 +344,11 @@ class D810Manager:
         snapshot_id: int | None = None,
     ) -> None:
         """Attach a rendered linearized program to a post-D810 snapshot."""
-        capture_mat_str = os.environ.get("D810_CAPTURE_POST_MATURITY")
-        if not capture_mat_str:
+        from d810.core.settings import get_settings
+        _s = get_settings()
+        if _s.capture_post_maturity is None:
             return
-        try:
-            target_mat = int(capture_mat_str)
-        except ValueError:
-            return
-        if int(maturity) != target_mat:
+        if int(maturity) != _s.capture_post_maturity:
             return
         if int(getattr(mba, "qty", 0) or 0) <= 0:
             return

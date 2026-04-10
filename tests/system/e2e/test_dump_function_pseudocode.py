@@ -786,13 +786,15 @@ class TestDumpFunctionPseudocode:
                     if os.path.exists(capture_path):
                         os.unlink(capture_path)
 
-                    os.environ["D810_CAPTURE_POST_MATURITY"] = str(target_mat_int)
-                    os.environ["D810_CAPTURE_POST_FILE"] = capture_path
+                    from d810.core.settings import configure_settings, reset_settings
+                    configure_settings(
+                        capture_post_maturity=target_mat_int,
+                        capture_post_file=capture_path,
+                    )
                     try:
                         cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
                     finally:
-                        os.environ.pop("D810_CAPTURE_POST_MATURITY", None)
-                        os.environ.pop("D810_CAPTURE_POST_FILE", None)
+                        reset_settings()
 
                     if cfunc is None:
                         raise AssertionError(

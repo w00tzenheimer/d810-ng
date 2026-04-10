@@ -322,7 +322,7 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     assert mba.marked_dirty == 1
 
 
-def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
+def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     """safe_verify should emit a JSON artifact with focused block capture."""
     from d810.hexrays.mutation import cfg_verify
 
@@ -343,8 +343,9 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     _FakeBlock(2, mba, succs=[3], preds=[1])
     mba.verify_error = RuntimeError("Unknown exception")
 
-    monkeypatch.setenv("D810_VERIFY_CAPTURE", "1")
-    monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
+    from d810.core.settings import configure_settings, reset_settings
+    configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
+    request.addfinalizer(reset_settings)
 
     with pytest.raises(RuntimeError):
         cfg_verify.safe_verify(
@@ -366,7 +367,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     assert 1 in captured_serials
 
 
-def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys):
+def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys, request):
     """Analyzer contract should accept payloads produced by safe_verify/capture_failure_artifact."""
     from d810.hexrays.mutation import cfg_verify
     from tools import analyze_verify_failures as avf
@@ -390,8 +391,9 @@ def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, mon
     _FakeBlock(4, mba, succs=[], preds=[2, 3])
     mba.verify_error = RuntimeError("Unknown exception")
 
-    monkeypatch.setenv("D810_VERIFY_CAPTURE", "1")
-    monkeypatch.setenv("D810_VERIFY_CAPTURE_DIR", str(tmp_path))
+    from d810.core.settings import configure_settings, reset_settings
+    configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
+    request.addfinalizer(reset_settings)
 
     with pytest.raises(RuntimeError):
         cfg_verify.safe_verify(

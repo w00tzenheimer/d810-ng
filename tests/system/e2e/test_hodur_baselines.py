@@ -174,15 +174,17 @@ class TestSemanticReferenceRegression:
         self,
         libobfuscated_setup,
         d810_state,
-        monkeypatch,
+        request,
     ):
         """sub_7FFD must produce a semantic_reference_like program with key markers."""
         func_ea = _get_func_ea("sub_7FFD3338C040")
         if func_ea == idaapi.BADADDR:
             pytest.skip("sub_7FFD3338C040 not found")
 
-        # Enable diagnostic snapshots for this decompilation
-        monkeypatch.setenv("D810_DIAG_SNAPSHOT", "1")
+        # Enable diagnostic snapshots + post-D810 rendered program capture at GLBOPT1
+        from d810.core.settings import configure_settings, reset_settings
+        configure_settings(diag_snapshots=True, capture_post_maturity=idaapi.MMAT_GLBOPT1)
+        request.addfinalizer(reset_settings)
 
         with d810_state() as state:
             with state.for_project("hodur_flag2.json"):
