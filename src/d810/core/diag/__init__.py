@@ -16,8 +16,7 @@ import time
 from pathlib import Path
 
 from d810.core.diag.schema import create_tables
-
-_DIAG_ENABLED = os.environ.get("D810_DIAG_SNAPSHOT", "0") == "1"
+from d810.core.settings import get_settings
 
 _current_conn: sqlite3.Connection | None = None
 _current_func_ea: int | None = None
@@ -60,7 +59,7 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     calls will return the same connection until ``close_diag_session()``.
     """
     global _current_conn, _current_func_ea
-    if not _DIAG_ENABLED:
+    if not get_settings().diag_snapshots:
         return
     close_diag_session()  # close any stale session
     resolved_log_dir = _resolve_log_dir(log_dir)
@@ -93,7 +92,7 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
     connection is returned.  Otherwise a one-off DB is created for backward
     compatibility (e.g. test harness usage outside the decompilation lifecycle).
     """
-    if not _DIAG_ENABLED:
+    if not get_settings().diag_snapshots:
         return None
     if _current_conn is not None:
         return _current_conn

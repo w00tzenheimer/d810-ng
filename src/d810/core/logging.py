@@ -536,9 +536,10 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     is promoted to ``logging.DEBUG``.  Callers that pass an explicit level are
     unaffected.
     """
-    # Honor D810_DEBUG_LOGGING env var: promote default level to DEBUG when
+    # Honor D810_DEBUG_LOGGING setting: promote default level to DEBUG when
     # the caller relies on the built-in default (logging.INFO).
-    if default_level == logging.INFO and os.environ.get("D810_DEBUG_LOGGING"):
+    from d810.core.settings import get_settings
+    if default_level == logging.INFO and get_settings().debug_logging:
         default_level = logging.DEBUG
 
     name = name or __name__

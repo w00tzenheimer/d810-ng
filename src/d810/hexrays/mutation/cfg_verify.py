@@ -214,13 +214,12 @@ def capture_failure_artifact(
     capture_metadata: dict[str, Any] | None = None,
 ) -> str | None:
     """Persist a compact CFG failure artifact for post-mortem debugging."""
-    if str(os.environ.get("D810_VERIFY_CAPTURE", "1")).lower() in {"0", "false", "off", "no"}:
+    from d810.core.settings import get_settings
+    _s = get_settings()
+    if not _s.verify_capture:
         return None
 
-    output_dir = os.environ.get(
-        "D810_VERIFY_CAPTURE_DIR",
-        os.path.expanduser("~/.idapro/logs/d810_logs/verify_failures"),
-    )
+    output_dir = _s.verify_capture_dir
     try:
         os.makedirs(output_dir, exist_ok=True)
     except OSError as dir_exc:
