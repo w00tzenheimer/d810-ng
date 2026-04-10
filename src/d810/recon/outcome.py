@@ -16,7 +16,7 @@ from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.context import FlowGateDecision
-    from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+    from d810.optimizers.microcode.flow.flattening.engine.provenance import (
         PipelineProvenance,
     )
     from d810.recon.runtime import ReconOutcome
