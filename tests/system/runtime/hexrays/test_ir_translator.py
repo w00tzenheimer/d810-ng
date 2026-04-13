@@ -343,6 +343,8 @@ class _FakeDeferredGraphModifier:
         source_block_serial: int,
         pred_serial: int | None,
         target_serial: int | None = None,
+        conditional_target: int | None = None,
+        fallthrough_target: int | None = None,
         expected_serial: int | None = None,
         expected_secondary_serial: int | None = None,
         description: str = "",
@@ -353,6 +355,8 @@ class _FakeDeferredGraphModifier:
                 source_block_serial,
                 pred_serial,
                 target_serial,
+                conditional_target,
+                fallthrough_target,
                 expected_serial,
                 expected_secondary_serial,
                 description,
@@ -749,7 +753,7 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
-        assert created[0].calls[0][1:6] == (45, 44, 200, 199, None)
+        assert created[0].calls[0][1:8] == (45, 44, 200, None, None, 199, None)
 
     def test_lower_applies_conditional_duplicate_block_patch_plan(
         self,
@@ -788,7 +792,48 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
-        assert created[0].calls[0][1:6] == (45, 44, None, 199, 200)
+        assert created[0].calls[0][1:8] == (45, 44, None, 2, 3, 199, 200)
+
+    def test_lower_applies_conditional_duplicate_block_patch_plan_with_explicit_targets(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=45,
+                    target_block=None,
+                    pred_serial=44,
+                    conditional_target=199,
+                    fallthrough_target=3,
+                )
+            ],
+            _conditional_duplicate_cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "duplicate_block"
+        assert created[0].calls[0][1:8] == (45, 44, None, 201, 3, 199, 200)
 
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,

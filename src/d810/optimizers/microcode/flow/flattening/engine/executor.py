@@ -41,6 +41,7 @@ from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
     RedirectBranch,
@@ -90,7 +91,7 @@ def _preflight_priority(mod: GraphModification) -> int:
     )
 
     match mod:
-        case InsertBlock() | CreateConditionalRedirect():
+        case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock():
             return 5
         case EdgeRedirectViaPredSplit():
             return 8

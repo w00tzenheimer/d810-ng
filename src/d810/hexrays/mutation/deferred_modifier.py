@@ -911,6 +911,8 @@ class DeferredGraphModifier:
         source_block_serial: int,
         pred_serial: int | None,
         target_serial: int | None = None,
+        conditional_target: int | None = None,
+        fallthrough_target: int | None = None,
         expected_serial: int | None = None,
         expected_secondary_serial: int | None = None,
         original_redirect_target: int | None = None,
@@ -929,6 +931,8 @@ class DeferredGraphModifier:
             block_serial=source_block_serial,
             new_target=target_serial,
             via_pred=pred_serial,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
             expected_serial=expected_serial,
             expected_secondary_serial=expected_secondary_serial,
             original_redirect_target=original_redirect_target,
@@ -940,10 +944,12 @@ class DeferredGraphModifier:
             ),
         ))
         logger.debug(
-            "Queued duplicate_block: src=%d pred=%s target=%s expected=%s secondary=%s",
+            "Queued duplicate_block: src=%d pred=%s target=%s cond=%s ft=%s expected=%s secondary=%s",
             source_block_serial,
             pred_serial,
             target_serial,
+            conditional_target,
+            fallthrough_target,
             expected_serial,
             expected_secondary_serial,
         )
@@ -1371,6 +1377,8 @@ class DeferredGraphModifier:
                     mod.block_serial,
                     mod.via_pred,
                     mod.new_target,
+                    mod.conditional_target,
+                    mod.fallthrough_target,
                     mod.expected_serial,
                     mod.expected_secondary_serial,
                 )
@@ -2618,6 +2626,8 @@ class DeferredGraphModifier:
                 source_blk=blk,
                 pred_serial=mod.via_pred,
                 target_serial=mod.new_target,
+                conditional_target=mod.conditional_target,
+                fallthrough_target=mod.fallthrough_target,
                 expected_serial=mod.expected_serial,
                 expected_secondary_serial=mod.expected_secondary_serial,
                 original_redirect_target=mod.original_redirect_target,
@@ -3062,8 +3072,10 @@ class DeferredGraphModifier:
         source_blk: ida_hexrays.mblock_t,
         pred_serial: int | None,
         target_serial: int | None,
-        expected_serial: int | None,
-        expected_secondary_serial: int | None,
+        conditional_target: int | None = None,
+        fallthrough_target: int | None = None,
+        expected_serial: int | None = None,
+        expected_secondary_serial: int | None = None,
         original_redirect_target: int | None = None,
     ) -> bool:
         """Duplicate ``source_blk`` and redirect ``pred_serial`` to the clone.
@@ -3076,6 +3088,8 @@ class DeferredGraphModifier:
             source_block_serial=source_blk.serial,
             pred_serial=pred_serial,
             target_serial=target_serial,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
         ):
             return False
 
@@ -3101,20 +3115,37 @@ class DeferredGraphModifier:
             ]
 
             if source_blk.nsucc() == 2:
-                conditional_target = source_blk.tail.d.b
-                fallthrough_target = next(
-                    (source_blk.succ(i) for i in range(source_blk.nsucc()) if source_blk.succ(i) != conditional_target),
-                    None,
+                effective_conditional_target = (
+                    conditional_target
+                    if conditional_target is not None
+                    else source_blk.tail.d.b
                 )
-                if fallthrough_target is None:
+                effective_fallthrough_target = (
+                    fallthrough_target
+                    if fallthrough_target is not None
+                    else next(
+                        (
+                            source_blk.succ(i)
+                            for i in range(source_blk.nsucc())
+                            if source_blk.succ(i) != source_blk.tail.d.b
+                        ),
+                        None,
+                    )
+                )
+                if effective_fallthrough_target is None:
                     logger.warning(
                         "duplicate_block: src blk[%d] missing fallthrough successor",
                         source_blk.serial,
                     )
                     return False
-
+                if effective_conditional_target == effective_fallthrough_target:
+                    logger.warning(
+                        "duplicate_block: src blk[%d] has identical conditional/fallthrough target %d",
+                        source_blk.serial,
+                        effective_conditional_target,
+                    )
+                    return False
                 duplicated_blk = self.mba.copy_block(source_blk, self.mba.qty - 1)
-
                 prev_pred_serials = [x for x in duplicated_blk.predset]
                 for prev_serial in prev_pred_serials:
                     duplicated_blk.predset._del(prev_serial)
@@ -3158,7 +3189,7 @@ class DeferredGraphModifier:
                 duplicated_default = create_standalone_block(
                     source_blk,
                     [],
-                    target_serial=fallthrough_target,
+                    target_serial=effective_fallthrough_target,
                     is_0_way=False,
                     verify=False,
                 )
@@ -3166,13 +3197,13 @@ class DeferredGraphModifier:
                 if not _rewire_edge(
                     duplicated_blk,
                     [x for x in duplicated_blk.succset],
-                    [duplicated_default.serial, conditional_target],
+                    [duplicated_default.serial, effective_conditional_target],
                     new_block_type=ida_hexrays.BLT_2WAY,
                     verify=False,
                 ):
                     return False
                 duplicated_blk.tail.d = ida_hexrays.mop_t()
-                duplicated_blk.tail.d.make_blkref(conditional_target)
+                duplicated_blk.tail.d.make_blkref(effective_conditional_target)
                 duplicated_blk.mark_lists_dirty()
                 self.mba.mark_chains_dirty()
             else:
@@ -4736,6 +4767,8 @@ class DeferredGraphModifier:
                 source_block_serial=mod.block_serial,
                 pred_serial=mod.via_pred,
                 target_serial=mod.new_target,
+                conditional_target=mod.conditional_target,
+                fallthrough_target=mod.fallthrough_target,
             ):
                 filtered_mods.append(mod)
                 continue
@@ -4802,6 +4835,8 @@ class DeferredGraphModifier:
         source_block_serial: int | None,
         pred_serial: int | None,
         target_serial: int | None,
+        conditional_target: int | None = None,
+        fallthrough_target: int | None = None,
     ) -> bool:
         """Validate duplicate-and-redirect topology without mutating the MBA."""
         if (
@@ -4820,6 +4855,16 @@ class DeferredGraphModifier:
         source_blk = self.mba.get_mblock(source_block_serial)
         pred_blk = self.mba.get_mblock(pred_serial)
         target_blk = self.mba.get_mblock(target_serial) if target_serial is not None else None
+        conditional_blk = (
+            self.mba.get_mblock(conditional_target)
+            if conditional_target is not None
+            else None
+        )
+        fallthrough_blk = (
+            self.mba.get_mblock(fallthrough_target)
+            if fallthrough_target is not None
+            else None
+        )
 
         if source_blk is None or pred_blk is None:
             logger.warning(
@@ -4834,12 +4879,24 @@ class DeferredGraphModifier:
                 target_serial,
             )
             return False
+        if conditional_target is not None and conditional_blk is None:
+            logger.warning(
+                "duplicate_block: missing conditional target blk[%s]",
+                conditional_target,
+            )
+            return False
+        if fallthrough_target is not None and fallthrough_blk is None:
+            logger.warning(
+                "duplicate_block: missing fallthrough target blk[%s]",
+                fallthrough_target,
+            )
+            return False
 
-            if source_blk.nsucc() > 2:
-                logger.warning(
-                    "duplicate_block: src blk[%d] has unsupported nsucc=%d",
-                    source_blk.serial,
-                    source_blk.nsucc(),
+        if source_blk.nsucc() > 2:
+            logger.warning(
+                "duplicate_block: src blk[%d] has unsupported nsucc=%d",
+                source_blk.serial,
+                source_blk.nsucc(),
             )
             return False
         if source_blk.nsucc() == 2:
@@ -4861,6 +4918,42 @@ class DeferredGraphModifier:
                     source_blk.serial,
                 )
                 return False
+            resolved_conditional = (
+                conditional_target
+                if conditional_target is not None
+                else source_blk.tail.d.b
+            )
+            resolved_fallthrough = (
+                fallthrough_target
+                if fallthrough_target is not None
+                else next(
+                    (
+                        source_blk.succ(i)
+                        for i in range(source_blk.nsucc())
+                        if source_blk.succ(i) != source_blk.tail.d.b
+                    ),
+                    None,
+                )
+            )
+            if resolved_fallthrough is None:
+                logger.warning(
+                    "duplicate_block: src blk[%d] missing fallthrough successor",
+                    source_blk.serial,
+                )
+                return False
+            if resolved_conditional == resolved_fallthrough:
+                logger.warning(
+                    "duplicate_block: src blk[%d] has identical conditional/fallthrough target %d",
+                    source_blk.serial,
+                    resolved_conditional,
+                )
+                return False
+        elif conditional_target is not None or fallthrough_target is not None:
+            logger.warning(
+                "duplicate_block: src blk[%d] is not 2-way but conditional targets were provided",
+                source_blk.serial,
+            )
+            return False
 
         if pred_blk.nsucc() == 1:
             if pred_blk.succ(0) != source_blk.serial:

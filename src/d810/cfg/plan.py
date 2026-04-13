@@ -255,6 +255,8 @@ class PatchDuplicateBlock:
             source_block=self.source_serial,
             target_block=self.target_serial,
             pred_serial=self.pred_serial,
+            conditional_target=self.conditional_target,
+            fallthrough_target=self.fallthrough_target,
         )
 
 
@@ -760,6 +762,11 @@ def _compile_duplicate_block_step(
         return None
     if source_block.nsucc == 2 and modification.target_block is not None:
         return None
+    if source_block.nsucc != 2 and (
+        modification.conditional_target is not None
+        or modification.fallthrough_target is not None
+    ):
+        return None
 
     block_id = allocator.alloc("duplicate_block")
     incoming_edge = PatchEdgeRef(
@@ -787,14 +794,25 @@ def _compile_duplicate_block_step(
         clone_outgoing_edges.append(PatchEdgeRef(source=block_id, target=clone_target))
 
     elif source_block.nsucc == 2:
-        conditional_target = _infer_conditional_target(source_block)
-        if conditional_target is None:
+        source_conditional_target = _infer_conditional_target(source_block)
+        if source_conditional_target is None:
             return None
-        fallthrough_target = _infer_fallthrough_target(
-            source_block,
-            conditional_target=conditional_target,
+        conditional_target = (
+            modification.conditional_target
+            if modification.conditional_target is not None
+            else source_conditional_target
+        )
+        fallthrough_target = (
+            modification.fallthrough_target
+            if modification.fallthrough_target is not None
+            else _infer_fallthrough_target(
+                source_block,
+                conditional_target=source_conditional_target,
+            )
         )
         if fallthrough_target is None:
+            return None
+        if conditional_target == fallthrough_target:
             return None
 
         fallthrough_block_id = allocator.alloc("duplicate_block_fallthrough")

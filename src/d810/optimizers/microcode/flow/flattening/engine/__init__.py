@@ -19,6 +19,13 @@ from .provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
+from .runtime import (
+    ExecutedPipeline,
+    PlannedPipeline,
+    apply_execution_results_to_provenance,
+    execute_family_pipeline,
+    plan_family_pipeline,
+)
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
 from .strategy import (
     FAMILY_CLEANUP,
@@ -34,12 +41,14 @@ from .strategy import (
 
 __all__ = [
     "AnalysisSnapshot",
+    "apply_execution_results_to_provenance",
     "CFFStrategyFamily",
     "DecisionInputSummary",
     "DecisionPhase",
     "DecisionReasonCode",
     "DecisionRecord",
     "DetectionResult",
+    "ExecutedPipeline",
     "FAMILY_CLEANUP",
     "FAMILY_DIRECT",
     "FAMILY_FALLBACK",
@@ -50,6 +59,7 @@ __all__ = [
     "OwnershipScope",
     "PipelinePolicy",
     "PlanFragment",
+    "PlannedPipeline",
     "PipelineProvenance",
     "PlannerHintSignals",
     "PlannerInputs",
@@ -59,7 +69,9 @@ __all__ = [
     "UnflatteningPlanner",
     "UnflatteningStrategy",
     "VerificationGate",
+    "execute_family_pipeline",
     "handler_coverage",
+    "plan_family_pipeline",
     "structure_quality_score",
 ]
 

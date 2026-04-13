@@ -11,6 +11,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -451,6 +452,26 @@ def graph_modifications_to_simulated_edits(
                         source=pred,
                         old_target=succ,
                         new_target=succ,
+                    )
+                )
+
+            case DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="duplicate_block",
+                        source=src,
+                        old_target=-1,
+                        new_target=target,
+                        via_pred=pred,
+                        duplicate_target=target,
+                        conditional_target=conditional_target,
+                        fallthrough_target=fallthrough_target,
                     )
                 )
 
@@ -973,10 +994,16 @@ def simulate_edits(
             duplicate_target = edit.duplicate_target
             source_successors = list(edit.source_successors)
             clone_succs: list[int]
+            explicit_conditional_clone = (
+                edit.conditional_target is not None
+                and edit.fallthrough_target is not None
+            )
 
             fallthrough_serial = edit.secondary_created_serial
             needs_fallthrough_clone = (
-                len(source_successors) == 2 or fallthrough_serial is not None
+                len(source_successors) == 2
+                or fallthrough_serial is not None
+                or explicit_conditional_clone
             )
             if needs_fallthrough_clone and fallthrough_serial is None:
                 fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
@@ -985,7 +1012,7 @@ def simulate_edits(
 
             if duplicate_target is not None:
                 clone_succs = [duplicate_target]
-            elif len(source_successors) <= 1:
+            elif len(source_successors) <= 1 and not explicit_conditional_clone:
                 clone_succs = source_successors
             else:
                 # 2-way block (m_jcnd): IDA verify.cpp expects

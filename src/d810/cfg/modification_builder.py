@@ -181,12 +181,16 @@ class ModificationBuilder:
         *,
         pred_serial: int | None = None,
         patch_kind: str = "",
+        conditional_target: int | None = None,
+        fallthrough_target: int | None = None,
     ) -> DuplicateBlock:
         return DuplicateBlock(
             source_block=source_block,
             target_block=target_block,
             pred_serial=pred_serial,
             patch_kind=patch_kind,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
         )
 
     def duplicate_and_redirect(

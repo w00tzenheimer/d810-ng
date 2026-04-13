@@ -556,6 +556,8 @@ class IDAIRTranslator:
                 source_serial=src,
                 pred_serial=pred,
                 target_serial=target,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
             ):
@@ -563,11 +565,14 @@ class IDAIRTranslator:
                     source_block_serial=src,
                     pred_serial=pred,
                     target_serial=target,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
                     expected_serial=assigned,
                     expected_secondary_serial=fallthrough_serial,
                     description=(
                         f"duplicate block src={src} pred={pred} "
-                        f"target={target} via {assigned}"
+                        f"target={target} cond={conditional_target} "
+                        f"ft={fallthrough_target} via {assigned}"
                     ),
                 )
 
@@ -676,12 +681,23 @@ class IDAIRTranslator:
                     ),
                 )
 
-            case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
-                logger.warning(
-                    "DuplicateBlock(source=%d, target=%s, pred=%s) not implemented, skipping",
-                    src,
-                    target,
-                    pred,
+            case DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                modifier.queue_duplicate_block(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    target_serial=target,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
+                    description=(
+                        f"duplicate block src={src} pred={pred} target={target} "
+                        f"cond={conditional_target} ft={fallthrough_target}"
+                    ),
                 )
 
             case DuplicateAndRedirect(

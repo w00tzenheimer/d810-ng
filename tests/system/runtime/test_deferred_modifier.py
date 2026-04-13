@@ -28,14 +28,22 @@ class _FakeEdgeSet:
     def push_back(self, val: int) -> None:
         self._items.append(val)
 
+    def _del(self, val: int) -> None:
+        try:
+            self._items.remove(val)
+        except ValueError:
+            return None
+
 
 class _FakeBlock:
     def __init__(self, serial: int):
         self.serial = serial
         self.type = ida_hexrays.BLT_1WAY
+        self.flags = 0
         self.tail = SimpleNamespace(opcode=ida_hexrays.m_goto, ea=0x1000, l=None, d=None, r=None)
         self.succset = _FakeEdgeSet()
         self.predset = _FakeEdgeSet()
+        self.prevb = None
 
     def nsucc(self) -> int:
         return 1
@@ -48,6 +56,9 @@ class _FakeBlock:
 
     def pred(self, _idx: int) -> int:
         return 0
+
+    def mark_lists_dirty(self) -> None:
+        return None
 
 
 class _FakeMBA:
@@ -500,6 +511,82 @@ def test_duplicate_block_rejects_unexpected_secondary_serial(monkeypatch):
     assert ok is False
     assert calls["pred"] == 0
     assert calls["clone"] == 0
+
+
+def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    conditional_target = _FakeBlock(30)
+    fallthrough_target = _FakeBlock(40)
+    duplicated_blk = _FakeBlock(7)
+    duplicated_default = _FakeBlock(8)
+
+    source.type = ida_hexrays.BLT_2WAY
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    source.succ = lambda idx: (2, 10)[idx]  # type: ignore[assignment]
+    source.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1000,
+        l=None,
+        r=None,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=2),
+    )
+    pred.succ = lambda _idx: 5  # type: ignore[assignment]
+    duplicated_blk.succset = _FakeEdgeSet([2, 10])
+    duplicated_blk.predset = _FakeEdgeSet([6])
+
+    mba.blocks.update({5: source, 6: pred, 30: conditional_target, 40: fallthrough_target})
+    mba.qty = len(mba.blocks)
+    mba.copy_block = lambda *_args, **_kwargs: duplicated_blk  # type: ignore[attr-defined]
+
+    modifier = dm.DeferredGraphModifier(mba)
+
+    monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
+    monkeypatch.setattr(
+        dm,
+        "create_standalone_block",
+        lambda *_args, **kwargs: duplicated_default
+        if kwargs.get("target_serial") == 40
+        else None,
+    )
+
+    rewired: dict[str, object] = {}
+    monkeypatch.setattr(
+        dm,
+        "_rewire_edge",
+        lambda _blk, old_succs, new_succs, **_kwargs: (
+            rewired.update({"old": list(old_succs), "new": list(new_succs)}) or True
+        ),
+    )
+
+    pred_calls = {"count": 0}
+    monkeypatch.setattr(
+        dm,
+        "change_1way_block_successor",
+        lambda blk, new_target, **_kwargs: (
+            pred_calls.__setitem__("count", pred_calls["count"] + 1)
+            if blk.serial == 6 and new_target == 7
+            else None
+        )
+        or True,
+    )
+
+    monkeypatch.setattr(dm.ida_hexrays, "mop_t", lambda: SimpleNamespace(make_blkref=lambda _value: None))
+
+    ok = modifier._apply_duplicate_block_and_redirect(
+        source_blk=source,
+        pred_serial=6,
+        target_serial=None,
+        conditional_target=30,
+        fallthrough_target=40,
+        expected_serial=None,
+        expected_secondary_serial=None,
+    )
+
+    assert ok is True
+    assert rewired == {"old": [2, 10], "new": [8, 30]}
+    assert pred_calls["count"] == 1
 
 
 def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
