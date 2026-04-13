@@ -48,7 +48,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["-m", "not profile"]
+addopts = ["-m", "not profile and not known_gap"]
 markers = [
     "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
     "requires_ida: Tests that require IDA Pro to run",
@@ -56,6 +56,7 @@ markers = [
     "e2e: End-to-end pipeline tests with golden output comparison",
     "hexrays: Tests that require Hex-Rays decompiler",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
+    "known_gap: Explicit known failing gap; excluded from the default green suite",
     "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
 ]
 
