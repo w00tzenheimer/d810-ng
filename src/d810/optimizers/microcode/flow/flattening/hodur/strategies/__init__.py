@@ -56,6 +56,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction i
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BadWhileLoopStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+    FakeJumpStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SingleIterationStrategy,
+)
 
 __all__ = [
     "ValrangeResolutionStrategy",
@@ -68,6 +77,9 @@ __all__ = [
     "LinearizedFlowGraphStrategy",
     "StateWriteReconstructionStrategy",
     "TopologicalSortStrategy",
+    "BadWhileLoopStrategy",
+    "FakeJumpStrategy",
+    "SingleIterationStrategy",
     "ALL_STRATEGIES",
     "LEGACY_STRATEGIES",
 ]
@@ -80,6 +92,9 @@ __all__ = [
 # superseded by reconstruction/LFG.
 ALL_STRATEGIES: list[type] = [
     StateWriteReconstructionStrategy,
+    FakeJumpStrategy,
+    BadWhileLoopStrategy,
+    SingleIterationStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     # DISCRIMINATOR TEST: topo disabled

@@ -8,7 +8,7 @@ logic lives in the hodur sub-package; this class is a thin coordinator that:
 2. Builds an immutable :class:`AnalysisSnapshot`.
 3. Collects :class:`PlanFragment` objects from each registered strategy.
 4. Composes the pipeline via :class:`UnflatteningPlanner`.
-5. Applies it via :class:`TransactionalExecutor`.
+5. Runs the shared execution lifecycle via ``engine.runtime``.
 
 Gate operation mode: ``GATE_SELECT`` — full recon + gate enforcement + planner
 hint influence.  See :class:`~d810.core.gate_modes.GateOperationMode`.
@@ -17,7 +17,7 @@ hint influence.  See :class:`~d810.core.gate_modes.GateOperationMode`.
 # perform strategy selection, conflict resolution, or pipeline reordering.
 # Those are owned exclusively by the UnflatteningPlanner (see planner.py).
 #
-# After planner.plan() returns:
+# After the shared runtime plans a pipeline:
 #   - The pipeline is passed to executor.execute_pipeline() WITHOUT
 #     modification (no filtering, reordering, insertion, or dropping).
 #   - Executor results are mapped to provenance lifecycle phases
@@ -52,19 +52,21 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
     AnalysisSnapshot,
-    ReachabilityInfo,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import ALL_STRATEGIES
+from d810.optimizers.microcode.flow.flattening.hodur.family import (
+    HodurStrategyFamily,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
-    DecisionPhase,
-    DecisionReasonCode,
-    GateAccounting,
     PipelineProvenance,
     PlannerInputs,
+)
+from d810.optimizers.microcode.flow.flattening.engine.runtime import (
+    execute_family_pipeline,
+    plan_family_pipeline,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
 from d810.hexrays.mutation.cfg_mutations import (
@@ -75,10 +77,6 @@ from d810.hexrays.mutation.cfg_mutations import (
 
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     StageResult,
-    VerificationGate,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.executor import (
-    TransactionalExecutor,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
@@ -87,10 +85,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_return_frontier_audit_from_store,
     load_terminal_return_audit_from_store,
     load_transition_report_from_store,
-    record_return_frontier_stage,
-    save_terminal_return_audit_to_store,
-    save_transition_report_to_store,
-    write_return_frontier_artifact_from_store,
 )
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
@@ -110,7 +104,7 @@ class HodurUnflattener(GenericUnflatteningRule):
     3. Each registered strategy proposes a
        :class:`~hodur.strategy.PlanFragment`.
     4. :class:`~hodur.planner.UnflatteningPlanner` composes the pipeline.
-    5. :class:`~hodur.executor.TransactionalExecutor` applies stages.
+    5. Shared runtime helpers execute the pipeline and project provenance.
     """
 
     DESCRIPTION = "Remove Hodur-style while-loop control flow flattening"
@@ -159,7 +153,6 @@ class HodurUnflattener(GenericUnflatteningRule):
 
     def __init__(self) -> None:
         super().__init__()
-        self.state_machine: DispatcherStateMachine | None = None
         self.max_passes = self.DEFAULT_MAX_PASSES
         self.min_state_constant = MIN_STATE_CONSTANT
         self.min_state_constants = MIN_STATE_CONSTANTS
@@ -167,13 +160,9 @@ class HodurUnflattener(GenericUnflatteningRule):
         self.allow_legacy_block_creation = True
         self._actual_pass_count: int = 0
         self._current_tracked_maturity: int = ida_hexrays.MMAT_ZERO
-        self._resolved_transitions: set[tuple[int, int]] = set()
-        self._initial_transitions: list | None = None
-        self._detector: HodurStateMachineDetector | None = None
         self._pass0_redirect_ledger: list[Pass0RedirectRecord] = []
         self._pass0_handler_entries: set[int] = set()
         self._last_redirect_meta: dict | None = None
-        self._switch_table_map: object | None = None  # DispatcherHandlerMap
         self._last_provenance: PipelineProvenance | None = None
         self._last_bst_serials: set[int] | None = None
         self._last_dispatcher_serial: int = -1
@@ -182,23 +171,27 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._last_bst_block_eas: set[int] = set()
         self._last_dispatcher_ea: int = 0
 
-        # Strategy pipeline components — disable fallback strategies until
-        # rollback infrastructure is reliable (see semantic-gate-replacement plan).
-        _DISABLED_STRATEGIES = {
-            "ConditionalForkFallbackStrategy",
-        }
-        self._strategies = [
-            cls()
-            for cls in ALL_STRATEGIES
-            if cls.__name__ not in _DISABLED_STRATEGIES
-        ]
+        # Strategy family adapter: Hodur now supplies detection, snapshot
+        # construction, and strategy registration through the shared engine
+        # family surface rather than owning those responsibilities directly.
+        self._cfg_translator = IDAIRTranslator()
+        self._family = HodurStrategyFamily(
+            cfg_translator=self._cfg_translator,
+            disabled_strategy_names={
+                "ConditionalForkFallbackStrategy",
+            },
+            min_state_constant=self.min_state_constant,
+            min_state_constants=self.min_state_constants,
+            max_state_constants=self.max_state_constants,
+            logger=unflat_logger,
+        )
+        self._strategies = self._family.strategies
         unflat_logger.info(
             "Active strategies: %s",
             [type(s).__name__ for s in self._strategies],
         )
         self._planner = UnflatteningPlanner(PipelinePolicy())
         self._gate = SemanticGate()
-        self._cfg_translator = IDAIRTranslator()
 
         # Return frontier audit components
         self._return_site_provider = HodurReturnSiteProvider()
@@ -218,6 +211,41 @@ class HodurUnflattener(GenericUnflatteningRule):
             self.allow_legacy_block_creation = bool(
                 self.config["allow_legacy_block_creation"]
             )
+        self._family.configure_detection(
+            min_state_constant=self.min_state_constant,
+            min_state_constants=self.min_state_constants,
+            max_state_constants=self.max_state_constants,
+        )
+
+    @property
+    def state_machine(self) -> DispatcherStateMachine | None:
+        family = getattr(self, "_family", None)
+        return family.state_machine if family is not None else None
+
+    @property
+    def _detector(self) -> HodurStateMachineDetector | None:
+        family = getattr(self, "_family", None)
+        return family.detector if family is not None else None
+
+    @property
+    def _switch_table_map(self) -> object | None:
+        family = getattr(self, "_family", None)
+        return family.switch_table_map if family is not None else None
+
+    @property
+    def _resolved_transitions(self) -> set[tuple[int | None, int]]:
+        family = getattr(self, "_family", None)
+        if family is None:
+            return set()
+        return set(family.resolved_transitions)
+
+    @property
+    def _initial_transitions(self) -> list | None:
+        family = getattr(self, "_family", None)
+        if family is None:
+            return None
+        transitions = family.initial_transitions
+        return list(transitions) if transitions else None
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         """Check if this rule should be applied."""
@@ -229,11 +257,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._current_tracked_maturity = self.mba.maturity
             self._actual_pass_count = 0
             self.max_passes = self.DEFAULT_MAX_PASSES
-            self._resolved_transitions = set()
-            self._initial_transitions = None
             self._pass0_redirect_ledger = []
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
+            self._family.reset_runtime_state()
             # Reset audit for new maturity
             if self.RETURN_FRONTIER_AUDIT_ENABLED:
                 self._audit_return_sites = ()
@@ -243,6 +270,14 @@ class HodurUnflattener(GenericUnflatteningRule):
             return False
 
         return True
+
+    def _clear_cached_dispatcher_context(self) -> None:
+        """Drop stale dispatcher/BST context when the current pass has none."""
+        self._last_bst_serials = None
+        self._last_dispatcher_serial = -1
+        self._last_func_ea = 0
+        self._last_bst_block_eas = set()
+        self._last_dispatcher_ea = 0
 
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         """Main optimization entry point — planner + strategy pipeline."""
@@ -263,167 +298,118 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
 
-        # Clear per-pass switch-table state so a stale map from a prior pass
-        # cannot suppress BST analysis or inject an outdated synthetic BST.
-        self._switch_table_map = None
-
-        # 1. Detect state machine
-        detector = HodurStateMachineDetector(
-            self.mba,
-            min_state_constant=self.min_state_constant,
-            min_state_constants=self.min_state_constants,
-            max_state_constants=self.max_state_constants,
-        )
-        state_machine = detector.detect()
-        self._detector = detector
-
+        # 1. Detect family-specific state model via the shared family surface.
+        self._family.begin_pass(self._actual_pass_count)
+        detection = self._family.detect(self.mba)
+        # 2. Build immutable snapshot through the family adapter.
+        snapshot = self._family.build_snapshot(self.mba, detection)
+        state_machine = snapshot.state_machine
         if state_machine is None:
-            # Fallback to robust cache analysis
-            cache = DispatcherCache.get_or_create(self.mba)
-            analysis = cache.analyze()
-            if analysis.is_conditional_chain:
-                state_machine = self._build_state_machine_from_cache(analysis)
-
-        # Switch-table fallback: detect m_jtbl dispatchers
-        if state_machine is None:
-            state_machine = self._try_switch_table_detection(self.mba)
-
-        if state_machine is None:
-            unflat_logger.info("No Hodur state machine detected")
-            self._actual_pass_count += 1
-            return 0
-
-        self.state_machine = state_machine
-
-        # Save full transition list from first detection for carry-forward
-        if self._actual_pass_count == 0:
-            self._initial_transitions = list(state_machine.transitions)
-
-        # Log the detected structure
-        self._log_state_machine()
-
-        # 2. Build immutable snapshot (includes BST analysis, reachability, etc.)
-        snapshot = self._build_snapshot(self.mba, state_machine, detector)
+            unflat_logger.info(
+                "No Hodur state machine detected; evaluating cleanup-only strategies"
+            )
+            self._clear_cached_dispatcher_context()
+            self._audit_return_sites = ()
+        else:
+            self._log_state_machine()
 
         # 3-4. PLANNER_AUTHORITY: planner owns strategy polling + pipeline composition
-        transition_report = load_transition_report_from_store(
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
-        )
-        return_frontier_audit = load_return_frontier_audit_from_store(
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
-        )
-        terminal_return_audit = load_terminal_return_audit_from_store(
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
-        )
+        if state_machine is None:
+            transition_report = None
+            return_frontier_audit = None
+            terminal_return_audit = None
+        else:
+            transition_report = load_transition_report_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+            )
+            return_frontier_audit = load_return_frontier_audit_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+            )
+            terminal_return_audit = load_terminal_return_audit_from_store(
+                func_ea=self.mba.entry_ea,
+                maturity=self.cur_maturity,
+                log_dir=self.log_dir,
+            )
         planner_inputs = PlannerInputs(
             total_handlers=snapshot.handler_count,
             handler_transitions=transition_report,
             return_frontier=return_frontier_audit,
             terminal_return_audit=terminal_return_audit,
         )
-        pipeline, provenance = self._planner.plan(
-            snapshot, self._strategies, inputs=planner_inputs,
+        active_strategies = self._family.strategies_for_maturity(self.cur_maturity)
+        planned = plan_family_pipeline(
+            snapshot,
+            active_strategies,
+            planner=self._planner,
+            inputs=planner_inputs,
         )
 
         # Return frontier audit: pre_plan stage (after fragment collection so
         # handler_paths from DirectLinearization strategy are available)
-        if self.RETURN_FRONTIER_AUDIT_ENABLED:
-            handler_paths = self._extract_handler_paths_from_fragments(pipeline)
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and snapshot.state_machine is not None:
+            handler_paths = self._extract_handler_paths_from_fragments(planned.pipeline)
             try:
-                self._audit_pre_plan(snapshot, handler_paths=handler_paths)
+                self._audit_return_sites = self._family.prepare_return_frontier_audit(
+                    snapshot,
+                    current_return_sites=tuple(self._audit_return_sites),
+                    return_site_provider=self._return_site_provider,
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    log_dir=self.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                    handler_paths=handler_paths,
+                )
             except Exception:
                 unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
 
-        if not pipeline:
+        if not planned.pipeline:
             unflat_logger.info("No strategy produced a plan fragment")
             self._actual_pass_count += 1
             return 0
 
-        self._last_provenance = provenance
-        unflat_logger.info("Planner provenance: %s", provenance.summary())
+        self._last_provenance = planned.provenance
+        unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
 
         # Return frontier audit: post_plan stage (mods queued but not applied)
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
+        if (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and snapshot.state_machine is not None
+            and self._audit_return_sites
+        ):
             try:
-                self._record_audit_stage("post_plan")
+                self._family.record_return_frontier_stage(
+                    return_sites=tuple(self._audit_return_sites),
+                    stage_name="post_plan",
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    log_dir=self.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                )
             except Exception:
                 unflat_logger.debug("_record_audit_stage(post_plan) failed (non-critical)")
 
-        # 5. EXECUTOR_BOUNDARY: executor consumes pipeline in-order, no reordering
-        executor = TransactionalExecutor(
-            self.mba,
-            gate=self._gate,
-            allow_legacy_block_creation=self.allow_legacy_block_creation,
+        # 5. EXECUTOR_BOUNDARY: runtime consumes planner output in-order,
+        # delegates to the configured executor, and projects executor outcomes
+        # back onto provenance.
+        executed = execute_family_pipeline(
+            snapshot,
+            planned,
+            executor_factory=self._family.make_executor_factory(
+                gate=self._gate,
+                allow_legacy_block_creation=self.allow_legacy_block_creation,
+            ),
+            flow_context=self.flow_context,
         )
-        results = executor.execute_pipeline(pipeline, total_handlers=snapshot.handler_count)
-
-        nb_changes = executor.total_changes
-
-        # 5b. ORCHESTRATOR_BOUNDARY: update provenance phases from executor outcomes
-        # (lifecycle bookkeeping only -- no re-selection or pipeline mutation)
-        for frag, result in zip(pipeline, results):
-            acct: GateAccounting | None = result.metadata.get("gate_accounting")
-            if result.success:
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.APPLIED,
-                    reason_code=DecisionReasonCode.ACCEPTED,
-                    gate_accounting=acct,
-                )
-            elif result.failure_phase == "preflight":
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.PREFLIGHT_REJECTED,
-                    reason_code=DecisionReasonCode.REJECTED_PREFLIGHT,
-                    reason_detail=result.error,
-                    gate_accounting=acct,
-                )
-            elif result.failure_phase == "safeguard":
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.GATE_FAILED,
-                    reason_code=DecisionReasonCode.REJECTED_GATE_SAFEGUARD,
-                    reason_detail=result.error,
-                    gate_accounting=acct,
-                )
-            elif result.failure_phase == "semantic_gate":
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.GATE_FAILED,
-                    reason_code=DecisionReasonCode.REJECTED_GATE_SEMANTIC,
-                    reason_detail=result.error,
-                    gate_accounting=acct,
-                )
-            elif result.failure_phase == "post_apply_contract":
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.GATE_FAILED,
-                    reason_code=DecisionReasonCode.REJECTED_GATE,
-                    reason_detail=result.error,
-                    gate_accounting=acct,
-                )
-            elif not result.success:
-                provenance = provenance.update_phase(
-                    frag.strategy_name,
-                    DecisionPhase.GATE_FAILED,
-                    reason_code=DecisionReasonCode.REJECTED_TRANSACTION,
-                    reason_detail=result.error or "execution failed",
-                    gate_accounting=acct,
-                )
-        # Mark unexecuted pipeline tail (fragments after early abort) as BYPASSED
-        for frag in pipeline[len(results):]:
-            provenance = provenance.update_phase(
-                frag.strategy_name,
-                DecisionPhase.BYPASSED,
-                reason_code=DecisionReasonCode.BYPASSED_PIPELINE_ABORT,
-                reason_detail="pipeline aborted before this fragment was executed",
-            )
+        pipeline = executed.pipeline
+        results = executed.results
+        provenance = executed.provenance
+        nb_changes = executed.total_changes
         self._last_provenance = provenance
 
         live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] = {}
@@ -434,65 +420,46 @@ class HodurUnflattener(GenericUnflatteningRule):
             for fragment, result in zip(pipeline, results)
         ):
             live_residual_dispatcher_preds_by_strategy["linearized_flow_graph"] = (
-                self._collect_live_lfg_residual_dispatcher_preds(snapshot)
+                self._family.collect_live_lfg_residual_dispatcher_preds(
+                    self.mba,
+                    snapshot,
+                )
             )
 
-        # Mark strategies as applied only AFTER successful execution.
-        # This prevents gate-failed fragments from suppressing standalone
-        # strategies on subsequent IDA callbacks.
-        func_ea = self.mba.entry_ea
-        maturity = self.cur_maturity
-        for frag, result in zip(pipeline, results):
-            if result.success and result.edits_applied > 0:
-                for strategy in self._strategies:
-                    if strategy.name == frag.strategy_name and hasattr(strategy, '_applied'):
-                        strategy._applied.add((func_ea, maturity))
-                        unflat_logger.info(
-                            "Marking strategy %s as applied for func 0x%X maturity=%d",
-                            strategy.name, func_ea, maturity,
-                        )
-                        if (
-                            strategy.name == "linearized_flow_graph"
-                            and hasattr(
-                                strategy,
-                                "_last_successful_residual_dispatcher_pred_counts",
-                            )
-                        ):
-                            residual_preds = live_residual_dispatcher_preds_by_strategy.get(
-                                "linearized_flow_graph",
-                                tuple(frag.metadata.get("residual_dispatcher_preds", ())),
-                            )
-                            strategy._last_successful_residual_dispatcher_pred_counts[
-                                (func_ea, maturity)
-                            ] = len(residual_preds)
-                            unflat_logger.info(
-                                "Recorded LFG residual dispatcher pred count for func 0x%X "
-                                "maturity=%d: %d",
-                                func_ea,
-                                maturity,
-                                len(residual_preds),
-                            )
+        self._family.record_execution_outcome(
+            pipeline,
+            results,
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+            nb_changes=nb_changes,
+            residual_dispatcher_preds_by_strategy=(
+                live_residual_dispatcher_preds_by_strategy
+            ),
+        )
 
-        # Record planner outcome via flow context callback
-        if self.flow_context is not None and hasattr(self.flow_context, 'report_outcome'):
-            self.flow_context.report_outcome(provenance, "planner")
-
-        # Persist terminal return audit from executor results (for next pass)
-        for result in results:
-            audit = result.metadata.get("terminal_return_audit")
-            if audit is not None:
-                save_terminal_return_audit_to_store(
-                    func_ea=self.mba.entry_ea,
-                    maturity=self.cur_maturity,
-                    audit=audit,
-                    log_dir=self.log_dir,
-                )
-                break
+        self._family.persist_terminal_return_audit(
+            results,
+            func_ea=self.mba.entry_ea,
+            maturity=self.cur_maturity,
+            log_dir=self.log_dir,
+        )
 
         # Return frontier audit: post_apply stage
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
+        if (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and snapshot.state_machine is not None
+            and self._audit_return_sites
+        ):
             try:
-                self._record_audit_stage("post_apply")
+                self._family.record_return_frontier_stage(
+                    return_sites=tuple(self._audit_return_sites),
+                    stage_name="post_apply",
+                    func_ea=self.mba.entry_ea,
+                    maturity=self.cur_maturity,
+                    log_dir=self.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                )
             except Exception:
                 unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
@@ -501,7 +468,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # The cleanup invalidates subsequent state-machine analysis, so once it
         # runs we suppress further Hodur iteration below.
         bst_cleanup_ran = False
-        bst_cleanup_blockers = self._collect_post_apply_bst_cleanup_blockers(
+        bst_cleanup_blockers = self._family.collect_post_apply_bst_cleanup_blockers(
             pipeline,
             results,
             live_residual_dispatcher_preds_by_strategy=(
@@ -680,11 +647,6 @@ class HodurUnflattener(GenericUnflatteningRule):
                 self.max_passes,
             )
 
-        # Update resolved transitions tracking
-        if nb_changes > 0:
-            for t in state_machine.transitions:
-                self._resolved_transitions.add((t.from_state, t.to_state))
-
         unflat_logger.info(
             "HodurUnflattener: Pass %d made %d changes",
             self._actual_pass_count,
@@ -701,22 +663,21 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._actual_pass_count += 1
 
         # Return frontier audit: post_pipeline stage + artifact write
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and self._audit_return_sites:
+        if (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and snapshot.state_machine is not None
+            and self._audit_return_sites
+        ):
             try:
-                self._record_audit_stage("post_pipeline")
-                write_return_frontier_artifact_from_store(
+                self._family.finalize_return_frontier_audit(
+                    tuple(self._audit_return_sites),
                     func_ea=self.mba.entry_ea,
                     maturity=self.cur_maturity,
                     log_dir=self.log_dir,
                     artifact_dir=Path(f".tmp/recon/{self.cur_maturity}"),
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
                 )
-                audit = load_return_frontier_audit_from_store(
-                    func_ea=self.mba.entry_ea,
-                    maturity=self.cur_maturity,
-                    log_dir=self.log_dir,
-                )
-                if audit is not None:
-                    audit.summary_log()
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
 
@@ -756,76 +717,6 @@ class HodurUnflattener(GenericUnflatteningRule):
     # ------------------------------------------------------------------
     # Return frontier audit helpers
     # ------------------------------------------------------------------
-
-    def _collect_live_lfg_residual_dispatcher_preds(
-        self,
-        snapshot: AnalysisSnapshot,
-    ) -> tuple[int, ...]:
-        """Collect live residual non-BST predecessors to the dispatcher.
-
-        This must be computed from the actual post-apply MBA, not fragment
-        metadata generated from projected CFG planning. Otherwise same-maturity
-        rerun bookkeeping and BST cleanup can diverge from reality.
-        """
-        bst_result = snapshot.bst_result
-        if bst_result is None or snapshot.bst_dispatcher_serial < 0:
-            return ()
-        strategy = next(
-            (
-                candidate
-                for candidate in self._strategies
-                if getattr(candidate, "name", None) == "linearized_flow_graph"
-            ),
-            None,
-        )
-        if strategy is None:
-            return ()
-        collector = getattr(strategy, "_collect_residual_dispatcher_predecessors", None)
-        if collector is None:
-            return ()
-        try:
-            flow_graph = self._cfg_translator.lift(self.mba)
-            raw_collector = getattr(strategy, "_collect_dispatcher_predecessors", None)
-            active_collector = raw_collector or collector
-            return active_collector(
-                flow_graph,
-                snapshot.bst_dispatcher_serial,
-                bst_node_blocks=set(bst_result.bst_node_blocks),
-            )
-        except Exception:
-            unflat_logger.debug(
-                "Failed to collect live LFG residual dispatcher preds",
-                exc_info=True,
-            )
-            return ()
-
-    @staticmethod
-    def _collect_post_apply_bst_cleanup_blockers(
-        pipeline: list,
-        results: list[StageResult],
-        *,
-        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] | None = None,
-    ) -> dict[str, tuple[int, ...]]:
-        blockers: dict[str, tuple[int, ...]] = {}
-        live_residual_dispatcher_preds_by_strategy = (
-            live_residual_dispatcher_preds_by_strategy or {}
-        )
-        for fragment, result in zip(pipeline, results):
-            if not (result.success and result.edits_applied > 0):
-                continue
-            if fragment.metadata.get("allow_post_apply_bst_cleanup", True):
-                continue
-            residual_preds = tuple(
-                int(serial)
-                for serial in live_residual_dispatcher_preds_by_strategy.get(
-                    fragment.strategy_name,
-                    tuple(fragment.metadata.get("residual_dispatcher_preds", ())),
-                )
-            )
-            if not residual_preds:
-                continue
-            blockers[fragment.strategy_name] = residual_preds
-        return blockers
 
     def _build_successor_map(self) -> dict[int, list[int]]:
         """Build successor map from current MBA state."""
@@ -870,280 +761,11 @@ class HodurUnflattener(GenericUnflatteningRule):
                 return hp
         return {}
 
-    def _audit_pre_plan(
-        self,
-        snapshot: AnalysisSnapshot,
-        handler_paths: "dict[int, list[HandlerPathResult]] | None" = None,
-    ) -> None:
-        """Collect return sites and record pre_plan audit stage.
-
-        Builds return sites from the dispatcher transition report (handler-centric),
-        so each EXIT/UNKNOWN handler becomes a distinct site keyed by handler_serial.
-        Falls back to MBA exit block scan when the transition report is unavailable.
-
-        Args:
-            snapshot: Current immutable analysis snapshot.
-            handler_paths: Optional mapping of handler_serial -> evaluated paths
-                (retained for signature compatibility; no longer the primary source).
-        """
-        from d810.recon.flow.transition_report import build_dispatcher_transition_report
-
-        # Build return_sites once per maturity level
-        if not self._audit_return_sites:
-            report = load_transition_report_from_store(
-                func_ea=self.mba.entry_ea,
-                maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-            )
-            used_report = False
-            if report is not None and report.rows:
-                self._audit_return_sites = self._return_site_provider.collect_return_sites(
-                    report
-                )
-                used_report = True
-                unflat_logger.info(
-                    "RETURN_FRONTIER_AUDIT: using recon-store transition report "
-                    "(%d rows -> %d sites)",
-                    len(report.rows),
-                    len(self._audit_return_sites),
-                )
-            elif snapshot.bst_dispatcher_serial >= 0:
-                try:
-                    stkoff = self._get_effective_state_var_stkoff(snapshot.state_machine)
-                    report = build_dispatcher_transition_report(
-                        snapshot.mba,
-                        snapshot.bst_dispatcher_serial,
-                        state_var_stkoff=stkoff,
-                    )
-                    save_transition_report_to_store(
-                        func_ea=self.mba.entry_ea,
-                        maturity=self.cur_maturity,
-                        report=report,
-                        log_dir=self.log_dir,
-                    )
-                except Exception as exc:
-                    report = None
-                    unflat_logger.info(
-                        "RETURN_FRONTIER_AUDIT: transition report failed (diagnostic only): %s",
-                        exc,
-                    )
-
-            if report is not None and report.rows and not used_report:
-                self._audit_return_sites = self._return_site_provider.collect_return_sites(
-                    report
-                )
-                unflat_logger.info(
-                    "RETURN_FRONTIER_AUDIT: using transition report (%d rows -> %d sites)",
-                    len(report.rows),
-                    len(self._audit_return_sites),
-                )
-            if not self._audit_return_sites and handler_paths:
-                # Fallback: use handler_paths from DirectLinearization fragment
-                self._audit_return_sites = self._return_site_provider.collect_return_sites_legacy(
-                    snapshot, handler_paths
-                )
-                unflat_logger.info(
-                    "RETURN_FRONTIER_AUDIT: fallback to handler_paths (%d handlers -> %d sites)",
-                    len(handler_paths),
-                    len(self._audit_return_sites),
-                )
-            if not self._audit_return_sites:
-                # Last resort: derive return sites from MBA exit blocks (nsucc==0)
-                from d810.cfg.flow.return_frontier import ReturnSite
-
-                exits = self._find_exit_blocks()
-                sites: list[ReturnSite] = []
-                for blk_serial in sorted(exits):
-                    site = ReturnSite(
-                        site_id=f"hodur_exit_{blk_serial}",
-                        origin_block=blk_serial,
-                        guard_hash=f"{blk_serial:016x}",
-                        expected_terminal_kind="return",
-                        provenance="pre_plan_exit_block_scan",
-                    )
-                    sites.append(site)
-                self._audit_return_sites = tuple(sites)
-                unflat_logger.info(
-                    "RETURN_FRONTIER_AUDIT: fallback to exit block scan (%d sites)",
-                    len(self._audit_return_sites),
-                )
-
-        succs = self._build_successor_map()
-        exits = self._find_exit_blocks()
-        result = record_return_frontier_stage(
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
-            return_sites=tuple(self._audit_return_sites),
-            successors=succs,
-            entry=0,
-            exits=exits,
-            stage_name="pre_plan",
-        )
-        unflat_logger.info(
-            "RETURN_FRONTIER_AUDIT[pre_plan]: sites=%d broken=%d (diagnostic only, not gated)",
-            result.metrics.get("total_sites", 0),
-            result.metrics.get("broken_count", 0),
-        )
-
-    def _record_audit_stage(self, stage_name: str) -> None:
-        """Record a return frontier audit stage from current MBA state."""
-        succs = self._build_successor_map()
-        exits = self._find_exit_blocks()
-        result = record_return_frontier_stage(
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
-            return_sites=tuple(self._audit_return_sites),
-            successors=succs,
-            entry=0,
-            exits=exits,
-            stage_name=stage_name,
-        )
-        unflat_logger.info(
-            "RETURN_FRONTIER_AUDIT[%s]: sites=%d broken=%d (diagnostic only, not gated)",
-            stage_name,
-            result.metrics.get("total_sites", 0),
-            result.metrics.get("broken_count", 0),
-        )
-
-    def _build_snapshot(
-        self,
-        mba: ida_hexrays.mba_t,
-        state_machine: DispatcherStateMachine,
-        detector: HodurStateMachineDetector,
-    ) -> AnalysisSnapshot:
-        """Build an immutable AnalysisSnapshot from current mba state.
-
-        Runs BST analysis, reachability BFS, and caches auxiliary results
-        into the frozen snapshot for strategies to consume without re-computing.
-        """
-        # BST analysis — skip when switch-table map is available (the
-        # synthetic BST fallback below handles it, and probing BST from a
-        # handler block instead of a dispatcher block would be incorrect).
-        bst_result = None
-        bst_dispatcher_serial = -1
-        if state_machine.handlers and self._switch_table_map is None:
-            entry_serial = list(state_machine.handlers.values())[0].check_block
-            bst_stkoff = self._get_effective_state_var_stkoff(state_machine)
-            try:
-                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
-
-                raw_bst = analyze_bst_dispatcher(
-                    mba,
-                    dispatcher_entry_serial=entry_serial,
-                    state_var_stkoff=bst_stkoff,
-                )
-                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
-                    bst_result = raw_bst
-                    bst_dispatcher_serial = entry_serial
-            except Exception:
-                bst_result = None
-
-        # Switch-table fallback: synthesize BST from handler map
-        if bst_result is None and self._switch_table_map is not None:
-            bst_result = self._switch_table_map.to_bst_result()
-            bst_dispatcher_serial = self._switch_table_map.dispatcher_serial
-            unflat_logger.debug(
-                "Using synthetic BST from switch-table analysis: "
-                "%d handlers, dispatcher=blk[%d]",
-                len(bst_result.handler_state_map),
-                bst_dispatcher_serial,
-            )
-
-        # Lift virtual CFG snapshot once per pass for strategy planning.
-        flow_graph = self._cfg_translator.lift(mba)
-
-        # Dispatcher cache
-        dispatcher_cache = DispatcherCache.get_or_create(mba)
-
-        # Reachability BFS from block 0
-        reachability = self._compute_reachability_info(mba)
-
-        # Supplement transitions from initial detection on subsequent passes
-        if self._actual_pass_count > 0 and self._initial_transitions is not None:
-            detected_keys = {
-                (t.from_state, t.to_state) for t in state_machine.transitions
-            }
-            supplemented = 0
-            for t in self._initial_transitions:
-                key = (t.from_state, t.to_state)
-                if key not in self._resolved_transitions and key not in detected_keys:
-                    state_machine.transitions.append(t)
-                    supplemented += 1
-            if supplemented:
-                unflat_logger.debug(
-                    "HodurUnflattener: supplemented %d transitions from initial "
-                    "detection (resolved: %d, re-detected: %d)",
-                    supplemented,
-                    len(self._resolved_transitions),
-                    len(detected_keys),
-                )
-
-        return AnalysisSnapshot(
-            mba=mba,
-            state_machine=state_machine,
-            detector=detector,
-            dispatcher_cache=dispatcher_cache,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
-            reachability=reachability,
-            maturity=mba.maturity,
-            pass_number=self._actual_pass_count,
-            resolved_transitions=frozenset(self._resolved_transitions),
-            initial_transitions=tuple(self._initial_transitions or []),
-            flow_graph=flow_graph,
-        )
-
     def _get_effective_state_var_stkoff(
         self, state_machine: DispatcherStateMachine | None = None
     ) -> int | None:
-        """Return the stack offset of the state variable, or None on failure.
-
-        Matches the original monolith semantics: returns None so that
-        ``analyze_bst_dispatcher`` can auto-detect the stkoff.
-        """
-        # Try detector first (passes detector object, not mop_t)
-        if self._detector is not None:
-            try:
-                from d810.recon.flow.transition_builder import (
-                    _get_state_var_stkoff,
-                )
-
-                stkoff = _get_state_var_stkoff(self._detector)
-                if stkoff is not None:
-                    return stkoff
-            except Exception:
-                pass
-
-        # Fallback: read mop_S.s.off directly from state_machine.state_var
-        sm = state_machine if state_machine is not None else self.state_machine
-        if sm is None or sm.state_var is None:
-            return None
-        import ida_hexrays
-        if sm.state_var.t == ida_hexrays.mop_S:
-            return sm.state_var.s.off
-        return None
-
-    def _compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
-        """BFS from block 0 to compute reachable block set."""
-        qty = mba.qty
-        visited: set[int] = set()
-        queue = [0]
-        while queue:
-            serial = queue.pop()
-            if serial in visited or serial < 0 or serial >= qty:
-                continue
-            visited.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is not None:
-                for i in range(blk.nsucc()):
-                    queue.append(blk.succ(i))
-        return ReachabilityInfo(
-            entry_serial=0,
-            reachable_blocks=frozenset(visited),
-            total_blocks=qty,
-        )
+        """Return the state-variable stack offset via the family adapter."""
+        return self._family.get_effective_state_var_stkoff(state_machine)
 
     def _log_state_machine(self) -> None:
         """Log the detected state machine structure."""
@@ -2877,109 +2499,11 @@ class HodurUnflattener(GenericUnflatteningRule):
     def _build_state_machine_from_cache(
         self, analysis: object
     ) -> DispatcherStateMachine | None:
-        """Build a DispatcherStateMachine from a DispatcherAnalysis cache result.
-
-        This fallback path is used when the primary detector does not find a
-        state machine but the dispatcher cache identifies a conditional chain.
-        In the strategy-pipeline architecture the primary path (BST-based
-        direct linearization) handles the vast majority of cases, so this
-        fallback returns ``None`` to let the pipeline attempt recovery on the
-        next maturity pass.
-        """
-        unflat_logger.debug(
-            "_build_state_machine_from_cache: cache-based fallback not implemented "
-            "in strategy-pipeline mode; returning None"
-        )
-        return None
+        """Backward-compatible wrapper for family-owned cache fallback."""
+        return self._family.build_state_machine_from_cache(analysis)
 
     def _try_switch_table_detection(
         self, mba: "ida_hexrays.mba_t",
     ) -> DispatcherStateMachine | None:
-        """Detect switch-table dispatchers and build a DispatcherStateMachine.
-
-        Falls back to ``analyze_switch_table_dispatcher()`` when BST and cache
-        detection both fail.  Discovers transitions via ``evaluate_handler_paths()``.
-        Stashes the ``DispatcherHandlerMap`` on ``self._switch_table_map`` for
-        ``_build_snapshot()`` to use as synthetic BST.
-        """
-        from d810.recon.flow.switch_table_analysis import (
-            analyze_switch_table_dispatcher,
-        )
-        from d810.recon.flow.transition_builder import (
-            StateHandler,
-            StateTransition,
-        )
-        from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
-
-        result = analyze_switch_table_dispatcher(mba)
-        if result is None:
-            return None
-
-        handler_map = result.handler_map
-        state_var_mop = result.state_var_mop
-
-        unflat_logger.info(
-            "Switch-table dispatcher detected: %d handlers at blk[%d]",
-            len(handler_map.handler_state_map),
-            handler_map.dispatcher_serial,
-        )
-
-        # Build DispatcherStateMachine with handlers.
-        # Each handler uses its own block serial as check_block (not the
-        # shared dispatcher serial) so downstream graph analysis has
-        # distinct per-handler identities.
-        sm = DispatcherStateMachine(mba=mba, state_var=state_var_mop)
-        sm.state_constants = set(handler_map.handler_state_map.values())
-
-        handler_entry_blocks = set(handler_map.handler_state_map.keys())
-        dispatcher_blocks_set = set(handler_map.dispatcher_blocks)
-
-        for handler_serial, state_const in handler_map.handler_state_map.items():
-            handler = StateHandler(
-                state_value=state_const,
-                check_block=handler_serial,
-                handler_blocks=[handler_serial],
-            )
-            sm.add_handler(handler)
-
-        # Discover transitions via forward evaluation
-        for handler_serial, state_const in handler_map.handler_state_map.items():
-            try:
-                paths = evaluate_handler_paths(
-                    mba,
-                    entry_serial=handler_serial,
-                    incoming_state=state_const,
-                    bst_node_blocks=dispatcher_blocks_set,
-                    state_var_stkoff=handler_map.state_var_stkoff,
-                    handler_entry_blocks=handler_entry_blocks,
-                )
-            except Exception:
-                unflat_logger.debug(
-                    "Forward eval failed for switch handler blk[%d] (state=%d)",
-                    handler_serial,
-                    state_const,
-                )
-                continue
-
-            for path_result in paths:
-                if path_result.final_state is None:
-                    continue  # Terminal path (return)
-                target = handler_map.resolve_target(path_result.final_state)
-                if target is None:
-                    continue
-                transition = StateTransition(
-                    from_state=state_const,
-                    to_state=path_result.final_state,
-                    from_block=path_result.exit_block,
-                )
-                sm.add_transition(transition)
-
-        unflat_logger.info(
-            "Switch-table state machine: %d handlers, %d transitions",
-            len(sm.handlers),
-            len(sm.transitions),
-        )
-
-        # Stash for _build_snapshot()
-        self._switch_table_map = handler_map
-        return sm
+        """Backward-compatible wrapper for family-owned switch-table fallback."""
+        return self._family.try_switch_table_detection(mba)

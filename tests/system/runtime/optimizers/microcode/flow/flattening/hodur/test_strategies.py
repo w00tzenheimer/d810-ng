@@ -96,9 +96,13 @@ def test_strategy_names_unique():
 
 
 def test_strategy_count():
-    """Experimental ALL_STRATEGIES currently contains 3 active strategies."""
-    assert len(ALL_STRATEGIES) == 3
-    assert "linearized_flow_graph" not in {cls().name for cls in ALL_STRATEGIES}
+    """Experimental ALL_STRATEGIES currently contains 6 active strategies."""
+    names = {cls().name for cls in ALL_STRATEGIES}
+    assert len(ALL_STRATEGIES) == 6
+    assert "bad_while_loop" in names
+    assert "fake_jump" in names
+    assert "single_iteration" in names
+    assert "linearized_flow_graph" not in names
 
 
 # ---------------------------------------------------------------------------

@@ -154,14 +154,19 @@ class CreateConditionalRedirect:
 class DuplicateBlock:
     """Request duplication of a block and predecessor redirect.
 
-    Backend support is intentionally deferred in Phase 1; translators should
-    emit diagnostics and skip.
+    The duplicate keeps the source instructions and is wired to the redirected
+    predecessor. For 1-way sources, ``target_block`` optionally overrides the
+    clone successor. For 2-way conditional sources, leave ``target_block`` as
+    ``None`` and optionally provide explicit ``conditional_target`` and
+    ``fallthrough_target`` to retarget the cloned conditional shape.
     """
 
     source_block: int
     target_block: int | None
     pred_serial: int | None = None
     patch_kind: str = ""
+    conditional_target: int | None = None
+    fallthrough_target: int | None = None
 
 
 @dataclass(frozen=True)
