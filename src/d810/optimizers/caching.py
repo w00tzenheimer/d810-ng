@@ -242,6 +242,10 @@ class OptimizationCache:
         """
         return self._storage.get_function_rules(function_addr)
 
+    def clear_function_rules(self, function_addr: int) -> None:
+        """Clear persisted rule configuration for a function."""
+        self._storage.clear_function_rules(function_addr)
+
     def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
         """Check if a rule should run on a function.
 
