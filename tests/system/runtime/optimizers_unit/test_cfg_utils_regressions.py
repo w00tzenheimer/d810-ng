@@ -322,6 +322,61 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     assert mba.marked_dirty == 1
 
 
+def test_insert_nop_blk_2way_does_not_duplicate_fallthrough_successor(monkeypatch):
+    """2-way helper insertion must preserve succset=[fallthrough, conditional]."""
+    from d810.hexrays.mutation import cfg_mutations
+
+    _hr = cfg_mutations.ida_hexrays
+    monkeypatch.setattr(_hr, "mop_b", 1, raising=False)
+    monkeypatch.setattr(_hr, "is_mcode_jcond", lambda _opcode: True, raising=False)
+
+    mba = _FakeMBA(qty=20)
+    fallthrough = _FakeBlock(5, mba, succs=[], preds=[10])
+    conditional = _FakeBlock(6, mba, succs=[], preds=[10])
+    blk = _FakeBlock(
+        10,
+        mba,
+        succs=[5, 6],
+        preds=[],
+        tail=SimpleNamespace(opcode=0x70, d=SimpleNamespace(t=_hr.mop_b, b=6)),
+    )
+    blk.nextb = fallthrough
+    fallthrough.prevb = blk
+
+    def _copy_block(src_blk, dest_serial):
+        assert dest_serial == src_blk.serial + 1
+        nop_blk = _FakeBlock(
+            11,
+            mba,
+            succs=[5, 6],
+            preds=[src_blk.serial],
+            tail=SimpleNamespace(opcode=_hr.m_goto),
+        )
+        nop_blk.head = SimpleNamespace(next=None)
+        nop_blk.nextb = None
+        src_blk.nextb = nop_blk
+        # Emulate the real IDA side effect: inserting the helper after the
+        # conditional block already rehomes the fallthrough edge to the helper.
+        src_blk.succset = _FakeSet([11, 6])
+        return nop_blk
+
+    mba.copy_block = _copy_block  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        cfg_mutations,
+        "insert_goto_instruction",
+        lambda blk, target_serial, nop_previous_instruction=False: setattr(
+            blk, "goto_target", target_serial
+        ),
+    )
+
+    nop_blk = cfg_mutations.insert_nop_blk(blk)
+
+    assert nop_blk.serial == 11
+    assert list(blk.succset) == [11, 6]
+    assert list(nop_blk.succset) == [5]
+    assert list(nop_blk.predset) == [10]
+
+
 def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     """safe_verify should emit a JSON artifact with focused block capture."""
     from d810.hexrays.mutation import cfg_verify

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import CreateConditionalRedirect, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     DecisionReasonCode,
@@ -92,6 +92,51 @@ def _flow_graph_with_edge() -> FlowGraph:
     )
 
 
+def _flow_graph_with_conditional_shape() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(1,),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+            ),
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(2, 3),
+                preds=(0,),
+                flags=0,
+                start_ea=0x401010,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                serial=2,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(1,),
+                flags=0,
+                start_ea=0x401020,
+                insn_snapshots=(),
+            ),
+            3: BlockSnapshot(
+                serial=3,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(1,),
+                flags=0,
+                start_ea=0x401030,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+
 def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_gap(
     monkeypatch,
 ) -> None:
@@ -120,7 +165,9 @@ def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_ga
     )
 
     family = EmulatedDispatcherStrategyFamily(
-        cfg_translator=SimpleNamespace(lift=lambda _mba: _flow_graph_with_edge())
+        cfg_translator=SimpleNamespace(
+            lift=lambda _mba: _flow_graph_with_conditional_shape()
+        )
     )
     detection = family.detect(mba)
 
@@ -218,7 +265,6 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     snapshot = family.build_snapshot(mba, detection)
     observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
     modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
-
     assert observation == EmulatedDispatcherMetadata(
         dispatcher_shape="unknown",
         state_transport="father_history_emulation",
@@ -238,6 +284,75 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
         RedirectGoto(from_serial=0, old_target=1, new_target=1),
     )
     assert snapshot.flow_graph.metadata[EMULATED_DISPATCHER_MODIFICATIONS_KEY] == modifications
+
+
+def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target_candidate(
+    monkeypatch,
+) -> None:
+    mba = _fake_mba()
+    cache = object()
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(
+            lift=lambda _mba: _flow_graph_with_conditional_shape()
+        )
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda _mba, _det: (
+            (
+                CreateConditionalRedirect(
+                    source_block=0,
+                    ref_block=1,
+                    conditional_target=2,
+                    fallthrough_target=3,
+                ),
+            ),
+            (),
+        ),
+    )
+    detection = EmulatedDispatcherDetection(
+        analysis_dispatchers=(3,),
+        dispatcher_shape="unknown",
+        state_transport="father_history_emulation",
+        lowering_mode="generic_graph_modifications",
+        provenance_hints=(),
+        state_constants=(0xF6A1E,),
+        collector_dispatcher_entries=(2,),
+    )
+
+    snapshot = family.build_snapshot(mba, detection)
+    observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+    modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
+
+    assert observation == EmulatedDispatcherMetadata(
+        dispatcher_shape="unknown",
+        state_transport="father_history_emulation",
+        lowering_mode="generic_graph_modifications",
+        provenance_hints=(),
+        analysis_dispatchers=(3,),
+        state_constants=(0xF6A1E,),
+        collector_dispatchers=(2,),
+        planning_ready=True,
+        planning_blocker=None,
+        candidate_count=1,
+        rejected_fathers=0,
+        candidate_kinds=("CreateConditionalRedirect",),
+        rejection_reasons=(),
+    )
+    assert modifications == (
+        CreateConditionalRedirect(
+            source_block=0,
+            ref_block=1,
+            conditional_target=2,
+            fallthrough_target=3,
+        ),
+    )
 
 
 def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
