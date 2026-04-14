@@ -1,4 +1,4 @@
-"""Explicit non-default failing tests for known emulated-dispatcher parity gaps."""
+"""Focused parity checks for the emulated-dispatcher engine family."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from tests.system.e2e.test_approov_engine_wrapper_baselines import (
 )
 
 
-pytestmark = [pytest.mark.e2e, pytest.mark.known_gap]
+pytestmark = [pytest.mark.e2e]
 
 
 @pytest.fixture(scope="class")
@@ -69,8 +69,8 @@ def _decompile_with_engine_wrapper_profile(
     return rendered, fired_rules, gap_summary
 
 
-class TestKnownEngineGaps:
-    """Known emulated-dispatcher parity gaps that stay visible but non-default."""
+class TestEmulatedDispatcherParity:
+    """Parity checks for the emulated-dispatcher engine-wrapper profile."""
 
     binary_name = _get_default_binary()
 
@@ -82,7 +82,7 @@ class TestKnownEngineGaps:
         code_comparator,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for explicit engine-gap parity assertions"
+            "libclang required for explicit emulated-dispatcher parity assertions"
         )
         func_ea = get_func_ea("approov_vm_dispatcher")
         if func_ea == idaapi.BADADDR:
