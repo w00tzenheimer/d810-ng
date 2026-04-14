@@ -648,6 +648,36 @@ class D810Manager:
             ),
         )
 
+    def clear_function_rule_override(self, function_addr: int) -> None:
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            logger.warning("Function-rules storage unavailable; override not cleared")
+            return
+
+        existing = self.storage.get_function_rules(function_addr)
+        if existing is None:
+            return
+
+        if existing.tags:
+            self.storage.set_function_rules(
+                function_addr=function_addr,
+                enabled_rules=set(),
+                disabled_rules=set(),
+                notes="",
+            )
+        else:
+            self.storage.clear_function_rules(function_addr)
+
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            project_name=str(self.config.get("project_name", "")),
+            func_eas=frozenset({int(function_addr)}),
+            changed_rules=frozenset(
+                set(existing.enabled_rules) | set(existing.disabled_rules)
+            ),
+        )
+
     def get_function_tags(self, function_addr: int) -> set[str]:
         if self.storage is None:
             self._init_storage()

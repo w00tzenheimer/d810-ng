@@ -38,6 +38,7 @@ ENGINE_WRAPPER_REMOVED_RULES = (
     "UnflattenerFakeJump",
     "BadWhileLoop",
 )
+TEMP_ENGINE_WRAPPER_NOTES = "temporary engine-wrapper test profile"
 
 APPROOV_ENGINE_BASELINES = {
     "approov_real_pattern": {
@@ -103,6 +104,27 @@ APPROOV_ENGINE_BASELINES = {
             "calls": 0,
         },
     },
+    "approov_vm_dispatcher": {
+        "legacy_project": "default_unflattening_approov.json",
+        "engine_matches_legacy": True,
+        "engine_changed": False,
+        "legacy_ast": {
+            "statements": 4,
+            "returns": 0,
+            "whiles": 1,
+            "gotos": 0,
+            "ifs": 2,
+            "calls": 0,
+        },
+        "engine_ast": {
+            "statements": 4,
+            "returns": 0,
+            "whiles": 1,
+            "gotos": 0,
+            "ifs": 2,
+            "calls": 0,
+        },
+    },
     "approov_simple_loop": {
         "legacy_project": "example_libobfuscated.json",
         "engine_matches_legacy": True,
@@ -138,10 +160,11 @@ def _get_default_binary() -> str:
 
 
 def _apply_engine_wrapper_profile(ctx) -> None:
-    """Replace legacy CFG unflattening rules with the extracted Hodur path."""
+    """Replace legacy CFG unflattening rules with the extracted engine paths."""
     for rule_name in ENGINE_WRAPPER_REMOVED_RULES:
         ctx.remove_rule(rule_name)
     ctx.add_rule("HodurUnflattener")
+    ctx.add_rule("EmulatedDispatcherUnflattener")
 
 
 def _decompile_without_d810(state, func_ea: int, pseudocode_to_string) -> str:
@@ -149,6 +172,56 @@ def _decompile_without_d810(state, func_ea: int, pseudocode_to_string) -> str:
     cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
     assert cfunc is not None, f"Decompilation failed for function at 0x{func_ea:x}"
     return pseudocode_to_string(cfunc.get_pseudocode())
+
+
+def _force_rule_scope_to_current_profile(state, ctx, func_ea: int):
+    manager = state.manager
+    previous = manager.get_function_rule_override(func_ea)
+    if (
+        previous is not None
+        and getattr(previous, "notes", "") == TEMP_ENGINE_WRAPPER_NOTES
+        and not getattr(previous, "tags", set())
+    ):
+        manager.clear_function_rule_override(func_ea)
+        previous = None
+    enabled_rules = {
+        str(rule.name)
+        for rule in list(ctx.active_ins_rules) + list(ctx.active_blk_rules)
+    }
+    manager.set_function_rule_override(
+        function_addr=func_ea,
+        enabled_rules=enabled_rules,
+        disabled_rules=set(),
+        notes=TEMP_ENGINE_WRAPPER_NOTES,
+    )
+    return previous
+
+
+def _restore_forced_rule_scope(state, func_ea: int, previous) -> None:
+    manager = state.manager
+    if previous is None:
+        manager.clear_function_rule_override(func_ea)
+        return
+    if (
+        getattr(previous, "notes", "") == TEMP_ENGINE_WRAPPER_NOTES
+        and not getattr(previous, "tags", set())
+    ):
+        manager.clear_function_rule_override(func_ea)
+        return
+    if (
+        not previous.enabled_rules
+        and not previous.disabled_rules
+        and not getattr(previous, "tags", set())
+        and not getattr(previous, "notes", "")
+    ):
+        manager.clear_function_rule_override(func_ea)
+        return
+    manager.set_function_rule_override(
+        function_addr=func_ea,
+        enabled_rules=set(previous.enabled_rules),
+        disabled_rules=set(previous.disabled_rules),
+        notes=getattr(previous, "notes", ""),
+    )
 
 
 def _decompile_with_project(
@@ -167,11 +240,15 @@ def _decompile_with_project(
             _apply_engine_wrapper_profile(ctx)
         state.stats.reset()
         state.start_d810()
-        cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-        assert cfunc is not None, (
-            f"Decompilation with d810 failed for function at 0x{func_ea:x}"
-        )
-        rendered = pseudocode_to_string(cfunc.get_pseudocode())
+        previous_override = _force_rule_scope_to_current_profile(state, ctx, func_ea)
+        try:
+            cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert cfunc is not None, (
+                f"Decompilation with d810 failed for function at 0x{func_ea:x}"
+            )
+            rendered = pseudocode_to_string(cfunc.get_pseudocode())
+        finally:
+            _restore_forced_rule_scope(state, func_ea, previous_override)
     state.stop_d810()
     return rendered
 
@@ -203,7 +280,11 @@ class TestApproovEngineWrapperBaselines:
         )
 
         effective_case = case.get_effective_config(get_binary_suffix())
-        if effective_case.skip and should_skip_reason(effective_case.skip):
+        if (
+            effective_case.function != "approov_vm_dispatcher"
+            and effective_case.skip
+            and should_skip_reason(effective_case.skip)
+        ):
             pytest.skip(effective_case.skip)
 
         func_ea = get_func_ea(effective_case.function)
