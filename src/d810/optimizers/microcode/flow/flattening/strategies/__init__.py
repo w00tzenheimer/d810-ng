@@ -34,6 +34,14 @@ from .fake_jump import (
     serialize_fake_jump_fixes,
     should_skip_fake_jump_predecessor,
 )
+from .emulated_dispatcher_strategy import (
+    EMULATED_DISPATCHER_METADATA_KEY,
+    EMULATED_DISPATCHER_MODIFICATIONS_KEY,
+    EmulatedDispatcherMetadata,
+    EmulatedDispatcherStrategy,
+    extract_emulated_dispatcher_metadata,
+    extract_emulated_dispatcher_modifications,
+)
 from .single_iteration import (
     DEFAULT_MAX_MAGIC,
     DEFAULT_MIN_MAGIC,
@@ -65,6 +73,10 @@ __all__ = [
     "FakeJumpPredFix",
     "FakeJumpResolution",
     "FakeJumpStrategy",
+    "EMULATED_DISPATCHER_METADATA_KEY",
+    "EMULATED_DISPATCHER_MODIFICATIONS_KEY",
+    "EmulatedDispatcherMetadata",
+    "EmulatedDispatcherStrategy",
     "SINGLE_ITERATION_FIXES_METADATA_KEY",
     "SingleIterationPredFix",
     "SingleIterationStrategy",
@@ -81,6 +93,8 @@ __all__ = [
     "extract_bad_while_loop_edits",
     "extract_bad_while_loop_follow_up",
     "extract_fake_jump_fixes",
+    "extract_emulated_dispatcher_metadata",
+    "extract_emulated_dispatcher_modifications",
     "extract_single_iteration_fixes",
     "resolve_fake_jump_target",
     "serialize_bad_while_loop_edits",

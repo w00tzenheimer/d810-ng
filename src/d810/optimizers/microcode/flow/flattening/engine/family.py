@@ -59,3 +59,17 @@ class CFFStrategyFamily(abc.ABC):
     def strategies(self) -> list[UnflatteningStrategy]:
         """Ordered list of strategies to poll during planning."""
         ...
+
+    def post_execute_cleanup(
+        self,
+        mba: object,
+        *,
+        snapshot: AnalysisSnapshot,
+        total_changes: int,
+    ) -> int:
+        """Run optional family-specific cleanup after successful execution.
+
+        Families that need legacy post-apply cleanup can override this hook.
+        The default implementation is a no-op.
+        """
+        return 0
