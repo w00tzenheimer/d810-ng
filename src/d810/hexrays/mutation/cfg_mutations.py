@@ -893,7 +893,11 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     # shifts in the middle of the MBA.
     insert_after_blk = blk.nsucc() > 1
     if insert_after_blk:
-        nop_block = mba.copy_block(blk, blk.serial)
+        # copy_block(dest_serial) inserts the new block *before* dest_serial.
+        # For BLT_2WAY fallthrough, verifier semantics require succset[0] to
+        # equal blk.nextb, so the synthesized fallthrough helper must be placed
+        # physically after blk, not before it.
+        nop_block = mba.copy_block(blk, blk.serial + 1)
         # Mid-CFG insertion can shift serials; refresh from the original block
         # object to keep bookkeeping tied to the same logical successor.
         if original_successor_blk is not None:
@@ -978,16 +982,43 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # blk -> original_successor as blk -> nop_block -> original_successor.
         # This keeps succ/pred bidirectional consistency and avoids detached
         # NOP blocks (preds=[]), which trigger INTERR 50856/50858.
-        blk.succset._del(original_successor_serial)
-        blk.succset.push_back(nop_block.serial)
+        cond_target = (
+            blk.tail.d.b
+            if blk.tail is not None
+            and ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+            and blk.tail.d is not None
+            and blk.tail.d.t == ida_hexrays.mop_b
+            else None
+        )
+
+        prev_blk_succs = [int(x) for x in blk.succset]
+        for prev_serial in prev_blk_succs:
+            blk.succset._del(prev_serial)
+
+        # For conditional blocks, verifier semantics require
+        # succset=[nextb, conditional_target] == [fallthrough, taken].
+        if cond_target is not None:
+            blk.succset.push_back(nop_block.serial)
+            if cond_target != nop_block.serial:
+                blk.succset.push_back(cond_target)
+        else:
+            if original_successor_serial in prev_blk_succs:
+                prev_blk_succs.remove(original_successor_serial)
+            blk.succset.push_back(nop_block.serial)
+            for prev_serial in prev_blk_succs:
+                if prev_serial != nop_block.serial:
+                    blk.succset.push_back(prev_serial)
         blk.mark_lists_dirty()
 
-        original_successor_blk.predset._del(blk.serial)
-        original_successor_blk.predset.push_back(nop_block.serial)
+        if _serial_in_predset(original_successor_blk, blk.serial):
+            original_successor_blk.predset._del(blk.serial)
+        if not _serial_in_predset(original_successor_blk, nop_block.serial):
+            original_successor_blk.predset.push_back(nop_block.serial)
         if original_successor_blk.serial != mba.qty - 1:
             original_successor_blk.mark_lists_dirty()
 
-        nop_block.predset.push_back(blk.serial)
+        if not _serial_in_predset(nop_block, blk.serial):
+            nop_block.predset.push_back(blk.serial)
 
     # Update any m_jtbl case targets across the entire MBA that reference
     # the original successor.  When the NOP block is spliced between blk and

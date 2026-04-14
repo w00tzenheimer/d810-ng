@@ -1245,8 +1245,7 @@ mutation pipeline.
 **Status on this branch (2026-04-14):**
 - The family boundary is now phenotype-based rather than provenance-branded:
   `emulated_dispatcher_family.py`, `emulated_dispatcher_strategy.py`, and
-  `unflattener_emulated_dispatcher_engine.py` are the canonical engine path,
-  with `ollvm_*` modules retained only as compatibility shims.
+  `unflattener_emulated_dispatcher_engine.py` are the canonical engine path.
 - The important correctness rule turned out to be "no partial lowering when
   unresolved fathers remain", not "port more father-history state at all
   costs". The current family now observes candidate metadata but abstains from

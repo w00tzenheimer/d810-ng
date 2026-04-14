@@ -439,7 +439,7 @@ def graph_modifications_to_simulated_edits(
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=ref,
+                        old_target=-1,
                         new_target=conditional,
                         fallthrough_target=fallthrough,
                     )
@@ -572,7 +572,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=ref,
+                        old_target=-1,
                         new_target=conditional,
                         fallthrough_target=fallthrough,
                         created_serial=assigned,
@@ -782,7 +782,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=patch_plan.relocation_map.rewrite_serial(ref),
+                        old_target=-1,
                         new_target=patch_plan.relocation_map.rewrite_serial(
                             conditional
                         ),
@@ -967,7 +967,9 @@ def simulate_edits(
                 fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
                 if fallthrough_serial == clone_serial:
                     fallthrough_serial += 1
-            clone_succs = [edit.new_target, fallthrough_serial]
+            # Keep Hex-Rays BLT_2WAY ordering: succset[0] is fallthrough,
+            # succset[1] is the conditional branch target.
+            clone_succs = [fallthrough_serial, edit.new_target]
             result[clone_serial] = clone_succs
             if edit.fallthrough_target is None:
                 result[fallthrough_serial] = []
@@ -979,11 +981,14 @@ def simulate_edits(
             clone_origins[fallthrough_serial] = edit
 
             new_succs = list(succs)
-            try:
-                idx = new_succs.index(edit.old_target)
-                new_succs[idx] = clone_serial
-            except ValueError:
-                new_succs.append(clone_serial)
+            if len(new_succs) == 1:
+                new_succs[0] = clone_serial
+            else:
+                try:
+                    idx = new_succs.index(edit.old_target)
+                    new_succs[idx] = clone_serial
+                except ValueError:
+                    new_succs.append(clone_serial)
             result[edit.source] = new_succs
 
         elif edit.kind == "duplicate_block":

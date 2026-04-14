@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
     ConvertToGoto,
     GraphModification,
     InsertBlock,
@@ -64,7 +65,7 @@ def _coerce_emulated_dispatcher_modifications(
 ) -> tuple[GraphModification, ...]:
     if not isinstance(raw, tuple):
         return ()
-    allowed = (RedirectGoto, ConvertToGoto, InsertBlock)
+    allowed = (RedirectGoto, ConvertToGoto, InsertBlock, CreateConditionalRedirect)
     items: list[GraphModification] = []
     for item in raw:
         if isinstance(item, allowed):
@@ -90,20 +91,28 @@ def _is_valid_emulated_dispatcher_modification(
     cfg: FlowGraph,
     mod: GraphModification,
 ) -> bool:
-    match mod:
-        case RedirectGoto(from_serial=src, new_target=dst):
-            return src in cfg.blocks and dst in cfg.blocks and src != dst
-        case ConvertToGoto(block_serial=src, goto_target=dst):
-            return src in cfg.blocks and dst in cfg.blocks and src != dst
-        case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
-            return (
-                pred in cfg.blocks
-                and succ in cfg.blocks
-                and pred != succ
-                and len(insns) > 0
-            )
-        case _:
-            return False
+    if isinstance(mod, RedirectGoto):
+        return mod.from_serial in cfg.blocks and mod.new_target in cfg.blocks and mod.from_serial != mod.new_target
+    if isinstance(mod, ConvertToGoto):
+        return mod.block_serial in cfg.blocks and mod.goto_target in cfg.blocks and mod.block_serial != mod.goto_target
+    if isinstance(mod, CreateConditionalRedirect):
+        return (
+            mod.source_block in cfg.blocks
+            and mod.ref_block in cfg.blocks
+            and mod.conditional_target in cfg.blocks
+            and mod.fallthrough_target in cfg.blocks
+            and mod.source_block != mod.conditional_target
+            and mod.source_block != mod.fallthrough_target
+            and mod.conditional_target != mod.fallthrough_target
+        )
+    if isinstance(mod, InsertBlock):
+        return (
+            mod.pred_serial in cfg.blocks
+            and mod.succ_serial in cfg.blocks
+            and mod.pred_serial != mod.succ_serial
+            and len(mod.instructions) > 0
+        )
+    return False
 
 
 def _normalize_emulated_dispatcher_modifications(
@@ -127,6 +136,16 @@ def _build_ownership(
             case ConvertToGoto(block_serial=src, goto_target=dst):
                 blocks.add(src)
                 edges.add((src, dst))
+            case CreateConditionalRedirect(
+                source_block=src,
+                ref_block=ref,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+            ):
+                blocks.add(src)
+                blocks.add(ref)
+                edges.add((src, conditional))
+                edges.add((src, fallthrough))
             case InsertBlock(pred_serial=pred, succ_serial=succ):
                 blocks.add(pred)
                 edges.add((pred, succ))

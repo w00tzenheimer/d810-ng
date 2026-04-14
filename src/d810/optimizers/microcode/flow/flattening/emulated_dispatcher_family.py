@@ -7,6 +7,7 @@ import ida_hexrays
 
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
     ConvertToGoto,
     GraphModification,
     InsertBlock,
@@ -239,7 +240,27 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and target_blk.tail is not None
             and ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
         ):
-            return None, "dispatcher_target_conditional_not_lowered"
+            if dispatcher_father.nsucc() != 1:
+                return None, "dispatcher_conditional_target_requires_one_way_source"
+            if target_blk.nextb is None:
+                return None, "dispatcher_target_missing_fallthrough"
+            conditional_target = int(target_blk.tail.d.b)
+            fallthrough_target = int(target_blk.nextb.serial)
+            if conditional_target == dispatcher_father.serial:
+                return None, "dispatcher_conditional_target_self_loop"
+            if fallthrough_target == dispatcher_father.serial:
+                return None, "dispatcher_fallthrough_target_self_loop"
+            return (
+                (
+                    CreateConditionalRedirect(
+                        source_block=int(dispatcher_father.serial),
+                        ref_block=int(target_blk.serial),
+                        conditional_target=conditional_target,
+                        fallthrough_target=fallthrough_target,
+                    ),
+                ),
+                None,
+            )
 
         raw_ins_to_copy = [
             ins
