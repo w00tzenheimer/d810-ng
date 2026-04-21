@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.cfg.entry_island_rescue import (
     EntryIslandRescueOption,
     build_entry_island_rescue_modification,

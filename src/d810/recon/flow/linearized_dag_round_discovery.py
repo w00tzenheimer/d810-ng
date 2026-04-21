@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import logging
 import re
 
+from d810.core import logging
 from d810.core.typing import Callable
 
 from d810.recon.flow.dag_redirect_discovery import select_plannable_dag_edges

@@ -23,7 +23,8 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+
+from d810.core.typing import Iterable, Sequence
 
 DEFAULT_PHASE = "post_d810"
 DEFAULT_MATURITY = "MMAT_GLBOPT1"

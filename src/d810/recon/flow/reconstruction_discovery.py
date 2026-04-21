@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 
+from d810.core import logging
 import ida_hexrays
 
 from d810.recon.flow.exit_transition_discovery import resolve_state_var_stkoff

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 import re
 from types import SimpleNamespace
 
+from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.recon.flow.linearized_state_dag import StateDagNodeKey
 from d810.recon.flow.target_entry_resolution import (

@@ -15,8 +15,8 @@ plus corridor ownership hints.  Callers in Hodur provide those facts from
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 
+from d810.core import logging
 from d810.core.typing import Protocol
 from d810.cfg.lowering_scope import derive_edge_predecessor, requires_pred_scoped_lowering
 
