@@ -34,6 +34,7 @@ class TransactionResult:
     success: bool
     applied_count: int = 0
     failure_phase: str | None = None
+    failure_detail: str | None = None
     classification: FailureClassification | None = None
     error: Exception | None = None
 
@@ -42,13 +43,20 @@ class TransactionResult:
         return cls(success=True, applied_count=count)
 
     @classmethod
-    def failed(cls, phase: str, error: Exception) -> TransactionResult:
+    def failed(
+        cls,
+        phase: str,
+        error: Exception,
+        *,
+        detail: str | None = None,
+    ) -> TransactionResult:
         from d810.cfg.contracts.transaction_policy import classify_failure
 
         classification = classify_failure(phase, str(error))
         return cls(
             success=False,
             failure_phase=phase,
+            failure_detail=detail,
             classification=classification,
             error=error,
         )
@@ -137,17 +145,21 @@ class CfgTransactionEngine:
             return TransactionResult.failed("post_apply_contract", exc)
         except Exception as exc:
             # Unexpected failure during lowering/apply
-            return TransactionResult.failed("backend_apply", exc)
+            phase = getattr(self._translator, "last_lowering_phase", None) or "backend_apply"
+            detail = getattr(self._translator, "last_lowering_subphase", None)
+            return TransactionResult.failed(phase, exc, detail=detail)
 
         if count == 0:
             # lower() returned 0 -- use translator's reported phase to distinguish
             # pre-mutation rejections (lowering) from post-mutation failures (native_verify)
             phase = getattr(self._translator, 'last_lowering_phase', None) or "backend_apply"
+            detail = getattr(self._translator, "last_lowering_subphase", None)
             return TransactionResult.failed(
                 phase,
                 RuntimeError(
                     "translator.lower() returned 0 applied modifications"
                 ),
+                detail=detail,
             )
 
         return TransactionResult.ok(count)

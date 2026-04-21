@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import os
+import platform
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.cfg.contracts.ida_contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
+from d810.cfg.graph_modification import CreateConditionalRedirect
+from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
+    EMULATED_DISPATCHER_MODIFICATIONS_KEY,
+    EmulatedDispatcherStrategyFamily,
+)
+from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 
 
 class _FakeEdgeSet:
@@ -21,6 +33,9 @@ class _FakeEdgeSet:
 
     def __getitem__(self, idx: int) -> int:
         return self._items[idx]
+
+    def __iter__(self):
+        return iter(list(self._items))
 
     def clear(self) -> None:
         self._items.clear()
@@ -108,6 +123,97 @@ def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     assert applied == 1
     assert len(calls) == 2
     assert mba.cleaned == 1
+
+
+def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=0,
+            new_target=0,
+            description="self-loop debug case",
+        ),
+    ]
+
+    state = {"calls": 0}
+
+    def _boom_once(_blk):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RuntimeError("debug formatter blew up")
+        return "<blk>"
+
+    monkeypatch.setattr(dm, "_format_block_info", _boom_once)
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(modifier, "_apply_single", lambda _mod: True)
+
+    applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+
+    assert applied == 1
+
+
+def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_targets(monkeypatch):
+    mba = _FakeMBA()
+    blk = _FakeBlock(15)
+    blk.type = ida_hexrays.BLT_2WAY
+    blk.tail.opcode = ida_hexrays.m_jnz
+    blk.tail.d = SimpleNamespace(t=ida_hexrays.mop_b, b=17)
+    blk.succset = _FakeEdgeSet([16, 17])
+    blk.nextb = SimpleNamespace(serial=16)
+    blk.nsucc = lambda: 2  # type: ignore[assignment]
+    blk.succ = lambda idx: [16, 17][idx]  # type: ignore[assignment]
+    mba.blocks = {15: blk}
+    mba.qty = 300
+
+    modifier = dm.DeferredGraphModifier(mba)
+
+    nop_blk = _FakeBlock(16)
+    helper_targets: list[tuple[int, int]] = []
+    conditional_targets: list[tuple[int, int, int | None]] = []
+
+    def _insert_nop(_blk):
+        mba.qty += 1
+        return nop_blk
+
+    def _change_1way(_blk, new_target, verify=False):
+        helper_targets.append((_blk.serial, new_target))
+        return True
+
+    def _change_2way(_blk, new_target, verify=False, old_target=None):
+        conditional_targets.append((_blk.serial, new_target, old_target))
+        return True
+
+    monkeypatch.setattr(dm, "insert_nop_blk", _insert_nop)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _change_1way)
+    monkeypatch.setattr(dm, "change_2way_block_conditional_successor", _change_2way)
+
+    ok_fallthrough = modifier._apply_single(
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_TARGET_CHANGE,
+            block_serial=15,
+            new_target=66,
+            old_target=16,
+        )
+    )
+    ok_conditional = modifier._apply_single(
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_TARGET_CHANGE,
+            block_serial=15,
+            new_target=202,
+            old_target=17,
+        )
+    )
+
+    assert ok_fallthrough is True
+    assert ok_conditional is True
+    assert helper_targets == [(16, 67)]
+    assert conditional_targets == [(15, 203, 18)]
+    assert modifier._serial_remap[16] == 17
+    assert modifier._serial_remap[17] == 18
+    assert modifier._serial_remap[202] == 203
 
 
 def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
@@ -292,6 +398,36 @@ def test_apply_attempts_verify_recovery(monkeypatch):
     assert modifier.verify_failed is False
 
 
+def test_apply_attempts_verify_recovery_on_non_runtime_preapply_exception(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+    ]
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _m: True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(
+        dm,
+        "mba_deep_cleaning",
+        lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1),
+    )
+
+    verify_calls = {"n": 0}
+
+    def _safe_verify(*_a, **_k):
+        verify_calls["n"] += 1
+        if verify_calls["n"] == 1:
+            raise ValueError("opaque verify failure")
+
+    monkeypatch.setattr(dm, "safe_verify", _safe_verify)
+
+    applied = modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
+    assert applied == 1
+    assert verify_calls["n"] == 2
+    assert modifier.verify_failed is False
+
+
 def test_apply_executes_post_apply_hook(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
@@ -422,6 +558,373 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
     assert cond_calls["count"] == 0
     assert ft_calls["count"] == 0
     assert src_calls["count"] == 0
+
+
+def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(7)
+    source.mba = mba
+    pred.mba = mba
+    source.head = None
+    source.tail = None
+    source.nsucc = lambda: 1  # type: ignore[assignment]
+    source.succ = lambda _idx: 0  # type: ignore[assignment]
+    pred.nsucc = lambda: 1  # type: ignore[assignment]
+    mba.blocks.update({5: source, 7: pred})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+
+    monkeypatch.setattr(
+        modifier,
+        "_check_duplicate_block_preconditions",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        dm,
+        "create_standalone_block",
+        lambda *_a, **_k: SimpleNamespace(
+            serial=223,
+            predset=_FakeEdgeSet(),
+            succset=_FakeEdgeSet(),
+        ),
+    )
+    monkeypatch.setattr(dm, "change_1way_block_successor", lambda *_a, **_k: True)
+
+    ok = modifier._apply_duplicate_block_and_redirect(
+        source_blk=source,
+        pred_serial=7,
+        target_serial=0,
+        expected_serial=225,
+    )
+
+    assert ok is True
+    assert modifier._serial_remap[225] == 223
+
+
+@dataclass
+class _StepTrace:
+    label: str
+    verify_error: str | None
+    source_serial: int
+    cond_serial: int | None
+    helper_serial: int | None
+
+
+@dataclass
+class _BatchTrace:
+    mod_type: str
+    block_serial: int | None
+    new_target: int | None
+    verify_error: str | None
+
+
+def _find_real_conditional_redirect_candidate(mba) -> CreateConditionalRedirect | None:
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+    snapshot = family.build_snapshot(mba, detection)
+    for mod in snapshot.flow_graph.metadata.get(EMULATED_DISPATCHER_MODIFICATIONS_KEY, ()):
+        if isinstance(mod, CreateConditionalRedirect):
+            return mod
+    return None
+
+
+def _real_emulated_dispatcher_modifications(mba) -> tuple[object, ...]:
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+    snapshot = family.build_snapshot(mba, detection)
+    return tuple(snapshot.flow_graph.metadata.get(EMULATED_DISPATCHER_MODIFICATIONS_KEY, ()))
+
+
+def _get_default_binary() -> str:
+    override = os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+
+
+def _verify_error(mba) -> str | None:
+    try:
+        mba.verify(True)
+    except Exception as exc:  # pragma: no cover - real IDA failure surface
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _trace_real_emulated_dispatcher_batch(
+    func_name: str,
+    *,
+    maturity: int = ida_hexrays.MMAT_GLBOPT1,
+) -> list[_BatchTrace]:
+    mba, modifier = _build_real_emulated_dispatcher_modifier(
+        func_name,
+        maturity=maturity,
+    )
+
+    trace: list[_BatchTrace] = []
+    for mod in sorted(modifier.modifications, key=lambda queued: queued.priority):
+        ok = modifier._apply_single(mod)
+        verify_error = None if ok else "apply_returned_false"
+        if verify_error is None:
+            verify_error = _verify_error(mba)
+        trace.append(
+            _BatchTrace(
+                mod_type=getattr(mod.mod_type, "name", str(mod.mod_type)),
+                block_serial=getattr(mod, "block_serial", None),
+                new_target=getattr(mod, "new_target", None),
+                verify_error=verify_error,
+            )
+        )
+        if verify_error is not None:
+            break
+
+    return trace
+
+
+def _build_real_emulated_dispatcher_modifier(
+    func_name: str,
+    *,
+    maturity: int = ida_hexrays.MMAT_GLBOPT1,
+):
+    func_ea = get_func_ea(func_name)
+    if func_ea == 0xFFFFFFFFFFFFFFFF:
+        pytest.skip(f"Function '{func_name}' not found")
+
+    mba = gen_microcode_at_maturity(func_ea, maturity)
+    if mba is None:
+        pytest.skip(
+            f"Failed to generate maturity {maturity} microcode for {func_name}"
+        )
+
+    modifications = _real_emulated_dispatcher_modifications(mba)
+    if not modifications:
+        pytest.skip(f"No emulated-dispatcher modifications found for {func_name}")
+
+    translator = IDAIRTranslator()
+    patch_plan = compile_patch_plan(list(modifications))
+    modifier = dm.DeferredGraphModifier(mba)
+    for step in patch_plan.steps:
+        translator._queue_patch_step(modifier, step)
+
+    modifier.coalesce()
+    return mba, modifier
+
+
+@pytest.mark.ida_required
+class TestCreateConditionalRedirectIntegration:
+    binary_name = _get_default_binary()
+
+    def test_emulated_dispatcher_batch_real_approov_pattern_traces_first_invalid_mod(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        trace = _trace_real_emulated_dispatcher_batch("approov_real_pattern")
+        first_invalid = next((entry for entry in trace if entry.verify_error is not None), None)
+        assert first_invalid is None, f"fresh batched apply should stay verify-clean, got {trace!r}"
+
+    def test_emulated_dispatcher_batch_real_approov_multistate_stepwise_apply_stays_verify_clean(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        trace = _trace_real_emulated_dispatcher_batch("approov_multistate")
+
+        first_invalid = next((entry for entry in trace if entry.verify_error is not None), None)
+        assert first_invalid is None, f"stepwise multistate apply should stay verify-clean, got {trace!r}"
+
+    def test_emulated_dispatcher_batch_real_approov_multistate_modifier_apply_stays_verify_clean(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        mba, modifier = _build_real_emulated_dispatcher_modifier("approov_multistate")
+
+        apply_error = None
+        try:
+            modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
+        except Exception as exc:  # pragma: no cover - real IDA failure surface
+            apply_error = f"{type(exc).__name__}: {exc}"
+
+        verify_error = _verify_error(mba)
+        assert apply_error is None
+        assert verify_error is None
+
+    def test_emulated_dispatcher_batch_real_approov_multistate_glbopt2_preapply_logging_reaches_raw_apply(
+        self,
+        libobfuscated_setup,
+        monkeypatch,
+    ) -> None:
+        mba, modifier = _build_real_emulated_dispatcher_modifier(
+            "approov_multistate",
+            maturity=ida_hexrays.MMAT_GLBOPT2,
+        )
+
+        calls = {"count": 0}
+
+        def _fake_apply_single(_mod):
+            calls["count"] += 1
+            return False
+
+        monkeypatch.setattr(modifier, "_apply_single", _fake_apply_single)
+        monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+        monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+        applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+
+        assert applied == 0
+        assert calls["count"] == 1
+        assert modifier.last_apply_phase == "backend_apply"
+        assert modifier.last_apply_subphase == "raw_apply"
+
+    def test_emulated_dispatcher_batch_real_approov_pattern_verify_breaks_after_mark_chains_dirty(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        func_ea = get_func_ea("approov_real_pattern")
+        if func_ea == 0xFFFFFFFFFFFFFFFF:
+            pytest.skip("Function 'approov_real_pattern' not found")
+
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
+        if mba is None:
+            pytest.skip("Failed to generate GLBOPT1 microcode for approov_real_pattern")
+
+        modifications = _real_emulated_dispatcher_modifications(mba)
+        if not modifications:
+            pytest.skip("No emulated-dispatcher modifications found for approov_real_pattern")
+
+        translator = IDAIRTranslator()
+        patch_plan = compile_patch_plan(list(modifications))
+        modifier = dm.DeferredGraphModifier(mba)
+        for step in patch_plan.steps:
+            translator._queue_patch_step(modifier, step)
+
+        applied = modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+        )
+        assert applied > 0
+        assert _verify_error(mba) is None
+
+        mba.mark_chains_dirty()
+        verify_error = _verify_error(mba)
+        assert verify_error is None
+
+    def test_emulated_dispatcher_batch_real_approov_pattern_after_legacy_like_gotos(
+        self,
+        libobfuscated_setup,
+    ) -> None:
+        func_ea = get_func_ea("approov_real_pattern")
+        if func_ea == 0xFFFFFFFFFFFFFFFF:
+            pytest.skip("Function 'approov_real_pattern' not found")
+
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
+        if mba is None:
+            pytest.skip("Failed to generate GLBOPT1 microcode for approov_real_pattern")
+
+        legacy_like = dm.DeferredGraphModifier(mba)
+        legacy_like.queue_goto_change(2, 8, description="legacy-like goto 2->8")
+        legacy_like.queue_goto_change(8, 9, description="legacy-like goto 8->9")
+        applied = legacy_like.apply(run_optimize_local=True, run_deep_cleaning=False)
+        assert applied == 2
+        assert _verify_error(mba) is None
+
+        modifications = _real_emulated_dispatcher_modifications(mba)
+        assert modifications, "expected emulated-dispatcher modifications after legacy-like gotos"
+
+        kinds = tuple(type(mod).__name__ for mod in modifications)
+        print("LEGACY_LIKE_GOTOS mods=", kinds)
+
+        translator = IDAIRTranslator()
+        patch_plan = compile_patch_plan(list(modifications))
+        modifier = dm.DeferredGraphModifier(mba)
+        for step in patch_plan.steps:
+            translator._queue_patch_step(modifier, step)
+
+        applied = modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
+        print("LEGACY_LIKE_GOTOS applied=", applied)
+        print("LEGACY_LIKE_GOTOS post_verify=", _verify_error(mba))
+        mba.mark_chains_dirty()
+        print("LEGACY_LIKE_GOTOS post_mark_verify=", _verify_error(mba))
+
+    def test_create_conditional_redirect_real_approov_pattern_isolated_apply_stays_verify_clean(
+        self,
+        libobfuscated_setup,
+        monkeypatch,
+    ) -> None:
+        func_ea = get_func_ea("approov_real_pattern")
+        if func_ea == 0xFFFFFFFFFFFFFFFF:
+            pytest.skip("Function 'approov_real_pattern' not found")
+
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
+        if mba is None:
+            pytest.skip("Failed to generate GLBOPT1 microcode for approov_real_pattern")
+
+        mod = _find_real_conditional_redirect_candidate(mba)
+        if mod is None:
+            pytest.skip("No CreateConditionalRedirect candidate found for approov_real_pattern")
+
+        modifier = dm.DeferredGraphModifier(mba)
+        source_blk = mba.get_mblock(mod.source_block)
+        assert source_blk is not None
+
+        trace: list[_StepTrace] = []
+        state: dict[str, object] = {"cond": None, "helper": None}
+
+        original_duplicate_block = dm.duplicate_block
+        original_change_2way = dm.change_2way_block_conditional_successor
+        original_change_1way = dm.change_1way_block_successor
+
+        def _capture(label: str) -> None:
+            cond_blk = state["cond"]
+            helper_blk = state["helper"]
+            trace.append(
+                _StepTrace(
+                    label=label,
+                    verify_error=_verify_error(mba),
+                    source_serial=source_blk.serial,
+                    cond_serial=getattr(cond_blk, "serial", None),
+                    helper_serial=getattr(helper_blk, "serial", None),
+                )
+            )
+
+        def _duplicate_block(*args, **kwargs):
+            cond_blk, helper_blk = original_duplicate_block(*args, **kwargs)
+            state["cond"] = cond_blk
+            state["helper"] = helper_blk
+            _capture("after_duplicate")
+            return cond_blk, helper_blk
+
+        def _change_2way(blk, new_target, **kwargs):
+            ok = original_change_2way(blk, new_target, **kwargs)
+            _capture("after_change_2way")
+            return ok
+
+        def _change_1way(blk, new_target, **kwargs):
+            ok = original_change_1way(blk, new_target, **kwargs)
+            if getattr(state["helper"], "serial", None) == blk.serial:
+                _capture("after_helper_rewire")
+            elif source_blk.serial == blk.serial:
+                _capture("after_source_redirect")
+            else:
+                _capture(f"after_change_1way_{blk.serial}")
+            return ok
+
+        monkeypatch.setattr(dm, "duplicate_block", _duplicate_block)
+        monkeypatch.setattr(dm, "change_2way_block_conditional_successor", _change_2way)
+        monkeypatch.setattr(dm, "change_1way_block_successor", _change_1way)
+
+        ok = modifier._apply_create_conditional_redirect(
+            source_blk=source_blk,
+            ref_blk_serial=mod.ref_block,
+            conditional_target_serial=mod.conditional_target,
+            fallthrough_target_serial=mod.fallthrough_target,
+            instructions_to_copy=tuple(mod.instructions),
+        )
+        _capture("after_apply")
+
+        assert ok is True
+        assert trace, "expected step trace for real conditional redirect"
+        first_invalid = next((step for step in trace if step.verify_error is not None), None)
+        assert first_invalid is None, f"isolated conditional redirect should stay verify-clean, got {trace!r}"
 
 
 def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypatch):

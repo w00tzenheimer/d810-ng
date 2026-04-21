@@ -31,6 +31,7 @@ from d810.cfg.plan import (
     PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
+    PatchRedirectBranch,
     PatchRedirectGoto,
     compile_patch_plan,
 )
@@ -249,8 +250,14 @@ class _FakeDeferredGraphModifier:
     def queue_goto_change(self, src: int, new: int, description: str = "") -> None:
         self.calls.append(("goto", src, new, description))
 
-    def queue_conditional_target_change(self, src: int, new: int, description: str = "") -> None:
-        self.calls.append(("branch", src, new, description))
+    def queue_conditional_target_change(
+        self,
+        src: int,
+        new: int,
+        old_target: int | None = None,
+        description: str = "",
+    ) -> None:
+        self.calls.append(("branch", src, new, old_target, description))
 
     def queue_convert_to_goto(self, serial: int, target: int, description: str = "") -> None:
         self.calls.append(("convert", serial, target, description))
@@ -262,11 +269,21 @@ class _FakeDeferredGraphModifier:
         old_target: int,
         new_target: int,
         via_pred: int,
+        clone_until: int | None = None,
         rule_priority: int,
         description: str = "",
     ) -> None:
         self.calls.append(
-            ("edge_redirect", src_block, old_target, new_target, via_pred, rule_priority, description)
+            (
+                "edge_redirect",
+                src_block,
+                old_target,
+                new_target,
+                via_pred,
+                clone_until,
+                rule_priority,
+                description,
+            )
         )
 
     def queue_edge_split_trampoline(
@@ -298,6 +315,7 @@ class _FakeDeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        instructions_to_copy: tuple[object, ...] | list[object] | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
         description: str = "",
@@ -309,6 +327,7 @@ class _FakeDeferredGraphModifier:
                 ref_blk_serial,
                 conditional_target_serial,
                 fallthrough_target_serial,
+                tuple(instructions_to_copy or ()),
                 expected_conditional_serial,
                 expected_fallthrough_serial,
                 description,
@@ -560,6 +579,43 @@ class TestIDAIntegration:
         assert created[0].calls[0][0] == "goto"
         assert created[0].calls[0][1:3] == (7, 9)
 
+    def test_lower_applies_redirect_branch_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = PatchPlan(
+            steps=(PatchRedirectBranch(from_serial=15, old_target=16, new_target=66),)
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0] == (
+            "branch",
+            15,
+            66,
+            16,
+            "redirect branch 15: 16->66",
+        )
+
     def test_lower_applies_edge_split_trampoline_patch_plan(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -658,6 +714,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
+        instructions = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
         patch_plan = compile_patch_plan(
             [
                 CreateConditionalRedirect(
@@ -665,6 +722,7 @@ class TestIDAIntegration:
                     ref_block=45,
                     conditional_target=199,
                     fallthrough_target=2,
+                    instructions=instructions,
                 )
             ],
             _cfg(),
@@ -675,7 +733,7 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_conditional"
-        assert created[0].calls[0][1:7] == (44, 45, 201, 2, 199, 200)
+        assert created[0].calls[0][1:8] == (44, 45, 201, 2, instructions, 199, 200)
 
     def test_lower_applies_insert_block_patch_plan(
         self,

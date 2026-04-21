@@ -18,6 +18,42 @@ from d810.hexrays.ir.cfg_queries import _serial_in_predset
 helper_logger = getLogger(__name__)
 
 
+def _rebuild_block_lists_if_available(blk: "ida_hexrays.mblock_t") -> None:
+    """Recompute copied block use/def lists when the Hex-Rays API exposes it."""
+    for attr_name in (
+        "dead_at_start",
+        "mustbuse",
+        "maybuse",
+        "mustbdef",
+        "maybdef",
+        "dnu",
+    ):
+        lst = getattr(blk, attr_name, None)
+        clear = getattr(lst, "clear", None)
+        if clear is None:
+            continue
+        try:
+            clear()
+        except Exception as exc:
+            helper_logger.debug(
+                "%s.clear() failed for blk[%d]: %s",
+                attr_name,
+                getattr(blk, "serial", -1),
+                exc,
+            )
+    build_lists = getattr(blk, "build_lists", None)
+    if build_lists is None:
+        return
+    try:
+        build_lists(False)
+    except Exception as exc:
+        helper_logger.debug(
+            "build_lists(False) failed for blk[%d]: %s",
+            getattr(blk, "serial", -1),
+            exc,
+        )
+
+
 def _rewire_edge(
     blk: "ida_hexrays.mblock_t",
     old_succs: list[int],
@@ -400,6 +436,7 @@ def create_block(
             prev_succ.mark_lists_dirty()
 
     new_blk.mark_lists_dirty()
+    _rebuild_block_lists_if_available(new_blk)
     mba.mark_chains_dirty()
     if not verify:
         return new_blk
@@ -1047,6 +1084,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
                 )
 
     nop_block.mark_lists_dirty()
+    _rebuild_block_lists_if_available(nop_block)
     mba.mark_chains_dirty()
     return nop_block
 
@@ -1199,6 +1237,10 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
             duplicated_blk.type = new_type
             mba.mark_chains_dirty()
 
+    _rebuild_block_lists_if_available(duplicated_blk)
+    if duplicated_blk_default is not None:
+        _rebuild_block_lists_if_available(duplicated_blk_default)
+
     return duplicated_blk, duplicated_blk_default
 
 
@@ -1216,6 +1258,26 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
     for goto_blk_serial in range(last_block_index):
         goto_blk: ida_hexrays.mblock_t = mba.get_mblock(goto_blk_serial)
         if goto_blk.is_simple_goto_block():
+            # A synthetic fallthrough helper for a 2-way predecessor must
+            # remain physically adjacent to that predecessor. Collapsing
+            # father -> helper -> target into father -> target would try to
+            # rewrite the direct fallthrough edge of a BLT_2WAY block, which
+            # the legacy helpers intentionally reject.
+            if any(
+                (
+                    father_blk := mba.get_mblock(father_serial)
+                ) is not None
+                and father_blk.nsucc() == 2
+                and father_blk.nextb is not None
+                and father_blk.nextb.serial == goto_blk_serial
+                for father_serial in list(goto_blk.predset)
+            ):
+                helper_logger.debug(
+                    "Skipping simple goto cleanup for blk[%d]: required 2-way "
+                    "fallthrough helper",
+                    goto_blk_serial,
+                )
+                continue
             goto_blk_dst_serial = goto_blk.tail.l.b
             goto_blk_preset = [x for x in goto_blk.predset]
             for father_serial in goto_blk_preset:

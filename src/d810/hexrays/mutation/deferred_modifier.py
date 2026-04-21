@@ -188,6 +188,7 @@ See Also
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import uuid
@@ -216,6 +217,8 @@ from d810.hexrays.mutation.cfg_mutations import (
 from d810.hexrays.mutation.cfg_mutations import (
     insert_nop_blk)
 from d810.hexrays.mutation.cfg_mutations import (
+    _get_fallthrough_successor_serial)
+from d810.hexrays.mutation.cfg_mutations import (
     insert_goto_instruction)
 from d810.hexrays.mutation.cfg_verify import (
     log_block_info)
@@ -235,6 +238,7 @@ from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     materialize_insn_snapshots,
 )
+from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.mutation.ir_translator import lift
 
 if TYPE_CHECKING:
@@ -283,7 +287,22 @@ def _format_block_info(blk: ida_hexrays.mblock_t) -> str:
     if blk is None:
         return "<None>"
 
-    # Block type names
+    def _safe_int_attr(obj, name: str):
+        with contextlib.suppress(Exception):
+            return int(getattr(obj, name))
+        return None
+
+    def _safe_edge_list(obj, attr_name: str) -> list[int] | str:
+        try:
+            raw = getattr(obj, attr_name, None)
+            if raw is not None:
+                return [int(x) for x in raw]
+        except Exception as exc:
+            return f"<{attr_name}-error:{type(exc).__name__}:{exc}>"
+        return []
+
+    serial = _safe_int_attr(blk, "serial")
+    blk_type_value = _safe_int_attr(blk, "type")
     blk_type_names = {
         ida_hexrays.BLT_NONE: "NONE",
         ida_hexrays.BLT_STOP: "STOP",
@@ -293,27 +312,70 @@ def _format_block_info(blk: ida_hexrays.mblock_t) -> str:
         ida_hexrays.BLT_NWAY: "NWAY",
         ida_hexrays.BLT_XTRN: "XTRN",
     }
-    blk_type = blk_type_names.get(blk.type, f"UNK({blk.type})")
+    if blk_type_value is None:
+        blk_type = "UNK(?)"
+    else:
+        blk_type = blk_type_names.get(blk_type_value, f"UNK({blk_type_value})")
 
-    # Successors
-    succs = []
-    for i in range(blk.nsucc()):
-        succs.append(blk.succ(i))
-    succ_str = f"succs={succs}" if succs else "succs=[]"
+    succs = _safe_edge_list(blk, "succset")
+    preds = _safe_edge_list(blk, "predset")
+    succ_str = f"succs={succs}"
+    pred_str = f"preds={preds}"
 
-    # Predecessors
-    preds = []
-    for i in range(blk.npred()):
-        preds.append(blk.pred(i))
-    pred_str = f"preds={preds}" if preds else "preds=[]"
-
-    # Tail instruction
+    tail = None
+    with contextlib.suppress(Exception):
+        tail = blk.tail
     tail_str = "tail=None"
-    if blk.tail:
-        opcode_name = ida_hexrays.get_mreg_name(blk.tail.opcode, 1) or str(blk.tail.opcode)
-        tail_str = f"tail.opcode={blk.tail.opcode} tail.ea={hex(blk.tail.ea)}"
+    if tail is not None:
+        opcode = _safe_int_attr(tail, "opcode")
+        ea = _safe_int_attr(tail, "ea")
+        ea_str = hex(ea) if ea is not None else "?"
+        tail_str = f"tail.opcode={opcode if opcode is not None else '?'} tail.ea={ea_str}"
 
-    return f"blk[{blk.serial}] type={blk_type} {succ_str} {pred_str} {tail_str}"
+    serial_str = serial if serial is not None else "?"
+    return f"blk[{serial_str}] type={blk_type} {succ_str} {pred_str} {tail_str}"
+
+
+def _mlist_dstr(value) -> str | None:
+    if value is None:
+        return None
+    dstr = getattr(value, "dstr", None)
+    if dstr is None:
+        return None
+    try:
+        text = dstr()
+    except Exception:
+        return None
+    return text or None
+
+
+def _trace_conditional_redirect_step(
+    label: str,
+    mba: ida_hexrays.mba_t,
+    *,
+    blocks: tuple[ida_hexrays.mblock_t | None, ...],
+) -> None:
+    if not (
+        _env_flag("D810_TRACE_CONDITIONAL_REDIRECT")
+        or _env_flag("D810_DEBUG_LOGGING")
+    ):
+        return
+
+    logger.warning("COND-REDIRECT TRACE %s", label)
+    for blk in blocks:
+        if blk is None:
+            continue
+        logger.warning("  %s", _format_block_info(blk))
+        for attr in ("mustbuse", "maybuse", "mustbdef", "maybdef", "dnu"):
+            text = _mlist_dstr(getattr(blk, attr, None))
+            if text:
+                logger.warning("    %s=%s", attr, text)
+    try:
+        mba.verify(True)
+    except Exception as exc:
+        logger.warning("  verify=%s: %s", type(exc).__name__, exc)
+    else:
+        logger.warning("  verify=ok")
 
 
 def _format_insn_info(insn: ida_hexrays.minsn_t) -> str:
@@ -499,6 +561,9 @@ class DeferredGraphModifier:
     modifications: list[GraphModification] = field(default_factory=list)
     _applied: bool = False
     verify_failed: bool = False
+    last_apply_phase: str | None = None
+    last_apply_subphase: str | None = None
+    last_stale_serial_scan: dict | None = None
     _pre_snapshot: FlowGraph | None = None
     # Optional event emitter; when None, no events are emitted (zero overhead).
     event_emitter: EventEmitter | None = None
@@ -516,6 +581,9 @@ class DeferredGraphModifier:
         self.modifications.clear()
         self._applied = False
         self._serial_remap.clear()
+        self.last_apply_phase = None
+        self.last_apply_subphase = None
+        self.last_stale_serial_scan = None
 
     def configure_events(
         self,
@@ -562,6 +630,82 @@ class DeferredGraphModifier:
             "pass_id": self._pass_id,
             "session_id": self._session_id,
         }
+
+    def _set_apply_phase(self, phase: str, subphase: str | None = None) -> None:
+        self.last_apply_phase = phase
+        self.last_apply_subphase = subphase
+
+    def _maybe_scan_stale_block_refs(self, *, subphase: str) -> dict | None:
+        if not (_env_flag("D810_DEFERRED_SCAN_STALE_SERIALS") or logger.isEnabledFor(10)):
+            return None
+
+        qty = int(self.mba.qty)
+        issues: list[dict[str, object]] = []
+        for serial in range(qty):
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                issues.append({"kind": "missing_block", "block_serial": serial})
+                if len(issues) >= 8:
+                    break
+                continue
+
+            succs = tuple(int(s) for s in get_succ_serials(blk))
+            preds = tuple(int(p) for p in get_pred_serials(blk))
+            for succ in succs:
+                if succ < 0 or succ >= qty:
+                    issues.append({
+                        "kind": "succ",
+                        "block_serial": serial,
+                        "ref_serial": succ,
+                    })
+            for pred in preds:
+                if pred < 0 or pred >= qty:
+                    issues.append({
+                        "kind": "pred",
+                        "block_serial": serial,
+                        "ref_serial": pred,
+                    })
+
+            nextb = int(getattr(blk, "nextb", -1))
+            if nextb >= qty:
+                issues.append({
+                    "kind": "nextb",
+                    "block_serial": serial,
+                    "ref_serial": nextb,
+                })
+            prevb = int(getattr(blk, "prevb", -1))
+            if prevb >= qty:
+                issues.append({
+                    "kind": "prevb",
+                    "block_serial": serial,
+                    "ref_serial": prevb,
+                })
+
+            tail = blk.tail
+            if tail is not None and getattr(tail.d, "t", None) == ida_hexrays.mop_b:
+                block_ref = int(tail.d.b)
+                if block_ref < 0 or block_ref >= qty:
+                    issues.append({
+                        "kind": "tail_d_block_ref",
+                        "block_serial": serial,
+                        "ref_serial": block_ref,
+                    })
+
+            if len(issues) >= 8:
+                break
+
+        result = {"subphase": subphase, "qty": qty, "issues": tuple(issues)}
+        self.last_stale_serial_scan = result
+        if issues:
+            logger.error(
+                "STALE-SERIAL-SCAN subphase=%s qty=%d issues=%s",
+                subphase,
+                qty,
+                issues,
+            )
+        else:
+            logger.debug("STALE-SERIAL-SCAN subphase=%s clean qty=%d", subphase, qty)
+        return result
 
     def _mod_payload(self, mod: GraphModification, mod_index: int | None = None) -> dict:
         """Extend a base payload with modification-specific fields."""
@@ -693,6 +837,7 @@ class DeferredGraphModifier:
         self,
         block_serial: int,
         new_target: int,
+        old_target: int | None = None,
         description: str = "",
         target_ref_kind: TargetRefKind | None = None,
     ) -> None:
@@ -706,11 +851,17 @@ class DeferredGraphModifier:
             mod_type=ModificationType.BLOCK_TARGET_CHANGE,
             block_serial=block_serial,
             new_target=new_target,
+            old_target=old_target,
             priority=10,
             description=description or f"jmp target {block_serial} -> {new_target}",
             target_ref_kind=resolved_target_kind,
         ))
-        logger.debug("Queued target change: block %d -> %d", block_serial, new_target)
+        logger.debug(
+            "Queued target change: block %d old_target=%s -> %d",
+            block_serial,
+            old_target,
+            new_target,
+        )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
@@ -844,6 +995,7 @@ class DeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        instructions_to_copy: list | tuple | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
         description: str = "",
@@ -867,6 +1019,8 @@ class DeferredGraphModifier:
             ref_blk_serial: Block to copy instructions from (should be conditional)
             conditional_target_serial: Target for jcc taken branch
             fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+            instructions_to_copy: Optional instructions to prepend to the cloned
+                conditional block before its original body executes.
             expected_conditional_serial: Expected final serial for cloned conditional block
             expected_fallthrough_serial: Expected final serial for NOP fallthrough block
             description: Optional description for logging
@@ -877,6 +1031,7 @@ class DeferredGraphModifier:
             new_target=ref_blk_serial,  # Reference block to copy from
             conditional_target=conditional_target_serial,
             fallthrough_target=fallthrough_target_serial,
+            instructions_to_copy=instructions_to_copy,
             expected_conditional_serial=expected_conditional_serial,
             expected_fallthrough_serial=expected_fallthrough_serial,
             priority=5,  # Very high priority - create blocks before other changes
@@ -985,7 +1140,9 @@ class DeferredGraphModifier:
             new_target: New successor target for the clone.
             via_pred: Predecessor whose edge is rewired to the clone. If None,
                       legacy BLOCK_GOTO_CHANGE semantics apply.
-            clone_until: Future corridor endpoint (not yet implemented, stub).
+            clone_until: Optional strict 1-way corridor endpoint. When set, the
+                backend clones the corridor ``src_block .. clone_until`` and
+                rewires ``via_pred`` to the first clone.
             description: Optional logging description.
             rule_priority: Conflict-resolution priority (higher wins).
         """
@@ -1002,7 +1159,7 @@ class DeferredGraphModifier:
             mod_type=ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
             block_serial=src_block,
             new_target=new_target,
-            priority=8,
+            priority=12 if clone_until is not None else 8,
             description=description or (
                 f"edge redirect via pred split: pred={via_pred} src={src_block} "
                 f"{old_target} -> {new_target}"
@@ -1421,23 +1578,46 @@ class DeferredGraphModifier:
                         continue  # Handled by edge-specific conflict pass below
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
                     if len(same_type_mods) > 1:
-                        targets = [(m.new_target, m.target_ref_kind) for m in same_type_mods]
-                        if len(set(targets)) > 1:
-                            # CONFLICT: Multiple modifications with different targets
-                            # Resolve by keeping only the highest rule_priority modification
-                            winner = max(same_type_mods, key=lambda m: m.rule_priority)
-                            losers = [m for m in same_type_mods if m != winner]
+                        if mod_type == ModificationType.BLOCK_TARGET_CHANGE:
+                            grouped_same_type_mods: list[list[GraphModification]] = []
+                            target_groups: dict[int | None, list[GraphModification]] = {}
+                            for same_type_mod in same_type_mods:
+                                target_groups.setdefault(same_type_mod.old_target, []).append(
+                                    same_type_mod
+                                )
+                            grouped_same_type_mods.extend(target_groups.values())
+                        else:
+                            grouped_same_type_mods = [same_type_mods]
+
+                        for grouped_mods in grouped_same_type_mods:
+                            if len(grouped_mods) <= 1:
+                                continue
+                            targets = [
+                                (m.new_target, m.target_ref_kind) for m in grouped_mods
+                            ]
+                            if len(set(targets)) <= 1:
+                                continue
+                            winner = max(grouped_mods, key=lambda m: m.rule_priority)
+                            losers = [m for m in grouped_mods if m != winner]
 
                             logger.warning(
-                                "CONFLICT RESOLVED: Block %d - keeping priority=%d (target=%d), "
+                                "CONFLICT RESOLVED: Block %d - keeping priority=%d (target=%d old_target=%s), "
                                 "discarding %s",
                                 block_serial,
                                 winner.rule_priority,
                                 winner.new_target,
-                                [(m.rule_priority, m.new_target, m.target_ref_kind.name) for m in losers]
+                                winner.old_target,
+                                [
+                                    (
+                                        m.rule_priority,
+                                        m.new_target,
+                                        m.target_ref_kind.name,
+                                        m.old_target,
+                                    )
+                                    for m in losers
+                                ],
                             )
 
-                            # Remove losers from unique_modifications
                             for loser in losers:
                                 if loser in unique_modifications:
                                     unique_modifications.remove(loser)
@@ -1519,6 +1699,21 @@ class DeferredGraphModifier:
         for block_serial, mods in remaining_by_block.items():
             terminal_mods = [m for m in mods if m.mod_type in terminal_mod_types]
             if len(terminal_mods) <= 1:
+                continue
+
+            if (
+                all(
+                    m.mod_type == ModificationType.BLOCK_TARGET_CHANGE
+                    for m in terminal_mods
+                )
+                and len(
+                    {
+                        m.old_target
+                        for m in terminal_mods
+                    }
+                )
+                == len(terminal_mods)
+            ):
                 continue
 
             winner = max(
@@ -1814,6 +2009,9 @@ class DeferredGraphModifier:
             logger.debug("No modifications to apply")
             return 0
 
+        self._set_apply_phase("backend_apply", "pre_apply_verify")
+        self.last_stale_serial_scan = None
+
         # Pre-apply successor repair: if the MBA already has an inconsistent
         # succset (INTERR 50860) before we touch it  --  e.g. block 210 at
         # MMAT_GLBOPT1  --  verify_each_mod=True would abort all 74 modifications
@@ -1831,10 +2029,12 @@ class DeferredGraphModifier:
             )
             if _env_flag("D810_DEFERRED_PREVERIFY"):
                 logger.warning("DEBUG: pre-apply verify passed")
-        except RuntimeError:
+        except Exception as exc:
             logger.warning(
-                "Pre-apply verify failed (likely stale succset from earlier pass); "
-                "attempting _repair_wrong_successors before deferred apply"
+                "Pre-apply verify failed (%s: %s); attempting "
+                "_repair_wrong_successors before deferred apply",
+                type(exc).__name__,
+                exc,
             )
             repaired = self._repair_wrong_successors()
             if repaired > 0:
@@ -1855,11 +2055,13 @@ class DeferredGraphModifier:
                         "proceeding with %d deferred modifications",
                         repaired, len(self.modifications),
                     )
-                except RuntimeError:
+                except Exception as exc2:
                     logger.error(
-                        "Pre-apply verify still failing after %d repair(s); "
-                        "aborting deferred apply to protect MBA integrity",
+                        "Pre-apply verify still failing after %d repair(s) "
+                        "(%s: %s); aborting deferred apply to protect MBA integrity",
                         repaired,
+                        type(exc2).__name__,
+                        exc2,
                     )
                     self.verify_failed = True
                     self._applied = True
@@ -1997,16 +2199,49 @@ class DeferredGraphModifier:
         # Log all queued modifications before applying
         logger.info("=== QUEUED MODIFICATIONS (sorted by priority) ===")
         for i, mod in enumerate(sorted_mods):
-            blk = self.mba.get_mblock(mod.block_serial)
             logger.info(
                 "  [%d] %s (priority=%d) target_blk=%d new_target=%s ref=%s",
                 i, mod.mod_type.name, mod.priority, mod.block_serial, mod.new_target,
                 mod.target_ref_kind.name,
             )
-            logger.info("      BEFORE: %s", _format_block_info(blk))
+            try:
+                blk = self.mba.get_mblock(mod.block_serial)
+                logger.info("      BEFORE: %s", _format_block_info(blk))
+            except Exception as exc:
+                logger.warning(
+                    "Queued modification [%d] source introspection failed "
+                    "(%s: %s); continuing with serial-only logging",
+                    i,
+                    type(exc).__name__,
+                    exc,
+                )
+                logger.info("      BEFORE: blk[%s] <introspection-failed>", mod.block_serial)
+
             if mod.new_target is not None:
-                target_blk = self.mba.get_mblock(mod.new_target)
-                logger.info("      TARGET: %s", _format_block_info(target_blk))
+                try:
+                    target_serial = self._resolve_target_serial(mod)
+                    if (
+                        target_serial is None
+                        or target_serial < 0
+                        or target_serial >= self.mba.qty
+                    ):
+                        logger.info(
+                            "      TARGET: future/unmaterialized serial=%s (current qty=%d)",
+                            target_serial,
+                            self.mba.qty,
+                        )
+                    else:
+                        target_blk = self.mba.get_mblock(target_serial)
+                        logger.info("      TARGET: %s", _format_block_info(target_blk))
+                except Exception as exc:
+                    logger.warning(
+                        "Queued modification [%d] target introspection failed "
+                        "(%s: %s); continuing with serial-only logging",
+                        i,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    logger.info("      TARGET: blk[%s] <introspection-failed>", mod.new_target)
 
         successful = 0
         failed = pre_rejected
@@ -2014,6 +2249,7 @@ class DeferredGraphModifier:
         recent_modifications: list[dict] = []
 
         for i, mod in enumerate(sorted_mods):
+            self._set_apply_phase("backend_apply", "raw_apply")
             effective_new_target = self._resolve_target_serial(mod)
             if effective_new_target != mod.new_target:
                 logger.debug(
@@ -2215,6 +2451,7 @@ class DeferredGraphModifier:
             except Exception as e:
                 failed += 1
                 logger.error("    RESULT: EXCEPTION: %s", e)
+                self._maybe_scan_stale_block_refs(subphase="raw_apply_exception")
                 if self.event_emitter is not None:
                     _ep = self._mod_payload(mod, i)
                     _ep["result"] = "failed"
@@ -2260,6 +2497,7 @@ class DeferredGraphModifier:
         # Mark chains dirty and run optimizations
         if successful > 0:
             self.mba.mark_chains_dirty()
+            self._maybe_scan_stale_block_refs(subphase="after_raw_apply")
 
         def _finish(result_count: int) -> int:
             """Shared exit: emit APPLY_FINISHED and mark applied."""
@@ -2284,12 +2522,19 @@ class DeferredGraphModifier:
 
         if successful > 0:
             if post_apply_hook is not None:
+                self._set_apply_phase("backend_apply", "post_apply_hook")
                 try:
                     post_apply_hook()
+                    self._maybe_scan_stale_block_refs(subphase="after_post_apply_hook")
                 except Exception as e:
-                    self.verify_failed = True
                     contract_violations = getattr(e, "violations", None)
                     contract_summary = getattr(e, "summary", None)
+                    self._set_apply_phase(
+                        "post_apply_contract" if contract_violations else "backend_apply",
+                        "post_apply_hook",
+                    )
+                    self.verify_failed = True
+                    self._maybe_scan_stale_block_refs(subphase="post_apply_hook_exception")
                     if contract_violations:
                         logger.error(
                             "post_apply_hook raised cfg contract failure: %s",
@@ -2348,15 +2593,23 @@ class DeferredGraphModifier:
                 return _finish(successful)
 
             if run_deep_cleaning:
+                self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
             elif run_optimize_local:
+                self._set_apply_phase("backend_apply", "optimize_local")
                 self.mba.optimize_local(0)
             else:
                 # Caller requested no optimize_local. Still run conservative
                 # cleanup so deferred CFG rewrites don't leave transient orphans.
+                self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
 
+            self._maybe_scan_stale_block_refs(
+                subphase=self.last_apply_subphase or "post_apply_maintenance"
+            )
+
             try:
+                self._set_apply_phase("native_verify", "native_verify")
                 safe_verify(
                     self.mba,
                     "after deferred modifications",
@@ -2375,6 +2628,7 @@ class DeferredGraphModifier:
                 # processing instead of letting IDA continue with a
                 # corrupted MBA (which causes hangs at later maturity levels).
                 self.verify_failed = True
+                self._maybe_scan_stale_block_refs(subphase="native_verify_failure")
                 logger.warning(
                     "MBA verify failed after applying %d deferred modifications "
                     "-- marking verify_failed so callers can abort gracefully",
@@ -2564,6 +2818,7 @@ class DeferredGraphModifier:
             remapped = False
             for attr in ("block_serial", "new_target", "old_target",
                          "via_pred", "src_block", "expected_serial",
+                         "expected_secondary_serial",
                          "final_target", "original_redirect_target"):
                 val = getattr(mod, attr, None)
                 if val is not None and val in self._serial_remap:
@@ -2588,7 +2843,7 @@ class DeferredGraphModifier:
             return self._apply_goto_change(blk, mod.new_target)
 
         elif mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
-            return self._apply_target_change(blk, mod.new_target)
+            return self._apply_target_change(blk, mod.new_target, mod.old_target)
 
         elif mod.mod_type == ModificationType.BLOCK_CONVERT_TO_GOTO:
             return self._apply_convert_to_goto(blk, mod.new_target)
@@ -2617,6 +2872,7 @@ class DeferredGraphModifier:
                 mod.new_target,
                 mod.conditional_target,
                 mod.fallthrough_target,
+                mod.instructions_to_copy,
                 expected_conditional_serial=mod.expected_conditional_serial,
                 expected_fallthrough_serial=mod.expected_fallthrough_serial,
             )
@@ -2692,7 +2948,12 @@ class DeferredGraphModifier:
 
         return change_1way_block_successor(blk, new_target, verify=False)
 
-    def _apply_target_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
+    def _apply_target_change(
+        self,
+        blk: ida_hexrays.mblock_t,
+        new_target: int,
+        old_target: int | None = None,
+    ) -> bool:
         """Change a conditional jump's target."""
         if blk.tail is None:
             return False
@@ -2711,7 +2972,91 @@ class DeferredGraphModifier:
             )
             return False
 
-        return change_2way_block_conditional_successor(blk, new_target, verify=False)
+        conditional_target = (
+            int(blk.tail.d.b)
+            if blk.tail is not None
+            and blk.tail.d is not None
+            and blk.tail.d.t == ida_hexrays.mop_b
+            else None
+        )
+        fallthrough_target = _get_fallthrough_successor_serial(blk)
+        if (
+            old_target is not None
+            and fallthrough_target is not None
+            and conditional_target is not None
+            and int(old_target) == int(fallthrough_target)
+            and int(fallthrough_target) != int(conditional_target)
+        ):
+            return self._apply_fallthrough_change(
+                blk,
+                new_target,
+                old_target=int(old_target),
+            )
+
+        return change_2way_block_conditional_successor(
+            blk,
+            new_target,
+            old_target=old_target,
+            verify=False,
+        )
+
+    def _apply_fallthrough_change(
+        self,
+        blk: ida_hexrays.mblock_t,
+        new_target: int,
+        *,
+        old_target: int,
+    ) -> bool:
+        """Re-home a 2-way block's fallthrough via an adjacent NOP-goto helper.
+
+        BLT_2WAY fallthrough must remain the physically-adjacent successor.
+        To redirect the non-taken arm, insert a NOP block immediately after
+        ``blk`` and repoint that helper to ``new_target``. Any blocks at or
+        beyond the insertion point shift by +1, so update ``_serial_remap`` to
+        keep later deferred modifications aligned with the live MBA.
+        """
+        fallthrough_target = _get_fallthrough_successor_serial(blk)
+        if fallthrough_target is None:
+            logger.warning(
+                "Block %d has no fallthrough successor to rewrite",
+                blk.serial,
+            )
+            return False
+        if int(fallthrough_target) != int(old_target):
+            logger.warning(
+                "Block %d fallthrough mismatch: expected old_target=%d but current fallthrough is %d",
+                blk.serial,
+                old_target,
+                fallthrough_target,
+            )
+            return False
+
+        old_qty = int(self.mba.qty)
+        nop_blk = insert_nop_blk(blk)
+        if nop_blk is None:
+            logger.warning(
+                "Failed to synthesize fallthrough helper for block %d",
+                blk.serial,
+            )
+            return False
+
+        insertion_serial = int(nop_blk.serial)
+        for serial in range(insertion_serial, old_qty):
+            self._serial_remap[serial] = serial + 1
+
+        effective_new_target = self._resolve_serial(int(new_target))
+        logger.info(
+            "Applying fallthrough rewrite on blk[%d]: old_target=%d helper=%d -> %d",
+            blk.serial,
+            old_target,
+            insertion_serial,
+            effective_new_target,
+        )
+        return change_1way_block_successor(
+            nop_blk,
+            int(effective_new_target),
+            verify=False,
+        )
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
@@ -2909,6 +3254,7 @@ class DeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        instructions_to_copy: list | tuple | None = None,
         *,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
@@ -2937,6 +3283,10 @@ class DeferredGraphModifier:
             True on success, False on failure
         """
         mba = self.mba
+        prelude_instructions = _prepare_block_creation_instructions(
+            mba,
+            instructions_to_copy,
+        )
 
         if source_blk.nsucc() != 1:
             logger.warning(
@@ -3003,6 +3353,37 @@ class DeferredGraphModifier:
                 "Duplicated conditional block %d -> %d (with NOP fallthrough %d)",
                 ref_blk_serial, new_cond_blk.serial, nop_blk.serial
             )
+            _trace_conditional_redirect_step(
+                "after_duplicate",
+                mba,
+                blocks=(
+                    source_blk,
+                    ref_blk,
+                    new_cond_blk,
+                    nop_blk,
+                    mba.get_mblock(conditional_target_serial),
+                    mba.get_mblock(fallthrough_target_serial),
+                ),
+            )
+
+            if prelude_instructions:
+                for insn in reversed(prelude_instructions):
+                    cloned_insn = ida_hexrays.minsn_t(insn)
+                    cloned_insn.setaddr(mba.entry_ea)
+                    new_cond_blk.insert_into_block(cloned_insn, new_cond_blk.head)
+                new_cond_blk.mark_lists_dirty()
+                _trace_conditional_redirect_step(
+                    "after_prelude_insert",
+                    mba,
+                    blocks=(
+                        source_blk,
+                        ref_blk,
+                        new_cond_blk,
+                        nop_blk,
+                        mba.get_mblock(conditional_target_serial),
+                        mba.get_mblock(fallthrough_target_serial),
+                    ),
+                )
 
             # Step 2: Wire the conditional target (jcc taken branch)
             # Change the conditional jump's target operand to point to the
@@ -3020,6 +3401,18 @@ class DeferredGraphModifier:
                 "Wired conditional target: %d -> %d (jcc taken)",
                 new_cond_blk.serial, conditional_target_serial
             )
+            _trace_conditional_redirect_step(
+                "after_change_2way",
+                mba,
+                blocks=(
+                    source_blk,
+                    ref_blk,
+                    new_cond_blk,
+                    nop_blk,
+                    mba.get_mblock(conditional_target_serial),
+                    mba.get_mblock(fallthrough_target_serial),
+                ),
+            )
 
             # Step 3: Wire the NOP-goto block to the fallthrough target
             # The NOP block was already created by duplicate_block and is
@@ -3035,6 +3428,18 @@ class DeferredGraphModifier:
             logger.debug(
                 "Wired NOP fallthrough: %d -> %d",
                 nop_blk.serial, fallthrough_target_serial
+            )
+            _trace_conditional_redirect_step(
+                "after_helper_rewire",
+                mba,
+                blocks=(
+                    source_blk,
+                    ref_blk,
+                    new_cond_blk,
+                    nop_blk,
+                    mba.get_mblock(conditional_target_serial),
+                    mba.get_mblock(fallthrough_target_serial),
+                ),
             )
 
             # Step 4: Redirect source block to the new conditional block
@@ -3053,6 +3458,18 @@ class DeferredGraphModifier:
                 "Created conditional redirect: %d -> %d (cond) -> jcc:%d / ft:%d (via NOP %d)",
                 source_blk.serial, new_cond_blk.serial,
                 conditional_target_serial, fallthrough_target_serial, nop_blk.serial
+            )
+            _trace_conditional_redirect_step(
+                "after_source_redirect",
+                mba,
+                blocks=(
+                    source_blk,
+                    ref_blk,
+                    new_cond_blk,
+                    nop_blk,
+                    mba.get_mblock(conditional_target_serial),
+                    mba.get_mblock(fallthrough_target_serial),
+                ),
             )
 
             return True
@@ -3260,12 +3677,13 @@ class DeferredGraphModifier:
                     return False
 
             if expected_serial is not None and duplicated_blk.serial != expected_serial:
-                logger.warning(
-                    "duplicate_block: created clone blk[%d], expected blk[%d]",
+                logger.info(
+                    "duplicate_block: created clone blk[%d], expected blk[%d] "
+                    "(serial drift from prior mod); recording remap",
                     duplicated_blk.serial,
                     expected_serial,
                 )
-                return False
+                self._serial_remap[int(expected_serial)] = int(duplicated_blk.serial)
             if expected_secondary_serial is not None:
                 if duplicated_default is None:
                     logger.warning(
@@ -3275,12 +3693,13 @@ class DeferredGraphModifier:
                     )
                     return False
                 if duplicated_default.serial != expected_secondary_serial:
-                    logger.warning(
-                        "duplicate_block: created fallthrough blk[%d], expected blk[%d]",
+                    logger.info(
+                        "duplicate_block: created fallthrough blk[%d], expected blk[%d] "
+                        "(serial drift from prior mod); recording remap",
                         duplicated_default.serial,
                         expected_secondary_serial,
                     )
-                    return False
+                    self._serial_remap[int(expected_secondary_serial)] = int(duplicated_default.serial)
 
             if pred_blk.nsucc() == 1:
                 if not change_1way_block_successor(
@@ -5092,26 +5511,24 @@ class DeferredGraphModifier:
         ``new_target``.  The original ``blk`` keeps all other predecessors and
         its original successor.
 
-        **Corridor case** (``clone_until`` is not None) is not yet implemented;
-        this method returns False with a warning in that case.
-
         Args:
             blk: The block to clone (src_block).
             old_target: Current successor on blk being replaced on the clone.
             new_target: New successor for the clone.
             via_pred: Predecessor whose edge is rewired to the clone.
-            clone_until: Future corridor endpoint (stub — not implemented).
+            clone_until: Optional final block in a strict 1-way corridor clone.
 
         Returns:
             True on success, False on failure.
         """
         if clone_until is not None:
-            logger.warning(
-                "edge_redirect_via_pred_split: corridor cloning (clone_until=%d) "
-                "is not yet implemented for block %d",
-                clone_until, blk.serial,
+            return self._apply_edge_redirect_via_pred_split_corridor(
+                blk=blk,
+                old_target=old_target,
+                new_target=new_target,
+                via_pred=via_pred,
+                clone_until=clone_until,
             )
-            return False
 
         mba = self.mba
 
@@ -5218,6 +5635,210 @@ class DeferredGraphModifier:
             logger.error("Traceback: %s", traceback.format_exc())
             return False
 
+    def _apply_edge_redirect_via_pred_split_corridor(
+        self,
+        *,
+        blk: "ida_hexrays.mblock_t",
+        old_target: int,
+        new_target: int,
+        via_pred: int,
+        clone_until: int,
+    ) -> bool:
+        """Clone a strict 1-way corridor and redirect one predecessor to it.
+
+        The live use-case is a shared suffix handoff where ``via_pred`` must
+        reach a private copy of ``blk .. clone_until`` while the original
+        corridor remains available to other predecessors.
+        """
+        mba = self.mba
+        if mba is None:
+            return False
+
+        via_pred_blk = mba.get_mblock(via_pred)
+        if via_pred_blk is None:
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: via_pred blk[%d] not found",
+                via_pred,
+            )
+            return False
+        if via_pred_blk.nsucc() != 1:
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: via_pred blk[%d] has nsucc=%d, expected 1",
+                via_pred_blk.serial,
+                via_pred_blk.nsucc(),
+            )
+            return False
+        if via_pred_blk.succ(0) != blk.serial:
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: via_pred blk[%d] targets blk[%d], expected src blk[%d]",
+                via_pred_blk.serial,
+                via_pred_blk.succ(0),
+                blk.serial,
+            )
+            return False
+
+        if blk.nsucc() != 1 or blk.succ(0) != old_target:
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: src blk[%d] does not start old_target=%d (nsucc=%d succ0=%s)",
+                blk.serial,
+                old_target,
+                blk.nsucc(),
+                blk.succ(0) if blk.nsucc() else None,
+            )
+            return False
+
+        corridor_serials = [blk.serial]
+        corridor_seen = {blk.serial}
+        cursor = blk
+        while cursor.serial != int(clone_until):
+            if cursor.nsucc() != 1:
+                logger.warning(
+                    "edge_redirect_via_pred_split corridor: interior blk[%d] has nsucc=%d, expected 1",
+                    cursor.serial,
+                    cursor.nsucc(),
+                )
+                return False
+            next_serial = cursor.succ(0)
+            if next_serial in corridor_seen:
+                logger.warning(
+                    "edge_redirect_via_pred_split corridor: cycle detected while walking blk[%d] -> blk[%d]",
+                    cursor.serial,
+                    next_serial,
+                )
+                return False
+            next_blk = mba.get_mblock(next_serial)
+            if next_blk is None:
+                logger.warning(
+                    "edge_redirect_via_pred_split corridor: missing next blk[%d] from blk[%d]",
+                    next_serial,
+                    cursor.serial,
+                )
+                return False
+            corridor_serials.append(next_serial)
+            corridor_seen.add(next_serial)
+            cursor = next_blk
+
+        corridor_templates = [mba.get_mblock(serial) for serial in corridor_serials]
+        if any(template is None for template in corridor_templates):
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: missing template in %s",
+                corridor_serials,
+            )
+            return False
+        if any(template.nsucc() != 1 for template in corridor_templates if template is not None):
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: non-1way block present in corridor %s",
+                corridor_serials,
+            )
+            return False
+        if new_target == corridor_serials[-1]:
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: rejecting self-loop final target %d",
+                new_target,
+            )
+            return False
+
+        cloned_serials: list[int] = []
+        try:
+            for index, template_blk in enumerate(corridor_templates):
+                assert template_blk is not None
+                is_last = index == len(corridor_templates) - 1
+                placeholder_target = (
+                    int(new_target)
+                    if is_last
+                    else int(corridor_serials[index + 1])
+                )
+
+                instructions_to_copy: list[ida_hexrays.minsn_t] = []
+                cur_ins = template_blk.head
+                while cur_ins is not None:
+                    is_trailing_goto = (
+                        template_blk.tail is not None
+                        and template_blk.tail.opcode == ida_hexrays.m_goto
+                        and cur_ins.next is None
+                    )
+                    if is_trailing_goto:
+                        break
+                    cloned_ins = ida_hexrays.minsn_t(cur_ins)
+                    cloned_ins.setaddr(mba.entry_ea)
+                    instructions_to_copy.append(cloned_ins)
+                    cur_ins = cur_ins.next
+
+                cloned_blk = create_standalone_block(
+                    template_blk,
+                    instructions_to_copy,
+                    target_serial=placeholder_target,
+                    is_0_way=False,
+                    verify=False,
+                )
+                cloned_serials.append(cloned_blk.serial)
+
+            for index in range(len(cloned_serials) - 1):
+                cloned_blk = mba.get_mblock(cloned_serials[index])
+                next_clone_serial = cloned_serials[index + 1]
+                if cloned_blk is None:
+                    return False
+                if not change_1way_block_successor(
+                    cloned_blk,
+                    next_clone_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "edge_redirect_via_pred_split corridor: failed to wire clone blk[%d] -> blk[%d]",
+                        cloned_serials[index],
+                        next_clone_serial,
+                    )
+                    return False
+
+            final_clone_blk = mba.get_mblock(cloned_serials[-1])
+            if final_clone_blk is None:
+                return False
+            if final_clone_blk.succ(0) != int(new_target):
+                if not change_1way_block_successor(
+                    final_clone_blk,
+                    int(new_target),
+                    verify=False,
+                ):
+                    logger.warning(
+                        "edge_redirect_via_pred_split corridor: failed to retarget final clone blk[%d] -> blk[%d]",
+                        final_clone_blk.serial,
+                        int(new_target),
+                    )
+                    return False
+
+            if not change_1way_block_successor(
+                via_pred_blk,
+                cloned_serials[0],
+                verify=False,
+            ):
+                logger.warning(
+                    "edge_redirect_via_pred_split corridor: failed to redirect via_pred blk[%d] -> clone blk[%d]",
+                    via_pred_blk.serial,
+                    cloned_serials[0],
+                )
+                return False
+
+            mba.mark_chains_dirty()
+            logger.info(
+                "edge_redirect_via_pred_split corridor: pred=%d src=%d corridor=%s clones=%s final_target=%d",
+                via_pred_blk.serial,
+                blk.serial,
+                corridor_serials,
+                cloned_serials,
+                int(new_target),
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "Exception in edge_redirect_via_pred_split corridor for src=%d clone_until=%d: %s",
+                blk.serial,
+                int(clone_until),
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
 
 @dataclass
 class ImmediateGraphModifier:
@@ -5299,6 +5920,7 @@ class ImmediateGraphModifier:
         self,
         block_serial: int,
         new_target: int,
+        old_target: int | None = None,
         description: str = "",
     ) -> None:
         """Apply a change to a conditional jump's target immediately."""
@@ -5307,8 +5929,13 @@ class ImmediateGraphModifier:
             logger.warning("Block %d not found", block_serial)
             return
 
-        logger.debug("Immediate target change: block %d -> %d", block_serial, new_target)
-        if self._apply_target_change(blk, new_target):
+        logger.debug(
+            "Immediate target change: block %d old_target=%s -> %d",
+            block_serial,
+            old_target,
+            new_target,
+        )
+        if self._apply_target_change(blk, new_target, old_target):
             self.modifications_applied += 1
 
     def queue_convert_to_goto(
@@ -5485,7 +6112,12 @@ class ImmediateGraphModifier:
 
         return change_1way_block_successor(blk, new_target, verify=False)
 
-    def _apply_target_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
+    def _apply_target_change(
+        self,
+        blk: ida_hexrays.mblock_t,
+        new_target: int,
+        old_target: int | None = None,
+    ) -> bool:
         """Change a conditional jump's target."""
         if blk.tail is None:
             return False
@@ -5504,7 +6136,12 @@ class ImmediateGraphModifier:
             )
             return False
 
-        return change_2way_block_conditional_successor(blk, new_target, verify=False)
+        return change_2way_block_conditional_successor(
+            blk,
+            new_target,
+            old_target=old_target,
+            verify=False,
+        )
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
