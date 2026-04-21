@@ -6,19 +6,18 @@ from types import SimpleNamespace
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.recon.flow.linearized_state_dag import StateDagNodeKey
-from d810.recon.flow.target_entry_resolution import (
-    resolve_edge_target_entry,
-    resolve_exact_dag_entry_for_state,
-    resolve_semantic_reference_entry_for_state,
-)
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.cfg.residual_target_resolution import (
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
     is_raw_state_label,
     resolve_normalized_alias_entry_for_state,
     resolve_nonexact_dispatch_target,
     resolve_owner_semantic_entry_for_blocks,
+)
+from d810.cfg.target_entry_resolution import (
+    resolve_edge_target_entry,
+    resolve_exact_dag_entry_for_state,
+    resolve_semantic_reference_entry_for_state,
 )
 
 

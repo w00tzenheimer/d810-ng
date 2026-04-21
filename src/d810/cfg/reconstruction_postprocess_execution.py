@@ -17,11 +17,6 @@ from d810.cfg.reconstruction_rescue_execution import (
     execute_reconstruction_late_island_rescues,
 )
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
-from d810.recon.flow.reconstruction_candidate_builder import (
-    build_reconstruction_candidate,
-)
-from d810.recon.flow.reconstruction_discovery import collect_shared_suffix_blocks
-from d810.recon.flow.residual_handoff_discovery import is_raw_state_label
 
 logger = logging.getLogger(
     "D810.cfg.reconstruction_postprocess_execution",
@@ -128,6 +123,25 @@ def _build_node_by_key(dag) -> dict:
     return node_by_key
 
 
+def _collect_shared_suffix_blocks(dag) -> set[int]:
+    shared_blocks: set[int] = set()
+    for node in getattr(dag, "nodes", ()) or ():
+        shared_blocks.update(
+            int(serial)
+            for serial in (getattr(node, "shared_suffix_blocks", ()) or ())
+        )
+    return shared_blocks
+
+
+def _is_raw_state_label(label: str, state_value: int) -> bool:
+    if label.endswith("_fallback"):
+        return False
+    try:
+        return int(label, 16) == (state_value & 0xFFFFFFFF)
+    except Exception:
+        return False
+
+
 def _iter_residual_raw_alias_edges(
     dag,
     *,
@@ -198,6 +212,7 @@ def _emit_residual_raw_alias_reconstruction_overrides(
     state_var_stkoff: int | None,
     constant_result,
     resolve_effective_target_entry,
+    build_reconstruction_candidate,
     analysis_mba,
     dispatcher_lookup,
     dispatcher,
@@ -206,11 +221,11 @@ def _emit_residual_raw_alias_reconstruction_overrides(
     owned_blocks: set[int],
     owned_edges: set[tuple[int, int]],
 ) -> int:
-    if state_var_stkoff is None:
+    if state_var_stkoff is None or build_reconstruction_candidate is None:
         return 0
 
     node_by_key = _build_node_by_key(dag)
-    shared_suffix_blocks = collect_shared_suffix_blocks(dag)
+    shared_suffix_blocks = _collect_shared_suffix_blocks(dag)
     bst_node_blocks = set(int(serial) for serial in getattr(dag, "bst_node_blocks", ()) or ())
     bst_node_blocks.add(int(dispatcher_serial))
 
@@ -250,7 +265,7 @@ def _emit_residual_raw_alias_reconstruction_overrides(
         if (
             original_target_entry is not None
             and int(original_target_entry) == normalized_target
-            and not is_raw_state_label(
+            and not _is_raw_state_label(
                 str(getattr(edge, "target_label", "") or ""),
                 int(getattr(edge, "target_state", 0)) & 0xFFFFFFFF,
             )
@@ -340,6 +355,7 @@ def execute_reconstruction_postprocess(
     collect_common_return_corridor,
     collect_terminal_family_report,
     resolve_effective_target_entry=None,
+    build_reconstruction_candidate=None,
     build_projected_mba=None,
 ) -> ReconstructionPostprocessExecutionResult:
     initial_modification_count = len(modifications)
@@ -433,6 +449,7 @@ def execute_reconstruction_postprocess(
         state_var_stkoff=state_var_stkoff,
         constant_result=constant_result,
         resolve_effective_target_entry=resolve_effective_target_entry,
+        build_reconstruction_candidate=build_reconstruction_candidate,
         analysis_mba=(
             build_projected_mba(projected_flow_graph)
             if callable(build_projected_mba)

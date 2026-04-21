@@ -7,6 +7,7 @@ import ida_hexrays
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto
 from d810.cfg.modification_builder import ModificationBuilder
+import d810.optimizers.microcode.flow.flattening.hodur.prototypes.exact_conditional_bridge as bridge_module
 from d810.optimizers.microcode.flow.flattening.hodur.prototypes.exact_conditional_bridge import (
     ExactConditionalBridgeNodeLoweringStrategy,
     collect_exact_conditional_bridge_sites,
@@ -78,7 +79,8 @@ def test_exact_conditional_bridge_strategy_plans_bridge_redirect_for_blk163(monk
         dispatcher_region=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.prototypes.exact_conditional_bridge.build_semantic_exact_round_summary",
+        bridge_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
 
