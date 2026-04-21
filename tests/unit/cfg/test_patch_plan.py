@@ -26,6 +26,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchEdgeRef,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -193,6 +194,24 @@ def test_compile_patch_plan_finalizes_edge_split_trampoline():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_preserves_corridor_edge_split_as_legacy_block_op():
+    modification = EdgeRedirectViaPredSplit(
+        src_block=10,
+        old_target=11,
+        new_target=12,
+        via_pred=9,
+        clone_until=11,
+    )
+
+    patch_plan = compile_patch_plan([modification], _cfg())
+
+    assert patch_plan.steps == (LegacyBlockOperation(modification=modification),)
+    assert patch_plan.legacy_block_operations == (
+        LegacyBlockOperation(modification=modification),
+    )
+    assert patch_plan.new_blocks == ()
+
+
 def test_compile_patch_plan_finalizes_conditional_redirect():
     patch_plan = compile_patch_plan(
         [
@@ -231,6 +250,39 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_finalizes_conditional_redirect_with_instructions():
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    patch_plan = compile_patch_plan(
+        [
+            CreateConditionalRedirect(
+                source_block=9,
+                ref_block=10,
+                conditional_target=14,
+                fallthrough_target=11,
+                instructions=instructions,
+            )
+        ],
+        _conditional_cfg(),
+    )
+
+    assert patch_plan.steps == (
+        PatchConditionalRedirect(
+            block_id=VirtualBlockId(namespace="conditional_redirect", ordinal=0),
+            assigned_serial=14,
+            fallthrough_block_id=VirtualBlockId(
+                namespace="conditional_redirect_fallthrough",
+                ordinal=1,
+            ),
+            fallthrough_serial=15,
+            source_serial=9,
+            ref_block=10,
+            conditional_target=16,
+            fallthrough_target=11,
+            instructions=instructions,
+        ),
+    )
+
+
 def test_compile_patch_plan_finalizes_insert_block():
     instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
     patch_plan = compile_patch_plan(
@@ -257,6 +309,44 @@ def test_compile_patch_plan_finalizes_insert_block():
     assert [spec.kind for spec in patch_plan.new_blocks] == ["insert_block"]
     assert patch_plan.relocation_map.stop_serial_before == 11
     assert patch_plan.relocation_map.stop_serial_after == 12
+    assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=9,
+                succ_serial=11,
+                instructions=instructions,
+                old_target_serial=10,
+            )
+        ],
+        _conditional_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=14,
+            pred_serial=9,
+            succ_serial=11,
+            instructions=instructions,
+            old_target_serial=10,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == ["insert_block"]
+    assert patch_plan.new_blocks[0].incoming_edge == PatchEdgeRef(source=9, target=10)
+    assert patch_plan.new_blocks[0].outgoing_edges == (
+        PatchEdgeRef(
+            source=VirtualBlockId(namespace="insert_block", ordinal=0),
+            target=11,
+        ),
+    )
+    assert patch_plan.relocation_map.stop_serial_before == 14
+    assert patch_plan.relocation_map.stop_serial_after == 15
     assert patch_plan.legacy_block_operations == ()
 
 

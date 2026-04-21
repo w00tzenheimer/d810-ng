@@ -221,6 +221,7 @@ class IDAIRTranslator:
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self._contract = contract
         self._last_lowering_phase: str | None = None
+        self._last_lowering_subphase: str | None = None
 
     @property
     def contract(self) -> IDACfgContract | None:
@@ -234,6 +235,11 @@ class IDAIRTranslator:
     def last_lowering_phase(self) -> str | None:
         """Phase of last failure from lower(), or None if lower() succeeded."""
         return self._last_lowering_phase
+
+    @property
+    def last_lowering_subphase(self) -> str | None:
+        """Most specific subphase reported by the backend, when available."""
+        return self._last_lowering_subphase
 
     @property
     def name(self) -> str:
@@ -285,6 +291,7 @@ class IDAIRTranslator:
         from d810.hexrays.mutation import deferred_modifier
 
         self._last_lowering_phase = None
+        self._last_lowering_subphase = None
 
         if not isinstance(patch_plan, PatchPlan):
             raise TypeError(
@@ -360,20 +367,27 @@ class IDAIRTranslator:
         # Under NOP_CLEANUP_RELAXED, disable rollback so the NOPs survive
         # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
         enable_rollback = not relaxed
-        result_count = modifier.apply(
-            run_optimize_local=True,
-            run_deep_cleaning=False,
-            verify_each_mod=verify_each_mod and enable_rollback,
-            rollback_on_verify_failure=verify_each_mod and enable_rollback,
-            continue_on_verify_failure=verify_each_mod,
-            enable_snapshot_rollback=enable_rollback,
-            post_apply_hook=effective_hook,
-        )
+        try:
+            result_count = modifier.apply(
+                run_optimize_local=True,
+                run_deep_cleaning=False,
+                verify_each_mod=verify_each_mod and enable_rollback,
+                rollback_on_verify_failure=verify_each_mod and enable_rollback,
+                continue_on_verify_failure=verify_each_mod,
+                enable_snapshot_rollback=enable_rollback,
+                post_apply_hook=effective_hook,
+            )
+        except Exception:
+            self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
+            self._last_lowering_subphase = modifier.last_apply_subphase
+            raise
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
         # means rollback also failed - the MBA may be corrupted.
         if modifier.verify_failed:
+            self._last_lowering_phase = modifier.last_apply_phase or "native_verify"
+            self._last_lowering_subphase = modifier.last_apply_subphase
             if relaxed and result_count > 0:
                 logger.info(
                     "DeferredGraphModifier.verify_failed is set after apply "
@@ -386,8 +400,11 @@ class IDAIRTranslator:
                     "DeferredGraphModifier.verify_failed is set after apply; "
                     "returning 0 to prevent pipeline from treating changes as successful"
                 )
-                self._last_lowering_phase = "native_verify"
                 return 0
+
+        if result_count == 0 and self._last_lowering_phase is None:
+            self._last_lowering_phase = modifier.last_apply_phase
+            self._last_lowering_subphase = modifier.last_apply_subphase
 
         return result_count
 
@@ -461,6 +478,7 @@ class IDAIRTranslator:
                 modifier.queue_conditional_target_change(
                     src,
                     new,
+                    old_target=old,
                     description=f"redirect branch {src}: {old}->{new}",
                 )
 
@@ -519,12 +537,14 @@ class IDAIRTranslator:
                 fallthrough_target=fallthrough_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
+                instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
                     source_blk_serial=src,
                     ref_blk_serial=ref,
                     conditional_target_serial=conditional_target,
                     fallthrough_target_serial=fallthrough_target,
+                    instructions_to_copy=instructions,
                     expected_conditional_serial=assigned,
                     expected_fallthrough_serial=fallthrough_serial,
                     description=(
@@ -653,6 +673,7 @@ class IDAIRTranslator:
                 old_target=old,
                 new_target=new,
                 via_pred=pred,
+                clone_until=clone_until,
                 rule_priority=priority,
             ):
                 modifier.queue_edge_redirect(
@@ -660,6 +681,7 @@ class IDAIRTranslator:
                     old_target=old,
                     new_target=new,
                     via_pred=pred,
+                    clone_until=clone_until,
                     rule_priority=priority,
                     description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
                 )
@@ -669,12 +691,14 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=cond_target,
                 fallthrough_target=fallthrough_target,
+                instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
                     source_blk_serial=src,
                     ref_blk_serial=ref,
                     conditional_target_serial=cond_target,
                     fallthrough_target_serial=fallthrough_target,
+                    instructions_to_copy=instructions,
                     description=(
                         f"create conditional redirect src={src} ref={ref} "
                         f"cond={cond_target} fallthrough={fallthrough_target}"

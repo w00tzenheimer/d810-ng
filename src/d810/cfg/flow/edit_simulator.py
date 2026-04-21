@@ -79,6 +79,7 @@ class SimulatedEdit:
     old_target: int
     new_target: int | None
     via_pred: int | None = None  # only for edge_split_redirect
+    clone_until: int | None = None  # only for corridor edge_split_redirect
     fallthrough_target: int | None = None  # only for create_conditional_redirect
     duplicate_target: int | None = None  # only for duplicate_block
     source_successors: tuple[int, ...] = ()  # only for duplicate_block
@@ -418,6 +419,7 @@ def graph_modifications_to_simulated_edits(
                 old_target=old,
                 new_target=new,
                 via_pred=pred,
+                clone_until=clone_until,
             ):
                 simulated.append(
                     SimulatedEdit(
@@ -426,6 +428,7 @@ def graph_modifications_to_simulated_edits(
                         old_target=old,
                         new_target=new,
                         via_pred=pred,
+                        clone_until=clone_until,
                     )
                 )
 
@@ -445,12 +448,17 @@ def graph_modifications_to_simulated_edits(
                     )
                 )
 
-            case InsertBlock(pred_serial=pred, succ_serial=succ):
+            case InsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                old_target_serial=old_target,
+            ):
+                effective_old_target = succ if old_target is None else old_target
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=succ,
+                        old_target=effective_old_target,
                         new_target=succ,
                     )
                 )
@@ -586,12 +594,14 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 pred_serial=pred,
                 succ_serial=succ,
                 assigned_serial=assigned,
+                old_target_serial=old_target,
             ):
+                effective_old_target = succ if old_target is None else old_target
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=succ,
+                        old_target=effective_old_target,
                         new_target=succ,
                         created_serial=assigned,
                         stop_serial_before=stop_serial_before,
@@ -796,16 +806,25 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 )
 
             case LegacyBlockOperation(
-                modification=InsertBlock(pred_serial=pred, succ_serial=succ),
+                modification=InsertBlock(
+                    pred_serial=pred,
+                    succ_serial=succ,
+                    old_target_serial=old_target,
+                ),
                 block_id=block_id,
             ):
                 assigned = patch_plan.relocation_map.assigned_serial_for(block_id)
                 relocated_succ = patch_plan.relocation_map.rewrite_serial(succ)
+                relocated_old_target = (
+                    relocated_succ
+                    if old_target is None
+                    else patch_plan.relocation_map.rewrite_serial(old_target)
+                )
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=relocated_succ,
+                        old_target=relocated_old_target,
                         new_target=relocated_succ,
                         created_serial=assigned,
                         stop_serial_before=stop_serial_before,
