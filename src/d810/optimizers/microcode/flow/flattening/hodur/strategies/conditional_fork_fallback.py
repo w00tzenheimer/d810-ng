@@ -4,6 +4,7 @@ from __future__ import annotations
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
@@ -30,6 +31,24 @@ logger = logging.getLogger("D810.hodur.strategy.conditional_fork_fallback")
 __all__ = ["ConditionalForkFallbackStrategy"]
 
 
+@algorithm_metadata(
+    algorithm_id="hodur.conditional_fork_fallback",
+    family="conditional_fork_resolution",
+    summary="Lowers resolved conditional state forks into explicit two-way CFG redirects.",
+    use_cases=(
+        "Replace dispatcher-mediated conditional state updates with one owned conditional redirect block.",
+        "Emit both arms of a resolved conditional handoff once recon has concrete arm targets.",
+    ),
+    examples=(
+        "Lower a handler that can transition to either state A or state B depending on a predicate.",
+        "Convert conditional fork candidates into CreateConditionalRedirect modifications for executor consumption.",
+    ),
+    tags=("hodur", "conditional", "fallback", "redirect", "state-machine"),
+    related_paths=(
+        "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
+        "src/d810/recon/flow/conditional_chain_resolution.py",
+    ),
+)
 class ConditionalForkFallbackStrategy:
     """Propose CONDITIONAL_REDIRECT edits for conditional state fork blocks.
 

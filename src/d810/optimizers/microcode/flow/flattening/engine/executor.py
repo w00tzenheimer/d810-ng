@@ -68,9 +68,6 @@ from d810.optimizers.microcode.flow.flattening.safeguards import (
 )
 from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
 
-# Dump full microcode after successful apply for diagnostic correlation
-from d810.recon.microcode_dump import mba_to_human_readable
-
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
 # ---------- MBA-to-BlockSnapshot helper (shared, IDA-dependent) ----------
@@ -93,8 +90,8 @@ def _preflight_priority(mod: GraphModification) -> int:
     match mod:
         case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock():
             return 5
-        case EdgeRedirectViaPredSplit():
-            return 8
+        case EdgeRedirectViaPredSplit(clone_until=clone_until):
+            return 12 if clone_until is not None else 8
         case RedirectGoto() | RedirectBranch():
             return 10
         case ConvertToGoto():
@@ -108,7 +105,7 @@ def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
         case "create_conditional_redirect" | "duplicate_block":
             return 5
         case "edge_split_redirect":
-            return 8
+            return 12 if edit.clone_until is not None else 8
         case "goto_redirect" | "conditional_redirect":
             return 10
         case "convert_to_goto":
@@ -360,16 +357,25 @@ class TransactionalExecutor:
                 reason=(
                     f"applied={tx_result.applied_count}"
                     if tx_result.success
-                    else f"rejected at {tx_result.failure_phase}: {tx_result.error}"
+                    else (
+                        f"rejected at {tx_result.failure_phase}"
+                        + (
+                            f"/{tx_result.failure_detail}"
+                            if tx_result.failure_detail
+                            else ""
+                        )
+                        + f": {tx_result.error}"
+                    )
                 ),
             )
         )
         if not tx_result.success:
             classification = tx_result.classification
             executor_logger.warning(
-                "CfgTransactionEngine rejected stage %s at phase %s: %s",
+                "CfgTransactionEngine rejected stage %s at phase %s detail %s: %s",
                 fragment.strategy_name,
                 tx_result.failure_phase,
+                tx_result.failure_detail,
                 tx_result.error,
             )
             result = StageResult(
@@ -384,20 +390,13 @@ class TransactionalExecutor:
                 ),
                 failure_phase=tx_result.failure_phase or "lowering",
             )
+            result.metadata["failure_detail"] = tx_result.failure_detail
             result.metadata["gate_accounting"] = gate_accounting
             executor_logger.info("Gate accounting: %s", gate_accounting.summary())
             return result
 
         changes = tx_result.applied_count
         self._total_changes += changes
-
-        if hasattr(self.mba, "maturity"):
-            executor_logger.info(
-                "POST-APPLY microcode dump (stage=%s, applied=%d):\n%s",
-                fragment.strategy_name,
-                changes,
-                "\n\n".join(mba_to_human_readable(self.mba)),
-            )
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:

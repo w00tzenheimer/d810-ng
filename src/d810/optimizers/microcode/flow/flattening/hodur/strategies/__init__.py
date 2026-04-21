@@ -23,6 +23,24 @@ Available strategies (in dependency order):
     the dead state variable after linearization, family ``cleanup``.
 8. :class:`StateWriteReconstructionStrategy` — experimental horizon-driven
     semantic handoff reconstruction, family ``direct``.
+9. :class:`SemanticStructuredRegionStrategy` — region-first lowering from
+   trusted structured semantic regions, family ``direct``.
+10. :class:`SemanticExactNodeAllPlannableEdgesStrategy` — bulk experimental
+   DAG redirect scaffold for straight-line exact handoffs only,
+   family ``direct``.
+11. :class:`ExactConditionalNodeLoweringStrategy` — predicate-aware hammock
+    lowering for exact conditional nodes, family ``direct``.
+12. :class:`ExactConditionalAliasNodeLoweringStrategy` — lower duplicate-arm
+    conditional nodes whose semantic exits alias to one canonical target,
+    family ``direct``.
+13. :class:`ExactConditionalForkNodeLoweringStrategy` — own both exits of
+    exact two-way semantic fork nodes, family ``direct``.
+14. :class:`ExactConditionalBridgeNodeLoweringStrategy` — prototype mixed-shape
+    bridge lowering for exact conditional nodes with one semantic bridge arm,
+    family ``direct``.
+15. :class:`ExactNodeFrontierBypassStrategy` — redirect residual dispatcher
+    feeders into dominating exact-node heads so BST cleanup can run,
+    family ``direct``.
 """
 from __future__ import annotations
 
@@ -49,9 +67,32 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_r
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     LinearizedFlowGraphStrategy,
+    SemanticStructuredRegionStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction import (
     StateWriteReconstructionStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
+    SemanticExactNodeAllPlannableEdgesStrategy,
+    SemanticExactNode5D0AEBD3To606DC166Strategy,
+    SemanticExactNode606DC166To139F2922Strategy,
+    SemanticExactNode63D54755To57BE6FD0Strategy,
+    SemanticExactNode57BE6FD0To03E42B03Strategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
+    ExactConditionalNodeLoweringStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
+    ExactConditionalAliasNodeLoweringStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
+    ExactConditionalForkNodeLoweringStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.prototypes import (
+    ExactConditionalBridgeNodeLoweringStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass import (
+    ExactNodeFrontierBypassStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
@@ -75,12 +116,24 @@ __all__ = [
     "InnerMergeDuplicationStrategy",
     "StateConstantReturnFixupStrategy",
     "LinearizedFlowGraphStrategy",
+    "SemanticStructuredRegionStrategy",
     "StateWriteReconstructionStrategy",
+    "SemanticExactNodeAllPlannableEdgesStrategy",
+    "ExactConditionalNodeLoweringStrategy",
+    "ExactConditionalAliasNodeLoweringStrategy",
+    "ExactConditionalForkNodeLoweringStrategy",
+    "ExactConditionalBridgeNodeLoweringStrategy",
+    "ExactNodeFrontierBypassStrategy",
+    "SemanticExactNode5D0AEBD3To606DC166Strategy",
+    "SemanticExactNode606DC166To139F2922Strategy",
+    "SemanticExactNode63D54755To57BE6FD0Strategy",
+    "SemanticExactNode57BE6FD0To03E42B03Strategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
     "SingleIterationStrategy",
     "ALL_STRATEGIES",
+    "EXPERIMENTAL_STRATEGIES",
     "LEGACY_STRATEGIES",
 ]
 
@@ -92,13 +145,15 @@ __all__ = [
 # superseded by reconstruction/LFG.
 ALL_STRATEGIES: list[type] = [
     StateWriteReconstructionStrategy,
-    FakeJumpStrategy,
-    BadWhileLoopStrategy,
-    SingleIterationStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     # DISCRIMINATOR TEST: topo disabled
     # TopologicalSortStrategy,
+]
+
+# Scratch-reset pipeline: one experimental strategy only.
+EXPERIMENTAL_STRATEGIES: list[type] = [
+    SemanticStructuredRegionStrategy,
 ]
 
 # Legacy pipeline preserved for reference/fallback.

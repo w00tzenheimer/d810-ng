@@ -59,6 +59,9 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     serialize_single_iteration_fixes,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
+from d810.recon.flow.graph_reachability import (
+    collect_residual_dispatcher_predecessors,
+)
 
 family_logger = logging.getLogger("D810.unflat.hodur.family", logging.DEBUG)
 
@@ -106,6 +109,8 @@ class HodurStrategyFamily(CFFStrategyFamily):
         *,
         cfg_translator: IDAIRTranslator | None = None,
         disabled_strategy_names: set[str] | frozenset[str] | None = None,
+        strategy_classes: list[type] | tuple[type, ...] | None = None,
+        recon_only: bool = False,
         min_state_constant: int = MIN_STATE_CONSTANT,
         min_state_constants: int = MIN_STATE_CONSTANTS,
         max_state_constants: int = MAX_STATE_CONSTANTS_HODUR,
@@ -113,13 +118,17 @@ class HodurStrategyFamily(CFFStrategyFamily):
     ) -> None:
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._disabled_strategy_names = frozenset(disabled_strategy_names or ())
+        self._recon_only = bool(recon_only)
         self._logger = logger or family_logger
         self.min_state_constant = int(min_state_constant)
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
+        selected_strategy_classes = (
+            list(strategy_classes) if strategy_classes is not None else ALL_STRATEGIES
+        )
         self._strategies = [
             cls()
-            for cls in ALL_STRATEGIES
+            for cls in selected_strategy_classes
             if cls.__name__ not in self._disabled_strategy_names
         ]
         self.reset_runtime_state()
@@ -130,9 +139,13 @@ class HodurStrategyFamily(CFFStrategyFamily):
 
     @property
     def strategies(self) -> list:
+        if self._recon_only:
+            return []
         return self._strategies
 
     def strategies_for_maturity(self, maturity: int | None = None) -> list:
+        if self._recon_only:
+            return []
         return list(self._strategies)
 
     @property
@@ -581,10 +594,12 @@ class HodurStrategyFamily(CFFStrategyFamily):
         if audit is not None:
             audit.summary_log()
 
-    def collect_live_lfg_residual_dispatcher_preds(
+    def collect_live_residual_dispatcher_preds(
         self,
         mba: ida_hexrays.mba_t,
         snapshot: AnalysisSnapshot,
+        *,
+        strategy_name: str,
     ) -> tuple[int, ...]:
         """Collect live residual non-BST predecessors to the dispatcher."""
         bst_result = snapshot.bst_result
@@ -594,15 +609,13 @@ class HodurStrategyFamily(CFFStrategyFamily):
             (
                 candidate
                 for candidate in self._strategies
-                if getattr(candidate, "name", None) == "linearized_flow_graph"
+                if getattr(candidate, "name", None) == strategy_name
             ),
             None,
         )
-        if strategy is None:
-            return ()
         collector = getattr(strategy, "_collect_residual_dispatcher_predecessors", None)
         if collector is None:
-            return ()
+            collector = collect_residual_dispatcher_predecessors
         try:
             flow_graph = self._cfg_translator.lift(mba)
             raw_collector = getattr(strategy, "_collect_dispatcher_predecessors", None)
@@ -614,10 +627,22 @@ class HodurStrategyFamily(CFFStrategyFamily):
             )
         except Exception:
             self._logger.debug(
-                "Failed to collect live LFG residual dispatcher preds",
+                "Failed to collect live residual dispatcher preds for %s",
+                strategy_name,
                 exc_info=True,
             )
             return ()
+
+    def collect_live_lfg_residual_dispatcher_preds(
+        self,
+        mba: ida_hexrays.mba_t,
+        snapshot: AnalysisSnapshot,
+    ) -> tuple[int, ...]:
+        return self.collect_live_residual_dispatcher_preds(
+            mba,
+            snapshot,
+            strategy_name="linearized_flow_graph",
+        )
 
     @staticmethod
     def collect_post_apply_bst_cleanup_blockers(
@@ -635,6 +660,18 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 continue
             if fragment.metadata.get("allow_post_apply_bst_cleanup", True):
                 continue
+            cleanup_reason = fragment.metadata.get("post_apply_bst_cleanup_reason")
+            group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
+            if isinstance(group_name, str):
+                residual_source = live_residual_dispatcher_preds_by_strategy.get(
+                    f"group:{group_name}"
+                )
+                if residual_source is not None:
+                    residual_preds = tuple(int(serial) for serial in residual_source)
+                    if not residual_preds:
+                        continue
+                    blockers[fragment.strategy_name] = residual_preds
+                    continue
             residual_preds = tuple(
                 int(serial)
                 for serial in live_residual_dispatcher_preds_by_strategy.get(
@@ -642,9 +679,11 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     tuple(fragment.metadata.get("residual_dispatcher_preds", ())),
                 )
             )
-            if not residual_preds:
+            if residual_preds:
+                blockers[fragment.strategy_name] = residual_preds
                 continue
-            blockers[fragment.strategy_name] = residual_preds
+            if isinstance(cleanup_reason, str) and cleanup_reason:
+                blockers[fragment.strategy_name] = ()
         return blockers
 
     def attach_fake_jump_fixes_to_flow_graph(
@@ -700,6 +739,17 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 )
             if not fixes:
                 return flow_graph
+
+        if (
+            self._state_machine is None
+            and dispatcher_analysis is not None
+            and tuple(getattr(dispatcher_analysis, "dispatchers", ()))
+        ):
+            self._logger.info(
+                "Skipping FakeJump fixes during cleanup-only pass with live "
+                "emulated-dispatcher candidates"
+            )
+            return flow_graph
 
         metadata = dict(flow_graph.metadata)
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(fixes)

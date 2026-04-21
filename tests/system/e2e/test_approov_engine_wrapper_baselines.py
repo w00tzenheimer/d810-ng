@@ -43,7 +43,7 @@ TEMP_ENGINE_WRAPPER_NOTES = "temporary engine-wrapper test profile"
 APPROOV_ENGINE_BASELINES = {
     "approov_real_pattern": {
         "legacy_project": "example_libobfuscated.json",
-        "engine_matches_legacy": False,
+        "engine_matches_legacy": True,
         "engine_changed": True,
         "legacy_ast": {
             "statements": 3,
@@ -54,9 +54,9 @@ APPROOV_ENGINE_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 4,
+            "statements": 3,
             "returns": 0,
-            "whiles": 1,
+            "whiles": 0,
             "gotos": 0,
             "ifs": 1,
             "calls": 0,
@@ -75,17 +75,17 @@ APPROOV_ENGINE_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 5,
+            "statements": 2,
             "returns": 1,
             "whiles": 1,
             "gotos": 0,
-            "ifs": 1,
+            "ifs": 0,
             "calls": 0,
         },
     },
     "approov_multistate": {
         "legacy_project": "example_libobfuscated.json",
-        "engine_matches_legacy": False,
+        "engine_matches_legacy": True,
         "engine_changed": True,
         "legacy_ast": {
             "statements": 5,
@@ -96,7 +96,7 @@ APPROOV_ENGINE_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 4,
+            "statements": 5,
             "returns": 0,
             "whiles": 1,
             "gotos": 0,

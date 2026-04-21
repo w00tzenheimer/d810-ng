@@ -35,10 +35,14 @@ from .fake_jump import (
     should_skip_fake_jump_predecessor,
 )
 from .emulated_dispatcher_strategy import (
+    DispatcherLoopRecoveryStrategy,
+    EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY,
+    EMULATED_DISPATCHER_LOOP_RECOVERY_MODIFICATIONS_KEY,
     EMULATED_DISPATCHER_METADATA_KEY,
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
     EmulatedDispatcherMetadata,
     EmulatedDispatcherStrategy,
+    extract_emulated_dispatcher_fallback_modifications,
     extract_emulated_dispatcher_metadata,
     extract_emulated_dispatcher_modifications,
 )
@@ -75,6 +79,9 @@ __all__ = [
     "FakeJumpStrategy",
     "EMULATED_DISPATCHER_METADATA_KEY",
     "EMULATED_DISPATCHER_MODIFICATIONS_KEY",
+    "EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY",
+    "EMULATED_DISPATCHER_LOOP_RECOVERY_MODIFICATIONS_KEY",
+    "DispatcherLoopRecoveryStrategy",
     "EmulatedDispatcherMetadata",
     "EmulatedDispatcherStrategy",
     "SINGLE_ITERATION_FIXES_METADATA_KEY",
@@ -93,6 +100,7 @@ __all__ = [
     "extract_bad_while_loop_edits",
     "extract_bad_while_loop_follow_up",
     "extract_fake_jump_fixes",
+    "extract_emulated_dispatcher_fallback_modifications",
     "extract_emulated_dispatcher_metadata",
     "extract_emulated_dispatcher_modifications",
     "extract_single_iteration_fixes",

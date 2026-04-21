@@ -63,6 +63,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateRedirectAnchor,
     RedirectSourceKind,
 )
+from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
 from d810.recon.flow.state_machine_analysis import build_mba_view_from_flow_graph
 from d810.recon.flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
@@ -96,13 +97,172 @@ def test_strategy_names_unique():
 
 
 def test_strategy_count():
-    """Experimental ALL_STRATEGIES currently contains 6 active strategies."""
+    """Worktree ALL_STRATEGIES uses the reconstruction-first 3-strategy stack."""
     names = {cls().name for cls in ALL_STRATEGIES}
-    assert len(ALL_STRATEGIES) == 6
-    assert "bad_while_loop" in names
-    assert "fake_jump" in names
-    assert "single_iteration" in names
+    assert len(ALL_STRATEGIES) == 3
+    assert "state_write_reconstruction" in names
+    assert "state_constant_return_fixup" in names
+    assert "dead_state_variable_elimination" in names
     assert "linearized_flow_graph" not in names
+
+
+def test_semantic_structured_region_collapses_same_target_conditional_candidates():
+    source_key = StateDagNodeKey(handler_serial=98, state_const=0x37B42A40)
+    target_key = StateDagNodeKey(handler_serial=21, state_const=0x63D54755)
+    site = SimpleNamespace(block_serial=98, state_value=0x63D54755, insn_ea=0, unsafe_trailing_insn_eas=())
+    edge_taken = StateDagEdge(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=source_key,
+        target_key=target_key,
+        target_state=0x63D54755,
+        target_entry_anchor=21,
+        target_label="0x63D54755",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+            block_serial=98,
+            branch_arm=1,
+        ),
+        ordered_path=(98, 100),
+    )
+    edge_fallthrough = StateDagEdge(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=source_key,
+        target_key=target_key,
+        target_state=0x63D54755,
+        target_entry_anchor=21,
+        target_label="0x63D54755",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+            block_serial=98,
+            branch_arm=0,
+        ),
+        ordered_path=(98, 99, 100),
+    )
+    taken_candidate = ReconstructionCandidate(
+        edge=edge_taken,
+        horizon_block=98,
+        site=site,
+        target_entry=21,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="conditional_arm",
+    )
+    fallthrough_candidate = ReconstructionCandidate(
+        edge=edge_fallthrough,
+        horizon_block=98,
+        site=site,
+        target_entry=21,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="conditional_arm",
+    )
+
+    normalized, collapsed = lfg_module._canonicalize_same_target_conditional_candidates(
+        [taken_candidate, fallthrough_candidate]
+    )
+
+    assert collapsed == 1
+    assert len(normalized) == 1
+    assert normalized[0].emission_mode == "direct"
+    assert normalized[0].target_entry == 21
+
+
+def test_reconstruction_collapses_same_target_conditional_candidates():
+    source_key = StateDagNodeKey(handler_serial=98, state_const=0x37B42A40)
+    target_key = StateDagNodeKey(handler_serial=21, state_const=0x63D54755)
+    site = SimpleNamespace(
+        block_serial=98,
+        state_value=0x63D54755,
+        insn_ea=0,
+        unsafe_trailing_insn_eas=(),
+    )
+    edge_taken = StateDagEdge(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=source_key,
+        target_key=target_key,
+        target_state=0x63D54755,
+        target_entry_anchor=21,
+        target_label="0x63D54755",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+            block_serial=98,
+            branch_arm=1,
+        ),
+        ordered_path=(98, 100),
+    )
+    edge_fallthrough = StateDagEdge(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=source_key,
+        target_key=target_key,
+        target_state=0x63D54755,
+        target_entry_anchor=21,
+        target_label="0x63D54755",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+            block_serial=98,
+            branch_arm=0,
+        ),
+        ordered_path=(98, 99, 100),
+    )
+
+    normalized, collapsed = reconstruction_module._canonicalize_same_target_conditional_candidates(
+        [
+            ReconstructionCandidate(
+                edge=edge_taken,
+                horizon_block=98,
+                site=site,
+                target_entry=21,
+                first_shared_block=None,
+                via_pred=None,
+                emission_mode="conditional_arm",
+            ),
+            ReconstructionCandidate(
+                edge=edge_fallthrough,
+                horizon_block=98,
+                site=site,
+                target_entry=21,
+                first_shared_block=None,
+                via_pred=None,
+                emission_mode="conditional_arm",
+            ),
+        ]
+    )
+
+    assert collapsed == 1
+    assert len(normalized) == 1
+    assert normalized[0].emission_mode == "direct"
+    assert normalized[0].target_entry == 21
+
+
+def test_reconstruction_fragment_blocks_bst_cleanup_when_structured_leaks_exist():
+    fragment = reconstruction_module._finalize_reconstruction_fragment(
+        strategy_name="state_write_reconstruction",
+        modifications=[],
+        owned_blocks={16, 68},
+        owned_edges={(16, 68)},
+        accepted_metadata=[],
+        rejected_metadata=[],
+        allow_post_apply_bst_cleanup=True,
+        post_apply_bst_cleanup_reason=None,
+        residual_dispatcher_preds=(),
+        structured_region_fidelity={
+            "leaked_units": (("sub7ffd_10743c4c_branch_region:post_exit_frontier", 1),),
+            "late_rewrite_entries": (
+                {
+                    "planner": "bridge",
+                    "source_block": 69,
+                    "target_block": 163,
+                    "semantic_status": "structured_leakage",
+                },
+            ),
+        },
+    )
+
+    assert fragment.metadata["allow_post_apply_bst_cleanup"] is False
+    assert (
+        fragment.metadata["post_apply_bst_cleanup_reason"]
+        == "structured_region_leakage"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3008,7 +3168,7 @@ def test_lfg_plan_rewrites_shared_dispatch_tail_when_block_proves_target():
     owned_transitions: set[tuple[int, int]] = set()
     emitted: set[tuple[int, int]] = set()
 
-    assert LinearizedFlowGraphStrategy._emit_dag_redirect(
+    assert SemanticStructuredRegionStrategy._emit_dag_redirect(
         edge=dag.edges[0],
         dag=dag,
         builder=builder,
@@ -3132,7 +3292,7 @@ def test_lfg_plan_prefers_immediate_state_write_semantic_entry():
     )
     modifications: list = []
 
-    assert LinearizedFlowGraphStrategy._emit_dag_redirect(
+    assert SemanticStructuredRegionStrategy._emit_dag_redirect(
         edge=dag.edges[0],
         dag=dag,
         builder=builder,
@@ -3166,6 +3326,8 @@ def test_lfg_plan_prefers_immediate_state_write_semantic_entry():
         and mod.new_target == 20
         for mod in modifications
     )
+
+
 
 
 def test_lfg_plan_does_not_fallback_to_stale_raw_target_after_semantic_entry_reject():

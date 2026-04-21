@@ -613,8 +613,10 @@ def _print_list_pair(
 
     may_s = ""
     if may is not None and not may.empty() and may != must:
-        may.sub(must)  # may -= must  (leaves the "may-only" part)
-        may_s = may.dstr()
+        may_only = idaapi.mlist_t()
+        may_only.add(may)
+        may_only.sub(must)  # may -= must  (leaves the "may-only" part)
+        may_s = may_only.dstr()
 
     rval = f"; {label}: {must_s}"
     if may_s:
