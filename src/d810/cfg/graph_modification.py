@@ -127,6 +127,9 @@ class EdgeRedirectViaPredSplit:
         old_target: Existing successor target on the source path.
         new_target: New successor target on the cloned path.
         via_pred: Predecessor whose edge to src_block is rewired to clone.
+        clone_until: Optional final block in a strict 1-way corridor clone.
+            When set, the backend clones the corridor ``src_block .. clone_until``
+            and retargets the final clone to ``new_target``.
         rule_priority: Rule priority for conflict resolution.
     """
 
@@ -134,6 +137,7 @@ class EdgeRedirectViaPredSplit:
     old_target: int
     new_target: int
     via_pred: int
+    clone_until: int | None = None
     rule_priority: int = 550
 
 
@@ -148,6 +152,7 @@ class CreateConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    instructions: tuple[InsnSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -175,12 +180,17 @@ class InsertBlock:
 
     Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_REDIRECT.
     Creates a new intermediate block containing the specified instructions
-    and redirects pred -> new_block -> succ.
+    and redirects pred -> new_block -> succ. By default, the existing edge
+    being replaced is assumed to be ``pred -> succ``; callers may override
+    that with ``old_target_serial`` when the new block should redirect a
+    predecessor away from a different current successor.
 
     Attributes:
         pred_serial: Predecessor block serial (edge source).
-        succ_serial: Successor block serial (edge target).
+        succ_serial: Final successor block serial for the inserted block.
         instructions: Tuple of instruction snapshots to place in new block.
+        old_target_serial: Existing successor edge being replaced. When unset,
+            defaults to ``succ_serial``.
 
     Example:
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -195,6 +205,7 @@ class InsertBlock:
     pred_serial: int
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...]
+    old_target_serial: int | None = None
 
 
 @dataclass(frozen=True)
@@ -366,6 +377,36 @@ class DuplicateAndRedirect:
     per_pred_targets: tuple[tuple[int, int], ...]
 
 
+@dataclass(frozen=True)
+class PhaseCycleLowering:
+    """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
+
+    This primitive captures a loop phase that must remain recognizable as a
+    header/body/latch subgraph rather than being lowered as independent
+    edge-local inserts. It is intended for dispatcher phases where:
+
+    - one role acts as the phase header/check,
+    - one role acts as the body/latch update,
+    - exits must flow into a single next phase,
+    - the body carries an explicit backedge to the header.
+
+    The current backend does not materialize this primitive yet. It exists to
+    pin the missing contract at the graph-modification layer before production
+    integration.
+    """
+
+    header_entries: tuple[int, ...]
+    header_target: int
+    body_entries: tuple[int, ...]
+    body_target: int
+    next_phase_entries: tuple[int, ...]
+    next_phase_target: int
+    terminal_entries: tuple[int, ...] = ()
+    terminal_target: int | None = None
+    state_roles: tuple[tuple[str, int], ...] = ()
+    reason: str = "dispatcher_phase_cycle"
+
+
 class DirectTerminalLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
     RETURN_CONST = "return_const"
@@ -404,6 +445,7 @@ GraphModification = Union[
     CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateAndRedirect,
+    PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
@@ -423,6 +465,7 @@ __all__ = [
     "CreateConditionalRedirect",
     "DuplicateBlock",
     "DuplicateAndRedirect",
+    "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",

@@ -141,7 +141,8 @@ def execute_dag_redirect_fallback(
                 and source_block in context.terminal_source_owned_blocks
             ),
             ordered_path_ends_at_source=(
-                not context.edge.ordered_path or source_block == context.edge.ordered_path[-1]
+                not context.edge.ordered_path
+                or source_block == context.edge.ordered_path[-1]
             ),
             emitted_already=(emit_key in state.emitted),
             nsucc=nsucc,

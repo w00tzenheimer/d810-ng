@@ -73,6 +73,23 @@ class TestPlanConditionalArmReconstructionModifications:
             RedirectBranch(from_serial=14, old_target=6, new_target=16),
         )
 
+    def test_rejects_self_target_redirects(self):
+        flow_graph = _DummyFlowGraph({
+            161: ((159,), (2, 163)),
+        })
+
+        plan = plan_conditional_arm_reconstruction_modifications(
+            flow_graph=flow_graph,
+            horizon_block=161,
+            target_entry=163,
+            branch_arm=1,
+            dispatcher_serial=2,
+            current_entry=161,
+        )
+
+        assert not plan.accepted
+        assert plan.rejection_reason == "invalid_or_noop_redirect"
+
 
 class TestPlanPassthroughReconstructionModifications:
     def test_preserves_oneway_and_branch_shapes(self):
@@ -121,7 +138,6 @@ class TestPlanSharedGroupReconstructionModifications:
         assert plan.modifications == (
             RedirectGoto(from_serial=9, old_target=10, new_target=24),
             RedirectGoto(from_serial=8, old_target=10, new_target=30),
-            RedirectGoto(from_serial=10, old_target=24, new_target=24),
         )
 
     def test_returns_duplicate_and_redirect(self):
@@ -173,4 +189,25 @@ class TestPlanSharedGroupReconstructionModifications:
                 source_serial=10,
                 per_pred_targets=((11, 2), (8, 24)),
             ),
+        )
+
+    def test_single_candidate_single_pred_shared_block_falls_back_to_direct_redirect(self):
+        flow_graph = _DummyFlowGraph({
+            10: ((8,), (2,)),
+        })
+
+        plan = plan_shared_group_reconstruction_modifications(
+            flow_graph=flow_graph,
+            shared_block=10,
+            ordered_path=(10,),
+            shared_candidates=(
+                SharedGroupEmissionCandidate(via_pred=8, target_entry=24),
+            ),
+        )
+
+        assert plan.accepted
+        assert plan.emission_mode == "single_pred_redirect"
+        assert plan.ordered_via_preds == (8,)
+        assert plan.modifications == (
+            RedirectGoto(from_serial=10, old_target=2, new_target=24),
         )

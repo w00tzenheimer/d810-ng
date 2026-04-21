@@ -88,8 +88,9 @@ def _dag(nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]):
 
 
 class _DummyMblock:
-    def __init__(self, head: object | None):
+    def __init__(self, head: object | None, *, succset: tuple[int, ...] = ()):
         self.head = head
+        self.succset = succset
 
 
 class _DummyMba:
@@ -263,6 +264,25 @@ class TestResidualTargetDiscovery:
                 dispatcher=dispatcher,
             )
             == 24
+        )
+
+    def test_resolves_nonexact_dispatch_target_via_same_state_exact_raw_node(self) -> None:
+        exact_raw = _node(entry=66, handler=66, state=0x4C77464F, owned=(66, 67), exclusive=(66,))
+        dag = _dag((exact_raw,), ())
+        dispatcher = SimpleNamespace(
+            _rows=(SimpleNamespace(lo=0x474EEEBC, hi=0x4E69F350, target=71),),
+            lookup=lambda state: 71 if state == 0x4C77464F else None,
+        )
+
+        assert (
+            resolve_nonexact_dispatch_target(
+                dag,
+                0x4C77464F,
+                source_block=16,
+                bst_node_blocks={2},
+                dispatcher=dispatcher,
+            )
+            == 66
         )
 
     def test_resolves_projected_path_tail_target(self) -> None:
@@ -505,3 +525,131 @@ class TestResidualTargetDiscovery:
         assert facts.source_level_handoff == (0x33, 26)
         assert facts.projected_path_handoff == (0x55, 28)
         assert facts.handoff == (0x11, 24)
+
+    def test_collects_residual_source_handoff_facts_prefers_projected_leaf_tail_target(
+        self,
+        monkeypatch,
+    ) -> None:
+        target_node = _node(entry=14, handler=14, state=0x11)
+        dag = _dag(
+            (target_node,),
+            (
+                StateDagEdge(
+                    kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                    source_key=StateDagNodeKey(handler_serial=15, state_const=0x22),
+                    target_key=target_node.key,
+                    target_state=0x11,
+                    target_entry_anchor=14,
+                    target_label="0x00000011",
+                    source_anchor=StateRedirectAnchor(
+                        kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                        block_serial=15,
+                        branch_arm=0,
+                    ),
+                    ordered_path=(15, 16),
+                    last_write_site=None,
+                ),
+            ),
+        )
+
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            lambda *args, **kwargs: (0x11, 66),
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            lambda *args, **kwargs: (0x11, 14),
+        )
+
+        facts = collect_residual_source_handoff_facts(
+            dag,
+            state_machine=object(),
+            projected_flow_graph=object(),
+            source_block=16,
+            current_preds=(15,),
+            state_var_stkoff=0x88,
+            bst_node_blocks={2, 6},
+            dispatcher_lookup=None,
+            dispatcher=object(),
+            analysis_mba="analysis",
+            live_mba=None,
+        )
+
+        assert facts.source_level_handoff == (0x11, 66)
+        assert facts.projected_path_handoff == (0x11, 14)
+        assert facts.handoff == (0x11, 14)
+
+    def test_collects_residual_source_handoff_facts_from_single_successor_state_write(
+        self,
+        monkeypatch,
+    ) -> None:
+        dag = _dag((), ())
+        mba = _DummyMba(
+            {
+                194: _DummyMblock(None, succset=(195,)),
+                195: _DummyMblock(None),
+            }
+        )
+
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            lambda *args, **kwargs: False,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            lambda dag, mba_value, source_block, **kwargs: (
+                (0x41FB8FBB, 86)
+                if mba_value is mba and int(source_block) == 195
+                else None
+            ),
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            lambda *args, **kwargs: None,
+        )
+
+        facts = collect_residual_source_handoff_facts(
+            dag,
+            state_machine=object(),
+            projected_flow_graph=object(),
+            source_block=194,
+            current_preds=(188,),
+            state_var_stkoff=0x88,
+            bst_node_blocks={2, 6},
+            dispatcher_lookup=None,
+            dispatcher=object(),
+            analysis_mba=mba,
+            live_mba=None,
+        )
+
+        assert facts.successor_handoff == (0x41FB8FBB, 86)
+        assert facts.source_level_handoff == (0x41FB8FBB, 86)
+        assert facts.handoff == (0x41FB8FBB, 86)
