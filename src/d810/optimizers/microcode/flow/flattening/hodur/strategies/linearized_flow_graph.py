@@ -1502,6 +1502,7 @@ class LinearizedFlowGraphStrategy:
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=self._emit_dag_redirect,
             collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
+            resolve_effective_target_entry=self._resolve_effective_target_entry,
             emit_structured_region=lambda *,
                 region,
                 dag,
@@ -2011,6 +2012,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=lambda **kwargs: False,
             collect_residual_dispatcher_predecessors=self._collect_residual_dispatcher_predecessors,
+            resolve_effective_target_entry=self._resolve_effective_target_entry,
             emit_structured_region=lambda *,
                 region,
                 dag,
@@ -2133,6 +2135,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             classify_artifact_return_blocks=classify_artifact_return_blocks,
             collect_common_return_corridor=collect_common_return_corridor,
             collect_terminal_family_report=collect_terminal_family_report,
+            build_reconstruction_candidate=build_reconstruction_candidate,
             resolve_effective_target_entry=self._resolve_effective_target_entry,
             build_projected_mba=build_mba_view_from_flow_graph,
         )

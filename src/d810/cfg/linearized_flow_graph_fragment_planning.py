@@ -5,12 +5,9 @@ from dataclasses import dataclass
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core import logging
 from d810.core.typing import Callable
+from d810.cfg.dag_index import build_dag_node_maps
 from d810.cfg.graph_modification import RedirectBranch
-from d810.recon.flow.dag_index import build_dag_node_maps
-from d810.recon.flow.residual_handoff_resolution import (
-    resolve_effective_target_entry as resolve_residual_effective_target_entry,
-)
-from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
+from d810.cfg.target_entry_resolution import resolve_edge_target_entry
 
 logger = logging.getLogger(
     "D810.cfg.linearized_flow_graph_fragment_planning",
@@ -117,6 +114,7 @@ class LinearizedFlowGraphPlanningCallbacks:
     emit_structured_region: Callable[..., "LinearizedFlowGraphStructuredRegionResult"]
     emit_residual_dispatcher_handoffs: Callable[..., int]
     disconnect_bst_comparison_nodes: Callable[..., int]
+    resolve_effective_target_entry: Callable[..., int | None] | None = None
 
 
 @dataclass(slots=True)
@@ -351,6 +349,7 @@ def _normalize_projected_conditional_redirects(
     owned_edges: set[tuple[int, int]],
     emitted: set[tuple[int, int]],
     claimed_2way: dict[tuple[int, int], int],
+    resolve_effective_target_entry=None,
 ) -> int:
     """Retarget queued conditional redirects against the latest projected DAG.
 
@@ -396,7 +395,7 @@ def _normalize_projected_conditional_redirects(
         normalized_target: int | None = None
         for edge in matching_edges:
             effective_target = (
-                resolve_residual_effective_target_entry(
+                resolve_effective_target_entry(
                     dag,
                     edge,
                     bst_node_blocks=set(int(block) for block in dispatcher_region),
@@ -405,7 +404,7 @@ def _normalize_projected_conditional_redirects(
                     dispatcher=dispatcher,
                     mba=mba,
                 )
-                if mba is not None
+                if mba is not None and callable(resolve_effective_target_entry)
                 else None
             )
             if effective_target is not None:
@@ -698,6 +697,7 @@ def build_linearized_flow_graph_planning_callbacks(
     emit_structured_region: object,
     emit_residual_dispatcher_handoffs: object,
     disconnect_bst_comparison_nodes: object,
+    resolve_effective_target_entry: object | None,
     build_live_dag: object,
     build_transition_report: object,
     select_plannable_edges: object,
@@ -828,6 +828,7 @@ def build_linearized_flow_graph_planning_callbacks(
             state.emitted,
             mba=mba,
         ),
+        resolve_effective_target_entry=resolve_effective_target_entry,
     )
 
 
@@ -1176,6 +1177,7 @@ def execute_linearized_flow_graph_planning(
             owned_edges=state.owned_edges,
             emitted=state.emitted,
             claimed_2way=state.claimed_2way,
+            resolve_effective_target_entry=callbacks.resolve_effective_target_entry,
         )
         if residual_dispatcher_normalized_count:
             try:

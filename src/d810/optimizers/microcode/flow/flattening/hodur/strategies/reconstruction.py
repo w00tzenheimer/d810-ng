@@ -2539,6 +2539,7 @@ class StateWriteReconstructionStrategy:
             classify_artifact_return_blocks=classify_artifact_return_blocks,
             collect_common_return_corridor=collect_common_return_corridor,
             collect_terminal_family_report=collect_terminal_family_report,
+            build_reconstruction_candidate=build_reconstruction_candidate,
         )
         log_reconstruction_postprocess_result(
             logger,
