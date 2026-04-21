@@ -30,6 +30,7 @@ import ida_hexrays
 from pathlib import Path
 
 from d810.core import logging
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.recon.flow.dispatcher_detection import (
@@ -55,6 +56,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.family import (
     HodurStrategyFamily,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    EXPERIMENTAL_STRATEGIES,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
@@ -90,6 +94,20 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
 
+_SUB7FFD_FUNC_EA = 0x180012B60
+
+
+def _mlist_text(value) -> str | None:
+    dstr = getattr(value, "dstr", None)
+    if dstr is None:
+        return None
+    try:
+        text = dstr()
+    except Exception:
+        return None
+    return text or None
+
+
 class HodurUnflattener(GenericUnflatteningRule):
     """Unflattener for Hodur-style while-loop state machines.
 
@@ -112,9 +130,10 @@ class HodurUnflattener(GenericUnflatteningRule):
         ida_hexrays.MMAT_GLBOPT1,
         ida_hexrays.MMAT_GLBOPT2,
     ]
+    RECON_ONLY_MODE = False
     RETURN_FRONTIER_AUDIT_ENABLED: bool = True  # Default on for debugging
-    DEFAULT_MAX_PASSES = 3
-    HARD_MAX_PASSES = 10
+    DEFAULT_MAX_PASSES = 1
+    HARD_MAX_PASSES = 1
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
 
@@ -141,7 +160,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             "max_passes",
             int,
             DEFAULT_MAX_PASSES,
-            "Maximum unflattening passes",
+            "Deprecated compatibility knob; Hodur now runs exactly one pass per maturity",
         ),
         ConfigParam(
             "allow_legacy_block_creation",
@@ -180,6 +199,8 @@ class HodurUnflattener(GenericUnflatteningRule):
             disabled_strategy_names={
                 "ConditionalForkFallbackStrategy",
             },
+            strategy_classes=EXPERIMENTAL_STRATEGIES,
+            recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,
             max_state_constants=self.max_state_constants,
@@ -206,7 +227,13 @@ class HodurUnflattener(GenericUnflatteningRule):
         if "max_state_constants" in self.config:
             self.max_state_constants = int(self.config["max_state_constants"])
         if "max_passes" in self.config:
-            self.max_passes = int(self.config["max_passes"])
+            requested_passes = int(self.config["max_passes"])
+            if requested_passes != self.DEFAULT_MAX_PASSES:
+                unflat_logger.info(
+                    "Ignoring configured max_passes=%d; Hodur now runs exactly one pass per maturity",
+                    requested_passes,
+                )
+            self.max_passes = self.DEFAULT_MAX_PASSES
         if "allow_legacy_block_creation" in self.config:
             self.allow_legacy_block_creation = bool(
                 self.config["allow_legacy_block_creation"]
@@ -347,6 +374,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             planner=self._planner,
             inputs=planner_inputs,
         )
+        self._last_provenance = planned.provenance
 
         # Return frontier audit: pre_plan stage (after fragment collection so
         # handler_paths from DirectLinearization strategy are available)
@@ -368,63 +396,79 @@ class HodurUnflattener(GenericUnflatteningRule):
                 unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
 
         if not planned.pipeline:
-            unflat_logger.info("No strategy produced a plan fragment")
-            self._actual_pass_count += 1
-            return 0
+            unflat_logger.info(
+                "No strategy produced a plan fragment; continuing in recon-only diagnostic mode"
+            )
+            pipeline = []
+            results = []
+            provenance = planned.provenance
+            nb_changes = 0
+        else:
+            unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
 
-        self._last_provenance = planned.provenance
-        unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
+            # Return frontier audit: post_plan stage (mods queued but not applied)
+            if (
+                self.RETURN_FRONTIER_AUDIT_ENABLED
+                and snapshot.state_machine is not None
+                and self._audit_return_sites
+            ):
+                try:
+                    self._family.record_return_frontier_stage(
+                        return_sites=tuple(self._audit_return_sites),
+                        stage_name="post_plan",
+                        func_ea=self.mba.entry_ea,
+                        maturity=self.cur_maturity,
+                        log_dir=self.log_dir,
+                        successors=self._build_successor_map(),
+                        exits=self._find_exit_blocks(),
+                    )
+                except Exception:
+                    unflat_logger.debug(
+                        "_record_audit_stage(post_plan) failed (non-critical)"
+                    )
 
-        # Return frontier audit: post_plan stage (mods queued but not applied)
-        if (
-            self.RETURN_FRONTIER_AUDIT_ENABLED
-            and snapshot.state_machine is not None
-            and self._audit_return_sites
-        ):
-            try:
-                self._family.record_return_frontier_stage(
-                    return_sites=tuple(self._audit_return_sites),
-                    stage_name="post_plan",
-                    func_ea=self.mba.entry_ea,
-                    maturity=self.cur_maturity,
-                    log_dir=self.log_dir,
-                    successors=self._build_successor_map(),
-                    exits=self._find_exit_blocks(),
-                )
-            except Exception:
-                unflat_logger.debug("_record_audit_stage(post_plan) failed (non-critical)")
-
-        # 5. EXECUTOR_BOUNDARY: runtime consumes planner output in-order,
-        # delegates to the configured executor, and projects executor outcomes
-        # back onto provenance.
-        executed = execute_family_pipeline(
-            snapshot,
-            planned,
-            executor_factory=self._family.make_executor_factory(
-                gate=self._gate,
-                allow_legacy_block_creation=self.allow_legacy_block_creation,
-            ),
-            flow_context=self.flow_context,
-        )
-        pipeline = executed.pipeline
-        results = executed.results
-        provenance = executed.provenance
-        nb_changes = executed.total_changes
-        self._last_provenance = provenance
+            # 5. EXECUTOR_BOUNDARY: runtime consumes planner output in-order,
+            # delegates to the configured executor, and projects executor outcomes
+            # back onto provenance.
+            executed = execute_family_pipeline(
+                snapshot,
+                planned,
+                executor_factory=self._family.make_executor_factory(
+                    gate=self._gate,
+                    allow_legacy_block_creation=self.allow_legacy_block_creation,
+                ),
+                flow_context=self.flow_context,
+            )
+            pipeline = executed.pipeline
+            results = executed.results
+            provenance = executed.provenance
+            nb_changes = executed.total_changes
+            self._last_provenance = provenance
 
         live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] = {}
-        if any(
-            fragment.strategy_name == "linearized_flow_graph"
-            and result.success
-            and result.edits_applied > 0
+        successful_fragments = [
+            fragment
             for fragment, result in zip(pipeline, results)
-        ):
-            live_residual_dispatcher_preds_by_strategy["linearized_flow_graph"] = (
-                self._family.collect_live_lfg_residual_dispatcher_preds(
-                    self.mba,
-                    snapshot,
-                )
+            if result.success and result.edits_applied > 0
+        ]
+        for fragment in successful_fragments:
+            strategy_name = fragment.strategy_name
+            group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
+            if (
+                strategy_name not in {"linearized_flow_graph", "exact_node_frontier_bypass"}
+                and not isinstance(group_name, str)
+            ):
+                continue
+            residual_preds = self._family.collect_live_residual_dispatcher_preds(
+                self.mba,
+                snapshot,
+                strategy_name=strategy_name,
             )
+            live_residual_dispatcher_preds_by_strategy[strategy_name] = residual_preds
+            if isinstance(group_name, str):
+                live_residual_dispatcher_preds_by_strategy[f"group:{group_name}"] = (
+                    residual_preds
+                )
 
         self._family.record_execution_outcome(
             pipeline,
@@ -639,14 +683,6 @@ class HodurUnflattener(GenericUnflatteningRule):
                 json.dumps(provenance.to_dict(), indent=2),
             )
 
-        # Adaptive convergence: extend max_passes when making progress
-        if nb_changes > 0 and self.max_passes < self.HARD_MAX_PASSES:
-            self.max_passes += 1
-            unflat_logger.debug(
-                "HodurUnflattener: progress detected, extending max_passes to %d",
-                self.max_passes,
-            )
-
         unflat_logger.info(
             "HodurUnflattener: Pass %d made %d changes",
             self._actual_pass_count,
@@ -681,28 +717,31 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
 
-        # --- Diagnostic snapshot: full MBA at post_pipeline ---
-        try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.mba_serializer import mba_to_block_snapshots
-            from d810.core.diag.snapshot import snapshot_mba as _snap_mba_pl
+        self._capture_post_pipeline_diagnostic_snapshot()
 
-            _pl_conn = get_diag_db(self.mba.entry_ea)
-            if _pl_conn is not None:
-                _pl_blocks = mba_to_block_snapshots(self.mba)
-                _snap_mba_pl(
-                    _pl_conn,
-                    _pl_blocks,
-                    label="post_pipeline",
-                    func_ea=self.mba.entry_ea,
-                    maturity="MMAT_GLBOPT1",
-                    phase="post_pipeline",
-                )
-        except Exception:
-            unflat_logger.debug(
-                "post_pipeline diagnostic snapshot failed (non-critical)",
-                exc_info=True,
-            )
+        if not pipeline:
+            return 0
+
+        bundle_stabilized = self._stabilize_sub7ffd_post_pipeline_bundle()
+        if bundle_stabilized:
+            nb_changes += bundle_stabilized
+
+        probe_blocks, probe_targets = self._collect_post_apply_may_only_probe_blocks(
+            pipeline, results
+        )
+        sticky_entry_ea = getattr(self, "_sticky_may_only_probe_entry_ea", None)
+        if sticky_entry_ea != self.mba.entry_ea:
+            self._sticky_may_only_probe_entry_ea = self.mba.entry_ea
+            self._sticky_may_only_probe_blocks = set()
+            self._sticky_may_only_probe_targets = set()
+        self._sticky_may_only_probe_blocks.update(probe_blocks)
+        self._sticky_may_only_probe_targets.update(probe_targets)
+        probe_blocks = tuple(sorted(self._sticky_may_only_probe_blocks))
+        probe_targets = tuple(sorted(self._sticky_may_only_probe_targets))
+        self._apply_post_apply_may_only_probe(
+            block_serials=probe_blocks,
+            target_blocks=probe_targets,
+        )
 
         # BST cleanup invalidates dispatcher/BST state — suppress re-iteration
         # so IDA does not invoke Hodur again on the cleaned CFG.
@@ -712,7 +751,180 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
             nb_changes = 0
 
+        # Re-apply the may-only probe on the final live MBA. Some late bridge
+        # rescue blocks (notably the sub_7FFD frontier latch) are only
+        # materialized after the first post-pipeline probe point.
+        self._apply_post_apply_may_only_probe(
+            block_serials=probe_blocks,
+            target_blocks=probe_targets,
+        )
+
         return nb_changes
+
+    def _stabilize_sub7ffd_post_pipeline_bundle(self) -> int:
+        """Make the fragile 80->118 setup/use corridor compaction-stable.
+
+        The repaired DAG and post-pipeline MBA already recover the semantic
+        bundle, but Hex-Rays later drops the reaching defs from blk[80] while
+        preserving uses that flow out of blk[118]. For the specific
+        ``sub_7FFD3338C040`` sample, split the shared conditional consumer for
+        predecessor ``80`` and migrate the setup instructions into that private
+        conditional clone so defs and immediate uses are kept together.
+        """
+        if int(getattr(self.mba, "entry_ea", 0) or 0) != _SUB7FFD_FUNC_EA:
+            return 0
+        unflat_logger.info(
+            "sub7ffd bundle stabilize inspect: maturity=%s qty=%d",
+            self.cur_maturity,
+            self.mba.qty,
+        )
+
+        source_blk = self.mba.get_mblock(80)
+        ref_blk = self.mba.get_mblock(118)
+        if source_blk is None or ref_blk is None:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: source80=%s ref118=%s",
+                source_blk is not None,
+                ref_blk is not None,
+            )
+            return 0
+        if source_blk.nsucc() != 1 or source_blk.succ(0) != 118:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: blk80 nsucc=%d succ0=%s",
+                source_blk.nsucc(),
+                source_blk.succ(0) if source_blk.nsucc() > 0 else None,
+            )
+            return 0
+        if ref_blk.nsucc() != 2 or ref_blk.tail is None:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: blk118 nsucc=%d tail=%s",
+                ref_blk.nsucc(),
+                ref_blk.tail is not None,
+            )
+            return 0
+        if not ida_hexrays.is_mcode_jcond(ref_blk.tail.opcode):
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: blk118 tail opcode=%s is not jcond",
+                ref_blk.tail.opcode,
+            )
+            return 0
+
+        source_insns: list[ida_hexrays.minsn_t] = []
+        nop_eas: list[int] = []
+        cur_ins = source_blk.head
+        while cur_ins is not None:
+            is_trailing_goto = (
+                source_blk.tail is not None
+                and source_blk.tail.opcode == ida_hexrays.m_goto
+                and cur_ins.next is None
+            )
+            if is_trailing_goto:
+                break
+            cloned_ins = ida_hexrays.minsn_t(cur_ins)
+            cloned_ins.setaddr(self.mba.entry_ea)
+            source_insns.append(cloned_ins)
+            if cur_ins.ea:
+                nop_eas.append(int(cur_ins.ea))
+            cur_ins = cur_ins.next
+
+        # The recovered bundle is the five-instruction setup in blk[80]:
+        # ldx + four constant moves before the goto into blk[118].
+        if len(source_insns) != 5:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: blk80 prelude len=%d",
+                len(source_insns),
+            )
+            return 0
+
+        conditional_target = int(getattr(ref_blk.tail.d, "b", -1))
+        succs = [ref_blk.succ(i) for i in range(ref_blk.nsucc())]
+        if conditional_target not in succs:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: cond_target=%d succs=%s",
+                conditional_target,
+                succs,
+            )
+            return 0
+        fallthrough_target = next((succ for succ in succs if succ != conditional_target), -1)
+        if fallthrough_target < 0:
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip: no fallthrough succs=%s cond=%d",
+                succs,
+                conditional_target,
+            )
+            return 0
+
+        private_conditional_serial = int(self.mba.qty - 1)
+        private_fallthrough_serial = int(self.mba.qty)
+
+        first_modifier = DeferredGraphModifier(self.mba)
+        first_modifier.queue_create_conditional_redirect(
+            source_blk_serial=80,
+            ref_blk_serial=118,
+            conditional_target_serial=conditional_target,
+            fallthrough_target_serial=fallthrough_target,
+            instructions_to_copy=(),
+            expected_conditional_serial=private_conditional_serial,
+            expected_fallthrough_serial=private_fallthrough_serial,
+            description="sub7ffd post_pipeline bundle stabilize 80->118",
+        )
+        for insn_ea in nop_eas:
+            first_modifier.queue_insn_nop(
+                block_serial=80,
+                insn_ea=insn_ea,
+                description="sub7ffd move setup into private 118 clone",
+            )
+
+        first_applied = first_modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=False,
+            rollback_on_verify_failure=False,
+            continue_on_verify_failure=False,
+            defer_post_apply_maintenance=False,
+            enable_snapshot_rollback=True,
+        )
+        if first_applied <= 0:
+            return 0
+
+        source_blk = self.mba.get_mblock(80)
+        if (
+            source_blk is None
+            or source_blk.nsucc() != 1
+            or source_blk.succ(0) != private_conditional_serial
+        ):
+            unflat_logger.info(
+                "sub7ffd bundle stabilize skip second phase: blk80 nsucc=%s succ0=%s expected=%s",
+                source_blk.nsucc() if source_blk is not None else None,
+                source_blk.succ(0) if source_blk is not None and source_blk.nsucc() > 0 else None,
+                private_conditional_serial,
+            )
+            return int(first_applied)
+
+        second_modifier = DeferredGraphModifier(self.mba)
+        second_modifier.queue_create_and_redirect(
+            source_block_serial=80,
+            final_target_serial=private_conditional_serial,
+            instructions_to_copy=tuple(source_insns),
+            is_0_way=False,
+            description="sub7ffd private setup block before cloned 118",
+        )
+        second_applied = second_modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=False,
+            rollback_on_verify_failure=False,
+            continue_on_verify_failure=False,
+            defer_post_apply_maintenance=False,
+            enable_snapshot_rollback=True,
+        )
+        applied = int(first_applied) + int(second_applied)
+        if applied > 0:
+            unflat_logger.info(
+                "sub7ffd post_pipeline bundle stabilize applied %d deferred modifications",
+                applied,
+            )
+        return int(applied)
 
     # ------------------------------------------------------------------
     # Return frontier audit helpers
@@ -734,6 +946,30 @@ class HodurUnflattener(GenericUnflatteningRule):
             if blk.nsucc() == 0:
                 exits.add(i)
         return frozenset(exits)
+
+    def _capture_post_pipeline_diagnostic_snapshot(self) -> None:
+        """Persist a post-pipeline MBA snapshot for recon-only/manual inspection."""
+        try:
+            from d810.core.diag import get_diag_db
+            from d810.core.diag.mba_serializer import mba_to_block_snapshots
+            from d810.core.diag.snapshot import snapshot_mba as _snap_mba_pl
+
+            _pl_conn = get_diag_db(self.mba.entry_ea)
+            if _pl_conn is not None:
+                _pl_blocks = mba_to_block_snapshots(self.mba)
+                _snap_mba_pl(
+                    _pl_conn,
+                    _pl_blocks,
+                    label="post_pipeline",
+                    func_ea=self.mba.entry_ea,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_pipeline",
+                )
+        except Exception:
+            unflat_logger.debug(
+                "post_pipeline diagnostic snapshot failed (non-critical)",
+                exc_info=True,
+            )
 
     def _extract_handler_paths_from_fragments(
         self, fragments: list
@@ -826,6 +1062,120 @@ class HodurUnflattener(GenericUnflatteningRule):
                     result.edits_applied,
                     result.reachability_after,
                 )
+
+    def _collect_post_apply_may_only_probe_blocks(
+        self, pipeline: list, results: list[StageResult]
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        block_serials: set[int] = set()
+        target_blocks: set[int] = set()
+        for fragment, result in zip(pipeline, results):
+            if fragment.strategy_name != "state_write_reconstruction":
+                continue
+            if not result.success or result.edits_applied <= 0:
+                continue
+            fidelity = fragment.metadata.get("structured_region_fidelity", {})
+            if not isinstance(fidelity, dict):
+                continue
+            for serial in fidelity.get("post_apply_may_only_probe_blocks", ()):
+                if isinstance(serial, int):
+                    block_serials.add(serial)
+            for serial in fidelity.get("post_apply_may_only_probe_targets", ()):
+                if isinstance(serial, int):
+                    target_blocks.add(serial)
+        return tuple(sorted(block_serials)), tuple(sorted(target_blocks))
+
+    def _apply_post_apply_may_only_probe(
+        self,
+        *,
+        block_serials: tuple[int, ...],
+        target_blocks: tuple[int, ...] = (),
+    ) -> None:
+        probe_targets = {
+            serial for serial in target_blocks if 0 <= serial < self.mba.qty
+        }
+        expanded_serials = set(block_serials)
+        if probe_targets:
+            for serial in range(self.mba.qty):
+                blk = self.mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                try:
+                    succs = [int(blk.succ(i)) for i in range(blk.nsucc)]
+                except Exception:
+                    continue
+                if any(target in probe_targets for target in succs):
+                    expanded_serials.add(serial)
+        if not expanded_serials:
+            return
+
+        applied = 0
+        for serial in sorted(expanded_serials):
+            if serial < 0 or serial >= self.mba.qty:
+                continue
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                continue
+            try:
+                blk.make_lists_ready()
+            except Exception:
+                unflat_logger.debug(
+                    "may-only probe: make_lists_ready failed for blk[%d]",
+                    serial,
+                    exc_info=True,
+                )
+                continue
+
+            changed_attrs: list[str] = []
+            for may_attr, must_attr in (
+                ("maybuse", "mustbuse"),
+                ("maybdef", "mustbdef"),
+            ):
+                may_list = getattr(blk, may_attr, None)
+                must_list = getattr(blk, must_attr, None)
+                clear = getattr(may_list, "clear", None)
+                add = getattr(may_list, "add", None)
+                if (
+                    may_list is None
+                    or must_list is None
+                    or clear is None
+                    or add is None
+                ):
+                    continue
+
+                may_only = ida_hexrays.mlist_t()
+                try:
+                    may_only.add(may_list)
+                    may_only.sub(must_list)
+                    clear()
+                    add(may_only)
+                except Exception:
+                    unflat_logger.debug(
+                        "may-only probe: failed to shrink %s for blk[%d]",
+                        may_attr,
+                        serial,
+                        exc_info=True,
+                    )
+                    continue
+
+                changed_attrs.append(
+                    f"{may_attr}={_mlist_text(may_only) or '<empty>'}"
+                )
+
+            if not changed_attrs:
+                continue
+
+            applied += 1
+            unflat_logger.info(
+                "Applied may-only liveness probe to blk[%d]: %s",
+                serial,
+                ", ".join(changed_attrs),
+            )
+
+        if applied:
+            unflat_logger.info(
+                "Applied may-only liveness probe to %d leaked frontier blocks",
+                applied,
+            )
 
     def _queue_handler_redirect(
         self,

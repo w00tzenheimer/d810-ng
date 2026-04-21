@@ -33,6 +33,34 @@ from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
     HodurUnflattener,
 )
 from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
+    SemanticExactNodeAllPlannableEdgesStrategy,
+    SemanticExactNode5D0AEBD3To606DC166Strategy,
+    SemanticExactNode606DC166To139F2922Strategy,
+    SemanticExactNode63D54755To57BE6FD0Strategy,
+    SemanticExactNode57BE6FD0To03E42B03Strategy,
+    _resolve_edge_window,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
+    SemanticStructuredRegionStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
+    ExactConditionalNodeLoweringStrategy,
+    collect_exact_conditional_sites,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
+    ExactConditionalAliasNodeLoweringStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
+    ExactConditionalForkNodeLoweringStrategy,
+    collect_exact_conditional_fork_sites,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass import (
+    ExactNodeFrontierBypassStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.prototypes import (
+    ExactConditionalBridgeNodeLoweringStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
@@ -185,10 +213,12 @@ def test_audit_pre_plan_persists_fallback_report_to_store(monkeypatch, tmp_path)
     assert loaded.summary.exit_count == 1
 
 
-def test_hodur_unflattener_registers_live_fake_jump_strategy():
+def test_hodur_unflattener_does_not_register_fake_jump_in_live_hodur_stack():
     unflattener = HodurUnflattener()
 
-    assert any(isinstance(strategy, FakeJumpStrategy) for strategy in unflattener._strategies)
+    assert not any(
+        isinstance(strategy, FakeJumpStrategy) for strategy in unflattener._strategies
+    )
 
 
 def test_hodur_unflattener_uses_hodur_strategy_family():
@@ -217,22 +247,265 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     assert unflattener._initial_transitions == ["initial"]
 
 
-def test_hodur_unflattener_registers_live_bad_while_loop_strategy():
+def test_hodur_unflattener_registers_region_first_experimental_strategy_only():
     unflattener = HodurUnflattener()
 
-    assert any(
-        isinstance(strategy, BadWhileLoopStrategy)
-        for strategy in unflattener._strategies
+    assert len(unflattener._strategies) == 1
+    assert isinstance(
+        unflattener._strategies[0],
+        SemanticStructuredRegionStrategy,
+    )
+    strategies = unflattener._family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT1)
+    assert len(strategies) == 1
+    assert isinstance(
+        strategies[0],
+        SemanticStructuredRegionStrategy,
     )
 
 
-def test_hodur_unflattener_registers_live_single_iteration_strategy():
-    unflattener = HodurUnflattener()
+def test_semantic_structured_region_strategy_only_runs_at_glbopt1():
+    strategy = SemanticStructuredRegionStrategy()
+    state_machine = SimpleNamespace(handlers={0x10: object()}, initial_state=0x10)
+    bst_result = SimpleNamespace(handler_state_map={0x10: 7})
 
-    assert any(
-        isinstance(strategy, SingleIterationStrategy)
-        for strategy in unflattener._strategies
+    glbopt1_snapshot = SimpleNamespace(
+        mba=SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_GLBOPT1),
+        state_machine=state_machine,
+        bst_result=bst_result,
     )
+    glbopt2_snapshot = SimpleNamespace(
+        mba=SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_GLBOPT2),
+        state_machine=state_machine,
+        bst_result=bst_result,
+    )
+
+    assert strategy.is_applicable(glbopt1_snapshot)
+    assert not strategy.is_applicable(glbopt2_snapshot)
+
+
+def test_hodur_strategy_family_defaults_to_live_strategies():
+    family = HodurStrategyFamily()
+
+    assert any(isinstance(strategy, BadWhileLoopStrategy) for strategy in family.strategies)
+    assert any(
+        isinstance(strategy, SingleIterationStrategy) for strategy in family.strategies
+    )
+
+
+def test_hodur_strategy_family_accepts_explicit_strategy_override():
+    family = HodurStrategyFamily(
+        strategy_classes=[
+            SemanticExactNode5D0AEBD3To606DC166Strategy,
+            SemanticExactNode606DC166To139F2922Strategy,
+            SemanticExactNode63D54755To57BE6FD0Strategy,
+            SemanticExactNode57BE6FD0To03E42B03Strategy,
+        ]
+    )
+
+    assert len(family.strategies) == 4
+    assert isinstance(
+        family.strategies[0],
+        SemanticExactNode5D0AEBD3To606DC166Strategy,
+    )
+    assert isinstance(
+        family.strategies[1],
+        SemanticExactNode606DC166To139F2922Strategy,
+    )
+    assert isinstance(
+        family.strategies[2],
+        SemanticExactNode63D54755To57BE6FD0Strategy,
+    )
+    assert isinstance(
+        family.strategies[3],
+        SemanticExactNode57BE6FD0To03E42B03Strategy,
+    )
+
+
+def test_semantic_exact_node_bulk_window_defaults(monkeypatch):
+    monkeypatch.delenv("D810_EXACT_NODE_EDGE_START", raising=False)
+    monkeypatch.delenv("D810_EXACT_NODE_EDGE_STOP", raising=False)
+
+    assert _resolve_edge_window(10) == (0, 10)
+
+
+def test_semantic_exact_node_bulk_window_clamps_and_orders(monkeypatch):
+    monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "7")
+    monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "3")
+    assert _resolve_edge_window(10) == (7, 7)
+
+    monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "0x2")
+    monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "99")
+    assert _resolve_edge_window(10) == (2, 10)
+
+
+def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
+    strategy = SemanticExactNodeAllPlannableEdgesStrategy()
+    transition_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_state=0x20,
+        kind=SimpleNamespace(name="TRANSITION"),
+    )
+    conditional_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x30),
+        target_state=0x40,
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+    )
+    round_summary = SimpleNamespace(
+        plannable_edges=(
+            SimpleNamespace(edge=transition_edge),
+            SimpleNamespace(edge=conditional_edge),
+        )
+    )
+
+    selected = strategy._select_edges(round_summary)
+
+    assert selected == [
+        (round_summary.plannable_edges[0], (0x10, 0x20))
+    ]
+
+
+def test_collect_exact_conditional_sites_uses_physical_site_and_fallback_shape():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 2, (11, 12), (0,), 0, 0, ()),
+            11: BlockSnapshot(11, 1, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 1, (14,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 1, (16,), (11,), 0, 0, ()),
+            14: BlockSnapshot(14, 1, (30,), (12,), 0, 0, ()),
+            16: BlockSnapshot(16, 1, (40,), (13,), 0, 0, ()),
+            40: BlockSnapshot(40, 1, (21,), (16,), 0, 0, ()),
+            21: BlockSnapshot(21, 0, (), (40,), 0, 0, ()),
+            30: BlockSnapshot(30, 0, (), (14,), 0, 0, ()),
+            0: BlockSnapshot(0, 1, (10,), (), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    transition_edge = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        ordered_path=(10, 11, 13),
+    )
+    alias_transition_edge = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0xAAAAAAAA),
+        source_anchor=SimpleNamespace(block_serial=10),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        ordered_path=(10, 11, 13),
+    )
+    return_edge = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_RETURN"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        ordered_path=(10, 12, 14, 30),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(transition_edge, alias_transition_edge, return_edge)),
+        plannable_edges=(
+            SimpleNamespace(edge=transition_edge),
+            SimpleNamespace(edge=alias_transition_edge),
+        ),
+    )
+
+    sites = collect_exact_conditional_sites(round_summary, flow_graph)
+
+    assert len(sites) == 1
+    site = sites[0]
+    assert site.source_block == 10
+    assert site.target_entry == 40
+    assert site.shape.taken_successor == 11
+    assert site.shape.fallback_successor == 12
+    assert site.shape.fallback_return_distance == 0
+    assert site.shape.taken_return_distance == 0
+
+
+def test_collect_exact_conditional_sites_rejects_when_taken_arm_is_closer_to_return():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 2, (11, 12), (0,), 0, 0, ()),
+            11: BlockSnapshot(11, 0, (), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 2, (14, 16), (10,), 0, 0, ()),
+            14: BlockSnapshot(14, 1, (15,), (12,), 0, 0, ()),
+            15: BlockSnapshot(15, 0, (), (14,), 0, 0, ()),
+            16: BlockSnapshot(16, 0, (), (12,), 0, 0, ()),
+            0: BlockSnapshot(0, 1, (10,), (), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    transition_edge = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        ordered_path=(10, 11),
+    )
+    return_edge = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_RETURN"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        ordered_path=(10, 12, 14, 15),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(transition_edge, return_edge)),
+        plannable_edges=(SimpleNamespace(edge=transition_edge),),
+    )
+
+    sites = collect_exact_conditional_sites(round_summary, flow_graph)
+
+    assert sites == ()
+
+
+def test_collect_exact_conditional_fork_sites_selects_two_way_semantic_site():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 2, (11, 12), (0,), 0, 0, ()),
+            11: BlockSnapshot(11, 1, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 1, (14,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 1, (40,), (11,), 0, 0, ()),
+            14: BlockSnapshot(14, 1, (50,), (12,), 0, 0, ()),
+            40: BlockSnapshot(40, 1, (21,), (13,), 0, 0, ()),
+            50: BlockSnapshot(50, 1, (22,), (14,), 0, 0, ()),
+            21: BlockSnapshot(21, 0, (), (40,), 0, 0, ()),
+            22: BlockSnapshot(22, 0, (), (50,), 0, 0, ()),
+            0: BlockSnapshot(0, 1, (10,), (), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    edge_a = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        ordered_path=(10, 11, 13),
+    )
+    edge_b = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10),
+        target_state=0x33333333,
+        target_entry_anchor=50,
+        ordered_path=(10, 12, 14),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(edge_a, edge_b)),
+        plannable_edges=(SimpleNamespace(edge=edge_a), SimpleNamespace(edge=edge_b)),
+    )
+
+    sites = collect_exact_conditional_fork_sites(round_summary, flow_graph)
+
+    assert len(sites) == 1
+    site = sites[0]
+    assert site.source_block == 10
+    assert {arm.first_hop for arm in site.arms} == {11, 12}
+    assert {arm.target_entry for arm in site.arms} == {40, 50}
 
 
 def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family(
@@ -308,7 +581,19 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
         "plan",
         lambda snap, strategies, inputs=None: (
             calls.append(("plan", snap, strategies, inputs)) or [],
-            object(),
+            PipelineProvenance(),
+        ),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "_capture_post_pipeline_diagnostic_snapshot",
+        lambda: calls.append("post_pipeline_snapshot"),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "_stabilize_sub7ffd_post_pipeline_bundle",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("recon-only no-plan path should not run bundle stabilization")
         ),
     )
 
@@ -316,6 +601,7 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
     assert ("begin_pass", 0) in calls
     assert ("detect", mba) in calls
     assert ("build_snapshot", mba, detection) in calls
+    assert "post_pipeline_snapshot" in calls
     plan_calls = [call for call in calls if isinstance(call, tuple) and call[0] == "plan"]
     assert len(plan_calls) == 1
     _, seen_snapshot, seen_strategies, _ = plan_calls[0]
@@ -323,6 +609,14 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
     assert seen_strategies == unflattener._family.strategies_for_maturity(
         ida_hexrays.MMAT_GLBOPT1
     )
+
+
+def test_hodur_unflattener_ignores_configured_max_passes():
+    unflattener = HodurUnflattener()
+
+    unflattener.configure({"max_passes": 7})
+
+    assert unflattener.max_passes == 1
 
 
 def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine_runtime(
@@ -805,7 +1099,6 @@ def test_hodur_strategy_family_records_execution_outcome():
     }
     assert family.resolved_transitions == frozenset({(0x10, 0x20)})
 
-
 def test_attach_fake_jump_fixes_to_flow_graph_metadata(monkeypatch):
     unflattener = HodurUnflattener()
     mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
@@ -869,6 +1162,52 @@ def test_attach_fake_jump_fixes_skips_conditional_chain_dispatchers(monkeypatch)
             get_or_create=lambda _mba: SimpleNamespace(
                 analyze=lambda: SimpleNamespace(is_conditional_chain=True),
                 is_dispatcher=lambda serial: serial == 2,
+            ),
+        ),
+    )
+
+    updated = unflattener._family.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
+
+    assert updated is flow_graph
+    assert updated.metadata == {}
+
+
+def test_attach_fake_jump_fixes_skips_cleanup_only_emulated_dispatcher_candidates(
+    monkeypatch,
+):
+    unflattener = HodurUnflattener()
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 1, (5,), (), 0, 0, ()),
+            5: BlockSnapshot(5, 1, (2,), (0,), 0, 0, ()),
+            6: BlockSnapshot(6, 1, (2,), (), 0, 0, ()),
+            2: BlockSnapshot(2, 4, (10, 20), (5, 6), 0, 0, ()),
+            10: BlockSnapshot(10, 0, (), (2,), 0, 0, ()),
+            20: BlockSnapshot(20, 0, (), (2,), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    monkeypatch.setattr(
+        hodur_family_module,
+        "collect_live_fake_jump_fixes",
+        lambda *_args, **_kwargs: (
+            FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10),
+            FakeJumpPredFix(fake_block=2, pred_block=6, new_target=20),
+        ),
+    )
+    monkeypatch.setattr(
+        hodur_family_module,
+        "DispatcherCache",
+        SimpleNamespace(
+            get_or_create=lambda _mba: SimpleNamespace(
+                analyze=lambda: SimpleNamespace(
+                    is_conditional_chain=False,
+                    dispatchers=(2,),
+                ),
+                is_dispatcher=lambda _serial: False,
             ),
         ),
     )
@@ -1155,6 +1494,40 @@ def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_set
     )
 
     assert blockers == {}
+
+
+def test_collect_post_apply_bst_cleanup_blockers_preserves_reason_without_preds():
+    fragment = PlanFragment(
+        strategy_name="linearized_flow_graph",
+        family="direct",
+        ownership=OwnershipScope(
+            blocks=frozenset(),
+            edges=frozenset(),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(0, 0, 0, 0.0),
+        risk_score=0.0,
+        metadata={
+            "allow_post_apply_bst_cleanup": False,
+            "residual_dispatcher_preds": (),
+            "post_apply_bst_cleanup_reason": "residual_dispatcher_redirects",
+        },
+        modifications=[],
+    )
+
+    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+        [fragment],
+        [
+            StageResult(
+                strategy_name="linearized_flow_graph",
+                success=True,
+                edits_applied=7,
+            ),
+        ],
+    )
+
+    assert blockers == {"linearized_flow_graph": ()}
 
 
 def test_collect_post_apply_bst_cleanup_blockers_prefers_live_residual_pred_sets():
