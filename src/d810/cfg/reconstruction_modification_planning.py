@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 
+from d810.core import logging
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     DuplicateAndRedirect,

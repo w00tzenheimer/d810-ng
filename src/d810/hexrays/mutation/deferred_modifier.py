@@ -636,7 +636,7 @@ class DeferredGraphModifier:
         self.last_apply_subphase = subphase
 
     def _maybe_scan_stale_block_refs(self, *, subphase: str) -> dict | None:
-        if not (_env_flag("D810_DEFERRED_SCAN_STALE_SERIALS") or logger.isEnabledFor(10)):
+        if not (_env_flag("D810_DEFERRED_SCAN_STALE_SERIALS") or logger.debug_on):
             return None
 
         qty = int(self.mba.qty)

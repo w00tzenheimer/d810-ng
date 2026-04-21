@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 
+from d810.core import logging
 from d810.cfg.shared_corridor import (
     first_boundary_index,
     first_shared_block_index,
