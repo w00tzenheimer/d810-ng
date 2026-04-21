@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
@@ -160,6 +161,24 @@ def _emulate_chain_exit(
     return None
 
 
+@algorithm_metadata(
+    algorithm_id="recon.collect_conditional_fork_resolution_candidates",
+    family="conditional_fork_resolution",
+    summary="Resolves both arms of conditional state forks from chain walk or emulation.",
+    use_cases=(
+        "Recover concrete taken/fallthrough targets when one handler writes two successor states.",
+        "Bridge dispatcher-ladder gaps with emulation when static chain walking cannot resolve a fork arm.",
+    ),
+    examples=(
+        "Turn a conditional state fork into a candidate with concrete taken and fallthrough handler targets.",
+        "Emulate a dispatcher ladder entry when one arm exits the ladder without a directly readable constant.",
+    ),
+    tags=("conditional", "fork", "emulation", "dispatcher", "reconstruction"),
+    related_paths=(
+        "src/d810/recon/flow/conditional_chain_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
+    ),
+)
 def collect_conditional_fork_resolution_candidates(
     snapshot: object,
     *,

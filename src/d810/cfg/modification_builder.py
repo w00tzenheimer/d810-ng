@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -81,6 +82,24 @@ from d810.cfg.lowering_scope import (  # noqa: E402
 
 
 @dataclass(frozen=True)
+@algorithm_metadata(
+    algorithm_id="cfg.modification_builder",
+    family="tail_block_duplication_and_redirect",
+    summary="Builds snapshot-backed GraphModification intents for direct CFG rewrites.",
+    use_cases=(
+        "Translate semantic lowering decisions into redirect, duplicate, and suffix-isolation edits.",
+        "Provide one consistent builder surface for direct, pred-split, and tail-duplication rewrites.",
+    ),
+    examples=(
+        "Redirect a resolved exact-state handoff with goto_redirect(source_block=78, target_block=14).",
+        "Privatize a shared tail with edge_redirect(..., via_pred=205) when a taken suffix must split from a terminal arm.",
+    ),
+    tags=("cfg", "redirect", "duplication", "pred-split", "lowering"),
+    related_paths=(
+        "src/d810/cfg/modification_builder.py",
+        "src/d810/cfg/graph_modification.py",
+    ),
+)
 class ModificationBuilder:
     """Construct GraphModification objects from strategy-local context."""
 
@@ -147,6 +166,7 @@ class ModificationBuilder:
         *,
         old_target: int | None = None,
         via_pred: int | None = None,
+        clone_until: int | None = None,
         rule_priority: int = 550,
     ) -> GraphModification:
         inferred_old_target = _infer_old_target(
@@ -171,6 +191,7 @@ class ModificationBuilder:
             old_target=inferred_old_target if inferred_old_target is not None else 0,
             new_target=target_block,
             via_pred=via_pred,
+            clone_until=clone_until,
             rule_priority=rule_priority,
         )
 

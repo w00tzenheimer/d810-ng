@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from d810.cfg.shared_corridor import (
     first_boundary_index,
     first_shared_block_index,
     is_shared_block,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +169,19 @@ def plan_reconstruction_emission(
         or shared_snapshot is None
         or via_pred not in tuple(shared_snapshot.preds)
     ):
+        logger.info(
+            "RECON DAG planner: missing_via_pred horizon=%d shared_block=%d via_pred=%s "
+            "shared_preds=%s horizon_index=%d first_shared_index=%s ordered_path=%s",
+            int(horizon_block),
+            int(shared_block),
+            (int(via_pred) if via_pred is not None else None),
+            tuple(int(pred) for pred in getattr(shared_snapshot, "preds", ()))
+            if shared_snapshot is not None
+            else (),
+            int(horizon_index),
+            (int(first_shared_index) if first_shared_index is not None else None),
+            tuple(int(serial) for serial in ordered_path),
+        )
         return ReconstructionEmissionDecision(
             accepted=False,
             first_shared_block=shared_block,

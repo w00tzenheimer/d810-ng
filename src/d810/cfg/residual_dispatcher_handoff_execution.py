@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.core.typing import Callable, Mapping
 
 from d810.cfg.lowering_selector import (
@@ -30,6 +31,9 @@ from d810.cfg.residual_handoff_planning import (
     ResidualPredSplitAttempt,
 )
 
+
+logger = logging.getLogger("D810.cfg.residual_dispatcher_handoff_execution", logging.DEBUG)
+
 @dataclass(frozen=True, slots=True)
 class ResidualDispatcherHandoffExecutionContext:
     dag: object
@@ -53,6 +57,7 @@ class ResidualDispatcherHandoffExecutionContext:
     resolve_synthesized_handoff_target: Callable[..., tuple[int, int] | None]
     resolve_projected_path_tail_target: Callable[..., tuple[int, int] | None]
     resolve_immediate_handoff_target: Callable[..., tuple[int, int] | None]
+    resolve_effective_target_entry: Callable[..., object] | None
 
 
 @dataclass(slots=True)
@@ -102,6 +107,7 @@ def build_residual_dispatcher_handoff_execution_context(
     resolve_synthesized_handoff_target: Callable[..., tuple[int, int] | None],
     resolve_projected_path_tail_target: Callable[..., tuple[int, int] | None],
     resolve_immediate_handoff_target: Callable[..., tuple[int, int] | None],
+    resolve_effective_target_entry: Callable[..., object] | None = None,
 ) -> ResidualDispatcherHandoffExecutionContext:
     residual_preds = collect_residual_dispatcher_predecessors(
         projected_flow_graph,
@@ -136,7 +142,79 @@ def build_residual_dispatcher_handoff_execution_context(
         resolve_synthesized_handoff_target=resolve_synthesized_handoff_target,
         resolve_projected_path_tail_target=resolve_projected_path_tail_target,
         resolve_immediate_handoff_target=resolve_immediate_handoff_target,
+        resolve_effective_target_entry=resolve_effective_target_entry,
     )
+
+
+def _iter_matching_handoff_edges(
+    dag: object,
+    *,
+    source_block: int,
+    state_value: int,
+):
+    raw_state_value = int(state_value) & 0xFFFFFFFF
+    terminal_matches: list[object] = []
+    source_matches: list[object] = []
+    for edge in getattr(dag, "edges", ()) or ():
+        target_state = getattr(edge, "target_state", None)
+        if target_state is None or (int(target_state) & 0xFFFFFFFF) != raw_state_value:
+            continue
+        ordered_path = tuple(
+            int(block_serial) for block_serial in (getattr(edge, "ordered_path", ()) or ())
+        )
+        if ordered_path and int(ordered_path[-1]) == int(source_block):
+            terminal_matches.append(edge)
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        if source_anchor is not None and int(getattr(source_anchor, "block_serial", -1)) == int(source_block):
+            source_matches.append(edge)
+    return tuple(terminal_matches) + tuple(source_matches)
+
+
+def _normalize_residual_handoff(
+    context: ResidualDispatcherHandoffExecutionContext,
+    *,
+    source_block: int,
+    handoff: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    if (
+        handoff is None
+        or context.resolve_effective_target_entry is None
+        or context.analysis_mba is None
+    ):
+        return handoff
+
+    state_value, target_entry = handoff
+    for edge in _iter_matching_handoff_edges(
+        context.dag,
+        source_block=int(source_block),
+        state_value=int(state_value),
+    ):
+        resolution = context.resolve_effective_target_entry(
+            context.dag,
+            edge,
+            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            state_var_stkoff=context.state_var_stkoff,
+            dispatcher_lookup=context.dispatcher_lookup,
+            dispatcher=context.dispatcher,
+            mba=context.analysis_mba,
+        )
+        resolved_target_entry = getattr(resolution, "target_entry", None)
+        if resolved_target_entry is None:
+            continue
+        normalized_target = int(resolved_target_entry)
+        if normalized_target == int(source_block):
+            continue
+        if normalized_target != int(target_entry):
+            logger.info(
+                "normalized residual handoff %d: state=0x%08X target %d -> %d",
+                int(source_block),
+                int(state_value) & 0xFFFFFFFF,
+                int(target_entry),
+                normalized_target,
+            )
+        return (int(state_value), normalized_target)
+    return handoff
 
 
 def execute_residual_dispatcher_handoffs(
@@ -176,6 +254,29 @@ def execute_residual_dispatcher_handoffs(
             dispatcher=context.dispatcher,
             analysis_mba=context.analysis_mba,
             live_mba=context.live_mba,
+        )
+        logger.info(
+            "residual handoff facts %d: preds=%s state_write=%s assignment=%s projected_snapshot=%s "
+            "immediate=%s synthesized=%s live_immediate=%s live_synthesized=%s successor=%s "
+            "live_successor=%s projected_path=%s chosen=%s",
+            int(source_block),
+            tuple(int(pred) for pred in current_preds),
+            bool(handoff_facts.source_has_state_write),
+            handoff_facts.assignment_map_handoff,
+            handoff_facts.projected_snapshot_handoff,
+            handoff_facts.immediate_handoff,
+            handoff_facts.synthesized_handoff,
+            handoff_facts.live_immediate_handoff,
+            handoff_facts.live_synthesized_handoff,
+            handoff_facts.successor_handoff,
+            handoff_facts.live_successor_handoff,
+            handoff_facts.projected_path_handoff,
+            handoff_facts.handoff,
+        )
+        effective_handoff = _normalize_residual_handoff(
+            context,
+            source_block=int(source_block),
+            handoff=handoff_facts.handoff,
         )
 
         prefix_before_attempts: list[ResidualPrefixAttempt] = []
@@ -252,7 +353,7 @@ def execute_residual_dispatcher_handoffs(
         goto_attempt: ResidualGotoAttempt | None = None
         prefix_after_attempts: list[ResidualPrefixAttempt] = []
 
-        if handoff_facts.handoff is None:
+        if effective_handoff is None:
             for via_pred in current_preds:
                 pred_handoff = None
                 if handoff_facts.source_has_state_write:
@@ -357,7 +458,7 @@ def execute_residual_dispatcher_handoffs(
                     )
                 )
         else:
-            state_value, target_entry = handoff_facts.handoff
+            state_value, target_entry = effective_handoff
             goto_attempt = build_residual_goto_attempt(
                 ResidualGotoAttemptBuildContext(
                     target_entry=int(target_entry),
@@ -506,6 +607,32 @@ def execute_residual_dispatcher_handoffs(
                 source_plan=source_plan,
             )
         )
+        logger.info(
+            "residual handoff plan %d: accepted=%s kind=%s redirected=%d reason=%s pred_splits=%d goto=%s prefix_before=%d prefix_after=%d",
+            int(source_block),
+            bool(source_plan.accepted),
+            source_plan.kind,
+            int(source_plan.redirected_count),
+            source_plan.rejection_reason,
+            len(pred_split_attempts),
+            None
+            if goto_attempt is None
+            else (int(goto_attempt.state_value), int(goto_attempt.target_entry)),
+            len(prefix_before_attempts),
+            len(prefix_after_attempts),
+        )
+        if not source_plan.accepted:
+            logger.info(
+                "residual handoff plan rejected %d: reason=%s pred_splits=%d goto=%s prefix_before=%d prefix_after=%d",
+                int(source_block),
+                source_plan.rejection_reason,
+                len(pred_split_attempts),
+                None
+                if goto_attempt is None
+                else (int(goto_attempt.state_value), int(goto_attempt.target_entry)),
+                len(prefix_before_attempts),
+                len(prefix_after_attempts),
+            )
         if not source_plan.accepted:
             continue
 
@@ -561,6 +688,7 @@ def emit_residual_dispatcher_handoffs(
     resolve_synthesized_handoff_target=None,
     resolve_projected_path_tail_target=None,
     resolve_immediate_handoff_target=None,
+    resolve_effective_target_entry=None,
 ) -> ResidualDispatcherHandoffExecutionResult:
     return execute_residual_dispatcher_handoffs(
         build_residual_dispatcher_handoff_execution_context(
@@ -585,6 +713,7 @@ def emit_residual_dispatcher_handoffs(
             resolve_synthesized_handoff_target=resolve_synthesized_handoff_target,
             resolve_projected_path_tail_target=resolve_projected_path_tail_target,
             resolve_immediate_handoff_target=resolve_immediate_handoff_target,
+            resolve_effective_target_entry=resolve_effective_target_entry,
         ),
         state=ResidualDispatcherHandoffMutableState(
             modifications=modifications,

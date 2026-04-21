@@ -75,6 +75,20 @@ def has_prior_branch_cut_for_state(
         path_index = edge.ordered_path.index(source_block)
         if path_index <= 0:
             continue
+        try:
+            branch_index = edge.ordered_path.index(edge.source_anchor.block_serial)
+        except ValueError:
+            branch_index = None
+        if (
+            branch_index is not None
+            and path_index == len(edge.ordered_path) - 1
+            and path_index == branch_index + 1
+        ):
+            # Allow residual cleanup on the immediate one-way leaf tail of a
+            # conditional corridor. These blocks still carry the raw state
+            # write, so suppressing the residual handoff there prevents the
+            # semantic-entry redirect the user actually wants.
+            continue
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
@@ -112,8 +126,23 @@ def is_shared_suffix_conditional_tail(
             continue
         if source_block not in edge.ordered_path:
             continue
-        if edge.ordered_path.index(source_block) > 0:
-            return True
+        path_index = edge.ordered_path.index(source_block)
+        if path_index <= 0:
+            continue
+        try:
+            branch_index = edge.ordered_path.index(edge.source_anchor.block_serial)
+        except ValueError:
+            branch_index = None
+        if (
+            branch_index is not None
+            and path_index == len(edge.ordered_path) - 1
+            and path_index == branch_index + 1
+        ):
+            # Immediate one-way leaf tails still carry the raw state write for
+            # the corridor arm. They should be eligible for residual cleanup
+            # instead of being treated as a shared-suffix blocker.
+            continue
+        return True
     return False
 
 
@@ -126,10 +155,26 @@ def can_rewrite_shared_suffix_family_fallback(
     bst_node_blocks: set[int],
     flow_graph: object | None = None,
 ) -> bool:
-    """Return whether a one-pred shared-suffix tail may use family fallback."""
-    if len(current_preds) != 1:
+    """Return whether a shared-suffix feeder tail may use family fallback."""
+    current_preds = tuple(int(pred) for pred in current_preds)
+    if not current_preds:
         return False
-    via_pred = current_preds[0]
+    if len(current_preds) == 1:
+        via_pred = current_preds[0]
+    else:
+        if flow_graph is None:
+            return False
+        for pred_serial in current_preds:
+            try:
+                pred_block = flow_graph.get_block(pred_serial)
+            except Exception:
+                pred_block = None
+            if pred_block is None:
+                return False
+            pred_succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+            if pred_succs != (int(source_block),):
+                return False
+        return True
     expected_fallback = resolve_owner_family_fallback_entry(
         dag,
         via_pred=via_pred,
@@ -146,6 +191,9 @@ def can_rewrite_shared_suffix_family_fallback(
         via_pred_block = None
     if via_pred_block is None:
         return False
+    via_pred_succs = tuple(int(succ) for succ in getattr(via_pred_block, "succs", ()))
+    if via_pred_succs == (int(source_block),):
+        return True
     for pred_serial in tuple(getattr(via_pred_block, "preds", ())):
         try:
             pred_block = flow_graph.get_block(pred_serial)

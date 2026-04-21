@@ -34,6 +34,8 @@ class ResidualSourceHandoffFacts:
     synthesized_handoff: tuple[int, int] | None
     live_immediate_handoff: tuple[int, int] | None
     live_synthesized_handoff: tuple[int, int] | None
+    successor_handoff: tuple[int, int] | None
+    live_successor_handoff: tuple[int, int] | None
     source_level_handoff: tuple[int, int] | None
     projected_path_handoff: tuple[int, int] | None
     handoff: tuple[int, int] | None
@@ -102,6 +104,29 @@ def dispatcher_exact_state_target(
         if lo == state_value and hi - lo == 1:
             return int(getattr(row, "target", 0))
     return None
+
+
+def supplemental_selected_entry_for_state(
+    dag: LinearizedStateDag,
+    state_value: int | None,
+) -> int | None:
+    """Return a DAG-selected supplemental semantic entry for ``state_value``."""
+    if state_value is None:
+        return None
+    raw_value = int(state_value) & 0xFFFFFFFF
+    for candidate_state, anchor in getattr(dag, "supplemental_selected_entries", ()) or ():
+        if (int(candidate_state) & 0xFFFFFFFF) == raw_value:
+            return int(anchor)
+    return None
+
+
+def is_transient_corridor_entry(
+    dag: LinearizedStateDag,
+    block_serial: int,
+) -> bool:
+    """Return whether ``block_serial`` is a transient corridor entry in the DAG."""
+    transient_entries = getattr(dag, "transient_entry_blocks", ()) or ()
+    return int(block_serial) in {int(block) for block in transient_entries}
 
 
 def has_live_exact_residual_handoff(
@@ -418,7 +443,15 @@ def resolve_normalized_alias_entry_for_state(
         return None
 
     raw_value = state_value & 0xFFFFFFFF
-    best_match: tuple[int, int, int, int] | None = None
+    node_by_key = {}
+    for node in dag.nodes:
+        key = getattr(node, "key", None)
+        try:
+            hash(key)
+        except Exception:
+            continue
+        node_by_key[key] = node
+    best_match: tuple[int, int, int, int, int] | None = None
     best_entry: int | None = None
 
     for node in dag.nodes:
@@ -431,9 +464,15 @@ def resolve_normalized_alias_entry_for_state(
         )
         if entry is None or entry == source_block:
             continue
-        if is_raw_state_label(node.state_label, raw_value):
+        raw_exact_node = (
+            node.kind == StateNodeKind.EXACT
+            and node.key.state_const == raw_value
+            and is_raw_state_label(node.state_label, raw_value)
+        )
+        if is_raw_state_label(node.state_label, raw_value) and not raw_exact_node:
             continue
         score = (
+            2 if raw_exact_node else 0,
             1 if node.state_label.endswith("_fallback") else 0,
             1 if entry in node.exclusive_blocks else 0,
             1 if entry in node.owned_blocks else 0,
@@ -453,13 +492,22 @@ def resolve_normalized_alias_entry_for_state(
         )
         if target_entry is None:
             continue
-        if is_raw_state_label(edge.target_label, raw_value):
+        target_node = node_by_key.get(edge.target_key) if edge.target_key is not None else None
+        raw_exact_target = (
+            target_node is not None
+            and target_node.kind == StateNodeKind.EXACT
+            and target_node.key.state_const == raw_value
+            and target_entry == target_node.entry_anchor
+            and is_raw_state_label(edge.target_label or "", raw_value)
+        )
+        if is_raw_state_label(edge.target_label, raw_value) and not raw_exact_target:
             continue
         on_path = source_block is not None and source_block in edge.ordered_path
         source_match = (
             source_block is not None and edge.source_anchor.block_serial == source_block
         )
         score = (
+            2 if raw_exact_target else 0,
             2 if edge.target_label.endswith("_fallback") else 0,
             1 if on_path else 0,
             1 if source_match else 0,
@@ -914,6 +962,40 @@ def resolve_projected_path_tail_target(
     return best_target
 
 
+def _is_immediate_conditional_leaf_tail_for_state(
+    dag: LinearizedStateDag,
+    *,
+    source_block: int,
+    state_value: int,
+    predecessor_hints: tuple[int, ...],
+) -> bool:
+    raw_value = int(state_value) & 0xFFFFFFFF
+    pred_hints = tuple(int(pred) for pred in predecessor_hints)
+    for edge in dag.edges:
+        if edge.kind != SemanticEdgeKind.CONDITIONAL_TRANSITION:
+            continue
+        if edge.target_state is None or (int(edge.target_state) & 0xFFFFFFFF) != raw_value:
+            continue
+        if source_block not in edge.ordered_path:
+            continue
+        path_index = edge.ordered_path.index(source_block)
+        if path_index <= 0 or path_index != len(edge.ordered_path) - 1:
+            continue
+        if edge.source_anchor.kind.name != "CONDITIONAL_BRANCH":
+            continue
+        try:
+            branch_index = edge.ordered_path.index(edge.source_anchor.block_serial)
+        except ValueError:
+            continue
+        if path_index != branch_index + 1:
+            continue
+        path_pred = int(edge.ordered_path[path_index - 1])
+        if pred_hints and path_pred not in pred_hints:
+            continue
+        return True
+    return False
+
+
 def iter_residual_prefix_handoffs(
     dag: LinearizedStateDag,
     *,
@@ -978,6 +1060,24 @@ def iter_live_block_insns(block: object):
         yield insn
         insn = getattr(insn, "next", None)
         seen += 1
+
+
+def iter_live_block_succs(block: object) -> tuple[int, ...]:
+    """Return block successors from a live mblock-like object."""
+    succset = getattr(block, "succset", None)
+    if succset is not None:
+        return tuple(int(succ) for succ in succset)
+    succs = getattr(block, "succs", None)
+    if succs is not None:
+        return tuple(int(succ) for succ in succs)
+    nsucc = getattr(block, "nsucc", None)
+    succ = getattr(block, "succ", None)
+    if callable(nsucc) and callable(succ):
+        try:
+            return tuple(int(succ(i)) for i in range(int(nsucc())))
+        except Exception:
+            return ()
+    return ()
 
 
 def mop_stkoff(mop: object | None) -> int | None:
@@ -1487,6 +1587,72 @@ def resolve_synthesized_handoff_target(
     return None
 
 
+def resolve_single_successor_handoff_target(
+    dag: LinearizedStateDag,
+    mba: object,
+    block_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    bst_node_blocks: set[int],
+    dispatcher_lookup: object | None,
+    dispatcher: object | None = None,
+    resolve_state_via_valranges: object | None = None,
+) -> tuple[int, int] | None:
+    """Resolve a residual source through a single successor state-write feeder."""
+    if mba is None:
+        return None
+    try:
+        block = mba.get_mblock(block_serial)
+    except Exception:
+        return None
+    if block is None:
+        return None
+
+    succs = iter_live_block_succs(block)
+    if len(succs) != 1:
+        return None
+    successor_serial = int(succs[0])
+    if successor_serial == int(block_serial) or successor_serial in bst_node_blocks:
+        return None
+
+    handoff = resolve_immediate_handoff_target(
+        dag,
+        mba,
+        successor_serial,
+        state_var_stkoff=state_var_stkoff,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
+    )
+    if handoff is None:
+        handoff = resolve_synthesized_handoff_target(
+            dag,
+            mba,
+            successor_serial,
+            state_var_stkoff=state_var_stkoff,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            via_pred=int(block_serial),
+            resolve_state_via_valranges=resolve_state_via_valranges,
+        )
+    if handoff is None:
+        handoff = resolve_projected_path_tail_target(
+            dag,
+            source_block=successor_serial,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            predecessor_hints=(int(block_serial),),
+            require_predecessor_match=True,
+        )
+    if handoff is None:
+        return None
+
+    state_value, target_entry = handoff
+    if int(target_entry) == int(block_serial):
+        return None
+    return (int(state_value), int(target_entry))
+
+
 def _is_backward_same_corridor_target(
     edge: StateDagEdge,
     *,
@@ -1745,6 +1911,8 @@ def collect_residual_source_handoff_facts(
 
     live_immediate_handoff = None
     live_synthesized_handoff = None
+    successor_handoff = None
+    live_successor_handoff = None
     if live_mba is not None and analysis_mba is not live_mba:
         live_immediate_handoff = resolve_immediate_handoff_target(
             dag,
@@ -1782,6 +1950,36 @@ def collect_residual_source_handoff_facts(
         or live_immediate_handoff
         or live_synthesized_handoff
     )
+    if source_level_handoff is None:
+        successor_handoff = resolve_single_successor_handoff_target(
+            dag,
+            analysis_mba,
+            source_block,
+            state_var_stkoff=state_var_stkoff,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher_lookup=dispatcher_lookup,
+            dispatcher=dispatcher,
+        )
+        if (
+            successor_handoff is None
+            and live_mba is not None
+            and analysis_mba is not live_mba
+        ):
+            live_successor_handoff = resolve_single_successor_handoff_target(
+                dag,
+                live_mba,
+                source_block,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+            )
+
+    source_level_handoff = (
+        source_level_handoff
+        or successor_handoff
+        or live_successor_handoff
+    )
     projected_path_handoff = None
     if not (
         source_has_state_write
@@ -1796,11 +1994,29 @@ def collect_residual_source_handoff_facts(
             predecessor_hints=current_preds if current_preds else None,
         )
 
+    prefer_projected_leaf_handoff = (
+        projected_path_handoff is not None
+        and source_level_handoff is not None
+        and (int(projected_path_handoff[0]) & 0xFFFFFFFF)
+        == (int(source_level_handoff[0]) & 0xFFFFFFFF)
+        and int(projected_path_handoff[1]) != int(source_level_handoff[1])
+        and _is_immediate_conditional_leaf_tail_for_state(
+            dag,
+            source_block=int(source_block),
+            state_value=int(projected_path_handoff[0]),
+            predecessor_hints=current_preds,
+        )
+    )
+
     handoff = (
-        assignment_map_handoff
-        or projected_snapshot_handoff
-        or source_level_handoff
-        or projected_path_handoff
+        projected_path_handoff
+        if prefer_projected_leaf_handoff
+        else (
+            assignment_map_handoff
+            or projected_snapshot_handoff
+            or source_level_handoff
+            or projected_path_handoff
+        )
     )
     return ResidualSourceHandoffFacts(
         source_block=int(source_block),
@@ -1812,6 +2028,8 @@ def collect_residual_source_handoff_facts(
         synthesized_handoff=synthesized_handoff,
         live_immediate_handoff=live_immediate_handoff,
         live_synthesized_handoff=live_synthesized_handoff,
+        successor_handoff=successor_handoff,
+        live_successor_handoff=live_successor_handoff,
         source_level_handoff=source_level_handoff,
         projected_path_handoff=projected_path_handoff,
         handoff=handoff,
@@ -1825,6 +2043,7 @@ __all__ = [
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
     "has_live_exact_residual_handoff",
+    "is_transient_corridor_entry",
     "block_has_state_var_write",
     "is_raw_state_label",
     "is_state_var_dest",
@@ -1853,4 +2072,5 @@ __all__ = [
     "resolve_singleton_state_write_value",
     "resolve_synthesized_handoff_target",
     "state_has_semantic_support",
+    "supplemental_selected_entry_for_state",
 ]
