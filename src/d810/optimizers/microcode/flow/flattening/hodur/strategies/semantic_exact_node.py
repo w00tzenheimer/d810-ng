@@ -28,7 +28,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.dag_redirect_execution import emit_dag_redirect
+from d810.cfg.dag_redirect_emission import emit_dag_redirect
 from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate

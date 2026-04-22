@@ -19,11 +19,11 @@ from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
     simulate_edits,
 )
-from d810.cfg.dag_redirect_execution import (
+from d810.cfg.dag_redirect_emission import (
     emit_dag_redirect,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.dispatcher_backedge_disconnect_execution import (
+from d810.cfg.dispatcher_backedge_disconnect_emission import (
     disconnect_bst_comparison_nodes,
 )
 from d810.cfg.graph_modification import (
@@ -52,16 +52,16 @@ from d810.cfg.semantic_region_lowering import (
     collect_admissible_region_lowering_sites,
     override_exit_sites_with_child_region_entries,
 )
-from d810.cfg.path_tail_redirect_execution import (
+from d810.cfg.path_tail_redirect_emission import (
     emit_path_tail_redirect,
 )
 from d810.cfg.projected_alias_normalization_planning import (
     normalize_projected_alias_handoffs,
 )
-from d810.cfg.residual_branch_anchor_execution import (
+from d810.cfg.residual_branch_anchor_emission import (
     emit_residual_branch_anchor_handoff,
 )
-from d810.cfg.residual_dispatcher_handoff_execution import (
+from d810.cfg.residual_dispatcher_handoff_emission import (
     emit_residual_dispatcher_handoffs,
 )
 from d810.core import logging
@@ -149,7 +149,7 @@ from d810.recon.flow.state_machine_analysis import (
 from d810.cfg.reconstruction_execution import (
     execute_primary_reconstruction_modifications,
 )
-from d810.cfg.reconstruction_postprocess_execution import (
+from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.recon.flow.transition_report import (

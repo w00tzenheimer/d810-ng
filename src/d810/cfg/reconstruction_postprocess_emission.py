@@ -12,7 +12,7 @@ from d810.cfg.reconstruction_execution import (
 from d810.cfg.reconstruction_postprocess_planning import (
     plan_reconstruction_postprocess_modifications,
 )
-from d810.cfg.reconstruction_rescue_execution import (
+from d810.cfg.reconstruction_rescue_emission import (
     execute_reconstruction_entry_island_rescues,
     execute_reconstruction_late_island_rescues,
 )

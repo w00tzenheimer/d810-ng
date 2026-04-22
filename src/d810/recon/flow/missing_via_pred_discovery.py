@@ -6,7 +6,7 @@ matching edges per ``force_edge``, and surfaces the ``DOWNSTREAM_HEAD_RESCUE``
 special case as a typed plan input for the emitter.
 
 No IDA runtime calls, no flow-graph mutations, no ``ModificationBuilder``
-invocations. The emitter side (``d810.cfg.reconstruction_missing_via_pred_execution``)
+invocations. The emitter side (``d810.cfg.reconstruction_missing_via_pred_emission``)
 consumes the plan produced here and runs the actual ``plan_direct_reconstruction_modifications``
 + ``plan_passthrough_reconstruction_modifications`` pair.
 """
