@@ -146,7 +146,7 @@ from d810.recon.flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
     run_snapshot_constant_fixpoint,
 )
-from d810.cfg.reconstruction_execution import (
+from d810.cfg.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
 )
 from d810.cfg.reconstruction_postprocess_emission import (

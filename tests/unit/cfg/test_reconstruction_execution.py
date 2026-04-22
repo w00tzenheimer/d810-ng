@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-import d810.cfg.reconstruction_execution as exec_mod
+import d810.cfg.reconstruction_emission as exec_mod
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -13,7 +13,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.cfg.reconstruction_execution import (
+from d810.cfg.reconstruction_emission import (
     apply_shared_group_reachability_fallback,
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
