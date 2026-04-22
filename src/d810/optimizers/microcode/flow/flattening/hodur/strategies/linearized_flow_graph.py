@@ -1521,6 +1521,7 @@ class LinearizedFlowGraphStrategy:
                     state_var_stkoff=dag_setup.state_var_stkoff,
                     dispatcher_serial=int(snapshot.bst_dispatcher_serial),
                     dispatcher=dag_setup.dispatcher,
+                    snapshot=snapshot,
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
@@ -1542,6 +1543,7 @@ class LinearizedFlowGraphStrategy:
         state_var_stkoff: int | None,
         dispatcher_serial: int,
         dispatcher: object | None,
+        snapshot: object | None = None,
     ) -> LinearizedFlowGraphStructuredRegionResult:
         del cls
         if state_var_stkoff is None:
@@ -1554,9 +1556,19 @@ class LinearizedFlowGraphStrategy:
         dispatcher_region = set(int(block) for block in dag.bst_node_blocks)
         if int(dispatcher_serial) >= 0:
             dispatcher_region.add(int(dispatcher_serial))
-        constant_result = run_snapshot_constant_fixpoint(
-            flow_graph,
-            int(state_var_stkoff),
+        # B1 step 2: constant_fixpoint is a pass-invariant (computed from
+        # pass-entry flow_graph + state_var_stkoff; post-round CFG changes
+        # don't alter state-constant propagation). Prefer the canonical
+        # pass-entry value from snapshot.discovery when available, avoiding
+        # one run_snapshot_constant_fixpoint() call per region per round.
+        ctx = getattr(snapshot, "discovery", None) if snapshot is not None else None
+        constant_result = (
+            ctx.constant_fixpoint
+            if ctx is not None and ctx.constant_fixpoint is not None
+            else run_snapshot_constant_fixpoint(
+                flow_graph,
+                int(state_var_stkoff),
+            )
         )
         shared_suffix_blocks = collect_shared_suffix_blocks(dag)
         allowed_pairs = {
@@ -2031,6 +2043,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
                     state_var_stkoff=dag_setup.state_var_stkoff,
                     dispatcher_serial=int(snapshot.bst_dispatcher_serial),
                     dispatcher=dag_setup.dispatcher,
+                    snapshot=snapshot,
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
