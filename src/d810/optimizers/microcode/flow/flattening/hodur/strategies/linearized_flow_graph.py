@@ -152,6 +152,9 @@ from d810.recon.flow.reconstruction_candidate_builder import (
 from d810.recon.flow.reconstruction_discovery import (
     collect_shared_suffix_blocks,
 )
+from d810.recon.flow.residual_alias_discovery import (
+    discover_residual_alias_overrides,
+)
 from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
@@ -2153,6 +2156,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             build_reconstruction_candidate=build_reconstruction_candidate,
             resolve_effective_target_entry=self._resolve_effective_target_entry,
             build_projected_mba=build_mba_view_from_flow_graph,
+            discover_residual_alias_overrides_fn=discover_residual_alias_overrides,
         )
 
         if len(modifications) == original_modification_count:

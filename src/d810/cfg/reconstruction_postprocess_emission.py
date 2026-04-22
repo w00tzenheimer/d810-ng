@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import os
+from dataclasses import dataclass
 
 from d810.core import logging
+from d810.core.typing import TYPE_CHECKING, Callable
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.plan import compile_patch_plan
-from d810.cfg.reconstruction_emission import (
-    execute_primary_reconstruction_modifications,
-)
 from d810.cfg.reconstruction_postprocess_planning import (
     plan_reconstruction_postprocess_modifications,
 )
@@ -16,7 +15,18 @@ from d810.cfg.reconstruction_rescue_emission import (
     execute_reconstruction_entry_island_rescues,
     execute_reconstruction_late_island_rescues,
 )
+from d810.cfg.residual_alias_emission import emit_residual_alias_modifications
 from d810.cfg.terminal_family_split import plan_terminal_family_splits
+
+if TYPE_CHECKING:
+    from d810.recon.flow.residual_alias_discovery import (
+        ResidualAliasDiscoveryResult,
+    )
+
+# Callback signature for the recon-layer residual-alias discovery producer.
+# Injected by the optimizers/hodur caller to avoid a cfg -> recon runtime
+# import (which the layered-architecture import-linter contract forbids).
+DiscoverResidualAliasOverridesFn = Callable[..., "ResidualAliasDiscoveryResult"]
 
 logger = logging.getLogger(
     "D810.cfg.reconstruction_postprocess_execution",
@@ -133,77 +143,7 @@ def _collect_shared_suffix_blocks(dag) -> set[int]:
     return shared_blocks
 
 
-def _is_raw_state_label(label: str, state_value: int) -> bool:
-    if label.endswith("_fallback"):
-        return False
-    try:
-        return int(label, 16) == (state_value & 0xFFFFFFFF)
-    except Exception:
-        return False
-
-
-def _iter_residual_raw_alias_edges(
-    dag,
-    *,
-    residual_dispatcher_preds: tuple[int, ...],
-):
-    residual_set = {int(serial) for serial in residual_dispatcher_preds}
-    seen: set[tuple[int, int, tuple[int, ...], int | None]] = set()
-    for edge in getattr(dag, "edges", ()) or ():
-        target_state = getattr(edge, "target_state", None)
-        target_label = str(getattr(edge, "target_label", "") or "")
-        if target_state is None or not _is_raw_state_label(target_label, int(target_state)):
-            continue
-        ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
-        source_block = None
-        if ordered_path and int(ordered_path[-1]) in residual_set:
-            source_block = int(ordered_path[-1])
-        else:
-            source_anchor = getattr(edge, "source_anchor", None)
-            anchor_block = getattr(source_anchor, "block_serial", None)
-            if anchor_block is not None and int(anchor_block) in residual_set:
-                source_block = int(anchor_block)
-            elif not residual_set:
-                # After region lowering, dispatcher predecessors may already be gone
-                # even though a raw alias still survives on a post-source exit tail.
-                # In that case, only admit tails that extend past the source anchor;
-                # this keeps the late phase narrow while still catching shapes like
-                # blk[15].fallthrough -> blk[16] -> 0x4C77464F.
-                if ordered_path and anchor_block is not None and int(ordered_path[-1]) != int(anchor_block):
-                    source_block = int(ordered_path[-1])
-        if source_block is None:
-            continue
-        key = (
-            int(source_block),
-            int(target_state) & 0xFFFFFFFF,
-            ordered_path,
-            int(getattr(edge, "target_entry_anchor", -1))
-            if getattr(edge, "target_entry_anchor", None) is not None
-            else None,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        yield int(source_block), edge
-
-
-def _resolve_target_label_for_entry(
-    dag,
-    *,
-    target_entry: int,
-    fallback_label: str,
-) -> str:
-    for node in getattr(dag, "nodes", ()) or ():
-        entry_anchor = getattr(node, "entry_anchor", None)
-        if entry_anchor is None or int(entry_anchor) != int(target_entry):
-            continue
-        label = str(getattr(node, "state_label", "") or "")
-        if label:
-            return label
-    return fallback_label
-
-
-def _emit_residual_raw_alias_reconstruction_overrides(
+def emit_residual_alias_overrides(
     *,
     dag,
     flow_graph,
@@ -220,8 +160,27 @@ def _emit_residual_raw_alias_reconstruction_overrides(
     modifications: list,
     owned_blocks: set[int],
     owned_edges: set[tuple[int, int]],
+    discover_overrides_fn: DiscoverResidualAliasOverridesFn | None = None,
 ) -> int:
-    if state_var_stkoff is None or build_reconstruction_candidate is None:
+    """Residual raw-alias reconstruction solver (public entry point).
+
+    Thin facade: delegates DAG-walk classification to the injected
+    ``discover_overrides_fn`` (wired to
+    :func:`d810.recon.flow.residual_alias_discovery.discover_residual_alias_overrides`
+    by the optimizers caller) and modification emission to
+    :func:`d810.cfg.residual_alias_emission.emit_residual_alias_modifications`.
+    Callback injection avoids a cfg -> recon runtime import, keeping the
+    layered-architecture import-linter contract green.
+
+    Returns ``0`` when ``discover_overrides_fn`` is None (no recon wiring
+    supplied), matching the historical early-exit when
+    ``build_reconstruction_candidate`` is None.
+    """
+    if (
+        state_var_stkoff is None
+        or build_reconstruction_candidate is None
+        or discover_overrides_fn is None
+    ):
         return 0
 
     node_by_key = _build_node_by_key(dag)
@@ -229,104 +188,32 @@ def _emit_residual_raw_alias_reconstruction_overrides(
     bst_node_blocks = set(int(serial) for serial in getattr(dag, "bst_node_blocks", ()) or ())
     bst_node_blocks.add(int(dispatcher_serial))
 
-    raw_candidates: list[object] = []
-    seen_candidates: set[tuple[str, int, int, int | None, int | None, tuple[int, ...]]] = set()
-
-    for source_block, edge in _iter_residual_raw_alias_edges(
-        dag,
+    discovery = discover_overrides_fn(
+        dag=dag,
+        flow_graph=flow_graph,
+        dispatcher_region=dispatcher_region,
+        dispatcher_serial=dispatcher_serial,
+        state_var_stkoff=state_var_stkoff,
+        constant_result=constant_result,
+        resolve_effective_target_entry=resolve_effective_target_entry,
+        build_reconstruction_candidate=build_reconstruction_candidate,
+        analysis_mba=analysis_mba,
+        dispatcher_lookup=dispatcher_lookup,
+        dispatcher=dispatcher,
         residual_dispatcher_preds=residual_dispatcher_preds,
-    ):
-        target_entry = getattr(edge, "target_entry_anchor", None)
-        if (
-            resolve_effective_target_entry is not None
-            and analysis_mba is not None
-        ):
-            resolution = resolve_effective_target_entry(
-                dag,
-                edge,
-                bst_node_blocks=bst_node_blocks,
-                state_var_stkoff=int(state_var_stkoff),
-                dispatcher_lookup=dispatcher_lookup,
-                dispatcher=dispatcher,
-                mba=analysis_mba,
-            )
-            resolved_target_entry = getattr(resolution, "target_entry", None)
-            if resolved_target_entry is not None:
-                target_entry = resolved_target_entry
-        if target_entry is None:
-            continue
-        normalized_target = int(target_entry)
-        original_target_entry = getattr(edge, "target_entry_anchor", None)
-        if (
-            normalized_target == int(source_block)
-            or normalized_target in bst_node_blocks
-        ):
-            continue
-        if (
-            original_target_entry is not None
-            and int(original_target_entry) == normalized_target
-            and not _is_raw_state_label(
-                str(getattr(edge, "target_label", "") or ""),
-                int(getattr(edge, "target_state", 0)) & 0xFFFFFFFF,
-            )
-        ):
-            continue
-
-        normalized_edge = replace(
-            edge,
-            target_entry_anchor=normalized_target,
-            target_label=_resolve_target_label_for_entry(
-                dag,
-                target_entry=normalized_target,
-                fallback_label=str(getattr(edge, "target_label", "") or ""),
-            ),
-        )
-        candidate, _rejection = build_reconstruction_candidate(
-            normalized_edge,
-            flow_graph=flow_graph,
-            node_by_key=node_by_key,
-            state_var_stkoff=int(state_var_stkoff),
-            constant_result=constant_result,
-            shared_suffix_blocks=shared_suffix_blocks,
-            dispatcher_region=dispatcher_region,
-        )
-        if candidate is None:
-            continue
-        candidate_key = (
-            str(getattr(candidate, "emission_mode", "")),
-            int(getattr(candidate, "horizon_block", -1)),
-            int(getattr(candidate, "target_entry", -1)),
-            (
-                int(getattr(candidate, "first_shared_block"))
-                if getattr(candidate, "first_shared_block", None) is not None
-                else None
-            ),
-            (
-                int(getattr(candidate, "via_pred"))
-                if getattr(candidate, "via_pred", None) is not None
-                else None
-            ),
-            tuple(int(serial) for serial in getattr(candidate.edge, "ordered_path", ()) or ()),
-        )
-        if candidate_key in seen_candidates:
-            continue
-        seen_candidates.add(candidate_key)
-        raw_candidates.append(candidate)
-
-    if not raw_candidates:
-        return 0
-
-    pre_modification_count = len(modifications)
-    execute_primary_reconstruction_modifications(
-        raw_candidates=raw_candidates,
+        node_by_key=node_by_key,
+        shared_suffix_blocks=shared_suffix_blocks,
+        bst_node_blocks=bst_node_blocks,
+    )
+    return emit_residual_alias_modifications(
+        discovery=discovery,
         flow_graph=flow_graph,
         node_by_key=node_by_key,
-        dispatcher_serial=int(dispatcher_serial),
+        dispatcher_serial=dispatcher_serial,
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
     )
-    return len(modifications) - pre_modification_count
 
 
 def execute_reconstruction_postprocess(
@@ -357,6 +244,7 @@ def execute_reconstruction_postprocess(
     resolve_effective_target_entry=None,
     build_reconstruction_candidate=None,
     build_projected_mba=None,
+    discover_residual_alias_overrides_fn: DiscoverResidualAliasOverridesFn | None = None,
 ) -> ReconstructionPostprocessExecutionResult:
     initial_modification_count = len(modifications)
     projected_flow_graph = flow_graph
@@ -398,24 +286,38 @@ def execute_reconstruction_postprocess(
         compute_reachable_blocks=compute_reachable_blocks,
     )
 
-    entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
-        dag=corrected_dag,
-        base_flow_graph=flow_graph,
-        projected_flow_graph=projected_flow_graph,
-        builder=builder,
-        modifications=modifications,
-        dispatcher_region=dispatcher_region,
-        collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
-            dag,
-            reachable_blocks=kwargs["reachable_blocks"],
-            dispatcher_region=kwargs["dispatcher_region"],
-            claimed_targets=collect_mod_claims(modifications)[1],
-        ),
-        compute_reachable_blocks=lambda fg: compute_reachable_blocks(
-            fg,
-            start_serial=getattr(fg, "entry_serial", None),
-        ),
+    # D810_RECON_SKIP_ISLAND_RESCUE=1 → skip early + late entry-island rescue
+    # (technique 5 of the 5-item port list). Diagnostic knob for the
+    # reconstruction-contribution harness.
+    _skip_island_rescue = (
+        os.getenv("D810_RECON_SKIP_ISLAND_RESCUE", "").strip() == "1"
     )
+    if _skip_island_rescue:
+        from d810.cfg.entry_island_rescue_planning import EntryIslandRescueRun
+        entry_island_rescue_run = EntryIslandRescueRun(
+            projected_flow_graph=projected_flow_graph,
+            emitted_count=0,
+            iterations=(),
+        )
+    else:
+        entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
+            dag=corrected_dag,
+            base_flow_graph=flow_graph,
+            projected_flow_graph=projected_flow_graph,
+            builder=builder,
+            modifications=modifications,
+            dispatcher_region=dispatcher_region,
+            collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
+                dag,
+                reachable_blocks=kwargs["reachable_blocks"],
+                dispatcher_region=kwargs["dispatcher_region"],
+                claimed_targets=collect_mod_claims(modifications)[1],
+            ),
+            compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+                fg,
+                start_serial=getattr(fg, "entry_serial", None),
+            ),
+        )
     if entry_island_rescue_run.emitted_count:
         projected_flow_graph = _project_flow_graph(flow_graph, modifications)
     _log_postprocess_phase_probe(
@@ -441,7 +343,12 @@ def execute_reconstruction_postprocess(
     dispatcher = getattr(bst_result, "dispatcher", None)
     bst_set = set(dag.bst_node_blocks)
     bst_set.add(dispatcher_serial)
-    early_residual_raw_alias_redirect_count = _emit_residual_raw_alias_reconstruction_overrides(
+    # D810_RECON_SKIP_RESIDUAL_ALIAS=1 → skip the early + late residual raw-alias
+    # reconstruction overrides (technique 1 of the 5-item port list).
+    _skip_residual_alias = (
+        os.getenv("D810_RECON_SKIP_RESIDUAL_ALIAS", "").strip() == "1"
+    )
+    early_residual_raw_alias_redirect_count = 0 if _skip_residual_alias else emit_residual_alias_overrides(
         dag=corrected_dag,
         flow_graph=projected_flow_graph,
         dispatcher_region=dispatcher_region,
@@ -461,6 +368,7 @@ def execute_reconstruction_postprocess(
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
+        discover_overrides_fn=discover_residual_alias_overrides_fn,
     )
     if early_residual_raw_alias_redirect_count:
         projected_flow_graph = _project_flow_graph(flow_graph, modifications)
@@ -546,24 +454,32 @@ def execute_reconstruction_postprocess(
             compute_reachable_blocks=compute_reachable_blocks,
         )
 
-        late_entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
-            dag=dag,
-            base_flow_graph=flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            builder=builder,
-            modifications=modifications,
-            dispatcher_region=dispatcher_region,
-            collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
-                dag,
-                reachable_blocks=kwargs["reachable_blocks"],
-                dispatcher_region=kwargs["dispatcher_region"],
-                claimed_targets=collect_mod_claims(modifications)[1],
-            ),
-            compute_reachable_blocks=lambda fg: compute_reachable_blocks(
-                fg,
-                start_serial=getattr(fg, "entry_serial", None),
-            ),
-        )
+        if _skip_island_rescue:
+            from d810.cfg.entry_island_rescue_planning import EntryIslandRescueRun
+            late_entry_island_rescue_run = EntryIslandRescueRun(
+                projected_flow_graph=projected_flow_graph,
+                emitted_count=0,
+                iterations=(),
+            )
+        else:
+            late_entry_island_rescue_run = execute_reconstruction_entry_island_rescues(
+                dag=dag,
+                base_flow_graph=flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                dispatcher_region=dispatcher_region,
+                collect_seeds=lambda dag, **kwargs: collect_entry_island_rescue_seeds(
+                    dag,
+                    reachable_blocks=kwargs["reachable_blocks"],
+                    dispatcher_region=kwargs["dispatcher_region"],
+                    claimed_targets=collect_mod_claims(modifications)[1],
+                ),
+                compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+                    fg,
+                    start_serial=getattr(fg, "entry_serial", None),
+                ),
+            )
         if late_entry_island_rescue_run.emitted_count:
             projected_flow_graph = _project_flow_graph(flow_graph, modifications)
         _log_postprocess_phase_probe(
@@ -580,26 +496,40 @@ def execute_reconstruction_postprocess(
             allow_post_apply_bst_cleanup = True
             post_apply_bst_cleanup_reason = None
 
-        late_island_rescue_result = execute_reconstruction_late_island_rescues(
-            dag=dag,
-            base_flow_graph=flow_graph,
-            projected_flow_graph=projected_flow_graph,
-            builder=builder,
-            modifications=modifications,
-            dispatcher_region=dispatcher_region,
-            dispatcher=getattr(bst_result, "dispatcher", None),
-            collect_seeds=lambda dag, **kwargs: collect_late_entry_island_rescue_seeds(
-                dag,
-                projected_flow_graph=kwargs["projected_flow_graph"],
-                reachable_blocks=kwargs["reachable_blocks"],
-                dispatcher_region=kwargs["dispatcher_region"],
-            ),
-            collect_diagnostics=collect_late_entry_island_diagnostics,
-            compute_reachable_blocks=lambda fg: compute_reachable_blocks(
-                fg,
-                start_serial=getattr(fg, "entry_serial", None),
-            ),
-        )
+        if _skip_island_rescue:
+            from d810.cfg.entry_island_rescue_planning import EntryIslandRescueRun
+            from d810.cfg.reconstruction_rescue_emission import (
+                LateReconstructionRescueRun,
+            )
+            late_island_rescue_result = LateReconstructionRescueRun(
+                run=EntryIslandRescueRun(
+                    projected_flow_graph=projected_flow_graph,
+                    emitted_count=0,
+                    iterations=(),
+                ),
+                diagnostics=(),
+            )
+        else:
+            late_island_rescue_result = execute_reconstruction_late_island_rescues(
+                dag=dag,
+                base_flow_graph=flow_graph,
+                projected_flow_graph=projected_flow_graph,
+                builder=builder,
+                modifications=modifications,
+                dispatcher_region=dispatcher_region,
+                dispatcher=getattr(bst_result, "dispatcher", None),
+                collect_seeds=lambda dag, **kwargs: collect_late_entry_island_rescue_seeds(
+                    dag,
+                    projected_flow_graph=kwargs["projected_flow_graph"],
+                    reachable_blocks=kwargs["reachable_blocks"],
+                    dispatcher_region=kwargs["dispatcher_region"],
+                ),
+                collect_diagnostics=collect_late_entry_island_diagnostics,
+                compute_reachable_blocks=lambda fg: compute_reachable_blocks(
+                    fg,
+                    start_serial=getattr(fg, "entry_serial", None),
+                ),
+            )
         if late_island_rescue_result.run.emitted_count:
             projected_flow_graph = _project_flow_graph(flow_graph, modifications)
         _log_postprocess_phase_probe(
@@ -622,8 +552,8 @@ def execute_reconstruction_postprocess(
         allow_post_apply_bst_cleanup = True
         post_apply_bst_cleanup_reason = None
     residual_raw_alias_redirect_count = 0
-    if not early_residual_raw_alias_redirect_count:
-        residual_raw_alias_redirect_count = _emit_residual_raw_alias_reconstruction_overrides(
+    if not early_residual_raw_alias_redirect_count and not _skip_residual_alias:
+        residual_raw_alias_redirect_count = emit_residual_alias_overrides(
             dag=corrected_dag,
             flow_graph=projected_flow_graph,
             dispatcher_region=dispatcher_region,
@@ -645,6 +575,7 @@ def execute_reconstruction_postprocess(
             modifications=modifications,
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
+            discover_overrides_fn=discover_residual_alias_overrides_fn,
         )
     if residual_raw_alias_redirect_count:
         projected_flow_graph = _project_flow_graph(flow_graph, modifications)
