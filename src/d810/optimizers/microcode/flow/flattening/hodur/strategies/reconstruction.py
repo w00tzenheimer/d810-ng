@@ -49,8 +49,6 @@ from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
-from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.plan import compile_patch_plan, is_block_creating_modification
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -137,6 +135,10 @@ from d810.recon.flow.structured_region_fidelity_report import (
     build_structured_region_fidelity_report,
     collect_sub7ffd_may_only_probe_blocks,
 )
+from d810.recon.flow.reconstruction_diagnostics import (
+    log_reconstruction_candidate_probe,
+    log_reconstruction_phase_probe,
+)
 
 logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
@@ -173,9 +175,6 @@ _SUB7FFD_FORCED_REGION_EDGES: dict[str, tuple[tuple[int, int], ...]] = {
     _SUB7FFD_RETRY_CHAIN_REGION_NAME: _SUB7FFD_RETRY_CHAIN_FORCE_EDGES,
 }
 _ENABLE_STRUCTURED_REGION_OVERLAY = False
-_RECON_PHASE_WATCH_BLOCKS = (
-    8, 11, 20, 32, 35, 45, 64, 69, 81, 83, 95, 100, 104, 156, 184, 187, 192, 195, 200, 203,
-)
 
 
 def _parse_relaxed_lateclone_shared_blocks() -> frozenset[int]:
@@ -224,150 +223,6 @@ def _parse_force_clone_primary_shared_blocks() -> frozenset[int]:
                 token,
             )
     return frozenset(forced)
-
-
-def _project_phase_probe_flow_graph(flow_graph, modifications: list):
-    try:
-        patch_plan = compile_patch_plan(modifications, flow_graph)
-        return project_post_state(flow_graph, patch_plan)
-    except Exception:
-        logger.debug("RECON PHASE PROBE: projection failed", exc_info=True)
-        return flow_graph
-
-
-def _log_reconstruction_phase_probe(
-    *,
-    phase: str,
-    flow_graph,
-    modifications: list,
-    owned_blocks: set[int],
-    owned_edges: set[tuple[int, int]],
-    accepted_metadata: list[dict[str, int | str | None]],
-    rejected_metadata: list[dict[str, int | str | None]],
-    compute_reachable_blocks,
-    shared_group_results=(),
-) -> None:
-    projected_flow_graph = _project_phase_probe_flow_graph(flow_graph, modifications)
-    reachable_set: set[int] = set()
-    if callable(compute_reachable_blocks):
-        try:
-            reachable_blocks = compute_reachable_blocks(
-                projected_flow_graph,
-                start_serial=getattr(projected_flow_graph, "entry_serial", None),
-            )
-            reachable_set = {int(serial) for serial in (reachable_blocks or ())}
-        except Exception:
-            logger.debug(
-                "RECON PHASE PROBE[%s]: reachable-block computation failed",
-                phase,
-                exc_info=True,
-            )
-    accepted_modes = Counter(
-        str(metadata.get("emission_mode") or "unknown")
-        for metadata in accepted_metadata
-    )
-    shared_summary = tuple(
-        (int(result.shared_block), str(result.emission_mode or ""))
-        for result in shared_group_results
-    )
-    watched_snapshots: list[str] = []
-    get_block = getattr(projected_flow_graph, "get_block", None)
-    block_map = getattr(projected_flow_graph, "blocks", {}) or {}
-    for serial in _RECON_PHASE_WATCH_BLOCKS:
-        block = None
-        if callable(get_block):
-            block = get_block(int(serial))
-        elif block_map:
-            block = block_map.get(int(serial))
-        if block is None:
-            watched_snapshots.append(
-                f"{int(serial)}:missing:reachable={int(serial) in reachable_set}"
-            )
-            continue
-        preds = tuple(int(pred) for pred in getattr(block, "preds", ()) or ())
-        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
-        watched_snapshots.append(
-            f"{int(serial)}:reachable={int(serial) in reachable_set}:preds={preds}:succs={succs}"
-        )
-    logger.info(
-        "RECON PHASE PROBE[%s]: mods=%d owned_blocks=%d owned_edges=%d accepted=%d rejected=%d accepted_modes=%s shared=%s watched=%s",
-        phase,
-        len(modifications),
-        len(owned_blocks),
-        len(owned_edges),
-        len(accepted_metadata),
-        len(rejected_metadata),
-        dict(accepted_modes),
-        shared_summary,
-        watched_snapshots,
-    )
-
-
-def _candidate_probe_signature(candidate) -> str:
-    edge = getattr(candidate, "edge", None)
-    source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
-    return (
-        f"src={int(getattr(source_anchor, 'block_serial', -1))}"
-        f"/arm={getattr(source_anchor, 'branch_arm', None)}"
-        f"/h={int(getattr(candidate, 'horizon_block', -1))}"
-        f"/t={int(getattr(candidate, 'target_entry', -1))}"
-        f"/shared={getattr(candidate, 'first_shared_block', None)}"
-        f"/via={getattr(candidate, 'via_pred', None)}"
-        f"/mode={getattr(candidate, 'emission_mode', None)}"
-        f"/path={ordered_path}"
-    )
-
-
-def _should_watch_candidate(candidate) -> bool:
-    edge = getattr(candidate, "edge", None)
-    source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
-    interesting_values = {
-        int(getattr(source_anchor, "block_serial", -1)),
-        int(getattr(candidate, "horizon_block", -1)),
-        int(getattr(candidate, "target_entry", -1)),
-        int(getattr(candidate, "first_shared_block", -1))
-        if getattr(candidate, "first_shared_block", None) is not None
-        else -1,
-        int(getattr(candidate, "via_pred", -1))
-        if getattr(candidate, "via_pred", None) is not None
-        else -1,
-    }
-    if any(int(serial) in _RECON_PHASE_WATCH_BLOCKS for serial in ordered_path):
-        return True
-    return any(value in _RECON_PHASE_WATCH_BLOCKS for value in interesting_values)
-
-
-def _log_reconstruction_candidate_probe(
-    *,
-    phase: str,
-    raw_candidates=(),
-    accepted_candidates=(),
-    rejected_candidates=(),
-) -> None:
-    raw_signatures = [
-        _candidate_probe_signature(candidate)
-        for candidate in raw_candidates
-        if _should_watch_candidate(candidate)
-    ]
-    accepted_signatures = [
-        _candidate_probe_signature(candidate)
-        for candidate in accepted_candidates
-        if _should_watch_candidate(candidate)
-    ]
-    rejected_signatures = [
-        _candidate_probe_signature(candidate)
-        for candidate in rejected_candidates
-        if _should_watch_candidate(candidate)
-    ]
-    logger.info(
-        "RECON CANDIDATE PROBE[%s]: raw=%s accepted=%s rejected=%s",
-        phase,
-        raw_signatures,
-        accepted_signatures,
-        rejected_signatures,
-    )
 
 
 def _state_edge_pair(edge) -> tuple[int, int] | None:
@@ -938,7 +793,7 @@ class StateWriteReconstructionStrategy:
                 "RECON DAG: primary shared-group force-clone blocks=%s",
                 sorted(int(block) for block in force_clone_primary_shared_blocks),
             )
-        _log_reconstruction_candidate_probe(
+        log_reconstruction_candidate_probe(
             phase="pre_primary_execution",
             raw_candidates=tuple(raw_candidates),
         )
@@ -955,7 +810,7 @@ class StateWriteReconstructionStrategy:
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(run)
         primary_probe_rejected_candidates = _collect_rejected_reconstruction_candidates(run)
-        _log_reconstruction_candidate_probe(
+        log_reconstruction_candidate_probe(
             phase="post_primary_execution",
             raw_candidates=tuple(raw_candidates),
             accepted_candidates=tuple(primary_probe_accepted_candidates),
@@ -965,7 +820,7 @@ class StateWriteReconstructionStrategy:
             primary_probe_accepted_metadata,
             primary_probe_rejected_metadata,
         ) = _build_execution_probe_metadata(run)
-        _log_reconstruction_phase_probe(
+        log_reconstruction_phase_probe(
             phase="post_primary_execution",
             flow_graph=flow_graph,
             modifications=modifications,
@@ -1181,7 +1036,7 @@ class StateWriteReconstructionStrategy:
             claimed_sources=_frontier_claimed_sources,
             claimed_targets=_frontier_claimed_targets,
         )
-        _log_reconstruction_phase_probe(
+        log_reconstruction_phase_probe(
             phase="pre_postprocess",
             flow_graph=flow_graph,
             modifications=modifications,
@@ -1242,7 +1097,7 @@ class StateWriteReconstructionStrategy:
                 "RECON DAG: force-keeping late per-pred shared groups=%s",
                 tuple(sorted(int(block) for block in force_keep_per_pred_shared_blocks)),
             )
-        _log_reconstruction_phase_probe(
+        log_reconstruction_phase_probe(
             phase="pre_late_shared_fallback",
             flow_graph=flow_graph,
             modifications=modifications,
@@ -1272,7 +1127,7 @@ class StateWriteReconstructionStrategy:
             ),
             force_keep_per_pred_shared_blocks=force_keep_per_pred_shared_blocks,
         )
-        _log_reconstruction_phase_probe(
+        log_reconstruction_phase_probe(
             phase="post_late_shared_fallback",
             flow_graph=flow_graph,
             modifications=modifications,
