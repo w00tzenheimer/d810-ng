@@ -5,7 +5,13 @@ by unit tests without an IDA environment.
 
 ``ReachabilityInfo`` captures reachability from the function entry block.
 ``AnalysisSnapshot`` is the read-only context passed to every strategy's
-``plan()`` method, with Hodur as the current primary producer.
+``plan()`` method, with Hodur as the current primary producer. The optional
+``discovery`` field carries a :class:`ReconRoundDiscoveryContext` (typed here
+as opaque ``object | None`` so recon stays out of the engine's import graph):
+it is the canonical round-level classification view — live DAG, corrected
+DAG, dispatcher region, shared-suffix blocks, structured regions, and the
+reconstruction-discovery-indexes bundle — built once per pass and shared by
+every strategy that previously set these up inline.
 """
 from __future__ import annotations
 
@@ -14,6 +20,9 @@ from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
+    from d810.recon.flow.round_discovery_context import (
+        ReconRoundDiscoveryContext,
+    )
 
 
 __all__ = [
@@ -97,6 +106,13 @@ class AnalysisSnapshot:
     nop_state_values: dict[int, int] = field(default_factory=dict)
     lfg_redirected_blocks: frozenset[int] = field(default_factory=frozenset)
     state_summary: StateModelSummary | None = None
+    # Canonical per-round classification bundle — typed as opaque ``object |
+    # None`` so recon types never leak into the engine's pure-Python import
+    # graph. Concrete type: ``ReconRoundDiscoveryContext`` (see
+    # :mod:`d810.recon.flow.round_discovery_context`). Defaults to ``None``
+    # until a family adapter opts in to building it; strategies MUST tolerate
+    # ``None`` during the Phase A scaffolding rollout.
+    discovery: object | None = None
 
     @property
     def state_constants(self) -> set:
