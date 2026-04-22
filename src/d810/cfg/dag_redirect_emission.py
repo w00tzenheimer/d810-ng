@@ -9,7 +9,7 @@ from d810.cfg.dag_redirect_modification_planning import (
     apply_dag_redirect_emission_plan,
     plan_dag_redirect_fallback,
 )
-from d810.cfg.path_tail_redirect_execution import emit_path_tail_redirect
+from d810.cfg.path_tail_redirect_emission import emit_path_tail_redirect
 from d810.cfg.lowering_selector import (
     is_backward_same_corridor_target,
     is_live_oneway_noop,

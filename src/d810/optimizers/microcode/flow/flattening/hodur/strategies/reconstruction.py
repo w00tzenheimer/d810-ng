@@ -27,7 +27,7 @@ from d810.cfg.reconstruction_execution import (
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
 )
-from d810.cfg.reconstruction_postprocess_execution import (
+from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.cfg.reconstruction_modification_planning import (
@@ -120,17 +120,17 @@ from d810.recon.flow.narrow_branch_local_discovery import (
 from d810.recon.flow.frontier_override_discovery import (
     discover_frontier_overrides,
 )
-from d810.cfg.frontier_override_execution import emit_frontier_overrides
+from d810.cfg.frontier_override_emission import emit_frontier_overrides
 from d810.recon.flow.missing_via_pred_discovery import (
     discover_missing_via_pred_direct_overrides,
 )
-from d810.cfg.reconstruction_missing_via_pred_execution import (
+from d810.cfg.reconstruction_missing_via_pred_emission import (
     emit_missing_via_pred_direct_overrides,
 )
 from d810.recon.flow.force_edge_override_discovery import (
     discover_force_edge_overrides,
 )
-from d810.cfg.reconstruction_force_edge_override_execution import (
+from d810.cfg.reconstruction_force_edge_override_emission import (
     execute_force_edge_override,
 )
 from d810.recon.flow.structured_region_fidelity_report import (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.residual_dispatcher_handoff_execution import _normalize_residual_handoff
+from d810.cfg.residual_dispatcher_handoff_emission import _normalize_residual_handoff
 
 
 def test_normalize_residual_handoff_prefers_effective_target_entry_for_matching_path_tail():
