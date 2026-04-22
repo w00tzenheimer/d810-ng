@@ -251,22 +251,6 @@ def _collect_accepted_reconstruction_candidates(run) -> list[object]:
     return accepted_candidates
 
 
-def _record_region_accept(
-    *,
-    candidate,
-    structured_region_edge_pairs: set[tuple[str, int, int]],
-    structured_region_accepted_counts: Counter[str],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-) -> None:
-    state_edge_pair = _state_edge_pair(candidate.edge)
-    if state_edge_pair is None:
-        return
-    for region_name, source_state, target_state in structured_region_edge_pairs:
-        if state_edge_pair == (source_state, target_state):
-            structured_region_accepted_counts[region_name] += 1
-            structured_region_accepted_pairs[region_name].add(state_edge_pair)
-
-
 def _should_defer_force_edge_materialization(
     *,
     region_name: str,
