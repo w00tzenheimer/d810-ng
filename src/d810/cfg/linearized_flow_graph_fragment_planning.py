@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core import logging
+from d810.core.round_context import RoundFrame
 from d810.core.typing import Callable
 from d810.cfg.dag_index import build_dag_node_maps
 from d810.cfg.graph_modification import RedirectBranch
@@ -95,6 +96,13 @@ class LinearizedFlowGraphPlanningContext:
     round_limit: int
     initial_state: int | None
     blocked_sources: frozenset[int]
+    # Pass-entry ``AnalysisSnapshot``. Carried so the internal round loop can
+    # push :class:`RoundFrame`-based scope info onto the log stream (and in
+    # future: into sub-callbacks via ``dataclasses.replace``) without
+    # rewiring every caller. Defaults to ``None`` for back-compat with
+    # callers that haven't migrated yet; round-aware logging is a no-op
+    # when absent.
+    snapshot: object | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,6 +560,7 @@ def build_linearized_flow_graph_planning_context(
     state_machine: object,
     dispatcher_serial: int,
     setup: LinearizedFlowGraphPlanSetup,
+    snapshot: object | None = None,
 ) -> LinearizedFlowGraphPlanningContext:
     dispatcher = setup.dispatcher
     return LinearizedFlowGraphPlanningContext(
@@ -576,6 +585,7 @@ def build_linearized_flow_graph_planning_context(
             else None
         ),
         blocked_sources=setup.blocked_sources,
+        snapshot=snapshot,
     )
 
 
@@ -893,6 +903,22 @@ def execute_linearized_flow_graph_planning(
     known_structured_regions: dict[str, LinearizedDagStructuredRegion] = {}
     for round_index in range(max(int(context.round_limit), 1)):
         round_attempted_region_names: set[str] = set()
+        # Publish the round scope on the snapshot's round_context stack for
+        # log correlation. This is read-only breadcrumb at the moment — no
+        # sub-callback currently consumes the pushed frame. When strategies
+        # opt in to ``snapshot.round_context.in_round`` checks, the frame
+        # will already be materialised here.
+        if context.snapshot is not None and round_index >= 0:
+            ctx = getattr(context.snapshot, "round_context", None)
+            if ctx is not None:
+                trace = ctx.push(
+                    RoundFrame(
+                        scope="round",
+                        index=int(round_index),
+                        name="projected_replan",
+                    )
+                ).as_trace()
+                logger.info("LFG round enter: %s", trace)
         round_mba = (
             context.mba
             if round_index == 0 or not context.projectable

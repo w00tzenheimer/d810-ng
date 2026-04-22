@@ -1409,6 +1409,7 @@ class LinearizedFlowGraphStrategy:
                 state_machine=sm,
                 dispatcher_serial=int(snapshot.bst_dispatcher_serial),
                 setup=dag_setup,
+                snapshot=snapshot,
             ),
             callbacks=planning_callbacks,
         )

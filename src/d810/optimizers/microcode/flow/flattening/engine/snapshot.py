@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING
 
-from d810.optimizers.microcode.flow.flattening.engine.round_context import (
+from d810.core.round_context import (
     RoundContext,
 )
 
