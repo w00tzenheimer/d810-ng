@@ -62,6 +62,13 @@ from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
 )
+from d810.recon.flow.round_discovery_context import (
+    build_round_discovery_context,
+)
+from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
+from d810.recon.flow.transition_builder import (
+    build_transition_result_from_state_machine,
+)
 
 family_logger = logging.getLogger("D810.unflat.hodur.family", logging.DEBUG)
 
@@ -299,6 +306,66 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 )
 
         self._state_machine = state_machine
+
+        # Phase A scaffolding: build the canonical per-round discovery context
+        # once, as the family adapter — strategies are NOT yet switched over,
+        # they still use their local setup recipes. Tolerate partial inputs
+        # gracefully (no half-built contexts — skip to None).
+        discovery: object | None = None
+        state_var_stkoff = self.get_effective_state_var_stkoff(state_machine)
+        if (
+            bst_result is not None
+            and bst_dispatcher_serial >= 0
+            and state_var_stkoff is not None
+            and flow_graph is not None
+        ):
+            try:
+                transition_result = build_transition_result_from_state_machine(
+                    state_machine,
+                    pre_header_serial=getattr(
+                        bst_result, "pre_header_serial", None
+                    ),
+                    strategy_name="hodur_round_discovery_context",
+                )
+                constant_fixpoint = run_snapshot_constant_fixpoint(
+                    flow_graph,
+                    state_var_stkoff,
+                )
+                discovery = build_round_discovery_context(
+                    flow_graph=flow_graph,
+                    transition_result=transition_result,
+                    dispatcher_entry_serial=bst_dispatcher_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    structured_regions=(),
+                    constant_fixpoint=constant_fixpoint,
+                    bst_result=bst_result,
+                    initial_state=state_machine.initial_state,
+                    pre_header_serial=getattr(
+                        bst_result, "pre_header_serial", None
+                    ),
+                    handler_range_map=(
+                        getattr(bst_result, "handler_range_map", {}) or {}
+                    ),
+                    bst_node_blocks=tuple(
+                        sorted(
+                            getattr(bst_result, "bst_node_blocks", set())
+                            or set()
+                        )
+                    ),
+                    diagnostics=tuple(
+                        getattr(bst_result, "diagnostics", ()) or ()
+                    ),
+                    dispatcher=getattr(bst_result, "dispatcher", None),
+                    mba=mba,
+                    prefer_local_corridors=True,
+                )
+            except Exception as exc:
+                family_logger.debug(
+                    "ReconRoundDiscoveryContext build failed (phase A): %s",
+                    exc,
+                )
+                discovery = None
+
         return AnalysisSnapshot(
             mba=mba,
             state_machine=state_machine,
@@ -312,6 +379,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
             resolved_transitions=frozenset(self._resolved_transitions),
             initial_transitions=tuple(self._initial_transitions or ()),
             flow_graph=flow_graph,
+            discovery=discovery,
         )
 
     def record_progress(self, *, nb_changes: int) -> None:
