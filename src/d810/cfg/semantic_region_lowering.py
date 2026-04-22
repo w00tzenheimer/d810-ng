@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
+from d810.cfg.state_dag_key import StateDagNodeKey
 from d810.cfg.residual_target_resolution import (
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,

@@ -152,7 +152,7 @@ def _iter_residual_raw_alias_edges(
     for edge in getattr(dag, "edges", ()) or ():
         target_state = getattr(edge, "target_state", None)
         target_label = str(getattr(edge, "target_label", "") or "")
-        if target_state is None or not is_raw_state_label(target_label, int(target_state)):
+        if target_state is None or not _is_raw_state_label(target_label, int(target_state)):
             continue
         ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
         source_block = None
@@ -631,6 +631,7 @@ def execute_reconstruction_postprocess(
             state_var_stkoff=state_var_stkoff,
             constant_result=constant_result,
             resolve_effective_target_entry=resolve_effective_target_entry,
+            build_reconstruction_candidate=build_reconstruction_candidate,
             analysis_mba=(
                 build_projected_mba(projected_flow_graph)
                 if callable(build_projected_mba)
