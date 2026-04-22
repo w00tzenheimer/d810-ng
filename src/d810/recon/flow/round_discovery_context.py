@@ -58,6 +58,7 @@ logger = logging.getLogger(
 __all__ = (
     "ReconRoundDiscoveryContext",
     "build_round_discovery_context",
+    "pass_entry_guard",
 )
 
 
@@ -249,3 +250,42 @@ def build_round_discovery_context(
         linearized_program=linearized_program,
         round_id=round_id,
     )
+
+
+
+def pass_entry_guard(snapshot, *, reason: str) -> bool:
+    """Log a warning when ``snapshot.discovery`` is being consulted from
+    inside a round scope.
+
+    Pass-entry state — ``snapshot.discovery.dag``, ``.corrected_dag``,
+    ``.indexes`` — is frozen at the top of each Hodur pass. Once LFG starts
+    its internal projected-replan rounds (``snapshot.round_context.in_round``
+    flips True), the live CFG has moved and reading ``discovery`` returns the
+    ORIGINAL view, not the current one. That is sometimes the desired
+    semantic (SSR admissibility checks that should be stable across the
+    whole pass) and sometimes a bug (strategy expected the live projected
+    view).
+
+    This helper is a VOLUNTARY guardrail: callers opt in by invoking it at
+    the site where they know they want pass-entry semantics. When invoked
+    outside a round (``snapshot.round_context.depth == 0`` or no round
+    frame on the stack) it is silent. When invoked inside a round, it logs
+    one WARNING line with the full scope trace plus the caller's stated
+    reason, so log readers can audit that the access was intentional.
+
+    Returns ``True`` when pass-entry access is safe (not in a round).
+    Returns ``False`` when the access is inside a round (caller should
+    double-check they actually want the frozen original view, not the
+    projected one). The return value is advisory; the helper never raises.
+    """
+    ctx = getattr(snapshot, "round_context", None)
+    if ctx is None or not getattr(ctx, "in_round", False):
+        return True
+    logger.warning(
+        "pass_entry_guard: snapshot.discovery consulted from inside a round "
+        "— reason=%r trace=%s (reading the pass-entry ORIGINAL view; if you "
+        "want the current projected view, use round_summary instead)",
+        reason,
+        ctx.as_trace(),
+    )
+    return False
