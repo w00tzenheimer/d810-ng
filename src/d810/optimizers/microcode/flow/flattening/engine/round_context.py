@@ -19,6 +19,43 @@ the deeper scope.
 
 Layer: ``d810.optimizers.microcode.flow.flattening.engine`` — pure-Python
 plumbing, unit-testable without IDA.
+
+Engine-planner contract
+-----------------------
+
+The engine planner still calls ``strategy.plan(snapshot)`` exactly once per
+strategy per pass, and still knows nothing about rounds. But that is fine
+because ``snapshot.round_context`` is already there. A strategy with an
+internal round loop composes like this:
+
+1. Receive the pass-entry snapshot: ``snapshot.round_context`` is the empty
+   stack, ``.depth == 0`` and ``.in_round == False``.
+2. Drive its own rounds however it wants (projected replan, retry, ...).
+3. For each round ``N``, build a sub-snapshot via::
+
+       sub_snapshot = dataclasses.replace(
+           snapshot,
+           round_context=snapshot.round_context.push(
+               RoundFrame(scope="round", index=N, name="projected_replan"),
+           ),
+       )
+
+   and pass ``sub_snapshot`` into the strategy's own sub-callbacks.
+4. Sub-callbacks observe ``sub_snapshot.round_context.in_round == True`` and
+   ``.round_index == N`` and can adjust behaviour (e.g. avoid consulting
+   ``snapshot.discovery.dag``, which is pass-entry frozen).
+
+No engine-planner change is required; the round context flows through the
+snapshot itself. The older framing of "RoundContext parameter on plan()"
+conflated two distinct shapes — this snapshot-based propagation is the
+correct one for strategy-internal rounds.
+
+Cross-strategy round coordination (strategy B in the same pass wanting to
+know what round strategy A was executing when A published a fact) is a
+SEPARATE concern and is NOT solved by ``RoundContext`` alone. If that ever
+lands on the roadmap, the natural primitive is an engine-owned
+``PassLedger`` that records ``(strategy_name, round_context, fact)`` tuples
+as rounds fire — a different surface, not a ``plan()`` parameter.
 """
 from __future__ import annotations
 
