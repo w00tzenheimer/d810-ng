@@ -17,6 +17,8 @@ queries.
 """
 from __future__ import annotations
 
+from d810.cfg.state_edge_pair import state_edge_pair, format_state_pair
+
 from dataclasses import dataclass
 from d810.core.typing import Iterable
 
@@ -65,22 +67,8 @@ class FrontierOverridePlan:
     state_pair_label: str
 
 
-def _state_edge_pair(edge) -> tuple[int, int] | None:
-    source_key = getattr(edge, "source_key", None)
-    source_state = getattr(source_key, "state_const", None)
-    target_state = getattr(edge, "target_state", None)
-    if source_state is None or target_state is None:
-        return None
-    return (
-        int(source_state) & 0xFFFFFFFF,
-        int(target_state) & 0xFFFFFFFF,
-    )
 
 
-def _format_state_pair(state_edge_pair: tuple[int, int] | None) -> str:
-    if state_edge_pair is None:
-        return "none"
-    return "0x%08X->0x%08X" % state_edge_pair
 
 
 def _bridge_exit_block_for_edge(
@@ -107,15 +95,15 @@ def _bridge_exit_block_for_edge(
 
 def _late_rewrite_memberships(
     *,
-    state_edge_pair: tuple[int, int] | None,
+    pair: tuple[int, int] | None,
     structured_regions,
     structured_region_candidate_pairs: dict[str, list[tuple[int, int]]],
     structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
 ) -> tuple[dict[str, str], ...]:
-    if state_edge_pair is None:
+    if pair is None:
         return ()
 
-    source_state, target_state = state_edge_pair
+    source_state, target_state = pair
     memberships: list[dict[str, str]] = []
     for region in structured_regions:
         region_name = str(region.region_name)
@@ -130,10 +118,10 @@ def _late_rewrite_memberships(
         candidate_pairs = set(structured_region_candidate_pairs.get(region_name, ()))
         accepted_pairs = set(structured_region_accepted_pairs.get(region_name, ()))
 
-        if state_edge_pair in region_internal_edges:
-            if state_edge_pair in accepted_pairs:
+        if pair in region_internal_edges:
+            if pair in accepted_pairs:
                 primary_status = "accepted_primary_region"
-            elif state_edge_pair in candidate_pairs:
+            elif pair in candidate_pairs:
                 primary_status = "raw_primary_region_candidate_unaccepted"
             else:
                 primary_status = "internal_region_edge_without_primary_candidate"
@@ -183,8 +171,8 @@ def _should_defer_structured_frontier_override(
             membership["region_name"] == _SUB7FFD_INITIAL_REGION_NAME
             for membership in memberships
         )
-    state_edge_pair = _state_edge_pair(edge)
-    if state_edge_pair != (0x16F7FF74, 0x652D7A98):
+    pair = state_edge_pair(edge)
+    if pair != (0x16F7FF74, 0x652D7A98):
         return False
     return any(
         membership["region_name"] == _SUB7FFD_INITIAL_REGION_NAME
@@ -219,9 +207,9 @@ def discover_frontier_overrides(
         target_entry = getattr(edge, "target_entry_anchor", None)
         if target_entry is None:
             continue
-        state_edge_pair = _state_edge_pair(edge)
+        pair = state_edge_pair(edge)
         raw_memberships = _late_rewrite_memberships(
-            state_edge_pair=state_edge_pair,
+            pair=pair,
             structured_regions=structured_regions,
             structured_region_candidate_pairs=structured_region_candidate_pairs,
             structured_region_accepted_pairs=structured_region_accepted_pairs,
@@ -254,7 +242,7 @@ def discover_frontier_overrides(
                 "RECON DAG: deferring structured frontier override blk[%d] -> blk[%d] state=%s roles=%s to bridge/postprocess",
                 exit_block,
                 target_entry,
-                _format_state_pair(state_edge_pair),
+                format_state_pair(pair),
                 sorted({membership['role'] for membership in memberships}),
             )
             continue
@@ -266,7 +254,7 @@ def discover_frontier_overrides(
             continue
 
         memberships_tuple = tuple(memberships)
-        state_pair_label = _format_state_pair(state_edge_pair)
+        state_pair_label = format_state_pair(pair)
 
         if any(int(block.succs[arm]) == target_entry for arm in range(block.nsucc)):
             plans.append(
@@ -278,7 +266,7 @@ def discover_frontier_overrides(
                     branch_arm=None,
                     old_target=target_entry,
                     memberships=memberships_tuple,
-                    state_edge_pair=state_edge_pair,
+                    pair=pair,
                     reaches_target=True,
                     edge_metadata={},
                     state_pair_label=state_pair_label,
@@ -329,7 +317,7 @@ def discover_frontier_overrides(
                 branch_arm=branch_arm,
                 old_target=int(old_target_value),
                 memberships=memberships_tuple,
-                state_edge_pair=state_edge_pair,
+                pair=pair,
                 reaches_target=False,
                 edge_metadata=edge_metadata,
                 state_pair_label=state_pair_label,
