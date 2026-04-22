@@ -1,17 +1,20 @@
 """Immutable analysis snapshot types for the shared unflattening engine.
 
-These types are pure Python — no IDA imports — so they can be fully exercised
-by unit tests without an IDA environment.
+Types are narrowed via :pep:`563` postponed annotations (``from __future__ import
+annotations``) plus :data:`d810.core.typing.TYPE_CHECKING` — runtime imports
+stay engine-local so recon types never leak into this module's runtime graph,
+while callers still get proper narrow types (``ReconRoundDiscoveryContext``,
+``FlowGraph``, …) for static analysis.
 
 ``ReachabilityInfo`` captures reachability from the function entry block.
 ``AnalysisSnapshot`` is the read-only context passed to every strategy's
 ``plan()`` method, with Hodur as the current primary producer. The optional
-``discovery`` field carries a :class:`ReconRoundDiscoveryContext` (typed here
-as opaque ``object | None`` so recon stays out of the engine's import graph):
-it is the canonical round-level classification view — live DAG, corrected
-DAG, dispatcher region, shared-suffix blocks, structured regions, and the
-reconstruction-discovery-indexes bundle — built once per pass and shared by
-every strategy that previously set these up inline.
+``discovery`` field carries the canonical per-round classification bundle —
+live DAG, corrected DAG, dispatcher region, shared-suffix blocks, structured
+regions, the reconstruction-discovery-indexes bundle, and the rendered
+linearized program — built once per ``(func_ea, maturity, pass)`` and shared
+by every strategy. **Consumers MUST NOT mutate ``discovery`` or any of its
+fields.**
 """
 from __future__ import annotations
 
@@ -89,10 +92,10 @@ class AnalysisSnapshot:
     Passed to every strategy's plan() method as read-only context.
     """
 
-    mba: object  # ida_hexrays.mba_t — keep as object (IDA type, not importable in unit tests)
+    mba: object  # ida_hexrays.mba_t — opaque object because the concrete type is caller-specific
     state_machine: object | None = None
     detector: object | None = None
-    dispatcher_cache: object | None = None  # keep as object (IDA type)
+    dispatcher_cache: object | None = None  # opaque object; family-specific concrete type
     bst_result: object | None = None
     bst_dispatcher_serial: int = -1
     handler_graph: dict = field(default_factory=dict)
@@ -106,13 +109,12 @@ class AnalysisSnapshot:
     nop_state_values: dict[int, int] = field(default_factory=dict)
     lfg_redirected_blocks: frozenset[int] = field(default_factory=frozenset)
     state_summary: StateModelSummary | None = None
-    # Canonical per-round classification bundle — typed as opaque ``object |
-    # None`` so recon types never leak into the engine's pure-Python import
-    # graph. Concrete type: ``ReconRoundDiscoveryContext`` (see
-    # :mod:`d810.recon.flow.round_discovery_context`). Defaults to ``None``
-    # until a family adapter opts in to building it; strategies MUST tolerate
-    # ``None`` during the Phase A scaffolding rollout.
-    discovery: object | None = None
+    # Canonical per-round classification bundle. Types are narrowed via
+    # ``TYPE_CHECKING``; runtime imports remain engine-only so recon types
+    # never leak into the engine's pure-Python import graph. Defaults to
+    # ``None`` until a family adapter opts in to building it; strategies MUST
+    # tolerate ``None`` during the Phase A scaffolding rollout.
+    discovery: ReconRoundDiscoveryContext | None = None
 
     @property
     def state_constants(self) -> set:

@@ -332,6 +332,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     state_var_stkoff,
                 )
                 discovery = build_round_discovery_context(
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity=int(mba.maturity),
+                    pass_number=int(self._pass_number),
                     flow_graph=flow_graph,
                     transition_result=transition_result,
                     dispatcher_entry_serial=bst_dispatcher_serial,
