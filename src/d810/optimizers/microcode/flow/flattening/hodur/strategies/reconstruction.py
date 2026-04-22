@@ -22,7 +22,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.reconstruction_execution import (
+from d810.cfg.reconstruction_emission import (
     apply_shared_group_reachability_fallback,
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
