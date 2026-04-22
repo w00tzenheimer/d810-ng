@@ -21,6 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING
 
+from d810.optimizers.microcode.flow.flattening.engine.round_context import (
+    RoundContext,
+)
+
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
     from d810.recon.flow.round_discovery_context import (
@@ -116,16 +120,18 @@ class AnalysisSnapshot:
     # tolerate ``None`` during the Phase A scaffolding rollout.
     discovery: ReconRoundDiscoveryContext | None = None
 
-    # Sub-strategy round index within the current pass. A "round" is the
-    # inner projected-replan iteration that some strategies run internally
-    # (notably LFG's ``execute_linearized_flow_graph_planning`` loop). 0
-    # means "pre-round / pass-entry"; LFG increments per internal round.
-    # Strategies reading ``discovery.dag`` MUST be aware that ``discovery``
-    # is pass-entry frozen — when ``round_number > 0`` the live CFG has
-    # already moved, so consulting ``discovery`` returns the ORIGINAL view,
-    # not the current projected view. Use ``round_summary`` (LFG-local)
-    # for the current projected DAG.
-    round_number: int = 0
+    # Hierarchical execution-scope stack. Empty ``RoundContext`` means
+    # "pass-entry, pre-strategy". Strategies that have internal
+    # projected-replan rounds push ``RoundFrame(scope="round", index=N,
+    # name=...)`` frames and pass the updated snapshot down to sub-callbacks
+    # via ``dataclasses.replace``. Strategies reading ``discovery.dag`` MUST
+    # be aware that ``discovery`` is pass-entry frozen — when
+    # ``round_context.in_round`` is True the live CFG has already moved, so
+    # consulting ``discovery`` returns the ORIGINAL pass-entry view, not the
+    # current projected view. Use ``round_summary`` (LFG-local) for the
+    # current projected DAG. The ``round_context.as_trace()`` breadcrumb is
+    # suitable for guardrail / debug log correlation.
+    round_context: RoundContext = field(default_factory=RoundContext)
 
     @property
     def state_constants(self) -> set:
