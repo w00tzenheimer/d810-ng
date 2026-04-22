@@ -17,6 +17,8 @@ Pure transform: no flow-graph access, no IDA calls.
 """
 from __future__ import annotations
 
+from d810.cfg.state_edge_pair import state_edge_pair
+
 from collections import defaultdict
 from dataclasses import dataclass
 from d810.core.typing import Iterable
@@ -37,16 +39,6 @@ __all__ = [
 
 # Duplicated from ``reconstruction._state_edge_pair`` to keep this producer
 # independent of the hodur strategy module. Must stay in sync.
-def _state_edge_pair(edge) -> tuple[int, int] | None:
-    source_key = getattr(edge, "source_key", None)
-    source_state = getattr(source_key, "state_const", None)
-    target_state = getattr(edge, "target_state", None)
-    if source_state is None or target_state is None:
-        return None
-    return (
-        int(source_state) & 0xFFFFFFFF,
-        int(target_state) & 0xFFFFFFFF,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +76,10 @@ def build_reconstruction_discovery_indexes(
     }
     structured_region_source_blocks: dict[tuple[int, int], set[int]] = defaultdict(set)
     for edge in dag.edges:
-        state_edge_pair = _state_edge_pair(edge)
-        if state_edge_pair is None:
+        pair = state_edge_pair(edge)
+        if pair is None:
             continue
-        structured_region_source_blocks[state_edge_pair].add(
+        structured_region_source_blocks[pair].add(
             int(edge.source_anchor.block_serial)
         )
 

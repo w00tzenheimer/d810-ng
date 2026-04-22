@@ -18,6 +18,8 @@ The private ``_build_late_rewrite_semantic_indexes`` helper is only used by
 """
 from __future__ import annotations
 
+from d810.cfg.state_edge_pair import state_edge_pair, format_state_pair
+
 from collections import Counter, defaultdict
 
 from d810.core import logging
@@ -43,22 +45,8 @@ __all__ = [
 ]
 
 
-def _state_edge_pair(edge) -> tuple[int, int] | None:
-    source_key = getattr(edge, "source_key", None)
-    source_state = getattr(source_key, "state_const", None)
-    target_state = getattr(edge, "target_state", None)
-    if source_state is None or target_state is None:
-        return None
-    return (
-        int(source_state) & 0xFFFFFFFF,
-        int(target_state) & 0xFFFFFFFF,
-    )
 
 
-def _format_state_pair(state_edge_pair: tuple[int, int] | None) -> str:
-    if state_edge_pair is None:
-        return "none"
-    return "0x%08X->0x%08X" % state_edge_pair
 
 
 def _build_late_rewrite_semantic_indexes(
@@ -79,15 +67,15 @@ def _build_late_rewrite_semantic_indexes(
         target_entry = getattr(edge, "target_entry_anchor", None)
         if target_entry is None:
             continue
-        state_edge_pair = _state_edge_pair(edge)
+        pair = state_edge_pair(edge)
         memberships = _late_rewrite_memberships(
-            state_edge_pair=state_edge_pair,
+            pair=pair,
             structured_regions=structured_regions,
             structured_region_candidate_pairs=structured_region_candidate_pairs,
             structured_region_accepted_pairs=structured_region_accepted_pairs,
         )
         record = {
-            "state_edge_pair": state_edge_pair,
+            "pair": pair,
             "edge_kind": edge_kind_name(edge),
             "memberships": memberships,
         }
@@ -181,7 +169,7 @@ def build_structured_region_fidelity_report(
             )
             return
 
-        pair_labels = sorted({_format_state_pair(match["state_edge_pair"]) for match in matches})
+        pair_labels = sorted({format_state_pair(match["state_edge_pair"]) for match in matches})
         edge_kinds = sorted({str(match["edge_kind"]) for match in matches})
         memberships = [
             membership

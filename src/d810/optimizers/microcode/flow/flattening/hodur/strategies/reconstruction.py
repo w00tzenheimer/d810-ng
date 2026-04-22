@@ -12,6 +12,8 @@ rewrite that still removes the dispatcher handoff:
 """
 from __future__ import annotations
 
+from d810.cfg.state_edge_pair import state_edge_pair
+
 from collections import Counter, defaultdict
 from dataclasses import replace
 import os
@@ -225,16 +227,6 @@ def _parse_force_clone_primary_shared_blocks() -> frozenset[int]:
     return frozenset(forced)
 
 
-def _state_edge_pair(edge) -> tuple[int, int] | None:
-    source_key = getattr(edge, "source_key", None)
-    source_state = getattr(source_key, "state_const", None)
-    target_state = getattr(edge, "target_state", None)
-    if source_state is None or target_state is None:
-        return None
-    return (
-        int(source_state) & 0xFFFFFFFF,
-        int(target_state) & 0xFFFFFFFF,
-    )
 
 
 def _collect_accepted_reconstruction_candidates(run) -> list[object]:
@@ -619,9 +611,9 @@ class StateWriteReconstructionStrategy:
             ", ".join(f"{k}={v}" for k, v in edge_kind_counts.most_common()),
         )
         for edge in dag.edges:
-            state_edge_pair = _state_edge_pair(edge)
-            if state_edge_pair is not None:
-                structured_region_edges_by_pair[state_edge_pair].append(edge)
+            pair = state_edge_pair(edge)
+            if pair is not None:
+                structured_region_edges_by_pair[pair].append(edge)
             candidate, rejection = build_reconstruction_candidate(
                 edge,
                 flow_graph=flow_graph,
@@ -633,18 +625,18 @@ class StateWriteReconstructionStrategy:
             )
             if candidate is not None:
                 raw_candidates.append(candidate)
-                if state_edge_pair is not None:
-                    structured_region_candidates_by_pair[state_edge_pair].append(candidate)
+                if pair is not None:
+                    structured_region_candidates_by_pair[pair].append(candidate)
                     for region_name, source_state, target_state in structured_region_edge_pairs:
-                        if state_edge_pair == (source_state, target_state):
+                        if pair == (source_state, target_state):
                             structured_region_candidate_counts[region_name] += 1
-                            structured_region_candidate_pairs[region_name].append(state_edge_pair)
+                            structured_region_candidate_pairs[region_name].append(pair)
             elif rejection is not None:
                 rejected_metadata.append(rejection)
         for edge in corrected_dag.edges:
-            state_edge_pair = _state_edge_pair(edge)
-            if state_edge_pair is not None:
-                corrected_region_edges_by_pair[state_edge_pair].append(edge)
+            pair = state_edge_pair(edge)
+            if pair is not None:
+                corrected_region_edges_by_pair[pair].append(edge)
 
         for force_edge in (
             _SUB7FFD_INITIAL_FORCE_EDGE,
@@ -836,7 +828,7 @@ class StateWriteReconstructionStrategy:
                 candidate,
                 structured_region_edge_pairs=structured_region_edge_pairs,
                 edge_metadata_fn=make_edge_metadata,
-                state_edge_pair_fn=_state_edge_pair,
+                state_edge_pair_fn=state_edge_pair,
             )
             logger.info(
                 "RECON DAG: conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
@@ -855,7 +847,7 @@ class StateWriteReconstructionStrategy:
                     candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
                     edge_metadata_fn=make_edge_metadata,
-                    state_edge_pair_fn=_state_edge_pair,
+                    state_edge_pair_fn=state_edge_pair,
                 )
                 logger.info(
                     "RECON DAG: direct %s state=0x%08X -> %s (nopped=%d)",
@@ -923,7 +915,7 @@ class StateWriteReconstructionStrategy:
                     candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
                     edge_metadata_fn=make_edge_metadata,
-                    state_edge_pair_fn=_state_edge_pair,
+                    state_edge_pair_fn=state_edge_pair,
                 )
                 logger.info(
                     "RECON DAG: narrow branch-local conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
@@ -942,7 +934,7 @@ class StateWriteReconstructionStrategy:
                     candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
                     edge_metadata_fn=make_edge_metadata,
-                    state_edge_pair_fn=_state_edge_pair,
+                    state_edge_pair_fn=state_edge_pair,
                 )
             for result in fallback_run.shared_group_results:
                 shared_group_results.append(result)
@@ -951,7 +943,7 @@ class StateWriteReconstructionStrategy:
                         candidate,
                         structured_region_edge_pairs=structured_region_edge_pairs,
                         edge_metadata_fn=make_edge_metadata,
-                        state_edge_pair_fn=_state_edge_pair,
+                        state_edge_pair_fn=state_edge_pair,
                     )
             if fallback_accepted_candidates:
                 logger.info(
@@ -992,7 +984,7 @@ class StateWriteReconstructionStrategy:
                     cache_write=self._cached_force_edge_direct_overrides_by_round.__setitem__,
                     blk_label=blk_label,
                     edge_metadata_fn=make_edge_metadata,
-                    state_edge_pair_fn=_state_edge_pair,
+                    state_edge_pair_fn=state_edge_pair,
                     discover_missing_via_pred_fn=discover_missing_via_pred_direct_overrides,
                 )
 
@@ -1145,7 +1137,7 @@ class StateWriteReconstructionStrategy:
                     replace(candidate, emission_mode=result.emission_mode),
                     structured_region_edge_pairs=structured_region_edge_pairs,
                     edge_metadata_fn=make_edge_metadata,
-                    state_edge_pair_fn=_state_edge_pair,
+                    state_edge_pair_fn=state_edge_pair,
                 )
             if result.emission_mode == "per_pred_redirect":
                 logger.info(
