@@ -32,6 +32,7 @@ from d810.cfg.reconstruction_modification_planning import (
     plan_direct_reconstruction_modifications,
     plan_passthrough_reconstruction_modifications,
 )
+from d810.cfg.reconstruction_recording import RoundAcceptLedger
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
@@ -78,6 +79,9 @@ from d810.recon.flow.reconstruction_discovery import (
     collect_shared_suffix_blocks,
     resolve_state_var_stkoff,
 )
+from d810.recon.flow.reconstruction_discovery_indexes import (
+    build_reconstruction_discovery_indexes,
+)
 from d810.recon.flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
     collect_late_entry_island_diagnostics,
@@ -97,7 +101,33 @@ from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate,
 )
-from d810.recon.flow.transition_builder import TransitionResult
+from d810.recon.flow.transition_builder import (
+    TransitionResult,
+    build_transition_result_from_state_machine,
+)
+from d810.recon.flow.conditional_arm_canonicalization import (
+    canonicalize_same_target_conditional_candidates,
+)
+from d810.recon.flow.shared_group_bucketing import (
+    group_candidates_by_shared_block,
+)
+from d810.recon.flow.narrow_branch_local_discovery import (
+    discover_narrow_branch_local_reconstruction_candidates,
+)
+from d810.recon.flow.frontier_override_discovery import (
+    discover_frontier_overrides,
+)
+from d810.cfg.frontier_override_execution import emit_frontier_overrides
+from d810.recon.flow.missing_via_pred_discovery import (
+    discover_missing_via_pred_direct_overrides,
+)
+from d810.cfg.reconstruction_missing_via_pred_execution import (
+    emit_missing_via_pred_direct_overrides,
+)
+from d810.recon.flow.structured_region_fidelity_report import (
+    build_structured_region_fidelity_report,
+    collect_sub7ffd_may_only_probe_blocks,
+)
 
 logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
@@ -357,152 +387,6 @@ def _collect_accepted_reconstruction_candidates(run) -> list[object]:
     return accepted_candidates
 
 
-def _canonicalize_same_target_conditional_candidates(
-    raw_candidates: list[ReconstructionCandidate],
-) -> tuple[tuple[ReconstructionCandidate, ...], int]:
-    """Collapse same-target conditional arms into a single direct handoff."""
-
-    grouped_branch_arms: dict[tuple[int, int, int, int | None], set[int]] = {}
-    for candidate in raw_candidates:
-        if candidate.emission_mode != "conditional_arm":
-            continue
-        source_anchor = getattr(candidate.edge, "source_anchor", None)
-        branch_arm = getattr(source_anchor, "branch_arm", None)
-        source_state = getattr(getattr(candidate.edge, "source_key", None), "state_const", None)
-        if branch_arm is None:
-            continue
-        key = (
-            int(getattr(source_anchor, "block_serial", candidate.horizon_block)),
-            int(candidate.horizon_block),
-            int(candidate.target_entry),
-            int(source_state) if source_state is not None else None,
-        )
-        grouped_branch_arms.setdefault(key, set()).add(int(branch_arm))
-
-    collapsed_keys = {
-        key for key, branch_arms in grouped_branch_arms.items() if len(branch_arms) > 1
-    }
-    if not collapsed_keys:
-        return tuple(raw_candidates), 0
-
-    seen_collapsed: set[tuple[int, int, int, int | None]] = set()
-    collapsed_count = 0
-    canonicalized: list[ReconstructionCandidate] = []
-    for candidate in raw_candidates:
-        if candidate.emission_mode != "conditional_arm":
-            canonicalized.append(candidate)
-            continue
-        source_anchor = getattr(candidate.edge, "source_anchor", None)
-        source_state = getattr(getattr(candidate.edge, "source_key", None), "state_const", None)
-        key = (
-            int(getattr(source_anchor, "block_serial", candidate.horizon_block)),
-            int(candidate.horizon_block),
-            int(candidate.target_entry),
-            int(source_state) if source_state is not None else None,
-        )
-        if key not in collapsed_keys:
-            canonicalized.append(candidate)
-            continue
-        if key in seen_collapsed:
-            collapsed_count += 1
-            continue
-        seen_collapsed.add(key)
-        canonicalized.append(replace(candidate, emission_mode="direct"))
-    return tuple(canonicalized), int(collapsed_count)
-
-
-def _build_narrow_branch_local_reconstruction_candidates(
-    *,
-    unresolved_edges: tuple[object, ...] | list[object],
-    flow_graph: object,
-) -> tuple[ReconstructionCandidate, ...]:
-    candidates: list[ReconstructionCandidate] = []
-    seen_signatures: set[tuple[int, int, int, int, int, tuple[int, ...]]] = set()
-
-    for edge in unresolved_edges:
-        source_anchor = getattr(edge, "source_anchor", None)
-        branch_arm = getattr(source_anchor, "branch_arm", None)
-        if branch_arm not in (0, 1):
-            continue
-
-        target_entry = getattr(edge, "target_entry_anchor", None)
-        if target_entry is None or int(target_entry) < 0:
-            continue
-
-        ordered_path = tuple(int(serial) for serial in (getattr(edge, "ordered_path", ()) or ()))
-        if len(ordered_path) < 2:
-            continue
-
-        source_anchor_block = int(getattr(source_anchor, "block_serial", -1))
-        if source_anchor_block >= 0 and source_anchor_block in ordered_path:
-            horizon_block = int(source_anchor_block)
-        else:
-            horizon_block = int(getattr(getattr(edge, "source_key", None), "handler_serial", -1))
-        if int(horizon_block) < 0:
-            continue
-
-        horizon_snapshot = flow_graph.get_block(int(horizon_block))
-        if horizon_snapshot is None:
-            continue
-        horizon_succs = tuple(int(succ) for succ in getattr(horizon_snapshot, "succs", ()) or ())
-        if int(getattr(horizon_snapshot, "nsucc", len(horizon_succs))) != 2:
-            continue
-        if int(horizon_block) not in ordered_path:
-            continue
-
-        source_state = getattr(getattr(edge, "source_key", None), "state_const", None)
-        target_state = getattr(edge, "target_state", None)
-        if source_state is None or target_state is None:
-            continue
-
-        signature = (
-            int(source_state) & 0xFFFFFFFF,
-            int(target_state) & 0xFFFFFFFF,
-            int(target_entry),
-            int(horizon_block),
-            int(branch_arm),
-            ordered_path,
-        )
-        if signature in seen_signatures:
-            continue
-        seen_signatures.add(signature)
-
-        site_state_value = getattr(getattr(edge, "site", None), "state_value", None)
-        if site_state_value is None:
-            site_state_value = getattr(
-                edge,
-                "observed_target_state",
-                getattr(edge, "target_state", None),
-            )
-        synthetic_site = getattr(edge, "site", None) or type(
-            "_SyntheticStateWriteSite",
-            (),
-            {
-                "block_serial": int(ordered_path[-1]),
-                "state_value": (
-                    int(site_state_value) & 0xFFFFFFFF
-                    if site_state_value is not None
-                    else int(target_state) & 0xFFFFFFFF
-                ),
-                "insn_ea": 0,
-                "unsafe_trailing_insn_eas": (),
-            },
-        )()
-        candidates.append(
-            ReconstructionCandidate(
-                edge=edge,
-                horizon_block=int(horizon_block),
-                site=synthetic_site,
-                target_entry=int(target_entry),
-                first_shared_block=None,
-                via_pred=None,
-                emission_mode="conditional_arm",
-                conditional_group_policy="rewrite_horizon",
-            )
-        )
-    return tuple(candidates)
-
-
 def _record_region_accept(
     *,
     candidate,
@@ -534,28 +418,6 @@ def _should_defer_force_edge_materialization(
         region_name == _SUB7FFD_DOWNSTREAM_REGION_NAME
         and force_edge == _SUB7FFD_DOWNSTREAM_HEAD_FORCE_EDGE
         and not override_candidates
-    )
-
-
-def _should_defer_structured_frontier_override(
-    *,
-    edge,
-    memberships: list[dict[str, str]],
-    exit_block: int,
-    target_entry: int,
-) -> bool:
-    if exit_block == 170 and target_entry == 211:
-        return any(
-            membership["region_name"] == _SUB7FFD_INITIAL_REGION_NAME
-            for membership in memberships
-        )
-    state_edge_pair = _state_edge_pair(edge)
-    if state_edge_pair != (0x16F7FF74, 0x652D7A98):
-        return False
-    return any(
-        membership["region_name"] == _SUB7FFD_INITIAL_REGION_NAME
-        and membership["role"] == "post_exit_frontier"
-        for membership in memberships
     )
 
 
@@ -624,757 +486,6 @@ def _build_execution_probe_metadata(
                 )
             )
     return accepted_metadata, rejected_metadata
-
-
-def _emit_missing_via_pred_direct_override(
-    *,
-    force_edge: tuple[int, int],
-    region_name: str,
-    structured_region_edges_by_pair: dict[tuple[int, int], list[object]],
-    corrected_region_edges_by_pair: dict[tuple[int, int], list[object]],
-    rejected_metadata: list[dict[str, int | str | None]],
-    flow_graph,
-    modifications: list,
-    owned_blocks: set[int],
-    owned_edges: set[tuple[int, int]],
-    accepted_metadata: list[dict[str, int | str | None]],
-    structured_region_edge_pairs: set[tuple[str, int, int]],
-    structured_region_accepted_counts: Counter[str],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-    builder,
-    node_by_key: dict,
-    dispatcher_serial: int,
-    mba,
-) -> bool:
-    raw_matching_edges = list(structured_region_edges_by_pair.get(force_edge, ()))
-    if not raw_matching_edges:
-        return False
-
-    def _try_edge_set(
-        matching_edges: list[object],
-        *,
-        variant: str,
-    ) -> tuple[bool, int | None, int | None, tuple[int, ...] | None]:
-        source_blocks = {
-            int(getattr(getattr(edge, "source_anchor", None), "block_serial", -1))
-            for edge in matching_edges
-        }
-        source_blocks.discard(-1)
-        target_entries = {
-            int(getattr(edge, "target_entry_anchor"))
-            for edge in matching_edges
-            if getattr(edge, "target_entry_anchor", None) is not None
-        }
-        if len(source_blocks) != 1 or len(target_entries) != 1:
-            return False, None, None, None
-
-        source_block = next(iter(source_blocks))
-        target_entry = next(iter(target_entries))
-        source_snapshot = flow_graph.get_block(int(source_block))
-        if source_snapshot is None or int(getattr(source_snapshot, "nsucc", 0)) != 1:
-            return False, None, None, None
-
-        target_snapshot = flow_graph.get_block(int(target_entry))
-        if target_snapshot is None or int(getattr(target_snapshot, "nsucc", 0)) != 1:
-            logger.info(
-                "RECON DAG: structured region direct-source override skipped %s for %s via %s target=%s variant=%s reason=complex_target_nsucc_%s",
-                region_name,
-                "0x%08X->0x%08X" % force_edge,
-                blk_label(mba, int(source_block)),
-                blk_label(mba, int(target_entry)),
-                variant,
-                (
-                    "missing"
-                    if target_snapshot is None
-                    else int(getattr(target_snapshot, "nsucc", 0))
-                ),
-            )
-            return False, None, None, None
-
-        ordered_path = tuple(int(serial) for serial in (matching_edges[0].ordered_path or ()))
-        if not ordered_path:
-            ordered_path = (int(source_block),)
-        direct_plan = plan_direct_reconstruction_modifications(
-            flow_graph=flow_graph,
-            horizon_block=int(source_block),
-            target_entry=int(target_entry),
-            ordered_path=ordered_path,
-        )
-        if not direct_plan.accepted:
-            logger.info(
-                "RECON DAG: structured region direct-source override rejected %s for %s via %s target=%s variant=%s reason=%s",
-                region_name,
-                "0x%08X->0x%08X" % force_edge,
-                blk_label(mba, int(source_block)),
-                blk_label(mba, int(target_entry)),
-                variant,
-                direct_plan.rejection_reason,
-            )
-            return False, None, None, None
-
-        modifications.extend(direct_plan.modifications)
-        owned_blocks.add(int(source_block))
-        owned_edges.add((int(source_block), int(target_entry)))
-        passthrough_count = 0
-        if (
-            getattr(getattr(matching_edges[0], "kind", None), "name", None)
-            == "CONDITIONAL_TRANSITION"
-        ):
-            source_key = getattr(matching_edges[0], "source_key", None)
-            source_node = node_by_key.get(source_key)
-            pt_entry_direct: int | None = None
-            if (
-                source_node is not None
-                and getattr(source_key, "state_const", None) is not None
-            ):
-                pt_entry_direct = int(source_node.entry_anchor)
-            pt_plan_direct = plan_passthrough_reconstruction_modifications(
-                flow_graph=flow_graph,
-                ordered_path=ordered_path,
-                horizon_block=int(source_block),
-                dispatcher_serial=dispatcher_serial,
-                current_state_entry=pt_entry_direct,
-            )
-            modifications.extend(pt_plan_direct.modifications)
-            passthrough_count = len(pt_plan_direct.modifications)
-        if (
-            region_name == _SUB7FFD_DOWNSTREAM_REGION_NAME
-            and force_edge == _SUB7FFD_DOWNSTREAM_HEAD_FORCE_EDGE
-            and variant == "corrected"
-            and int(source_block) == 170
-            and int(target_entry) == _SUB7FFD_DOWNSTREAM_HEAD_RESCUE_SOURCE
-            and raw_matching_edges
-        ):
-            raw_target_entries = {
-                int(getattr(edge, "target_entry_anchor"))
-                for edge in raw_matching_edges
-                if getattr(edge, "target_entry_anchor", None) is not None
-            }
-            if raw_target_entries == {_SUB7FFD_DOWNSTREAM_HEAD_RESCUE_TARGET}:
-                rescue_mod = builder.edge_redirect(
-                    source_block=_SUB7FFD_DOWNSTREAM_HEAD_RESCUE_SOURCE,
-                    target_block=_SUB7FFD_DOWNSTREAM_HEAD_RESCUE_TARGET,
-                    via_pred=int(source_block),
-                )
-                modifications.append(rescue_mod)
-                owned_blocks.add(_SUB7FFD_DOWNSTREAM_HEAD_RESCUE_SOURCE)
-                owned_edges.add(
-                    (
-                        _SUB7FFD_DOWNSTREAM_HEAD_RESCUE_SOURCE,
-                        _SUB7FFD_DOWNSTREAM_HEAD_RESCUE_TARGET,
-                    )
-                )
-                logger.info(
-                    "RECON DAG: structured region corrected head rescue %s forced %s via %s rescue=%s->%s",
-                    region_name,
-                    "0x%08X->0x%08X" % force_edge,
-                    blk_label(mba, int(source_block)),
-                    blk_label(mba, _SUB7FFD_DOWNSTREAM_HEAD_RESCUE_SOURCE),
-                    blk_label(mba, _SUB7FFD_DOWNSTREAM_HEAD_RESCUE_TARGET),
-                )
-        accepted_metadata.append(
-            make_edge_metadata(
-                matching_edges[0],
-                horizon_block=int(source_block),
-                target_entry=int(target_entry),
-                emission_mode=(
-                    "structured_head_direct"
-                    if variant == "raw"
-                    else "structured_head_corrected_direct"
-                ),
-            )
-        )
-        structured_region_accepted_counts[region_name] += 1
-        structured_region_accepted_pairs[region_name].add(force_edge)
-        logger.info(
-            "RECON DAG: structured region direct-source override %s forced %s via %s target=%s variant=%s passthrough=%d",
-            region_name,
-            "0x%08X->0x%08X" % force_edge,
-            blk_label(mba, int(source_block)),
-            blk_label(mba, int(target_entry)),
-            variant,
-            passthrough_count,
-        )
-        return True, int(source_block), int(target_entry), ordered_path
-
-    raw_source_blocks = {
-        int(getattr(getattr(edge, "source_anchor", None), "block_serial", -1))
-        for edge in raw_matching_edges
-    }
-    raw_source_blocks.discard(-1)
-    matching_rejections = [
-        rejection
-        for rejection in rejected_metadata
-        if int(rejection.get("target_state") or -1) == int(force_edge[1])
-        and int(rejection.get("source_block") or -1) in raw_source_blocks
-    ]
-    rejection_reasons = {
-        str(rejection.get("rejection_reason") or "")
-        for rejection in matching_rejections
-    }
-    if rejection_reasons != {"missing_via_pred"}:
-        return False
-
-    accepted, _, _, _ = _try_edge_set(raw_matching_edges, variant="raw")
-    if accepted:
-        return True
-
-    if (
-        region_name == _SUB7FFD_DOWNSTREAM_REGION_NAME
-        and force_edge == _SUB7FFD_DOWNSTREAM_HEAD_FORCE_EDGE
-    ):
-        logger.info(
-            "RECON DAG: structured region corrected direct-source override disabled for %s %s; leaving head edge to bridge/postprocess",
-            region_name,
-            "0x%08X->0x%08X" % force_edge,
-        )
-        return False
-
-    corrected_matching_edges = list(corrected_region_edges_by_pair.get(force_edge, ()))
-    if corrected_matching_edges:
-        accepted, _, _, _ = _try_edge_set(
-            corrected_matching_edges,
-            variant="corrected",
-        )
-        if accepted:
-            return True
-
-    return False
-
-
-def _bridge_exit_block_for_edge(
-    edge,
-    *,
-    dispatcher_region: set[int],
-    dispatcher_serial: int,
-) -> int | None:
-    if edge.ordered_path:
-        for serial in reversed(edge.ordered_path):
-            block_serial = int(serial)
-            if (
-                block_serial != dispatcher_serial
-                and block_serial not in dispatcher_region
-            ):
-                return block_serial
-        return None
-
-    source_block = int(edge.source_anchor.block_serial)
-    if source_block == dispatcher_serial or source_block in dispatcher_region:
-        return None
-    return source_block
-
-
-def _late_rewrite_memberships(
-    *,
-    state_edge_pair: tuple[int, int] | None,
-    structured_regions,
-    structured_region_candidate_pairs: dict[str, list[tuple[int, int]]],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-) -> tuple[dict[str, str], ...]:
-    if state_edge_pair is None:
-        return ()
-
-    source_state, target_state = state_edge_pair
-    memberships: list[dict[str, str]] = []
-    for region in structured_regions:
-        region_name = str(region.region_name)
-        region_states = {int(state) & 0xFFFFFFFF for state in region.state_values}
-        region_internal_edges = {
-            (int(src) & 0xFFFFFFFF, int(dst) & 0xFFFFFFFF)
-            for src, dst in region.internal_state_edges
-        }
-        region_exit_states = {
-            int(state) & 0xFFFFFFFF for state in getattr(region, "exit_state_values", ())
-        }
-        candidate_pairs = set(structured_region_candidate_pairs.get(region_name, ()))
-        accepted_pairs = set(structured_region_accepted_pairs.get(region_name, ()))
-
-        if state_edge_pair in region_internal_edges:
-            if state_edge_pair in accepted_pairs:
-                primary_status = "accepted_primary_region"
-            elif state_edge_pair in candidate_pairs:
-                primary_status = "raw_primary_region_candidate_unaccepted"
-            else:
-                primary_status = "internal_region_edge_without_primary_candidate"
-            memberships.append(
-                {
-                    "region_name": region_name,
-                    "role": "internal",
-                    "leak_unit": region_name,
-                    "primary_status": primary_status,
-                }
-            )
-            continue
-
-        if source_state in region_states and target_state in region_exit_states:
-            memberships.append(
-                {
-                    "region_name": region_name,
-                    "role": "exit_frontier",
-                    "leak_unit": f"{region_name}:exit_frontier",
-                    "primary_status": "outside_primary_region_contract",
-                }
-            )
-            continue
-
-        if source_state in region_exit_states:
-            memberships.append(
-                {
-                    "region_name": region_name,
-                    "role": "post_exit_frontier",
-                    "leak_unit": f"{region_name}:post_exit_frontier",
-                    "primary_status": "outside_primary_region_contract",
-                }
-            )
-
-    return tuple(memberships)
-
-
-def _build_late_rewrite_semantic_indexes(
-    *,
-    dag,
-    dispatcher_region: set[int],
-    dispatcher_serial: int,
-    structured_regions,
-    structured_region_candidate_pairs: dict[str, list[tuple[int, int]]],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-) -> tuple[
-    dict[tuple[int, int], list[dict[str, object]]],
-    dict[tuple[int, int, int | None], list[dict[str, object]]],
-]:
-    bridge_index: dict[tuple[int, int], list[dict[str, object]]] = defaultdict(list)
-    feeder_index: dict[tuple[int, int, int | None], list[dict[str, object]]] = defaultdict(list)
-    for edge in getattr(dag, "edges", ()):
-        target_entry = getattr(edge, "target_entry_anchor", None)
-        if target_entry is None:
-            continue
-        state_edge_pair = _state_edge_pair(edge)
-        memberships = _late_rewrite_memberships(
-            state_edge_pair=state_edge_pair,
-            structured_regions=structured_regions,
-            structured_region_candidate_pairs=structured_region_candidate_pairs,
-            structured_region_accepted_pairs=structured_region_accepted_pairs,
-        )
-        record = {
-            "state_edge_pair": state_edge_pair,
-            "edge_kind": edge_kind_name(edge),
-            "memberships": memberships,
-        }
-        bridge_exit_block = _bridge_exit_block_for_edge(
-            edge,
-            dispatcher_region=dispatcher_region,
-            dispatcher_serial=dispatcher_serial,
-        )
-        if bridge_exit_block is not None:
-            bridge_index[(int(bridge_exit_block), int(target_entry))].append(record)
-        feeder_index[
-            (
-                int(edge.source_anchor.block_serial),
-                int(target_entry),
-                getattr(edge.source_anchor, "branch_arm", None),
-            )
-        ].append(record)
-    return dict(bridge_index), dict(feeder_index)
-
-
-def _format_state_pair(state_edge_pair: tuple[int, int] | None) -> str:
-    if state_edge_pair is None:
-        return "none"
-    return "0x%08X->0x%08X" % state_edge_pair
-
-
-def _log_late_rewrite_fidelity(
-    *,
-    logger,
-    mba,
-    structured_region_accepted_counts: Counter[str],
-    structured_regions,
-    structured_region_candidate_pairs: dict[str, list[tuple[int, int]]],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-    dispatcher_region: set[int],
-    dispatcher_serial: int,
-    dag,
-    postprocess_plan,
-) -> dict[str, object]:
-    primary_region_edges = int(
-        sum(len(pairs) for pairs in structured_region_accepted_pairs.values())
-    )
-    bridge_recovery_edges = len(postprocess_plan.bridge_plan.modifications)
-    feeder_recovery_edges = len(postprocess_plan.feeder_plan.modifications) + len(
-        postprocess_plan.fixpoint_feeder_plan.modifications
-    )
-    return_recovery_edges = len(postprocess_plan.return_plan.modifications)
-    late_local_redirect_edges = (
-        bridge_recovery_edges + feeder_recovery_edges + return_recovery_edges
-    )
-    logger.info(
-        "RECON DAG: fidelity primary_region_edges=%d bridge_recovery_edges=%d late_local_redirect_edges=%d",
-        primary_region_edges,
-        bridge_recovery_edges,
-        late_local_redirect_edges,
-    )
-
-    bridge_index, feeder_index = _build_late_rewrite_semantic_indexes(
-        dag=dag,
-        dispatcher_region=dispatcher_region,
-        dispatcher_serial=dispatcher_serial,
-        structured_regions=structured_regions,
-        structured_region_candidate_pairs=structured_region_candidate_pairs,
-        structured_region_accepted_pairs=structured_region_accepted_pairs,
-    )
-    leak_units: Counter[str] = Counter()
-    leak_roles: Counter[str] = Counter()
-    detailed_entries: list[dict[str, object]] = []
-
-    def _record_entry(
-        *,
-        planner: str,
-        source_block: int,
-        target_block: int,
-        branch_arm: int | None,
-        tag: str,
-        matches: list[dict[str, object]],
-    ) -> None:
-        if not matches:
-            logger.info(
-                "RECON DAG: late rewrite planner=%s blk[%d]%s -> blk[%d] tag=%s semantic=unmatched",
-                planner,
-                source_block,
-                f".arm{branch_arm}" if branch_arm is not None else "",
-                target_block,
-                tag,
-            )
-            detailed_entries.append(
-                {
-                    "planner": planner,
-                    "source_block": source_block,
-                    "target_block": target_block,
-                    "branch_arm": branch_arm,
-                    "tag": tag,
-                    "semantic_status": "unmatched",
-                }
-            )
-            return
-
-        pair_labels = sorted({_format_state_pair(match["state_edge_pair"]) for match in matches})
-        edge_kinds = sorted({str(match["edge_kind"]) for match in matches})
-        memberships = [
-            membership
-            for match in matches
-            for membership in match["memberships"]
-        ]
-        if not memberships:
-            logger.info(
-                "RECON DAG: late rewrite planner=%s blk[%d]%s -> blk[%d] tag=%s states=%s edge_kinds=%s structural_role=outside_structured_regions",
-                planner,
-                source_block,
-                f".arm{branch_arm}" if branch_arm is not None else "",
-                target_block,
-                tag,
-                pair_labels,
-                edge_kinds,
-            )
-            detailed_entries.append(
-                {
-                    "planner": planner,
-                    "source_block": source_block,
-                    "target_block": target_block,
-                    "branch_arm": branch_arm,
-                    "tag": tag,
-                    "semantic_status": "outside_structured_regions",
-                    "state_pairs": tuple(pair_labels),
-                    "edge_kinds": tuple(edge_kinds),
-                }
-            )
-            return
-
-        unit_labels = sorted({membership["leak_unit"] for membership in memberships})
-        role_labels = sorted({membership["role"] for membership in memberships})
-        primary_statuses = sorted({membership["primary_status"] for membership in memberships})
-        for membership in memberships:
-            leak_units[str(membership["leak_unit"])] += 1
-            leak_roles[str(membership["role"])] += 1
-        logger.info(
-            "RECON DAG: late rewrite planner=%s blk[%d]%s -> blk[%d] tag=%s states=%s edge_kinds=%s leak_units=%s roles=%s primary_status=%s",
-            planner,
-            source_block,
-            f".arm{branch_arm}" if branch_arm is not None else "",
-            target_block,
-            tag,
-            pair_labels,
-            edge_kinds,
-            unit_labels,
-            role_labels,
-            primary_statuses,
-        )
-        detailed_entries.append(
-            {
-                "planner": planner,
-                "source_block": source_block,
-                "target_block": target_block,
-                "branch_arm": branch_arm,
-                "tag": tag,
-                "semantic_status": "structured_leakage",
-                "state_pairs": tuple(pair_labels),
-                "edge_kinds": tuple(edge_kinds),
-                "leak_units": tuple(unit_labels),
-                "roles": tuple(role_labels),
-                "primary_status": tuple(primary_statuses),
-            }
-        )
-
-    for entry in postprocess_plan.bridge_plan.log_entries:
-        matches = bridge_index.get((int(entry.source_block), int(entry.target_block)), [])
-        _record_entry(
-            planner="bridge",
-            source_block=int(entry.source_block),
-            target_block=int(entry.target_block),
-            branch_arm=getattr(entry, "branch_arm", None),
-            tag=str(entry.tag),
-            matches=matches,
-        )
-    for entry in postprocess_plan.feeder_plan.log_entries:
-        matches = feeder_index.get(
-            (
-                int(entry.source_block),
-                int(entry.target_block),
-                getattr(entry, "branch_arm", None),
-            ),
-            [],
-        )
-        _record_entry(
-            planner="feeder",
-            source_block=int(entry.source_block),
-            target_block=int(entry.target_block),
-            branch_arm=getattr(entry, "branch_arm", None),
-            tag=str(entry.tag),
-            matches=matches,
-        )
-
-    if leak_units:
-        logger.info(
-            "RECON DAG: leaked semantic units: %s",
-            ", ".join(f"{unit}={count}" for unit, count in leak_units.most_common()),
-        )
-    if leak_roles:
-        logger.info(
-            "RECON DAG: leaked semantic roles: %s",
-            ", ".join(f"{role}={count}" for role, count in leak_roles.most_common()),
-        )
-
-    return {
-        "primary_region_edges": primary_region_edges,
-        "bridge_recovery_edges": bridge_recovery_edges,
-        "late_local_redirect_edges": late_local_redirect_edges,
-        "leaked_units": tuple((unit, count) for unit, count in leak_units.most_common()),
-        "leaked_roles": tuple((role, count) for role, count in leak_roles.most_common()),
-        "late_rewrite_entries": tuple(detailed_entries),
-    }
-
-
-def _emit_structured_frontier_overrides(
-    *,
-    dag,
-    flow_graph,
-    builder: ModificationBuilder,
-    modifications: list,
-    owned_blocks: set[int],
-    owned_edges: set[tuple[int, int]],
-    accepted_metadata: list[dict[str, int | str | None]],
-    dispatcher_region: set[int],
-    dispatcher_serial: int,
-    structured_regions,
-    structured_region_candidate_pairs: dict[str, list[tuple[int, int]]],
-    structured_region_accepted_pairs: dict[str, set[tuple[int, int]]],
-    mba,
-) -> list[dict[str, object]]:
-    claimed_sources, claimed_targets = collect_mod_claims(modifications)
-    claimed_sources.update(int(block_serial) for block_serial in owned_blocks)
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in dispatcher_region)
-    emitted_records: list[dict[str, object]] = []
-
-    for edge in getattr(dag, "edges", ()):
-        target_entry = getattr(edge, "target_entry_anchor", None)
-        if target_entry is None:
-            continue
-        memberships = [
-            membership
-            for membership in _late_rewrite_memberships(
-                state_edge_pair=_state_edge_pair(edge),
-                structured_regions=structured_regions,
-                structured_region_candidate_pairs=structured_region_candidate_pairs,
-                structured_region_accepted_pairs=structured_region_accepted_pairs,
-            )
-            if membership["region_name"]
-            in {_SUB7FFD_INITIAL_REGION_NAME, "sub7ffd_retry_chain_region"}
-            and membership["role"] in {"exit_frontier", "post_exit_frontier"}
-        ]
-        if not memberships:
-            continue
-        exit_block = _bridge_exit_block_for_edge(
-            edge,
-            dispatcher_region=dispatcher_region,
-            dispatcher_serial=dispatcher_serial,
-        )
-        if exit_block is None:
-            continue
-        exit_block = int(exit_block)
-        target_entry = int(target_entry)
-        if _should_defer_structured_frontier_override(
-            edge=edge,
-            memberships=memberships,
-            exit_block=exit_block,
-            target_entry=target_entry,
-        ):
-            logger.info(
-                "RECON DAG: deferring structured frontier override blk[%d] -> blk[%d] state=%s roles=%s to bridge/postprocess",
-                exit_block,
-                target_entry,
-                _format_state_pair(_state_edge_pair(edge)),
-                sorted({membership['role'] for membership in memberships}),
-            )
-            continue
-        if exit_block in claimed_sources or target_entry in claimed_targets:
-            continue
-        if target_entry in bst_set:
-            continue
-
-        block = flow_graph.get_block(exit_block)
-        if block is None:
-            continue
-        if any(int(block.succs[arm]) == target_entry for arm in range(block.nsucc)):
-            claimed_targets.add(target_entry)
-            continue
-
-        modification = None
-        branch_arm: int | None = None
-        tag = "structured_exit_frontier"
-        if block.nsucc == 1:
-            old_target = int(block.succs[0])
-            if old_target != dispatcher_serial and old_target not in bst_set:
-                continue
-            modification = builder.goto_redirect(
-                source_block=exit_block,
-                target_block=target_entry,
-                old_target=old_target,
-            )
-        elif block.nsucc == 2:
-            for arm in range(2):
-                arm_target = int(block.succs[arm])
-                if arm_target == dispatcher_serial or arm_target in bst_set:
-                    if arm != 1:
-                        break
-                    branch_arm = arm
-                    modification = builder.edge_redirect(
-                        source_block=exit_block,
-                        target_block=target_entry,
-                        old_target=arm_target,
-                    )
-                    tag = "structured_exit_frontier_2way"
-                    break
-        if modification is None:
-            continue
-
-        modifications.append(modification)
-        claimed_sources.add(exit_block)
-        claimed_targets.add(target_entry)
-        owned_edges.add((exit_block, target_entry))
-        accepted_metadata.append(
-            make_edge_metadata(
-                edge,
-                horizon_block=exit_block,
-                target_entry=target_entry,
-                emission_mode=tag,
-            )
-        )
-        emitted_records.append(
-            {
-                "source_block": exit_block,
-                "target_entry": target_entry,
-                "branch_arm": branch_arm,
-                "tag": tag,
-                "state_edge_pair": _state_edge_pair(edge),
-                "roles": tuple(sorted({membership["role"] for membership in memberships})),
-            }
-        )
-        logger.info(
-            "RECON DAG: structured frontier override blk[%d]%s -> blk[%d] roles=%s state=%s",
-            exit_block,
-            f".arm{branch_arm}" if branch_arm is not None else "",
-            target_entry,
-            sorted({membership["role"] for membership in memberships}),
-            _format_state_pair(_state_edge_pair(edge)),
-        )
-
-    return emitted_records
-
-
-def _collect_sub7ffd_may_only_probe_blocks(
-    *,
-    structured_region_fidelity: dict[str, object],
-    structured_frontier_overrides: list[dict[str, object]],
-    postprocess_plan,
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Return leaked-frontier blocks for the explicit may-only liveness probe.
-
-    The old microcode dump bug effectively replaced may-lists with
-    may-minus-must on the live MBA.  We do not want to do that globally again,
-    but for sub_7FFD exploration we can probe the same effect explicitly on the
-    leaked initial frontier blocks that still fall out into bridge/local
-    recovery.
-    """
-    block_serials: set[int] = set()
-    structured_frontier_targets: set[int] = set()
-    leaked_entries = structured_region_fidelity.get("late_rewrite_entries", ())
-    if isinstance(leaked_entries, tuple):
-        iterable_entries = leaked_entries
-    elif isinstance(leaked_entries, list):
-        iterable_entries = tuple(leaked_entries)
-    else:
-        iterable_entries = ()
-
-    for entry in iterable_entries:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("semantic_status") != "structured_leakage":
-            continue
-        leak_units = {
-            str(unit)
-            for unit in entry.get("leak_units", ())
-            if unit is not None
-        }
-        if not any(
-            unit.startswith(f"{_SUB7FFD_INITIAL_REGION_NAME}:")
-            for unit in leak_units
-        ):
-            continue
-        source_block = entry.get("source_block")
-        if isinstance(source_block, int):
-            block_serials.add(source_block)
-
-    for entry in structured_frontier_overrides:
-        if not isinstance(entry, dict):
-            continue
-        roles = {str(role) for role in entry.get("roles", ()) if role is not None}
-        if not roles & {"exit_frontier", "post_exit_frontier"}:
-            continue
-        source_block = entry.get("source_block")
-        if isinstance(source_block, int):
-            block_serials.add(source_block)
-        target_entry = entry.get("target_entry")
-        if isinstance(target_entry, int):
-            structured_frontier_targets.add(target_entry)
-
-    for entry in getattr(getattr(postprocess_plan, "bridge_plan", None), "log_entries", ()):
-        source_block = getattr(entry, "source_block", None)
-        target_block = getattr(entry, "target_block", None)
-        if not isinstance(source_block, int) or not isinstance(target_block, int):
-            continue
-        if target_block in structured_frontier_targets:
-            block_serials.add(source_block)
-
-    return tuple(sorted(block_serials)), tuple(sorted(structured_frontier_targets))
 
 
 def _finalize_reconstruction_fragment(
@@ -1610,14 +721,10 @@ class StateWriteReconstructionStrategy:
             return None
 
         builder = ModificationBuilder.from_snapshot(snapshot)
-        transition_result = TransitionResult(
-            transitions=list(sm.transitions),
-            handlers=dict(sm.handlers),
-            assignment_map=dict(sm.assignment_map),
-            initial_state=sm.initial_state,
+        transition_result = build_transition_result_from_state_machine(
+            sm,
             pre_header_serial=getattr(bst_result, "pre_header_serial", None),
             strategy_name=self.name,
-            resolved_count=len(sm.transitions),
         )
         _corrected_dag_out: list = []
         dag = build_live_linearized_state_dag_from_graph(
@@ -1678,19 +785,19 @@ class StateWriteReconstructionStrategy:
                     cache_key[1],
                     [str(region.region_name) for region in cached_structured_regions],
                 )
-        structured_region_edge_pairs = {
-            (str(region.region_name), int(source), int(target))
-            for region in structured_regions
-            for source, target in region.internal_state_edges
-        }
-        structured_region_source_blocks: dict[tuple[int, int], set[int]] = defaultdict(set)
-        for edge in dag.edges:
-            state_edge_pair = _state_edge_pair(edge)
-            if state_edge_pair is None:
-                continue
-            structured_region_source_blocks[state_edge_pair].add(
-                int(edge.source_anchor.block_serial)
-            )
+        indexes = build_reconstruction_discovery_indexes(
+            dag=dag,
+            corrected_dag=corrected_dag,
+            structured_regions=structured_regions,
+        )
+        structured_region_edge_pairs = indexes.structured_region_edge_pairs
+        structured_region_source_blocks = indexes.structured_region_source_blocks
+        dispatcher_region = indexes.dispatcher_region
+        shared_suffix_blocks = indexes.shared_suffix_blocks
+        corrected_boundary_shared_blocks = indexes.corrected_boundary_shared_blocks
+        dag_maps = indexes.dag_maps
+        node_by_key = indexes.node_by_key
+        dispatcher_serial = indexes.dispatcher_serial
         for region in structured_regions:
             logger.info(
                 "RECON DAG: structured region discovered %s entry=0x%08X states=%d internal_edges=%d exits=%d",
@@ -1711,16 +818,6 @@ class StateWriteReconstructionStrategy:
         # Phase 1 uses dag (stale augmented — identical to baseline) so
         # that corridor redirect targets are unchanged.  Late phases below
         # switch to corrected_dag.
-        dispatcher_region = set(dag.bst_node_blocks)
-        if dag.dispatcher_entry_serial >= 0:
-            dispatcher_region.add(int(dag.dispatcher_entry_serial))
-        shared_suffix_blocks = collect_shared_suffix_blocks(dag)
-        corrected_boundary_shared_blocks = collect_boundary_protected_shared_blocks(
-            corrected_dag
-        )
-        dag_maps = build_dag_node_maps(dag)
-        node_by_key = dag_maps.node_by_key
-        dispatcher_serial = int(dag.dispatcher_entry_serial)
 
         raw_candidates: list[ReconstructionCandidate] = []
         rejected_metadata: list[dict[str, int | str | None]] = []
@@ -1838,16 +935,11 @@ class StateWriteReconstructionStrategy:
         modifications: list = []
         owned_blocks: set[int] = set()
         owned_edges: set[tuple[int, int]] = set()
-        accepted_metadata: list[dict[str, int | str | None]] = []
-        structured_region_accepted_counts: Counter[str] = Counter()
-        structured_region_accepted_pairs: dict[str, set[tuple[int, int]]] = defaultdict(set)
-        shared_group_candidates_by_block: dict[int, list[ReconstructionCandidate]] = defaultdict(list)
-        for candidate in raw_candidates:
-            if (
-                candidate.emission_mode not in {"conditional_arm", "direct"}
-                and candidate.first_shared_block is not None
-            ):
-                shared_group_candidates_by_block[int(candidate.first_shared_block)].append(candidate)
+        ledger = RoundAcceptLedger()
+        accepted_metadata = ledger.accepted_metadata
+        structured_region_accepted_counts = ledger.structured_region_accepted_counts
+        structured_region_accepted_pairs = ledger.structured_region_accepted_pairs
+        shared_group_candidates_by_block = group_candidates_by_shared_block(raw_candidates)
         if 95 in shared_group_candidates_by_block:
             logger.info(
                 "RECON DAG: shared-group bucket blk[95] candidates=%s",
@@ -1887,7 +979,7 @@ class StateWriteReconstructionStrategy:
             # which can wire edges rejected by the strict corridor emitter.
 
         raw_candidates, collapsed_same_target_conditionals = (
-            _canonicalize_same_target_conditional_candidates(raw_candidates)
+            canonicalize_same_target_conditional_candidates(raw_candidates)
         )
         if collapsed_same_target_conditionals:
             logger.info(
@@ -1955,12 +1047,11 @@ class StateWriteReconstructionStrategy:
                 )
         for result in run.conditional_results:
             candidate = result.candidate
-            _record_accept_metadata(accepted_metadata, candidate)
-            _record_region_accept(
-                candidate=candidate,
+            ledger.record_accept(
+                candidate,
                 structured_region_edge_pairs=structured_region_edge_pairs,
-                structured_region_accepted_counts=structured_region_accepted_counts,
-                structured_region_accepted_pairs=structured_region_accepted_pairs,
+                edge_metadata_fn=make_edge_metadata,
+                state_edge_pair_fn=_state_edge_pair,
             )
             logger.info(
                 "RECON DAG: conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
@@ -1975,12 +1066,11 @@ class StateWriteReconstructionStrategy:
         for result in run.direct_results:
             if result.accepted_candidate is not None:
                 candidate = result.accepted_candidate
-                _record_accept_metadata(accepted_metadata, candidate)
-                _record_region_accept(
-                    candidate=candidate,
+                ledger.record_accept(
+                    candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
-                    structured_region_accepted_counts=structured_region_accepted_counts,
-                    structured_region_accepted_pairs=structured_region_accepted_pairs,
+                    edge_metadata_fn=make_edge_metadata,
+                    state_edge_pair_fn=_state_edge_pair,
                 )
                 logger.info(
                     "RECON DAG: direct %s state=0x%08X -> %s (nopped=%d)",
@@ -2011,13 +1101,13 @@ class StateWriteReconstructionStrategy:
             not in structured_region_accepted_pairs.get(region_name, set())
             for edge in structured_region_edges_by_pair.get((source_state, target_state), ())
         )
-        narrow_branch_local_candidates = _build_narrow_branch_local_reconstruction_candidates(
+        narrow_branch_local_candidates = discover_narrow_branch_local_reconstruction_candidates(
             unresolved_edges=unresolved_branch_local_edges,
             flow_graph=flow_graph,
         )
         if narrow_branch_local_candidates:
             narrow_branch_local_candidates, collapsed_branch_local_conditionals = (
-                _canonicalize_same_target_conditional_candidates(
+                canonicalize_same_target_conditional_candidates(
                     list(narrow_branch_local_candidates)
                 )
             )
@@ -2044,12 +1134,11 @@ class StateWriteReconstructionStrategy:
             )
             for result in fallback_run.conditional_results:
                 candidate = result.candidate
-                _record_accept_metadata(accepted_metadata, candidate)
-                _record_region_accept(
-                    candidate=candidate,
+                ledger.record_accept(
+                    candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
-                    structured_region_accepted_counts=structured_region_accepted_counts,
-                    structured_region_accepted_pairs=structured_region_accepted_pairs,
+                    edge_metadata_fn=make_edge_metadata,
+                    state_edge_pair_fn=_state_edge_pair,
                 )
                 logger.info(
                     "RECON DAG: narrow branch-local conditional_arm %s state=0x%08X -> %s (arm=%d, redirects=%d, passthrough=%d)",
@@ -2064,22 +1153,20 @@ class StateWriteReconstructionStrategy:
                 if result.accepted_candidate is None:
                     continue
                 candidate = result.accepted_candidate
-                _record_accept_metadata(accepted_metadata, candidate)
-                _record_region_accept(
-                    candidate=candidate,
+                ledger.record_accept(
+                    candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
-                    structured_region_accepted_counts=structured_region_accepted_counts,
-                    structured_region_accepted_pairs=structured_region_accepted_pairs,
+                    edge_metadata_fn=make_edge_metadata,
+                    state_edge_pair_fn=_state_edge_pair,
                 )
             for result in fallback_run.shared_group_results:
                 shared_group_results.append(result)
                 for candidate in result.accepted_candidates:
-                    _record_accept_metadata(accepted_metadata, candidate)
-                    _record_region_accept(
-                        candidate=candidate,
+                    ledger.record_accept(
+                        candidate,
                         structured_region_edge_pairs=structured_region_edge_pairs,
-                        structured_region_accepted_counts=structured_region_accepted_counts,
-                        structured_region_accepted_pairs=structured_region_accepted_pairs,
+                        edge_metadata_fn=make_edge_metadata,
+                        state_edge_pair_fn=_state_edge_pair,
                     )
             if fallback_accepted_candidates:
                 logger.info(
@@ -2221,13 +1308,16 @@ class StateWriteReconstructionStrategy:
                             blk_label(mba, cached_target_entry),
                             cached_direct_plan.rejection_reason,
                         )
-                    if _emit_missing_via_pred_direct_override(
+                    missing_via_pred_plan = discover_missing_via_pred_direct_overrides(
                         force_edge=force_edge,
                         region_name=str(region.region_name),
                         structured_region_edges_by_pair=structured_region_edges_by_pair,
                         corrected_region_edges_by_pair=corrected_region_edges_by_pair,
                         rejected_metadata=rejected_metadata,
-                        flow_graph=flow_graph,
+                    )
+                    if missing_via_pred_plan is not None and emit_missing_via_pred_direct_overrides(
+                        missing_via_pred_plan,
+                        builder=builder,
                         modifications=modifications,
                         owned_blocks=owned_blocks,
                         owned_edges=owned_edges,
@@ -2235,10 +1325,12 @@ class StateWriteReconstructionStrategy:
                         structured_region_edge_pairs=structured_region_edge_pairs,
                         structured_region_accepted_counts=structured_region_accepted_counts,
                         structured_region_accepted_pairs=structured_region_accepted_pairs,
-                        builder=builder,
                         node_by_key=node_by_key,
                         dispatcher_serial=dispatcher_serial,
+                        flow_graph=flow_graph,
                         mba=mba,
+                        blk_label=blk_label,
+                        edge_metadata_fn=make_edge_metadata,
                     ):
                         continue
                     continue
@@ -2488,20 +1580,29 @@ class StateWriteReconstructionStrategy:
                 if not replacement_done:
                     shared_group_results.append(override_result)
 
-        structured_frontier_overrides = _emit_structured_frontier_overrides(
+        frontier_override_plans = discover_frontier_overrides(
             dag=dag,
             flow_graph=flow_graph,
-            builder=builder,
-            modifications=modifications,
-            owned_blocks=owned_blocks,
-            owned_edges=owned_edges,
-            accepted_metadata=accepted_metadata,
             dispatcher_region=dispatcher_region,
             dispatcher_serial=dispatcher_serial,
             structured_regions=structured_regions,
             structured_region_candidate_pairs=structured_region_candidate_pairs,
             structured_region_accepted_pairs=structured_region_accepted_pairs,
-            mba=mba,
+        )
+        _frontier_claimed_sources, _frontier_claimed_targets = collect_mod_claims(
+            modifications
+        )
+        _frontier_claimed_sources.update(
+            int(block_serial) for block_serial in owned_blocks
+        )
+        structured_frontier_overrides = emit_frontier_overrides(
+            frontier_override_plans,
+            builder=builder,
+            modifications=modifications,
+            owned_edges=owned_edges,
+            accepted_metadata=accepted_metadata,
+            claimed_sources=_frontier_claimed_sources,
+            claimed_targets=_frontier_claimed_targets,
         )
         _log_reconstruction_phase_probe(
             phase="pre_postprocess",
@@ -2624,15 +1725,11 @@ class StateWriteReconstructionStrategy:
             if not result.accepted_candidates:
                 continue
             for candidate in result.accepted_candidates:
-                _record_accept_metadata(
-                    accepted_metadata,
+                ledger.record_accept(
                     replace(candidate, emission_mode=result.emission_mode),
-                )
-                _record_region_accept(
-                    candidate=candidate,
                     structured_region_edge_pairs=structured_region_edge_pairs,
-                    structured_region_accepted_counts=structured_region_accepted_counts,
-                    structured_region_accepted_pairs=structured_region_accepted_pairs,
+                    edge_metadata_fn=make_edge_metadata,
+                    state_edge_pair_fn=_state_edge_pair,
                 )
             if result.emission_mode == "per_pred_redirect":
                 logger.info(
@@ -2663,7 +1760,7 @@ class StateWriteReconstructionStrategy:
                 )
 
         if structured_regions and postprocess.postprocess_plan is not None:
-            structured_region_fidelity = _log_late_rewrite_fidelity(
+            structured_region_fidelity = build_structured_region_fidelity_report(
                 logger=logger,
                 mba=mba,
                 structured_region_accepted_counts=structured_region_accepted_counts,
@@ -2680,7 +1777,7 @@ class StateWriteReconstructionStrategy:
                     structured_frontier_overrides
                 )
             may_only_probe_blocks, may_only_probe_targets = (
-                _collect_sub7ffd_may_only_probe_blocks(
+                collect_sub7ffd_may_only_probe_blocks(
                     structured_region_fidelity=structured_region_fidelity,
                     structured_frontier_overrides=structured_frontier_overrides,
                     postprocess_plan=postprocess.postprocess_plan,

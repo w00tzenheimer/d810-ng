@@ -59,6 +59,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.family import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     EXPERIMENTAL_STRATEGIES,
+    StateWriteReconstructionStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     PipelinePolicy,
@@ -199,7 +200,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             disabled_strategy_names={
                 "ConditionalForkFallbackStrategy",
             },
-            strategy_classes=EXPERIMENTAL_STRATEGIES,
+            # Region-first experimental strategy runs first; late-residual
+            # cleanup strategies are added ONE AT A TIME (see
+            # .claude/handoffs/2026-04-20-region-first-reconstruction-fold.md).
+            # Currently wired: StateWriteReconstructionStrategy — the
+            # direct-source / frontier / shared-group residual redirect driver.
+            strategy_classes=[
+                *EXPERIMENTAL_STRATEGIES,
+                StateWriteReconstructionStrategy,
+            ],
             recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,

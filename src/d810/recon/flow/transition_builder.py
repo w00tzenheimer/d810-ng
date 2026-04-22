@@ -54,6 +54,29 @@ class TransitionResult:
     resolved_count: int = 0
 
 
+def build_transition_result_from_state_machine(
+    sm,
+    *,
+    pre_header_serial: Optional[int] = None,
+    strategy_name: str = "",
+) -> TransitionResult:
+    """Factory: package a live ``StateMachine`` into a ``TransitionResult``.
+
+    Replaces the inline ``TransitionResult(transitions=list(sm.transitions), ...)``
+    construction formerly sitting inside ``StateWriteReconstructionStrategy.plan``.
+    Pure data transform: no IDA calls, no flow-graph access.
+    """
+    return TransitionResult(
+        transitions=list(sm.transitions),
+        handlers=dict(sm.handlers),
+        assignment_map=dict(sm.assignment_map),
+        initial_state=sm.initial_state,
+        pre_header_serial=pre_header_serial,
+        strategy_name=strategy_name,
+        resolved_count=len(sm.transitions),
+    )
+
+
 class TransitionBuilderStrategy(Protocol):
     """Protocol for pluggable transition-building strategies."""
 

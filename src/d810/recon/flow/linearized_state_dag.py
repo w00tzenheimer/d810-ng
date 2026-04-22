@@ -133,14 +133,10 @@ class BoundaryInlineMode(Enum):
     INLINE_SINGLE_LEVEL = auto()
 
 
-@dataclass(frozen=True, slots=True)
-class StateDagNodeKey:
-    """Stable identity for a state node."""
-
-    handler_serial: int
-    state_const: int | None = None
-    range_lo: int | None = None
-    range_hi: int | None = None
+# StateDagNodeKey lives in d810.cfg (lower layer) so cfg-layer lowering code can
+# instantiate it without an upward `cfg -> recon` import. Re-exported here to
+# preserve the public import surface of this module.
+from d810.cfg.state_dag_key import StateDagNodeKey  # noqa: E402  (kept near its recon peers)
 
 
 @dataclass(frozen=True, slots=True)
