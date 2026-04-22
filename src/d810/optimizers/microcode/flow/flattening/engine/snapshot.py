@@ -116,6 +116,17 @@ class AnalysisSnapshot:
     # tolerate ``None`` during the Phase A scaffolding rollout.
     discovery: ReconRoundDiscoveryContext | None = None
 
+    # Sub-strategy round index within the current pass. A "round" is the
+    # inner projected-replan iteration that some strategies run internally
+    # (notably LFG's ``execute_linearized_flow_graph_planning`` loop). 0
+    # means "pre-round / pass-entry"; LFG increments per internal round.
+    # Strategies reading ``discovery.dag`` MUST be aware that ``discovery``
+    # is pass-entry frozen — when ``round_number > 0`` the live CFG has
+    # already moved, so consulting ``discovery`` returns the ORIGINAL view,
+    # not the current projected view. Use ``round_summary`` (LFG-local)
+    # for the current projected DAG.
+    round_number: int = 0
+
     @property
     def state_constants(self) -> set:
         if self.state_summary is not None:
