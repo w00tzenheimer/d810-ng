@@ -93,6 +93,58 @@ from d810.recon.flow.dag_redirect_discovery import (
 from d810.recon.flow.linearized_dag_round_discovery import (
     build_linearized_dag_round_summary,
 )
+from d810.recon.flow.round_discovery_context_probe import (
+    compare_round_context_to_rebuild,
+    probe_enabled as _round_ctx_probe_enabled,
+)
+
+
+def _round_ctx_probe_wrap(snapshot, inner):
+    """Wrap ``build_linearized_dag_round_summary`` with an env-gated equivalence
+    probe against ``snapshot.discovery`` — fires only on the FIRST round summary
+    build of the pass.
+
+    ``snapshot.discovery`` is the pass-entry frozen DAG/indexes/structured-
+    regions view. ``round_summary`` is the round-local rebuild against the
+    PROJECTED flow_graph (original + cumulative modifications from earlier
+    rounds). They are only expected to match on round 1 (pass-entry inputs).
+    Round 2+ divergence is the intended pass-vs-round scope boundary, not a
+    bug.
+
+    When ``D810_RECON_ROUND_CTX_PROBE=1`` AND ``snapshot.discovery`` is present,
+    emit ONE INFO line on round 1 only:
+        ``ROUND CTX DAG EQUIV: match=yes``
+        ``ROUND CTX DAG EQUIV: match=no mismatches=[...]``
+    Subsequent round calls are silently delegated. B1 step 1 wiring — no
+    behavior change.
+    """
+    # Closure-local flag so each wrapped callback instance fires the probe
+    # at most once per pass.
+    state = {"probed": False}
+
+    def _wrapped(*args, **kwargs):
+        round_summary = inner(*args, **kwargs)
+        if state["probed"]:
+            return round_summary
+        ctx = getattr(snapshot, "discovery", None)
+        if ctx is not None and _round_ctx_probe_enabled():
+            try:
+                compare_round_context_to_rebuild(
+                    ctx,
+                    rebuild_dag=round_summary.dag,
+                    rebuild_corrected_dag=ctx.corrected_dag,
+                    rebuild_indexes=ctx.indexes,
+                )
+            except Exception:
+                logger.debug(
+                    "ROUND CTX DAG EQUIV probe failed", exc_info=True
+                )
+        state["probed"] = True
+        return round_summary
+
+    return _wrapped
+
+
 from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate,
@@ -1441,7 +1493,7 @@ class LinearizedFlowGraphStrategy:
             bst_result=bst_result,
             mba=mba,
             setup=dag_setup,
-            discover_round_summary=build_linearized_dag_round_summary,
+            discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
             build_projected_mba=build_mba_view_from_flow_graph,
             project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
                 base_flow_graph,
@@ -1951,7 +2003,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             bst_result=bst_result,
             mba=mba,
             setup=dag_setup,
-            discover_round_summary=build_linearized_dag_round_summary,
+            discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
             build_projected_mba=build_mba_view_from_flow_graph,
             project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
                 base_flow_graph,
