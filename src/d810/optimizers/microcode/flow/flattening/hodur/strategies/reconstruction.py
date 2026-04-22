@@ -104,6 +104,9 @@ from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate,
 )
+from d810.recon.flow.residual_alias_discovery import (
+    discover_residual_alias_overrides,
+)
 from d810.recon.flow.transition_builder import (
     TransitionResult,
     build_transition_result_from_state_machine,
@@ -1049,6 +1052,7 @@ class StateWriteReconstructionStrategy:
             collect_common_return_corridor=collect_common_return_corridor,
             collect_terminal_family_report=collect_terminal_family_report,
             build_reconstruction_candidate=build_reconstruction_candidate,
+            discover_residual_alias_overrides_fn=discover_residual_alias_overrides,
         )
         log_reconstruction_postprocess_result(
             logger,
