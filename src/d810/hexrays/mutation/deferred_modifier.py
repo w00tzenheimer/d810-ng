@@ -2190,6 +2190,77 @@ class DeferredGraphModifier:
 
         logger.info("Applying %d queued graph modifications", total_mod_count)
 
+        # D810_DEFERRED_DIAG_PHASES=1 → capture diag DB snapshots at
+        # phase boundaries inside DeferredGraphModifier.apply so future
+        # diagnostic queries can tell which phase mutated which blocks.
+        # Reuses the existing snapshots + blocks tables; no schema changes.
+        _diag_phases_enabled = (
+            os.getenv("D810_DEFERRED_DIAG_PHASES", "").strip() == "1"
+        )
+
+        def _capture_phase_snapshot(phase_label: str) -> None:
+            if not _diag_phases_enabled:
+                return
+            try:
+                from d810.core.diag import get_diag_db
+                from d810.core.diag.snapshot import snapshot_mba
+                from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                diag_db = get_diag_db(
+                    self.mba.entry_ea if self.mba is not None else 0
+                )
+                if diag_db is None:
+                    return
+                snapshot_mba(
+                    diag_db,
+                    mba_to_block_snapshots(self.mba),
+                    label=f"deferred_apply_{phase_label}",
+                    func_ea=self.mba.entry_ea if self.mba is not None else 0,
+                    maturity="MMAT_GLBOPT1",
+                    phase=phase_label,
+                )
+            except Exception:
+                logger.debug(
+                    "Deferred-apply phase snapshot [%s] failed (non-critical)",
+                    phase_label,
+                    exc_info=True,
+                )
+
+        _capture_phase_snapshot("pre_loop")
+
+        # D810_DEFERRED_WATCH_BLOCKS="75,76" → log after every mod how the
+        # watched blocks' succs/preds look, so we can correlate which mod
+        # actually mutated a block vs which mod just claimed to.
+        watch_blocks: list[int] = []
+        _watch_raw = os.getenv("D810_DEFERRED_WATCH_BLOCKS", "").strip()
+        if _watch_raw:
+            for token in _watch_raw.replace(",", " ").split():
+                try:
+                    watch_blocks.append(int(token, 10))
+                except ValueError:
+                    continue
+
+        def _capture_watch_state() -> dict[int, tuple[str, tuple[int, ...], tuple[int, ...]]]:
+            state: dict[int, tuple[str, tuple[int, ...], tuple[int, ...]]] = {}
+            for serial in watch_blocks:
+                blk_w = self.mba.get_mblock(int(serial))
+                if blk_w is None:
+                    state[int(serial)] = ("MISSING", (), ())
+                    continue
+                succs_w = tuple(blk_w.succ(i) for i in range(blk_w.nsucc()))
+                preds_w = tuple(blk_w.pred(i) for i in range(blk_w.npred()))
+                nsucc_w = blk_w.nsucc()
+                shape = f"{nsucc_w}WAY" if nsucc_w in (0, 1, 2) else f"nsucc={nsucc_w}"
+                state[int(serial)] = (shape, succs_w, preds_w)
+            return state
+
+        watch_prev = _capture_watch_state() if watch_blocks else {}
+        if watch_blocks:
+            logger.info(
+                "DEFERRED WATCH init: %s",
+                {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
+                 for b, s in watch_prev.items()},
+            )
+
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_APPLY_STARTED, {
                 **self._base_payload(),
@@ -2294,6 +2365,22 @@ class DeferredGraphModifier:
                 # Re-fetch block after modification
                 blk_after = self.mba.get_mblock(mod.block_serial)
                 logger.info("    AFTER:  %s", _format_block_info(blk_after))
+
+                # Watch-block delta audit: log when any watched block changed
+                # between the previous mod and this one.
+                if watch_blocks:
+                    watch_now = _capture_watch_state()
+                    for serial in watch_blocks:
+                        prev = watch_prev.get(int(serial))
+                        now = watch_now.get(int(serial))
+                        if prev != now:
+                            logger.warning(
+                                "DEFERRED WATCH[%d]: mod[%d] %s mutated blk[%d] "
+                                "prev=%s now=%s",
+                                serial, i, mod.mod_type.name, serial,
+                                prev, now,
+                            )
+                    watch_prev = watch_now
                 source_after_snapshot = snapshot_block_for_capture(blk_after)
                 target_after_snapshot = None
                 if mod.new_target is not None:
@@ -2494,6 +2581,31 @@ class DeferredGraphModifier:
             successful, total_mod_count, failed, rolled_back
         )
 
+        _capture_phase_snapshot("post_loop")
+
+        # Final watch-block audit: if any watched block drifted from its last
+        # captured state with no intervening per-mod delta log, a mutation
+        # happened OUTSIDE the deferred_modifier.apply loop (another code path
+        # touched self.mba between applies). That's the smoking gun for the
+        # dual-apply-path hypothesis.
+        if watch_blocks:
+            watch_final = _capture_watch_state()
+            for serial in watch_blocks:
+                prev = watch_prev.get(int(serial))
+                now = watch_final.get(int(serial))
+                if prev != now:
+                    logger.warning(
+                        "DEFERRED WATCH[%d] FINAL DRIFT: no mod logged a delta "
+                        "yet block changed from prev=%s to final=%s "
+                        "(mutation outside deferred_modifier.apply loop)",
+                        serial, prev, now,
+                    )
+            logger.info(
+                "DEFERRED WATCH final: %s",
+                {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
+                 for b, s in watch_final.items()},
+            )
+
         # Mark chains dirty and run optimizations
         if successful > 0:
             self.mba.mark_chains_dirty()
@@ -2523,9 +2635,33 @@ class DeferredGraphModifier:
         if successful > 0:
             if post_apply_hook is not None:
                 self._set_apply_phase("backend_apply", "post_apply_hook")
+                if watch_blocks:
+                    logger.info(
+                        "DEFERRED WATCH pre-post-apply-hook: %s",
+                        {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
+                         for b, s in _capture_watch_state().items()},
+                    )
                 try:
                     post_apply_hook()
+                    if watch_blocks:
+                        post_hook_state = _capture_watch_state()
+                        pre_state = watch_final if 'watch_final' in dir() else {}
+                        for serial in watch_blocks:
+                            prev = pre_state.get(int(serial))
+                            now = post_hook_state.get(int(serial))
+                            if prev != now:
+                                logger.warning(
+                                    "DEFERRED WATCH[%d]: post_apply_hook mutated "
+                                    "blk[%d] prev=%s now=%s",
+                                    serial, serial, prev, now,
+                                )
+                        logger.info(
+                            "DEFERRED WATCH post-post-apply-hook: %s",
+                            {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
+                             for b, s in post_hook_state.items()},
+                        )
                     self._maybe_scan_stale_block_refs(subphase="after_post_apply_hook")
+                    _capture_phase_snapshot("post_post_apply_hook")
                 except Exception as e:
                     contract_violations = getattr(e, "violations", None)
                     contract_summary = getattr(e, "summary", None)
@@ -2595,14 +2731,17 @@ class DeferredGraphModifier:
             if run_deep_cleaning:
                 self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
+                _capture_phase_snapshot("post_deep_cleaning")
             elif run_optimize_local:
                 self._set_apply_phase("backend_apply", "optimize_local")
                 self.mba.optimize_local(0)
+                _capture_phase_snapshot("post_optimize_local")
             else:
                 # Caller requested no optimize_local. Still run conservative
                 # cleanup so deferred CFG rewrites don't leave transient orphans.
                 self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                _capture_phase_snapshot("post_conservative_cleanup")
 
             self._maybe_scan_stale_block_refs(
                 subphase=self.last_apply_subphase or "post_apply_maintenance"
@@ -2621,6 +2760,7 @@ class DeferredGraphModifier:
                         "recent_modifications": list(recent_modifications),
                     },
                 )
+                _capture_phase_snapshot("post_verify")
             except RuntimeError:
                 # The modifications are already applied in-place and cannot
                 # be rolled back.  Setting verify_failed lets callers know
