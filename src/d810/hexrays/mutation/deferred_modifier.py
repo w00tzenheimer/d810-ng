@@ -195,6 +195,7 @@ import uuid
 
 from d810.core.typing import TYPE_CHECKING, Callable
 import os
+import time
 
 import ida_hexrays
 
@@ -2254,12 +2255,71 @@ class DeferredGraphModifier:
             return state
 
         watch_prev = _capture_watch_state() if watch_blocks else {}
+        # Persist watch-block transitions to the diag DB when watch is active.
+        # Session id lets multiple apply() calls in one DB be distinguished
+        # without a separate table for sessions.
+        _watch_apply_session = f"apply_{int(time.time() * 1000)}_{id(self)}"
+
+        def _persist_watch_transition(
+            *, mod_index: int | None, mod_type: str, phase: str,
+            serial: int,
+            prev: tuple[str, tuple[int, ...], tuple[int, ...]] | None,
+            now: tuple[str, tuple[int, ...], tuple[int, ...]] | None,
+        ) -> None:
+            if not watch_blocks:
+                return
+            try:
+                from d810.core.diag import get_diag_db
+                from d810.core.diag.snapshot import snapshot_watch_transition
+                diag_db = get_diag_db(
+                    self.mba.entry_ea if self.mba is not None else 0
+                )
+                if diag_db is None:
+                    return
+                prev_type = prev[0] if prev is not None else None
+                prev_succs = prev[1] if prev is not None else None
+                prev_preds = prev[2] if prev is not None else None
+                now_type = now[0] if now is not None else None
+                now_succs = now[1] if now is not None else None
+                now_preds = now[2] if now is not None else None
+                snapshot_watch_transition(
+                    diag_db,
+                    func_ea=(
+                        self.mba.entry_ea if self.mba is not None else 0
+                    ),
+                    apply_session_id=_watch_apply_session,
+                    mod_index=mod_index,
+                    mod_type=mod_type,
+                    phase=phase,
+                    block_serial=int(serial),
+                    prev_type_name=prev_type,
+                    prev_succs=prev_succs,
+                    prev_preds=prev_preds,
+                    now_type_name=now_type,
+                    now_succs=now_succs,
+                    now_preds=now_preds,
+                )
+            except Exception:
+                logger.debug(
+                    "Watch-block transition persist failed (non-critical)",
+                    exc_info=True,
+                )
+
         if watch_blocks:
             logger.info(
                 "DEFERRED WATCH init: %s",
                 {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
                  for b, s in watch_prev.items()},
             )
+            for _init_serial in watch_blocks:
+                _persist_watch_transition(
+                    mod_index=None,
+                    mod_type="INIT",
+                    phase="init",
+                    serial=_init_serial,
+                    prev=None,
+                    now=watch_prev.get(int(_init_serial)),
+                )
 
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_APPLY_STARTED, {
@@ -2367,7 +2427,8 @@ class DeferredGraphModifier:
                 logger.info("    AFTER:  %s", _format_block_info(blk_after))
 
                 # Watch-block delta audit: log when any watched block changed
-                # between the previous mod and this one.
+                # between the previous mod and this one, and persist each
+                # transition to the diag DB's watch_block_transitions table.
                 if watch_blocks:
                     watch_now = _capture_watch_state()
                     for serial in watch_blocks:
@@ -2379,6 +2440,14 @@ class DeferredGraphModifier:
                                 "prev=%s now=%s",
                                 serial, i, mod.mod_type.name, serial,
                                 prev, now,
+                            )
+                            _persist_watch_transition(
+                                mod_index=i,
+                                mod_type=mod.mod_type.name,
+                                phase="per_mod",
+                                serial=int(serial),
+                                prev=prev,
+                                now=now,
                             )
                     watch_prev = watch_now
                 source_after_snapshot = snapshot_block_for_capture(blk_after)
@@ -2600,6 +2669,15 @@ class DeferredGraphModifier:
                         "(mutation outside deferred_modifier.apply loop)",
                         serial, prev, now,
                     )
+                _persist_watch_transition(
+                    mod_index=None,
+                    mod_type="POST_LOOP",
+                    phase="post_loop",
+                    serial=int(serial),
+                    prev=prev,
+                    now=now,
+                )
+            watch_prev = watch_final
             logger.info(
                 "DEFERRED WATCH final: %s",
                 {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
@@ -2645,7 +2723,7 @@ class DeferredGraphModifier:
                     post_apply_hook()
                     if watch_blocks:
                         post_hook_state = _capture_watch_state()
-                        pre_state = watch_final if 'watch_final' in dir() else {}
+                        pre_state = watch_prev
                         for serial in watch_blocks:
                             prev = pre_state.get(int(serial))
                             now = post_hook_state.get(int(serial))
@@ -2655,6 +2733,15 @@ class DeferredGraphModifier:
                                     "blk[%d] prev=%s now=%s",
                                     serial, serial, prev, now,
                                 )
+                            _persist_watch_transition(
+                                mod_index=None,
+                                mod_type="POST_APPLY_HOOK",
+                                phase="post_post_apply_hook",
+                                serial=int(serial),
+                                prev=prev,
+                                now=now,
+                            )
+                        watch_prev = post_hook_state
                         logger.info(
                             "DEFERRED WATCH post-post-apply-hook: %s",
                             {b: f"{s[0]} succs={list(s[1])} preds={list(s[2])}"
@@ -2732,16 +2819,45 @@ class DeferredGraphModifier:
                 self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
                 _capture_phase_snapshot("post_deep_cleaning")
+                _cleanup_phase_label = "post_deep_cleaning"
+                _cleanup_mod_type = "DEEP_CLEANING"
             elif run_optimize_local:
                 self._set_apply_phase("backend_apply", "optimize_local")
                 self.mba.optimize_local(0)
                 _capture_phase_snapshot("post_optimize_local")
+                _cleanup_phase_label = "post_optimize_local"
+                _cleanup_mod_type = "OPTIMIZE_LOCAL"
             else:
                 # Caller requested no optimize_local. Still run conservative
                 # cleanup so deferred CFG rewrites don't leave transient orphans.
                 self._set_apply_phase("backend_apply", "deep_cleaning")
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
                 _capture_phase_snapshot("post_conservative_cleanup")
+                _cleanup_phase_label = "post_conservative_cleanup"
+                _cleanup_mod_type = "CONSERVATIVE_CLEANUP"
+
+            # Persist per-watched-block transitions across the IDA cleanup
+            # step — this is where mba.optimize_local(0) typically reshapes
+            # blocks (the sub_7FFD blk[75] 2WAY→1WAY mystery is captured here).
+            if watch_blocks:
+                cleanup_state = _capture_watch_state()
+                for serial in watch_blocks:
+                    prev = watch_prev.get(int(serial))
+                    now = cleanup_state.get(int(serial))
+                    if prev != now:
+                        logger.warning(
+                            "DEFERRED WATCH[%d] %s mutated blk[%d] prev=%s now=%s",
+                            serial, _cleanup_phase_label, serial, prev, now,
+                        )
+                    _persist_watch_transition(
+                        mod_index=None,
+                        mod_type=_cleanup_mod_type,
+                        phase=_cleanup_phase_label,
+                        serial=int(serial),
+                        prev=prev,
+                        now=now,
+                    )
+                watch_prev = cleanup_state
 
             self._maybe_scan_stale_block_refs(
                 subphase=self.last_apply_subphase or "post_apply_maintenance"

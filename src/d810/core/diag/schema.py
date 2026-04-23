@@ -187,6 +187,34 @@ CREATE TABLE IF NOT EXISTS rendered_program_lines (
 
 CREATE INDEX IF NOT EXISTS idx_rendered_program_lines_variant
     ON rendered_program_lines(snapshot_id, variant_name, node_index, line_no);
+
+-- Per-mod watch-block transitions captured by DeferredGraphModifier.apply
+-- when D810_DEFERRED_WATCH_BLOCKS is set. One row per observed transition
+-- of a watched block's (type_name, succs, preds) triple during apply. Lets
+-- diagnostic tooling answer "which mod mutated blk[X]?" with a single SQL
+-- query instead of greping the text log.
+CREATE TABLE IF NOT EXISTS watch_block_transitions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    func_ea_hex         TEXT NOT NULL,
+    func_ea_i64         INTEGER NOT NULL,
+    apply_session_id    TEXT NOT NULL,
+    mod_index           INTEGER,
+    mod_type            TEXT NOT NULL,
+    phase               TEXT NOT NULL,
+    block_serial        INTEGER NOT NULL,
+    prev_type_name      TEXT,
+    prev_succs          TEXT,
+    prev_preds          TEXT,
+    now_type_name       TEXT,
+    now_succs           TEXT,
+    now_preds           TEXT,
+    timestamp           REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_watch_block_transitions_session
+    ON watch_block_transitions(apply_session_id, mod_index);
+CREATE INDEX IF NOT EXISTS idx_watch_block_transitions_block
+    ON watch_block_transitions(block_serial, apply_session_id);
 """
 
 

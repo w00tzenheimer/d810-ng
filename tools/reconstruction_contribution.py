@@ -207,6 +207,10 @@ def run_scenario(
         "-o",
         dump_label,
         "-l",
+        # --enable-debug-logging sets D810_DIAG_SNAPSHOT=1 inside the
+        # container so the diag SQLite DB is written (required for
+        # watch_block_transitions / phase snapshots to land).
+        "--enable-debug-logging",
     ]
     print(f"[{name}] running docker dump -> {dump_label}")
     proc = subprocess.run(

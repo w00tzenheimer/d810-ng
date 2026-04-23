@@ -503,4 +503,54 @@ def snapshot_reachability(
         "INSERT INTO block_classification VALUES (?,?,?,?,?,?)",
         rows,
     )
+
+
+def snapshot_watch_transition(
+    conn: sqlite3.Connection,
+    *,
+    func_ea: int,
+    apply_session_id: str,
+    mod_index: int | None,
+    mod_type: str,
+    phase: str,
+    block_serial: int,
+    prev_type_name: str | None,
+    prev_succs: tuple[int, ...] | None,
+    prev_preds: tuple[int, ...] | None,
+    now_type_name: str | None,
+    now_succs: tuple[int, ...] | None,
+    now_preds: tuple[int, ...] | None,
+) -> None:
+    """Persist a single watch-block transition.
+
+    Called by ``DeferredGraphModifier.apply`` when ``D810_DEFERRED_WATCH_BLOCKS``
+    is set AND ``D810_DEFERRED_DIAG_PHASES=1`` OR any of the explicit opt-in
+    flags enable DB persistence. Each row captures (before, after) state for
+    one watched block at one observation point so later SQL queries can
+    answer "which mod mutated blk[X]?" programmatically.
+    """
+    func_hex, func_i64 = _dual(func_ea)
+    conn.execute(
+        "INSERT INTO watch_block_transitions ("
+        "func_ea_hex, func_ea_i64, apply_session_id, mod_index, mod_type, "
+        "phase, block_serial, prev_type_name, prev_succs, prev_preds, "
+        "now_type_name, now_succs, now_preds, timestamp"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            func_hex,
+            func_i64,
+            apply_session_id,
+            mod_index,
+            mod_type,
+            phase,
+            int(block_serial),
+            prev_type_name,
+            json.dumps(list(prev_succs)) if prev_succs is not None else None,
+            json.dumps(list(prev_preds)) if prev_preds is not None else None,
+            now_type_name,
+            json.dumps(list(now_succs)) if now_succs is not None else None,
+            json.dumps(list(now_preds)) if now_preds is not None else None,
+            time.time(),
+        ),
+    )
     conn.commit()
