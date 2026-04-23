@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import d810.cfg.reconstruction_postprocess_emission as postprocess_exec
 from d810.cfg.reconstruction_postprocess_emission import (
-    _emit_residual_raw_alias_reconstruction_overrides,
+    emit_residual_alias_overrides,
     execute_reconstruction_postprocess,
 )
 from d810.recon.flow.linearized_state_dag import (
@@ -201,7 +201,7 @@ class TestExecuteReconstructionPostprocess:
         )
         monkeypatch.setattr(
             postprocess_exec,
-            "_emit_residual_raw_alias_reconstruction_overrides",
+            "emit_residual_alias_overrides",
             lambda **kwargs: kwargs["modifications"].append(("late-raw-alias", 63)) or 1,
         )
 
@@ -269,7 +269,7 @@ class TestExecuteReconstructionPostprocess:
 
         monkeypatch.setattr(
             postprocess_exec,
-            "_emit_residual_raw_alias_reconstruction_overrides",
+            "emit_residual_alias_overrides",
             _fake_emit,
         )
 
@@ -388,7 +388,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
     modifications: list[object] = []
     owned_blocks: set[int] = set()
     owned_edges: set[tuple[int, int]] = set()
-    redirected = _emit_residual_raw_alias_reconstruction_overrides(
+    redirected = emit_residual_alias_overrides(
         dag=dag,
         flow_graph=SimpleNamespace(),
         dispatcher_region={71, 72},
@@ -474,7 +474,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
     modifications: list[object] = []
     owned_blocks: set[int] = set()
     owned_edges: set[tuple[int, int]] = set()
-    redirected = _emit_residual_raw_alias_reconstruction_overrides(
+    redirected = emit_residual_alias_overrides(
         dag=dag,
         flow_graph=SimpleNamespace(),
         dispatcher_region={71, 72},
@@ -560,7 +560,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
     modifications: list[object] = []
     owned_blocks: set[int] = set()
     owned_edges: set[tuple[int, int]] = set()
-    redirected = _emit_residual_raw_alias_reconstruction_overrides(
+    redirected = emit_residual_alias_overrides(
         dag=dag,
         flow_graph=SimpleNamespace(),
         dispatcher_region={71, 72},
@@ -640,7 +640,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
     modifications: list[object] = []
     owned_blocks: set[int] = set()
     owned_edges: set[tuple[int, int]] = set()
-    redirected = _emit_residual_raw_alias_reconstruction_overrides(
+    redirected = emit_residual_alias_overrides(
         dag=dag,
         flow_graph=SimpleNamespace(),
         dispatcher_region={71, 72},
