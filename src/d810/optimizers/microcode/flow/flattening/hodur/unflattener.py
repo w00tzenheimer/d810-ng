@@ -26,6 +26,8 @@ hint influence.  See :class:`~d810.core.gate_modes.GateOperationMode`.
 """
 from __future__ import annotations
 
+import os
+
 import ida_hexrays
 from pathlib import Path
 
@@ -205,10 +207,19 @@ class HodurUnflattener(GenericUnflatteningRule):
             # .claude/handoffs/2026-04-20-region-first-reconstruction-fold.md).
             # Currently wired: StateWriteReconstructionStrategy — the
             # direct-source / frontier / shared-group residual redirect driver.
-            strategy_classes=[
-                *EXPERIMENTAL_STRATEGIES,
-                StateWriteReconstructionStrategy,
-            ],
+            #
+            # D810_RECON_SKIP_SRW_STRATEGY=1 → unregister
+            # StateWriteReconstructionStrategy entirely. Diagnostic knob for
+            # the reconstruction-contribution harness — needed to measure
+            # SSR-alone output cleanly, because the SRW strategy's postprocess
+            # phase reads primary's ``modifications``/``owned_*`` contract and
+            # would emit flood-redirects on an empty contract (see
+            # tools/reconstruction_contribution.py).
+            strategy_classes=(
+                [*EXPERIMENTAL_STRATEGIES]
+                if os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() == "1"
+                else [*EXPERIMENTAL_STRATEGIES, StateWriteReconstructionStrategy]
+            ),
             recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,
