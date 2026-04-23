@@ -33,7 +33,18 @@ rg 'transient (corridor entries|denylist)' "$FILE" 2>/dev/null | head -5 || echo
 
 echo ""
 echo "=== Boundary Classifier ==="
+# Report BOTH event counts (log-line totals, inflated by per-round reruns)
+# AND distinct-state counts (actual unique state constants seen). Reporting
+# only event counts led to a misread in the past — see
+# ~/.claude/projects/-Users-mahmoud-src-idapro-d810/memory/script_over_ad_hoc_analysis.md
+echo "-- event counts (raw log lines; includes per-round rerun duplication) --"
 rg 'supplemental classification' "$FILE" 2>/dev/null | sed 's/.*→ //' | sort | uniq -c | sort -rn || echo "(none)"
+echo ""
+echo "-- distinct state counts (unique state constants per classification bucket) --"
+for bucket in unclassified stable_handoff "terminal alias" terminal; do
+  n=$(rg "supplemental classification.*→ ${bucket}$" "$FILE" 2>/dev/null | grep -oE "state 0x[0-9A-Fa-f]+" | sort -u | wc -l | tr -d ' ')
+  printf '  %7d distinct states → %s\n' "$n" "$bucket"
+done
 
 echo ""
 echo "=== DSVE Guard ==="
