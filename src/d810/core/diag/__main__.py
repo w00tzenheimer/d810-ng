@@ -240,6 +240,91 @@ def _format_rendered_program_variants(variants: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_watch_transitions(
+    conn: sqlite3.Connection,
+    *,
+    block: int | None = None,
+    session: str | None = None,
+    phase: str | None = None,
+    changed_only: bool = False,
+    sessions_only: bool = False,
+) -> str:
+    """Render watch_block_transitions rows in log-style format.
+
+    Output mirrors the stdout ``DEFERRED WATCH`` log line format so SQL
+    query output looks familiar to anyone who has read the text log.
+    """
+    if sessions_only:
+        rows = conn.execute(
+            "SELECT apply_session_id, COUNT(*) AS n, "
+            "MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts "
+            "FROM watch_block_transitions "
+            "GROUP BY apply_session_id ORDER BY MIN(id)"
+        ).fetchall()
+        if not rows:
+            return "(no watch_block_transitions rows — is the table populated?)"
+        lines = [
+            f"{sid}: rows={n} window={first_ts:.3f}..{last_ts:.3f}"
+            for sid, n, first_ts, last_ts in rows
+        ]
+        return "\n".join(lines)
+
+    clauses: list[str] = []
+    params: list = []
+    if block is not None:
+        clauses.append("block_serial = ?")
+        params.append(int(block))
+    if session is not None:
+        clauses.append("apply_session_id = ?")
+        params.append(session)
+    if phase is not None:
+        clauses.append("phase = ?")
+        params.append(phase)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    rows = conn.execute(
+        f"SELECT apply_session_id, mod_index, mod_type, phase, block_serial, "
+        f"prev_type_name, prev_succs, prev_preds, "
+        f"now_type_name, now_succs, now_preds "
+        f"FROM watch_block_transitions {where} ORDER BY id"
+    , params).fetchall()
+    if not rows:
+        return "(no watch_block_transitions rows match the filter)"
+
+    out: list[str] = []
+    current_session: str | None = None
+    for (
+        sid, mod_idx, mod_type, ph, blk,
+        p_type, p_succs, p_preds, n_type, n_succs, n_preds,
+    ) in rows:
+        prev_tuple = (
+            None if p_type is None
+            else (p_type, tuple(json.loads(p_succs or "[]")), tuple(json.loads(p_preds or "[]")))
+        )
+        now_tuple = (
+            None if n_type is None
+            else (n_type, tuple(json.loads(n_succs or "[]")), tuple(json.loads(n_preds or "[]")))
+        )
+        if changed_only and prev_tuple == now_tuple:
+            continue
+        if sid != current_session:
+            out.append(f"=== session {sid} ===")
+            current_session = sid
+        mod_tag = f"mod[{mod_idx}]" if mod_idx is not None else ""
+        kind_tag = f"{mod_type}".ljust(22)
+        header = f"[{ph:<24}] {mod_tag:<10} {kind_tag} blk[{blk}]"
+        if prev_tuple is None:
+            body = f"_ → {now_tuple}"
+        elif now_tuple is None:
+            body = f"{prev_tuple} → _"
+        elif prev_tuple == now_tuple:
+            body = f"(unchanged) {now_tuple}"
+        else:
+            body = f"{prev_tuple} → {now_tuple}"
+        out.append(f"{header}  {body}")
+    return "\n".join(out) if out else "(no transitions matched after filters)"
+
+
 def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> str:
     """Trace EA(s) across all snapshots and format output."""
     lines: list[str] = []
@@ -392,6 +477,37 @@ def main(argv: list[str] | None = None) -> int:
     p_ea.add_argument("--exact", action="store_true",
                       help="Match start_ea exactly (default: range containment)")
 
+    p_watch = sub.add_parser(
+        "watch-transitions",
+        parents=[common],
+        help=(
+            "Dump watch_block_transitions rows in log-like format. "
+            "Captured by DeferredGraphModifier.apply when "
+            "D810_DEFERRED_WATCH_BLOCKS is set."
+        ),
+    )
+    p_watch.add_argument(
+        "--block", type=int, default=None,
+        help="Filter to a single block serial (default: all watched blocks)",
+    )
+    p_watch.add_argument(
+        "--session", default=None,
+        help="Filter to a single apply_session_id (default: all sessions)",
+    )
+    p_watch.add_argument(
+        "--transition-phase", dest="transition_phase", default=None,
+        help="Filter by transition phase (init, per_mod, post_loop, "
+        "post_post_apply_hook, post_optimize_local, ...)",
+    )
+    p_watch.add_argument(
+        "--changed-only", action="store_true",
+        help="Only show transitions where prev != now (mutations)",
+    )
+    p_watch.add_argument(
+        "--sessions-only", action="store_true",
+        help="List distinct apply_session_ids and row counts, no transition detail",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -436,6 +552,15 @@ def main(argv: list[str] | None = None) -> int:
         print(_format_rendered_program_variants(rendered_program_variants(conn, snap_id)))
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
+    elif args.command == "watch-transitions":
+        print(_format_watch_transitions(
+            conn,
+            block=args.block,
+            session=args.session,
+            phase=args.transition_phase,
+            changed_only=args.changed_only,
+            sessions_only=args.sessions_only,
+        ))
 
     conn.close()
     return 0
