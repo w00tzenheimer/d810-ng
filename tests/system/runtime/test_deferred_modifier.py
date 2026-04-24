@@ -2206,3 +2206,153 @@ class TestStagedAtomicApply:
         assert applied >= 2
         # Exactly one copy was made (for the destructive mod's source block).
         assert len(mba.copied_blocks) == 1
+
+    def test_staged_atomic_entry_block_pred_rewires_via_direct_succset(
+        self, monkeypatch,
+    ):
+        """Bug 1 — Entry-block (serial 0) rewire must bypass change_1way_block_successor.
+
+        The 1-way wiring helper rejects ``serial == 0`` unconditionally.  When
+        the source block's sole pred is the synthetic function-entry block
+        (blk[0]), staged_atomic must rewire via direct succset/predset ``_del`` +
+        ``push_back`` rather than routing through the rejecting helper.  If the
+        direct-rewire path is missing, the entry edge stays on the original
+        block and the copy is orphaned from the outside.
+        """
+        mba = _StagedFakeMBA()
+        # Build: entry blk[0] -> blk[5] (1-way) -> blk[20].
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        src.predset.push_back(0)  # sole pred is the synthetic entry block
+        # Make blk[0] a real 1-way block targeting blk[5].  It is the ONLY
+        # pred of blk[5] (no other fake preds).
+        entry = mba.blocks[0]
+        entry.succset = _SuffixEdgeSet([5])
+        tgt = _StagedFakeBlock(20, nsucc=0)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        changes = _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="goto 5 -> 30 (entry block pred)",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # A copy was staged.
+        assert len(mba.copied_blocks) == 1
+        _src_serial, copy_serial = mba.copied_blocks[0]
+
+        # The direct-rewire path must have severed blk[0] -> blk[5] and
+        # wired blk[0] -> copy.  Because we bypass change_1way_block_successor
+        # for serial 0, no (0, *, "1way") entry is recorded by the patched
+        # wiring helpers — we validate the succset/predset state instead.
+        assert 5 not in list(entry.succset), (
+            "entry blk[0] must no longer target the original blk[5]"
+        )
+        assert copy_serial in list(entry.succset), (
+            "entry blk[0] must target the copy after direct rewire"
+        )
+        assert 0 not in list(src.predset), (
+            "original blk[5] must no longer list blk[0] as a pred"
+        )
+        copy_blk = mba.get_mblock(copy_serial)
+        assert 0 in list(copy_blk.predset), (
+            "copy must list blk[0] as a pred after direct rewire"
+        )
+        # Sanity: no "1way"-style wrapper call ever fired for the entry block.
+        assert not any(s == 0 for (s, _t, _k) in changes), (
+            "entry-block rewire must avoid change_1way_block_successor "
+            "(which rejects serial 0)"
+        )
+        # Commit rewire counts toward applied.
+        assert applied >= 1
+
+    def test_staged_atomic_cleanup_pre_disconnects_edges_before_remove(
+        self, monkeypatch,
+    ):
+        """Bug 2 — cleanup must strip succset/predset entries before remove_block.
+
+        IDA's ``mba.remove_block`` errors with INTERR 51919 when the block
+        still has outgoing (succset) or incoming (predset) entries at removal
+        time.  The cleanup phase must pre-disconnect both sides of every edge
+        before invoking ``remove_block``.  Simulate a _StagedFakeMBA whose
+        ``remove_block`` raises unless both sides are empty — confirm the
+        cleanup phase satisfies the precondition in practice.
+        """
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        tgt = _StagedFakeBlock(20, nsucc=0)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+
+        # Tighten remove_block: INTERR 51919 if the block still has edges.
+        removed_ok: list[int] = []
+        remove_calls: list[tuple[int, int, int]] = []  # (serial, succset_sz, predset_sz)
+
+        def _strict_remove_block(self, blk):
+            succsz = blk.succset.size()
+            predsz = blk.predset.size()
+            remove_calls.append((blk.serial, succsz, predsz))
+            if succsz != 0 or predsz != 0:
+                raise RuntimeError(
+                    f"INTERR 51919: blk[{blk.serial}] still has "
+                    f"succset={succsz} predset={predsz}"
+                )
+            removed_ok.append(blk.serial)
+            if blk.serial in self.blocks:
+                del self.blocks[blk.serial]
+
+        monkeypatch.setattr(_StagedFakeMBA, "remove_block", _strict_remove_block)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="goto 5 -> 30 (cleanup test)",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # The staged rewire + cleanup pipeline must have disconnected
+        # edges on the original block BEFORE calling remove_block, so the
+        # strict-remove guard never fires INTERR 51919.
+        assert remove_calls, "cleanup phase never invoked remove_block"
+        assert 5 in removed_ok, (
+            "original blk[5] must have been removed after cleanup "
+            f"(remove_calls={remove_calls}, removed={removed_ok})"
+        )
+        # Every recorded remove_block call saw empty succset/predset.
+        for serial, succsz, predsz in remove_calls:
+            assert succsz == 0, (
+                f"remove_block(blk[{serial}]) saw succset size {succsz} -- "
+                "cleanup failed to pre-disconnect outgoing edges"
+            )
+            assert predsz == 0, (
+                f"remove_block(blk[{serial}]) saw predset size {predsz} -- "
+                "cleanup failed to pre-disconnect incoming edges"
+            )
+        assert applied >= 1
