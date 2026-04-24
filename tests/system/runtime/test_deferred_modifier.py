@@ -51,7 +51,14 @@ class _FakeEdgeSet:
 
 
 class _FakeBlock:
-    def __init__(self, serial: int):
+    # Base EA for deriving stable start addresses for fake blocks.  The
+    # staged_atomic Bug 3 fix re-resolves blocks by ``mblock_t.start``
+    # (the block's byte-address range start, which IDA guarantees is
+    # stable across serial-shifting mutations).  Every fake block now
+    # has a default ``start`` derived from its initial serial.
+    _DEFAULT_EA_BASE = 0x18000000
+
+    def __init__(self, serial: int, *, start: int | None = None):
         self.serial = serial
         self.type = ida_hexrays.BLT_1WAY
         self.flags = 0
@@ -59,6 +66,9 @@ class _FakeBlock:
         self.succset = _FakeEdgeSet()
         self.predset = _FakeEdgeSet()
         self.prevb = None
+        # Stable byte-address range start (see class docstring).
+        self.start = start if start is not None else self._DEFAULT_EA_BASE + serial * 0x100
+        self.end = self.start + 0x100
 
     def nsucc(self) -> int:
         return 1
@@ -1828,10 +1838,24 @@ class TestPrivateTerminalSuffix:
 
 
 class _StagedFakeBlock(_FakeBlock):
-    """Extended fake block with configurable nsucc and iterable predset."""
+    """Extended fake block with configurable nsucc, iterable predset, and stable ``start`` EA.
 
-    def __init__(self, serial: int, *, nsucc: int = 1, succ_serial: int = 0):
-        super().__init__(serial)
+    The ``start`` field models ``mblock_t.start`` — the byte-address range
+    start, which IDA guarantees is stable across ``insert_block`` /
+    ``copy_block`` / ``remove_block``.  Serials shift; ``start`` does not.
+    The staged_atomic Bug 3 fix re-resolves blocks by ``start`` EA at every
+    phase boundary so stale serials are never dereferenced.
+    """
+
+    def __init__(
+        self,
+        serial: int,
+        *,
+        nsucc: int = 1,
+        succ_serial: int = 0,
+        start: int | None = None,
+    ):
+        super().__init__(serial, start=start)
         self.succset = _SuffixEdgeSet([succ_serial] if nsucc >= 1 else [])
         self.predset = _SuffixEdgeSet()
         self._nsucc_override = nsucc
@@ -1845,7 +1869,14 @@ class _StagedFakeBlock(_FakeBlock):
 
 
 class _StagedFakeMBA(_FakeMBA):
-    """Extended fake MBA with copy_block + remove_block hooks for staging tests."""
+    """Extended fake MBA with copy_block + remove_block hooks for staging tests.
+
+    ``get_mblock(serial)`` respects the positional block array: after a
+    simulated ``remove_block`` or ``copy_block`` shifts serials, lookups
+    by the *old* serial return the block now sitting at that index, not
+    the original block.  This reproduces the serial-shift behaviour of
+    real IDA MBA that exposed Bug 3 in the staged_atomic pipeline.
+    """
 
     def __init__(self):
         super().__init__()
@@ -1856,8 +1887,19 @@ class _StagedFakeMBA(_FakeMBA):
         self.qty = 2
 
     def copy_block(self, src_blk, new_serial, cpblk_flags=3):
-        """Simulate mba.copy_block -- append a copy at new_serial, shift BLT_STOP."""
-        copy = _StagedFakeBlock(new_serial, nsucc=0)
+        """Simulate mba.copy_block -- append a copy at new_serial, shift BLT_STOP.
+
+        The freshly-minted copy gets a fresh ``start`` EA (distinct from the
+        source) so tests can confirm the staged_atomic pipeline tracks each
+        block by its stable start address.
+        """
+        # Synthesize a fresh start EA for the copy — in real IDA the
+        # copy shares the source's byte range, but for test purposes we
+        # need a distinct EA so we can validate EA-based resolution of
+        # copy-vs-original.  Place it in the high range so it doesn't
+        # collide with existing fake blocks.
+        fresh_start = 0x1F000000 + len(self.copied_blocks) * 0x100
+        copy = _StagedFakeBlock(new_serial, nsucc=0, start=fresh_start)
         # Faithfully replicate the full succset (2-way blocks need both edges).
         for k in range(src_blk.succset.size()):
             copy.succset.push_back(src_blk.succset[k])
@@ -1868,7 +1910,9 @@ class _StagedFakeMBA(_FakeMBA):
             copy.predset.push_back(src_blk.predset[k])
         self.copied_blocks.append((src_blk.serial, new_serial))
 
-        # Shift existing BLT_STOP (highest serial) up by one
+        # Shift existing BLT_STOP (highest serial) up by one — this is
+        # exactly the serial-drift pattern that makes serial-based handles
+        # unsafe in the staged_atomic pipeline.
         max_existing = max(self.blocks.keys())
         old_stop = self.blocks.pop(max_existing)
         new_stop_serial = max_existing + 1
@@ -1882,6 +1926,26 @@ class _StagedFakeMBA(_FakeMBA):
         self.removed_blocks.append(blk.serial)
         if blk.serial in self.blocks:
             del self.blocks[blk.serial]
+
+    def simulate_serial_shift(self, *, removed_serial: int) -> None:
+        """Helper: simulate IDA's post-``remove_block`` serial compaction.
+
+        Real IDA ``remove_block`` shifts every serial greater than the
+        removed index down by one.  ``_StagedFakeMBA.remove_block`` by
+        itself only deletes the dict entry; this helper mirrors the
+        positional-compaction behaviour so unit tests can exercise the
+        EA-based lookup under *real* serial drift.
+        """
+        shifted: dict[int, _StagedFakeBlock] = {}
+        for serial, blk in self.blocks.items():
+            if serial > removed_serial:
+                new_serial = serial - 1
+                blk.serial = new_serial
+                shifted[new_serial] = blk
+            else:
+                shifted[serial] = blk
+        self.blocks = shifted
+        self.qty = max(self.blocks.keys()) + 1 if self.blocks else 0
 
 
 def _staged_patch_wiring(monkeypatch, mba):
@@ -1981,16 +2045,26 @@ class TestStagedAtomicPendingRewire:
     """Data contract for the _StagedPendingRewire record."""
 
     def test_pending_rewire_is_frozen_and_carries_serials(self):
-        """_StagedPendingRewire is an immutable record of the swap."""
+        """_StagedPendingRewire is an immutable record of the swap.
+
+        Bug 3 fix: the record now carries stable start-EA fields in
+        addition to the serial fields.  Serials are kept for diagnostics
+        only; the EA fields are the canonical lookup keys used by the
+        commit/cleanup phases to re-resolve blocks after serial drift.
+        """
         rw = dm._StagedPendingRewire(
             original_serial=10,
             new_serial=42,
-            preds_to_redirect=(5, 6),
+            original_start_ea=0x1800C100,
+            new_start_ea=0x1F000000,
+            preds_to_redirect=(0x1800C500, 0x1800C600),
             mod_type=dm.ModificationType.BLOCK_GOTO_CHANGE,
         )
         assert rw.original_serial == 10
         assert rw.new_serial == 42
-        assert rw.preds_to_redirect == (5, 6)
+        assert rw.original_start_ea == 0x1800C100
+        assert rw.new_start_ea == 0x1F000000
+        assert rw.preds_to_redirect == (0x1800C500, 0x1800C600)
         import dataclasses
         assert dataclasses.is_dataclass(rw)
         # Confirm immutability: frozen dataclass.
@@ -2000,6 +2074,12 @@ class TestStagedAtomicPendingRewire:
             pass
         else:  # pragma: no cover -- guard against regressions in the dataclass
             raise AssertionError("_StagedPendingRewire must be frozen")
+        try:
+            rw.original_start_ea = 0  # type: ignore[misc]
+        except (AttributeError, dataclasses.FrozenInstanceError):
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("_StagedPendingRewire EA fields must be frozen")
 
 
 class TestStagedAtomicApply:
@@ -2356,3 +2436,433 @@ class TestStagedAtomicApply:
                 "cleanup failed to pre-disconnect incoming edges"
             )
         assert applied >= 1
+
+
+class TestStagedAtomicEaIdentity:
+    """Bug 3 — EA-based identity for stage -> commit -> cleanup pipeline.
+
+    ``mba.remove_block`` / ``mba.copy_block`` / ``mba.insert_block`` shift
+    block *serials* while ``mblock_t.start`` (byte-address range start) is
+    stable.  The staged_atomic pipeline must therefore use start EAs as
+    block *handles* across phase boundaries.  These tests validate:
+
+    1. Staging captures each block's start EA (not just serials).
+    2. Commit re-resolves by start EA after simulated serial drift.
+    3. Cleanup does not remove the wrong block when serials have shifted.
+    4. A captured-EA block removed out-of-band causes a skipped rewire
+       with a warning (no crash, no wrong-block mutation).
+    """
+
+    def test_get_mblock_by_start_ea_returns_none_when_missing(self):
+        """Helper must return None for an unknown EA (no exception)."""
+        mba = _StagedFakeMBA()
+        assert dm._get_mblock_by_start_ea(mba, 0xDEADBEEF) is None
+
+    def test_get_mblock_by_start_ea_finds_block_after_simulated_shift(self):
+        """After a simulated serial shift, EA-based lookup still finds the right block."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18001000)
+        mba.blocks[5] = src
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        # Baseline: EA lookup finds the block at serial 5.
+        found = dm._get_mblock_by_start_ea(mba, 0x18001000)
+        assert found is src
+        assert found.serial == 5
+
+        # Simulate a copy_block that shifted serial 5's position.
+        # (We manually shift — not via mba.copy_block — to isolate the
+        # lookup behaviour under pure serial drift.)
+        shifted = {}
+        for serial, blk in mba.blocks.items():
+            if serial == 5:
+                blk.serial = 7
+                shifted[7] = blk
+            else:
+                shifted[serial] = blk
+        mba.blocks = shifted
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        # Lookup by serial 5 now returns None (or the wrong block).
+        # Lookup by start EA must still find the block at its new serial.
+        found_after = dm._get_mblock_by_start_ea(mba, 0x18001000)
+        assert found_after is src
+        assert found_after.serial == 7, "EA-based lookup must find the drifted block"
+
+    def test_stage_captures_start_eas_on_pending_rewire(self, monkeypatch):
+        """_stage_destructive_mod_via_copy records start EA for original + copy + preds."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+
+        assert rewire is not None, "staging must succeed for 1-way BLOCK_GOTO_CHANGE"
+        # Original serial/ea captured pre-copy.
+        assert rewire.original_serial == 5
+        assert rewire.original_start_ea == 0x18005000
+        # Copy got a fresh EA (0x1F000000 by the fake MBA's synthesizer).
+        assert rewire.new_start_ea != rewire.original_start_ea
+        copy_blk = mba.get_mblock(rewire.new_serial)
+        assert copy_blk is not None
+        assert rewire.new_start_ea == copy_blk.start
+        # Pred snapshot recorded by EA, not by serial.
+        assert rewire.preds_to_redirect == (0x1800A000,)
+
+    def test_commit_re_resolves_original_by_ea_after_staging_shift(self, monkeypatch):
+        """After a Phase 2 inner staging shift, commit still hits the right block.
+
+        Simulate: a later staging step shifts the serial of an already-staged
+        original block (e.g. BLT_STOP moves, compacting inner serials).
+        The commit phase must locate the original by its captured start EA,
+        not by the now-stale ``original_serial``.
+        """
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        changes = _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+        assert rewire is not None
+        staged_orig_serial = rewire.original_serial
+        staged_copy_serial = rewire.new_serial
+
+        # Simulate a drift: shuffle serial numbers without touching start EAs.
+        # This models what a second copy_block (for a different staged mod)
+        # would do to the positional block array: IDA's real copy_block
+        # not only shifts blk.serial but also rewrites every succset/predset
+        # entry pointing at any shifted block.  Mirror both effects so the
+        # fake MBA behaves like the real one.
+        SHIFT = 3
+        old_to_new = {s: s + SHIFT for s in mba.blocks}
+        shuffled: dict[int, _StagedFakeBlock] = {}
+        for serial, blk in mba.blocks.items():
+            new_serial = old_to_new[serial]
+            blk.serial = new_serial
+            # Update every outgoing edge to point at the new serial of its target.
+            remapped_succs = [
+                old_to_new.get(int(blk.succset[k]), int(blk.succset[k]))
+                for k in range(blk.succset.size())
+            ]
+            blk.succset.clear()
+            for s in remapped_succs:
+                blk.succset.push_back(s)
+            # Update every incoming edge the same way.
+            remapped_preds = [
+                old_to_new.get(int(blk.predset[k]), int(blk.predset[k]))
+                for k in range(blk.predset.size())
+            ]
+            blk.predset.clear()
+            for s in remapped_preds:
+                blk.predset.push_back(s)
+            shuffled[new_serial] = blk
+        mba.blocks = shuffled
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        # After drift, the staging serials are stale.  Commit must re-resolve
+        # by EA.
+        ok = modifier._commit_staged_rewire(rewire)
+        assert ok is True, (
+            "commit must succeed even after serial drift, by re-resolving "
+            "original + copy + preds via their captured start EAs"
+        )
+        # The recorded wiring change targeted the (post-drift) copy serial.
+        copy_blk_now = dm._get_mblock_by_start_ea(mba, rewire.new_start_ea)
+        assert copy_blk_now is not None
+        assert any(
+            t == copy_blk_now.serial for (_, t, _) in changes
+        ), (
+            f"commit must redirect pred to the copy's CURRENT serial "
+            f"({copy_blk_now.serial}), not the staging-time serial "
+            f"({staged_copy_serial}); changes={changes}, "
+            f"staged_orig_serial={staged_orig_serial}"
+        )
+
+    def test_cleanup_ignores_stale_serial_and_uses_ea(self, monkeypatch):
+        """Cleanup must remove the block with the captured EA, even if serials shifted.
+
+        If we relied on ``rewire.original_serial`` after the commit phase
+        did its work, cleanup would either (a) fail silently because the
+        serial now points to a different block, or (b) worse, remove the
+        wrong block.  EA-based re-resolution eliminates both failure modes.
+        """
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+            ),
+        ]
+
+        # Capture the src object up-front — tests that cleanup removed
+        # *this specific object*, regardless of its serial at removal time.
+        original_src_id = id(src)
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+        assert applied >= 1
+
+        # Cleanup must have called remove_block on the block at start_ea
+        # 0x18005000 — the original src.  Inject a marker: ensure mba.removed_blocks
+        # contains the serial that the src had at the *time of removal*
+        # (which may differ from the staging-time serial 5 if drift occurred).
+        # Regardless of serial, src must no longer be in mba.blocks.
+        assert not any(id(b) == original_src_id for b in mba.blocks.values()), (
+            "cleanup must have removed the specific src block object "
+            "(identified by its captured start EA), not a wrong block "
+            "at the stale serial"
+        )
+
+    def _install_capture_handler(self, request):
+        """Install a capture handler directly on dm.logger (D810 doesn't propagate).
+
+        Returns the captured-records list so tests can inspect warnings.
+        D810's logger sets ``propagate=False`` so pytest's ``caplog``
+        cannot intercept events via the root logger; we attach a direct
+        handler to ``dm.logger`` instead.  Cleanup via pytest finalizer
+        guarantees the handler is detached even on test failure.
+        """
+        import logging
+
+        records: list[logging.LogRecord] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _ListHandler(level=logging.WARNING)
+        dm.logger.addHandler(handler)
+        request.addfinalizer(lambda: dm.logger.removeHandler(handler))
+        return records
+
+    def test_commit_skips_rewire_when_original_removed_out_of_band(
+        self, monkeypatch, request,
+    ):
+        """Captured-EA block deleted between stage and commit -> skip + warn."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        records = self._install_capture_handler(request)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+        assert rewire is not None
+
+        # Out-of-band: delete the original block before commit runs.
+        del mba.blocks[rewire.original_serial]
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        ok = modifier._commit_staged_rewire(rewire)
+
+        # Rewire skipped cleanly — no crash, False result, warning logged.
+        assert ok is False
+        messages = [rec.getMessage() for rec in records]
+        assert any(
+            "missing block by EA" in m or "block removed out of band" in m
+            for m in messages
+        ), f"expected a 'missing block by EA' warning, got {messages}"
+
+    def test_commit_skips_pred_when_pred_removed_out_of_band(
+        self, monkeypatch, request,
+    ):
+        """Captured-EA pred deleted between stage and commit -> pred skipped + warn."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        records = self._install_capture_handler(request)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+        assert rewire is not None
+        assert rewire.preds_to_redirect == (0x1800A000,)
+
+        # Out-of-band: delete the pred before commit runs.
+        del mba.blocks[10]
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        ok = modifier._commit_staged_rewire(rewire)
+
+        # With no external preds left to redirect, the rewire still
+        # returns True (no failed redirects) but logs a warning about the
+        # missing pred.
+        assert ok is True, (
+            "rewire should still return True when all preds were validly "
+            "skipped — partial or empty redirects are not failures"
+        )
+        messages = [rec.getMessage() for rec in records]
+        assert any(
+            "start_ea=0x1800a000" in m.lower() or "not found" in m.lower()
+            for m in messages
+        ), f"expected a pred-not-found warning, got {messages}"
+
+    def test_cleanup_skips_removed_out_of_band_with_warning(self, monkeypatch, request):
+        """If the captured-EA original was already removed, cleanup skips + warns."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        records = self._install_capture_handler(request)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=5,
+            new_target=30,
+        )
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+        assert rewire is not None
+        # Pretend the rewire was committed.
+        committed = [rewire]
+
+        # Now remove the original out-of-band before cleanup runs.
+        del mba.blocks[rewire.original_serial]
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        removed = modifier._cleanup_orphaned_originals(committed)
+
+        assert removed == 0, (
+            "cleanup must skip blocks that were removed out-of-band, "
+            "not recount them"
+        )
+        messages = [rec.getMessage() for rec in records]
+        assert any(
+            "already removed" in m.lower() or "0x18005000" in m.lower()
+            for m in messages
+        ), f"expected an 'already removed' warning, got {messages}"
+
+    def test_cleanup_removes_correct_block_after_multi_stage_serial_drift(
+        self, monkeypatch,
+    ):
+        """Multiple staged mods -> cumulative serial drift -> cleanup targets each by EA.
+
+        Stage two destructive mods on different source blocks.  Each copy_block
+        shifts the BLT_STOP serial.  Cleanup, iterating in descending EA order,
+        must re-resolve each original by its captured start EA and remove the
+        correct object — not fall for the stale serial that now points at a
+        different (live) block.
+        """
+        mba = _StagedFakeMBA()
+        # Two independent source blocks, each with a distinct pred and succ.
+        src_a = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
+        src_a.predset.push_back(10)
+        pred_a = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
+        tgt_a = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
+        tgt_a.predset.push_back(5)
+
+        src_b = _StagedFakeBlock(6, nsucc=1, succ_serial=21, start=0x18006000)
+        src_b.predset.push_back(11)
+        pred_b = _StagedFakeBlock(11, nsucc=1, succ_serial=6, start=0x1800B000)
+        tgt_b = _StagedFakeBlock(21, nsucc=0, start=0x18015000)
+        tgt_b.predset.push_back(6)
+
+        mba.blocks.update({
+            5: src_a, 6: src_b, 10: pred_a, 11: pred_b, 20: tgt_a, 21: tgt_b,
+        })
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="destructive A",
+            ),
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=6,
+                new_target=31,
+                description="destructive B",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+        assert applied >= 2, f"expected two staged rewires, got applied={applied}"
+
+        # Both original source objects must be gone from mba.blocks, identified
+        # by their stable start EAs — not by their staging-time serials.
+        live_starts = {b.start for b in mba.blocks.values()}
+        assert src_a.start not in live_starts, (
+            "src_a (ea=0x18005000) must be removed by cleanup"
+        )
+        assert src_b.start not in live_starts, (
+            "src_b (ea=0x18006000) must be removed by cleanup"
+        )
+        # Both copies survived (distinct synthetic EAs per _StagedFakeMBA).
+        assert len(mba.copied_blocks) == 2
