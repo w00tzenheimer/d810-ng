@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.cfg.reconstruction_redirect_log import log_redirect_attempt
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -135,6 +136,15 @@ def plan_reconstruction_preheader_bridge(
             resolved_target=None,
         )
 
+    log_redirect_attempt(
+        phase="preheader_bridge",
+        src=int(dag.pre_header_serial),
+        old_target=int(old_target),
+        new_target=int(resolved),
+        dag=dag,
+        state_const=int(dag.initial_state) if dag.initial_state is not None else None,
+    )
+
     return ReconstructionPreheaderBridgeResult(
         modification=builder.goto_redirect(
             source_block=dag.pre_header_serial,
@@ -196,6 +206,17 @@ def plan_reconstruction_bridge_modifications(
         if block.nsucc == 1:
             old_target = int(block.succs[0])
             if old_target == dispatcher_serial or old_target in bst_set:
+                edge_state = getattr(
+                    getattr(edge, "source_key", None), "state_const", None
+                )
+                log_redirect_attempt(
+                    phase="dag_bridge",
+                    src=int(exit_block),
+                    old_target=int(old_target),
+                    new_target=int(target_entry),
+                    dag=dag,
+                    state_const=edge_state,
+                )
                 bridge_mods.append(
                     builder.goto_redirect(
                         source_block=exit_block,
@@ -222,6 +243,17 @@ def plan_reconstruction_bridge_modifications(
                 arm_target = int(block.succs[arm])
                 if arm_target == dispatcher_serial or arm_target in bst_set:
                     if arm == 1:
+                        edge_state = getattr(
+                            getattr(edge, "source_key", None), "state_const", None
+                        )
+                        log_redirect_attempt(
+                            phase="dag_bridge",
+                            src=int(exit_block),
+                            old_target=int(arm_target),
+                            new_target=int(target_entry),
+                            dag=dag,
+                            state_const=edge_state,
+                        )
                         bridge_mods.append(
                             builder.edge_redirect(
                                 source_block=exit_block,
