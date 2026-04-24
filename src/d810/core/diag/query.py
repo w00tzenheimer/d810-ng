@@ -194,3 +194,160 @@ def rendered_program_variants(
         (snapshot_id,),
     )
     return cur.fetchall()
+
+
+# Hex-Rays microcode opcode numeric ids used by the diag serializer when the
+# human-readable `m_<name>` form is unavailable (see mba_serializer._opcode_name).
+# Keep these names in sync with ``ida_hexrays.mcode_t``.
+_UND_NAMES = frozenset({"m_und", "op_61"})
+_NOP_NAMES = frozenset({"m_nop", "op_1"})
+_GOTO_NAMES = frozenset({"m_goto", "op_55"})
+_NOP_LIKE_NAMES = _UND_NAMES | _NOP_NAMES
+
+
+def _classify_block_content(insns: list[dict[str, Any]]) -> str:
+    """Classify the "what's left in this block" after d810 applies.
+
+    ``empty`` means zero recorded instructions.
+    ``m_und_only`` means every instruction is ``m_und`` (dead, pending removal).
+    ``nop_und_only`` means every instruction is ``m_und`` or ``m_nop``.
+    ``goto_only`` means a single-instruction trampoline.
+    ``has_content`` means at least one live opcode remains.
+
+    Opcode-name matching is tolerant of both the ``m_<name>`` form and the
+    numeric fallback ``op_<N>`` the diag serializer emits when symbolic
+    naming is unavailable.
+    """
+    if not insns:
+        return "empty"
+    opcodes = {i["opcode_name"] for i in insns}
+    if opcodes <= _UND_NAMES:
+        return "m_und_only"
+    if opcodes <= _NOP_LIKE_NAMES:
+        return "nop_und_only"
+    if len(insns) == 1 and opcodes <= _GOTO_NAMES:
+        return "goto_only"
+    return "has_content"
+
+
+def merge_causality(
+    conn: sqlite3.Connection,
+    from_snapshot_id: int,
+    to_snapshot_id: int,
+) -> dict[str, Any]:
+    """Compare two snapshots and report which FROM blocks vanished in TO.
+
+    For each vanished block (serial in FROM but not in TO), records its
+    pre-disappearance shape (``type_name``, ``preds``, ``succs``,
+    ``insn_count``, ``tail_opcode``, ``content_class``) and infers its
+    **absorber** in TO by finding the TO block that shares the most
+    instruction EAs. Only EAs with non-zero ``ea_i64`` are used — synthesized
+    instructions (ea=0) are too collision-prone to carry lineage.
+
+    Returns a dict with ``from_snapshot_id``, ``to_snapshot_id``, block
+    counts, and a ``vanished`` list sorted by vanished serial. Each
+    vanished entry has an ``absorber`` dict (or ``None`` when no lineage
+    can be inferred) containing the best-match TO block with the count of
+    shared EAs.
+    """
+    conn.row_factory = _dict_factory
+    from_serials = {
+        r["serial"]
+        for r in conn.execute(
+            "SELECT serial FROM blocks WHERE snapshot_id=?", (from_snapshot_id,)
+        ).fetchall()
+    }
+    to_serials = {
+        r["serial"]
+        for r in conn.execute(
+            "SELECT serial FROM blocks WHERE snapshot_id=?", (to_snapshot_id,)
+        ).fetchall()
+    }
+    vanished = sorted(from_serials - to_serials)
+
+    vanished_rows: list[dict[str, Any]] = []
+    for serial in vanished:
+        blk = conn.execute(
+            "SELECT * FROM blocks WHERE snapshot_id=? AND serial=?",
+            (from_snapshot_id, serial),
+        ).fetchone()
+        if blk is None:
+            continue
+        preds = json.loads(blk["preds"]) if blk["preds"] else []
+        succs = json.loads(blk["succs"]) if blk["succs"] else []
+
+        insns = conn.execute(
+            "SELECT ea_i64, ea_hex, opcode_name FROM instructions "
+            "WHERE snapshot_id=? AND block_serial=? ORDER BY insn_index",
+            (from_snapshot_id, serial),
+        ).fetchall()
+
+        tail_opcode = insns[-1]["opcode_name"] if insns else None
+        content_class = _classify_block_content(insns)
+
+        real_eas = [i["ea_i64"] for i in insns if i["ea_i64"]]
+        absorber: dict[str, Any] | None = None
+        if real_eas:
+            placeholders = ",".join(["?"] * len(real_eas))
+            top = conn.execute(
+                f"SELECT block_serial, COUNT(*) AS matches FROM instructions "
+                f"WHERE snapshot_id=? AND ea_i64 IN ({placeholders}) "
+                f"GROUP BY block_serial ORDER BY matches DESC LIMIT 1",
+                [to_snapshot_id] + real_eas,
+            ).fetchone()
+            if top:
+                abs_serial = top["block_serial"]
+                abs_total = conn.execute(
+                    "SELECT insn_count, type_name FROM blocks "
+                    "WHERE snapshot_id=? AND serial=?",
+                    (to_snapshot_id, abs_serial),
+                ).fetchone()
+                absorber = {
+                    "serial": abs_serial,
+                    "type_name": abs_total["type_name"] if abs_total else None,
+                    "matching_eas": top["matches"],
+                    "absorber_insn_count": (
+                        abs_total["insn_count"] if abs_total else None
+                    ),
+                    "vanished_real_ea_count": len(real_eas),
+                }
+
+        # Disposition classifies HOW a block vanished:
+        # - ``absorbed``          : at least one real EA survived in a TO block
+        # - ``deleted``           : block had real EAs but NONE survived in TO
+        #                           (most likely unreachable-block removal)
+        # - ``synthesized_only``  : block only had synth (ea=0) insns, so
+        #                           lineage cannot be inferred either way
+        if absorber is not None:
+            disposition = "absorbed"
+        elif real_eas:
+            disposition = "deleted"
+        else:
+            disposition = "synthesized_only"
+
+        vanished_rows.append(
+            {
+                "serial": serial,
+                "type_name": blk["type_name"],
+                "preds": preds,
+                "succs": succs,
+                "npred": blk["npred"],
+                "nsucc": blk["nsucc"],
+                "insn_count": blk["insn_count"],
+                "tail_opcode": tail_opcode,
+                "content_class": content_class,
+                "disposition": disposition,
+                "absorber": absorber,
+                "start_ea_hex": blk["start_ea_hex"],
+                "end_ea_hex": blk["end_ea_hex"],
+            }
+        )
+
+    return {
+        "from_snapshot_id": from_snapshot_id,
+        "to_snapshot_id": to_snapshot_id,
+        "from_block_count": len(from_serials),
+        "to_block_count": len(to_serials),
+        "vanished_count": len(vanished),
+        "vanished": vanished_rows,
+    }

@@ -37,6 +37,7 @@ import sys
 from d810.core.diag.query import (
     block_detail,
     chain,
+    merge_causality,
     rendered_program_nodes,
     rendered_program_text,
     rendered_program_variants,
@@ -325,6 +326,123 @@ def _format_watch_transitions(
     return "\n".join(out) if out else "(no transitions matched after filters)"
 
 
+_MERGE_CAUSALITY_FROM_DEFAULT = "state_write_reconstruction_post_apply"
+_MERGE_CAUSALITY_TO_DEFAULT = "maturity_MMAT_GLBOPT1_post_d810"
+
+
+def _resolve_snapshot_by_label(conn: sqlite3.Connection, label: str) -> int:
+    """Resolve the newest snapshot whose label matches exactly."""
+    row = conn.execute(
+        "SELECT MAX(id) FROM snapshots WHERE label=?", (label,)
+    ).fetchone()
+    if row is None or row[0] is None:
+        print(
+            f"ERROR: no snapshot with label={label!r}. "
+            f"Use `SELECT id, label FROM snapshots` to list available labels.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return int(row[0])
+
+
+_DISPOSITIONS = ("absorbed", "deleted", "synthesized_only")
+_CONTENT_CLASSES = (
+    "empty",
+    "m_und_only",
+    "nop_und_only",
+    "goto_only",
+    "has_content",
+)
+
+
+def _format_merge_causality(result: dict, *, limit: int | None) -> str:
+    """Render the merge-causality report: header, cross-tab, detail rows.
+
+    Cross-tab is content_class × disposition so a single glance answers
+    "how many vanished handler-body-looking blocks were deleted vs merged".
+    When *limit* is ``None`` the detail section is omitted (summary-only
+    mode, recommended default). When *limit* is an int, at most that many
+    rows are printed.
+    """
+    from_total = result["from_block_count"]
+    to_total = result["to_block_count"]
+    vanished = result["vanished"]
+    lines: list[str] = []
+    lines.append(
+        f"MERGE CAUSALITY: FROM snap {result['from_snapshot_id']} "
+        f"({from_total} blocks) -> TO snap {result['to_snapshot_id']} "
+        f"({to_total} blocks)"
+    )
+    lines.append(f"vanished: {len(vanished)} blocks")
+    lines.append("")
+
+    cross: dict[tuple[str, str], int] = {}
+    for row in vanished:
+        key = (row["content_class"], row["disposition"])
+        cross[key] = cross.get(key, 0) + 1
+
+    lines.append("cross-tab  content_class × disposition")
+    header = f"  {'content_class':<14}" + "".join(
+        f" {d:>16}" for d in _DISPOSITIONS
+    ) + f" {'TOTAL':>8}"
+    lines.append(header)
+    lines.append("  " + "-" * (len(header) - 2))
+    for cls in _CONTENT_CLASSES:
+        counts = [cross.get((cls, d), 0) for d in _DISPOSITIONS]
+        total = sum(counts)
+        if total == 0:
+            continue
+        cells = "".join(f" {c:>16}" for c in counts)
+        lines.append(f"  {cls:<14}{cells} {total:>8}")
+    col_totals = [
+        sum(cross.get((c, d), 0) for c in _CONTENT_CLASSES) for d in _DISPOSITIONS
+    ]
+    grand = sum(col_totals)
+    lines.append(
+        f"  {'TOTAL':<14}"
+        + "".join(f" {c:>16}" for c in col_totals)
+        + f" {grand:>8}"
+    )
+    lines.append("")
+
+    if limit is None:
+        lines.append(
+            "(detail rows suppressed — pass --limit N for per-block entries)"
+        )
+        return "\n".join(lines)
+
+    for row in vanished[:limit]:
+        serial = row["serial"]
+        tn = row["type_name"]
+        ic = row["insn_count"]
+        tail = row["tail_opcode"] or "(no insns)"
+        cc = row["content_class"]
+        disp = row["disposition"]
+        preds = row["preds"]
+        succs = row["succs"]
+        lines.append(
+            f"blk[{serial}] {tn} insn={ic} tail={tail} [{cc}/{disp}]"
+        )
+        lines.append(f"  preds={preds} -> succs={succs}")
+        abs_ = row["absorber"]
+        if abs_ is None:
+            if disp == "deleted":
+                lines.append(
+                    "  absorber: none — real EAs did not survive in TO (deleted)"
+                )
+            else:
+                lines.append("  absorber: none — block had no real EAs (synth-only)")
+        else:
+            lines.append(
+                f"  absorber: blk[{abs_['serial']}] {abs_['type_name']} "
+                f"({abs_['matching_eas']}/{abs_['vanished_real_ea_count']} EAs "
+                f"match; absorber has {abs_['absorber_insn_count']} insns total)"
+            )
+    if len(vanished) > limit:
+        lines.append(f"... {len(vanished) - limit} more rows suppressed")
+    return "\n".join(lines)
+
+
 def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> str:
     """Trace EA(s) across all snapshots and format output."""
     lines: list[str] = []
@@ -477,6 +595,55 @@ def main(argv: list[str] | None = None) -> int:
     p_ea.add_argument("--exact", action="store_true",
                       help="Match start_ea exactly (default: range containment)")
 
+    p_merge = sub.add_parser(
+        "merge-causality",
+        parents=[common],
+        help=(
+            "Diff two snapshots by EA/block lineage. For each block in FROM "
+            "that is absent in TO, report its pre-disappearance shape and "
+            "the inferred TO absorber (the TO block that shares the most "
+            "instruction EAs). Defaults compare state_write_reconstruction_"
+            "post_apply -> maturity_MMAT_GLBOPT1_post_d810, i.e. the "
+            "shrink that happens inside Hex-Rays after d810 returns."
+        ),
+    )
+    p_merge.add_argument(
+        "--from-label",
+        default=_MERGE_CAUSALITY_FROM_DEFAULT,
+        help=f"FROM snapshot label (default: {_MERGE_CAUSALITY_FROM_DEFAULT})",
+    )
+    p_merge.add_argument(
+        "--to-label",
+        default=_MERGE_CAUSALITY_TO_DEFAULT,
+        help=f"TO snapshot label (default: {_MERGE_CAUSALITY_TO_DEFAULT})",
+    )
+    p_merge.add_argument(
+        "--only-content-class",
+        default=None,
+        help="Filter vanished entries to one content_class "
+        "(empty, m_und_only, nop_und_only, goto_only, has_content)",
+    )
+    p_merge.add_argument(
+        "--only-disposition",
+        default=None,
+        choices=("absorbed", "deleted", "synthesized_only"),
+        help=(
+            "Filter vanished entries by disposition: absorbed = merged into "
+            "a TO block (EA lineage preserved); deleted = had real EAs in "
+            "FROM but none survived in TO (unreachable-block removal); "
+            "synthesized_only = no real EAs to infer lineage from."
+        ),
+    )
+    p_merge.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Show N per-block detail rows after the summary. "
+            "Default is summary-only (no detail rows)."
+        ),
+    )
+
     p_watch = sub.add_parser(
         "watch-transitions",
         parents=[common],
@@ -552,6 +719,24 @@ def main(argv: list[str] | None = None) -> int:
         print(_format_rendered_program_variants(rendered_program_variants(conn, snap_id)))
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
+    elif args.command == "merge-causality":
+        from_snap = _resolve_snapshot_by_label(conn, args.from_label)
+        to_snap = _resolve_snapshot_by_label(conn, args.to_label)
+        result = merge_causality(conn, from_snap, to_snap)
+        filtered = list(result["vanished"])
+        if args.only_content_class:
+            filtered = [
+                r for r in filtered
+                if r["content_class"] == args.only_content_class
+            ]
+        if args.only_disposition:
+            filtered = [
+                r for r in filtered
+                if r["disposition"] == args.only_disposition
+            ]
+        result = dict(result)
+        result["vanished"] = filtered
+        print(_format_merge_causality(result, limit=args.limit))
     elif args.command == "watch-transitions":
         print(_format_watch_transitions(
             conn,
