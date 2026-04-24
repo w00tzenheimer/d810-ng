@@ -125,6 +125,190 @@ def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
     assert mba.cleaned == 1
 
 
+def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
+    """transactional=True must restore pre-snapshot if the loop breaks early.
+
+    Non-transactional apply returns the partial count (1/3) and leaves the
+    first mutation live on the MBA. Transactional apply on the same scenario
+    must invoke the snapshot restore path and return 0.
+    """
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
+        dm.GraphModification(dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001),
+    ]
+
+    calls: list[int] = []
+
+    def _fake_apply_single(_mod):
+        calls.append(1)
+        return len(calls) == 1
+
+    restore_calls: list[object] = []
+
+    def _fake_restore(_snap):
+        restore_calls.append(_snap)
+        return True
+
+    monkeypatch.setattr(modifier, "_apply_single", _fake_apply_single)
+    monkeypatch.setattr(modifier, "_restore_from_snapshot", _fake_restore)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+    )
+    assert applied == 0
+    assert len(calls) == 2
+    assert len(restore_calls) == 1
+
+
+def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatch):
+    """transactional=True must return the full applied count on success.
+
+    No rollback should fire when every queued mod lands cleanly.
+    """
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
+    ]
+
+    restore_calls: list[object] = []
+
+    monkeypatch.setattr(modifier, "_apply_single", lambda _mod: True)
+    monkeypatch.setattr(
+        modifier,
+        "_restore_from_snapshot",
+        lambda snap: restore_calls.append(snap) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+    )
+    assert applied == 2
+    assert restore_calls == []
+
+
+def test_apply_transactional_rejects_batch_with_contradictory_redirects(monkeypatch):
+    """transactional=True must reject a batch where two BLOCK_GOTO_CHANGE
+    mods on the same source block prescribe different targets.
+
+    This is the Mode 1 pattern we observed on sub_7FFD3338C040:
+        mod[26]: RedirectGoto src=76 tgt=11
+        mod[75]: RedirectGoto src=76 tgt=2
+    Both succeed individually; the pair cancels. The gate catches it
+    before any live mutation so verify_failed is set and apply loop is
+    never entered.
+    """
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2),
+    ]
+
+    apply_calls: list[int] = []
+    monkeypatch.setattr(modifier, "_apply_single", lambda _mod: apply_calls.append(1) or True)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+    )
+    assert applied == 0
+    # Apply loop must not have been entered.
+    assert apply_calls == []
+    assert modifier.verify_failed is True
+
+
+def test_detect_transactional_batch_conflicts_direct():
+    """Unit-test the gate's conflict-detection logic in isolation.
+
+    Covers the decision predicate without running the full apply() flow,
+    because the coalescer already deduplicates many same-(src, mod_type)
+    pairs before the gate would see them. The gate is defense-in-depth
+    for cases the coalescer misses (different old_targets etc.) and is
+    easiest to validate directly.
+    """
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+
+    # No conflict: single graph mod.
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+    ]
+    assert modifier._detect_transactional_batch_conflicts() is None
+
+    # No conflict: graph mod + instruction mod on same block.
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=76, insn_ea=0x1000),
+    ]
+    assert modifier._detect_transactional_batch_conflicts() is None
+
+    # Conflict: two graph mods on blk[76] pointing at different targets.
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2),
+    ]
+    reason = modifier._detect_transactional_batch_conflicts()
+    assert reason is not None
+    assert "blk[76]" in reason
+    assert "new_targets" in reason
+
+    # No conflict: same block, same target (redundant but consistent).
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11),
+    ]
+    assert modifier._detect_transactional_batch_conflicts() is None
+
+
+def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(monkeypatch):
+    """If the snapshot restore call returns False, MBA is in an inconsistent
+    state and verify_failed must be set so callers can abort gracefully.
+    """
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1),
+        dm.GraphModification(dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000),
+    ]
+
+    calls: list[int] = []
+
+    def _fake_apply_single(_mod):
+        calls.append(1)
+        return False  # first one fails immediately
+
+    monkeypatch.setattr(modifier, "_apply_single", _fake_apply_single)
+    monkeypatch.setattr(modifier, "_restore_from_snapshot", lambda _snap: False)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False, run_deep_cleaning=False, transactional=True,
+    )
+    # restore failed → we cannot claim successful rollback → return partial count
+    # and signal verify_failed so the caller can quarantine the function.
+    assert applied == 0
+    assert modifier.verify_failed is True
+
+
 def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
