@@ -1278,15 +1278,7 @@ class StateWriteReconstructionStrategy:
             )
             return None
 
-        snapshot_reconstruction_post_apply(
-            logger,
-            dag=dag,
-            modifications=modifications,
-            mba=mba,
-            strategy_name=self.name,
-        )
-
-        return finalize_reconstruction_fragment(
+        fragment = finalize_reconstruction_fragment(
             strategy_name=self.name,
             modifications=modifications,
             owned_blocks=owned_blocks,
@@ -1303,3 +1295,18 @@ class StateWriteReconstructionStrategy:
             # sub_7FFD3338C040 (logged via PLANNER_CTX_CONFLICT).
             cumulative_planner_view=snapshot.cumulative_planner_view,
         )
+
+        # Snapshot AFTER finalize so the diag DB reflects the post-filter
+        # state of ``modifications``. Previously this ran before finalize,
+        # causing dropped Mode 1 conflicts to still appear in the
+        # ``state_write_reconstruction_post_apply`` DB snapshot while being
+        # absent from the actual applied fragment — a misleading signal.
+        snapshot_reconstruction_post_apply(
+            logger,
+            dag=dag,
+            modifications=fragment.modifications,
+            mba=mba,
+            strategy_name=self.name,
+        )
+
+        return fragment
