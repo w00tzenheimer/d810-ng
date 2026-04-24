@@ -178,6 +178,11 @@ from d810.recon.flow.shared_suffix_discovery import (
     is_shared_suffix_conditional_tail,
     pred_split_target_reaches_via_pred,
 )
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    PLANNER_CTX_METADATA_KEY,
+    LinearizationDecision,
+    PlannerContextContribution,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -959,6 +964,46 @@ def _log_linearized_flow_graph_plan_result(
     )
 
 
+def _build_linearized_flow_graph_planner_context_contribution(
+    *,
+    strategy_name: str,
+    modifications,
+    owned_blocks: frozenset[int],
+    round_index: int,
+) -> PlannerContextContribution:
+    """Scan emitted mods + owned_blocks to produce a PlannerContextContribution.
+
+    Symmetric to
+    :func:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder._build_planner_context_contribution`:
+    every :class:`RedirectGoto` becomes a :class:`LinearizationDecision` so
+    later strategies (same pipeline, later rounds) can call
+    ``view.is_linearized(src)`` and skip emitting a contradictory reverse
+    redirect. Owned blocks populate ``claimed_sources`` so the same
+    strategies can also call ``view.is_claimed(src)`` for broader scope.
+
+    ``StateWriteNeutralization`` contributions are deliberately omitted in
+    this first pass — building them would require threading the original
+    state constant through the emission path (``ZeroStateWrite`` stores
+    only the insn_ea, not the pre-zeroing value). Added incrementally.
+    """
+    linearizations = tuple(
+        LinearizationDecision(
+            src=int(mod.from_serial),
+            tgt=int(mod.new_target),
+            reason=strategy_name,
+            strategy=strategy_name,
+            round_index=round_index,
+        )
+        for mod in modifications
+        if isinstance(mod, RedirectGoto)
+    )
+    return PlannerContextContribution(
+        linearizations=linearizations,
+        neutralizations=(),
+        claimed_sources=frozenset(int(blk) for blk in owned_blocks),
+    )
+
+
 def _build_linearized_flow_graph_plan_fragment(
     *,
     strategy_name: str,
@@ -967,6 +1012,7 @@ def _build_linearized_flow_graph_plan_fragment(
     state_machine: object,
     bst_node_blocks: frozenset[int],
     result: object,
+    round_index: int = 0,
 ) -> PlanFragment:
     ownership = OwnershipScope(
         blocks=result.owned_blocks,
@@ -978,6 +1024,12 @@ def _build_linearized_flow_graph_plan_fragment(
         transitions_resolved=result.transition_count + result.conditional_count,
         blocks_freed=len(bst_node_blocks),
         conflict_density=0.0,
+    )
+    planner_ctx = _build_linearized_flow_graph_planner_context_contribution(
+        strategy_name=strategy_name,
+        modifications=result.modifications,
+        owned_blocks=result.owned_blocks,
+        round_index=round_index,
     )
     return PlanFragment(
         strategy_name=strategy_name,
@@ -1008,6 +1060,7 @@ def _build_linearized_flow_graph_plan_fragment(
             "goto_skip_count": 0,
             "nop_state_values": {},
             "safeguard_min_required": 1,
+            PLANNER_CTX_METADATA_KEY: planner_ctx,
         },
     )
 
