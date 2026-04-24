@@ -665,7 +665,7 @@ def _audit_special_block_instructions(
     return offenders
 
 
-@dataclass(frozen=True)
+@dataclass
 class _StagedPendingRewire:
     """Record of a pending predecessor rewire produced during the staging phase.
 
@@ -673,48 +673,56 @@ class _StagedPendingRewire:
     applies the intended mutation to the copy, and records one of these to
     redirect external predecessors at commit time.
 
-    Bug 3 fix — EA-based identity
-    -----------------------------
-    ``mba.remove_block()`` (Phase 4 cleanup) and ``mba.copy_block()`` /
-    ``mba.insert_block()`` shift block *serials* for every block whose
-    positional index is greater than the mutation point.  Between staging
-    (Phase 2) and cleanup (Phase 4) many serials are reshuffled, so
-    ``original_serial`` / ``new_serial`` cannot be trusted as block *handles*
-    past the moment they were captured.
+    Bug 4 fix — mblock_t pointer identity
+    -------------------------------------
+    Earlier revisions used ``original_start_ea`` / ``new_start_ea`` as
+    the stable identity key and re-resolved via ``_get_mblock_by_start_ea``
+    at each phase boundary.  That worked for the Bug 3 serial-drift case
+    but *silently fails* in the presence of ``mba.copy_block``: the IDA
+    SDK copies the source block's ``start`` address onto the clone, so
+    original and copy share the same start EA.  ``_get_mblock_by_start_ea``
+    iterates ``range(mba.qty)`` and returns the first match — always the
+    lower-numbered original — so every lookup of the copy's EA incorrectly
+    returns the original.  ``_commit_staged_rewire`` then rewired preds to
+    the original block (no-op), leaving the copy orphaned and the CFG
+    semantically broken (observed on sub_7FFD: ``while(1);`` collapse).
 
-    IDA guarantees ``mblock_t.start`` (byte-address range start) is stable
-    across the mutations we perform here.  The canonical *lookup key*
-    for "find this block at commit/cleanup time" is therefore the start
-    EA, resolved via ``_get_mblock_by_start_ea``.
-
-    The serial fields are kept for diagnostics / logging only; do not
-    index ``mba.get_mblock(serial)`` with them after staging.  Always
-    re-resolve by EA at each phase boundary.
+    mblock_t pointers are stable across ``insert_block`` / ``copy_block``
+    (those operations never reallocate existing block objects) and remain
+    valid until an explicit ``remove_block`` on that specific block.  For
+    staged_atomic's purposes — where we only remove originals at the very
+    end of Phase 4 — holding direct pointers for originals, copies, and
+    preds is the correct identity.
 
     Fields:
-        original_serial: Serial of the pre-existing block at staging time.
-            Diagnostics only — VOLATILE across phase boundaries.
-        new_serial: Serial of the freshly-copied block at staging time.
-            Diagnostics only — VOLATILE across phase boundaries.
-        original_start_ea: Start address of the original block.  STABLE —
-            use this (via ``_get_mblock_by_start_ea``) to re-resolve the
-            original block during commit and cleanup.
-        new_start_ea: Start address of the freshly-copied block.  STABLE —
-            use this to re-resolve the copy during commit.
-        preds_to_redirect: Start EAs of the predecessors that pointed at
-            the original block and must now point at the copy.  Captured
-            at staging time so the commit phase does not re-read the live
-            predset (which may legitimately shift under concurrent mods).
-        mod_type: The original ModificationType (retained for diagnostics
-            and to pick the correct wiring helper during commit).
+        original_blk: mblock_t pointer to the pre-existing block being
+            logically replaced.  Stable across Phase 2-3 mutations; may
+            become invalid after Phase 4 ``remove_block``.
+        new_blk: mblock_t pointer to the freshly-copied block.  Stable
+            throughout the pipeline (we never remove copies).
+        preds_to_redirect: Tuple of mblock_t pointers to external
+            predecessors captured at staging time.  Stable across
+            subsequent stages.
+        mod_type: The original ModificationType (retained for
+            diagnostics and to pick the correct wiring helper at commit).
+        original_serial: Snapshot of the original's serial at staging
+            time (diagnostics only — use ``original_blk.serial`` for live).
+        new_serial: Snapshot of the copy's serial at staging time
+            (diagnostics only — use ``new_blk.serial`` for live).
+        original_start_ea: Snapshot of the original's start EA at
+            staging time (diagnostics only; not a reliable identity).
+        new_start_ea: Snapshot of the copy's start EA at staging time
+            (diagnostics only; equals original_start_ea in practice).
     """
 
-    original_serial: int
-    new_serial: int
-    original_start_ea: int
-    new_start_ea: int
-    preds_to_redirect: tuple[int, ...]
+    original_blk: "ida_hexrays.mblock_t"
+    new_blk: "ida_hexrays.mblock_t"
+    preds_to_redirect: tuple["ida_hexrays.mblock_t", ...]
     mod_type: "ModificationType"
+    original_serial: int = -1
+    new_serial: int = -1
+    original_start_ea: int = -1
+    new_start_ea: int = -1
 
 
 @dataclass
@@ -3503,11 +3511,14 @@ class DeferredGraphModifier:
             staged_indices.add(i)
             logger.debug(
                 "staged_atomic stage[%d]: %s blk[%d](ea=0x%x) -> copy blk[%d]"
-                "(ea=0x%x) (pred_eas=%s)",
+                "(ea=0x%x) (preds_serials=%s)",
                 i, mod.mod_type.name, rewire.original_serial,
                 rewire.original_start_ea, rewire.new_serial,
                 rewire.new_start_ea,
-                tuple(f"0x{ea:x}" for ea in rewire.preds_to_redirect),
+                tuple(
+                    int(p.serial) if p is not None else None
+                    for p in rewire.preds_to_redirect
+                ),
             )
 
         # --- Phase 3: Commit ---------------------------------------------
@@ -3520,12 +3531,68 @@ class DeferredGraphModifier:
         #     observe the pre-modification graph; after this step
         #     completes they observe the mutated graph.  No partial
         #     intermediate is ever visible.
+        # Bug 4 fix — redirect Phase 3a mods whose ``new_target`` refers
+        # to a *staged* original block so they wire to the copy instead.
+        # Without this, an in-place mod (e.g., a refused entry-block
+        # goto-change that falls back to ``_apply_single``) wires its
+        # source at the ORIGINAL block — which still carries its
+        # pre-modification goto — defeating the copy-and-swap entirely.
+        #
+        # On sub_7FFD this manifested as blk[1] (entry) pointing at
+        # original blk[78] (goto dispatcher) instead of copy blk[232]
+        # (goto handler blk[14]), collapsing AFTER to ``while(1);``.
+        #
+        # We use *pointer identity* on ``original_blk`` because
+        # copy_block preserves start EA — EAs are ambiguous between
+        # original and copy.  The live ``copy_blk.serial`` is read at
+        # the moment we rewrite the mod (it is stable under subsequent
+        # copy_block calls which only shift BLT_STOP).
+        # Map keyed by the ORIGINAL block's live serial (stable through
+        # Phase 2 because copy_block only shifts BLT_STOP — not the
+        # lower-numbered originals).  SWIG Python wrappers for the same
+        # C++ mblock_t pointer are NOT identity-preserving across
+        # ``mba.get_mblock`` calls, so we cannot use ``id(blk)``; the
+        # serial IS stable between phase-2 end and phase-4 start (no
+        # ``remove_block`` has been called yet).
+        original_serial_to_copy: dict[int, "ida_hexrays.mblock_t"] = {}
+        for r in pending_rewires:
+            try:
+                k = int(r.original_blk.serial)
+            except Exception:
+                continue
+            original_serial_to_copy[k] = r.new_blk
+        logger.info(
+            "staged_atomic: Phase 3a built original->copy map with %d "
+            "entries (from %d pending_rewires)",
+            len(original_serial_to_copy), len(pending_rewires),
+        )
+
+        def _maybe_redirect_to_copy(mod: "GraphModification") -> None:
+            if mod.new_target is None:
+                return
+            copy_blk = original_serial_to_copy.get(int(mod.new_target))
+            if copy_blk is None:
+                return
+            try:
+                new_serial = int(copy_blk.serial)
+            except Exception:
+                return
+            if new_serial == mod.new_target:
+                return
+            logger.info(
+                "staged_atomic: rewriting mod new_target %d -> %d "
+                "(original blk has staged copy at live serial %d)",
+                mod.new_target, new_serial, new_serial,
+            )
+            mod.new_target = new_serial
+
         for i, mod, cls in classified:
             if i in staged_indices:
                 continue  # Handled by staging + commit rewire.
             effective_new_target = self._resolve_target_serial(mod)
             if effective_new_target != mod.new_target:
                 mod.new_target = effective_new_target
+            _maybe_redirect_to_copy(mod)
             blk = self.mba.get_mblock(mod.block_serial)
             if cls == StagedAtomicClassification.UNSUPPORTED:
                 logger.warning(
@@ -3742,12 +3809,15 @@ class DeferredGraphModifier:
             )
             return None
 
-        # Snapshot external predecessors.  We capture each pred's *start EA*
-        # instead of its serial (Bug 3 fix): by the time the commit phase
-        # runs, later staging steps or mutations may have shifted any of
-        # these serials while the start EAs remain stable.  Diagnostics
-        # retain the pre-copy serial for log continuity.
-        preds_snapshot: list[int] = []
+        # Snapshot external predecessors as direct ``mblock_t`` pointers
+        # (Bug 4 fix).  Pointers are stable across ``copy_block`` /
+        # ``insert_block`` and remain valid until that specific block is
+        # ``remove_block``'d.  Preds are external blocks we never remove
+        # during staged_atomic, so their pointers stay valid through
+        # commit.  EA is retained only for diagnostics — copy_block
+        # preserves start EAs, so EA-based lookup cannot distinguish
+        # original from copy (see _StagedPendingRewire docstring).
+        preds_snapshot: list["ida_hexrays.mblock_t"] = []
         original_start_ea = int(target_blk.start)
         for k in range(target_blk.predset.size()):
             pred_serial = int(target_blk.predset[k])
@@ -3759,15 +3829,7 @@ class DeferredGraphModifier:
                     pred_serial, target_blk.serial,
                 )
                 continue
-            try:
-                preds_snapshot.append(int(pred_blk.start))
-            except Exception:
-                logger.debug(
-                    "staged_atomic stage: pred blk[%d] has no readable "
-                    "start EA; skipping pred snapshot entry",
-                    pred_serial,
-                )
-                continue
+            preds_snapshot.append(pred_blk)
 
         # Copy target block.  ``mba.copy_block(blk, new_serial, cpblk_flags=3)``
         # inserts the copy at ``new_serial`` (shifting later blocks);
@@ -3868,12 +3930,14 @@ class DeferredGraphModifier:
             return None
 
         return _StagedPendingRewire(
-            original_serial=mod.block_serial,
-            new_serial=new_blk.serial,
-            original_start_ea=original_start_ea,
-            new_start_ea=new_start_ea,
+            original_blk=target_blk,
+            new_blk=new_blk,
             preds_to_redirect=tuple(preds_snapshot),
             mod_type=mod.mod_type,
+            original_serial=int(mod.block_serial),
+            new_serial=int(new_blk.serial),
+            original_start_ea=original_start_ea,
+            new_start_ea=new_start_ea,
         )
 
     def _apply_destructive_on_copy(
@@ -3948,36 +4012,45 @@ class DeferredGraphModifier:
         mba = self.mba
         if mba is None:
             return False
-        original = _get_mblock_by_start_ea(mba, rewire.original_start_ea)
-        copy = _get_mblock_by_start_ea(mba, rewire.new_start_ea)
+        # Bug 4 fix — use mblock_t pointers captured at stage time
+        # directly, not EA lookup.  copy_block preserves source.start, so
+        # EA-based lookup cannot distinguish original from copy and
+        # always returned the original (silently making commits no-ops).
+        original = rewire.original_blk
+        copy = rewire.new_blk
         if original is None or copy is None:
             logger.warning(
-                "staged_atomic commit: missing block by EA "
-                "orig_ea=0x%x(serial=%s) copy_ea=0x%x(serial=%s) — "
-                "skipping rewire (block removed out of band?)",
-                rewire.original_start_ea,
-                None if original is None else original.serial,
-                rewire.new_start_ea,
-                None if copy is None else copy.serial,
+                "staged_atomic commit: null pointer (stage bug?) — "
+                "skipping rewire (orig_serial_at_stage=%d copy_serial_at_stage=%d)",
+                rewire.original_serial, rewire.new_serial,
             )
             return False
 
-        # Resolve current serials (may differ from the serials captured
-        # at staging time because of intervening copy_block inserts).
-        original_serial = int(original.serial)
-        copy_serial = int(copy.serial)
+        # Live serials — may differ from staging-time snapshot because
+        # each ``copy_block(_, qty-1)`` inserts before BLT_STOP which
+        # only shifts BLT_STOP itself.  But ``blk.serial`` is live.
+        try:
+            original_serial = int(original.serial)
+            copy_serial = int(copy.serial)
+        except Exception:
+            logger.warning(
+                "staged_atomic commit: serial read failed on orig/copy; "
+                "skipping rewire"
+            )
+            return False
 
         any_failed = False
-        for pred_start_ea in rewire.preds_to_redirect:
-            pred_blk = _get_mblock_by_start_ea(mba, pred_start_ea)
+        for pred_blk in rewire.preds_to_redirect:
             if pred_blk is None:
-                logger.warning(
-                    "staged_atomic commit: pred with start_ea=0x%x not found, "
-                    "skipping (rewire of orig_ea=0x%x -> copy_ea=0x%x)",
-                    pred_start_ea, rewire.original_start_ea, rewire.new_start_ea,
+                continue
+            try:
+                pred_serial = int(pred_blk.serial)
+            except Exception:
+                logger.debug(
+                    "staged_atomic commit: pred pointer serial read "
+                    "failed; skipping"
                 )
                 continue
-            pred_serial = int(pred_blk.serial)
             # Skip preds that no longer target the original (already rewired
             # by an earlier commit step or mod).
             cur_succs = {int(pred_blk.succset[k]) for k in range(pred_blk.succset.size())}
@@ -4119,40 +4192,32 @@ class DeferredGraphModifier:
         # independent of the volatile serials.  Each iteration then
         # re-resolves the block via EA so we never dereference a stale
         # serial.
-        by_ea_desc = sorted(
-            committed_rewires,
-            key=lambda r: r.original_start_ea,
-            reverse=True,
-        )
-        for rewire in by_ea_desc:
-            original = _get_mblock_by_start_ea(
-                mba, rewire.original_start_ea,
-            )
-            if original is None:
-                logger.warning(
-                    "staged_atomic cleanup: block with start_ea=0x%x "
-                    "(staging serial=%d) already removed; skipping",
-                    rewire.original_start_ea, rewire.original_serial,
-                )
-                continue
-            # Defensive sanity: confirm the re-resolved block really
-            # matches the captured EA.  ``_get_mblock_by_start_ea`` only
-            # returns a block whose ``start`` matches, so this is
-            # belt-and-braces logging for the case where IDA ever
-            # changes block start EAs mid-run.
+        # Bug 4 fix — use stored mblock_t pointers directly.  Sort by
+        # live serial descending so removals don't invalidate earlier
+        # iterations' serial arithmetic (we re-read blk.serial per
+        # iteration anyway, but the descending sort minimises the
+        # number of shift events per iteration).
+        def _live_serial(r: "_StagedPendingRewire") -> int:
             try:
-                actual_start = int(original.start)
+                return int(r.original_blk.serial)
             except Exception:
-                actual_start = None
-            if actual_start != rewire.original_start_ea:
+                return -1
+        by_serial_desc = sorted(
+            committed_rewires, key=_live_serial, reverse=True,
+        )
+        for rewire in by_serial_desc:
+            original = rewire.original_blk
+            if original is None:
+                continue
+            try:
+                current_serial = int(original.serial)
+            except Exception:
                 logger.warning(
-                    "staged_atomic cleanup: block resolved by EA=0x%x now "
-                    "reports start=0x%s (drift detected); skipping",
-                    rewire.original_start_ea,
-                    "unknown" if actual_start is None else f"{actual_start:x}",
+                    "staged_atomic cleanup: original pointer unusable "
+                    "(staging serial=%d start_ea=0x%x); skipping",
+                    rewire.original_serial, rewire.original_start_ea,
                 )
                 continue
-            current_serial = int(original.serial)
             # Only remove if it is now unreachable (no predecessors).
             if original.predset.size() != 0:
                 logger.debug(
