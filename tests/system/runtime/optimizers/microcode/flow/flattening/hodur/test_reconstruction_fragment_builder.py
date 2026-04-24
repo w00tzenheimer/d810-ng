@@ -100,6 +100,96 @@ class TestPlannerCtxContribution:
         assert ctx.linearizations == ()
 
 
+class TestDropConflictingRedirects:
+    """The finalize_reconstruction_fragment gate — with a cumulative view,
+    SRW's contradictory redirects are dropped before fragment construction.
+    """
+
+    def _view_with(self, src: int, tgt: int, strategy: str = "ssr") -> CumulativePlannerView:
+        # Build a CumulativePlannerView as if a prior SSR fragment had
+        # committed to src -> tgt.
+        prior_frag_meta = {
+            PLANNER_CTX_METADATA_KEY: PlannerContextContribution(
+                linearizations=(
+                    LinearizationDecision(
+                        src=src, tgt=tgt, reason=strategy,
+                        strategy=strategy, round_index=0,
+                    ),
+                ),
+            ),
+        }
+
+        class _Frag:
+            metadata = prior_frag_meta
+
+        return CumulativePlannerView.compile([_Frag()])
+
+    def test_drops_conflicting_redirect_when_view_has_prior_decision(self) -> None:
+        view = self._view_with(src=76, tgt=11)  # SSR committed 76 -> 11
+        # SRW emits src=76 -> 2 (the Mode 1 override)
+        frag = finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=11, new_target=2),
+                RedirectGoto(from_serial=99, old_target=2, new_target=55),
+            ],
+            owned_blocks={76, 99},
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=0,
+            cumulative_planner_view=view,
+        )
+        srcs = {m.from_serial for m in frag.modifications if isinstance(m, RedirectGoto)}
+        # blk[76] conflict dropped; blk[99] kept.
+        assert srcs == {99}
+
+    def test_keeps_matching_redirect_same_target(self) -> None:
+        view = self._view_with(src=76, tgt=11)
+        # SRW emits src=76 -> 11 (same target — consistent, not a conflict)
+        frag = finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=11),
+            ],
+            owned_blocks={76},
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=0,
+            cumulative_planner_view=view,
+        )
+        assert len(frag.modifications) == 1
+
+    def test_no_view_means_no_filtering(self) -> None:
+        # Without a view, all mods pass through unchanged.
+        frag = finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=11, new_target=2),
+            ],
+            owned_blocks={76},
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=0,
+            cumulative_planner_view=None,
+        )
+        assert len(frag.modifications) == 1
+
+
 class TestCumulativeViewCompilesFromSrwFragment:
     """End-to-end: the engine's CumulativePlannerView.compile must pick up
     the contribution SRW attached in finalize_reconstruction_fragment.

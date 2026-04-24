@@ -1297,4 +1297,9 @@ class StateWriteReconstructionStrategy:
             post_apply_bst_cleanup_reason=post_apply_bst_cleanup_reason,
             residual_dispatcher_preds=residual_dispatcher_preds,
             structured_region_fidelity=structured_region_fidelity,
+            # Honor prior-fragment linearizations: if SSR (running first)
+            # already committed to a target for this src, don't emit a
+            # contradictory redirect. Drops ~7 Mode 1 overrides per run on
+            # sub_7FFD3338C040 (logged via PLANNER_CTX_CONFLICT).
+            cumulative_planner_view=snapshot.cumulative_planner_view,
         )
