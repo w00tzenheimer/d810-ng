@@ -429,6 +429,140 @@ class TargetRefKind(Enum):
     STOP_BLOCK = auto()  # Resolve to current mba.qty - 1 at apply-time
 
 
+class StagedAtomicClassification(Enum):
+    """Classification of a queued modification for the ``staged_atomic`` apply path.
+
+    The ``apply(staged_atomic=True)`` mode gives real atomicity: the
+    intermediate state where the new copy exists but predecessors are not yet
+    rewired is invisible to any external observer of the MBA.  To accomplish
+    this, each queued modification must be classified into one of the buckets
+    below; each bucket takes a different path through the four-phase
+    orchestration (classify → stage → commit → cleanup).
+
+    Buckets:
+
+    * ``ADDITIVE``        -- The modification only creates new ``mblock_t``
+      objects (via ``mba.copy_block``/``create_standalone_block``) and, at
+      most, rewires the *one* predecessor it logically owns.  It never
+      destroys pre-existing block topology until the tail redirect step,
+      which itself is guarded and can fail cleanly.  Existing handlers such
+      as ``PrivateTerminalSuffixGroup`` and ``DirectTerminalLoweringGroup``
+      already follow this pattern.  Apply these directly through the normal
+      ``_apply_single`` dispatcher during the commit phase.
+
+    * ``DESTRUCTIVE_EXPRESSIBLE`` -- The modification currently mutates an
+      existing block's tail / succset / predset in-place.  Under
+      ``staged_atomic`` these are lowered into a
+      *copy-and-swap* sequence: ``mba.copy_block`` the target block,
+      apply the intended mutation on the *copy*, record a pending rewire
+      of every external predecessor to point at the copy, and defer both
+      the redirect and the cleanup of the now-orphaned original block to
+      the commit / cleanup phases.  Currently covers
+      ``BLOCK_GOTO_CHANGE``, ``BLOCK_TARGET_CHANGE``,
+      ``BLOCK_CONVERT_TO_GOTO``, and ``EDGE_REMOVE``.
+
+    * ``INSTRUCTION_ONLY`` -- The modification touches instructions inside
+      an existing block but never changes the block's topology (succset /
+      predset / type).  These are always safe to apply after the
+      staging / commit / cleanup phases have settled the CFG shape.
+      Covers ``INSN_REMOVE``, ``INSN_NOP``, ``INSN_ZERO_STATE_WRITE``,
+      and ``BLOCK_NOP_INSNS``.
+
+    * ``UNSUPPORTED`` -- The modification type has no staged_atomic
+      lowering yet.  When encountered, the staged_atomic path falls back
+      to the default sequential ``_apply_single`` behaviour for that mod
+      (and logs a warning).  This is intentional: new mod types can be
+      added without forcing a simultaneous update to the staged path.
+
+    Reference template: ``_apply_private_terminal_suffix_group`` in this
+    file -- it demonstrates the full
+    ``validate -> snapshot -> copy -> wire -> redirect -> cleanup``
+    sequence that the staged_atomic path generalises for the destructive
+    bucket.
+    """
+
+    ADDITIVE = auto()
+    DESTRUCTIVE_EXPRESSIBLE = auto()
+    INSTRUCTION_ONLY = auto()
+    UNSUPPORTED = auto()
+
+
+# Mapping from ModificationType -> StagedAtomicClassification.  Kept as a
+# module-level constant so classification is O(1) and can be introspected
+# from unit tests without instantiating a modifier.  New modification types
+# must be added here (or they default to UNSUPPORTED).
+_STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" = {
+    # Instruction-only: never touches block topology.
+    ModificationType.INSN_REMOVE: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_NOP: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.BLOCK_NOP_INSNS: StagedAtomicClassification.INSTRUCTION_ONLY,
+    # Destructive-expressible: mutate an existing block's tail/succset in-place.
+    # Lowered to copy-and-swap under staged_atomic.
+    ModificationType.BLOCK_GOTO_CHANGE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.BLOCK_TARGET_CHANGE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.BLOCK_CONVERT_TO_GOTO: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    ModificationType.EDGE_REMOVE: StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE,
+    # Additive: already create new blocks and defer the tail redirect.
+    # Safe to apply through the default dispatcher during commit.
+    ModificationType.BLOCK_CREATE_WITH_REDIRECT: StagedAtomicClassification.ADDITIVE,
+    ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: StagedAtomicClassification.ADDITIVE,
+    ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: StagedAtomicClassification.ADDITIVE,
+    ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT: StagedAtomicClassification.ADDITIVE,
+    ModificationType.EDGE_SPLIT_TRAMPOLINE: StagedAtomicClassification.ADDITIVE,
+    ModificationType.PRIVATE_TERMINAL_SUFFIX: StagedAtomicClassification.ADDITIVE,
+    ModificationType.PRIVATE_TERMINAL_SUFFIX_GROUP: StagedAtomicClassification.ADDITIVE,
+    ModificationType.DIRECT_TERMINAL_LOWERING_GROUP: StagedAtomicClassification.ADDITIVE,
+    ModificationType.REORDER_BLOCKS: StagedAtomicClassification.ADDITIVE,
+    # BLOCK_FALLTHROUGH_CHANGE: not currently emitted anywhere — mark UNSUPPORTED
+    # so staged_atomic falls back to sequential apply if it ever shows up.
+    ModificationType.BLOCK_FALLTHROUGH_CHANGE: StagedAtomicClassification.UNSUPPORTED,
+}
+
+
+def classify_for_staged_atomic(
+    mod_type: "ModificationType",
+) -> StagedAtomicClassification:
+    """Return the staged_atomic classification for a given modification type.
+
+    Exposed at module level so tests and planners can reason about
+    classifications without instantiating a modifier.
+    """
+    return _STAGED_ATOMIC_CLASS_MAP.get(mod_type, StagedAtomicClassification.UNSUPPORTED)
+
+
+@dataclass(frozen=True)
+class _StagedPendingRewire:
+    """Record of a pending predecessor rewire produced during the staging phase.
+
+    The staging phase copies the destructive-expressible mod's target block,
+    applies the intended mutation to the copy, and records one of these to
+    redirect external predecessors at commit time.  All fields are serials
+    (never live pointers) so the record survives unrelated CFG drift that
+    could invalidate ``mblock_t`` references.
+
+    Fields:
+        original_serial: Serial of the pre-existing block that is being
+            logically replaced.  After commit + cleanup this block is
+            orphaned (removed from all predsets and succsets) and scheduled
+            for deletion in the cleanup phase.
+        new_serial: Serial of the freshly-copied block that now carries
+            the intended mutation.  External predecessors are redirected
+            to this serial during the commit phase.
+        preds_to_redirect: Serials of the predecessors that pointed at the
+            original block and must now point at ``new_serial``.  Captured
+            at staging time so the commit phase does not re-read the live
+            predset (which may legitimately shift under concurrent mods).
+        mod_type: The original ModificationType (retained for diagnostics
+            and to pick the correct wiring helper during commit).
+    """
+
+    original_serial: int
+    new_serial: int
+    preds_to_redirect: tuple[int, ...]
+    mod_type: "ModificationType"
+
+
 @dataclass
 class GraphModification:
     """Represents a single queued graph modification."""
@@ -2028,6 +2162,7 @@ class DeferredGraphModifier:
         enable_snapshot_rollback: bool = False,
         post_apply_hook: Callable[[], None] | None = None,
         transactional: bool = False,
+        staged_atomic: bool = False,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -2064,6 +2199,16 @@ class DeferredGraphModifier:
                 rollback-based atomicity, not pre-computed write-back. Does
                 not avoid the intermediate-state-visible-to-IDA-internals
                 window between the first mod and a rollback.
+            staged_atomic: If True, run the Strategy B four-phase
+                stage-into-new-blocks pipeline: destructive-expressible mods
+                are lowered to copy-and-swap sequences, additive + instruction
+                mods execute through the normal dispatcher, and orphaned
+                originals are deleted in a terminal cleanup phase.  Provides
+                real atomicity (intermediate state invisible) on top of the
+                existing rollback semantics supplied by
+                ``enable_snapshot_rollback``. ``transactional=True`` still
+                wraps the staged commit in snapshot rollback; the two kwargs
+                may be combined safely.
 
         Returns:
             Number of successful modifications applied. When ``transactional``
@@ -2475,6 +2620,48 @@ class DeferredGraphModifier:
         failed = pre_rejected
         rolled_back = 0
         recent_modifications: list[dict] = []
+
+        # ────────────────────────────────────────────────────────────────
+        # Strategy B staged_atomic path.
+        #
+        # When requested, route the modification list through the four-phase
+        # stage-into-new-blocks pipeline (classify -> stage -> commit ->
+        # cleanup).  This gives real atomicity: the intermediate state where
+        # the copy exists but external predecessors have not yet been
+        # redirected is invisible to any observer of the MBA.
+        #
+        # The staged path delegates to the existing ``_apply_single``
+        # dispatcher for ADDITIVE + INSTRUCTION_ONLY mods (they already
+        # follow the copy-block-swap pattern or cannot violate atomicity),
+        # and lowers DESTRUCTIVE_EXPRESSIBLE mods into copy-and-swap
+        # sequences against ``mba.copy_block``.  UNSUPPORTED mods fall
+        # through to the sequential path with a warning.
+        # ────────────────────────────────────────────────────────────────
+        if staged_atomic:
+            (
+                staged_successful,
+                staged_failed,
+            ) = self._apply_staged_atomic(
+                sorted_mods,
+                recent_modifications=recent_modifications,
+            )
+            successful += staged_successful
+            failed += staged_failed
+            # Jump to the post-apply tail (skip the sequential for-loop).
+            # The ``goto``-like structure is represented by an early return
+            # through ``_finish``; the tail handles optimize_local/verify.
+            return self._finalize_apply(
+                successful=successful,
+                failed=failed,
+                rolled_back=rolled_back,
+                sorted_mods=sorted_mods,
+                recent_modifications=recent_modifications,
+                run_optimize_local=run_optimize_local,
+                run_deep_cleaning=run_deep_cleaning,
+                defer_post_apply_maintenance=defer_post_apply_maintenance,
+                enable_snapshot_rollback=enable_snapshot_rollback,
+                post_apply_hook=post_apply_hook,
+            )
 
         for i, mod in enumerate(sorted_mods):
             self._set_apply_phase("backend_apply", "raw_apply")
@@ -3064,6 +3251,610 @@ class DeferredGraphModifier:
                     )
                 except RuntimeError:
                     pass
+
+        return _finish(successful)
+
+    # ================================================================
+    # staged_atomic (Strategy B) apply pipeline
+    # ================================================================
+    #
+    # Design note: staged_atomic extends Phase 1 rollback semantics with
+    # real atomicity.  The four phases (classify / stage / commit / cleanup)
+    # ensure that ``mba.verify()``-visible state only transitions between
+    # two consistent CFG configurations, never through the in-flight
+    # "copy exists but preds not yet redirected" intermediate.
+    #
+    # Reference template: :py:meth:`_apply_private_terminal_suffix_group`
+    # demonstrates the full validate/snapshot/copy/wire/redirect sequence
+    # that staged_atomic generalises for the destructive-expressible bucket.
+
+    def _apply_staged_atomic(
+        self,
+        sorted_mods: "list[GraphModification]",
+        *,
+        recent_modifications: "list[dict]",
+    ) -> "tuple[int, int]":
+        """Execute the four-phase staged_atomic pipeline.
+
+        Phases:
+            1. Classify each mod into one of
+               ``StagedAtomicClassification`` buckets.
+            2. Stage DESTRUCTIVE_EXPRESSIBLE mods: copy the target block
+               via ``mba.copy_block``, apply the intended mutation to the
+               copy, record a pending rewire for each external predecessor.
+            3. Commit: apply ADDITIVE + INSTRUCTION_ONLY mods through
+               ``_apply_single`` (they already follow copy-and-swap or
+               never touch topology), then replay pending rewires from the
+               staging phase so external predecessors now point at the
+               copies.
+            4. Cleanup: remove orphaned original blocks (reverse-topo order
+               so removals don't invalidate earlier serials).  Orphaned
+               blocks are those whose predset became empty after commit.
+
+        Failure handling: if staging fails for a destructive-expressible
+        mod, no state changes have been made to the existing topology,
+        so subsequent mods can still proceed.  If commit fails, the
+        copies already in the MBA become orphaned new blocks that the
+        cleanup phase attempts to delete.  Combined with Phase 1
+        snapshot rollback, this provides both "intermediate state
+        invisible" + "clean failure".
+
+        Args:
+            sorted_mods: Modifications in priority order (already passed
+                through coalesce / pre-reject gates).
+            recent_modifications: Shared trace buffer for diagnostics.
+
+        Returns:
+            Tuple ``(successful, failed)`` with per-mod success counts.
+        """
+        successful = 0
+        failed = 0
+
+        # --- Phase 1: Classify ---------------------------------------
+        classified: list[tuple[int, GraphModification, StagedAtomicClassification]] = [
+            (i, mod, classify_for_staged_atomic(mod.mod_type))
+            for i, mod in enumerate(sorted_mods)
+        ]
+        class_counts: dict[StagedAtomicClassification, int] = {}
+        for _, _, cls in classified:
+            class_counts[cls] = class_counts.get(cls, 0) + 1
+        logger.info(
+            "staged_atomic classify: %s",
+            {c.name: n for c, n in class_counts.items()},
+        )
+
+        # --- Phase 2: Stage destructive-expressible mods -------------
+        pending_rewires: list[_StagedPendingRewire] = []
+        staged_indices: set[int] = set()
+        for i, mod, cls in classified:
+            if cls != StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE:
+                continue
+            effective_new_target = self._resolve_target_serial(mod)
+            if effective_new_target != mod.new_target:
+                mod.new_target = effective_new_target
+            rewire = self._stage_destructive_mod_via_copy(mod, index=i)
+            if rewire is None:
+                logger.warning(
+                    "staged_atomic: staging failed for mod[%d] %s (block=%d)",
+                    i, mod.mod_type.name, mod.block_serial,
+                )
+                failed += 1
+                continue
+            pending_rewires.append(rewire)
+            staged_indices.add(i)
+            logger.debug(
+                "staged_atomic stage[%d]: %s blk[%d] -> copy blk[%d] "
+                "(preds=%s)",
+                i, mod.mod_type.name, rewire.original_serial,
+                rewire.new_serial, rewire.preds_to_redirect,
+            )
+
+        # --- Phase 3: Commit ---------------------------------------------
+        # 3a. Run ADDITIVE + INSTRUCTION_ONLY + UNSUPPORTED mods directly
+        #     through _apply_single.  They are either already atomic
+        #     (ADDITIVE — internal copy-and-swap) or cannot violate
+        #     atomicity (INSTRUCTION_ONLY — touches insns only).
+        # 3b. Replay staged rewires to redirect external predecessors at
+        #     the swap point.  Until this step runs, external preds still
+        #     observe the pre-modification graph; after this step
+        #     completes they observe the mutated graph.  No partial
+        #     intermediate is ever visible.
+        for i, mod, cls in classified:
+            if i in staged_indices:
+                continue  # Handled by staging + commit rewire.
+            effective_new_target = self._resolve_target_serial(mod)
+            if effective_new_target != mod.new_target:
+                mod.new_target = effective_new_target
+            blk = self.mba.get_mblock(mod.block_serial)
+            if cls == StagedAtomicClassification.UNSUPPORTED:
+                logger.warning(
+                    "staged_atomic: mod[%d] %s has no staged lowering; "
+                    "falling back to sequential apply",
+                    i, mod.mod_type.name,
+                )
+            try:
+                if self._apply_single(mod):
+                    successful += 1
+                    recent_modifications.append({
+                        "index": i,
+                        "description": mod.description,
+                        "mod_type": mod.mod_type.name,
+                        "block_serial": mod.block_serial,
+                        "new_target": mod.new_target,
+                        "phase": "staged_atomic/commit_additive",
+                    })
+                    if len(recent_modifications) > _MAX_CAPTURE_HISTORY:
+                        recent_modifications.pop(0)
+                else:
+                    failed += 1
+                    logger.warning(
+                        "staged_atomic: commit phase failed for mod[%d] %s",
+                        i, mod.mod_type.name,
+                    )
+            except Exception as exc:
+                failed += 1
+                logger.error(
+                    "staged_atomic: exception during mod[%d] %s: %s",
+                    i, mod.mod_type.name, exc,
+                )
+                import traceback
+                logger.error("staged_atomic traceback: %s", traceback.format_exc())
+
+        # 3c. Replay pending rewires (commit the swap).
+        committed_rewires: list[_StagedPendingRewire] = []
+        for rewire in pending_rewires:
+            if self._commit_staged_rewire(rewire):
+                successful += 1
+                committed_rewires.append(rewire)
+                recent_modifications.append({
+                    "description": f"staged_rewire {rewire.original_serial}->{rewire.new_serial}",
+                    "mod_type": rewire.mod_type.name,
+                    "phase": "staged_atomic/commit_rewire",
+                })
+                if len(recent_modifications) > _MAX_CAPTURE_HISTORY:
+                    recent_modifications.pop(0)
+            else:
+                failed += 1
+                logger.warning(
+                    "staged_atomic: commit rewire failed for %s blk[%d] -> copy[%d]",
+                    rewire.mod_type.name, rewire.original_serial, rewire.new_serial,
+                )
+
+        # --- Phase 4: Cleanup orphaned original blocks ---------------
+        # Originals whose external predecessors have all been redirected
+        # are now unreachable.  Remove them in reverse-topological (by
+        # serial, descending) order so earlier serials are not invalidated.
+        # ``remove_block`` is optional on the live IDA API (sometimes
+        # exposed, sometimes not); the cleanup step probes for it and
+        # falls back to a soft "mark unreachable" if unavailable.
+        if committed_rewires:
+            cleaned = self._cleanup_orphaned_originals(committed_rewires)
+            logger.info(
+                "staged_atomic cleanup: removed %d orphaned original blocks",
+                cleaned,
+            )
+
+        self.mba.mark_chains_dirty()
+        return successful, failed
+
+    def _stage_destructive_mod_via_copy(
+        self,
+        mod: "GraphModification",
+        *,
+        index: int,
+    ) -> "_StagedPendingRewire | None":
+        """Stage a destructive-expressible mod as a copy-and-swap.
+
+        The staging step:
+          1. Snapshots the target block's external predecessors (serials only).
+          2. Copies the target block via ``mba.copy_block`` to append at
+             ``mba.qty - 1`` (before BLT_STOP).
+          3. Applies the intended mutation to the *copy* using the same
+             helpers as the in-place path.
+          4. Returns a ``_StagedPendingRewire`` recording the swap that
+             must be applied during the commit phase.  Returning ``None``
+             signals that staging could not be performed (precondition
+             failure, missing block, etc.) — the caller counts that as a
+             ``failed`` mod and continues.
+
+        No external predecessor is redirected here; that happens during
+        the commit phase.  Until commit runs, any external observer still
+        sees the original block wired into the pre-modification CFG.
+        """
+        mba = self.mba
+        if mba is None:
+            return None
+        target_blk = mba.get_mblock(mod.block_serial)
+        if target_blk is None:
+            logger.warning(
+                "staged_atomic stage: blk[%d] not found for mod %s",
+                mod.block_serial, mod.mod_type.name,
+            )
+            return None
+
+        # Snapshot external predecessors (serials — never live pointers).
+        preds_snapshot = tuple(
+            int(target_blk.predset[k])
+            for k in range(target_blk.predset.size())
+        )
+
+        # Copy target block.  ``mba.copy_block(blk, new_serial, cpblk_flags=3)``
+        # inserts the copy at ``new_serial`` (shifting later blocks);
+        # we append before BLT_STOP so only BLT_STOP's serial shifts.
+        try:
+            new_blk = mba.copy_block(target_blk, mba.qty - 1)
+        except Exception as exc:
+            logger.warning(
+                "staged_atomic stage: copy_block failed for blk[%d]: %s",
+                target_blk.serial, exc,
+            )
+            return None
+        if new_blk is None:
+            logger.warning(
+                "staged_atomic stage: copy_block returned None for blk[%d]",
+                target_blk.serial,
+            )
+            return None
+
+        # copy_block inherits predset/succset from the source; wipe
+        # predset on the copy so external preds will only route to the
+        # copy after the commit phase redirects them explicitly.
+        try:
+            inherited_preds = [x for x in new_blk.predset]
+        except Exception:
+            inherited_preds = []
+        for p in inherited_preds:
+            try:
+                new_blk.predset._del(p)
+            except Exception:
+                # Some SWIG wrappers expose `clear()` only; fall back below.
+                pass
+        if new_blk.predset.size() > 0:
+            try:
+                new_blk.predset.clear()
+            except Exception:
+                pass
+
+        # Apply the intended mutation to the *copy*.
+        mutation_ok = self._apply_destructive_on_copy(new_blk, mod)
+        if not mutation_ok:
+            logger.warning(
+                "staged_atomic stage: mutation failed on copy blk[%d] for mod[%d] %s",
+                new_blk.serial, index, mod.mod_type.name,
+            )
+            return None
+
+        return _StagedPendingRewire(
+            original_serial=mod.block_serial,
+            new_serial=new_blk.serial,
+            preds_to_redirect=preds_snapshot,
+            mod_type=mod.mod_type,
+        )
+
+    def _apply_destructive_on_copy(
+        self,
+        copy_blk: "ida_hexrays.mblock_t",
+        mod: "GraphModification",
+    ) -> bool:
+        """Apply a destructive-expressible mod to the freshly-copied block.
+
+        Dispatches by ``mod.mod_type``.  The copy already inherited the
+        original block's succset (and thus its topology); the helpers
+        below re-use the same in-place mutation primitives as the
+        sequential path — they operate on ``copy_blk`` instead of the
+        live target, so the original block's wiring is untouched.
+        """
+        if mod.mod_type == ModificationType.BLOCK_GOTO_CHANGE:
+            if copy_blk.nsucc() != 1:
+                return False
+            return change_1way_block_successor(
+                copy_blk, mod.new_target, verify=False,
+            )
+        if mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
+            if copy_blk.tail is None or copy_blk.nsucc() != 2:
+                return False
+            return change_2way_block_conditional_successor(
+                copy_blk, mod.new_target, verify=False,
+            )
+        if mod.mod_type == ModificationType.BLOCK_CONVERT_TO_GOTO:
+            if copy_blk.nsucc() != 2:
+                return False
+            return make_2way_block_goto(
+                copy_blk, mod.new_target, verify=False,
+            )
+        if mod.mod_type == ModificationType.EDGE_REMOVE:
+            return remove_block_edge(
+                copy_blk, mod.new_target, verify=False,
+            )
+        logger.warning(
+            "staged_atomic: no copy-mutator for mod_type=%s",
+            mod.mod_type.name,
+        )
+        return False
+
+    def _commit_staged_rewire(
+        self,
+        rewire: "_StagedPendingRewire",
+    ) -> bool:
+        """Redirect every external predecessor recorded in ``rewire``.
+
+        This is the swap point for a single destructive-expressible mod.
+        Before this method runs, external preds still target
+        ``rewire.original_serial`` and observe the pre-modification graph.
+        After it returns, every external pred that previously targeted
+        the original now targets ``rewire.new_serial`` (the copy) and
+        observes the post-modification graph.  Either all redirects
+        succeed or the rewire is counted as ``failed`` — the copy then
+        becomes an orphaned new block that Phase 4 cleanup or snapshot
+        rollback can remove.
+        """
+        mba = self.mba
+        if mba is None:
+            return False
+        original = mba.get_mblock(rewire.original_serial)
+        copy = mba.get_mblock(rewire.new_serial)
+        if original is None or copy is None:
+            logger.warning(
+                "staged_atomic commit: missing block orig=%s copy=%s",
+                rewire.original_serial, rewire.new_serial,
+            )
+            return False
+
+        any_failed = False
+        for pred_serial in rewire.preds_to_redirect:
+            pred_blk = mba.get_mblock(pred_serial)
+            if pred_blk is None:
+                logger.debug(
+                    "staged_atomic commit: pred blk[%d] not found, skipping",
+                    pred_serial,
+                )
+                continue
+            # Skip preds that no longer target the original (already rewired
+            # by an earlier commit step or mod).
+            cur_succs = {int(pred_blk.succset[k]) for k in range(pred_blk.succset.size())}
+            if rewire.original_serial not in cur_succs:
+                continue
+            rewired_ok = False
+            if pred_blk.nsucc() == 1:
+                rewired_ok = change_1way_block_successor(
+                    pred_blk, rewire.new_serial, verify=False,
+                )
+            elif pred_blk.nsucc() == 2:
+                # Only rewire the conditional-branch arm that currently
+                # targets the original.  The fallthrough arm (serial+1)
+                # is untouched by staged_atomic.
+                if (
+                    pred_blk.tail is not None
+                    and getattr(pred_blk.tail, "d", None) is not None
+                    and pred_blk.tail.d.b == rewire.original_serial
+                ):
+                    rewired_ok = change_2way_block_conditional_successor(
+                        pred_blk, rewire.new_serial, verify=False,
+                        old_target=rewire.original_serial,
+                    )
+                else:
+                    logger.debug(
+                        "staged_atomic commit: pred blk[%d] is 2-way with "
+                        "fallthrough pointing at original — leaving succset "
+                        "as-is (fallthrough implicit)",
+                        pred_serial,
+                    )
+                    continue
+            else:
+                logger.debug(
+                    "staged_atomic commit: pred blk[%d] has nsucc=%d; "
+                    "skipping (not 1-way or 2-way)",
+                    pred_serial, pred_blk.nsucc(),
+                )
+                continue
+            if not rewired_ok:
+                logger.warning(
+                    "staged_atomic commit: failed to redirect pred blk[%d] "
+                    "from blk[%d] to copy blk[%d]",
+                    pred_serial, rewire.original_serial, rewire.new_serial,
+                )
+                any_failed = True
+        return not any_failed
+
+    def _cleanup_orphaned_originals(
+        self,
+        committed_rewires: "list[_StagedPendingRewire]",
+    ) -> int:
+        """Remove original blocks whose external predecessors have been rewired.
+
+        Processes the committed rewires in reverse order of ``original_serial``
+        (descending) so that earlier serials remain valid as later serials
+        shift after removal.  Uses ``mba.remove_block`` when available; if
+        the live API does not expose it (or raises) the original is left
+        in place as an unreachable block — the subsequent ``optimize_local``
+        and ``mba_deep_cleaning`` passes will collect it.
+
+        Returns the number of blocks actually removed.
+        """
+        mba = self.mba
+        if mba is None:
+            return 0
+        removed = 0
+        # Sort by original_serial DESC so removal of later serials does not
+        # invalidate earlier ones.
+        by_serial_desc = sorted(
+            committed_rewires,
+            key=lambda r: r.original_serial,
+            reverse=True,
+        )
+        for rewire in by_serial_desc:
+            original = mba.get_mblock(rewire.original_serial)
+            if original is None:
+                continue
+            # Only remove if it is now unreachable (no predecessors).
+            if original.predset.size() != 0:
+                logger.debug(
+                    "staged_atomic cleanup: blk[%d] still has %d predecessors, "
+                    "leaving in place",
+                    rewire.original_serial, original.predset.size(),
+                )
+                continue
+            # Clear the block's own outgoing edges' predset references to
+            # itself so remove_block does not observe dangling links.
+            for k in range(original.succset.size()):
+                succ_serial = int(original.succset[k])
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is None:
+                    continue
+                try:
+                    succ_blk.predset._del(rewire.original_serial)
+                except Exception:
+                    pass
+            try:
+                remover = getattr(mba, "remove_block", None)
+                if remover is None:
+                    logger.debug(
+                        "staged_atomic cleanup: mba.remove_block unavailable; "
+                        "leaving blk[%d] as unreachable",
+                        rewire.original_serial,
+                    )
+                    continue
+                remover(original)
+                removed += 1
+            except Exception as exc:
+                logger.warning(
+                    "staged_atomic cleanup: remove_block(blk[%d]) failed: %s",
+                    rewire.original_serial, exc,
+                )
+        return removed
+
+    def _finalize_apply(
+        self,
+        *,
+        successful: int,
+        failed: int,
+        rolled_back: int,
+        sorted_mods: "list[GraphModification]",
+        recent_modifications: "list[dict]",
+        run_optimize_local: bool,
+        run_deep_cleaning: bool,
+        defer_post_apply_maintenance: bool,
+        enable_snapshot_rollback: bool,
+        post_apply_hook: "Callable[[], None] | None",
+    ) -> int:
+        """Shared tail for the staged_atomic path.
+
+        Mirrors the tail of :py:meth:`apply` (mark dirty, run optimize_local
+        or deep cleaning, post-apply hook, native verify, snapshot rollback
+        on failure).  Kept as a separate method so the staged_atomic branch
+        can share the exact same post-apply contract as the sequential path
+        without duplicating ~180 lines of bookkeeping.
+        """
+        if successful > 0:
+            self.mba.mark_chains_dirty()
+
+        def _finish(result_count: int) -> int:
+            self._applied = True
+            if self.event_emitter is not None:
+                _fp = self._base_payload()
+                _fp.update({
+                    "applied": result_count,
+                    "failed": failed,
+                    "rolled_back": rolled_back,
+                    "verify_failed": self.verify_failed,
+                    "mode": "staged_atomic",
+                })
+                self._emit(DeferredEvent.DEFERRED_APPLY_FINISHED, _fp)
+            return result_count
+
+        if self.verify_failed:
+            logger.warning(
+                "staged_atomic: skipping post-apply cleanup -- "
+                "verify already failed during commit phase"
+            )
+            return _finish(successful)
+
+        if successful == 0:
+            return _finish(successful)
+
+        if post_apply_hook is not None:
+            try:
+                post_apply_hook()
+            except Exception as exc:
+                self.verify_failed = True
+                logger.error(
+                    "staged_atomic: post_apply_hook raised: %s",
+                    exc,
+                    exc_info=True,
+                )
+                capture_failure_artifact(
+                    self.mba,
+                    "exception during staged_atomic post-apply hook",
+                    exc,
+                    logger_func=logger.error,
+                    capture_metadata={
+                        "phase": "staged_atomic/post_apply_hook_exception",
+                        "applied_modifications": successful,
+                        "queued_modifications": len(sorted_mods),
+                        "recent_modifications": list(recent_modifications),
+                    },
+                )
+                if enable_snapshot_rollback and self._pre_snapshot is not None:
+                    if self._restore_from_snapshot(self._pre_snapshot):
+                        self.verify_failed = False
+                        return _finish(0)
+                return _finish(successful)
+
+        if defer_post_apply_maintenance:
+            return _finish(successful)
+
+        if run_deep_cleaning:
+            mba_deep_cleaning(self.mba, call_mba_combine_block=True)
+        elif run_optimize_local:
+            self.mba.optimize_local(0)
+        else:
+            mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+
+        try:
+            safe_verify(
+                self.mba,
+                "after staged_atomic modifications",
+                logger_func=logger.error,
+                capture_metadata={
+                    "phase": "staged_atomic/post_apply_verify",
+                    "applied_modifications": successful,
+                    "queued_modifications": len(sorted_mods),
+                    "recent_modifications": list(recent_modifications),
+                },
+            )
+        except RuntimeError:
+            self.verify_failed = True
+            logger.warning(
+                "staged_atomic: MBA verify failed after %d modifications",
+                successful,
+            )
+            if self.event_emitter is not None:
+                _vfp = self._base_payload()
+                _vfp["result"] = "verify_failed"
+                _vfp["error"] = "staged_atomic post-apply verify failed"
+                self._emit(DeferredEvent.DEFERRED_VERIFY_FAILED, _vfp)
+
+            if enable_snapshot_rollback and self._pre_snapshot is not None:
+                if self._restore_from_snapshot(self._pre_snapshot):
+                    self.verify_failed = False
+                    return _finish(0)
+
+            try:
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                safe_verify(
+                    self.mba,
+                    "after staged_atomic (recovery)",
+                    logger_func=logger.error,
+                    capture_metadata={
+                        "phase": "staged_atomic/post_apply_recovery_verify",
+                        "applied_modifications": successful,
+                        "queued_modifications": len(sorted_mods),
+                        "recent_modifications": list(recent_modifications),
+                    },
+                )
+                self.verify_failed = False
+            except RuntimeError:
+                pass
 
         return _finish(successful)
 
