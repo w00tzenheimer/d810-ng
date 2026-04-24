@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from d810.core import logging
@@ -32,11 +33,25 @@ def _can_emit_direct(
     shared_suffix_blocks: set[int],
     dispatcher_region: set[int],
 ) -> bool:
+    # D810_PREFER_DIRECT_FOR_TRANSITION=1 → for non-conditional DAG edges
+    # (TRANSITION / EXIT_ROUTINE kinds), relax the multi-pred / shared-suffix
+    # pessimism and accept DIRECT emission. Pure state-to-state transitions
+    # should land as 1-way gotos regardless of shared-block heuristics; the
+    # per-predecessor-differentiation reason to duplicate only applies to
+    # conditional edges where different preds legitimately route to
+    # different targets. Diagnostic/experimental gate; default off.
+    relax_shared = (
+        not is_conditional_transition
+        and os.getenv("D810_PREFER_DIRECT_FOR_TRANSITION", "").strip() == "1"
+    )
+
     horizon_block = int(ordered_path[horizon_index])
     block = flow_graph.get_block(horizon_block)
-    if block is None or block.nsucc != 1 or block.npred > 1:
+    if block is None or block.nsucc != 1:
         return False
-    if is_shared_block(
+    if not relax_shared and block.npred > 1:
+        return False
+    if not relax_shared and is_shared_block(
         flow_graph,
         horizon_block,
         shared_suffix_blocks=shared_suffix_blocks,
@@ -53,6 +68,12 @@ def _can_emit_direct(
         dispatcher_region=dispatcher_region,
     )
     end_index = len(ordered_path) if boundary_index is None else boundary_index
+    # NOTE: downstream blocks keep the strict check even when the gate is on.
+    # Relaxing the horizon's shared-check lets pure TRANSITION edges land as
+    # gotos on shared handler-exit blocks, but continuing to relax downstream
+    # blocks over-collapses the path and produces `while(2)` irreducible
+    # artifacts (IDA's escape hatch for structures it can't fold). Keep the
+    # downstream walk strict so the reconstruction stays well-formed.
     for index in range(horizon_index + 1, end_index):
         block_serial = int(ordered_path[index])
         curr = flow_graph.get_block(block_serial)
@@ -149,6 +170,19 @@ def plan_reconstruction_emission(
         return ReconstructionEmissionDecision(
             accepted=True,
             emission_mode="conditional_arm",
+        )
+
+    # D810_SKIP_PRED_SPLIT_FOR_TRANSITION=1 → for pure TRANSITION edges
+    # (non-conditional), reject emission instead of falling through to
+    # pred_split. Diagnostic: isolates whether the remaining duplications
+    # are responsible for the residual while(1)/while(2) irreducibility.
+    if (
+        not is_conditional_transition
+        and os.getenv("D810_SKIP_PRED_SPLIT_FOR_TRANSITION", "").strip() == "1"
+    ):
+        return ReconstructionEmissionDecision(
+            accepted=False,
+            rejection_reason="pred_split_suppressed_for_transition",
         )
 
     if first_shared_index is None:
