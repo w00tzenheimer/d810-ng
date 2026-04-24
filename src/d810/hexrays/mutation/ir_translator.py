@@ -375,6 +375,12 @@ class IDAIRTranslator:
         use_transactional = os.getenv(
             "D810_DEFERRED_TRANSACTIONAL", ""
         ).strip() == "1" and enable_rollback
+        # Opt-in staged atomic mode: destructive mods lowered to copy-and-swap
+        # via mba.copy_block so intermediate state is invisible to IDA-level
+        # observers. Composable with transactional.
+        use_staged_atomic = os.getenv(
+            "D810_DEFERRED_STAGED_ATOMIC", ""
+        ).strip() == "1"
         try:
             result_count = modifier.apply(
                 run_optimize_local=True,
@@ -385,6 +391,7 @@ class IDAIRTranslator:
                 enable_snapshot_rollback=enable_rollback,
                 post_apply_hook=effective_hook,
                 transactional=use_transactional,
+                staged_atomic=use_staged_atomic,
             )
         except Exception:
             self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
