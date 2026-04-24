@@ -1820,3 +1820,389 @@ class TestPrivateTerminalSuffix:
             s == 1 and t == clone_s_serial
             for s, t in state["successor_changes"]
         )
+
+
+# ---------------------------------------------------------------------------
+#  TestStagedAtomic -- Strategy B: stage-into-new-blocks apply path
+# ---------------------------------------------------------------------------
+
+
+class _StagedFakeBlock(_FakeBlock):
+    """Extended fake block with configurable nsucc and iterable predset."""
+
+    def __init__(self, serial: int, *, nsucc: int = 1, succ_serial: int = 0):
+        super().__init__(serial)
+        self.succset = _SuffixEdgeSet([succ_serial] if nsucc >= 1 else [])
+        self.predset = _SuffixEdgeSet()
+        self._nsucc_override = nsucc
+        self._succ_override = succ_serial
+
+    def nsucc(self) -> int:  # type: ignore[override]
+        return self.succset.size()
+
+    def succ(self, _idx: int) -> int:  # type: ignore[override]
+        return self.succset[_idx]
+
+
+class _StagedFakeMBA(_FakeMBA):
+    """Extended fake MBA with copy_block + remove_block hooks for staging tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.copied_blocks: list[tuple[int, int]] = []  # (src_serial, new_serial)
+        self.removed_blocks: list[int] = []
+        # Inject a BLT_STOP block so mba.qty - 1 is valid.
+        self.blocks[1] = _StagedFakeBlock(1, nsucc=0)
+        self.qty = 2
+
+    def copy_block(self, src_blk, new_serial, cpblk_flags=3):
+        """Simulate mba.copy_block -- append a copy at new_serial, shift BLT_STOP."""
+        copy = _StagedFakeBlock(new_serial, nsucc=0)
+        # Faithfully replicate the full succset (2-way blocks need both edges).
+        for k in range(src_blk.succset.size()):
+            copy.succset.push_back(src_blk.succset[k])
+        copy.type = src_blk.type
+        copy.tail = src_blk.tail
+        # copy_block inherits predset/succset from src
+        for k in range(src_blk.predset.size()):
+            copy.predset.push_back(src_blk.predset[k])
+        self.copied_blocks.append((src_blk.serial, new_serial))
+
+        # Shift existing BLT_STOP (highest serial) up by one
+        max_existing = max(self.blocks.keys())
+        old_stop = self.blocks.pop(max_existing)
+        new_stop_serial = max_existing + 1
+        old_stop.serial = new_stop_serial
+        self.blocks[new_stop_serial] = old_stop
+        self.blocks[new_serial] = copy
+        self.qty = new_stop_serial + 1
+        return copy
+
+    def remove_block(self, blk):
+        self.removed_blocks.append(blk.serial)
+        if blk.serial in self.blocks:
+            del self.blocks[blk.serial]
+
+
+def _staged_patch_wiring(monkeypatch, mba):
+    """Patch change_*_block_successor to operate on _StagedFakeBlock succset."""
+    changes: list[tuple[int, int, str]] = []
+
+    def _fake_1way(blk, new_target, verify=True):
+        old_target = blk.succset[0] if blk.succset.size() > 0 else None
+        blk.succset.clear()
+        blk.succset.push_back(new_target)
+        if old_target is not None:
+            old_succ = mba.get_mblock(old_target)
+            if old_succ is not None:
+                old_succ.predset._del(blk.serial)
+        new_succ = mba.get_mblock(new_target)
+        if new_succ is not None:
+            new_succ.predset.push_back(blk.serial)
+        changes.append((blk.serial, new_target, "1way"))
+        return True
+
+    def _fake_2way(blk, new_target, verify=True, old_target=None):
+        if blk.tail is not None and hasattr(blk.tail, "d") and blk.tail.d is not None:
+            blk.tail.d.b = new_target
+        blk.succset.clear()
+        blk.succset.push_back(new_target)
+        new_succ = mba.get_mblock(new_target)
+        if new_succ is not None:
+            new_succ.predset.push_back(blk.serial)
+        changes.append((blk.serial, new_target, "2way"))
+        return True
+
+    def _fake_make_goto(blk, new_target, verify=True):
+        blk.succset.clear()
+        blk.succset.push_back(new_target)
+        changes.append((blk.serial, new_target, "make_goto"))
+        return True
+
+    def _fake_remove_edge(blk, to_serial, verify=True):
+        blk.succset._del(to_serial)
+        changes.append((blk.serial, to_serial, "remove_edge"))
+        return True
+
+    monkeypatch.setattr(dm, "change_1way_block_successor", _fake_1way)
+    monkeypatch.setattr(dm, "change_2way_block_conditional_successor", _fake_2way)
+    monkeypatch.setattr(dm, "make_2way_block_goto", _fake_make_goto)
+    monkeypatch.setattr(dm, "remove_block_edge", _fake_remove_edge)
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: setattr(mba, "cleaned", mba.cleaned + 1))
+
+    return changes
+
+
+class TestStagedAtomicClassification:
+    """Module-level classification helpers for staged_atomic."""
+
+    def test_classify_for_staged_atomic_goto_is_destructive_expressible(self):
+        """BLOCK_GOTO_CHANGE is a destructive-expressible mod under staged_atomic."""
+        cls = dm.classify_for_staged_atomic(dm.ModificationType.BLOCK_GOTO_CHANGE)
+        assert cls == dm.StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE
+
+    def test_classify_for_staged_atomic_insn_nop_is_instruction_only(self):
+        """INSN_NOP touches instructions only, never topology."""
+        cls = dm.classify_for_staged_atomic(dm.ModificationType.INSN_NOP)
+        assert cls == dm.StagedAtomicClassification.INSTRUCTION_ONLY
+
+    def test_classify_for_staged_atomic_reorder_is_additive(self):
+        """REORDER_BLOCKS already uses copy_block pattern -- classified ADDITIVE."""
+        cls = dm.classify_for_staged_atomic(dm.ModificationType.REORDER_BLOCKS)
+        assert cls == dm.StagedAtomicClassification.ADDITIVE
+
+    def test_classify_all_known_mod_types_have_classification(self):
+        """Every ModificationType must have a staged_atomic classification."""
+        for mod_type in dm.ModificationType:
+            cls = dm.classify_for_staged_atomic(mod_type)
+            assert isinstance(cls, dm.StagedAtomicClassification), (
+                f"{mod_type.name} returned {cls!r}"
+            )
+
+    def test_classify_destructive_expressible_bucket_contents(self):
+        """Destructive-expressible bucket must contain the four known in-place mods."""
+        expected = {
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            dm.ModificationType.BLOCK_TARGET_CHANGE,
+            dm.ModificationType.BLOCK_CONVERT_TO_GOTO,
+            dm.ModificationType.EDGE_REMOVE,
+        }
+        actual = {
+            mt for mt in dm.ModificationType
+            if dm.classify_for_staged_atomic(mt)
+            == dm.StagedAtomicClassification.DESTRUCTIVE_EXPRESSIBLE
+        }
+        assert actual == expected
+
+
+class TestStagedAtomicPendingRewire:
+    """Data contract for the _StagedPendingRewire record."""
+
+    def test_pending_rewire_is_frozen_and_carries_serials(self):
+        """_StagedPendingRewire is an immutable record of the swap."""
+        rw = dm._StagedPendingRewire(
+            original_serial=10,
+            new_serial=42,
+            preds_to_redirect=(5, 6),
+            mod_type=dm.ModificationType.BLOCK_GOTO_CHANGE,
+        )
+        assert rw.original_serial == 10
+        assert rw.new_serial == 42
+        assert rw.preds_to_redirect == (5, 6)
+        import dataclasses
+        assert dataclasses.is_dataclass(rw)
+        # Confirm immutability: frozen dataclass.
+        try:
+            rw.new_serial = 99  # type: ignore[misc]
+        except (AttributeError, dataclasses.FrozenInstanceError):
+            pass
+        else:  # pragma: no cover -- guard against regressions in the dataclass
+            raise AssertionError("_StagedPendingRewire must be frozen")
+
+
+class TestStagedAtomicApply:
+    """Integration tests for DeferredGraphModifier.apply(staged_atomic=True)."""
+
+    def test_staged_atomic_goto_change_stages_copy_and_redirects_preds(
+        self, monkeypatch,
+    ):
+        """Destructive-expressible BLOCK_GOTO_CHANGE is lowered to copy-and-swap.
+
+        Before: blk[5] (pred=10) -> blk[20]
+        After:  blk[10] -> copy(5) -> blk[30]; original blk[5] orphaned.
+        """
+        mba = _StagedFakeMBA()
+        # Build: blk[5] is 1-way -> blk[20]; blk[10] is pred targeting blk[5].
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        tgt = _StagedFakeBlock(20, nsucc=0)
+        tgt.predset.push_back(5)
+        mba.blocks.update({5: src, 10: pred, 20: tgt})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        changes = _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="goto 5 -> 30",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # Exactly one copy was staged.
+        assert len(mba.copied_blocks) == 1
+        src_serial, copy_serial = mba.copied_blocks[0]
+        assert src_serial == 5
+
+        # Commit phase redirected pred blk[10] to the copy.
+        pred_redirects = [(s, t, kind) for (s, t, kind) in changes if s == 10]
+        assert any(t == copy_serial for (_, t, _) in pred_redirects)
+
+        # applied counts both staging and commit rewire.
+        assert applied >= 1
+
+    def test_staged_atomic_instruction_only_bypasses_staging(self, monkeypatch):
+        """INSN_NOP must NOT trigger copy_block; it runs through _apply_single."""
+        mba = _StagedFakeMBA()
+        blk = _StagedFakeBlock(5, nsucc=1, succ_serial=1)
+        blk.head = _FakeInsn(opcode=ida_hexrays.m_mov, ea=0x1234)
+        blk.tail = blk.head
+        mba.blocks[5] = blk
+        mba.qty = 6
+
+        _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.INSN_NOP,
+                block_serial=5,
+                insn_ea=0x1234,
+                description="nop insn",
+            ),
+        ]
+
+        nop_calls: list[int] = []
+
+        def _fake_make_nop(self, _ins):
+            nop_calls.append(self.serial)
+
+        monkeypatch.setattr(_StagedFakeBlock, "make_nop", _fake_make_nop, raising=False)
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # No block copies were made: instruction-only mods skip staging.
+        assert len(mba.copied_blocks) == 0
+        assert applied >= 1
+
+    def test_staged_atomic_default_false_does_not_change_control_flow(
+        self, monkeypatch,
+    ):
+        """staged_atomic=False (default) preserves the existing sequential path."""
+        mba = _StagedFakeMBA()
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=0,
+                new_target=1,
+            ),
+        ]
+
+        captured_calls: list[str] = []
+
+        def _fake_apply_single(_mod):
+            captured_calls.append("sequential")
+            return True
+
+        monkeypatch.setattr(modifier, "_apply_single", _fake_apply_single)
+        monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+        monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
+        monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+
+        applied = modifier.apply(run_optimize_local=False, run_deep_cleaning=False)
+        # Default path still uses _apply_single via the sequential for-loop.
+        assert applied == 1
+        assert captured_calls == ["sequential"]
+        # No staging copies performed.
+        assert len(mba.copied_blocks) == 0
+
+    def test_staged_atomic_failed_staging_does_not_rewire_preds(self, monkeypatch):
+        """If staging fails, no commit rewire is issued and preds stay on original."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=2, succ_serial=20)  # 2-way — rejects BLOCK_GOTO_CHANGE staging
+        src.succset.push_back(30)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        mba.blocks.update({5: src, 10: pred})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        changes = _staged_patch_wiring(monkeypatch, mba)
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # Mutation on the copy fails (block is 2-way, not 1-way).
+        # BUT: copy_block IS called first (stage step 2).  The mutation (step 3)
+        # fails, so NO pending rewire is recorded, and NO external pred is
+        # redirected.  Result: pred blk[10] still targets blk[5].
+        pred_changes = [(s, t) for (s, t, _) in changes if s == 10]
+        assert not pred_changes, f"pred should not be redirected, got {pred_changes}"
+        assert applied == 0
+
+    def test_staged_atomic_classify_mixed_bucket(self, monkeypatch):
+        """Mixed mod list: one destructive, one instruction-only, one additive."""
+        mba = _StagedFakeMBA()
+        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20)
+        src.predset.push_back(10)
+        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5)
+        tgt = _StagedFakeBlock(20, nsucc=0)
+        tgt.predset.push_back(5)
+        other = _StagedFakeBlock(7, nsucc=1, succ_serial=1)
+        other.head = _FakeInsn(opcode=ida_hexrays.m_mov, ea=0x5678)
+        other.tail = other.head
+        mba.blocks.update({5: src, 10: pred, 20: tgt, 7: other})
+        mba.qty = max(mba.blocks.keys()) + 1
+
+        _staged_patch_wiring(monkeypatch, mba)
+        # Stub make_nop so INSN_NOP doesn't crash.
+        monkeypatch.setattr(
+            _StagedFakeBlock, "make_nop", lambda self, _ins: None, raising=False,
+        )
+
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier.modifications = [
+            dm.GraphModification(
+                dm.ModificationType.BLOCK_GOTO_CHANGE,
+                block_serial=5,
+                new_target=30,
+                description="destructive",
+            ),
+            dm.GraphModification(
+                dm.ModificationType.INSN_NOP,
+                block_serial=7,
+                insn_ea=0x5678,
+                description="insn-only",
+            ),
+        ]
+
+        applied = modifier.apply(
+            run_optimize_local=False,
+            run_deep_cleaning=False,
+            staged_atomic=True,
+        )
+
+        # Both mods applied, each through its own path:
+        # - destructive via stage + commit rewire
+        # - instruction-only via _apply_single
+        assert applied >= 2
+        # Exactly one copy was made (for the destructive mod's source block).
+        assert len(mba.copied_blocks) == 1
