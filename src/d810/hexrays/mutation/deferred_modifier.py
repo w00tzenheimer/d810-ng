@@ -571,6 +571,100 @@ def _get_mblock_by_start_ea(
     return None
 
 
+def _audit_special_block_instructions(
+    mba: "ida_hexrays.mba_t",
+    *,
+    phase: str,
+) -> list[dict[str, object]]:
+    """Report CFG_51814 offenders: non-empty blocks in special slots/types.
+
+    IDA's ``verify.cpp:1055-1058`` enforces that entry (serial==0),
+    exit (type==BLT_STOP), and extern (type==BLT_XTRN) blocks have
+    ``head == nullptr`` — *i.e.* no instructions.  Any non-empty block
+    in one of these positions/types triggers ``MBLOCK_INTERR(51814)``
+    before our ``safe_verify`` call can recover.
+
+    This helper walks all blocks in ``mba`` and returns a record for
+    every offender.  Intended to run right before ``safe_verify`` in
+    mutation pipelines so the exact offending block(s) are logged with
+    full provenance (serial, type, start/tail EA, succs/preds, head
+    opcode) rather than a bare ``INTERR 51814``.  Always on — the walk
+    is O(mba.qty) and only logs when something is wrong.
+    """
+    offenders: list[dict[str, object]] = []
+    if mba is None:
+        return offenders
+    try:
+        qty = int(mba.qty)
+    except Exception:
+        return offenders
+    blt_stop = ida_hexrays.BLT_STOP
+    blt_xtrn = ida_hexrays.BLT_XTRN
+    blk_type_names = {
+        ida_hexrays.BLT_NONE: "NONE",
+        ida_hexrays.BLT_STOP: "STOP",
+        ida_hexrays.BLT_0WAY: "0WAY",
+        ida_hexrays.BLT_1WAY: "1WAY",
+        ida_hexrays.BLT_2WAY: "2WAY",
+        ida_hexrays.BLT_NWAY: "NWAY",
+        ida_hexrays.BLT_XTRN: "XTRN",
+    }
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        try:
+            blk_type = int(blk.type)
+        except Exception:
+            continue
+        is_special_serial = serial == 0
+        is_special_type = blk_type in (blt_stop, blt_xtrn)
+        if not (is_special_serial or is_special_type):
+            continue
+        try:
+            head = blk.head
+        except Exception:
+            head = None
+        if head is None:
+            continue  # empty → legal
+        # Non-empty special block → CFG_51814 offender.
+        try:
+            tail = blk.tail
+        except Exception:
+            tail = None
+        if is_special_type:
+            reason = "exit_type_STOP" if blk_type == blt_stop else "extern_type_XTRN"
+        else:
+            reason = "entry_serial_0"
+        offender = {
+            "phase": phase,
+            "serial": serial,
+            "type": blk_type,
+            "type_name": blk_type_names.get(blk_type, f"UNK({blk_type})"),
+            "start_ea": int(getattr(blk, "start", 0) or 0),
+            "head_ea": int(getattr(head, "ea", 0) or 0),
+            "head_opcode": int(getattr(head, "opcode", 0) or 0),
+            "tail_ea": int(getattr(tail, "ea", 0) or 0) if tail else None,
+            "tail_opcode": int(getattr(tail, "opcode", 0) or 0) if tail else None,
+            "succs": [int(blk.succset[k]) for k in range(blk.succset.size())],
+            "preds": [int(blk.predset[k]) for k in range(blk.predset.size())],
+            "reason": reason,
+        }
+        offenders.append(offender)
+        logger.error(
+            "CFG_51814_OFFENDER[%s]: blk[%d] type=%s start=0x%x head.ea=0x%x "
+            "tail.ea=%s succs=%s preds=%s reason=%s",
+            phase, serial, offender["type_name"], offender["start_ea"],
+            offender["head_ea"],
+            "0x%x" % offender["tail_ea"] if offender["tail_ea"] else "None",
+            offender["succs"], offender["preds"], offender["reason"],
+        )
+    return offenders
+
+
 @dataclass(frozen=True)
 class _StagedPendingRewire:
     """Record of a pending predecessor rewire produced during the staging phase.
@@ -3394,11 +3488,16 @@ class DeferredGraphModifier:
                 mod.new_target = effective_new_target
             rewire = self._stage_destructive_mod_via_copy(mod, index=i)
             if rewire is None:
-                logger.warning(
-                    "staged_atomic: staging failed for mod[%d] %s (block=%d)",
+                # Staging declined — could be a refusal (e.g., entry-block
+                # guard) or a genuine failure.  Either way, don't count
+                # it as failed here: the mod is NOT in staged_indices, so
+                # Phase 3a will run it through ``_apply_single``, which
+                # correctly counts success or failure a single time.
+                logger.info(
+                    "staged_atomic: staging declined for mod[%d] %s "
+                    "(block=%d) — will fall through to sequential apply",
                     i, mod.mod_type.name, mod.block_serial,
                 )
-                failed += 1
                 continue
             pending_rewires.append(rewire)
             staged_indices.add(i)
@@ -3502,8 +3601,83 @@ class DeferredGraphModifier:
                 cleaned,
             )
 
+        # --- Phase 5: CFG_51814 provenance audit --------------------
+        # Walk the MBA and report any non-empty block in a special
+        # slot/type (entry serial==0, type==BLT_STOP, type==BLT_XTRN).
+        # These would trigger INTERR 51814 during the subsequent
+        # ``safe_verify``; logging them here (with serial, type, EAs,
+        # succs/preds) gives actionable diagnostics right at the phase
+        # boundary instead of a bare INTERR.  If we found offenders,
+        # attempt one defensive repair: retype non-special-serial
+        # offenders back to a sensible type derived from their succset.
+        offenders = _audit_special_block_instructions(
+            self.mba, phase="staged_atomic/post_cleanup",
+        )
+        if offenders:
+            self._repair_cfg_51814_offenders(offenders)
+
         self.mba.mark_chains_dirty()
         return successful, failed
+
+    def _repair_cfg_51814_offenders(
+        self,
+        offenders: list[dict[str, object]],
+    ) -> None:
+        """Best-effort repair of CFG_51814 offenders detected by the audit.
+
+        For *type*-based offenders (BLT_STOP / BLT_XTRN assigned to a
+        block that now carries instructions in the middle of the CFG),
+        we retype based on ``succset`` size:
+          * 0 successors → BLT_0WAY
+          * 1 successor  → BLT_1WAY
+          * 2 successors → BLT_2WAY
+          * N successors → BLT_NWAY
+
+        For *serial*-based offenders (serial == 0 but non-empty), there
+        is no in-place repair: the entry-block invariant is positional.
+        We log and leave it for downstream rollback.
+        """
+        mba = self.mba
+        if mba is None:
+            return
+        for off in offenders:
+            serial = int(off["serial"])
+            reason = str(off["reason"])
+            if reason == "entry_serial_0":
+                logger.error(
+                    "CFG_51814 repair: cannot fix entry block blk[%d] "
+                    "in-place (positional invariant); leaving for rollback",
+                    serial,
+                )
+                continue
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            try:
+                nsucc = int(blk.succset.size())
+            except Exception:
+                nsucc = -1
+            if nsucc == 0:
+                new_type = ida_hexrays.BLT_0WAY
+            elif nsucc == 1:
+                new_type = ida_hexrays.BLT_1WAY
+            elif nsucc == 2:
+                new_type = ida_hexrays.BLT_2WAY
+            else:
+                new_type = ida_hexrays.BLT_NWAY
+            try:
+                old_type = int(blk.type)
+                blk.type = new_type
+                logger.warning(
+                    "CFG_51814 repair: retyped blk[%d] from %d → %d "
+                    "(succs=%d, reason=%s)",
+                    serial, old_type, new_type, nsucc, reason,
+                )
+            except Exception as exc:
+                logger.error(
+                    "CFG_51814 repair: failed to retype blk[%d]: %s",
+                    serial, exc,
+                )
 
     def _stage_destructive_mod_via_copy(
         self,
@@ -3539,6 +3713,34 @@ class DeferredGraphModifier:
                 mod.block_serial, mod.mod_type.name,
             )
             return None
+        # Entry-block guard: the function entry (serial==0, or EA ==
+        # mba.entry_ea) is positionally invariant.  copy_block +
+        # remove_block on the entry shifts serials — the old blk[1]
+        # (which holds the prologue) becomes the new blk[0], a
+        # non-empty block at serial==0 that triggers INTERR 51814.
+        # The entry cannot participate in the copy-and-swap pattern;
+        # callers must apply mods to it in-place via the sequential
+        # path (``_apply_single``).
+        try:
+            target_serial = int(target_blk.serial)
+            target_start = int(target_blk.start)
+            mba_entry_ea = int(getattr(mba, "entry_ea", -1))
+        except Exception:
+            target_serial = -1
+            target_start = -1
+            mba_entry_ea = -1
+        if target_serial == 0 or (
+            target_start != -1 and target_start == mba_entry_ea
+        ):
+            logger.warning(
+                "staged_atomic stage: refusing to copy entry block "
+                "blk[%d] (ea=0x%x, mba.entry_ea=0x%x) for mod %s (target "
+                "serial from mod=%d) — entry is positionally invariant; "
+                "caller will fall back to sequential apply",
+                target_serial, target_start,
+                mba_entry_ea, mod.mod_type.name, mod.block_serial,
+            )
+            return None
 
         # Snapshot external predecessors.  We capture each pred's *start EA*
         # instead of its serial (Bug 3 fix): by the time the commit phase
@@ -3571,6 +3773,22 @@ class DeferredGraphModifier:
         # inserts the copy at ``new_serial`` (shifting later blocks);
         # we append before BLT_STOP so only BLT_STOP's serial shifts.
         try:
+            src_type = int(target_blk.type)
+        except Exception:
+            src_type = -1
+        # Guard: never stage a copy of a special-slot block — copy_block
+        # preserves ``type``, so copying a BLT_STOP/BLT_XTRN source would
+        # place a special-typed block into the middle of the CFG and
+        # trigger INTERR 51814 as soon as the copy has instructions.
+        if src_type in (ida_hexrays.BLT_STOP, ida_hexrays.BLT_XTRN):
+            logger.warning(
+                "staged_atomic stage: refusing to copy special-typed "
+                "source blk[%d] type=%d (would propagate special type into "
+                "active CFG and trigger CFG_51814)",
+                target_blk.serial, src_type,
+            )
+            return None
+        try:
             new_blk = mba.copy_block(target_blk, mba.qty - 1)
         except Exception as exc:
             logger.warning(
@@ -3584,6 +3802,33 @@ class DeferredGraphModifier:
                 target_blk.serial,
             )
             return None
+        # Post-copy provenance: log src/copy type + serial/EA, and repair
+        # if IDA somehow handed us a special-typed copy (defense in depth).
+        try:
+            new_type = int(new_blk.type)
+        except Exception:
+            new_type = -1
+        if new_type in (ida_hexrays.BLT_STOP, ida_hexrays.BLT_XTRN):
+            logger.error(
+                "staged_atomic stage: copy_block returned special-typed "
+                "copy blk[%d] type=%d from source blk[%d] type=%d — "
+                "repairing by re-stamping copy.type=src.type",
+                new_blk.serial, new_type, target_blk.serial, src_type,
+            )
+            try:
+                new_blk.type = src_type
+            except Exception as exc:
+                logger.error(
+                    "staged_atomic stage: failed to repair copy.type: %s",
+                    exc,
+                )
+                return None
+        logger.debug(
+            "staged_atomic stage: copy_block src=blk[%d](type=%d ea=0x%x) "
+            "-> copy=blk[%d](type=%d ea=0x%x)",
+            target_blk.serial, src_type, int(target_blk.start),
+            new_blk.serial, int(new_blk.type), int(new_blk.start),
+        )
 
         # copy_block inherits predset/succset from the source; wipe
         # predset on the copy so external preds will only route to the
@@ -3977,6 +4222,13 @@ class DeferredGraphModifier:
                         current_serial, rewire.original_start_ea,
                     )
                     continue
+                logger.warning(
+                    "staged_atomic cleanup: remove_block(blk[%d] ea=0x%x "
+                    "type=%d mod_type=%s)",
+                    current_serial, rewire.original_start_ea,
+                    int(getattr(original, "type", -1)),
+                    rewire.mod_type.name,
+                )
                 remover(original)
                 removed += 1
             except Exception as exc:
