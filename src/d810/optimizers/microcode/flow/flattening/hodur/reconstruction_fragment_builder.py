@@ -14,8 +14,14 @@ from d810.core import logging
 from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    RedirectGoto,
 )
 from d810.cfg.plan import is_block_creating_modification
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    PLANNER_CTX_METADATA_KEY,
+    LinearizationDecision,
+    PlannerContextContribution,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -32,6 +38,44 @@ logger = logging.getLogger(
 __all__ = ("finalize_reconstruction_fragment",)
 
 
+def _build_planner_context_contribution(
+    *,
+    strategy_name: str,
+    modifications: list,
+    owned_blocks: set[int],
+    round_index: int,
+) -> PlannerContextContribution:
+    """Scan emitted mods + owned_blocks to produce a PlannerContextContribution.
+
+    Every :class:`RedirectGoto` becomes a :class:`LinearizationDecision` so
+    later strategies (same pipeline, later rounds) can call
+    ``view.is_linearized(src)`` and skip emitting a contradictory reverse
+    redirect. Owned blocks populate ``claimed_sources`` so the same
+    strategies can also call ``view.is_claimed(src)`` for broader scope.
+
+    ``StateWriteNeutralization`` contributions are deliberately omitted in
+    this first pass — building them would require threading the original
+    state constant through the emission path (``ZeroStateWrite`` stores
+    only the insn_ea, not the pre-zeroing value). Added incrementally.
+    """
+    linearizations = tuple(
+        LinearizationDecision(
+            src=int(mod.from_serial),
+            tgt=int(mod.new_target),
+            reason="state_write_reconstruction",
+            strategy=strategy_name,
+            round_index=round_index,
+        )
+        for mod in modifications
+        if isinstance(mod, RedirectGoto)
+    )
+    return PlannerContextContribution(
+        linearizations=linearizations,
+        neutralizations=(),
+        claimed_sources=frozenset(int(blk) for blk in owned_blocks),
+    )
+
+
 def finalize_reconstruction_fragment(
     *,
     strategy_name: str,
@@ -44,6 +88,7 @@ def finalize_reconstruction_fragment(
     post_apply_bst_cleanup_reason: str | None,
     residual_dispatcher_preds: tuple[int, ...],
     structured_region_fidelity: dict[str, object] | None = None,
+    round_index: int = 0,
 ) -> PlanFragment:
     """Assemble the terminal ``PlanFragment`` for one reconstruction round."""
     pts_types = (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)
@@ -65,6 +110,13 @@ def finalize_reconstruction_fragment(
             len(pts_mods),
         )
         modifications = non_pts_mods
+
+    planner_ctx = _build_planner_context_contribution(
+        strategy_name=strategy_name,
+        modifications=modifications,
+        owned_blocks=owned_blocks,
+        round_index=round_index,
+    )
 
     return PlanFragment(
         strategy_name=strategy_name,
@@ -91,6 +143,7 @@ def finalize_reconstruction_fragment(
             "residual_dispatcher_preds": residual_dispatcher_preds,
             "structured_region_fidelity": structured_region_fidelity,
             "safeguard_min_required": 1,
+            PLANNER_CTX_METADATA_KEY: planner_ctx,
         },
         modifications=modifications,
     )
