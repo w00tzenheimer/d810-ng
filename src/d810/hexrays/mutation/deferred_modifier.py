@@ -1411,6 +1411,61 @@ class DeferredGraphModifier:
         """Check if there are any queued modifications."""
         return len(self.modifications) > 0
 
+    def _detect_transactional_batch_conflicts(self) -> str | None:
+        """Scan queued modifications for contradictory pairs.
+
+        The transactional pre-gate (apply(transactional=True)) calls this
+        before any live mutation. It catches Mode 1 conflicts — two graph
+        modifications on the same source block that prescribe different
+        targets — which on sub_7FFD3338C040 manifested as:
+
+            mod[26]: RedirectGoto src=76 tgt=11 old=2
+            mod[75]: RedirectGoto src=76 tgt=2  old=11
+
+        The pair cancels out: blk[76] ends up at the original dispatcher
+        target despite 2 ``emitted`` mods. The Phase 1 rollback wouldn't
+        help — both mods succeed individually; the contradiction is at
+        the batch level. This gate rejects such batches up front.
+
+        Returns a human-readable description of the first conflict found,
+        or ``None`` if the batch is internally consistent.
+        """
+        graph_mod_types = {
+            ModificationType.BLOCK_GOTO_CHANGE,
+            ModificationType.BLOCK_TARGET_CHANGE,
+            ModificationType.BLOCK_FALLTHROUGH_CHANGE,
+            ModificationType.BLOCK_CONVERT_TO_GOTO,
+            ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
+        }
+        by_source: dict[int, list[tuple[int, GraphModification]]] = {}
+        for idx, mod in enumerate(self.modifications):
+            if mod.mod_type not in graph_mod_types:
+                continue
+            src = getattr(mod, "block_serial", None)
+            if src is None:
+                continue
+            by_source.setdefault(int(src), []).append((idx, mod))
+        for src, entries in by_source.items():
+            if len(entries) < 2:
+                continue
+            targets = {
+                int(m.new_target)
+                for _, m in entries
+                if getattr(m, "new_target", None) is not None
+            }
+            if len(targets) > 1:
+                desc = ", ".join(
+                    f"mod[{i}]({m.mod_type.name} src={src}"
+                    f" tgt={getattr(m, 'new_target', None)})"
+                    for i, m in entries
+                )
+                return (
+                    f"contradictory graph mods on blk[{src}]: "
+                    f"{len(entries)} mods yielding {len(targets)} distinct "
+                    f"new_targets ({sorted(targets)}) — {desc}"
+                )
+        return None
+
     def _restore_from_snapshot(self, snapshot: FlowGraph) -> bool:
         """Restore MBA topology from a FlowGraph snapshot.
 
@@ -1972,6 +2027,7 @@ class DeferredGraphModifier:
         defer_post_apply_maintenance: bool = False,
         enable_snapshot_rollback: bool = False,
         post_apply_hook: Callable[[], None] | None = None,
+        transactional: bool = False,
     ) -> int:
         """
         Apply all queued modifications in priority order.
@@ -1998,9 +2054,21 @@ class DeferredGraphModifier:
                 modifications are applied and before cleanup/verify. Use this
                 to run post-apply canonicalization inside the same transactional
                 boundary as deferred rewrites.
+            transactional: If True, guarantees all-or-nothing semantics: the
+                MBA ends up either fully transformed (every queued modification
+                landed) or fully restored to pre-apply state (zero visible
+                effect). Implies ``enable_snapshot_rollback=True``; additionally
+                restores the snapshot if the per-mod loop aborts mid-batch, if
+                the post_apply_hook raises, or if post-apply verify fails.
+                Mutations still happen incrementally under the hood — this is
+                rollback-based atomicity, not pre-computed write-back. Does
+                not avoid the intermediate-state-visible-to-IDA-internals
+                window between the first mod and a rollback.
 
         Returns:
-            Number of successful modifications applied.
+            Number of successful modifications applied. When ``transactional``
+            is True, returns either ``len(self.modifications)`` on full success
+            or ``0`` on any failure (after rollback).
         """
         if self._applied:
             logger.warning("DeferredGraphModifier.apply() called twice")
@@ -2009,6 +2077,35 @@ class DeferredGraphModifier:
         if not self.modifications:
             logger.debug("No modifications to apply")
             return 0
+
+        # Transactional mode forces snapshot capture — we need the pre-state
+        # available for any rollback path below (mid-loop abort, post_apply_hook
+        # failure, or post-apply verify failure).
+        if transactional:
+            if not enable_snapshot_rollback:
+                logger.info(
+                    "TRANSACTIONAL: forcing enable_snapshot_rollback=True"
+                )
+                enable_snapshot_rollback = True
+
+            # Pre-apply consistency gate: detect obviously contradictory
+            # batches before any live mutation. Catches Mode 1 bugs (two
+            # redirects on the same source block pointing at different
+            # targets — which on sub_7FFD manifested as mod[26] redirect
+            # 76->11 and mod[75] redirect 76->2 cancelling each other).
+            # Strategy A / Phase 2 scope: we don't re-simulate the entire
+            # patch plan here (avoids a cfg layer import), but we do reject
+            # the easy cases that the earlier planner missed.
+            conflict = self._detect_transactional_batch_conflicts()
+            if conflict is not None:
+                logger.warning(
+                    "TRANSACTIONAL: pre-apply consistency gate rejected "
+                    "batch: %s",
+                    conflict,
+                )
+                self._applied = True
+                self.verify_failed = True
+                return 0
 
         self._set_apply_phase("backend_apply", "pre_apply_verify")
         self.last_stale_serial_scan = None
@@ -2702,6 +2799,39 @@ class DeferredGraphModifier:
                 })
                 self._emit(DeferredEvent.DEFERRED_APPLY_FINISHED, _fp)
             return result_count
+
+        # Transactional mid-batch abort: when the apply loop broke early
+        # (first-failure-aborts policy), restore from the pre-snapshot so the
+        # caller sees a clean "nothing applied" result rather than a partial
+        # mutation. This is the distinguishing behavior from plain
+        # enable_snapshot_rollback, which only restores on post-apply verify
+        # failure.
+        if transactional and successful < total_mod_count:
+            if self._pre_snapshot is not None:
+                logger.warning(
+                    "TRANSACTIONAL: mid-batch abort (%d/%d applied, %d failed) "
+                    "— restoring pre-snapshot (nblocks=%d)",
+                    successful, total_mod_count, failed,
+                    self._pre_snapshot.num_blocks,
+                )
+                if self._restore_from_snapshot(self._pre_snapshot):
+                    self.verify_failed = False
+                    logger.warning(
+                        "TRANSACTIONAL: rollback succeeded — returning 0"
+                    )
+                    return _finish(0)
+                logger.error(
+                    "TRANSACTIONAL: rollback FAILED — MBA is in inconsistent "
+                    "state (partial mutation live); caller must abort"
+                )
+                self.verify_failed = True
+                return _finish(successful)
+            logger.error(
+                "TRANSACTIONAL: requested but no pre_snapshot captured; "
+                "cannot roll back partial apply"
+            )
+            self.verify_failed = True
+            return _finish(successful)
 
         if self.verify_failed:
             logger.warning(
