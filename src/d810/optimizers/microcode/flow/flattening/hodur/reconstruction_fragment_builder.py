@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.cfg.graph_modification import (
+    ConvertToGoto,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
@@ -99,27 +100,39 @@ def _drop_conflicting_redirects(
     if cumulative_planner_view is None:
         return modifications
     kept: list = []
-    dropped: list[tuple[int, int, int]] = []  # (src, prior_tgt, dropped_tgt)
+    dropped: list[tuple[str, int, int, int]] = []  # (mod_type, src, prior_tgt, dropped_tgt)
     for mod in modifications:
-        if not isinstance(mod, RedirectGoto):
+        # RedirectGoto: mod.from_serial + mod.new_target
+        if isinstance(mod, RedirectGoto):
+            src = int(mod.from_serial)
+            new_tgt = int(mod.new_target)
+            mod_type_name = "RedirectGoto"
+        # ConvertToGoto: mod.block_serial + mod.goto_target
+        # Same emission path as RedirectGoto (builder.goto_redirect returns
+        # ConvertToGoto for 2-way source blocks). Treated as equivalent for
+        # conflict detection — a ConvertToGoto after a prior RedirectGoto on
+        # the same src with different target is the same Mode 1 pattern.
+        elif isinstance(mod, ConvertToGoto):
+            src = int(mod.block_serial)
+            new_tgt = int(mod.goto_target)
+            mod_type_name = "ConvertToGoto"
+        else:
             kept.append(mod)
             continue
-        prior_tgt = cumulative_planner_view.linearization_target_for(
-            int(mod.from_serial)
-        )
-        if prior_tgt is None or prior_tgt == int(mod.new_target):
+        prior_tgt = cumulative_planner_view.linearization_target_for(src)
+        if prior_tgt is None or prior_tgt == new_tgt:
             kept.append(mod)
             continue
-        dropped.append((int(mod.from_serial), int(prior_tgt), int(mod.new_target)))
+        dropped.append((mod_type_name, src, int(prior_tgt), new_tgt))
     if dropped:
         logger.warning(
-            "RECON: dropped %d RedirectGoto mod(s) from strategy %r to honor "
-            "prior cross-fragment linearizations: %s",
+            "RECON: dropped %d mod(s) from strategy %r to honor prior "
+            "cross-fragment linearizations: %s",
             len(dropped),
             strategy_name,
             "; ".join(
-                f"src={src} prior_tgt={ptgt} dropped_tgt={dtgt}"
-                for src, ptgt, dtgt in dropped[:10]
+                f"{mtype}(src={src} prior_tgt={ptgt} dropped_tgt={dtgt})"
+                for mtype, src, ptgt, dtgt in dropped[:10]
             ),
         )
     return kept
