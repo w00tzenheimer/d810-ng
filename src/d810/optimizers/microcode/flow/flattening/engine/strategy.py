@@ -7,7 +7,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
+from d810.core.typing import (
+    TYPE_CHECKING,
+    NotRequired,
+    Protocol,
+    TypedDict,
+    runtime_checkable,
+)
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    PlannerContextContribution,
+)
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
@@ -23,10 +32,32 @@ __all__ = [
     "BenefitMetrics",
     "OwnershipScope",
     "PlanFragment",
+    "PlanFragmentMetadata",
     "StageResult",
     "UnflatteningStrategy",
     "VerificationGate",
 ]
+
+
+class PlanFragmentMetadata(TypedDict, total=False):
+    """Typed schema for :attr:`PlanFragment.metadata`.
+
+    ``total=False`` so strategies only declare the keys they actually set.
+    Only a handful of keys are typed here today — the rest remain untyped
+    `dict` access at runtime. Add keys as they're audited; the TypedDict
+    shape is advisory for type checkers, not enforced at runtime.
+
+    Currently typed:
+        planner_ctx: A :class:`PlannerContextContribution` recording the
+            linearization decisions, state-write neutralizations, and
+            claimed sources this fragment's strategy made. The engine
+            aggregates these across fragments via
+            :meth:`CumulativePlannerView.compile` and injects the result
+            onto :class:`AnalysisSnapshot.cumulative_planner_view` for
+            subsequent strategies.
+    """
+
+    planner_ctx: NotRequired[PlannerContextContribution]
 
 
 FAMILY_DIRECT: str = "direct"
@@ -105,7 +136,11 @@ class PlanFragment:
     prerequisites: list[str]
     expected_benefit: BenefitMetrics
     risk_score: float
-    metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
+    # Typed as PlanFragmentMetadata (TypedDict) for documentation + type-
+    # checker support on the ``planner_ctx`` key. Runtime value is a
+    # plain dict; strategies can still set arbitrary untyped keys here
+    # and type checkers will flag but not break them.
+    metadata: "PlanFragmentMetadata" = field(default_factory=dict)  # type: ignore[assignment]
     modifications: list[GraphModification] = field(default_factory=list)
 
     def is_empty(self) -> bool:

@@ -43,6 +43,9 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    CumulativePlannerView,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -452,8 +455,18 @@ class UnflatteningPlanner:
                     reason="is_applicable returned False",
                 ))
                 continue
+            # Build the cumulative planner-context view from prior fragments'
+            # metadata and inject it onto the snapshot. This is what lets a
+            # later strategy see "blk[76] was already linearized by srw in
+            # round 0" and skip emitting a contradictory reverse redirect.
+            # Rebuilt every iteration because fragments accumulates; cost is
+            # O(n) in prior contributions, trivially cheap at realistic sizes.
+            cumulative_view = CumulativePlannerView.compile(fragments)
+            snapshot_for_strategy = replace(
+                snapshot, cumulative_planner_view=cumulative_view
+            )
             try:
-                fragment = strategy.plan(snapshot)
+                fragment = strategy.plan(snapshot_for_strategy)
             except Exception as e:
                 logger.warning(
                     "Strategy %s crashed: %s", strategy.name, e,

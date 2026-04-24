@@ -24,6 +24,9 @@ from d810.core.typing import TYPE_CHECKING
 from d810.core.round_context import (
     RoundContext,
 )
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    CumulativePlannerView,
+)
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
@@ -119,6 +122,16 @@ class AnalysisSnapshot:
     # ``None`` until a family adapter opts in to building it; strategies MUST
     # tolerate ``None`` during the Phase A scaffolding rollout.
     discovery: ReconRoundDiscoveryContext | None = None
+
+    # Cumulative planner-context view built from prior fragments' metadata
+    # entries under the "planner_ctx" key. The engine rebuilds this before
+    # each strategy's plan() call, aggregating every LinearizationDecision /
+    # StateWriteNeutralization / claimed_sources contribution made earlier
+    # in the same pipeline run. Strategies read from it to avoid re-routing
+    # blocks that prior strategies have already committed to.
+    # Defaults to None; strategies MUST tolerate None (fall back to "no
+    # prior context known").
+    cumulative_planner_view: CumulativePlannerView | None = None
 
     # Hierarchical execution-scope stack. Empty ``RoundContext`` means
     # "pass-entry, pre-strategy". Strategies that have internal
