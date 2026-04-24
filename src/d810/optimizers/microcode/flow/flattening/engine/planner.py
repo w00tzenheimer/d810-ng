@@ -392,7 +392,54 @@ class PlannerDecision:
         )
 
 
-@dataclass
+def _log_planner_ctx_conflicts(
+    fragment: PlanFragment,
+    view: CumulativePlannerView,
+    log: object,
+) -> None:
+    """Log (but do not modify) mods whose src is already linearized/claimed.
+
+    Engine-level diagnostic that surfaces the Mode 1 pattern — a strategy
+    queuing a graph mod on a source block that a prior fragment already
+    linearized or claimed in this same pipeline run. Does not mutate the
+    fragment; just logs at WARNING so operators see the conflict in the
+    live d810 log without affecting current emission behavior.
+
+    The planner_ctx mechanism's value is validated when this log starts
+    firing on real runs. Consumer-side fixes (a strategy gating its own
+    emissions on view queries) can be added in follow-up work once the
+    specific emission paths that produce the reverse redirects are
+    localized in the log stream.
+    """
+    if view is None:
+        return
+    # Import locally — graph_modification lives in cfg and would be a
+    # heavy top-level dependency for a diagnostic helper.
+    from d810.cfg.graph_modification import RedirectGoto
+    conflicts: list[str] = []
+    for mod in fragment.modifications:
+        if not isinstance(mod, RedirectGoto):
+            continue
+        src = int(mod.from_serial)
+        prior_tgt = view.linearization_target_for(src)
+        if prior_tgt is None:
+            continue
+        if prior_tgt == int(mod.new_target):
+            # Not a conflict — same target, strategies agree.
+            continue
+        conflicts.append(
+            f"src={src} prior_tgt={prior_tgt} new_tgt={mod.new_target}"
+        )
+    if conflicts:
+        log.warning(
+            "PLANNER_CTX_CONFLICT: strategy %r emitted %d redirect(s) "
+            "conflicting with prior pipeline decisions: %s",
+            fragment.strategy_name,
+            len(conflicts),
+            "; ".join(conflicts[:10]),  # cap to avoid log explosion
+        )
+
+
 class PipelinePolicy:
     """Policy for strategy selection and ordering."""
 
@@ -482,6 +529,8 @@ class UnflatteningPlanner:
                 ))
                 continue
             if isinstance(fragment, list):
+                for frag in fragment:
+                    _log_planner_ctx_conflicts(frag, cumulative_view, logger)
                 fragments.extend(fragment)
                 # Extract nop_state_values from any fragment metadata
                 # and inject into snapshot for subsequent strategies.
@@ -519,6 +568,7 @@ class UnflatteningPlanner:
                         )
                         break
             elif fragment is not None:
+                _log_planner_ctx_conflicts(fragment, cumulative_view, logger)
                 fragments.append(fragment)
                 # Extract nop_state_values from fragment metadata
                 # and inject into snapshot for subsequent strategies.
