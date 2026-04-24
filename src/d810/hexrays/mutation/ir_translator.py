@@ -58,6 +58,8 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
+import os
+
 import ida_hexrays
 
 
@@ -367,6 +369,12 @@ class IDAIRTranslator:
         # Under NOP_CLEANUP_RELAXED, disable rollback so the NOPs survive
         # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
         enable_rollback = not relaxed
+        # Opt-in transactional mode: gates the batch with pre-apply conflict
+        # detection and rolls back on any mid-batch abort. Off by default to
+        # preserve existing behavior; enable for probes that want all-or-nothing.
+        use_transactional = os.getenv(
+            "D810_DEFERRED_TRANSACTIONAL", ""
+        ).strip() == "1" and enable_rollback
         try:
             result_count = modifier.apply(
                 run_optimize_local=True,
@@ -376,6 +384,7 @@ class IDAIRTranslator:
                 continue_on_verify_failure=verify_each_mod,
                 enable_snapshot_rollback=enable_rollback,
                 post_apply_hook=effective_hook,
+                transactional=use_transactional,
             )
         except Exception:
             self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
