@@ -39,11 +39,30 @@ Design Notes
 from __future__ import annotations
 
 import enum
+import os
+import sys
 from dataclasses import dataclass
 from d810.core.typing import Union
 
+from d810.core import logging
+
 # Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
+
+
+# Construction tracer for graph mods. When
+# ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` is set, every
+# ``RedirectGoto(...)`` construction logs its args + the caller frame.
+# Helps locate which of the ~20 direct-construction sites emitted a
+# specific mod when a Mode 1 bug surfaces. Off by default because
+# every RedirectGoto goes through this — the log volume is only
+# manageable for targeted investigations.
+_redirect_goto_tracer = logging.getLogger(
+    "D810.cfg.graph_modification.redirect_goto_trace", logging.DEBUG
+)
+_TRACE_REDIRECT_GOTO = (
+    os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +87,31 @@ class RedirectGoto:
     from_serial: int
     old_target: int
     new_target: int
+
+    def __post_init__(self) -> None:
+        if not _TRACE_REDIRECT_GOTO:
+            return
+        # Walk up past dataclass-generated __init__ (filename "<string>")
+        # to find the real caller. Falls back to frame 2 if stack is
+        # shallower than expected.
+        depth = 1
+        frame = sys._getframe(depth)
+        while frame is not None and frame.f_code.co_filename == "<string>":
+            depth += 1
+            try:
+                frame = sys._getframe(depth)
+            except ValueError:
+                frame = None
+                break
+        caller = (
+            f"{frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
+            f"{frame.f_code.co_name}:{frame.f_lineno}"
+            if frame is not None else "<unknown>"
+        )
+        _redirect_goto_tracer.info(
+            "REDIRECT_GOTO_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
+            self.from_serial, self.old_target, self.new_target, caller,
+        )
 
 
 @dataclass(frozen=True)
