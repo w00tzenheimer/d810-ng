@@ -75,6 +75,7 @@ from d810.recon.flow.linearized_state_dag import (
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.edge_metadata import make_edge_metadata
 from d810.recon.flow.edge_metadata import edge_kind_name
+from d810.recon.flow.full_coverage_chain_probe import log_chain_coverage
 from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
@@ -530,6 +531,13 @@ class StateWriteReconstructionStrategy:
         # anchors.  Used for late phases (bridge, feeder, island rescue,
         # terminal family) that benefit from correct supplemental targets.
         corrected_dag = _corrected_dag_out[0] if _corrected_dag_out else dag
+
+        # D810_DIAG_FULL_COVERAGE_CHAIN=1 → log SCC-based full-coverage
+        # chain diagnostic. Observational only; validates that a Tarjan-SCC
+        # traversal would cover every DAG state (Option A from
+        # .claude/notes/investigations/2026-04-23-sub_7ffd_lowering.md).
+        log_chain_coverage(corrected_dag, context_label="SRW corrected_dag")
+
         constant_result = run_snapshot_constant_fixpoint(
             flow_graph,
             state_var_stkoff,
