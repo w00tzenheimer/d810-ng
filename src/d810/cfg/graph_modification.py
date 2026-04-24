@@ -63,6 +63,47 @@ _redirect_goto_tracer = logging.getLogger(
 _TRACE_REDIRECT_GOTO = (
     os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"
 )
+# Unified knob that turns on construction traces for every graph-mod type
+# (RedirectGoto, RedirectBranch, DuplicateAndRedirect, ZeroStateWrite).
+# ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` is an alias for backwards
+# compat; new callers should use ``D810_TRACE_MOD_CONSTRUCTION=1``.
+_TRACE_MOD_CONSTRUCTION = (
+    _TRACE_REDIRECT_GOTO
+    or os.environ.get("D810_TRACE_MOD_CONSTRUCTION", "").strip() == "1"
+)
+
+
+def _construction_caller() -> str:
+    """Walk past ``_construction_caller`` + ``__post_init__`` +
+    dataclass-generated ``__init__`` (filename ``<string>``) to find the
+    first user frame. Returns ``"filename:func:line"`` or ``"<unknown>"``
+    if the stack is shallower than expected.
+
+    Depth model when called from ``__post_init__``:
+      0: _construction_caller (this function)
+      1: __post_init__ (graph_modification.py)
+      2: <string> (dataclass-generated __init__)
+      3: user caller site
+    """
+    # Start at depth=2 to skip both our helper and __post_init__.
+    depth = 2
+    try:
+        frame = sys._getframe(depth)
+    except ValueError:
+        return "<unknown>"
+    # Skip any number of consecutive <string> frames (dataclass internals).
+    while frame is not None and frame.f_code.co_filename == "<string>":
+        depth += 1
+        try:
+            frame = sys._getframe(depth)
+        except ValueError:
+            return "<unknown>"
+    if frame is None:
+        return "<unknown>"
+    return (
+        f"{frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
+        f"{frame.f_code.co_name}:{frame.f_lineno}"
+    )
 
 
 @dataclass(frozen=True)
@@ -89,28 +130,12 @@ class RedirectGoto:
     new_target: int
 
     def __post_init__(self) -> None:
-        if not _TRACE_REDIRECT_GOTO:
+        if not _TRACE_MOD_CONSTRUCTION:
             return
-        # Walk up past dataclass-generated __init__ (filename "<string>")
-        # to find the real caller. Falls back to frame 2 if stack is
-        # shallower than expected.
-        depth = 1
-        frame = sys._getframe(depth)
-        while frame is not None and frame.f_code.co_filename == "<string>":
-            depth += 1
-            try:
-                frame = sys._getframe(depth)
-            except ValueError:
-                frame = None
-                break
-        caller = (
-            f"{frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
-            f"{frame.f_code.co_name}:{frame.f_lineno}"
-            if frame is not None else "<unknown>"
-        )
         _redirect_goto_tracer.info(
             "REDIRECT_GOTO_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
-            self.from_serial, self.old_target, self.new_target, caller,
+            self.from_serial, self.old_target, self.new_target,
+            _construction_caller(),
         )
 
 
@@ -136,6 +161,15 @@ class RedirectBranch:
     from_serial: int
     old_target: int
     new_target: int
+
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "REDIRECT_BRANCH_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
+            self.from_serial, self.old_target, self.new_target,
+            _construction_caller(),
+        )
 
 
 @dataclass(frozen=True)
@@ -317,6 +351,14 @@ class ZeroStateWrite:
     block_serial: int
     insn_ea: int
 
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "ZERO_STATE_WRITE_CONSTRUCTED block=%s insn_ea=0x%x caller=%s",
+            self.block_serial, self.insn_ea, _construction_caller(),
+        )
+
 
 @dataclass(frozen=True)
 class PrivateTerminalSuffix:
@@ -419,6 +461,16 @@ class DuplicateAndRedirect:
     """
     source_serial: int
     per_pred_targets: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "DUPLICATE_AND_REDIRECT_CONSTRUCTED src=%s per_pred_targets=%s caller=%s",
+            self.source_serial,
+            list(self.per_pred_targets),
+            _construction_caller(),
+        )
 
 
 @dataclass(frozen=True)
