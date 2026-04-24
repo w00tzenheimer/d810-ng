@@ -136,11 +136,15 @@ class PlanFragment:
     prerequisites: list[str]
     expected_benefit: BenefitMetrics
     risk_score: float
-    # Typed as PlanFragmentMetadata (TypedDict) for documentation + type-
-    # checker support on the ``planner_ctx`` key. Runtime value is a
-    # plain dict; strategies can still set arbitrary untyped keys here
-    # and type checkers will flag but not break them.
-    metadata: "PlanFragmentMetadata" = field(default_factory=dict)  # type: ignore[assignment]
+    # Runtime type is plain ``dict``; :class:`PlanFragmentMetadata` documents
+    # the typed schema (specifically the ``planner_ctx`` key) for human
+    # readers and type-checker narrowing at call sites that know to cast.
+    # We can't use ``PlanFragmentMetadata`` directly as the annotation
+    # here because Python 3.13's ``dataclass`` decorator introspects
+    # ``cls.__mro__`` of annotated types, and TypedDict classes don't
+    # expose a stable MRO — doing so raises ``AttributeError: 'function'
+    # object has no attribute '__mro__'`` at import time.
+    metadata: dict = field(default_factory=dict)  # type: ignore[type-arg]
     modifications: list[GraphModification] = field(default_factory=list)
 
     def is_empty(self) -> bool:
