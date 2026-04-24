@@ -1,9 +1,20 @@
 """Snapshot-backed helpers for emitting GraphModification intents."""
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
+
+# Diagnostic logger for tracing every goto_redirect emission back to its
+# caller (there are ~19 call sites across cfg/ and optimizers/; when Mode 1
+# conflicts surface we need to know which specific site produced the
+# override). Emits at INFO so it shows up in the live d810 log alongside
+# the existing RECONSTRUCTION_REDIRECT_ATTEMPT entries.
+_mod_builder_logger = logging.getLogger(
+    "D810.cfg.modification_builder", logging.DEBUG
+)
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -120,6 +131,23 @@ class ModificationBuilder:
         *,
         old_target: int | None = None,
     ) -> GraphModification:
+        # Caller-identifying trace: logs filename:function:line of the
+        # immediate caller so diagnostic tooling can map each emitted
+        # RedirectGoto (or ConvertToGoto) back to its emission site. This
+        # is the missing half of reconstruction_redirect_log (which only
+        # captures 4 of 19+ call sites). Grep the live d810 log for
+        # "GOTO_REDIRECT_CALL src=76" to see which file emitted a
+        # specific mod.
+        _frame = sys._getframe(1)
+        _caller = (
+            f"{_frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
+            f"{_frame.f_code.co_name}:{_frame.f_lineno}"
+        )
+        _mod_builder_logger.info(
+            "GOTO_REDIRECT_CALL src=%s tgt=%s old=%s caller=%s",
+            source_block, target_block, old_target, _caller,
+        )
+
         nsucc = self.block_nsucc_map.get(source_block, 1)
         if nsucc == 2:
             return ConvertToGoto(block_serial=source_block, goto_target=target_block)
