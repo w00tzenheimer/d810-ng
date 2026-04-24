@@ -3615,6 +3615,55 @@ class DeferredGraphModifier:
             if rewire.original_serial not in cur_succs:
                 continue
             rewired_ok = False
+            # ---- Entry-block special case (Bug 1 fix) -----------------
+            # The synthetic function-entry block lives at serial 0 and is
+            # used by IDA to hold the function's entry edge.  The 1-way
+            # mutation helper (``change_1way_block_successor``) rejects
+            # serial 0 unconditionally (``blk.serial == 0`` guard at the
+            # top of the helper).  That makes the entry edge unredirectable
+            # through the normal wiring primitive and causes the
+            # ``staged_atomic commit: failed to redirect pred blk[0] ...``
+            # warning observed on live functions.
+            #
+            # Mirror the direct succset/predset ``_del`` + ``push_back``
+            # pattern used by ``_post_apply_bst_cleanup`` (unflattener) for
+            # dispatcher-edge severing — it is the battle-tested primitive
+            # the codebase already uses when the block-0 guard blocks a
+            # high-level helper.  This path keeps both sides of the edge
+            # consistent (``pred.succset`` + ``original.predset`` /
+            # ``copy.predset``) without routing through any goto-materialising
+            # helper, which the synthetic entry block cannot host anyway.
+            if pred_blk.serial == 0 and pred_blk.nsucc() == 1:
+                try:
+                    pred_blk.succset._del(rewire.original_serial)
+                    pred_blk.succset.push_back(rewire.new_serial)
+                    original.predset._del(pred_blk.serial)
+                    copy.predset.push_back(pred_blk.serial)
+                    try:
+                        pred_blk.mark_lists_dirty()
+                    except Exception:
+                        pass
+                    logger.debug(
+                        "staged_atomic commit: entry blk[0] rewired "
+                        "from blk[%d] to copy blk[%d] via direct succset/predset",
+                        rewire.original_serial, rewire.new_serial,
+                    )
+                    rewired_ok = True
+                except Exception as exc:
+                    logger.warning(
+                        "staged_atomic commit: entry blk[0] direct rewire "
+                        "from blk[%d] to copy blk[%d] raised: %s",
+                        rewire.original_serial, rewire.new_serial, exc,
+                    )
+                    rewired_ok = False
+                if not rewired_ok:
+                    logger.warning(
+                        "staged_atomic commit: failed to redirect pred blk[%d] "
+                        "from blk[%d] to copy blk[%d]",
+                        pred_serial, rewire.original_serial, rewire.new_serial,
+                    )
+                    any_failed = True
+                continue
             if pred_blk.nsucc() == 1:
                 rewired_ok = change_1way_block_successor(
                     pred_blk, rewire.new_serial, verify=False,
@@ -3694,17 +3743,57 @@ class DeferredGraphModifier:
                     rewire.original_serial, original.predset.size(),
                 )
                 continue
-            # Clear the block's own outgoing edges' predset references to
-            # itself so remove_block does not observe dangling links.
-            for k in range(original.succset.size()):
-                succ_serial = int(original.succset[k])
+            # ---- Bug 2 fix ---------------------------------------------
+            # IDA's ``mba.remove_block`` errors with INTERR 51919 when the
+            # block still has succset / predset entries at removal time.
+            # Pre-disconnect both sides of every edge the block
+            # participates in before calling ``remove_block`` — this
+            # mirrors the battle-tested ``_post_apply_bst_cleanup``
+            # pattern (unflattener.py L1537) which already severs edges
+            # via ``succset._del`` + ``predset._del`` at GLBOPT1 without
+            # hitting INTERR 51919.
+            #
+            # Clear outgoing edges: for every succ, remove original
+            # from succ.predset AND remove succ from original.succset.
+            try:
+                outgoing = [int(original.succset[k])
+                            for k in range(original.succset.size())]
+            except Exception:
+                outgoing = []
+            for succ_serial in outgoing:
                 succ_blk = mba.get_mblock(succ_serial)
-                if succ_blk is None:
-                    continue
                 try:
-                    succ_blk.predset._del(rewire.original_serial)
+                    original.succset._del(succ_serial)
                 except Exception:
                     pass
+                if succ_blk is not None:
+                    try:
+                        succ_blk.predset._del(rewire.original_serial)
+                    except Exception:
+                        pass
+            # Clear incoming edges defensively (should be empty if rewire
+            # worked, but pre-existing bookkeeping drift may leave stale
+            # entries; ``remove_block`` INTERRs either way).
+            try:
+                incoming = [int(original.predset[k])
+                            for k in range(original.predset.size())]
+            except Exception:
+                incoming = []
+            for pred_serial in incoming:
+                pred_blk = mba.get_mblock(pred_serial)
+                try:
+                    original.predset._del(pred_serial)
+                except Exception:
+                    pass
+                if pred_blk is not None:
+                    try:
+                        pred_blk.succset._del(rewire.original_serial)
+                    except Exception:
+                        pass
+            try:
+                original.mark_lists_dirty()
+            except Exception:
+                pass
             try:
                 remover = getattr(mba, "remove_block", None)
                 if remover is None:
