@@ -19,6 +19,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import is_block_creating_modification
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PLANNER_CTX_METADATA_KEY,
+    CumulativePlannerView,
     LinearizationDecision,
     PlannerContextContribution,
 )
@@ -76,6 +77,54 @@ def _build_planner_context_contribution(
     )
 
 
+def _drop_conflicting_redirects(
+    modifications: list,
+    cumulative_planner_view: CumulativePlannerView | None,
+    *,
+    strategy_name: str,
+) -> list:
+    """Drop RedirectGoto mods that contradict prior-fragment linearizations.
+
+    This is the consumer-side fix for the Mode 1 bug. When SSR (running
+    first in the pipeline) linearizes blk[X] to tgt=A via a RedirectGoto,
+    then SRW (running second) queues RedirectGoto src=X tgt=B (B != A),
+    the coalescer can't dedupe because old_target differs. The engine's
+    ``PLANNER_CTX_CONFLICT`` diagnostic surfaces this, but defaults to
+    log-only. This filter enforces "first fragment wins" — SRW's
+    contradictory emission is dropped and SSR's decision stands.
+
+    Returns the filtered list. Non-RedirectGoto mods are untouched.
+    Matching emissions (same src + same new_target) are also untouched.
+    """
+    if cumulative_planner_view is None:
+        return modifications
+    kept: list = []
+    dropped: list[tuple[int, int, int]] = []  # (src, prior_tgt, dropped_tgt)
+    for mod in modifications:
+        if not isinstance(mod, RedirectGoto):
+            kept.append(mod)
+            continue
+        prior_tgt = cumulative_planner_view.linearization_target_for(
+            int(mod.from_serial)
+        )
+        if prior_tgt is None or prior_tgt == int(mod.new_target):
+            kept.append(mod)
+            continue
+        dropped.append((int(mod.from_serial), int(prior_tgt), int(mod.new_target)))
+    if dropped:
+        logger.warning(
+            "RECON: dropped %d RedirectGoto mod(s) from strategy %r to honor "
+            "prior cross-fragment linearizations: %s",
+            len(dropped),
+            strategy_name,
+            "; ".join(
+                f"src={src} prior_tgt={ptgt} dropped_tgt={dtgt}"
+                for src, ptgt, dtgt in dropped[:10]
+            ),
+        )
+    return kept
+
+
 def finalize_reconstruction_fragment(
     *,
     strategy_name: str,
@@ -89,8 +138,17 @@ def finalize_reconstruction_fragment(
     residual_dispatcher_preds: tuple[int, ...],
     structured_region_fidelity: dict[str, object] | None = None,
     round_index: int = 0,
+    cumulative_planner_view: CumulativePlannerView | None = None,
 ) -> PlanFragment:
-    """Assemble the terminal ``PlanFragment`` for one reconstruction round."""
+    """Assemble the terminal ``PlanFragment`` for one reconstruction round.
+
+    When *cumulative_planner_view* is provided, RedirectGoto mods that
+    contradict prior-fragment linearizations are dropped before the
+    fragment is returned. Callers (SRW.plan()) should pass
+    ``snapshot.cumulative_planner_view`` so Mode 1 conflicts surfaced by
+    the engine-level PLANNER_CTX_CONFLICT diagnostic are resolved at
+    the emission site rather than merely logged.
+    """
     pts_types = (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)
     pts_mods = [mod for mod in modifications if isinstance(mod, pts_types)]
     has_block_creators = any(
@@ -110,6 +168,12 @@ def finalize_reconstruction_fragment(
             len(pts_mods),
         )
         modifications = non_pts_mods
+
+    modifications = _drop_conflicting_redirects(
+        modifications,
+        cumulative_planner_view,
+        strategy_name=strategy_name,
+    )
 
     planner_ctx = _build_planner_context_contribution(
         strategy_name=strategy_name,
