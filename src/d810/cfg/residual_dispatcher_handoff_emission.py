@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 
+from d810.cfg.reconstruction_redirect_log import log_redirect_attempt
 from d810.cfg.lowering_selector import (
     is_live_oneway_noop,
     is_valid_pred_split_pair,
@@ -635,6 +636,26 @@ def execute_residual_dispatcher_handoffs(
             )
         if not source_plan.accepted:
             continue
+
+        plan_target_entry = getattr(source_plan, "target_entry", None)
+        plan_prefix_target = getattr(source_plan, "prefix_target", None)
+        redirect_new_target = (
+            int(plan_target_entry)
+            if plan_target_entry is not None
+            else (int(plan_prefix_target) if plan_prefix_target is not None else None)
+        )
+        redirect_old_target = getattr(source_plan, "old_target", None)
+        if redirect_old_target is None:
+            redirect_old_target = int(context.dispatcher_serial)
+        if redirect_new_target is not None:
+            log_redirect_attempt(
+                phase="residual_handoff",
+                src=int(source_block),
+                old_target=int(redirect_old_target),
+                new_target=int(redirect_new_target),
+                dag=context.dag,
+                state_const=getattr(source_plan, "state_value", None),
+            )
 
         apply_residual_dispatcher_source_plan(
             source_plan,

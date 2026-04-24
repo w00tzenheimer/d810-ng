@@ -7,6 +7,7 @@ from d810.core import logging
 from d810.core.round_context import RoundFrame
 from d810.core.typing import Callable
 from d810.cfg.dag_index import build_dag_node_maps
+from d810.cfg.reconstruction_redirect_log import log_redirect_attempt
 from d810.cfg.graph_modification import RedirectBranch
 from d810.cfg.target_entry_resolution import resolve_edge_target_entry
 
@@ -1095,6 +1096,18 @@ def execute_linearized_flow_graph_planning(
             and initial_entry in context.original_blocks
             and context.pre_header_serial not in state.claimed_1way
         ):
+            log_redirect_attempt(
+                phase="lfg_preheader",
+                src=int(context.pre_header_serial),
+                old_target=int(context.dispatcher_serial),
+                new_target=int(initial_entry),
+                dag=latest_summary.dag,
+                state_const=(
+                    int(context.initial_state)
+                    if context.initial_state is not None
+                    else None
+                ),
+            )
             state.modifications.append(
                 context.builder.goto_redirect(
                     source_block=int(context.pre_header_serial),
