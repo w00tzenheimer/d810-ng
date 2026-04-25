@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     DuplicateAndRedirect,
+    EdgeRedirectViaPredSplit,
     RedirectGoto,
     ZeroStateWrite,
 )
@@ -68,9 +69,51 @@ from d810.recon.flow.linearized_state_dag import (
 
 __all__ = (
     "AnchorKey",
+    "CorridorSpliceData",
     "DagAuthority",
     "DagDecision",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorSpliceData:
+    """Function-specific corridor-clone splice points (uee-7wcd).
+
+    Some lowering decisions cannot today be derived from the recon
+    ``LinearizedStateDag``: e.g., ``sub_7FFD3338C040``'s
+    ``deferred_corridor_clone`` emission requires hand-tuned splice
+    points (shared block, base target, clone source/target) that
+    no current DAG schema field encodes.  R2's emission catalogue
+    flagged this as a DAG_GAP candidate (uee-7wcd in the
+    DAG-as-arbiter epic).
+
+    The closure path is to seed :class:`DagAuthority` with this
+    function-specific data at construction time so the arbiter can
+    authoritatively ALLOW corridor-shaped mods rather than letting
+    them slip through as ``DAG_GAP:edge_redirect_via_pred_split``.
+    The data lives in ``engine`` (family-agnostic) so any future
+    function with a corridor pattern can register without touching
+    Hodur internals.
+
+    Attributes:
+        function_ea: ``mba.entry_ea`` this corridor applies to.  Used
+            to gate registry consultation (don't apply sub_7FFD's
+            corridor to other functions).
+        shared_block: The shared dispatch block being spliced
+            (e.g., 45 for sub_7FFD).
+        base_target: Where the shared block's primary redirect goes
+            (e.g., 126 for sub_7FFD).
+        clone_source: The block whose corridor is cloned per-pred
+            (e.g., 122 for sub_7FFD).
+        clone_target: Where the cloned corridor's tail redirects
+            (e.g., 180 for sub_7FFD).
+    """
+
+    function_ea: int
+    shared_block: int
+    base_target: int
+    clone_source: int
+    clone_target: int
 
 
 # Composite key for a redirect anchor: (block_serial, branch_arm).
@@ -183,6 +226,7 @@ class DagAuthority:
         "_node_by_handler",
         "_node_by_entry_anchor",
         "_planner_scope_edge_kinds",
+        "_corridor_by_shared_block",
     )
 
     # Edge kinds the planner currently emits modifications for.  Other
@@ -193,9 +237,22 @@ class DagAuthority:
         {SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION}
     )
 
-    def __init__(self, dag: LinearizedStateDag) -> None:
+    def __init__(
+        self,
+        dag: LinearizedStateDag,
+        *,
+        corridor_data: tuple[CorridorSpliceData, ...] = (),
+    ) -> None:
         self._dag = dag
         self._planner_scope_edge_kinds = self._PLANNER_SCOPE_EDGE_KINDS
+        # Map shared_block -> corridor data for O(1) consultation by
+        # ``permits_edge_redirect_via_pred_split`` and
+        # ``canonical_corridor_splice_for``.  Empty by default; planner
+        # seeds this with function-specific data based on
+        # ``mba.entry_ea`` (uee-7wcd).
+        self._corridor_by_shared_block: dict[int, CorridorSpliceData] = {
+            int(c.shared_block): c for c in corridor_data
+        }
 
         # Build the (src_block, branch_arm) -> target_entry_anchor index.
         # When two edges in scope agree on a target, collapse them into a
@@ -393,6 +450,153 @@ class DagAuthority:
             proof_edge_key=(int(mod.block_serial), int(mod.insn_ea), "ZeroStateWrite"),
         )
 
+    def canonical_corridor_splice_for(
+        self, shared_block: int
+    ) -> CorridorSpliceData | None:
+        """Return the corridor splice data for a shared block, or None.
+
+        uee-7wcd extension.  When seeded by the planner with function-
+        specific corridor data, this query authoritatively answers
+        "is this shared_block a known corridor splice point?"
+        """
+        return self._corridor_by_shared_block.get(int(shared_block))
+
+    def permits_edge_redirect_via_pred_split(
+        self, mod: EdgeRedirectViaPredSplit
+    ) -> DagDecision:
+        """Validate an EdgeRedirectViaPredSplit against the DAG (uee-7wcd).
+
+        The mod represents a corridor clone splice: a predecessor
+        ``mod.via_pred`` is rewired through a freshly-cloned corridor
+        ``mod.src_block .. mod.clone_until`` whose tail retargets to
+        ``mod.new_target``.
+
+        Decision rules:
+
+        * If ``DagAuthority`` was seeded with corridor data for the
+          shared block (= ``mod.old_target``) and the (clone_source,
+          clone_target) pair matches the recorded splice, ALLOW.
+        * If corridor data is seeded but the (src, target) tuple
+          disagrees with the registered splice points,
+          ``DAG_DISAGREEMENT:corridor_splice@<shared>``.
+        * If no corridor data is seeded for this shared block,
+          ``DAG_GAP:edge_redirect_via_pred_split_seed_missing``.
+
+        The Hodur fragment-level filter (``_drop_dag_disagreement``)
+        currently only validates RedirectGoto / ConvertToGoto; this
+        method exists to make the validation path *available* for
+        tests + future filter extensions.
+        """
+        shared_block = int(mod.old_target)
+        corridor = self._corridor_by_shared_block.get(shared_block)
+        if corridor is None:
+            return DagDecision.gap("edge_redirect_via_pred_split_seed_missing")
+        if (
+            int(mod.src_block) == int(corridor.clone_source)
+            and int(mod.new_target) == int(corridor.clone_target)
+        ):
+            return DagDecision.allow(
+                target_entry_anchor=int(corridor.clone_target),
+                proof_edge_key=(
+                    "corridor_splice",
+                    int(corridor.shared_block),
+                    int(corridor.clone_source),
+                    int(corridor.clone_target),
+                ),
+            )
+        return DagDecision.refuse(
+            f"DAG_DISAGREEMENT:corridor_splice@{shared_block}->"
+            f"{{planner=({mod.src_block},{mod.new_target}),"
+            f"dag=({corridor.clone_source},{corridor.clone_target})}}"
+        )
+
+    def permits_dead_block_terminator_redirect(
+        self,
+        mod: RedirectGoto,
+        *,
+        projected_flow_graph: object | None = None,
+        dispatcher_serial: int | None = None,
+        original_stop_serial: int | None = None,
+    ) -> DagDecision:
+        """Validate a dead-block terminator redirect (uee-7snc).
+
+        The dead-dispatcher-root cleanup pass emits ``RedirectGoto``s
+        that retarget orphaned dispatcher-feeders at the function's
+        STOP block.  These mods can't be derived from the recon
+        ``LinearizedStateDag`` directly because they depend on
+        reachability of the *projected post-mod* CFG — a graph the
+        DAG (built once per pipeline run, mem_52073043) doesn't model.
+
+        Decision rules (when caller supplies the projected graph + the
+        dispatcher / stop serials):
+
+        * ``mod.from_serial`` block must be in the projected graph,
+          have empty predset, have exactly one successor =
+          ``dispatcher_serial``, and ``mod.new_target`` must equal
+          ``original_stop_serial`` → ALLOW.
+        * Any constraint violation → ``DAG_DISAGREEMENT:dead_block_terminator``
+          with a per-reason payload (block missing / has preds /
+          succ-not-dispatcher / target-not-stop).
+        * Caller didn't pass projected_flow_graph / serials →
+          ``DAG_GAP:dead_block_terminator_no_projected_graph``.
+
+        Mirrors the predicate ``_collect_dead_dispatcher_root_cleanup_modifications``
+        already uses inline (``linearized_flow_graph.py:1135``); the
+        method exists so the consumer can consult the arbiter and
+        record an audit trail rather than re-deriving the predicate.
+        """
+        if (
+            projected_flow_graph is None
+            or dispatcher_serial is None
+            or original_stop_serial is None
+        ):
+            return DagDecision.gap("dead_block_terminator_no_projected_graph")
+        try:
+            blocks = getattr(projected_flow_graph, "blocks", None)
+            if blocks is None or int(mod.from_serial) not in blocks:
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:dead_block_terminator@{mod.from_serial}"
+                    "->{reason=block_not_in_projected_graph}"
+                )
+            block = projected_flow_graph.get_block(int(mod.from_serial))
+            if block is None:
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:dead_block_terminator@{mod.from_serial}"
+                    "->{reason=block_lookup_returned_none}"
+                )
+            preds = tuple(getattr(block, "preds", ()))
+            if preds:
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:dead_block_terminator@{mod.from_serial}"
+                    f"->{{reason=block_has_preds,preds={list(preds)}}}"
+                )
+            succs = tuple(getattr(block, "succs", ()))
+            if len(succs) != 1 or int(succs[0]) != int(dispatcher_serial):
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:dead_block_terminator@{mod.from_serial}"
+                    f"->{{reason=succ_not_dispatcher,succs={list(succs)},"
+                    f"dispatcher={dispatcher_serial}}}"
+                )
+            if int(mod.new_target) != int(original_stop_serial):
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:dead_block_terminator@{mod.from_serial}"
+                    f"->{{planner_target={mod.new_target},"
+                    f"expected_stop={original_stop_serial}}}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            return DagDecision.refuse(
+                f"REFUSE:dead_block_terminator_validation_error:{exc!r}"
+            )
+        return DagDecision.allow(
+            target_entry_anchor=int(original_stop_serial),
+            proof_edge_key=(
+                "dead_block_terminator",
+                int(mod.from_serial),
+                int(dispatcher_serial),
+                int(original_stop_serial),
+            ),
+        )
+
     def permits(self, mod: object) -> DagDecision:
         """Dispatch by mod type. Unknown mod types yield DAG_GAP.
 
@@ -413,6 +617,13 @@ class DagAuthority:
             return self.permits_duplicate_and_redirect(mod)  # type: ignore[arg-type]
         if kind == "ZeroStateWrite":
             return self.permits_zero_state_write(mod)  # type: ignore[arg-type]
+        if kind == "EdgeRedirectViaPredSplit":
+            # uee-7wcd: EdgeRedirectViaPredSplit goes through the
+            # corridor-aware validator.  Without seeded corridor data
+            # this returns DAG_GAP:edge_redirect_via_pred_split_seed_missing,
+            # but the named gap is a strict improvement over the prior
+            # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
+            return self.permits_edge_redirect_via_pred_split(mod)  # type: ignore[arg-type]
         return DagDecision.gap(f"unknown_mod_kind:{kind}")
 
     # ------------------------------------------------------------------

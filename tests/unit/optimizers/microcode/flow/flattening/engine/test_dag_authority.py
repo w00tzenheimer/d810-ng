@@ -477,3 +477,220 @@ class TestIndexHelpers:
         auth = DagAuthority(dag)
         out = auth.edges_from(StateDagNodeKey(handler_serial=10, state_const=0x1))
         assert out == (edge,)
+
+
+# ----------------------------------------------------------------------------
+# uee-7wcd — corridor splice (EdgeRedirectViaPredSplit) gap closure
+# ----------------------------------------------------------------------------
+
+
+from d810.cfg.graph_modification import EdgeRedirectViaPredSplit
+from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    CorridorSpliceData,
+)
+
+
+class TestCorridorSpliceClosure:
+    """uee-7wcd: DagAuthority gains awareness of function-specific
+    corridor splices, moving the gap from
+    ``DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit`` to either
+    authoritative ALLOW (when seed data matches) or
+    ``DAG_GAP:edge_redirect_via_pred_split_seed_missing`` (when no
+    seed data is available for the shared block).
+    """
+
+    def _seeded_authority(self, *seeds: CorridorSpliceData) -> DagAuthority:
+        return DagAuthority(_dag(), corridor_data=tuple(seeds))
+
+    def test_canonical_corridor_splice_for_returns_seed(self) -> None:
+        seed = CorridorSpliceData(
+            function_ea=0x180012B60,
+            shared_block=45,
+            base_target=126,
+            clone_source=122,
+            clone_target=180,
+        )
+        auth = self._seeded_authority(seed)
+        assert auth.canonical_corridor_splice_for(45) is seed
+
+    def test_canonical_corridor_splice_for_returns_none_when_unseeded(self) -> None:
+        auth = self._seeded_authority()
+        assert auth.canonical_corridor_splice_for(45) is None
+
+    def test_permits_edge_redirect_via_pred_split_allows_when_seed_matches(self) -> None:
+        seed = CorridorSpliceData(
+            function_ea=0x180012B60,
+            shared_block=45,
+            base_target=126,
+            clone_source=122,
+            clone_target=180,
+        )
+        auth = self._seeded_authority(seed)
+        mod = EdgeRedirectViaPredSplit(
+            src_block=122,
+            old_target=45,
+            new_target=180,
+            via_pred=37,
+            clone_until=45,
+        )
+        decision = auth.permits_edge_redirect_via_pred_split(mod)
+        assert decision.allowed
+        assert decision.target_entry_anchor == 180
+        assert decision.proof_edge_key[0] == "corridor_splice"
+
+    def test_permits_edge_redirect_via_pred_split_disagrees_on_target_mismatch(self) -> None:
+        seed = CorridorSpliceData(
+            function_ea=0x180012B60,
+            shared_block=45,
+            base_target=126,
+            clone_source=122,
+            clone_target=180,
+        )
+        auth = self._seeded_authority(seed)
+        mod = EdgeRedirectViaPredSplit(
+            src_block=122,
+            old_target=45,
+            new_target=999,  # disagrees with seed clone_target=180
+            via_pred=37,
+        )
+        decision = auth.permits_edge_redirect_via_pred_split(mod)
+        assert decision.is_disagreement
+        assert "corridor_splice@45" in decision.reason
+
+    def test_permits_edge_redirect_via_pred_split_gap_when_no_seed(self) -> None:
+        auth = self._seeded_authority()  # no seeds
+        mod = EdgeRedirectViaPredSplit(
+            src_block=122,
+            old_target=45,
+            new_target=180,
+            via_pred=37,
+        )
+        decision = auth.permits_edge_redirect_via_pred_split(mod)
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:edge_redirect_via_pred_split_seed_missing"
+
+    def test_permits_dispatcher_routes_edge_redirect_via_pred_split(self) -> None:
+        # The named gap is a strict improvement over the prior
+        # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
+        auth = self._seeded_authority()
+        mod = EdgeRedirectViaPredSplit(
+            src_block=122, old_target=45, new_target=180, via_pred=37,
+        )
+        decision = auth.permits(mod)
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:edge_redirect_via_pred_split_seed_missing"
+
+
+# ----------------------------------------------------------------------------
+# uee-7snc — dead-block-terminator validator
+# ----------------------------------------------------------------------------
+
+
+class _StubProjectedBlock:
+    def __init__(self, *, preds: tuple[int, ...] = (), succs: tuple[int, ...] = ()):
+        self.preds = preds
+        self.succs = succs
+
+
+class _StubProjectedFlowGraph:
+    def __init__(self, blocks: dict[int, _StubProjectedBlock]):
+        self.blocks = blocks
+    def get_block(self, serial: int):
+        return self.blocks.get(int(serial))
+
+
+class TestDeadBlockTerminatorClosure:
+    """uee-7snc: DagAuthority gains a validator for the dead-dispatcher-
+    root cleanup pattern.  Mirrors the predicate
+    ``_collect_dead_dispatcher_root_cleanup_modifications`` already
+    uses inline; the new ``permits_dead_block_terminator_redirect``
+    method exposes it through the arbiter so the consumer can record
+    an audit trail rather than re-deriving the predicate.
+    """
+
+    def test_allows_unreachable_block_with_dispatcher_succ(self) -> None:
+        auth = DagAuthority(_dag())
+        graph = _StubProjectedFlowGraph({
+            42: _StubProjectedBlock(preds=(), succs=(2,)),
+        })
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert decision.allowed
+        assert decision.target_entry_anchor == 99
+        assert decision.proof_edge_key[0] == "dead_block_terminator"
+
+    def test_refuses_block_with_preds(self) -> None:
+        # Block has predecessors → not dead → can't be retargeted to STOP.
+        auth = DagAuthority(_dag())
+        graph = _StubProjectedFlowGraph({
+            42: _StubProjectedBlock(preds=(10,), succs=(2,)),
+        })
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert decision.is_disagreement
+        assert "block_has_preds" in decision.reason
+
+    def test_refuses_block_succ_not_dispatcher(self) -> None:
+        auth = DagAuthority(_dag())
+        graph = _StubProjectedFlowGraph({
+            42: _StubProjectedBlock(preds=(), succs=(50,)),  # not dispatcher
+        })
+        mod = RedirectGoto(from_serial=42, old_target=50, new_target=99)
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert decision.is_disagreement
+        assert "succ_not_dispatcher" in decision.reason
+
+    def test_refuses_target_not_stop(self) -> None:
+        auth = DagAuthority(_dag())
+        graph = _StubProjectedFlowGraph({
+            42: _StubProjectedBlock(preds=(), succs=(2,)),
+        })
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=88)  # not 99
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert decision.is_disagreement
+        assert "expected_stop=99" in decision.reason
+
+    def test_gap_when_inputs_missing(self) -> None:
+        auth = DagAuthority(_dag())
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=None,
+            dispatcher_serial=None,
+            original_stop_serial=None,
+        )
+        assert decision.is_gap
+        assert decision.reason == "DAG_GAP:dead_block_terminator_no_projected_graph"
+
+    def test_refuses_block_not_in_graph(self) -> None:
+        auth = DagAuthority(_dag())
+        graph = _StubProjectedFlowGraph({})  # no block 42
+        mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
+        decision = auth.permits_dead_block_terminator_redirect(
+            mod,
+            projected_flow_graph=graph,
+            dispatcher_serial=2,
+            original_stop_serial=99,
+        )
+        assert decision.is_disagreement
+        assert "block_not_in_projected_graph" in decision.reason

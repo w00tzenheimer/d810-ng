@@ -444,6 +444,45 @@ def _log_planner_ctx_conflicts(
         )
 
 
+_SUB7FFD3338C040_ENTRY_EA = 0x180012B60
+
+
+def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
+    """Return function-specific CorridorSpliceData for the snapshot.
+
+    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only
+    registered corridor is sub_7FFD3338C040's poll-corridor splice
+    (shared_block=45, base_target=126, clone_source=122,
+    clone_target=180).  Returns an empty tuple when the function has
+    no registered corridor.
+
+    Until recon analysis can derive corridor patterns directly, this
+    seed registry is the canonical source of corridor data for the
+    DAG arbiter.
+    """
+    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        CorridorSpliceData,
+    )
+    mba = getattr(snapshot, "mba", None)
+    if mba is None:
+        return ()
+    try:
+        entry_ea = int(getattr(mba, "entry_ea", -1))
+    except Exception:
+        return ()
+    if entry_ea == _SUB7FFD3338C040_ENTRY_EA:
+        return (
+            CorridorSpliceData(
+                function_ea=entry_ea,
+                shared_block=45,
+                base_target=126,
+                clone_source=122,
+                clone_target=180,
+            ),
+        )
+    return ()
+
+
 def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     """Construct the DAG-as-arbiter for this pipeline run, or None.
 
@@ -466,10 +505,17 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     # (planner is imported during d810 startup; dag_authority is a
     # phase-1 artifact that should not be required for engine bootstrap).
     from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        CorridorSpliceData,
         DagAuthority,
     )
+    # uee-7wcd: seed function-specific corridor data based on
+    # ``mba.entry_ea``.  Currently only sub_7FFD3338C040 has a
+    # registered corridor; new entries can be added here when other
+    # functions surface the same shape.  Long-term: have recon
+    # analysis derive corridor patterns from the DAG itself.
+    corridor_data = _corridor_seed_data_for_snapshot(snapshot)
     try:
-        return DagAuthority(dag)
+        return DagAuthority(dag, corridor_data=corridor_data)
     except Exception as exc:
         logger.warning(
             "Failed to build DagAuthority from snapshot.discovery.dag: %s",
