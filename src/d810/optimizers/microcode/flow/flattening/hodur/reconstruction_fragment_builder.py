@@ -203,6 +203,88 @@ def _drop_intra_fragment_dup_conflicts(
     return kept
 
 
+def _drop_dag_disagreement(
+    modifications: list,
+    cumulative_planner_view: CumulativePlannerView | None,
+    *,
+    strategy_name: str,
+) -> list:
+    """Drop redirect mods the DAG-arbiter refuses (Phase 3 of uee-jrgq).
+
+    DAG-as-arbiter conformance check: ask the DagAuthority whether each
+    redirect mod is permitted by the canonical recon DAG.  Resolution
+    rules:
+
+      * ``ALLOW`` → keep (mod conforms to DAG)
+      * ``DAG_DISAGREEMENT:...`` → drop (planner proposed a target the
+        DAG explicitly disagrees with) + log DAG_DISAGREEMENT
+      * ``DAG_GAP:...`` → keep (DAG silent; let the legacy
+        prior-fragment-wins filter
+        ``_drop_conflicting_redirects`` decide whether to drop)
+
+    Only RedirectGoto / ConvertToGoto are validated here today — those
+    are the two mod kinds whose DAG queries are fully covered.  Other
+    mod kinds (DupAndRedirect, ZSW) currently get strict ``DAG_GAP``
+    refusals from DagAuthority; we keep them in the fragment and let
+    the existing intra-fragment dup-conflict filter / coalescer handle
+    them downstream.
+
+    No-op when ``cumulative_planner_view`` lacks a ``dag_authority``
+    (legacy / non-Hodur families that haven't built a recon DAG yet).
+    """
+    if cumulative_planner_view is None:
+        return modifications
+    authority = cumulative_planner_view.dag_authority
+    if authority is None:
+        return modifications
+
+    kept: list = []
+    dropped: list[tuple[str, int, str]] = []  # (mod_type, src, reason)
+    gaps: int = 0
+    for mod in modifications:
+        # Only validate redirect-shaped mods; let everything else pass.
+        if _redirect_source(mod) is None:
+            kept.append(mod)
+            continue
+        decision = authority.permits(mod)
+        if decision.allowed:
+            kept.append(mod)
+            continue
+        if decision.is_gap:
+            # DAG silent — leave the mod in place for the legacy
+            # prior-fragment-wins filter to potentially drop.
+            kept.append(mod)
+            gaps += 1
+            continue
+        if decision.is_disagreement:
+            dropped.append(
+                (type(mod).__name__, int(_redirect_source(mod) or -1), decision.reason)
+            )
+            continue
+        # Other refusal — log + drop conservatively.
+        dropped.append(
+            (type(mod).__name__, int(_redirect_source(mod) or -1), decision.reason)
+        )
+    if dropped:
+        logger.warning(
+            "RECON DAG_ARBITER: dropped %d mod(s) from strategy %r as "
+            "DAG-disagreement (planner target ≠ DAG canonical target): %s",
+            len(dropped),
+            strategy_name,
+            "; ".join(
+                f"{mtype}(src={src} reason={reason})"
+                for mtype, src, reason in dropped[:10]
+            ),
+        )
+    if gaps:
+        logger.debug(
+            "RECON DAG_ARBITER: %d mod(s) from strategy %r in DAG_GAP "
+            "regions; deferring to legacy prior-fragment-wins filter",
+            gaps, strategy_name,
+        )
+    return kept
+
+
 def _drop_conflicting_redirects(
     modifications: list,
     cumulative_planner_view: CumulativePlannerView | None,
@@ -211,13 +293,22 @@ def _drop_conflicting_redirects(
 ) -> list:
     """Drop RedirectGoto mods that contradict prior-fragment linearizations.
 
-    This is the consumer-side fix for the Mode 1 bug. When SSR (running
-    first in the pipeline) linearizes blk[X] to tgt=A via a RedirectGoto,
-    then SRW (running second) queues RedirectGoto src=X tgt=B (B != A),
-    the coalescer can't dedupe because old_target differs. The engine's
-    ``PLANNER_CTX_CONFLICT`` diagnostic surfaces this, but defaults to
-    log-only. This filter enforces "first fragment wins" — SRW's
-    contradictory emission is dropped and SSR's decision stands.
+    Legacy "first-fragment-wins" Mode 1 filter.  Since Phase 3 of
+    uee-jrgq, this filter is the FALLBACK consulted only for mods the
+    DagAuthority returned ``DAG_GAP`` for — i.e., regions where the
+    recon DAG cannot answer authoritatively.  For DAG-known regions,
+    ``_drop_dag_disagreement`` has already dropped any planner mod that
+    disagreed with the canonical DAG decision, so this filter sees
+    only conforming or gap-region mods.
+
+    Original Mode 1 fix rationale (preserved for context): when SSR
+    (running first in the pipeline) linearizes blk[X] to tgt=A via a
+    RedirectGoto, then SRW (running second) queues RedirectGoto src=X
+    tgt=B (B != A), the coalescer can't dedupe because old_target
+    differs.  The engine's ``PLANNER_CTX_CONFLICT`` diagnostic surfaces
+    this, but defaults to log-only.  This filter enforces
+    "first fragment wins" — SRW's contradictory emission is dropped
+    and SSR's decision stands.
 
     Returns the filtered list. Non-RedirectGoto mods are untouched.
     Matching emissions (same src + same new_target) are also untouched.
@@ -297,6 +388,16 @@ def finalize_reconstruction_fragment(
 
     modifications = _drop_intra_fragment_dup_conflicts(
         modifications,
+        strategy_name=strategy_name,
+    )
+
+    # Phase 3 of uee-jrgq: DAG-as-arbiter conformance check runs
+    # BEFORE the legacy prior-fragment-wins filter.  When the DAG can
+    # answer authoritatively, its decision wins; when it returns
+    # DAG_GAP the legacy filter is consulted as a fallback.
+    modifications = _drop_dag_disagreement(
+        modifications,
+        cumulative_planner_view,
         strategy_name=strategy_name,
     )
 
