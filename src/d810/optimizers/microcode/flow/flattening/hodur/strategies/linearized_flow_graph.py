@@ -34,6 +34,11 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
+from d810.cfg.zero_state_write_emission import (
+    ZsvSiteRequest,
+    ZsvSource,
+    collect_zero_state_writes,
+)
 from d810.cfg.linearized_flow_graph_fragment_planning import (
     LinearizedDagStructuredRegion,
     LinearizedFlowGraphPlanSetup,
@@ -605,27 +610,36 @@ def _collect_structured_region_zero_state_write_modifications(
     constant_result: object,
     existing_modifications: tuple[object, ...] | list[object],
 ) -> tuple[ZeroStateWrite, ...]:
-    mods: list[ZeroStateWrite] = []
-    seen: set[tuple[int, int]] = {
-        (int(mod.block_serial), int(mod.insn_ea))
-        for mod in existing_modifications
-        if isinstance(mod, ZeroStateWrite)
-    }
+    """Resolve structured-region path-walk sites and emit ZSW.
+
+    Thin adapter over the unified :func:`collect_zero_state_writes`
+    emitter (Phase 4 of uee-jrgq, ticket uee-rjo8). Performs the
+    LFG-local recon-side path resolution
+    (:func:`find_last_state_write_site_on_path_snapshot`) to project
+    accepted candidates into :class:`ZsvSiteRequest` records, then
+    delegates emission to the single-emitter module.
+
+    The shared dedup invariant (every ``(block, insn_ea)`` is keyed
+    identically across all 3 collector inputs) is preserved: any
+    ZSW already in ``existing_modifications`` seeds the unified
+    ``seen`` set.
+    """
     in_stk_maps = getattr(constant_result, "in_stk_maps", None)
     in_reg_maps = getattr(constant_result, "in_reg_maps", None)
 
+    requests: list[ZsvSiteRequest] = []
     for candidate in accepted_candidates:
         edge = getattr(candidate, "edge", None)
         if edge is None:
             continue
-        target_states = {
+        target_states = frozenset(
             int(state_value) & 0xFFFFFFFF
             for state_value in (
                 getattr(edge, "target_state", None),
                 getattr(edge, "observed_target_state", None),
             )
             if state_value is not None
-        }
+        )
         if not target_states:
             continue
         ordered_path = tuple(
@@ -647,20 +661,20 @@ def _collect_structured_region_zero_state_write_modifications(
         insn_ea = getattr(site, "insn_ea", None)
         if site_state is None or insn_ea is None or int(insn_ea) == 0:
             continue
-        if (int(site_state) & 0xFFFFFFFF) not in target_states:
-            continue
-        key = (int(block_serial), int(insn_ea))
-        if key in seen:
-            continue
-        seen.add(key)
-        mods.append(
-            ZeroStateWrite(
+        requests.append(
+            ZsvSiteRequest(
                 block_serial=int(block_serial),
                 insn_ea=int(insn_ea),
+                site_state=int(site_state),
+                target_states=target_states,
+                provenance="lfg_structured_region",
             )
         )
 
-    return tuple(mods)
+    return collect_zero_state_writes(
+        source=ZsvSource.from_resolved_sites(requests),
+        existing_modifications=existing_modifications,
+    )
 
 
 def _collect_trivial_redirect_tail_zero_state_write_modifications(
@@ -670,12 +684,22 @@ def _collect_trivial_redirect_tail_zero_state_write_modifications(
     dispatcher_serial: int,
     state_var_stkoff: int,
 ) -> tuple[ZeroStateWrite, ...]:
-    mods: list[ZeroStateWrite] = []
-    seen: set[tuple[int, int]] = {
-        (int(mod.block_serial), int(mod.insn_ea))
-        for mod in modifications
-        if isinstance(mod, ZeroStateWrite)
-    }
+    """Resolve dispatcher-redirect tail sites and emit ZSW.
+
+    Thin adapter over the unified :func:`collect_zero_state_writes`
+    emitter (Phase 4 of uee-jrgq, ticket uee-rjo8). Walks the
+    accumulated modifications for ``RedirectGoto`` mods whose
+    ``old_target`` is the dispatcher and resolves the source block's
+    last state write via :func:`find_last_state_write_site_snapshot`,
+    then delegates emission to the single-emitter module.
+
+    The original block-only collector did not have a target-state
+    handle (it only knew the source block and dispatcher), so the
+    request leaves ``target_states`` empty — the unified emitter then
+    skips the site_state↔target_states match check, mirroring the
+    legacy behaviour.
+    """
+    requests: list[ZsvSiteRequest] = []
     for mod in modifications:
         if not isinstance(mod, RedirectGoto):
             continue
@@ -702,17 +726,21 @@ def _collect_trivial_redirect_tail_zero_state_write_modifications(
             continue
         if len(tuple(getattr(site, "trailing_insn_eas", ()))) > 1:
             continue
-        key = (source_block, int(insn_ea))
-        if key in seen:
-            continue
-        seen.add(key)
-        mods.append(
-            ZeroStateWrite(
+        site_state = getattr(site, "state_value", None)
+        requests.append(
+            ZsvSiteRequest(
                 block_serial=source_block,
                 insn_ea=int(insn_ea),
+                site_state=None if site_state is None else int(site_state),
+                target_states=frozenset(),
+                provenance="lfg_trivial_redirect_tail",
             )
         )
-    return tuple(mods)
+
+    return collect_zero_state_writes(
+        source=ZsvSource.from_resolved_sites(requests),
+        existing_modifications=modifications,
+    )
 
 
 def _filter_unsafe_preferred_region_lowering(

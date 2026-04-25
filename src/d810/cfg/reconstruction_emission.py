@@ -22,6 +22,10 @@ from d810.cfg.reconstruction_modification_planning import (
     plan_passthrough_reconstruction_modifications,
     plan_shared_group_reconstruction_modifications,
 )
+from d810.cfg.zero_state_write_emission import (
+    ZsvSource,
+    collect_zero_state_writes,
+)
 
 logger = logging.getLogger(
     "D810.cfg.reconstruction_execution",
@@ -110,74 +114,24 @@ def _collect_zero_state_write_modifications(
 ) -> tuple[ZeroStateWrite, ...]:
     """Collect ZeroStateWrite modifications for reconstruction candidates.
 
-    Seeds its dedup ``seen`` set from any ``ZeroStateWrite`` already present
-    in ``existing_modifications`` so that repeated invocations across
-    candidate buckets / regions do not re-emit the same (block, insn_ea)
-    decision. This is the planner-level single-owner invariant for ZSW
-    construction (see ticket uee-y1ko).
+    Thin wrapper around the unified :func:`collect_zero_state_writes`
+    emitter (Phase 4 of uee-jrgq, ticket uee-rjo8). Preserves the
+    historical signature for the four call sites in
+    :func:`execute_primary_reconstruction_modifications`.
+
+    The single-emitter invariant — every ``(block_serial, insn_ea)``
+    ZSW decision has exactly one author per pipeline run — is enforced
+    by sharing the ``existing_modifications`` accumulator across all
+    invocations. The unified module performs the dedup pass once
+    (see ``cfg/zero_state_write_emission.py``).
     """
-    mods: list[ZeroStateWrite] = []
-    seen: set[tuple[int, int]] = {
-        (int(mod.block_serial), int(mod.insn_ea))
-        for mod in existing_modifications
-        if isinstance(mod, ZeroStateWrite)
-    }
-    for candidate in candidates:
-        site = getattr(candidate, "site", None)
-        if site is None:
-            continue
-        block_serial = getattr(site, "block_serial", None)
-        insn_ea = getattr(site, "insn_ea", None)
-        site_state = getattr(site, "state_value", None)
-        target_state = getattr(getattr(candidate, "edge", None), "target_state", None)
-        observed_target_state = getattr(
-            getattr(candidate, "edge", None),
-            "observed_target_state",
-            None,
-        )
-        horizon_block = getattr(candidate, "horizon_block", None)
-        if (
-            block_serial is None
-            or insn_ea is None
-            or int(insn_ea) == 0
-            or site_state is None
-            or target_state is None
-            or horizon_block is None
-        ):
-            continue
-        ordered_path = tuple(
-            int(serial)
-            for serial in getattr(getattr(candidate, "edge", None), "ordered_path", ()) or ()
-        )
-        if int(block_serial) != int(horizon_block):
-            if not ordered_path:
-                continue
-            try:
-                horizon_index = ordered_path.index(int(horizon_block))
-                site_index = ordered_path.index(int(block_serial))
-            except ValueError:
-                continue
-            if int(site_index) < int(horizon_index):
-                continue
-        normalized_site_state = int(site_state) & 0xFFFFFFFF
-        accepted_target_states = {
-            int(state_value) & 0xFFFFFFFF
-            for state_value in (target_state, observed_target_state)
-            if state_value is not None
-        }
-        if normalized_site_state not in accepted_target_states:
-            continue
-        key = (int(block_serial), int(insn_ea))
-        if key in seen:
-            continue
-        seen.add(key)
-        mods.append(
-            ZeroStateWrite(
-                block_serial=int(block_serial),
-                insn_ea=int(insn_ea),
-            )
-        )
-    return tuple(mods)
+    return collect_zero_state_writes(
+        source=ZsvSource.from_candidates(
+            candidates,
+            provenance="reconstruction_candidates",
+        ),
+        existing_modifications=existing_modifications,
+    )
 
 
 def _is_conditional_transition(candidate) -> bool:

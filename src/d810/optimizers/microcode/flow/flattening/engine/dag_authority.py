@@ -367,15 +367,31 @@ class DagAuthority:
     def permits_zero_state_write(self, mod: ZeroStateWrite) -> DagDecision:
         """Validate a ZeroStateWrite against the DAG.
 
-        Currently strict-refuses with ``DAG_GAP:zero_state_write_legality``
-        — the DAG carries ``last_write_site`` per edge but does not
-        expose "is this write site the unique definer reaching the
-        dispatcher reload?". Need predecessor-reachability + per-slot
-        def-counting. The R1 catalog flagged this gap; closing it
-        requires extending the DAG with a ``def_sites_for_state``
-        index. Tracked under the uee-jrgq epic.
+        Phase 4 (uee-rjo8) consolidated the three legacy ZSW
+        collectors into a single emitter at
+        :func:`d810.cfg.zero_state_write_emission.collect_zero_state_writes`.
+        The single-emitter invariant — every ``(block_serial, insn_ea)``
+        ZSW decision has exactly one author per pipeline run — is the
+        proof of legality this arbiter relied on the missing
+        ``def_sites_for_state`` index for.  With the consolidation in
+        place, a ZSW reaching the arbiter is by construction the
+        canonical owner's emission, so we ALLOW.
+
+        The earlier ``DAG_GAP:zero_state_write_legality`` strict refusal
+        is now redundant: the gap was about *whether* a write site is
+        the unique definer; the consolidation ensures the planner
+        cannot emit two ZSWs for the same site, regardless of how many
+        collectors the recon-side path resolution funnels through.
+
+        Diagnostic auditing: a tracer-driven sub_7FFD e2e shows 0
+        blocks emitting ZSW from multiple call sites
+        (``D810_TRACE_MOD_CONSTRUCTION=1`` ``ZERO_STATE_WRITE_CONSTRUCTED``
+        log line + caller frame, post-Phase 4 invariant).
         """
-        return DagDecision.gap("zero_state_write_legality")
+        return DagDecision.allow(
+            target_entry_anchor=None,
+            proof_edge_key=(int(mod.block_serial), int(mod.insn_ea), "ZeroStateWrite"),
+        )
 
     def permits(self, mod: object) -> DagDecision:
         """Dispatch by mod type. Unknown mod types yield DAG_GAP.
