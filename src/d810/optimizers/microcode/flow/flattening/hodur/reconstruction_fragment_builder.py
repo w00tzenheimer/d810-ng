@@ -7,6 +7,55 @@ structured-region-leakage soft-gate on post-apply BST cleanup.
 Lives in the Hodur strategies package because ``PlanFragment`` is a
 Hodur-specific type; moving this to ``d810.cfg`` would require an upward
 import. Kept Hodur-local per the Option C decomposition plan.
+
+Conflict-resolution filter cascade (uee-jrgq Phase 6 — retirement gate)
+=======================================================================
+
+When ``finalize_reconstruction_fragment`` runs, modifications flow through
+three filters in this order.  Each filter is single-purpose; together they
+form a cascade with a clear retirement criterion.
+
+  1. ``_drop_intra_fragment_dup_conflicts`` — intra-fragment overlap
+     between ``DuplicateAndRedirect`` and ``RedirectGoto``/``ConvertToGoto``
+     on the same source.  DupAndRedirect always wins (per-pred routing is
+     strictly more expressive than uniform redirect).  Pure intra-fragment
+     pass; does NOT consult the cumulative view.
+
+  2. ``_drop_dag_disagreement`` (Phase 3 of uee-jrgq) — the DAG-as-arbiter
+     check.  When ``cumulative_planner_view.dag_authority`` is present,
+     each redirect mod is validated against the recon DAG's canonical
+     decision.  Drops on ``DAG_DISAGREEMENT``; keeps and lets through on
+     ``ALLOW`` or ``DAG_GAP:<name>`` (DAG silent).  Records each
+     disagreement as a ``DagDisagreementRecord`` (Phase 5) for the
+     pipeline-level audit summary.
+
+  3. ``_drop_conflicting_redirects`` — legacy "first-fragment-wins"
+     Mode 1 filter.  Fallback for DAG_GAP regions where the DAG cannot
+     answer authoritatively.  Reads ``cumulative_planner_view``'s
+     ``LinearizationDecision`` aggregates (echoed from prior fragments'
+     emitted mods via ``_build_planner_context_contribution``).
+
+Retirement gate
+---------------
+Filters (1) and (3) and the mod-echo logic in
+``_build_planner_context_contribution`` are CONCEPTUALLY redundant once
+the DAG arbiter has authoritative coverage of every emission decision
+point.  Today the DAG returns ``DAG_GAP`` for ``DuplicateAndRedirect``
+and ``ZeroStateWrite`` mods (covered by extension tickets uee-7wcd,
+uee-7snc, uee-qli0, uee-bwdk) and for sources the
+``LinearizedStateDag`` doesn't enumerate as in-scope edges.  Until
+those gaps close, retiring the legacy filters would regress observable
+behaviour — e.g., on sub_7FFD3338C040 the legacy filter catches 5 of 8
+Mode 1 drops in DAG_GAP regions that the arbiter cannot yet see.
+
+Retirement criterion: when ``PipelineProvenance.dag_audit_records``
+shows zero ``DAG_GAP``-bucket drops on the corpus AND filters (1)+(3)
+fire zero times across the corpus for a full release cycle, both can
+be deleted along with the mod-echo in ``_build_planner_context_contribution``.
+
+This module's docstring + Phase 6 commit (uee-6yu7) formalises the
+retirement contract; the actual deletion lands as a follow-up commit
+once the criterion is met.
 """
 from __future__ import annotations
 
