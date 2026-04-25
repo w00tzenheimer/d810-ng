@@ -13,6 +13,7 @@ from __future__ import annotations
 from d810.core import logging
 from d810.cfg.graph_modification import (
     ConvertToGoto,
+    DuplicateAndRedirect,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
@@ -55,12 +56,25 @@ def _build_planner_context_contribution(
     redirect. Owned blocks populate ``claimed_sources`` so the same
     strategies can also call ``view.is_claimed(src)`` for broader scope.
 
+    Every :class:`DuplicateAndRedirect` also becomes a
+    :class:`LinearizationDecision` keyed on its ``source_serial`` (uee-dnhk
+    extension).  DupAndRedirect mutates the source block's goto to its
+    first per-pred target, so it is a linearization decision in the same
+    sense as a RedirectGoto from the cumulative view's perspective.
+    Tracking it lets a later strategy that emits a plain RedirectGoto on
+    a shared block (a less-specific decision) be dropped by the existing
+    Mode 1 filter — empirically observed on sub_7FFD where SRW emits
+    DupAndRedirect on shared blocks {10, 32, 35, 64, 100, 104, 156, 184,
+    187, 192, 195, 200, 203} while later residual/conditional strategies
+    emit overlapping RedirectGotos.  The source's ``source_serial`` is
+    also added to ``claimed_sources``.
+
     ``StateWriteNeutralization`` contributions are deliberately omitted in
     this first pass — building them would require threading the original
     state constant through the emission path (``ZeroStateWrite`` stores
     only the insn_ea, not the pre-zeroing value). Added incrementally.
     """
-    linearizations = tuple(
+    redirect_linearizations = tuple(
         LinearizationDecision(
             src=int(mod.from_serial),
             tgt=int(mod.new_target),
@@ -71,11 +85,122 @@ def _build_planner_context_contribution(
         for mod in modifications
         if isinstance(mod, RedirectGoto)
     )
-    return PlannerContextContribution(
-        linearizations=linearizations,
-        neutralizations=(),
-        claimed_sources=frozenset(int(blk) for blk in owned_blocks),
+    dup_linearizations = tuple(
+        LinearizationDecision(
+            src=int(mod.source_serial),
+            # DupAndRedirect's first per-pred entry is the goto target
+            # the original block ends up with (later per-pred entries get
+            # their own duplicated copies).  Use that as the linearization
+            # target so the cumulative view can detect later RedirectGotos
+            # that disagree.  Empty per_pred_targets is a planner bug, but
+            # we defensively skip rather than crash.
+            tgt=int(mod.per_pred_targets[0][1]),
+            reason=f"{strategy_name}_duplicate_and_redirect",
+            strategy=strategy_name,
+            round_index=round_index,
+        )
+        for mod in modifications
+        if isinstance(mod, DuplicateAndRedirect) and mod.per_pred_targets
     )
+    dup_claimed_sources = frozenset(
+        int(mod.source_serial) for mod in modifications
+        if isinstance(mod, DuplicateAndRedirect)
+    )
+    return PlannerContextContribution(
+        linearizations=redirect_linearizations + dup_linearizations,
+        neutralizations=(),
+        claimed_sources=(
+            frozenset(int(blk) for blk in owned_blocks)
+            | dup_claimed_sources
+        ),
+    )
+
+
+def _redirect_source(mod: object) -> int | None:
+    """Return the source-block serial of a RedirectGoto/ConvertToGoto, else None."""
+    if isinstance(mod, RedirectGoto):
+        return int(mod.from_serial)
+    if isinstance(mod, ConvertToGoto):
+        return int(mod.block_serial)
+    return None
+
+
+def _redirect_target(mod: object) -> int | None:
+    """Return the new target serial of a RedirectGoto/ConvertToGoto, else None."""
+    if isinstance(mod, RedirectGoto):
+        return int(mod.new_target)
+    if isinstance(mod, ConvertToGoto):
+        return int(mod.goto_target)
+    return None
+
+
+def _drop_intra_fragment_dup_conflicts(
+    modifications: list,
+    *,
+    strategy_name: str,
+) -> list:
+    """Drop RedirectGoto/ConvertToGoto when a DupAndRedirect targets the same source.
+
+    Tracer-revealed conflict (uee-dnhk): when one planner emits
+    ``DuplicateAndRedirect(source_serial=X, per_pred_targets=[(p1, t1),
+    (p2, t2)])`` and another emits ``RedirectGoto(from_serial=X,
+    new_target=T)``, both reach the fragment.  Outcomes if both apply:
+
+      * If all per_pred_targets equal T, the RedirectGoto is redundant
+        (DupAndRedirect's first per_pred entry already sets blk[X]'s
+        goto to t1, and t1 == T).
+      * If any per_pred_target differs from T, the result depends on
+        apply order: whichever ran last wins on blk[X]'s goto, while
+        per-pred routing emitted by DupAndRedirect remains.  Pred-level
+        targets diverge from RedirectGoto's uniform intent.
+
+    Resolution policy: **DupAndRedirect always wins**.  Per-pred routing
+    is strictly more expressive than uniform RedirectGoto on a shared
+    block; the planner that emitted DupAndRedirect knew about the
+    multi-pred nature, the one that emitted plain RedirectGoto did not.
+    Drop every RedirectGoto/ConvertToGoto whose source matches a
+    DupAndRedirect's source_serial.
+
+    This filter does NOT consult ``cumulative_planner_view`` — it is
+    purely an intra-fragment pass.  Cross-fragment DupAndRedirect-vs-
+    RedirectGoto coordination would require extending the cumulative
+    view's contribution model and is tracked separately.
+
+    Returns the filtered list.  Non-redirect, non-dup mods untouched.
+    """
+    dup_sources = {
+        int(mod.source_serial) for mod in modifications
+        if isinstance(mod, DuplicateAndRedirect)
+    }
+    if not dup_sources:
+        return modifications
+    kept: list = []
+    dropped: list[tuple[str, int, int]] = []  # (mod_type, src, dropped_tgt)
+    for mod in modifications:
+        if isinstance(mod, DuplicateAndRedirect):
+            kept.append(mod)
+            continue
+        src = _redirect_source(mod)
+        if src is None or src not in dup_sources:
+            kept.append(mod)
+            continue
+        # Conflict: same source has both a RedirectGoto/ConvertToGoto
+        # and a DupAndRedirect.  Drop the redirect, keep the dup.
+        tgt = _redirect_target(mod)
+        dropped.append((type(mod).__name__, src, tgt if tgt is not None else -1))
+    if dropped:
+        logger.warning(
+            "RECON: dropped %d redirect mod(s) from strategy %r as "
+            "intra-fragment duplicates of DuplicateAndRedirect on the "
+            "same source (per-pred routing is more specific): %s",
+            len(dropped),
+            strategy_name,
+            "; ".join(
+                f"{mtype}(src={src} dropped_tgt={dtgt})"
+                for mtype, src, dtgt in dropped[:10]
+            ),
+        )
+    return kept
 
 
 def _drop_conflicting_redirects(
@@ -102,28 +227,16 @@ def _drop_conflicting_redirects(
     kept: list = []
     dropped: list[tuple[str, int, int, int]] = []  # (mod_type, src, prior_tgt, dropped_tgt)
     for mod in modifications:
-        # RedirectGoto: mod.from_serial + mod.new_target
-        if isinstance(mod, RedirectGoto):
-            src = int(mod.from_serial)
-            new_tgt = int(mod.new_target)
-            mod_type_name = "RedirectGoto"
-        # ConvertToGoto: mod.block_serial + mod.goto_target
-        # Same emission path as RedirectGoto (builder.goto_redirect returns
-        # ConvertToGoto for 2-way source blocks). Treated as equivalent for
-        # conflict detection — a ConvertToGoto after a prior RedirectGoto on
-        # the same src with different target is the same Mode 1 pattern.
-        elif isinstance(mod, ConvertToGoto):
-            src = int(mod.block_serial)
-            new_tgt = int(mod.goto_target)
-            mod_type_name = "ConvertToGoto"
-        else:
+        src = _redirect_source(mod)
+        new_tgt = _redirect_target(mod)
+        if src is None or new_tgt is None:
             kept.append(mod)
             continue
         prior_tgt = cumulative_planner_view.linearization_target_for(src)
         if prior_tgt is None or prior_tgt == new_tgt:
             kept.append(mod)
             continue
-        dropped.append((mod_type_name, src, int(prior_tgt), new_tgt))
+        dropped.append((type(mod).__name__, src, int(prior_tgt), new_tgt))
     if dropped:
         logger.warning(
             "RECON: dropped %d mod(s) from strategy %r to honor prior "
@@ -181,6 +294,11 @@ def finalize_reconstruction_fragment(
             len(pts_mods),
         )
         modifications = non_pts_mods
+
+    modifications = _drop_intra_fragment_dup_conflicts(
+        modifications,
+        strategy_name=strategy_name,
+    )
 
     modifications = _drop_conflicting_redirects(
         modifications,
