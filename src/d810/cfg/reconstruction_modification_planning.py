@@ -277,14 +277,44 @@ def plan_shared_group_reconstruction_modifications(
         int(shared_block),
         tuple(int(serial) for serial in ordered_path),
     )
+
+    shared_preds_tuple = tuple(int(pred) for pred in shared_snapshot.preds)
+    candidates_tuple = tuple(shared_candidates)
+    if (
+        not force_clone
+        and old_target is not None
+        and len(candidates_tuple) == 1
+        and len(shared_preds_tuple) == 1
+        and int(candidates_tuple[0].via_pred) == int(shared_preds_tuple[0])
+        and int(candidates_tuple[0].target_entry) != int(old_target)
+        and int(candidates_tuple[0].target_entry) != int(shared_block)
+    ):
+        single_candidate = candidates_tuple[0]
+        single_pred_targets = (
+            (int(single_candidate.via_pred), int(single_candidate.target_entry)),
+        )
+        return SharedGroupModificationPlan(
+            accepted=True,
+            modifications=(
+                RedirectGoto(
+                    from_serial=int(shared_block),
+                    old_target=int(old_target),
+                    new_target=int(single_candidate.target_entry),
+                ),
+            ),
+            ordered_via_preds=(int(single_candidate.via_pred),),
+            per_pred_targets=single_pred_targets,
+            emission_mode="single_pred_redirect",
+        )
+
     lowering_decision = plan_reconstruction_lowering(
         flow_graph=flow_graph,
         context=ReconstructionLoweringContext(
             kind=ReconstructionLoweringKind.SHARED_GROUP,
             shared_block=int(shared_block),
-            shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
+            shared_preds=shared_preds_tuple,
             old_target=(int(old_target) if old_target is not None else None),
-            shared_candidates=tuple(shared_candidates),
+            shared_candidates=candidates_tuple,
         ),
     )
     if not lowering_decision.accepted:
