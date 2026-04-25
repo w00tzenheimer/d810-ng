@@ -9,6 +9,7 @@ from .family import CFFStrategyFamily, DetectionResult
 from .metrics import handler_coverage, structure_quality_score
 from .planner import PipelinePolicy, PlannerHintSignals, UnflatteningPlanner
 from .provenance import (
+    DagDisagreementRecord,
     DecisionInputSummary,
     DecisionPhase,
     DecisionReasonCode,
@@ -43,6 +44,7 @@ __all__ = [
     "AnalysisSnapshot",
     "apply_execution_results_to_provenance",
     "CFFStrategyFamily",
+    "DagDisagreementRecord",
     "DecisionInputSummary",
     "DecisionPhase",
     "DecisionReasonCode",
