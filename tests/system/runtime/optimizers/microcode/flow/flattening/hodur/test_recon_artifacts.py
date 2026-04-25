@@ -35,10 +35,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
 from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
-    SemanticExactNode5D0AEBD3To606DC166Strategy,
-    SemanticExactNode606DC166To139F2922Strategy,
-    SemanticExactNode63D54755To57BE6FD0Strategy,
-    SemanticExactNode57BE6FD0To03E42B03Strategy,
+    _parse_focus_edge_pairs,
     _resolve_edge_window,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
@@ -294,30 +291,13 @@ def test_hodur_strategy_family_defaults_to_live_strategies():
 
 def test_hodur_strategy_family_accepts_explicit_strategy_override():
     family = HodurStrategyFamily(
-        strategy_classes=[
-            SemanticExactNode5D0AEBD3To606DC166Strategy,
-            SemanticExactNode606DC166To139F2922Strategy,
-            SemanticExactNode63D54755To57BE6FD0Strategy,
-            SemanticExactNode57BE6FD0To03E42B03Strategy,
-        ]
+        strategy_classes=[SemanticExactNodeAllPlannableEdgesStrategy]
     )
 
-    assert len(family.strategies) == 4
+    assert len(family.strategies) == 1
     assert isinstance(
         family.strategies[0],
-        SemanticExactNode5D0AEBD3To606DC166Strategy,
-    )
-    assert isinstance(
-        family.strategies[1],
-        SemanticExactNode606DC166To139F2922Strategy,
-    )
-    assert isinstance(
-        family.strategies[2],
-        SemanticExactNode63D54755To57BE6FD0Strategy,
-    )
-    assert isinstance(
-        family.strategies[3],
-        SemanticExactNode57BE6FD0To03E42B03Strategy,
+        SemanticExactNodeAllPlannableEdgesStrategy,
     )
 
 
@@ -362,6 +342,76 @@ def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
     assert selected == [
         (round_summary.plannable_edges[0], (0x10, 0x20))
     ]
+
+
+def test_parse_focus_edge_pairs_handles_hex_and_decimal():
+    assert _parse_focus_edge_pairs(None) is None
+    assert _parse_focus_edge_pairs("") is None
+    assert _parse_focus_edge_pairs("   ") is None
+    assert _parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
+    assert _parse_focus_edge_pairs(
+        "5d0aebd3,606dc166;606dc166,139f2922"
+    ) == (
+        (0x5D0AEBD3, 0x606DC166),
+        (0x606DC166, 0x139F2922),
+    )
+    assert _parse_focus_edge_pairs("0x10,0x20") == ((0x10, 0x20),)
+    # Malformed entries are silently skipped; valid ones survive.
+    assert _parse_focus_edge_pairs("garbage;0x10,0x20") == ((0x10, 0x20),)
+
+
+def test_semantic_exact_node_focus_pairs_constructor_arg(monkeypatch):
+    monkeypatch.delenv("D810_EXACT_NODE_FOCUS_EDGES", raising=False)
+    strategy = SemanticExactNodeAllPlannableEdgesStrategy(
+        focus_edge_pairs=((0x5D0AEBD3, 0x606DC166),)
+    )
+    pinned_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x5D0AEBD3),
+        target_state=0x606DC166,
+        kind=SimpleNamespace(name="TRANSITION"),
+    )
+    other_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x606DC166),
+        target_state=0x139F2922,
+        kind=SimpleNamespace(name="TRANSITION"),
+    )
+    round_summary = SimpleNamespace(
+        plannable_edges=(
+            SimpleNamespace(edge=pinned_edge),
+            SimpleNamespace(edge=other_edge),
+        )
+    )
+    selected = strategy._select_edges(round_summary)
+    assert len(selected) == 1
+    assert selected[0][1] == (0x5D0AEBD3, 0x606DC166)
+
+
+def test_semantic_exact_node_focus_env_var_overrides_constructor(monkeypatch):
+    monkeypatch.setenv(
+        "D810_EXACT_NODE_FOCUS_EDGES", "606dc166,139f2922"
+    )
+    strategy = SemanticExactNodeAllPlannableEdgesStrategy(
+        focus_edge_pairs=((0x5D0AEBD3, 0x606DC166),)
+    )
+    pinned_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x5D0AEBD3),
+        target_state=0x606DC166,
+        kind=SimpleNamespace(name="TRANSITION"),
+    )
+    other_edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x606DC166),
+        target_state=0x139F2922,
+        kind=SimpleNamespace(name="TRANSITION"),
+    )
+    round_summary = SimpleNamespace(
+        plannable_edges=(
+            SimpleNamespace(edge=pinned_edge),
+            SimpleNamespace(edge=other_edge),
+        )
+    )
+    selected = strategy._select_edges(round_summary)
+    assert len(selected) == 1
+    assert selected[0][1] == (0x606DC166, 0x139F2922)
 
 
 def test_collect_exact_conditional_sites_uses_physical_site_and_fallback_shape():

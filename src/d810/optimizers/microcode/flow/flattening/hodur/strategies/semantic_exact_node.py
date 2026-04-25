@@ -19,6 +19,17 @@ environment variables:
 - ``D810_EXACT_NODE_EDGE_STOP``: exclusive stop index, default ``len(edges)``
 
 This makes the experiment bisectable without changing code between runs.
+
+To pin the bulk experiment to a specific subset of edges (the role formerly
+played by per-edge bisection variant classes), set:
+
+- ``D810_EXACT_NODE_FOCUS_EDGES``: semicolon-separated ``src,dst`` hex pairs,
+  for example ``5d0aebd3,606dc166;606dc166,139f2922``. When set, only those
+  pairs are considered, in the order given, and the straight-line filter and
+  window environment variables are bypassed.
+
+The same restriction can be applied programmatically via the
+``focus_edge_pairs`` constructor argument.
 """
 from __future__ import annotations
 
@@ -87,10 +98,6 @@ logger = logging.getLogger(
 
 __all__ = [
     "SemanticExactNodeAllPlannableEdgesStrategy",
-    "SemanticExactNode5D0AEBD3To606DC166Strategy",
-    "SemanticExactNode606DC166To139F2922Strategy",
-    "SemanticExactNode63D54755To57BE6FD0Strategy",
-    "SemanticExactNode57BE6FD0To03E42B03Strategy",
     "build_semantic_exact_round_summary",
 ]
 
@@ -135,6 +142,39 @@ def _resolve_edge_window(total_edges: int) -> tuple[int, int]:
     if stop < start:
         stop = start
     return start, stop
+
+
+def _parse_focus_edge_pairs(
+    raw: str | None,
+) -> tuple[tuple[int, int], ...] | None:
+    """Parse a ``D810_EXACT_NODE_FOCUS_EDGES`` style spec.
+
+    Accepts ``src,dst[;src,dst]*`` where each value may be hex (``0x``-prefixed
+    or bare hex) or decimal. Returns ``None`` when the spec is missing or empty
+    so callers can fall back to the default selection path. Malformed entries
+    are silently skipped to keep the env-var override permissive for
+    bisection.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    pairs: list[tuple[int, int]] = []
+    for chunk in cleaned.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [part.strip() for part in chunk.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            src = int(parts[0], 16) if not parts[0].lower().startswith("0x") else int(parts[0], 0)
+            dst = int(parts[1], 16) if not parts[1].lower().startswith("0x") else int(parts[1], 0)
+        except ValueError:
+            continue
+        pairs.append((src & 0xFFFFFFFF, dst & 0xFFFFFFFF))
+    return tuple(pairs) if pairs else None
 
 
 def _edge_kind_name(edge: object) -> str:
@@ -983,14 +1023,57 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
     The selected edge window can be restricted with
     ``D810_EXACT_NODE_EDGE_START`` / ``D810_EXACT_NODE_EDGE_STOP`` so the bulk
     experiment can be bisected deterministically.
+
+    For pinned bisection (formerly handled by per-edge variant classes), pass
+    ``focus_edge_pairs`` to the constructor or set
+    ``D810_EXACT_NODE_FOCUS_EDGES`` (semicolon-separated ``src,dst`` hex pairs).
+    When a focus restriction is in effect, only the listed pairs are
+    considered, in the order given, and the straight-line filter / window
+    environment variables are bypassed.
     """
 
     STRATEGY_NAME = "semantic_exact_node_all_plannable_edges"
+
+    def __init__(
+        self,
+        *,
+        focus_edge_pairs: tuple[tuple[int, int], ...] | None = None,
+    ) -> None:
+        self._focus_edge_pairs: tuple[tuple[int, int], ...] | None = (
+            tuple((int(src) & 0xFFFFFFFF, int(dst) & 0xFFFFFFFF) for src, dst in focus_edge_pairs)
+            if focus_edge_pairs is not None
+            else None
+        )
+
+    def _resolve_focus_edge_pairs(self) -> tuple[tuple[int, int], ...] | None:
+        env_focus = _parse_focus_edge_pairs(os.getenv("D810_EXACT_NODE_FOCUS_EDGES"))
+        if env_focus is not None:
+            return env_focus
+        return self._focus_edge_pairs
 
     def _select_edges(
         self,
         round_summary,
     ) -> list[tuple[object, tuple[int, int]]]:
+        focus_pairs = self._resolve_focus_edge_pairs()
+        if focus_pairs:
+            by_pair: dict[tuple[int, int], object] = {}
+            for plannable in round_summary.plannable_edges:
+                pair = _edge_pair(getattr(plannable, "edge", None))
+                if pair is not None and pair not in by_pair:
+                    by_pair[pair] = plannable
+            selected: list[tuple[object, tuple[int, int]]] = []
+            for pair in focus_pairs:
+                plannable = by_pair.get(pair)
+                if plannable is not None:
+                    selected.append((plannable, pair))
+            logger.info(
+                "EXACT NODE EXPERIMENT: focus restriction active, selected %d/%d pinned pairs",
+                len(selected),
+                len(focus_pairs),
+            )
+            return selected
+
         ordered_edges: list[tuple[object, tuple[int, int]]] = []
         seen_pairs: set[tuple[int, int]] = set()
         for plannable in round_summary.plannable_edges:
@@ -1004,55 +1087,11 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
             ordered_edges.append((plannable, pair))
 
         start, stop = _resolve_edge_window(len(ordered_edges))
-        selected = ordered_edges[start:stop]
+        windowed = ordered_edges[start:stop]
         logger.info(
             "EXACT NODE EXPERIMENT: selected bulk window [%d:%d) of %d unique plannable edges",
             start,
             stop,
             len(ordered_edges),
         )
-        return selected
-
-
-class SemanticExactNode5D0AEBD3To606DC166Strategy(
-    _SemanticExactNodeExperimentStrategy
-):
-    """Directly lower the initial 0x5D0AEBD3 -> 0x606DC166 handoff."""
-
-    STRATEGY_NAME = "semantic_exact_node_5d0aebd3_to_606dc166"
-    FOCUS_EDGE_PAIRS = (
-        (0x5D0AEBD3, 0x606DC166),
-    )
-
-
-class SemanticExactNode606DC166To139F2922Strategy(
-    _SemanticExactNodeExperimentStrategy
-):
-    """Directly lower the next 0x606DC166 -> 0x139F2922 handoff."""
-
-    STRATEGY_NAME = "semantic_exact_node_606dc166_to_139f2922"
-    FOCUS_EDGE_PAIRS = (
-        (0x606DC166, 0x139F2922),
-    )
-
-
-class SemanticExactNode63D54755To57BE6FD0Strategy(
-    _SemanticExactNodeExperimentStrategy
-):
-    """Directly lower the next 0x63D54755 -> 0x57BE6FD0 handoff."""
-
-    STRATEGY_NAME = "semantic_exact_node_63d54755_to_57be6fd0"
-    FOCUS_EDGE_PAIRS = (
-        (0x63D54755, 0x57BE6FD0),
-    )
-
-
-class SemanticExactNode57BE6FD0To03E42B03Strategy(
-    _SemanticExactNodeExperimentStrategy
-):
-    """Directly lower the next 0x57BE6FD0 -> 0x03E42B03 handoff."""
-
-    STRATEGY_NAME = "semantic_exact_node_57be6fd0_to_03e42b03"
-    FOCUS_EDGE_PAIRS = (
-        (0x57BE6FD0, 0x03E42B03),
-    )
+        return windowed
