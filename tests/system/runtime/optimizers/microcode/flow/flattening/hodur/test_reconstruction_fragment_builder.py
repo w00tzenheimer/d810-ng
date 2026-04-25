@@ -414,3 +414,192 @@ class TestIntraFragmentDupAndRedirectConflicts:
             m.from_serial for m in frag.modifications if isinstance(m, RedirectGoto)
         }
         assert srcs_redirect == {999}
+
+
+# ----------------------------------------------------------------------------
+# Phase 3 of uee-jrgq — DAG-as-arbiter conformance via DagAuthority
+# ----------------------------------------------------------------------------
+
+
+class TestDagArbiterConformance:
+    """Phase 3: when CumulativePlannerView carries a DagAuthority, the new
+    _drop_dag_disagreement filter runs BEFORE the legacy
+    _drop_conflicting_redirects filter and drops mods the DAG explicitly
+    disagrees with.  Mods in DAG_GAP regions still flow into the legacy
+    filter.
+    """
+
+    def _stub_authority(self, *, allow_for: dict[int, int] | None = None,
+                        disagree_for: dict[int, int] | None = None,
+                        gap_for: set[int] | None = None):
+        """Build a minimal DagAuthority stand-in for testing.
+
+        Avoids constructing a real LinearizedStateDag (which has many
+        required fields) — uses duck typing to provide just the
+        ``permits()`` method finalize_reconstruction_fragment exercises.
+        """
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+        allow = dict(allow_for or {})
+        disagree = dict(disagree_for or {})
+        gap = set(gap_for or ())
+
+        class _StubAuthority:
+            def permits(self, mod):
+                src = getattr(mod, "from_serial", None)
+                if src is None:
+                    src = getattr(mod, "block_serial", None)
+                if src is None:
+                    return DagDecision.gap("no_source")
+                src_int = int(src)
+                if src_int in gap:
+                    return DagDecision.gap("unknown_source")
+                if src_int in disagree:
+                    canonical = disagree[src_int]
+                    new_tgt = getattr(mod, "new_target", None) or getattr(mod, "goto_target", None)
+                    return DagDecision.refuse(
+                        f"DAG_DISAGREEMENT:{src_int}->"
+                        f"{{planner={new_tgt},dag={canonical}}}"
+                    )
+                if src_int in allow:
+                    return DagDecision.allow(target_entry_anchor=allow[src_int])
+                return DagDecision.gap("unknown_source")
+
+        return _StubAuthority()
+
+    def _view_with_authority(self, authority) -> CumulativePlannerView:
+        return CumulativePlannerView.empty(dag_authority=authority)
+
+    def _finalize(self, *, modifications, owned_blocks=None, view=None):
+        return finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=modifications,
+            owned_blocks=owned_blocks if owned_blocks is not None else set(),
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=0,
+            cumulative_planner_view=view,
+        )
+
+    def test_keeps_mod_when_dag_allows(self) -> None:
+        # DAG canonical target == planner target → ALLOW → keep.
+        authority = self._stub_authority(allow_for={76: 11})
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=11),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        assert len(frag.modifications) == 1
+
+    def test_drops_mod_when_dag_disagrees(self) -> None:
+        # Planner says 76→2; DAG says 76→11 → DAG_DISAGREEMENT → drop.
+        authority = self._stub_authority(disagree_for={76: 11})
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=2),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        # Mod dropped.
+        assert all(
+            not isinstance(m, RedirectGoto)
+            for m in frag.modifications
+        )
+
+    def test_keeps_mod_when_dag_silent_gap(self) -> None:
+        # DAG returns DAG_GAP → defer to legacy filter.  With no prior
+        # fragment in the cumulative view, legacy filter doesn't drop
+        # either, so the mod survives.
+        authority = self._stub_authority(gap_for={76})
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=2),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        assert len(frag.modifications) == 1
+        assert isinstance(frag.modifications[0], RedirectGoto)
+
+    def test_drops_dag_disagreement_keeps_others(self) -> None:
+        # Mixed batch: 76 disagrees → drop; 99 allowed → keep.
+        authority = self._stub_authority(
+            disagree_for={76: 11},
+            allow_for={99: 55},
+        )
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=2),
+                RedirectGoto(from_serial=99, old_target=2, new_target=55),
+            ],
+            owned_blocks={76, 99},
+            view=view,
+        )
+        srcs = {
+            m.from_serial for m in frag.modifications
+            if isinstance(m, RedirectGoto)
+        }
+        assert srcs == {99}
+
+    def test_no_authority_falls_through_to_legacy(self) -> None:
+        # Without a DagAuthority, the legacy filter is the only one
+        # active.  An unrelated source has no prior linearization, so
+        # the mod survives.
+        view = CumulativePlannerView.empty()  # no dag_authority
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=11),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        assert len(frag.modifications) == 1
+
+    def test_dag_disagreement_takes_precedence_over_legacy_match(self) -> None:
+        # Even when prior fragments would've allowed the mod (legacy
+        # filter would keep it because no linearization decision matches),
+        # if the DAG disagrees the mod is dropped.  DAG wins.
+        authority = self._stub_authority(disagree_for={76: 11})
+        # No prior fragment recorded → legacy filter would keep the mod.
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=2),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        # DAG arbiter dropped it.
+        assert all(
+            not isinstance(m, RedirectGoto)
+            for m in frag.modifications
+        )
+
+    def test_convert_to_goto_is_arbitrated(self) -> None:
+        # ConvertToGoto goes through the same DAG check as RedirectGoto.
+        authority = self._stub_authority(disagree_for={76: 11})
+        view = self._view_with_authority(authority)
+        frag = self._finalize(
+            modifications=[
+                ConvertToGoto(block_serial=76, goto_target=2),
+            ],
+            owned_blocks={76},
+            view=view,
+        )
+        assert all(
+            not isinstance(m, ConvertToGoto)
+            for m in frag.modifications
+        )
