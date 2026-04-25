@@ -17,6 +17,7 @@ from d810.core import logging
 _logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DagDisagreementRecord",
     "DecisionInputSummary",
     "DecisionPhase",
     "DecisionReasonCode",
@@ -230,12 +231,66 @@ class DecisionRecord:
         return self.reason_code == DecisionReasonCode.ACCEPTED
 
 
+@dataclass(frozen=True, slots=True)
+class DagDisagreementRecord:
+    """One DAG-arbiter disagreement (Phase 5 of uee-jrgq).
+
+    Captured by ``_drop_dag_disagreement`` in
+    :mod:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder`
+    when the DagAuthority refuses a planner-emitted modification.  Records
+    flow to :class:`PipelineProvenance.dag_audit_records` so the planner
+    can emit a per-run ``PLANNER_DAG_AUDIT`` summary at INFO log level.
+
+    Distinguished by ``decision_reason``:
+
+    * ``DAG_DISAGREEMENT:src->{planner=T1,dag=T2}`` — the DAG canonical
+      target differs from the planner's proposed target. Real architectural
+      disagreement worth surfacing.
+    * ``DAG_GAP:<gap_name>`` — the DAG can't answer authoritatively; the
+      legacy filter then decides. Gap-bucketed records flow into the audit
+      so Phase 6 retirement can compute the gap-vs-disagreement split.
+    * Other refusals — escape hatch for shape-specific rejections.
+
+    Attributes:
+        planner_name: Strategy name that emitted the dropped mod (e.g.
+            ``"state_write_reconstruction"``).
+        mod_kind: Modification class name (e.g. ``"RedirectGoto"``,
+            ``"ConvertToGoto"``).
+        source_block: Source-block serial of the dropped mod.
+        branch_arm: Conditional-branch arm (``0``/``1``) when applicable;
+            ``None`` for unconditional gotos. Today every entry is ``None``
+            because both ``RedirectGoto`` and ``ConvertToGoto`` describe
+            unconditional successor rewrites; future arm-aware mod kinds
+            will populate this field.
+        planner_target: Target serial the planner proposed.
+        dag_target: Target serial the DAG canonically committed to. ``None``
+            when the refusal is ``DAG_GAP`` (DAG silent) or another
+            non-disagreement code.
+        phase: Where in the pipeline the drop happened. Today every record
+            comes from ``"post_apply_filter"`` (i.e.
+            ``finalize_reconstruction_fragment``); future intra-fragment
+            arbiter calls will report ``"intra_fragment"``.
+        decision_reason: The full ``DagDecision.reason`` string (preserved
+            verbatim for forensic / regex parsing).
+    """
+
+    planner_name: str
+    mod_kind: str
+    source_block: int
+    branch_arm: int | None
+    planner_target: int | None
+    dag_target: int | None
+    phase: str
+    decision_reason: str
+
+
 @dataclass(frozen=True)
 class PipelineProvenance:
     """Complete decision ledger for one compose_pipeline call."""
 
     rows: tuple[DecisionRecord, ...] = ()
     input_summary: DecisionInputSummary | None = None
+    dag_audit_records: tuple[DagDisagreementRecord, ...] = ()
 
     @property
     def accepted_count(self) -> int:
@@ -294,6 +349,7 @@ class PipelineProvenance:
         return PipelineProvenance(
             rows=tuple(new_rows),
             input_summary=self.input_summary,
+            dag_audit_records=self.dag_audit_records,
         )
 
     def phase_summary(self) -> str:

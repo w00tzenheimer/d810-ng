@@ -37,6 +37,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.flow.terminal_return import TerminalReturnSourceKind
 from d810.core.logging import getLogger
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+    DagDisagreementRecord,
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,
@@ -478,6 +479,126 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
         return None
 
 
+# Metadata key under which finalize_reconstruction_fragment stores
+# captured DagDisagreementRecord tuples.  Re-declared here to avoid
+# importing the hodur sub-package from the engine layer (engine must
+# stay family-agnostic; hodur depends on engine, not the other way
+# around).  Keep this string in sync with
+# ``d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder.DAG_AUDIT_METADATA_KEY``.
+_DAG_AUDIT_METADATA_KEY: str = "dag_audit"
+
+
+def _collect_dag_audit_records(
+    fragments: list[PlanFragment],
+) -> tuple[DagDisagreementRecord, ...]:
+    """Aggregate ``DagDisagreementRecord`` from each fragment's metadata.
+
+    Strategies that participate in DAG-arbiter conformance store a
+    ``tuple[DagDisagreementRecord, ...]`` under ``metadata["dag_audit"]``
+    (see
+    :mod:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder`).
+    Fragments without that key contribute nothing.  Returns the flat
+    aggregate in the same order fragments were planned, preserving
+    intra-fragment record order so the per-run summary is deterministic.
+    """
+    out: list[DagDisagreementRecord] = []
+    for frag in fragments:
+        metadata = getattr(frag, "metadata", None)
+        if not metadata:
+            continue
+        records = metadata.get(_DAG_AUDIT_METADATA_KEY)
+        if not records:
+            continue
+        for record in records:
+            if isinstance(record, DagDisagreementRecord):
+                out.append(record)
+    return tuple(out)
+
+
+def _format_dag_audit_summary(
+    records: tuple[DagDisagreementRecord, ...],
+) -> str:
+    """Render a deterministic ``PLANNER_DAG_AUDIT`` summary string.
+
+    Format:
+
+    .. code-block:: text
+
+        PLANNER_DAG_AUDIT:
+          Total disagreements: N across M planner(s)
+          By planner:
+            <planner_a>: K disagreement(s) (blk[X]->A vs DAG=B; ...)
+            <planner_b>: ...
+
+    Records with ``decision_reason`` starting with ``DAG_GAP:`` are
+    excluded from disagreement counts but reported as a separate
+    "DAG_GAP refusals: N" line so Phase 6 can compute the
+    gap-vs-disagreement split when retiring the legacy conflict mode.
+
+    Returns the empty string when ``records`` is empty so callers can
+    skip emission entirely.
+    """
+    if not records:
+        return ""
+
+    disagreements = [
+        r for r in records
+        if not r.decision_reason.startswith("DAG_GAP:")
+    ]
+    gaps = [r for r in records if r.decision_reason.startswith("DAG_GAP:")]
+
+    by_planner: dict[str, list[DagDisagreementRecord]] = {}
+    for r in disagreements:
+        by_planner.setdefault(r.planner_name, []).append(r)
+
+    lines: list[str] = ["PLANNER_DAG_AUDIT:"]
+    lines.append(
+        f"  Total disagreements: {len(disagreements)} across "
+        f"{len(by_planner)} planner(s)"
+    )
+
+    if by_planner:
+        lines.append("  By planner:")
+        # Sort by descending count, then alphabetical for deterministic output.
+        ordered = sorted(
+            by_planner.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+        for planner_name, planner_records in ordered:
+            details = "; ".join(
+                _format_disagreement_detail(r)
+                for r in planner_records[:5]
+            )
+            suffix = (
+                f" (+{len(planner_records) - 5} more)"
+                if len(planner_records) > 5 else ""
+            )
+            lines.append(
+                f"    {planner_name}: {len(planner_records)} "
+                f"disagreement(s) ({details}){suffix}"
+            )
+
+    if gaps:
+        lines.append(
+            f"  DAG_GAP refusals: {len(gaps)} mod(s) deferred to legacy filter"
+        )
+
+    return "\n".join(lines)
+
+
+def _format_disagreement_detail(record: DagDisagreementRecord) -> str:
+    """Render one ``DagDisagreementRecord`` as a compact detail string."""
+    planner_tgt_str = (
+        str(record.planner_target) if record.planner_target is not None else "?"
+    )
+    dag_tgt_str = (
+        str(record.dag_target) if record.dag_target is not None else "?"
+    )
+    return (
+        f"blk[{record.source_block}]->{planner_tgt_str} vs DAG={dag_tgt_str}"
+    )
+
+
 class PipelinePolicy:
     """Policy for strategy selection and ordering."""
 
@@ -666,11 +787,34 @@ class UnflatteningPlanner:
             inputs=inputs,
         )
 
+        # Phase 5 of uee-jrgq: aggregate DAG-arbiter audit records
+        # captured by every fragment that participated in DAG conformance
+        # filtering, store them on PipelineProvenance, and emit a single
+        # PLANNER_DAG_AUDIT summary line at INFO so operators see it in
+        # ``d810.log`` without enabling DEBUG.  Aggregation runs over the
+        # full ``fragments`` list (including any policy/conflict-dropped
+        # fragments) — every captured drop is interesting regardless of
+        # whether the fragment that caused it survived.
+        dag_audit_records = _collect_dag_audit_records(fragments)
+        if dag_audit_records:
+            summary = _format_dag_audit_summary(dag_audit_records)
+            if summary:
+                logger.info("%s", summary)
+
         # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
         if pre_planner_records:
             provenance = PipelineProvenance(
                 rows=tuple(pre_planner_records) + provenance.rows,
                 input_summary=provenance.input_summary,
+                dag_audit_records=dag_audit_records,
+            )
+        elif dag_audit_records:
+            # Even when there were no pre-planner records, attach the
+            # aggregated DAG audit so callers can inspect the run.
+            provenance = PipelineProvenance(
+                rows=provenance.rows,
+                input_summary=provenance.input_summary,
+                dag_audit_records=dag_audit_records,
             )
 
         return pipeline, provenance
