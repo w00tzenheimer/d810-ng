@@ -74,10 +74,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction i
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
-    SemanticExactNode5D0AEBD3To606DC166Strategy,
-    SemanticExactNode606DC166To139F2922Strategy,
-    SemanticExactNode63D54755To57BE6FD0Strategy,
-    SemanticExactNode57BE6FD0To03E42B03Strategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     ExactConditionalNodeLoweringStrategy,
@@ -124,10 +120,6 @@ __all__ = [
     "ExactConditionalForkNodeLoweringStrategy",
     "ExactConditionalBridgeNodeLoweringStrategy",
     "ExactNodeFrontierBypassStrategy",
-    "SemanticExactNode5D0AEBD3To606DC166Strategy",
-    "SemanticExactNode606DC166To139F2922Strategy",
-    "SemanticExactNode63D54755To57BE6FD0Strategy",
-    "SemanticExactNode57BE6FD0To03E42B03Strategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -157,16 +149,25 @@ EXPERIMENTAL_STRATEGIES: list[type] = [
 ]
 
 # Legacy pipeline preserved for reference/fallback.
+#
+# Dormant strategies retired pre-Phase-1 of the DAG-as-arbiter epic
+# (uee-jrgq):
+#   * EdgeSplitConflictResolutionStrategy — placeholder, emits no fragment;
+#     symbolic duplicate-block split was never re-enabled
+#   * ConditionalForkFallbackStrategy — explicitly disabled in unflattener
+#     (`disabled_strategy_names`); CONDITIONAL_REDIRECT subsumed by the
+#     SRW conditional-arm path
+#   * InnerMergeDuplicationStrategy — already-commented; tail-duplication
+#     causes IDA structurer goto proliferation
+# Imports kept so the classes remain accessible for manual/experimental
+# use; LEGACY_STRATEGIES below excludes them so they cannot be picked up
+# by automatic legacy-fallback wiring.
 LEGACY_STRATEGIES: list[type] = [
     ValrangeResolutionStrategy,
-    EdgeSplitConflictResolutionStrategy,
+    # EdgeSplitConflictResolutionStrategy,  # dormant — see header above
     TerminalLoopCleanupStrategy,
-    ConditionalForkFallbackStrategy,
-    # InnerMergeDuplicationStrategy disabled: tail-duplication of merge blocks
-    # causes IDA structurer regressions (goto proliferation) that outweigh the
-    # occasional goto elimination it provides.  Keep the import so the class
-    # remains accessible for manual/experimental use.
-    # InnerMergeDuplicationStrategy,
+    # ConditionalForkFallbackStrategy,  # dormant — see header above
+    # InnerMergeDuplicationStrategy,  # dormant — see header above
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
 ]
