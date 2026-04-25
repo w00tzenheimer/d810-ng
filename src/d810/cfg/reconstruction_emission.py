@@ -105,9 +105,23 @@ def _resolve_candidate_horizon_old_target(
 
 def _collect_zero_state_write_modifications(
     candidates: tuple[object, ...] | list[object],
+    *,
+    existing_modifications: tuple[object, ...] | list[object] = (),
 ) -> tuple[ZeroStateWrite, ...]:
+    """Collect ZeroStateWrite modifications for reconstruction candidates.
+
+    Seeds its dedup ``seen`` set from any ``ZeroStateWrite`` already present
+    in ``existing_modifications`` so that repeated invocations across
+    candidate buckets / regions do not re-emit the same (block, insn_ea)
+    decision. This is the planner-level single-owner invariant for ZSW
+    construction (see ticket uee-y1ko).
+    """
     mods: list[ZeroStateWrite] = []
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[int, int]] = {
+        (int(mod.block_serial), int(mod.insn_ea))
+        for mod in existing_modifications
+        if isinstance(mod, ZeroStateWrite)
+    }
     for candidate in candidates:
         site = getattr(candidate, "site", None)
         if site is None:
@@ -910,7 +924,12 @@ def execute_primary_reconstruction_modifications(
         owned_blocks.add(int(group.source_block))
         owned_edges.add((int(group.source_block), int(group.conditional_target)))
         owned_edges.add((int(group.source_block), int(group.fallthrough_target)))
-        modifications.extend(_collect_zero_state_write_modifications(group.candidates))
+        modifications.extend(
+            _collect_zero_state_write_modifications(
+                group.candidates,
+                existing_modifications=modifications,
+            )
+        )
         for candidate in group.candidates:
             conditional_results.append(
                 ConditionalArmExecutionResult(
@@ -948,7 +967,12 @@ def execute_primary_reconstruction_modifications(
         modifications.extend(cond_plan.modifications)
         owned_blocks.add(int(candidate.horizon_block))
         owned_edges.add((int(candidate.horizon_block), int(candidate.target_entry)))
-        modifications.extend(_collect_zero_state_write_modifications((candidate,)))
+        modifications.extend(
+            _collect_zero_state_write_modifications(
+                (candidate,),
+                existing_modifications=modifications,
+            )
+        )
 
         pt_plan = plan_passthrough_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -1033,7 +1057,10 @@ def execute_primary_reconstruction_modifications(
             (int(direct_candidate.horizon_block), int(direct_candidate.target_entry))
         )
         modifications.extend(
-            _collect_zero_state_write_modifications((direct_candidate,))
+            _collect_zero_state_write_modifications(
+                (direct_candidate,),
+                existing_modifications=modifications,
+            )
         )
 
         passthrough_count = 0
@@ -1113,7 +1140,8 @@ def execute_primary_reconstruction_modifications(
             ),
         )
         zero_mods = _collect_zero_state_write_modifications(
-            tuple(shared_result.accepted_candidates)
+            tuple(shared_result.accepted_candidates),
+            existing_modifications=modifications,
         )
         modifications.extend(zero_mods)
         shared_group_results.append(
