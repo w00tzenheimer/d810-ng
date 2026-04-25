@@ -56,6 +56,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 
 if TYPE_CHECKING:
+    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        DagAuthority,
+    )
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
@@ -440,6 +443,41 @@ def _log_planner_ctx_conflicts(
         )
 
 
+def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
+    """Construct the DAG-as-arbiter for this pipeline run, or None.
+
+    Phase 2 of uee-jrgq.  Reads the recon DAG off ``snapshot.discovery``
+    if present; returns ``None`` when no discovery context is available
+    (legacy / non-Hodur families that haven't built a LinearizedStateDag
+    yet).  Built once per ``UnflatteningPlanner.plan()`` call.
+
+    Per the deferral decision (mem_52073043), per-round rederivation is
+    intentionally deferred — the same authority is threaded through
+    every cumulative-view rebuild within this plan() invocation.
+    """
+    discovery = getattr(snapshot, "discovery", None)
+    if discovery is None:
+        return None
+    dag = getattr(discovery, "dag", None)
+    if dag is None:
+        return None
+    # Local import to avoid cyclic-import surface at module load time
+    # (planner is imported during d810 startup; dag_authority is a
+    # phase-1 artifact that should not be required for engine bootstrap).
+    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        DagAuthority,
+    )
+    try:
+        return DagAuthority(dag)
+    except Exception as exc:
+        logger.warning(
+            "Failed to build DagAuthority from snapshot.discovery.dag: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
 class PipelinePolicy:
     """Policy for strategy selection and ordering."""
 
@@ -492,6 +530,15 @@ class UnflatteningPlanner:
         fragments: list[PlanFragment] = []
         pre_planner_records: list[DecisionRecord] = []
 
+        # Build a DagAuthority once per pipeline run from the recon DAG
+        # if one is available. Per the deferral decision (mem_52073043),
+        # the authority is NOT re-derived per round — same DagAuthority
+        # is threaded through every CumulativePlannerView.compile() call
+        # below.  ``discovery`` may be ``None`` (legacy / DAG-less family);
+        # in that case ``dag_authority`` stays ``None`` and downstream
+        # consumers fall back to the legacy LinearizationDecision path.
+        dag_authority = _build_dag_authority(snapshot)
+
         for strategy in strategies:
             if not strategy.is_applicable(snapshot):
                 pre_planner_records.append(DecisionRecord(
@@ -508,7 +555,9 @@ class UnflatteningPlanner:
             # round 0" and skip emitting a contradictory reverse redirect.
             # Rebuilt every iteration because fragments accumulates; cost is
             # O(n) in prior contributions, trivially cheap at realistic sizes.
-            cumulative_view = CumulativePlannerView.compile(fragments)
+            cumulative_view = CumulativePlannerView.compile(
+                fragments, dag_authority=dag_authority,
+            )
             snapshot_for_strategy = replace(
                 snapshot, cumulative_planner_view=cumulative_view
             )

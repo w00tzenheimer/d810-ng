@@ -245,3 +245,53 @@ class TestMode1Regression:
             ),),
         ))])
         assert view.original_state_for(76) == 0x63B2C08B
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 of uee-jrgq — DagAuthority threading through CumulativePlannerView
+# ---------------------------------------------------------------------------
+
+
+class TestDagAuthorityThreading:
+    """Phase 2 plumbing: CumulativePlannerView carries an optional
+    DagAuthority through compile()/empty() so consumers can do
+    DAG-conformance checks (Phase 3 wiring)."""
+
+    def test_empty_defaults_to_no_authority(self) -> None:
+        view = CumulativePlannerView.empty()
+        assert view.dag_authority is None
+
+    def test_compile_defaults_to_no_authority(self) -> None:
+        view = CumulativePlannerView.compile([])
+        assert view.dag_authority is None
+
+    def test_empty_carries_authority_when_provided(self) -> None:
+        sentinel = object()  # stand-in DagAuthority — view doesn't dispatch
+        view = CumulativePlannerView.empty(dag_authority=sentinel)  # type: ignore[arg-type]
+        assert view.dag_authority is sentinel
+
+    def test_compile_carries_authority_when_provided(self) -> None:
+        sentinel = object()
+        view = CumulativePlannerView.compile([], dag_authority=sentinel)  # type: ignore[arg-type]
+        assert view.dag_authority is sentinel
+
+    def test_compile_authority_persists_across_iterations(self) -> None:
+        # Simulate the planner's loop: same authority threaded through
+        # multiple compile() calls as fragments accumulate.
+        sentinel = object()
+        v1 = CumulativePlannerView.compile([], dag_authority=sentinel)  # type: ignore[arg-type]
+        # Pretend we got a fragment; rebuild with the same authority.
+        v2 = CumulativePlannerView.compile([], dag_authority=sentinel)  # type: ignore[arg-type]
+        assert v1.dag_authority is sentinel
+        assert v2.dag_authority is sentinel
+        assert v1.dag_authority is v2.dag_authority
+
+    def test_authority_is_optional_existing_callers_unaffected(self) -> None:
+        # Backward-compat: callers that pass only fragments still work.
+        view = CumulativePlannerView.compile([])
+        assert view.dag_authority is None
+        # Existing query methods unaffected by the new field.
+        assert view.is_linearized(99) is False
+        assert view.linearization_target_for(99) is None
+        assert view.is_claimed(99) is False
+
