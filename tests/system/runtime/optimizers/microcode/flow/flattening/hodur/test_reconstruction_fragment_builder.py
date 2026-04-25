@@ -603,3 +603,137 @@ class TestDagArbiterConformance:
             not isinstance(m, ConvertToGoto)
             for m in frag.modifications
         )
+
+
+# ----------------------------------------------------------------------------
+# Phase 6 of uee-jrgq — retirement criterion for the legacy filter cascade
+# ----------------------------------------------------------------------------
+
+
+class TestPhase6RetirementCriterion:
+    """Phase 6 of uee-jrgq formalises the retirement contract for the
+    pre-DAG legacy filter cascade.  The actual deletion of
+    ``_drop_intra_fragment_dup_conflicts`` /
+    ``_drop_conflicting_redirects`` and the mod-echo logic in
+    ``_build_planner_context_contribution`` is gated on:
+
+      1. The DAG arbiter has authoritative coverage of every emission
+         decision point (DAG_GAP returns drop to zero across the
+         corpus).
+      2. The legacy filters fire zero times across a release cycle.
+
+    These tests pin the *measurement* surface for that gate so a
+    future cleanup commit can reliably check criteria (1) and (2)
+    without re-deriving the test fixture every time.
+    """
+
+    def test_when_dag_authority_allows_legacy_filter_is_no_op(self) -> None:
+        # Criterion (2) check: when DAG arbiter has ALLOWED every
+        # redirect mod, the legacy ``_drop_conflicting_redirects``
+        # filter sees no work to do (because no mod survives to
+        # disagree with prior linearizations beyond what the arbiter
+        # already vetoed).  This test pins that no-op behaviour so a
+        # future deletion does not silently change semantics.
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+
+        class _AllowAllAuthority:
+            def permits(self, mod):
+                # Allow whatever target the planner proposed.
+                return DagDecision.allow(
+                    target_entry_anchor=getattr(mod, "new_target", None)
+                    or getattr(mod, "goto_target", None),
+                )
+
+        view = CumulativePlannerView.empty(dag_authority=_AllowAllAuthority())
+        frag = finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=[
+                RedirectGoto(from_serial=76, old_target=2, new_target=11),
+                RedirectGoto(from_serial=99, old_target=2, new_target=55),
+            ],
+            owned_blocks={76, 99},
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=0,
+            cumulative_planner_view=view,
+        )
+        # Both mods kept — DAG arbiter allowed both, legacy never fires.
+        srcs = {
+            m.from_serial for m in frag.modifications
+            if isinstance(m, RedirectGoto)
+        }
+        assert srcs == {76, 99}
+
+    def test_dag_gap_region_falls_through_to_legacy(self) -> None:
+        # Criterion (1) measurement: the legacy filter is doing
+        # *real work* today on DAG_GAP regions.  This test pins the
+        # current behaviour as a regression guard — when criterion (1)
+        # eventually holds (DAG covers all sources), this test will
+        # fail by remaining green when the legacy filter is removed,
+        # forcing the tester to update both the production code and
+        # this assertion together.
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+
+        class _AllGapAuthority:
+            def permits(self, mod):
+                return DagDecision.gap("unknown_source")
+
+        # Build a cumulative view as if a prior fragment had committed
+        # blk[76] -> 11; the DAG is silent on it (DAG_GAP), so the
+        # legacy filter must catch the disagreement.
+        prior_meta = {
+            PLANNER_CTX_METADATA_KEY: PlannerContextContribution(
+                linearizations=(
+                    LinearizationDecision(
+                        src=76, tgt=11, reason="prior",
+                        strategy="ssr", round_index=0,
+                    ),
+                ),
+            ),
+        }
+
+        class _Frag:
+            metadata = prior_meta
+
+        view = CumulativePlannerView.compile(
+            [_Frag()], dag_authority=_AllGapAuthority(),
+        )
+        frag = finalize_reconstruction_fragment(
+            strategy_name="state_write_reconstruction",
+            modifications=[
+                # Disagrees with prior (76 -> 11) by trying 76 -> 2.
+                RedirectGoto(from_serial=76, old_target=11, new_target=2),
+            ],
+            owned_blocks={76},
+            owned_edges=frozenset(),
+            accepted_metadata=[],
+            rejected_metadata=[],
+            allow_post_apply_bst_cleanup=True,
+            post_apply_bst_cleanup_reason=None,
+            residual_dispatcher_preds=(),
+            structured_region_fidelity=None,
+            round_index=1,
+            cumulative_planner_view=view,
+        )
+        # Legacy filter dropped the conflicting redirect — criterion (1)
+        # not yet met (DAG silent + legacy still doing work).
+        srcs = {
+            m.from_serial for m in frag.modifications
+            if isinstance(m, RedirectGoto)
+        }
+        assert srcs == set(), (
+            "regression: when DAG returns DAG_GAP and legacy filter "
+            "would drop a Mode 1 conflict, the legacy filter must "
+            "still drop it.  If this assertion fires GREEN with the "
+            "legacy filter removed, criterion (1) needs to be "
+            "re-validated against the current corpus before deletion."
+        )
