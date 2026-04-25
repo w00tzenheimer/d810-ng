@@ -336,9 +336,13 @@ class TestPermitsConvertToGoto:
 
 
 class TestStrictGapRefusals:
-    """DupAndRedirect and ZSW are not yet covered by DAG queries.
-    Per strict DAG_GAP policy, they refuse until the four extension
-    tickets close (uee-7wcd, uee-7snc, uee-qli0, uee-bwdk)."""
+    """DupAndRedirect remains a strict DAG_GAP until the safety
+    annotations land (uee-7wcd, uee-7snc, uee-qli0, uee-bwdk).
+    ZSW was previously gap-refused; Phase 4 (uee-rjo8) consolidated
+    the three legacy collectors into a single emitter that enforces
+    the canonical-owner invariant by construction, so ZSW is now
+    permitted (see test_zero_state_write_allows_post_phase4_consolidation).
+    """
 
     def test_dup_and_redirect_refuses_with_named_gap(self):
         dag = _dag()
@@ -349,14 +353,21 @@ class TestStrictGapRefusals:
         assert decision.is_gap
         assert decision.reason == "DAG_GAP:duplicate_and_redirect_safety"
 
-    def test_zero_state_write_refuses_with_named_gap(self):
+    def test_zero_state_write_allows_post_phase4_consolidation(self):
+        """ZSW collector consolidation (uee-rjo8, Phase 4) replaced the
+        ``DAG_GAP:zero_state_write_legality`` strict refusal with an
+        ALLOW. The single-emitter invariant
+        (``cfg/zero_state_write_emission.py``) means a ZSW reaching
+        the arbiter is by construction the canonical owner's emission,
+        so the prior gap is closed.
+        """
         dag = _dag()
         auth = DagAuthority(dag)
         decision = auth.permits_zero_state_write(
             ZeroStateWrite(block_serial=10, insn_ea=0x1000)
         )
-        assert decision.is_gap
-        assert decision.reason == "DAG_GAP:zero_state_write_legality"
+        assert decision.allowed
+        assert decision.reason == "ALLOW"
 
 
 # --------------------------------------------------------------------------
@@ -395,11 +406,13 @@ class TestPermitsDispatcher:
         )
         assert decision.is_gap
 
-    def test_dispatches_zsw_to_gap(self):
+    def test_dispatches_zsw_to_allow(self):
+        """Post-Phase-4 (uee-rjo8): ZSW dispatch ALLOWS via the
+        canonical-owner invariant from the consolidated emitter."""
         dag = _dag()
         auth = DagAuthority(dag)
         decision = auth.permits(ZeroStateWrite(block_serial=10, insn_ea=0x1000))
-        assert decision.is_gap
+        assert decision.allowed
 
     def test_unknown_mod_kind_refuses_with_gap(self):
         dag = _dag()
