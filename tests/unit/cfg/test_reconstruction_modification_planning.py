@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     DuplicateAndRedirect,
@@ -193,14 +191,6 @@ class TestPlanSharedGroupReconstructionModifications:
             ),
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "single_pred_redirect emission mode not yet implemented; "
-            "planner currently rejects single-candidate single-pred "
-            "shared blocks as missing_keep_pred. Tracked in tk uee-o685"
-        ),
-        strict=True,
-    )
     def test_single_candidate_single_pred_shared_block_falls_back_to_direct_redirect(self):
         flow_graph = _DummyFlowGraph({
             10: ((8,), (2,)),
