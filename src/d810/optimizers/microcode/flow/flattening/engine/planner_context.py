@@ -46,7 +46,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.core.typing import Iterable
+from d810.core.typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:  # pragma: no cover — type hints only
+    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        DagAuthority,
+    )
 
 __all__ = [
     "LinearizationDecision",
@@ -155,11 +160,32 @@ class CumulativePlannerView:
     unit of planning, and strategies in round N should see decisions
     made in rounds 0..N-1 of the same pipeline, not decisions from some
     unrelated previous decompilation.
+
+    DAG-as-arbiter (Phase 2 of uee-jrgq)
+    ------------------------------------
+    The optional ``dag_authority`` field carries the canonical answer
+    for "what does the recon DAG commit src/arm to?". Strategies and
+    fragment-finalisers query it BEFORE emitting redirects; mods that
+    disagree with the DAG are dropped (Phase 3).  ``dag_authority`` is
+    None when no DAG is available for the current pipeline (e.g. a
+    family that hasn't built one yet) — callers MUST tolerate None and
+    fall through to the legacy ``LinearizationDecision``-based filter.
+
+    Per the deferral decision (mem_52073043), the authority is built
+    once per pipeline run; per-round rederivation is intentionally
+    deferred. The view is rebuilt every iteration to absorb new
+    fragment contributions, but it carries the same DagAuthority across
+    iterations.
     """
 
     linearization_decisions: frozenset[LinearizationDecision]
     neutralized_state_writes: frozenset[StateWriteNeutralization]
     claimed_sources: frozenset[int]
+    # ``DagAuthority`` is forward-typed via string-quoted annotation to
+    # avoid an upward import (this module is structurally below
+    # ``dag_authority``).  Runtime callers pass an instance; tests may
+    # leave it None.  See ``engine.dag_authority.DagAuthority``.
+    dag_authority: "DagAuthority | None" = None
 
     # Query helpers — keep the hot path tight (linear scan is fine at
     # the scale of "a few hundred decisions per pipeline"; if that grows
@@ -208,7 +234,10 @@ class CumulativePlannerView:
 
     @classmethod
     def compile(
-        cls, fragments: "Iterable[object]"
+        cls,
+        fragments: "Iterable[object]",
+        *,
+        dag_authority: "DagAuthority | None" = None,
     ) -> "CumulativePlannerView":
         """Aggregate contributions across *fragments* into a new view.
 
@@ -219,6 +248,12 @@ class CumulativePlannerView:
         ``.metadata`` and ``.metadata[PLANNER_CTX_METADATA_KEY]``. Missing
         or empty contributions are silently skipped, so strategies that
         do not opt in incur zero cost.
+
+        ``dag_authority`` carries the per-pipeline-run DAG-as-arbiter
+        instance. The same authority is threaded through every
+        iteration of the planner loop (built once per pipeline per
+        memory mem_52073043). Pass ``None`` for legacy / DAG-less
+        runs; consumers MUST tolerate that.
         """
         linearizations: list[LinearizationDecision] = []
         neutralizations: list[StateWriteNeutralization] = []
@@ -239,13 +274,24 @@ class CumulativePlannerView:
             linearization_decisions=frozenset(linearizations),
             neutralized_state_writes=frozenset(neutralizations),
             claimed_sources=frozenset(claimed),
+            dag_authority=dag_authority,
         )
 
     @classmethod
-    def empty(cls) -> "CumulativePlannerView":
-        """Return an empty view — the correct starting point for a pipeline."""
+    def empty(
+        cls,
+        *,
+        dag_authority: "DagAuthority | None" = None,
+    ) -> "CumulativePlannerView":
+        """Return an empty view — the correct starting point for a pipeline.
+
+        ``dag_authority`` may be passed when the empty view is the
+        first iteration of a pipeline that already has a DagAuthority
+        available; subsequent iterations pass it through ``compile()``.
+        """
         return cls(
             linearization_decisions=frozenset(),
             neutralized_state_writes=frozenset(),
             claimed_sources=frozenset(),
+            dag_authority=dag_authority,
         )
