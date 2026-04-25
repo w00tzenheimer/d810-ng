@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import d810.cfg.reconstruction_postprocess_emission as postprocess_exec
+import d810.cfg.residual_alias_emission as residual_alias_emission
 from d810.cfg.reconstruction_postprocess_emission import (
     emit_residual_alias_overrides,
     execute_reconstruction_postprocess,
@@ -351,11 +352,6 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
         bst_node_blocks={71},
     )
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        postprocess_exec,
-        "collect_shared_suffix_blocks",
-        lambda dag: set(),
-    )
 
     def _fake_build_candidate(edge, **kwargs):
         captured["normalized_edge"] = edge
@@ -371,7 +367,9 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
             None,
         )
 
-    monkeypatch.setattr(postprocess_exec, "build_reconstruction_candidate", _fake_build_candidate)
+    # Use the real discovery function to drive normalization, but monkeypatch
+    # the emission helper to capture raw_candidates and append our redirect.
+    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -380,7 +378,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
         kwargs["owned_edges"].add((16, kwargs["raw_candidates"][0].target_entry))
 
     monkeypatch.setattr(
-        postprocess_exec,
+        residual_alias_emission,
         "execute_primary_reconstruction_modifications",
         _fake_execute,
     )
@@ -396,6 +394,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
         state_var_stkoff=0x30,
         constant_result=object(),
         resolve_effective_target_entry=lambda *args, **kwargs: SimpleNamespace(target_entry=63),
+        build_reconstruction_candidate=_fake_build_candidate,
         analysis_mba=object(),
         dispatcher_lookup=None,
         dispatcher=None,
@@ -403,6 +402,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
+        discover_overrides_fn=discover_residual_alias_overrides,
     )
 
     assert redirected == 1
@@ -437,11 +437,6 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
         bst_node_blocks={71},
     )
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        postprocess_exec,
-        "collect_shared_suffix_blocks",
-        lambda dag: set(),
-    )
 
     def _fake_build_candidate(edge, **kwargs):
         captured["normalized_edge"] = edge
@@ -457,7 +452,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
             None,
         )
 
-    monkeypatch.setattr(postprocess_exec, "build_reconstruction_candidate", _fake_build_candidate)
+    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -466,7 +461,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
         kwargs["owned_edges"].add((16, kwargs["raw_candidates"][0].target_entry))
 
     monkeypatch.setattr(
-        postprocess_exec,
+        residual_alias_emission,
         "execute_primary_reconstruction_modifications",
         _fake_execute,
     )
@@ -482,6 +477,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
         state_var_stkoff=0x30,
         constant_result=object(),
         resolve_effective_target_entry=lambda *args, **kwargs: SimpleNamespace(target_entry=63),
+        build_reconstruction_candidate=_fake_build_candidate,
         analysis_mba=object(),
         dispatcher_lookup=None,
         dispatcher=None,
@@ -489,6 +485,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
+        discover_overrides_fn=discover_residual_alias_overrides,
     )
 
     assert redirected == 1
@@ -523,11 +520,6 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
         bst_node_blocks={71},
     )
     captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        postprocess_exec,
-        "collect_shared_suffix_blocks",
-        lambda dag: set(),
-    )
 
     def _fake_build_candidate(edge, **kwargs):
         captured["normalized_edge"] = edge
@@ -543,7 +535,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
             None,
         )
 
-    monkeypatch.setattr(postprocess_exec, "build_reconstruction_candidate", _fake_build_candidate)
+    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -552,7 +544,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
         kwargs["owned_edges"].add((16, kwargs["raw_candidates"][0].target_entry))
 
     monkeypatch.setattr(
-        postprocess_exec,
+        residual_alias_emission,
         "execute_primary_reconstruction_modifications",
         _fake_execute,
     )
@@ -568,6 +560,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
         state_var_stkoff=0x30,
         constant_result=object(),
         resolve_effective_target_entry=lambda *args, **kwargs: SimpleNamespace(target_entry=63),
+        build_reconstruction_candidate=_fake_build_candidate,
         analysis_mba=object(),
         dispatcher_lookup=None,
         dispatcher=None,
@@ -575,6 +568,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
+        discover_overrides_fn=discover_residual_alias_overrides,
     )
 
     assert redirected == 1
@@ -605,26 +599,19 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
         nodes=(SimpleNamespace(entry_anchor=63, state_label="STATE_474EEEBB"),),
         bst_node_blocks={71},
     )
-    monkeypatch.setattr(
-        postprocess_exec,
-        "collect_shared_suffix_blocks",
-        lambda dag: set(),
-    )
-    monkeypatch.setattr(
-        postprocess_exec,
-        "build_reconstruction_candidate",
-        lambda edge, **kwargs: (
-            SimpleNamespace(
-                edge=edge,
-                horizon_block=16,
-                target_entry=int(edge.target_entry_anchor),
-                first_shared_block=None,
-                via_pred=None,
-                emission_mode="direct",
-            ),
-            None,
+    _fake_build_candidate = lambda edge, **kwargs: (
+        SimpleNamespace(
+            edge=edge,
+            horizon_block=16,
+            target_entry=int(edge.target_entry_anchor),
+            first_shared_block=None,
+            via_pred=None,
+            emission_mode="direct",
         ),
+        None,
     )
+
+    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         kwargs["modifications"].append(("redirect", kwargs["raw_candidates"][0].target_entry))
@@ -632,7 +619,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
         kwargs["owned_edges"].add((16, kwargs["raw_candidates"][0].target_entry))
 
     monkeypatch.setattr(
-        postprocess_exec,
+        residual_alias_emission,
         "execute_primary_reconstruction_modifications",
         _fake_execute,
     )
@@ -648,6 +635,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
         state_var_stkoff=0x30,
         constant_result=object(),
         resolve_effective_target_entry=None,
+        build_reconstruction_candidate=_fake_build_candidate,
         analysis_mba=None,
         dispatcher_lookup=None,
         dispatcher=None,
@@ -655,6 +643,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
         modifications=modifications,
         owned_blocks=owned_blocks,
         owned_edges=owned_edges,
+        discover_overrides_fn=discover_residual_alias_overrides,
     )
 
     assert redirected == 1
