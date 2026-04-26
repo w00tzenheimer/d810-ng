@@ -153,15 +153,6 @@ def execute_family_pipeline(
         )
 
     executor = executor_factory(snapshot.mba)
-    # uee-b7ze Phase 2: plumb dispatcher state-var stkoff into the executor
-    # so the use-def refusal gate can ignore BST-comparison "uses" that are
-    # expected to die when the dispatcher collapses.
-    _state_var = getattr(getattr(snapshot, "state_machine", None), "state_var", None)
-    if _state_var is not None and hasattr(_state_var, "s") and _state_var.s is not None:
-        try:
-            executor.state_var_stkoff = int(_state_var.s.off)
-        except AttributeError:
-            pass  # executor may not support the attribute (older subclass)
     results = executor.execute_pipeline(
         planned.pipeline, total_handlers=snapshot.handler_count
     )
