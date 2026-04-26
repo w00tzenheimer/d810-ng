@@ -534,6 +534,167 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
 _DAG_AUDIT_METADATA_KEY: str = "dag_audit"
 
 
+def _redirect_source_for_engine(mod: object) -> int | None:
+    """Return the source-block serial of a redirect-shaped mod, else None.
+
+    Hot-reload-safe class-name dispatch (rules/no-concrete-isinstance.yml).
+    Mirrors the helper in reconstruction_fragment_builder.py; duplicated
+    here to avoid an upward engine→hodur import.
+    """
+    kind = type(mod).__name__
+    if kind == "RedirectGoto":
+        return int(getattr(mod, "from_serial", -1))
+    if kind == "ConvertToGoto":
+        return int(getattr(mod, "block_serial", -1))
+    return None
+
+
+def _redirect_target_for_engine(mod: object) -> int | None:
+    """Return the new-target serial of a redirect-shaped mod, else None."""
+    kind = type(mod).__name__
+    if kind == "RedirectGoto":
+        return int(getattr(mod, "new_target", -1))
+    if kind == "ConvertToGoto":
+        return int(getattr(mod, "goto_target", -1))
+    return None
+
+
+def _parse_dag_target_from_engine_reason(reason: str) -> int | None:
+    """Best-effort extract of the DAG canonical target from a reason string.
+
+    Reason format: ``DAG_DISAGREEMENT:<src>->{planner=<T1>,dag=<T2>}``.
+    Returns ``T2`` as int, or None on parse failure.
+    """
+    try:
+        marker = "dag="
+        idx = reason.index(marker)
+        rest = reason[idx + len(marker):]
+        end = rest.find("}")
+        if end < 0:
+            return None
+        return int(rest[:end])
+    except (ValueError, IndexError):
+        return None
+
+
+def _apply_engine_dag_conformance_gate(
+    fragment: PlanFragment,
+    cumulative_view: "CumulativePlannerView | None",
+) -> PlanFragment:
+    """Engine-level DAG-conformance gate applied to every fragment.
+
+    Phase 3 of uee-jrgq wired ``_drop_dag_disagreement`` only into the
+    SRW finalizer (``finalize_reconstruction_fragment``).  Other
+    strategies (LFG, residual_handoff, semantic_structured_region,
+    fake-jump fixers, etc.) construct ``PlanFragment`` directly and
+    bypass that internal call, so DAG-disagreement was uncaught for
+    their emissions.  Empirical case on sub_7FFD: ``blk[110]`` had a
+    correct ``→142`` proposal from the shared-group planner dropped
+    by the legacy filter because a wrong ``→137`` proposal from
+    ``plan_residual_goto_emission`` (in a fragment that bypassed the
+    arbiter) committed first.
+
+    This engine-level gate runs the same conformance check on every
+    fragment between ``strategy.plan()`` returning and
+    ``fragments.append(fragment)``.  Idempotent: fragments that already
+    carry a ``dag_audit`` metadata entry (i.e., SRW already validated
+    them) skip the second pass.
+
+    Decision rules per redirect mod (RedirectGoto / ConvertToGoto):
+      * ``ALLOW``                       → keep
+      * ``DAG_GAP:*``                   → keep (legacy fallback handles)
+      * ``DAG_DISAGREEMENT:*`` / refuse → drop, record disagreement,
+                                          warn
+
+    No-op when ``cumulative_view`` lacks a ``dag_authority`` (legacy /
+    non-Hodur families).
+    """
+    if cumulative_view is None or cumulative_view.dag_authority is None:
+        return fragment
+    # Idempotent: SRW finalizer's internal call already validated.
+    existing_audit = fragment.metadata.get(_DAG_AUDIT_METADATA_KEY)
+    if existing_audit is not None:
+        return fragment
+
+    authority = cumulative_view.dag_authority
+    kept: list = []
+    records: list[DagDisagreementRecord] = []
+    dropped_log: list[tuple[str, int, str]] = []
+    for mod in fragment.modifications:
+        src = _redirect_source_for_engine(mod)
+        if src is None:
+            kept.append(mod)
+            continue
+        decision = authority.permits(mod)
+        if decision.allowed:
+            kept.append(mod)
+            continue
+        if decision.is_gap:
+            kept.append(mod)
+            continue
+        planner_tgt = _redirect_target_for_engine(mod)
+        dag_tgt = (
+            _parse_dag_target_from_engine_reason(decision.reason)
+            if decision.is_disagreement
+            else None
+        )
+        records.append(
+            DagDisagreementRecord(
+                planner_name=fragment.strategy_name,
+                mod_kind=type(mod).__name__,
+                source_block=src,
+                branch_arm=None,
+                planner_target=int(planner_tgt) if planner_tgt is not None else None,
+                dag_target=dag_tgt,
+                phase="engine_post_plan_gate",
+                decision_reason=decision.reason,
+            )
+        )
+        dropped_log.append((type(mod).__name__, src, decision.reason))
+
+    if not records:
+        return fragment  # All mods conformed; no audit entry needed.
+
+    logger.warning(
+        "ENGINE DAG_GATE: dropped %d mod(s) from strategy %r as "
+        "DAG-disagreement (planner target ≠ DAG canonical target): %s",
+        len(dropped_log),
+        fragment.strategy_name,
+        "; ".join(
+            f"{mtype}(src={src} reason={reason})"
+            for mtype, src, reason in dropped_log[:10]
+        ),
+    )
+    new_metadata = dict(fragment.metadata)
+    new_metadata[_DAG_AUDIT_METADATA_KEY] = tuple(records)
+
+    # Critical: when we drop a redirect mod, also remove the
+    # corresponding ``LinearizationDecision`` from the fragment's
+    # ``planner_ctx`` contribution so the cumulative view that later
+    # strategies see does NOT carry the dropped mod's target as a
+    # "committed prior linearization".  Otherwise the legacy
+    # prior-fragment-wins filter would still drop a CORRECT later
+    # emission (e.g., src=110 dag-canonical=142 vs prior-now-dropped
+    # =137) because it consults LinearizationDecision aggregates
+    # rebuilt from fragment metadata, not the filtered modification
+    # list.
+    contribution = new_metadata.get("planner_ctx")
+    if contribution is not None and hasattr(contribution, "linearizations"):
+        dropped_sources = {int(src) for _, src, _ in dropped_log}
+        retained_linearizations = tuple(
+            d for d in contribution.linearizations
+            if int(getattr(d, "src", -1)) not in dropped_sources
+        )
+        if len(retained_linearizations) != len(contribution.linearizations):
+            # Reconstruct the contribution with the trimmed linearizations.
+            # Use replace() to preserve other fields (neutralizations,
+            # claimed_sources).
+            new_metadata["planner_ctx"] = replace(
+                contribution, linearizations=retained_linearizations,
+            )
+    return replace(fragment, modifications=kept, metadata=new_metadata)
+
+
 def _collect_dag_audit_records(
     fragments: list[PlanFragment],
 ) -> tuple[DagDisagreementRecord, ...]:
@@ -785,6 +946,15 @@ class UnflatteningPlanner:
                         break
             elif fragment is not None:
                 _log_planner_ctx_conflicts(fragment, cumulative_view, logger)
+                # Engine-level DAG-conformance gate (uee-2hng).  Applied
+                # to every fragment, idempotent for SRW which already
+                # ran the same check internally.  Strategies that
+                # construct PlanFragment directly (LFG, residual_handoff,
+                # etc.) get DAG-disagreement filtering here that they
+                # would otherwise bypass.
+                fragment = _apply_engine_dag_conformance_gate(
+                    fragment, cumulative_view,
+                )
                 fragments.append(fragment)
                 # Extract nop_state_values from fragment metadata
                 # and inject into snapshot for subsequent strategies.
