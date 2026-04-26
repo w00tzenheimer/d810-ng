@@ -63,6 +63,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
     VerificationGate,
 )
+from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+    check_redirect_severs_use_def,
+)
 from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
@@ -335,6 +338,35 @@ class TransactionalExecutor:
             len(patch_plan.new_blocks),
             len(patch_plan.legacy_block_operations),
         )
+
+        # uee-b7ze Phase 1 observer-only: log use-def dominance severance
+        # for every RedirectGoto that would orphan a stkvar use.  Logging
+        # only — we do NOT drop or refuse modifications here.
+        for _mod in modifications:
+            if not isinstance(_mod, RedirectGoto):
+                continue
+            try:
+                _violations = check_redirect_severs_use_def(_mod, self.mba, pre_cfg)
+            except Exception:
+                executor_logger.debug(
+                    "USE_DEF_SEVERANCE: detector crashed for redirect blk[%d]->blk[%d]",
+                    _mod.from_serial,
+                    _mod.new_target,
+                    exc_info=True,
+                )
+                continue
+            if not _violations:
+                continue
+            _details = "; ".join(
+                f"var_stk[{v.var_stkoff:#x}]@blk[{v.use_block}]" for v in _violations
+            )
+            executor_logger.warning(
+                "USE_DEF_SEVERANCE: redirect blk[%d] -> blk[%d] would orphan %d use(s): %s",
+                _mod.from_serial,
+                _mod.new_target,
+                len(_violations),
+                _details,
+            )
 
         # Wire CfgTransactionEngine for projected -> pre -> lower/apply sequence
         contract = self._get_cfg_contract()
