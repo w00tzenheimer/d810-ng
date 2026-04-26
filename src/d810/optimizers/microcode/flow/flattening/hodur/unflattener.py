@@ -135,6 +135,16 @@ class HodurUnflattener(GenericUnflatteningRule):
     ]
     RECON_ONLY_MODE = False
     RETURN_FRONTIER_AUDIT_ENABLED: bool = True  # Default on for debugging
+    # MBL_KEEP marking experiment (uee-jfta follow-up): mark every block
+    # reachable from the function entry at end-of-pipeline so IDA's
+    # ``remove_empty_and_unreachable_blocks()`` and ``merge_blocks()``
+    # don't delete them.  Block-level only — does NOT preserve
+    # instruction-level DCE.  Empirical effect on sub_7FFD3338C040:
+    # snap10 block count 54 -> 200, AFTER lines 279 -> 293.  Has wider
+    # ramifications (some downstream IDA passes may assume blocks they
+    # think are unreachable can be deleted), so off by default until
+    # corpus testing.
+    MBL_KEEP_ENABLED: bool = False
     DEFAULT_MAX_PASSES = 1
     HARD_MAX_PASSES = 1
     MOP_TRACKER_MAX_NB_BLOCK = 100
@@ -778,6 +788,46 @@ class HodurUnflattener(GenericUnflatteningRule):
             block_serials=probe_blocks,
             target_blocks=probe_targets,
         )
+
+        # uee-jfta follow-up: optional MBL_KEEP experiment.  After d810's
+        # pipeline finishes, IDA's GLBOPT1 cleanup runs aggressive
+        # block-level DCE.  Marking every reachable block with MBL_KEEP
+        # preserves them past ``remove_empty_and_unreachable_blocks()``
+        # and ``merge_blocks()``.  Block-level only — does NOT preserve
+        # instruction-level DCE (dead-store elimination still wipes
+        # individual instructions).  Gated by class flag.
+        if self.MBL_KEEP_ENABLED and self.mba is not None and self.mba.qty > 1:
+            keep_visited: set[int] = set()
+            keep_queue: list[int] = [0]
+            while keep_queue:
+                serial = keep_queue.pop()
+                if serial in keep_visited or serial < 0 or serial >= self.mba.qty:
+                    continue
+                keep_visited.add(serial)
+                blk = self.mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                for i in range(blk.nsucc()):
+                    keep_queue.append(blk.succ(i))
+            kept_serials: list[int] = []
+            for serial in sorted(keep_visited):
+                blk = self.mba.get_mblock(serial)
+                if blk is None:
+                    continue
+                pre_flags = int(blk.flags)
+                blk.flags |= ida_hexrays.MBL_KEEP
+                post_flags = int(blk.flags)
+                if pre_flags != post_flags:
+                    kept_serials.append(serial)
+                    unflat_logger.info(
+                        "MBL_KEEP: blk[%d] flags 0x%05x -> 0x%05x (set MBL_KEEP=0x%05x)",
+                        serial, pre_flags, post_flags, ida_hexrays.MBL_KEEP,
+                    )
+            unflat_logger.info(
+                "MBL_KEEP: marked %d/%d reachable blocks (kept_serials=%s)",
+                len(kept_serials), len(keep_visited),
+                kept_serials[:30],
+            )
 
         return nb_changes
 
