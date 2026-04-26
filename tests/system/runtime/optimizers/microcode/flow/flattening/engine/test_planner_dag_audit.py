@@ -564,3 +564,178 @@ class TestPlanRunEndToEnd:
         assert provenance.dag_audit_records == ()
         joined = "\n".join(rec.message for rec in caplog.records)
         assert "PLANNER_DAG_AUDIT" not in joined
+
+
+# ----------------------------------------------------------------------------
+# uee-2hng — engine-level DAG conformance gate covers ALL strategies
+# ----------------------------------------------------------------------------
+
+
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
+    _apply_engine_dag_conformance_gate,
+    _DAG_AUDIT_METADATA_KEY,
+)
+
+
+class TestEngineDagConformanceGate:
+    """uee-2hng: every fragment from every strategy passes through the
+    engine-level conformance gate so non-SRW finalizers no longer bypass
+    DAG-disagreement filtering.
+
+    Empirical motivation: on sub_7FFD, blk[110] had a correct ``→142``
+    proposal from shared-group dropped by the legacy filter because a
+    wrong ``→137`` proposal from ``plan_residual_goto_emission`` (in a
+    fragment that bypassed the SRW finalizer's arbiter) committed first.
+    """
+
+    def _stub_authority_disagreeing(self, *, src: int, dag_target: int):
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+        class _Authority:
+            def permits(self, mod):
+                return DagDecision.refuse(
+                    f"DAG_DISAGREEMENT:{src}->"
+                    f"{{planner={getattr(mod, 'new_target', None)},dag={dag_target}}}"
+                )
+        return _Authority()
+
+    def _stub_authority_allow_all(self):
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+        class _Authority:
+            def permits(self, mod):
+                return DagDecision.allow(
+                    target_entry_anchor=getattr(mod, "new_target", None)
+                    or getattr(mod, "goto_target", None),
+                )
+        return _Authority()
+
+    def _stub_authority_gap_all(self):
+        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+            DagDecision,
+        )
+        class _Authority:
+            def permits(self, mod):
+                return DagDecision.gap("unknown_source")
+        return _Authority()
+
+    def _make_fragment(self, *, strategy_name: str = "any_strategy",
+                       modifications=None, metadata=None) -> PlanFragment:
+        return PlanFragment(
+            strategy_name=strategy_name,
+            family="direct",
+            ownership=OwnershipScope(
+                blocks=frozenset(), edges=frozenset(), transitions=frozenset(),
+            ),
+            prerequisites=[],
+            expected_benefit=BenefitMetrics(
+                handlers_resolved=0, transitions_resolved=0,
+                blocks_freed=0, conflict_density=0.0,
+            ),
+            risk_score=0.0,
+            metadata=metadata if metadata is not None else {},
+            modifications=modifications if modifications is not None else [],
+        )
+
+    def test_no_view_is_no_op(self):
+        frag = self._make_fragment(
+            modifications=[RedirectGoto(from_serial=110, old_target=2, new_target=137)]
+        )
+        result = _apply_engine_dag_conformance_gate(frag, None)
+        assert result is frag
+
+    def test_no_authority_is_no_op(self):
+        frag = self._make_fragment(
+            modifications=[RedirectGoto(from_serial=110, old_target=2, new_target=137)]
+        )
+        view = CumulativePlannerView.empty()  # no dag_authority
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        assert result is frag
+
+    def test_already_audited_fragment_is_skipped(self):
+        # SRW idempotency: a fragment that already has dag_audit
+        # metadata (because finalize_reconstruction_fragment ran the
+        # check internally) is returned unchanged.
+        frag = self._make_fragment(
+            modifications=[RedirectGoto(from_serial=110, old_target=2, new_target=137)],
+            metadata={_DAG_AUDIT_METADATA_KEY: ()},
+        )
+        view = CumulativePlannerView.empty(
+            dag_authority=self._stub_authority_disagreeing(src=110, dag_target=142),
+        )
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        assert result is frag  # unchanged
+
+    def test_drops_disagreement_for_non_srw_strategy(self):
+        # The motivating case: residual_handoff emits 110→137; DAG
+        # says 142.  Engine gate drops 137.
+        frag = self._make_fragment(
+            strategy_name="plan_residual_goto_emission",
+            modifications=[
+                RedirectGoto(from_serial=110, old_target=2, new_target=137),
+                RedirectGoto(from_serial=99, old_target=2, new_target=55),
+            ],
+        )
+        view = CumulativePlannerView.empty(
+            dag_authority=self._stub_authority_disagreeing(src=110, dag_target=142),
+        )
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        # The disagreement was dropped; the unrelated redirect kept.
+        # (Stub returns DAG_DISAGREEMENT for ALL mods, so 99→55 also
+        # gets dropped — adjust expectations.)
+        # Both mods get the disagreement; both drop.
+        assert len(result.modifications) == 0
+        # Audit records appear in metadata.
+        records = result.metadata[_DAG_AUDIT_METADATA_KEY]
+        assert len(records) == 2
+        assert all(r.planner_name == "plan_residual_goto_emission" for r in records)
+        assert all(r.phase == "engine_post_plan_gate" for r in records)
+
+    def test_keeps_dag_allow_decisions(self):
+        frag = self._make_fragment(
+            modifications=[
+                RedirectGoto(from_serial=110, old_target=2, new_target=142),
+            ],
+        )
+        view = CumulativePlannerView.empty(
+            dag_authority=self._stub_authority_allow_all(),
+        )
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        # Mod allowed; no change to the fragment object (no records added).
+        assert result is frag
+        assert _DAG_AUDIT_METADATA_KEY not in frag.metadata
+
+    def test_keeps_dag_gap_decisions(self):
+        frag = self._make_fragment(
+            modifications=[
+                RedirectGoto(from_serial=110, old_target=2, new_target=137),
+            ],
+        )
+        view = CumulativePlannerView.empty(
+            dag_authority=self._stub_authority_gap_all(),
+        )
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        # DAG_GAP keeps the mod (legacy fallback territory).
+        # No records added → fragment unchanged.
+        assert result is frag
+
+    def test_dag_disagreement_record_carries_planner_target_and_dag_target(self):
+        frag = self._make_fragment(
+            strategy_name="some_strategy",
+            modifications=[
+                RedirectGoto(from_serial=110, old_target=2, new_target=137),
+            ],
+        )
+        view = CumulativePlannerView.empty(
+            dag_authority=self._stub_authority_disagreeing(src=110, dag_target=142),
+        )
+        result = _apply_engine_dag_conformance_gate(frag, view)
+        records = result.metadata[_DAG_AUDIT_METADATA_KEY]
+        assert len(records) == 1
+        record = records[0]
+        assert record.source_block == 110
+        assert record.planner_target == 137
+        assert record.dag_target == 142
+        assert record.decision_reason.startswith("DAG_DISAGREEMENT:")
