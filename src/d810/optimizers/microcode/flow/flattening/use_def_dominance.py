@@ -1,13 +1,15 @@
-"""Use-def dominance severance detector (Phase 1 — observer-only).
+"""Use-def dominance severance detector (ticket ``uee-b7ze``).
 
 This module detects when a proposed ``RedirectGoto`` would sever a
 use-def dominance chain, i.e., move a definition of a stack variable
 out of a position where it dominated its uses.
 
-Phase 1 is **observer-only**: callers should log violations but MUST
-NOT use them to drop or refuse modifications. Phase 2 will add the
-refusal mechanism once the detector is shown to fire on the byte-handler
-severance case for ``sub_7FFD3338C040`` (ticket ``uee-b7ze``).
+Callers may pass ``exclude_stkoffs`` (typically the dispatcher state
+variable's stack offset) to suppress violations whose only "uses"
+are BST comparisons that are *expected* to die when the dispatcher
+collapses.  The remaining violations represent real cross-handler
+def/use chains (e.g. byte-buffer writes consumed by a later block)
+and are intended for refusal by the executor (Phase 2).
 
 Algorithm
 ---------
@@ -131,6 +133,7 @@ def check_redirect_severs_use_def(
     mod: RedirectGoto,
     mba: object,
     pre_cfg: FlowGraph,
+    exclude_stkoffs: tuple[int, ...] = (),
 ) -> tuple[SeveranceViolation, ...]:
     """Detect use-def chains that would be severed by *mod*.
 
@@ -139,6 +142,10 @@ def check_redirect_severs_use_def(
         mba: An ``ida_hexrays.mba_t`` instance used to query DU chains
             and walk the source block's live instruction stream.
         pre_cfg: The pre-modification CFG snapshot.
+        exclude_stkoffs: Stack offsets to ignore when reporting
+            violations.  The dispatcher state variable's offset belongs
+            here — its uses are the BST comparisons that we *want* to
+            die after linearization, so they are not real severances.
 
     Returns:
         A (possibly empty) tuple of :class:`SeveranceViolation`s.
@@ -151,12 +158,17 @@ def check_redirect_severs_use_def(
     if not defs:
         return ()
 
+    excluded: frozenset[int] = frozenset(int(off) for off in exclude_stkoffs)
+
     post_adj = _build_post_mod_adjacency(pre_cfg, mod)
     entry = int(getattr(pre_cfg, "entry_serial", 0))
     dom_tree = compute_dom_tree(post_adj, entry=entry)
 
     violations: list[SeveranceViolation] = []
     for stkoff, size in defs:
+        if stkoff in excluded:
+            # Filtered out — typically the dispatcher state variable.
+            continue
         uses: list[UseSite] = find_all_uses_of_stkvar(mba, stkoff, size)
         for use in uses:
             if use.block_serial == src:

@@ -128,6 +128,7 @@ class TransactionalExecutor:
         allow_legacy_block_creation: bool = True,
         cfg_contract: IDACfgContract | None = None,
         safeguard_profile: str = "engine",
+        state_var_stkoff: int | None = None,
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
@@ -139,6 +140,11 @@ class TransactionalExecutor:
             contract=self.cfg_contract,
         )
         self._total_changes = 0
+        # uee-b7ze Phase 2: dispatcher state variable's stack offset.
+        # Use-def severance violations whose var_stkoff equals this value
+        # are filtered out — they are BST comparisons that are *expected*
+        # to die after linearization.
+        self.state_var_stkoff = state_var_stkoff
 
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
@@ -339,14 +345,25 @@ class TransactionalExecutor:
             len(patch_plan.legacy_block_operations),
         )
 
-        # uee-b7ze Phase 1 observer-only: log use-def dominance severance
-        # for every RedirectGoto that would orphan a stkvar use.  Logging
-        # only — we do NOT drop or refuse modifications here.
+        # uee-b7ze Phase 2 refusal gate: drop any RedirectGoto whose
+        # use-def dominance severance violations remain after filtering
+        # out the dispatcher state variable's stack offset.  The state
+        # variable's "uses" are BST comparisons that are *expected* to
+        # die after linearization; the surviving violations are real
+        # cross-handler def/use chains (e.g. byte-buffer writes).
+        _exclude_stkoffs: tuple[int, ...] = (
+            (int(self.state_var_stkoff),) if self.state_var_stkoff is not None else ()
+        )
+        _kept_modifications: list[GraphModification] = []
+        _refusal_count = 0
         for _mod in modifications:
             if not isinstance(_mod, RedirectGoto):
+                _kept_modifications.append(_mod)
                 continue
             try:
-                _violations = check_redirect_severs_use_def(_mod, self.mba, pre_cfg)
+                _violations = check_redirect_severs_use_def(
+                    _mod, self.mba, pre_cfg, exclude_stkoffs=_exclude_stkoffs,
+                )
             except Exception:
                 executor_logger.debug(
                     "USE_DEF_SEVERANCE: detector crashed for redirect blk[%d]->blk[%d]",
@@ -354,19 +371,42 @@ class TransactionalExecutor:
                     _mod.new_target,
                     exc_info=True,
                 )
+                _kept_modifications.append(_mod)
                 continue
             if not _violations:
+                _kept_modifications.append(_mod)
                 continue
             _details = "; ".join(
                 f"var_stk[{v.var_stkoff:#x}]@blk[{v.use_block}]" for v in _violations
             )
             executor_logger.warning(
-                "USE_DEF_SEVERANCE: redirect blk[%d] -> blk[%d] would orphan %d use(s): %s",
+                "USE_DEF_REFUSAL: redirect blk[%d] -> blk[%d] would orphan %d use(s): %s",
                 _mod.from_serial,
                 _mod.new_target,
                 len(_violations),
                 _details,
             )
+            _refusal_count += 1
+        if _refusal_count > 0:
+            executor_logger.info(
+                "Stage %s use-def refusal: dropped %d redirect(s); recompiling PatchPlan",
+                fragment.strategy_name,
+                _refusal_count,
+            )
+            modifications = _kept_modifications
+            patch_plan = compile_patch_plan(
+                modifications, pre_cfg, patch_plan.execution_policy,
+            )
+            if not modifications:
+                result = StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="all modifications refused by use-def gate",
+                    failure_phase="use_def_refusal",
+                )
+                result.metadata["use_def_refusal_count"] = _refusal_count
+                result.metadata["gate_accounting"] = gate_accounting
+                return result
 
         # Wire CfgTransactionEngine for projected -> pre -> lower/apply sequence
         contract = self._get_cfg_contract()
