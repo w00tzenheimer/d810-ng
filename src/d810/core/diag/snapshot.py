@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_SYNTHETIC_DAG_NODE_STATE_PREFIX = 0xD810000000000000
+_SYNTHETIC_DAG_NODE_STATE_MASK = 0x0000FFFFFFFFFFFF
 
 
 def _safe_int(val: int | None) -> int | None:
@@ -31,6 +33,46 @@ def _dual(val: int | None) -> tuple[str | None, int | None]:
     hex_text = f"0x{val & _MASK64:016x}"
     i64 = _safe_int(val)
     return (hex_text, i64)
+
+
+def _fnv1a_64(text: str) -> int:
+    value = 0xCBF29CE484222325
+    for byte in text.encode("utf-8", errors="surrogatepass"):
+        value ^= byte
+        value = (value * 0x100000001B3) & _MASK64
+    return value
+
+
+def dag_node_diagnostic_state(node_or_key: object) -> int:
+    """Return a stable state-like identity for a DAG node in diagnostics.
+
+    ``dag_nodes`` and ``dag_local_*`` tables both use this value. Exact nodes
+    use their concrete state. Range-backed nodes without a concrete state use
+    ``range_lo`` as the representative. Nodes that have neither get a stable
+    synthetic identity derived from their handler/range tuple, instead of
+    collapsing under state zero.
+    """
+    key = getattr(node_or_key, "key", node_or_key)
+
+    state_const = getattr(key, "state_const", None)
+    if state_const is not None:
+        return int(state_const) & _MASK64
+
+    range_lo = getattr(key, "range_lo", None)
+    if range_lo is not None:
+        return int(range_lo) & _MASK64
+
+    handler_serial = getattr(key, "handler_serial", None)
+    if handler_serial is None:
+        handler_serial = getattr(node_or_key, "handler_serial", None)
+    range_hi = getattr(key, "range_hi", None)
+    payload = (
+        f"handler={handler_serial if handler_serial is not None else 'none'};"
+        f"range_lo=none;"
+        f"range_hi={range_hi if range_hi is not None else 'none'}"
+    )
+    digest = _fnv1a_64(payload) & _SYNTHETIC_DAG_NODE_STATE_MASK
+    return _SYNTHETIC_DAG_NODE_STATE_PREFIX | digest
 
 
 @dataclass
@@ -121,8 +163,10 @@ class DagNode:
     """Snapshot of a DAG node (handler state).
 
     Attributes:
-        state: Handler state constant (integer).
-        state_hex: Hex string representation (e.g. "0x5D0AEBD3").
+        state: Stable diagnostic state identity. Exact nodes use the handler
+            state constant, range-only nodes use range_lo, and anonymous nodes
+            use a synthetic handler-derived identity.
+        state_hex: Hex string representation (e.g. "0x000000005D0AEBD3").
         entry_block: Entry block serial number.
         classification: Node classification ("TRANSITION", "EXIT", etc.).
         shared_suffix: Optional JSON array of shared block serials.
@@ -348,14 +392,7 @@ def _enum_name(value: object) -> str:
 
 
 def _node_state_value(node: object) -> int:
-    key = getattr(node, "key", None)
-    state_const = getattr(key, "state_const", None)
-    if state_const is not None:
-        return int(state_const)
-    range_lo = getattr(key, "range_lo", None)
-    if range_lo is not None:
-        return int(range_lo)
-    return 0
+    return dag_node_diagnostic_state(node)
 
 
 def snapshot_dag_local_facts(

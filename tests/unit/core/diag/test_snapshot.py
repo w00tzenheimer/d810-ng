@@ -15,6 +15,7 @@ from d810.core.diag.snapshot import (
     Modification,
     _dual,
     _safe_int,
+    dag_node_diagnostic_state,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_mba,
@@ -433,6 +434,72 @@ class TestSnapshotDag:
         ).fetchall()
         assert edge_rows[0] == ("blk[205]", "blk[207]", "TAKEN", 1)
         assert edge_rows[-1] == ("blk[217]", "blk[218]", "TERMINAL", None)
+
+    def test_range_only_node_identity_matches_outer_and_local_tables(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+
+        node = StateDagNode(
+            key=StateDagNodeKey(
+                handler_serial=205,
+                state_const=None,
+                range_lo=0x29837000,
+                range_hi=0x29837FFF,
+            ),
+            kind=StateNodeKind.RANGE_BACKED,
+            state_label="STATE_29837000",
+            handler_serial=205,
+            entry_anchor=205,
+            owned_blocks=(205,),
+            exclusive_blocks=(205,),
+            shared_suffix_blocks=(),
+            local_segments=(
+                StateLocalSegment("blk[205]", LocalSegmentKind.STRAIGHT_LINE, (205,)),
+            ),
+            local_edges=(),
+        )
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=1,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=None,
+            bst_node_blocks=(),
+            nodes=(node,),
+            edges=(),
+        )
+        diagnostic_state = dag_node_diagnostic_state(node)
+        assert diagnostic_state == 0x29837000
+
+        snapshot_dag(
+            conn,
+            1,
+            [DagNode(diagnostic_state, "ignored", 205, "RANGE_BACKED")],
+            [],
+        )
+        snapshot_dag_local_facts(conn, 1, dag)
+
+        outer_hex = conn.execute(
+            "SELECT state_hex FROM dag_nodes WHERE snapshot_id=1"
+        ).fetchone()[0]
+        local_hex = conn.execute(
+            "SELECT DISTINCT state_hex FROM dag_node_blocks WHERE snapshot_id=1"
+        ).fetchone()[0]
+        assert outer_hex == "0x0000000029837000"
+        assert local_hex == outer_hex
+
+    def test_anonymous_node_identity_is_stable_and_nonzero(self) -> None:
+        key = StateDagNodeKey(handler_serial=77)
+
+        first = dag_node_diagnostic_state(key)
+        second = dag_node_diagnostic_state(key)
+
+        assert first == second
+        assert first != 0
+        assert f"0x{first:016x}".startswith("0xd810")
 
 
 class TestSnapshotModifications:
