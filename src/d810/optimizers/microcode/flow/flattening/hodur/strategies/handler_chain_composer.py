@@ -244,6 +244,15 @@ class HandlerChainComposerStrategy:
             risk_score=0.5,
             metadata={
                 "handler_chain_composer_emitted": emitted,
+                # The default safeguard expects bulk CFG modifications
+                # relative to handler count; a chain-composer emission of
+                # InsertBlock per chain produces fewer modifications but
+                # each one is high-value.  Override to require at least
+                # one applied mod, mirroring the pattern used by other
+                # focused strategies (see hodur.unflattener
+                # ``safeguard_min_required`` precedent).
+                "safeguard_min_required": 1,
+                "safeguard_profile": "engine",
             },
         )
 
