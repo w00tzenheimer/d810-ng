@@ -12,6 +12,7 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
                 DagEdge,
                 DagNode,
                 snapshot_dag,
+                snapshot_dag_local_facts,
                 snapshot_mba,
             )
             import json as _json
@@ -49,6 +50,7 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
                 ))
 
             snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            snapshot_dag_local_facts(diag_db, snap_id, dag)
     except Exception:
         logger.warning(
             "Early diagnostic DAG snapshot failed (non-critical)",
@@ -73,6 +75,7 @@ def snapshot_reconstruction_post_apply(
                 DagNode,
                 Modification,
                 snapshot_dag,
+                snapshot_dag_local_facts,
                 snapshot_mba,
                 snapshot_modifications,
             )
@@ -111,6 +114,7 @@ def snapshot_reconstruction_post_apply(
                 ))
 
             snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            snapshot_dag_local_facts(diag_db, snap_id, dag)
 
             mod_snapshots = []
             for midx, mod in enumerate(modifications):

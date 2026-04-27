@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from d810.recon.flow.linearized_state_dag import (
         LinearizedStateDag,
         RenderedProgramSnapshot,
+        StateDagNode,
+        StateLocalEdge,
     )
     from d810.recon.flow.reconstruction_discovery_indexes import (
         ReconstructionDiscoveryIndexes,
@@ -56,10 +58,29 @@ logger = logging.getLogger(
 
 
 __all__ = (
+    "DagLocalFacts",
     "ReconRoundDiscoveryContext",
     "build_round_discovery_context",
     "pass_entry_guard",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class DagLocalFacts:
+    """Typed lookup indexes for one LinearizedStateDag's node-local facts.
+
+    These are runtime planner facts, not diagnostic-rendering data. Consumers
+    use them directly instead of parsing ``linearized_program`` text or querying
+    the diag database.
+    """
+
+    node_by_entry: dict[int, StateDagNode]
+    node_by_handler: dict[int, StateDagNode]
+    node_by_owned_block: dict[int, StateDagNode]
+    node_by_any_local_block: dict[int, StateDagNode]
+    owned_blocks_by_entry: dict[int, frozenset[int]]
+    shared_suffix_by_entry: dict[int, frozenset[int]]
+    local_edges_by_entry: dict[int, tuple[StateLocalEdge, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +132,11 @@ class ReconRoundDiscoveryContext:
     )
     node_by_key: dict = field(default_factory=dict)
 
+    # Typed node-local DAG facts for planner logic. This deliberately mirrors
+    # LinearizedStateDag structure without forcing consumers to scan all nodes
+    # or scrape rendered text.
+    local_facts: DagLocalFacts | None = None
+
     # Canonical "next block / fall-through vs jump" view produced by
     # ``build_linearized_state_program(dag, ...)``. Strategies use this to
     # avoid re-rendering. ``None`` if the renderer raised during build (the
@@ -120,6 +146,49 @@ class ReconRoundDiscoveryContext:
     # Opaque round identity: ``(func_ea, maturity, pass_number, monotonic_ns)``.
     # Used by downstream consumers (probes, caches) to key per-round data.
     round_id: tuple[int, int, int, int] = (0, 0, 0, 0)
+
+
+def _build_dag_local_facts(dag: LinearizedStateDag) -> DagLocalFacts:
+    node_by_entry: dict[int, StateDagNode] = {}
+    node_by_handler: dict[int, StateDagNode] = {}
+    node_by_owned_block: dict[int, StateDagNode] = {}
+    node_by_any_local_block: dict[int, StateDagNode] = {}
+    owned_blocks_by_entry: dict[int, frozenset[int]] = {}
+    shared_suffix_by_entry: dict[int, frozenset[int]] = {}
+    local_edges_by_entry: dict[int, tuple[StateLocalEdge, ...]] = {}
+
+    for node in dag.nodes:
+        entry = int(node.entry_anchor)
+        handler = int(node.handler_serial)
+        node_by_entry.setdefault(entry, node)
+        node_by_handler.setdefault(handler, node)
+
+        owned_blocks = frozenset(int(block) for block in node.owned_blocks)
+        shared_suffix = frozenset(int(block) for block in node.shared_suffix_blocks)
+        owned_blocks_by_entry[entry] = owned_blocks
+        shared_suffix_by_entry[entry] = shared_suffix
+        local_edges_by_entry[entry] = tuple(node.local_edges)
+
+        any_local_blocks = set(owned_blocks)
+        any_local_blocks.update(int(block) for block in node.exclusive_blocks)
+        any_local_blocks.update(shared_suffix)
+        for segment in node.local_segments:
+            any_local_blocks.update(int(block) for block in segment.blocks)
+
+        for block in owned_blocks:
+            node_by_owned_block.setdefault(block, node)
+        for block in any_local_blocks:
+            node_by_any_local_block.setdefault(block, node)
+
+    return DagLocalFacts(
+        node_by_entry=node_by_entry,
+        node_by_handler=node_by_handler,
+        node_by_owned_block=node_by_owned_block,
+        node_by_any_local_block=node_by_any_local_block,
+        owned_blocks_by_entry=owned_blocks_by_entry,
+        shared_suffix_by_entry=shared_suffix_by_entry,
+        local_edges_by_entry=local_edges_by_entry,
+    )
 
 
 def build_round_discovery_context(
@@ -211,6 +280,7 @@ def build_round_discovery_context(
         int(s) for s in indexes.corrected_boundary_shared_blocks
     )
     node_by_key = dict(indexes.node_by_key)
+    local_facts = _build_dag_local_facts(dag)
 
     round_id = (
         int(func_ea),
@@ -223,13 +293,14 @@ def build_round_discovery_context(
         logger.debug(
             "ReconRoundDiscoveryContext: dispatcher=%d region=%d shared_suffix=%d "
             "boundary_shared=%d node_by_key=%d structured_regions=%d "
-            "linearized_program=%s round_id=%s",
+            "local_fact_entries=%d linearized_program=%s round_id=%s",
             indexes.dispatcher_serial,
             len(dispatcher_region),
             len(shared_suffix_blocks),
             len(corrected_boundary_shared_blocks),
             len(node_by_key),
             len(structured_regions),
+            len(local_facts.node_by_entry),
             "ok" if linearized_program is not None else "none",
             round_id,
         )
@@ -247,6 +318,7 @@ def build_round_discovery_context(
         shared_suffix_blocks=shared_suffix_blocks,
         corrected_boundary_shared_blocks=corrected_boundary_shared_blocks,
         node_by_key=node_by_key,
+        local_facts=local_facts,
         linearized_program=linearized_program,
         round_id=round_id,
     )

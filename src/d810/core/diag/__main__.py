@@ -10,6 +10,7 @@ Usage::
     python -m d810.core.diag program --db path.sqlite3 --snapshot -1 --nodes
     python -m d810.core.diag program --db path.sqlite3 --snapshot 12 --variant semantic_reference_like
     python -m d810.core.diag program --db path.sqlite3 --maturity GLBOPT1 --phase post_d810
+    python -m d810.core.diag state-local --db path.sqlite3 --snapshot 6 0x298372CC
     PYTHONPATH=src python3 -m d810.core.diag program \\
       --db /Users/mahmoud/src/idapro/d810/.worktrees/state-label-linearization/.tmp/logs/d810_logs/0000000180012b60_1774805543_33.diag.sqlite3 \\
       --maturity GLBOPT1 \\
@@ -42,6 +43,7 @@ from d810.core.diag.query import (
     rendered_program_text,
     rendered_program_variants,
     return_paths,
+    state_local,
     var_writes,
 )
 
@@ -238,6 +240,64 @@ def _format_rendered_program_variants(variants: list[dict]) -> str:
             f"{variant['label_render_mode']}/{variant['boundary_inline_mode']}/"
             f"{variant['comment_mode']}"
         )
+    return "\n".join(lines)
+
+
+def _blk_list(serials: list[int]) -> str:
+    return ", ".join(f"blk[{int(serial)}]" for serial in serials)
+
+
+def _state_label_from_query(state: int) -> str:
+    return f"STATE_{int(state) & 0xFFFFFFFF:08X}"
+
+
+def _format_state_local(result: dict | None, *, state: int) -> str:
+    """Format typed state-local DAG facts."""
+    if result is None:
+        return f"{_state_label_from_query(state)}:\n    // state not found"
+
+    node = result["node"]
+    lines: list[str] = [_state_label_from_query(state) + ":"]
+    classification = str(node.get("classification") or "unknown").lower()
+    lines.append(f"    // entry blk[{node['entry_block']}] [{classification}]")
+
+    if not result.get("local_facts_available"):
+        shared_suffix = node.get("shared_suffix")
+        if shared_suffix:
+            try:
+                shared_blocks = json.loads(shared_suffix)
+            except json.JSONDecodeError:
+                shared_blocks = []
+            if shared_blocks:
+                lines.append(f"    // shared-suffix: {_blk_list(shared_blocks)}")
+        missing = result.get("missing_tables") or []
+        detail = (
+            f"missing tables: {', '.join(missing)}"
+            if missing
+            else "no dag_local_* rows for this state"
+        )
+        lines.append(f"    // local facts unavailable ({detail})")
+        return "\n".join(lines)
+
+    blocks_by_role = result.get("blocks_by_role", {})
+    owned_blocks = blocks_by_role.get("owned", [])
+    shared_blocks = blocks_by_role.get("shared_suffix", [])
+    if owned_blocks:
+        lines.append(f"    // blocks: {_blk_list(owned_blocks)}")
+    if shared_blocks:
+        lines.append(f"    // shared-suffix: {_blk_list(shared_blocks)}")
+
+    local_edges = result.get("local_edges", [])
+    if local_edges:
+        parts = []
+        for edge in local_edges:
+            kind = str(edge["kind"]).lower()
+            parts.append(
+                f"{edge['source_segment_id']} -{kind}-> {edge['target_segment_id']}"
+            )
+        lines.append(f"    // local-cfg: {', '.join(parts)}")
+    else:
+        lines.append("    // local-cfg: (none)")
     return "\n".join(lines)
 
 
@@ -586,6 +646,13 @@ def main(argv: list[str] | None = None) -> int:
         help="List stored rendered-program variants for a snapshot",
     )
 
+    p_state_local = sub.add_parser(
+        "state-local",
+        parents=[common],
+        help="Show typed local CFG facts for one LinearizedStateDag state",
+    )
+    p_state_local.add_argument("state", type=lambda x: int(x, 0))
+
     p_ea = sub.add_parser(
         "ea-trace", parents=[common],
         help="Trace an EA across all snapshots (block lineage)",
@@ -716,7 +783,19 @@ def main(argv: list[str] | None = None) -> int:
             print(result if result is not None else "(rendered program not found)")
     elif args.command == "program-variants":
         print(_snapshot_header(conn, snap_id))
-        print(_format_rendered_program_variants(rendered_program_variants(conn, snap_id)))
+        print(
+            _format_rendered_program_variants(
+                rendered_program_variants(conn, snap_id)
+            )
+        )
+    elif args.command == "state-local":
+        print(_snapshot_header(conn, snap_id))
+        print(
+            _format_state_local(
+                state_local(conn, snap_id, args.state),
+                state=args.state,
+            )
+        )
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
     elif args.command == "merge-causality":

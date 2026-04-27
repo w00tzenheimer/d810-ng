@@ -284,6 +284,21 @@ class TestRenderedProgramCommand:
         assert "semantic_reference_like" in out
 
 
+class TestStateLocalCommand:
+    def test_state_local(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+        rc = main(["state-local", "--db", str(loaded_db_path), "0x298372CC"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "STATE_298372CC:" in out
+        assert "// entry blk[205] [range_backed]" in out
+        assert "// blocks: blk[205], blk[207], blk[206], blk[217], blk[218]" in out
+        assert "// shared-suffix: blk[217], blk[218]" in out
+        assert "blk[205] -taken-> blk[207]" in out
+        assert "blk[205] -fallthrough-> blk[206]" in out
+        assert "blk[206] -shared_suffix-> blk[217]" in out
+        assert "blk[217] -terminal-> blk[218]" in out
+
+
 # ---------------------------------------------------------------------------
 # Subprocess test (validates ``python -m d810.core.diag`` entry point)
 # ---------------------------------------------------------------------------
