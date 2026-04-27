@@ -98,24 +98,20 @@ class HandlerChainCandidate:
     """State constants attached to each handler in the chain (informational)."""
 
 
-# Opcodes we permit during composition. ``m_stx`` is the actual byte
-# write; the rest are typical OLLVM byte-handler glue that materialises
-# the source value.  Anything outside this whitelist is treated as
-# "complex" and aborts composition for that handler.
-_PERMITTED_COMPOSITION_OPCODES: frozenset[int] = frozenset(
+# Opcodes that abort composition because their effects are hard to
+# preserve in a relocated InsertBlock body: external side effects
+# (calls), control-flow termination (ret), assembly escape (ext), and
+# indirect jumps (jtbl/ijmp) that change CFG topology.  Everything else
+# — arithmetic, flag setters, conditional branches, byte loads/stores
+# — is composable.
+_FORBIDDEN_COMPOSITION_OPCODES: frozenset[int] = frozenset(
     {
-        ida_hexrays.m_stx,   # memory write (the byte write itself)
-        ida_hexrays.m_mov,   # constant/reg setup
-        ida_hexrays.m_xdu,   # zero-extend
-        ida_hexrays.m_xds,   # sign-extend
-        ida_hexrays.m_low,   # truncation
-        ida_hexrays.m_add,   # arithmetic for indexing
-        ida_hexrays.m_sub,
-        ida_hexrays.m_or,
-        ida_hexrays.m_and,
-        ida_hexrays.m_xor,
-        ida_hexrays.m_shl,
-        ida_hexrays.m_shr,
+        ida_hexrays.m_call,   # external side effects
+        ida_hexrays.m_icall,  # external side effects (indirect)
+        ida_hexrays.m_ret,    # control-flow termination
+        ida_hexrays.m_ext,    # extended assembly escape
+        ida_hexrays.m_jtbl,   # indirect jump (jump-table)
+        ida_hexrays.m_ijmp,   # indirect jump (computed)
     }
 )
 
@@ -313,9 +309,10 @@ class HandlerChainComposerStrategy:
                 continue
             for serial in chain.handler_serials:
                 visited.add(serial)
-            if len(chain.handler_serials) < 2:
-                # Chain of length 1 is not interesting for composition.
-                continue
+            # Length-1 chains are still candidates: a single handler
+            # whose body needs to be lifted onto the linearized path so
+            # its def-use chain is preserved.  The benefit is use-def
+            # preservation, not structural compaction.
             candidates.append(chain)
 
         return candidates
@@ -414,9 +411,11 @@ class HandlerChainComposerStrategy:
 
             cur_serial = succ_serial
 
-        # Fell out via depth-cap or break: emit only if we got >=2 handlers
-        # AND we have a clear single successor of the last block.
-        if len(chain_serials) < 2:
+        # Fell out via depth-cap or break: emit only when we have a
+        # clear single successor of the last block.  Length-1 is allowed
+        # (single-handler chains preserve def-use just as well as multi-
+        # handler chains; the goal is dominance, not compaction).
+        if not chain_serials:
             return None
         last_blk = mba.get_mblock(chain_serials[-1])  # type: ignore[attr-defined]
         if last_blk is None or last_blk.nsucc() != 1:
@@ -451,7 +450,7 @@ class HandlerChainComposerStrategy:
             if opcode in (ida_hexrays.m_goto, ida_hexrays.m_nop):
                 insn = insn.next
                 continue
-            if opcode not in _PERMITTED_COMPOSITION_OPCODES:
+            if opcode in _FORBIDDEN_COMPOSITION_OPCODES:
                 return None  # abort composition for this handler
             try:
                 snap = capture_insn_snapshot(insn)
