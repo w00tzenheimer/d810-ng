@@ -133,6 +133,11 @@ database to make lowering decisions.
 
 The diag database stores both the outer semantic DAG and node-local facts.
 
+All DAG-local tables use the same diagnostic node identity for `state_hex`:
+`state_const` when present, otherwise `range_lo` for range-backed nodes,
+otherwise a stable synthetic handler/range identity. This identity is a storage
+key, not necessarily a semantic state constant.
+
 Outer DAG tables:
 
 - `dag_nodes`: state, entry block, classification, and shared suffix summary.

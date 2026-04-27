@@ -11,6 +11,7 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
             from d810.core.diag.snapshot import (
                 DagEdge,
                 DagNode,
+                dag_node_diagnostic_state,
                 snapshot_dag,
                 snapshot_dag_local_facts,
                 snapshot_mba,
@@ -28,9 +29,10 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
 
             dag_nodes = []
             for node in dag.nodes:
+                diagnostic_state = dag_node_diagnostic_state(node)
                 dag_nodes.append(DagNode(
-                    state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                    state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
+                    state=diagnostic_state,
+                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
                     entry_block=int(node.entry_anchor),
                     classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
                     shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
@@ -74,6 +76,7 @@ def snapshot_reconstruction_post_apply(
                 DagEdge,
                 DagNode,
                 Modification,
+                dag_node_diagnostic_state,
                 snapshot_dag,
                 snapshot_dag_local_facts,
                 snapshot_mba,
@@ -92,9 +95,10 @@ def snapshot_reconstruction_post_apply(
 
             dag_nodes = []
             for node in dag.nodes:
+                diagnostic_state = dag_node_diagnostic_state(node)
                 dag_nodes.append(DagNode(
-                    state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                    state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
+                    state=diagnostic_state,
+                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
                     entry_block=int(node.entry_anchor),
                     classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
                     shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
