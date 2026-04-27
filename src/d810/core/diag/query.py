@@ -196,6 +196,142 @@ def rendered_program_variants(
     return cur.fetchall()
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _state_hex(value: int) -> str:
+    return f"0x{int(value) & 0xFFFFFFFFFFFFFFFF:016x}"
+
+
+def _state_i64(value: int) -> int:
+    value = int(value)
+    if value > 0x7FFFFFFFFFFFFFFF:
+        return value - (1 << 64)
+    return value
+
+
+def state_local(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    state: int,
+) -> dict[str, Any] | None:
+    """Return typed state-local DAG facts for one state.
+
+    The returned dict is built from ``dag_nodes`` plus the optional
+    ``dag_node_blocks``, ``dag_local_segments``, and ``dag_local_edges`` tables.
+    Old databases that lack the typed local tables return the basic node row
+    with ``local_facts_available=False`` instead of raising.
+    """
+    conn.row_factory = _dict_factory
+    state_value = int(state)
+    fixed_hex = _state_hex(state_value)
+    fixed_hex_upper = fixed_hex.upper().replace("X", "x")
+    short_hex = f"0x{state_value & 0xFFFFFFFF:08x}"
+    short_hex_upper = short_hex.upper().replace("X", "x")
+    cur = conn.execute(
+        "SELECT * FROM dag_nodes "
+        "WHERE snapshot_id=? AND (state_hex IN (?, ?, ?, ?) OR state_i64=?) "
+        "ORDER BY entry_block LIMIT 1",
+        (
+            snapshot_id,
+            fixed_hex,
+            fixed_hex_upper,
+            short_hex,
+            short_hex_upper,
+            _state_i64(state_value),
+        ),
+    )
+    node = cur.fetchone()
+    if node is None:
+        return None
+
+    required_tables = (
+        "dag_node_blocks",
+        "dag_local_segments",
+        "dag_local_edges",
+    )
+    table_presence = {
+        table: _table_exists(conn, table)
+        for table in required_tables
+    }
+    tables_available = all(table_presence.values())
+    result: dict[str, Any] = {
+        "node": node,
+        "blocks_by_role": {},
+        "segments": [],
+        "local_edges": [],
+        "local_facts_available": False,
+        "missing_tables": [
+            table for table, present in table_presence.items() if not present
+        ],
+    }
+    if not tables_available:
+        return result
+
+    entry_block = int(node["entry_block"])
+    state_hexes = tuple(dict.fromkeys((
+        node["state_hex"],
+        fixed_hex,
+        fixed_hex_upper,
+        short_hex,
+        short_hex_upper,
+    )))
+    state_hex_placeholders = ",".join("?" for _ in state_hexes)
+
+    blocks_by_role: dict[str, list[int]] = {
+        "owned": [],
+        "exclusive": [],
+        "shared_suffix": [],
+    }
+    block_rows = conn.execute(
+        "SELECT role, block_serial FROM dag_node_blocks "
+        f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
+        "AND entry_block=? "
+        "ORDER BY role, block_index",
+        (snapshot_id, *state_hexes, entry_block),
+    ).fetchall()
+    for row in block_rows:
+        blocks_by_role.setdefault(row["role"], []).append(int(row["block_serial"]))
+
+    segment_rows = conn.execute(
+        "SELECT segment_id, kind, blocks_json FROM dag_local_segments "
+        f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
+        "AND entry_block=? "
+        "ORDER BY segment_index",
+        (snapshot_id, *state_hexes, entry_block),
+    ).fetchall()
+    segments = []
+    for row in segment_rows:
+        segment = dict(row)
+        try:
+            segment["blocks"] = json.loads(segment.pop("blocks_json") or "[]")
+        except json.JSONDecodeError:
+            segment["blocks"] = []
+        segments.append(segment)
+
+    local_edges = conn.execute(
+        "SELECT source_segment_id, target_segment_id, kind, branch_arm "
+        "FROM dag_local_edges "
+        f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
+        "AND entry_block=? "
+        "ORDER BY edge_index",
+        (snapshot_id, *state_hexes, entry_block),
+    ).fetchall()
+
+    result["blocks_by_role"] = blocks_by_role
+    result["segments"] = segments
+    result["local_edges"] = local_edges
+    result["local_facts_available"] = bool(
+        block_rows or segment_rows or local_edges
+    )
+    return result
+
+
 # Hex-Rays microcode opcode numeric ids used by the diag serializer when the
 # human-readable `m_<name>` form is unavailable (see mba_serializer._opcode_name).
 # Keep these names in sync with ``ida_hexrays.mcode_t``.

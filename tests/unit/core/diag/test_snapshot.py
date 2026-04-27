@@ -16,6 +16,7 @@ from d810.core.diag.snapshot import (
     _dual,
     _safe_int,
     snapshot_dag,
+    snapshot_dag_local_facts,
     snapshot_mba,
     snapshot_modifications,
     snapshot_rendered_program,
@@ -24,12 +25,20 @@ from d810.core.diag.snapshot import (
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
+    LinearizedStateDag,
+    LocalEdgeKind,
+    LocalSegmentKind,
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderOrderStrategy,
     RenderedProgramLine,
     RenderedProgramNode,
     RenderedProgramSnapshot,
+    StateDagNode,
+    StateDagNodeKey,
+    StateLocalEdge,
+    StateLocalSegment,
+    StateNodeKind,
 )
 
 
@@ -361,6 +370,69 @@ class TestSnapshotDag:
             "SELECT ordered_path FROM dag_edges WHERE snapshot_id=1"
         ).fetchone()
         assert json.loads(row[0]) == [131, 174, 176]
+
+    def test_snapshot_dag_local_facts_writes_node_internals(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+
+        node = StateDagNode(
+            key=StateDagNodeKey(handler_serial=205, state_const=0x298372CC),
+            kind=StateNodeKind.RANGE_BACKED,
+            state_label="STATE_298372CC",
+            handler_serial=205,
+            entry_anchor=205,
+            owned_blocks=(205, 207, 206, 217, 218),
+            exclusive_blocks=(205, 207, 206),
+            shared_suffix_blocks=(217, 218),
+            local_segments=(
+                StateLocalSegment("blk[205]", LocalSegmentKind.BRANCH, (205,)),
+                StateLocalSegment("blk[207]", LocalSegmentKind.STRAIGHT_LINE, (207,)),
+                StateLocalSegment("blk[206]", LocalSegmentKind.STRAIGHT_LINE, (206,)),
+                StateLocalSegment("blk[217]", LocalSegmentKind.SHARED_SUFFIX, (217,)),
+                StateLocalSegment("blk[218]", LocalSegmentKind.TERMINAL_SUFFIX, (218,)),
+            ),
+            local_edges=(
+                StateLocalEdge("blk[205]", "blk[207]", LocalEdgeKind.TAKEN, 1),
+                StateLocalEdge("blk[205]", "blk[206]", LocalEdgeKind.FALLTHROUGH, 0),
+                StateLocalEdge("blk[206]", "blk[217]", LocalEdgeKind.SHARED_SUFFIX),
+                StateLocalEdge("blk[217]", "blk[218]", LocalEdgeKind.TERMINAL),
+            ),
+        )
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=1,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=0x298372CC,
+            bst_node_blocks=(),
+            nodes=(node,),
+            edges=(),
+        )
+
+        snapshot_dag_local_facts(conn, 1, dag)
+
+        block_rows = conn.execute(
+            "SELECT role, block_serial FROM dag_node_blocks "
+            "WHERE snapshot_id=1 ORDER BY role, block_serial"
+        ).fetchall()
+        assert ("shared_suffix", 217) in block_rows
+        assert ("owned", 205) in block_rows
+
+        segment_row = conn.execute(
+            "SELECT kind, blocks_json FROM dag_local_segments "
+            "WHERE snapshot_id=1 AND segment_id='blk[205]'"
+        ).fetchone()
+        assert segment_row == ("BRANCH", "[205]")
+
+        edge_rows = conn.execute(
+            "SELECT source_segment_id, target_segment_id, kind, branch_arm "
+            "FROM dag_local_edges WHERE snapshot_id=1 ORDER BY edge_index"
+        ).fetchall()
+        assert edge_rows[0] == ("blk[205]", "blk[207]", "TAKEN", 1)
+        assert edge_rows[-1] == ("blk[217]", "blk[218]", "TERMINAL", None)
 
 
 class TestSnapshotModifications:

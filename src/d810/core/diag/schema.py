@@ -112,6 +112,53 @@ CREATE TABLE IF NOT EXISTS dag_edges (
     PRIMARY KEY (snapshot_id, edge_id)
 );
 
+-- Typed local facts for each DAG node. These mirror LinearizedStateDag node
+-- internals so tools can reconstruct state-local CFG views without scraping
+-- rendered text.
+CREATE TABLE IF NOT EXISTS dag_node_blocks (
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    state_hex       TEXT NOT NULL,
+    entry_block     INTEGER NOT NULL,
+    block_serial    INTEGER NOT NULL,
+    block_index     INTEGER NOT NULL,
+    role            TEXT NOT NULL CHECK(role IN (
+        'owned',
+        'exclusive',
+        'shared_suffix'
+    )),
+    PRIMARY KEY (snapshot_id, state_hex, entry_block, role, block_index)
+);
+
+CREATE TABLE IF NOT EXISTS dag_local_segments (
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    state_hex       TEXT NOT NULL,
+    entry_block     INTEGER NOT NULL,
+    segment_index   INTEGER NOT NULL,
+    segment_id      TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    blocks_json     TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, state_hex, entry_block, segment_index)
+);
+
+CREATE TABLE IF NOT EXISTS dag_local_edges (
+    snapshot_id        INTEGER NOT NULL REFERENCES snapshots(id),
+    state_hex          TEXT NOT NULL,
+    entry_block        INTEGER NOT NULL,
+    edge_index         INTEGER NOT NULL,
+    source_segment_id  TEXT NOT NULL,
+    target_segment_id  TEXT NOT NULL,
+    kind               TEXT NOT NULL,
+    branch_arm         INTEGER,
+    PRIMARY KEY (snapshot_id, state_hex, entry_block, edge_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dag_node_blocks_state
+    ON dag_node_blocks(snapshot_id, state_hex, entry_block);
+CREATE INDEX IF NOT EXISTS idx_dag_local_segments_state
+    ON dag_local_segments(snapshot_id, state_hex, entry_block);
+CREATE INDEX IF NOT EXISTS idx_dag_local_edges_state
+    ON dag_local_edges(snapshot_id, state_hex, entry_block, edge_index);
+
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
     snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),

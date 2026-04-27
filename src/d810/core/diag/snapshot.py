@@ -340,6 +340,114 @@ def snapshot_dag(
     conn.commit()
 
 
+def _enum_name(value: object) -> str:
+    name = getattr(value, "name", None)
+    if name is not None:
+        return str(name)
+    return str(value)
+
+
+def _node_state_value(node: object) -> int:
+    key = getattr(node, "key", None)
+    state_const = getattr(key, "state_const", None)
+    if state_const is not None:
+        return int(state_const)
+    range_lo = getattr(key, "range_lo", None)
+    if range_lo is not None:
+        return int(range_lo)
+    return 0
+
+
+def snapshot_dag_local_facts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    dag: object,
+) -> None:
+    """Snapshot typed node-local facts from a LinearizedStateDag-like object.
+
+    This intentionally uses duck typing so the core diag module remains pure
+    Python and does not import the recon layer. ``snapshot_dag`` stores the
+    outer state graph; this stores each node's block roles, local segments, and
+    state-local CFG edges for on-demand DB rendering and planner audits.
+    """
+    nodes = tuple(getattr(dag, "nodes", ()) or ())
+    block_rows: list[tuple] = []
+    segment_rows: list[tuple] = []
+    edge_rows: list[tuple] = []
+
+    for node in nodes:
+        state_hex, _state_i64 = _dual(_node_state_value(node))
+        if state_hex is None:
+            continue
+        entry_block = int(getattr(node, "entry_anchor"))
+
+        for role, attr in (
+            ("owned", "owned_blocks"),
+            ("exclusive", "exclusive_blocks"),
+            ("shared_suffix", "shared_suffix_blocks"),
+        ):
+            for block_index, block_serial in enumerate(
+                getattr(node, attr, ()) or ()
+            ):
+                block_rows.append((
+                    snapshot_id,
+                    state_hex,
+                    entry_block,
+                    int(block_serial),
+                    block_index,
+                    role,
+                ))
+
+        for segment_index, segment in enumerate(
+            getattr(node, "local_segments", ()) or ()
+        ):
+            blocks = [int(block) for block in getattr(segment, "blocks", ()) or ()]
+            segment_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                segment_index,
+                str(getattr(segment, "segment_id")),
+                _enum_name(getattr(segment, "kind")),
+                json.dumps(blocks),
+            ))
+
+        for edge_index, edge in enumerate(getattr(node, "local_edges", ()) or ()):
+            branch_arm = getattr(edge, "branch_arm", None)
+            edge_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                edge_index,
+                str(getattr(edge, "source_segment_id")),
+                str(getattr(edge, "target_segment_id")),
+                _enum_name(getattr(edge, "kind")),
+                int(branch_arm) if branch_arm is not None else None,
+            ))
+
+    conn.execute("DELETE FROM dag_node_blocks WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM dag_local_segments WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM dag_local_edges WHERE snapshot_id=?", (snapshot_id,))
+
+    if block_rows:
+        conn.executemany(
+            "INSERT INTO dag_node_blocks VALUES (?,?,?,?,?,?)",
+            block_rows,
+        )
+    if segment_rows:
+        conn.executemany(
+            "INSERT INTO dag_local_segments VALUES (?,?,?,?,?,?,?)",
+            segment_rows,
+        )
+    if edge_rows:
+        conn.executemany(
+            "INSERT INTO dag_local_edges VALUES (?,?,?,?,?,?,?,?)",
+            edge_rows,
+        )
+
+    conn.commit()
+
+
 def snapshot_modifications(
     conn: sqlite3.Connection,
     snapshot_id: int,
