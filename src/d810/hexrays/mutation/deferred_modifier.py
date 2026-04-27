@@ -4887,6 +4887,198 @@ class DeferredGraphModifier:
         )
         return False
 
+    def _apply_create_and_redirect(
+        self,
+        source_blk: ida_hexrays.mblock_t,
+        final_target: int,
+        instructions_to_copy: list | tuple | None,
+        is_0_way: bool,
+        expected_serial: int | None,
+        old_target_serial: int | None = None,
+    ) -> bool:
+        """
+        Create a standalone intermediate block and redirect source through it.
+
+        Creates: source_blk -> new_block -> final_target
+
+        Uses :func:`create_standalone_block` instead of :func:`create_block`
+        to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
+
+        Supports both 1-way and 2-way source blocks. For 2-way sources,
+        ``old_target_serial`` must be provided and must equal the conditional
+        (taken) arm of the m_jcnd tail (i.e., ``source_blk.tail.d.b``).
+        Redirecting the fallthrough arm is not supported.
+        """
+        if instructions_to_copy is None:
+            instructions_to_copy = []
+        instructions_to_copy = _prepare_block_creation_instructions(
+            self.mba,
+            instructions_to_copy,
+        )
+
+        if source_blk.serial == 0:
+            logger.warning(
+                "create_and_redirect requires non-entry source block; block %d is entry",
+                source_blk.serial,
+            )
+            return False
+
+        nsucc = int(source_blk.nsucc())
+        if nsucc not in (1, 2):
+            logger.warning(
+                "create_and_redirect: unsupported nsucc=%d for blk[%d]",
+                nsucc,
+                source_blk.serial,
+            )
+            return False
+
+        # Pre-validate 2-way path BEFORE creating the new block to avoid
+        # leaving an orphan when the final redirect cannot succeed.
+        if nsucc == 2:
+            if old_target_serial is None:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] requires "
+                    "old_target_serial to disambiguate arm",
+                    source_blk.serial,
+                )
+                return False
+            tail = source_blk.tail
+            if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+                tail_op = int(getattr(tail, "opcode", -1)) if tail is not None else -1
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] tail is not a "
+                    "conditional jump (opcode=%d)",
+                    source_blk.serial,
+                    tail_op,
+                )
+                return False
+            # change_2way_block_conditional_successor only rewrites the
+            # conditional (taken) arm, which lives in tail.d.b. If the
+            # caller wants to retarget the fallthrough arm, we cannot do
+            # that via this helper without violating physical adjacency.
+            try:
+                cond_target = int(tail.d.b)
+            except Exception:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] m_jcnd tail "
+                    "has no readable target operand",
+                    source_blk.serial,
+                )
+                return False
+            if cond_target != int(old_target_serial):
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] conditional "
+                    "arm targets blk[%d], expected old_target=%d (likely "
+                    "fallthrough arm; refusing to create orphan)",
+                    source_blk.serial,
+                    cond_target,
+                    int(old_target_serial),
+                )
+                return False
+
+        mba = self.mba
+
+        # Find reference block for copy_block template (tail block, avoiding XTRN/STOP)
+        tail_serial = mba.qty - 1
+        ref_block = mba.get_mblock(tail_serial)
+        while ref_block.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
+            tail_serial -= 1
+            ref_block = mba.get_mblock(tail_serial)
+
+        # Get target block to check if it's 0-way
+        target_blk = mba.get_mblock(final_target)
+        actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
+
+        try:
+            old_stop_serial = mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(mba.qty)
+                if (blk := mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
+            # Create a standalone block -- ref_block's CFG edges are NOT modified.
+            new_block = create_standalone_block(
+                ref_block,
+                instructions_to_copy,
+                target_serial=None if actual_is_0_way else final_target,
+                is_0_way=actual_is_0_way,
+                verify=False,
+            )
+            if expected_serial is not None and new_block.serial != expected_serial:
+                self._serial_remap[int(expected_serial)] = int(new_block.serial)
+                logger.info(
+                    "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
+                    "recorded in serial remap",
+                    expected_serial,
+                    new_block.serial,
+                )
+            new_stop_serial = mba.qty - 1
+            for pred_serial in old_stop_pred_serials:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None or pred_blk.serial == new_block.serial:
+                    continue
+                if pred_blk.nsucc() != 1 or pred_blk.succ(0) != new_block.serial:
+                    continue
+                if not change_1way_block_successor(pred_blk, new_stop_serial, verify=False):
+                    logger.warning(
+                        "create_and_redirect: failed to relocate stop predecessor blk[%d] -> blk[%d]",
+                        pred_blk.serial,
+                        new_stop_serial,
+                    )
+                    return False
+
+            # Ensure all instructions in the new block have safe EAs within
+            # the function range to prevent INTERR 50863.
+            safe_ea = mba.entry_ea
+            cur = new_block.head
+            while cur is not None:
+                cur.ea = safe_ea
+                cur = cur.next
+
+            # Redirect source block to the new block. Dispatch on the
+            # current source topology: 1-way uses change_1way; 2-way (with
+            # validated m_jcnd conditional arm) uses change_2way.
+            if nsucc == 1:
+                redirect_ok = change_1way_block_successor(
+                    source_blk, new_block.serial, verify=False
+                )
+            else:
+                redirect_ok = change_2way_block_conditional_successor(
+                    source_blk,
+                    new_block.serial,
+                    verify=False,
+                    old_target=int(old_target_serial)
+                    if old_target_serial is not None
+                    else None,
+                )
+            if not redirect_ok:
+                logger.warning(
+                    "Failed to redirect block %d (nsucc=%d) to new block %d",
+                    source_blk.serial, nsucc, new_block.serial,
+                )
+                # Best-effort cleanup for the partially-created orphan block.
+                try:
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                except Exception:
+                    pass
+                return False
+
+            logger.debug(
+                "Created block %d: %d -> %d -> %d (source nsucc=%d)",
+                new_block.serial, source_blk.serial, new_block.serial,
+                final_target, nsucc,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Exception in create_and_redirect for block %d: %s",
+                source_blk.serial, e
+            )
+            return False
+
     def _apply_create_conditional_redirect(
         self,
         source_blk: ida_hexrays.mblock_t,
