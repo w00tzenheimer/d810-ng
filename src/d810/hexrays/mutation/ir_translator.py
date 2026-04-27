@@ -575,6 +575,7 @@ class IDAIRTranslator:
                 succ_serial=succ,
                 assigned_serial=assigned,
                 instructions=instructions,
+                old_target_serial=old_target,
             ):
                 modifier.queue_create_and_redirect(
                     source_block_serial=pred,
@@ -582,9 +583,11 @@ class IDAIRTranslator:
                     instructions_to_copy=list(instructions),
                     is_0_way=False,
                     expected_serial=assigned,
+                    old_target_serial=old_target,
                     description=(
                         f"insert block {pred}->{assigned}->{succ} "
-                        f"with {len(instructions)} instructions"
+                        f"with {len(instructions)} instructions "
+                        f"(old_target={old_target})"
                     ),
                 )
 
