@@ -104,13 +104,31 @@ class _StubMba:
 
 
 class _StubHandler:
+    """Mirrors the real ``StateHandler`` shape (transition_builder.py).
+
+    Real fields: ``state_value``, ``check_block``, ``handler_blocks``.
+    The strategy reads ``handler_blocks[0]`` first, falling back to
+    ``check_block``.
+    """
+
     def __init__(self, entry_serial: int) -> None:
-        self.entry_serial = entry_serial
+        # Tests pre-existing semantics: a single entry serial is the
+        # handler entry block.  Use it as both check_block and the
+        # singleton handler_blocks list so the strategy's preference
+        # order resolves to it.
+        self.state_value = 0
+        self.check_block = entry_serial
+        self.handler_blocks = [entry_serial]
 
 
 class _StubStateMachine:
     def __init__(self, handler_serials: list[int]) -> None:
-        self.handlers = [_StubHandler(s) for s in handler_serials]
+        # Real ``DispatcherStateMachine.handlers`` is ``dict[int,
+        # StateHandler]``; mirror that here so the strategy's
+        # ``handlers_attr.values()`` walk works.
+        self.handlers = {
+            i: _StubHandler(s) for i, s in enumerate(handler_serials)
+        }
 
 
 class _StubSnapshot:
