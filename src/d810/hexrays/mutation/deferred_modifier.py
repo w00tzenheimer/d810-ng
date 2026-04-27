@@ -1253,6 +1253,7 @@ class DeferredGraphModifier:
         is_0_way: bool = False,
         expected_serial: int | None = None,
         description: str = "",
+        old_target_serial: int | None = None,
     ) -> None:
         """
         Queue creation of an intermediate block with instruction redirect.
@@ -1267,6 +1268,10 @@ class DeferredGraphModifier:
             instructions_to_copy: List of minsn_t or InsnSnapshot to copy to the new block
             is_0_way: If True, new block will be 0-way (no successor)
             description: Optional description for logging
+            old_target_serial: Existing successor edge on source being replaced.
+                Required when source is 2-way (disambiguates which arm of the
+                conditional jump to redirect). Defaults to ``final_target_serial``
+                when source is 1-way.
         """
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_CREATE_WITH_REDIRECT,
@@ -1276,6 +1281,7 @@ class DeferredGraphModifier:
             instructions_to_copy=instructions_to_copy,
             is_0_way=is_0_way,
             expected_serial=expected_serial,
+            old_target=old_target_serial,
             priority=5,  # Very high priority - create blocks before other changes
             description=description or f"create block after {source_block_serial} -> {final_target_serial}",
         ))
@@ -4622,6 +4628,7 @@ class DeferredGraphModifier:
                 mod.instructions_to_copy,
                 mod.is_0_way,
                 expected_serial=mod.expected_serial,
+                old_target_serial=mod.old_target,
             )
 
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
@@ -4887,6 +4894,7 @@ class DeferredGraphModifier:
         instructions_to_copy: list | tuple | None,
         is_0_way: bool,
         expected_serial: int | None,
+        old_target_serial: int | None = None,
     ) -> bool:
         """
         Create a standalone intermediate block and redirect source through it.
@@ -4895,6 +4903,11 @@ class DeferredGraphModifier:
 
         Uses :func:`create_standalone_block` instead of :func:`create_block`
         to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
+
+        Supports both 1-way and 2-way source blocks. For 2-way sources,
+        ``old_target_serial`` must be provided and must equal the conditional
+        (taken) arm of the m_jcnd tail (i.e., ``source_blk.tail.d.b``).
+        Redirecting the fallthrough arm is not supported.
         """
         if instructions_to_copy is None:
             instructions_to_copy = []
@@ -4903,22 +4916,65 @@ class DeferredGraphModifier:
             instructions_to_copy,
         )
 
-        # Precondition: this helper rewires a single outgoing edge. If the
-        # source is not 1-way, creating the new block first can leave orphans
-        # when the final redirect fails.
-        if source_blk.nsucc() != 1:
-            logger.warning(
-                "create_and_redirect requires 1-way source block; block %d has nsucc=%d",
-                source_blk.serial,
-                source_blk.nsucc(),
-            )
-            return False
         if source_blk.serial == 0:
             logger.warning(
                 "create_and_redirect requires non-entry source block; block %d is entry",
                 source_blk.serial,
             )
             return False
+
+        nsucc = int(source_blk.nsucc())
+        if nsucc not in (1, 2):
+            logger.warning(
+                "create_and_redirect: unsupported nsucc=%d for blk[%d]",
+                nsucc,
+                source_blk.serial,
+            )
+            return False
+
+        # Pre-validate 2-way path BEFORE creating the new block to avoid
+        # leaving an orphan when the final redirect cannot succeed.
+        if nsucc == 2:
+            if old_target_serial is None:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] requires "
+                    "old_target_serial to disambiguate arm",
+                    source_blk.serial,
+                )
+                return False
+            tail = source_blk.tail
+            if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+                tail_op = int(getattr(tail, "opcode", -1)) if tail is not None else -1
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] tail is not a "
+                    "conditional jump (opcode=%d)",
+                    source_blk.serial,
+                    tail_op,
+                )
+                return False
+            # change_2way_block_conditional_successor only rewrites the
+            # conditional (taken) arm, which lives in tail.d.b. If the
+            # caller wants to retarget the fallthrough arm, we cannot do
+            # that via this helper without violating physical adjacency.
+            try:
+                cond_target = int(tail.d.b)
+            except Exception:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] m_jcnd tail "
+                    "has no readable target operand",
+                    source_blk.serial,
+                )
+                return False
+            if cond_target != int(old_target_serial):
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] conditional "
+                    "arm targets blk[%d], expected old_target=%d (likely "
+                    "fallthrough arm; refusing to create orphan)",
+                    source_blk.serial,
+                    cond_target,
+                    int(old_target_serial),
+                )
+                return False
 
         mba = self.mba
 
@@ -4951,12 +5007,13 @@ class DeferredGraphModifier:
                 verify=False,
             )
             if expected_serial is not None and new_block.serial != expected_serial:
-                logger.warning(
-                    "create_and_redirect: created blk[%d], expected blk[%d]",
-                    new_block.serial,
+                self._serial_remap[int(expected_serial)] = int(new_block.serial)
+                logger.info(
+                    "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
+                    "recorded in serial remap",
                     expected_serial,
+                    new_block.serial,
                 )
-                return False
             new_stop_serial = mba.qty - 1
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
@@ -4980,11 +5037,26 @@ class DeferredGraphModifier:
                 cur.ea = safe_ea
                 cur = cur.next
 
-            # Redirect source block to the new block
-            if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
+            # Redirect source block to the new block. Dispatch on the
+            # current source topology: 1-way uses change_1way; 2-way (with
+            # validated m_jcnd conditional arm) uses change_2way.
+            if nsucc == 1:
+                redirect_ok = change_1way_block_successor(
+                    source_blk, new_block.serial, verify=False
+                )
+            else:
+                redirect_ok = change_2way_block_conditional_successor(
+                    source_blk,
+                    new_block.serial,
+                    verify=False,
+                    old_target=int(old_target_serial)
+                    if old_target_serial is not None
+                    else None,
+                )
+            if not redirect_ok:
                 logger.warning(
-                    "Failed to redirect block %d to new block %d",
-                    source_blk.serial, new_block.serial
+                    "Failed to redirect block %d (nsucc=%d) to new block %d",
+                    source_blk.serial, nsucc, new_block.serial,
                 )
                 # Best-effort cleanup for the partially-created orphan block.
                 try:
@@ -4994,8 +5066,9 @@ class DeferredGraphModifier:
                 return False
 
             logger.debug(
-                "Created block %d: %d -> %d -> %d",
-                new_block.serial, source_blk.serial, new_block.serial, final_target
+                "Created block %d: %d -> %d -> %d (source nsucc=%d)",
+                new_block.serial, source_blk.serial, new_block.serial,
+                final_target, nsucc,
             )
             return True
 
@@ -6875,6 +6948,7 @@ class DeferredGraphModifier:
             if self._check_create_and_redirect_preconditions(
                 source_block_serial=mod.block_serial,
                 final_target_serial=mod.final_target,
+                old_target_serial=mod.old_target,
             ):
                 filtered_mods.append(mod)
                 continue
@@ -6969,6 +7043,7 @@ class DeferredGraphModifier:
         *,
         source_block_serial: int | None,
         final_target_serial: int | None,
+        old_target_serial: int | None = None,
     ) -> bool:
         """Validate live topology for create-and-redirect without mutating the MBA."""
         if self.mba is None or source_block_serial is None or final_target_serial is None:
@@ -6996,15 +7071,45 @@ class DeferredGraphModifier:
             )
             return False
 
-        if source_blk.nsucc() != 1:
-            logger.warning(
-                "create_and_redirect: src blk[%d] must be 1-way, got nsucc=%d",
-                source_blk.serial,
-                source_blk.nsucc(),
-            )
-            return False
+        nsucc = int(source_blk.nsucc())
+        if nsucc == 1:
+            return True
+        if nsucc == 2:
+            if old_target_serial is None:
+                logger.warning(
+                    "create_and_redirect: 2-way src blk[%d] requires old_target_serial",
+                    source_blk.serial,
+                )
+                return False
+            tail = source_blk.tail
+            if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+                logger.warning(
+                    "create_and_redirect: 2-way src blk[%d] tail is not m_jcnd",
+                    source_blk.serial,
+                )
+                return False
+            try:
+                cond_target = int(tail.d.b)
+            except Exception:
+                logger.warning(
+                    "create_and_redirect: 2-way src blk[%d] m_jcnd target unreadable",
+                    source_blk.serial,
+                )
+                return False
+            if cond_target != int(old_target_serial):
+                logger.warning(
+                    "create_and_redirect: 2-way src blk[%d] cond arm=%d != "
+                    "old_target=%d (fallthrough arm not supported)",
+                    source_blk.serial, cond_target, int(old_target_serial),
+                )
+                return False
+            return True
 
-        return True
+        logger.warning(
+            "create_and_redirect: src blk[%d] has unsupported nsucc=%d",
+            source_blk.serial, nsucc,
+        )
+        return False
 
     def _check_duplicate_block_preconditions(
         self,
@@ -7768,6 +7873,7 @@ class ImmediateGraphModifier:
         is_0_way: bool = False,
         expected_serial: int | None = None,
         description: str = "",
+        old_target_serial: int | None = None,
     ) -> None:
         """Create an intermediate block and redirect immediately."""
         blk = self.mba.get_mblock(source_block_serial)
@@ -7785,6 +7891,7 @@ class ImmediateGraphModifier:
             instructions_to_copy,
             is_0_way,
             expected_serial=expected_serial,
+            old_target_serial=old_target_serial,
         ):
             self.modifications_applied += 1
 
@@ -7972,6 +8079,7 @@ class ImmediateGraphModifier:
         instructions_to_copy: list | tuple | None,
         is_0_way: bool,
         expected_serial: int | None,
+        old_target_serial: int | None = None,
     ) -> bool:
         """
         Create a standalone intermediate block and redirect source through it.
@@ -7980,6 +8088,10 @@ class ImmediateGraphModifier:
 
         Uses :func:`create_standalone_block` instead of :func:`create_block`
         to avoid corrupting ``ref_block``'s CFG edges (INTERR 50856/50858).
+
+        Supports both 1-way and 2-way source blocks. For 2-way sources,
+        ``old_target_serial`` must equal ``source_blk.tail.d.b`` (the
+        conditional/taken arm of the m_jcnd tail).
         """
         if instructions_to_copy is None:
             instructions_to_copy = []
@@ -7993,6 +8105,52 @@ class ImmediateGraphModifier:
                 source_blk.serial,
             )
             return False
+
+        nsucc = int(source_blk.nsucc())
+        if nsucc not in (1, 2):
+            logger.warning(
+                "create_and_redirect: unsupported nsucc=%d for blk[%d]",
+                nsucc,
+                source_blk.serial,
+            )
+            return False
+
+        # Pre-validate 2-way path BEFORE creating the new block so we never
+        # leave an orphan when redirect cannot succeed.
+        if nsucc == 2:
+            if old_target_serial is None:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] requires "
+                    "old_target_serial to disambiguate arm",
+                    source_blk.serial,
+                )
+                return False
+            tail = source_blk.tail
+            if tail is None or not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
+                tail_op = int(getattr(tail, "opcode", -1)) if tail is not None else -1
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] tail is not "
+                    "a conditional jump (opcode=%d)",
+                    source_blk.serial, tail_op,
+                )
+                return False
+            try:
+                cond_target = int(tail.d.b)
+            except Exception:
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] m_jcnd target "
+                    "operand unreadable",
+                    source_blk.serial,
+                )
+                return False
+            if cond_target != int(old_target_serial):
+                logger.warning(
+                    "create_and_redirect: 2-way source blk[%d] conditional "
+                    "arm targets blk[%d], expected old_target=%d (fallthrough "
+                    "arm not supported)",
+                    source_blk.serial, cond_target, int(old_target_serial),
+                )
+                return False
 
         mba = self.mba
 
@@ -8025,12 +8183,13 @@ class ImmediateGraphModifier:
                 verify=False,
             )
             if expected_serial is not None and new_block.serial != expected_serial:
-                logger.warning(
-                    "create_and_redirect: created blk[%d], expected blk[%d]",
-                    new_block.serial,
+                self._serial_remap[int(expected_serial)] = int(new_block.serial)
+                logger.info(
+                    "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
+                    "recorded in serial remap",
                     expected_serial,
+                    new_block.serial,
                 )
-                return False
             new_stop_serial = mba.qty - 1
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
@@ -8054,17 +8213,33 @@ class ImmediateGraphModifier:
                 cur.ea = safe_ea
                 cur = cur.next
 
-            # Redirect source block to the new block
-            if not change_1way_block_successor(source_blk, new_block.serial, verify=False):
+            # Redirect source block to the new block. Dispatch on the
+            # current source topology: 1-way uses change_1way; 2-way (with
+            # validated m_jcnd conditional arm) uses change_2way.
+            if nsucc == 1:
+                redirect_ok = change_1way_block_successor(
+                    source_blk, new_block.serial, verify=False
+                )
+            else:
+                redirect_ok = change_2way_block_conditional_successor(
+                    source_blk,
+                    new_block.serial,
+                    verify=False,
+                    old_target=int(old_target_serial)
+                    if old_target_serial is not None
+                    else None,
+                )
+            if not redirect_ok:
                 logger.warning(
-                    "Failed to redirect block %d to new block %d",
-                    source_blk.serial, new_block.serial
+                    "Failed to redirect block %d (nsucc=%d) to new block %d",
+                    source_blk.serial, nsucc, new_block.serial,
                 )
                 return False
 
             logger.debug(
-                "Created block %d: %d -> %d -> %d",
-                new_block.serial, source_blk.serial, new_block.serial, final_target
+                "Created block %d: %d -> %d -> %d (source nsucc=%d)",
+                new_block.serial, source_blk.serial, new_block.serial,
+                final_target, nsucc,
             )
             return True
 
