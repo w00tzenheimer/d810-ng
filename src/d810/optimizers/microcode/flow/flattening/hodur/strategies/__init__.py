@@ -44,6 +44,8 @@ Available strategies (in dependency order):
 """
 from __future__ import annotations
 
+import os
+
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
@@ -90,6 +92,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.prototypes import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass import (
     ExactNodeFrontierBypassStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer import (
+    HandlerChainComposerStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
@@ -120,6 +125,7 @@ __all__ = [
     "ExactConditionalForkNodeLoweringStrategy",
     "ExactConditionalBridgeNodeLoweringStrategy",
     "ExactNodeFrontierBypassStrategy",
+    "HandlerChainComposerStrategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -129,24 +135,48 @@ __all__ = [
     "LEGACY_STRATEGIES",
 ]
 
+def _filter_strategies(strategies: list[type]) -> list[type]:
+    """Filter strategies via env vars D810_HODUR_ONLY / D810_HODUR_SKIP.
+
+    D810_HODUR_ONLY=Foo,Bar        — only run Foo and Bar
+    D810_HODUR_SKIP=Baz            — skip Baz, run everything else
+    Both can be combined; ONLY is applied first, then SKIP.
+    """
+    only = {n.strip() for n in os.environ.get("D810_HODUR_ONLY", "").split(",") if n.strip()}
+    skip = {n.strip() for n in os.environ.get("D810_HODUR_SKIP", "").split(",") if n.strip()}
+    out = list(strategies)
+    if only:
+        out = [s for s in out if s.__name__ in only]
+    if skip:
+        out = [s for s in out if s.__name__ not in skip]
+    return out
+
+
 # Experimental pipeline: reconstruction-first with direct cleanup.
 # LinearizedFlowGraphStrategy remains importable for targeted tests and manual
 # experiments, but it is no longer part of the live Hodur pipeline.
 # Dead legacy shells and dormant reference strategies have been deleted once
 # their behavior was either harvested into shared recon/cfg modules or fully
 # superseded by reconstruction/LFG.
-ALL_STRATEGIES: list[type] = [
+ALL_STRATEGIES: list[type] = _filter_strategies([
     StateWriteReconstructionStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     # DISCRIMINATOR TEST: topo disabled
     # TopologicalSortStrategy,
-]
+])
 
 # Scratch-reset pipeline: one experimental strategy only.
-EXPERIMENTAL_STRATEGIES: list[type] = [
+#
+# ``HandlerChainComposerStrategy`` is included for registration but is
+# default-OFF via ``HANDLER_CHAIN_COMPOSER_ENABLED = False`` on the class
+# itself.  When the flag is False, ``plan()`` returns ``None`` immediately
+# and no modifications are emitted.  Set to ``True`` only for targeted
+# byte-handler-chain experiments (ticket ``uee-b7ze``).
+EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     SemanticStructuredRegionStrategy,
-]
+    HandlerChainComposerStrategy,
+])
 
 # Legacy pipeline preserved for reference/fallback.
 #
