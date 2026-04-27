@@ -303,9 +303,28 @@ class HandlerChainComposerStrategy:
 
         if not handler_entries:
             return []
+
+        # Read the dispatcher serial so we can skip chains that exit
+        # back to the dispatcher.  An InsertBlock between the chain
+        # anchor and the dispatcher is a no-op — IDA's downstream
+        # cleanup eliminates the dispatcher and the inserted block with
+        # it.  Useful chains exit to NEXT-handler blocks (post-
+        # linearization) or to handler-body downstream blocks.
+        dispatcher_serial = -1
+        # Try several known attribute paths on the snapshot/state-machine.
+        for src in (
+            getattr(snapshot, "bst_dispatcher_serial", None),
+            getattr(getattr(snapshot, "bst_result", None), "dispatcher_serial", None),
+            getattr(sm, "dispatcher_serial", None),
+        ):
+            if isinstance(src, int) and src >= 0:
+                dispatcher_serial = int(src)
+                break
         logger.info(
-            "HandlerChainComposer: %d handler entries from state-machine",
+            "HandlerChainComposer: %d handler entries from state-machine"
+            " (dispatcher_serial=%d)",
             len(handler_entries),
+            dispatcher_serial,
         )
 
         # Walk handler entries; for each one whose predecessor is NOT a
@@ -325,6 +344,21 @@ class HandlerChainComposerStrategy:
                 continue
             for serial in chain.handler_serials:
                 visited.add(serial)
+            # Skip chains that exit to the dispatcher.  Insert-before-
+            # dispatcher is a no-op once IDA's cleanup eliminates the
+            # dispatcher.  We only emit when the chain exit lands on a
+            # handler-body downstream or a non-dispatcher block.
+            if (
+                dispatcher_serial >= 0
+                and chain.succ_serial == dispatcher_serial
+            ):
+                logger.info(
+                    "HandlerChainComposer: skipping chain pred=%d"
+                    " handlers=%s — succ is dispatcher (no-op)",
+                    chain.pred_serial,
+                    chain.handler_serials,
+                )
+                continue
             # Length-1 chains are still candidates: a single handler
             # whose body needs to be lifted onto the linearized path so
             # its def-use chain is preserved.  The benefit is use-def
