@@ -406,6 +406,26 @@ class HandlerChainComposerStrategy:
         if anchor_pred in handler_entries:
             return None  # not a chain start; some upstream handler feeds us
 
+        # Anchor pred must itself have a single successor for our
+        # InsertBlock semantics to work cleanly: we splice a new block
+        # between pred and the chain start by changing pred's only
+        # successor edge.  If pred is multi-way (BST node, conditional),
+        # InsertBlock cannot rewire it without a RedirectBranch-style
+        # mod, which we don't emit here.  Skipping multi-way preds also
+        # avoids the ``CFG_50856_BAD_NSUCC`` projected-check failure
+        # observed empirically on sub_7FFD3338C040.
+        try:
+            anchor_blk = mba.get_mblock(anchor_pred)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+        if anchor_blk is None:
+            return None
+        try:
+            if anchor_blk.nsucc() != 1:
+                return None
+        except Exception:
+            return None
+
         chain_serials: list[int] = []
         composed: list[InsnSnapshot] = []
         state_values: list[int] = []
