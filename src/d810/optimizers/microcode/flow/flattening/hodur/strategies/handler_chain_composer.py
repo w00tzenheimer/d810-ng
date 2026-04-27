@@ -198,11 +198,20 @@ class HandlerChainComposerStrategy:
                     reason,
                 )
                 continue
+            # ``old_target_serial`` tells the backend which existing
+            # edge to replace.  We're splicing pred -> chain[0] -> ...
+            # into pred -> composed_block -> chain_exit.  The existing
+            # edge being replaced is pred -> handler_serials[0]; the
+            # new block routes to succ_serial.  Without this override,
+            # InsertBlock would try to splice on the (pred, succ) edge,
+            # which doesn't exist in the original CFG, producing
+            # CFG_50856_BAD_NSUCC.
             modifications.append(
                 InsertBlock(
                     pred_serial=candidate.pred_serial,
                     succ_serial=candidate.succ_serial,
                     instructions=candidate.composed_instructions,
+                    old_target_serial=int(candidate.handler_serials[0]),
                 )
             )
             owned_blocks.update(candidate.handler_serials)
@@ -406,25 +415,6 @@ class HandlerChainComposerStrategy:
         if anchor_pred in handler_entries:
             return None  # not a chain start; some upstream handler feeds us
 
-        # Anchor pred must itself have a single successor for our
-        # InsertBlock semantics to work cleanly: we splice a new block
-        # between pred and the chain start by changing pred's only
-        # successor edge.  If pred is multi-way (BST node, conditional),
-        # InsertBlock cannot rewire it without a RedirectBranch-style
-        # mod, which we don't emit here.  Skipping multi-way preds also
-        # avoids the ``CFG_50856_BAD_NSUCC`` projected-check failure
-        # observed empirically on sub_7FFD3338C040.
-        try:
-            anchor_blk = mba.get_mblock(anchor_pred)  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        if anchor_blk is None:
-            return None
-        try:
-            if anchor_blk.nsucc() != 1:
-                return None
-        except Exception:
-            return None
 
         chain_serials: list[int] = []
         composed: list[InsnSnapshot] = []
