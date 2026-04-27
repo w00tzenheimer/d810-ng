@@ -274,23 +274,39 @@ class HandlerChainComposerStrategy:
             return []
 
         sm = snapshot.state_machine
-        handlers = list(getattr(sm, "handlers", None) or [])
+        # ``DispatcherStateMachine.handlers`` is ``dict[int, StateHandler]``;
+        # iterate VALUES, not keys (which would be state-value ints).
+        handlers_attr = getattr(sm, "handlers", None) or {}
+        if isinstance(handlers_attr, dict):
+            handlers = list(handlers_attr.values())
+        else:
+            handlers = list(handlers_attr)
         if not handlers:
             return []
 
-        # Build a set of handler-entry serials to constrain chain detection.
+        # Build a set of handler-entry serials.  ``StateHandler`` exposes
+        # ``check_block`` (the BST decision block) and ``handler_blocks``
+        # (the handler-body block list).  Prefer ``handler_blocks[0]``
+        # when available; fall back to ``check_block``.
         handler_entries: set[int] = set()
         for h in handlers:
-            entry = getattr(h, "entry_block", None) or getattr(
-                h, "entry_serial", None
-            )
-            if isinstance(entry, int):
-                handler_entries.add(int(entry))
-            elif entry is not None and hasattr(entry, "serial"):
-                handler_entries.add(int(entry.serial))
+            blocks = getattr(h, "handler_blocks", None) or ()
+            if blocks:
+                try:
+                    handler_entries.add(int(blocks[0]))
+                    continue
+                except (ValueError, TypeError, IndexError):
+                    pass
+            check = getattr(h, "check_block", None)
+            if isinstance(check, int):
+                handler_entries.add(int(check))
 
         if not handler_entries:
             return []
+        logger.info(
+            "HandlerChainComposer: %d handler entries from state-machine",
+            len(handler_entries),
+        )
 
         # Walk handler entries; for each one whose predecessor is NOT a
         # handler entry, attempt to extend a chain forward.
