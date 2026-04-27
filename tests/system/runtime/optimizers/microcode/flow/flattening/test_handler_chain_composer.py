@@ -229,8 +229,15 @@ class TestChainDetection:
         candidates = strat.detect_chains(snap)
         assert candidates == []
 
-    def test_rejects_single_handler_chain(self) -> None:
-        """A single handler with no chain neighbour is not interesting."""
+    def test_accepts_single_handler_chain(self) -> None:
+        """A single composable handler is now a valid candidate.
+
+        Length-1 chains are kept because the goal is use-def
+        preservation (lift the body onto the linearized path), not
+        structural compaction.  Even one isolated state-setter handler
+        whose def is being severed by linearization should be a
+        candidate for InsertBlock-based body relocation.
+        """
         strat = HandlerChainComposerStrategy()
         strat.HANDLER_CHAIN_COMPOSER_ENABLED = True
         pred_blk = _StubBlock(1, (10,), ())
@@ -241,7 +248,10 @@ class TestChainDetection:
         snap = _StubSnapshot(mba, sm)
 
         candidates = strat.detect_chains(snap)
-        assert candidates == []
+        assert len(candidates) == 1
+        assert candidates[0].handler_serials == (10,)
+        assert candidates[0].pred_serial == 1
+        assert candidates[0].succ_serial == 20
 
 
 class TestPlanEmission:
