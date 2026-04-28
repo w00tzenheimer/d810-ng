@@ -31,6 +31,7 @@ from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
 )
+from d810.recon.flow.persisted_recon_dag import store_persisted_recon_dag
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
@@ -243,6 +244,16 @@ def build_round_discovery_context(
         corrected_dag_out=corrected_dag_out,
     )
     corrected_dag = corrected_dag_out[0] if corrected_dag_out else dag
+
+    # Stash the FIRST DAG built per func_ea as the canonical recon-time
+    # anchor selection. Diagnostic dumps consult this cache so they label
+    # what HCC actually consumed instead of a post-mutation rebuild. Pure
+    # observability — no effect on lowering. Subsequent builds in the same
+    # decompilation are silently ignored (first-write wins).
+    try:
+        store_persisted_recon_dag(int(func_ea), dag)
+    except Exception:
+        pass
 
     indexes = build_reconstruction_discovery_indexes(
         dag=dag,

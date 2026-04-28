@@ -54,16 +54,21 @@ from d810.recon.flow.bst_analysis import (
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
+    LinearizedStateDag,
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderedProgramSnapshot,
     RenderOrderStrategy,
+    StateAnchorDivergence,
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
+    compute_dag_anchor_divergence,
+    render_dag_anchor_divergence,
     render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
+from d810.recon.flow.persisted_recon_dag import get_persisted_recon_dag
 from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
     TransitionKind,
@@ -1175,13 +1180,50 @@ def dump_linearized_dag(
     *,
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
-    """Build and render the unified state-level DAG for a dispatcher."""
-    dag = _build_live_linearized_state_dag(
+    """Render the canonical recon-time DAG when available, else the
+    post-mutation live rebuild with an explicit non-canonical label.
+
+    Diagnostics that rebuild the DAG from a mutated MBA can produce
+    different anchor selections than what HCC actually consumed at
+    recon time (the BST/state-machine analysis reads the live CFG).
+    The recon-time DAG is captured into the per-function process-level
+    cache by ``build_round_discovery_context``; consult it first so the
+    diagnostic shows what the engine actually saw.
+
+    Adds an explicit ``POST_MUTATION_INFERRED — not canonical`` header
+    to live-rebuild output so future debuggers don't trust it as
+    semantic ground truth.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    persisted = get_persisted_recon_dag(func_ea) if func_ea else None
+    if persisted is not None:
+        rendered = render_linearized_state_dag(persisted, order_strategy=order_strategy)
+        return _prepend_dag_header_label(rendered, "persisted recon-time")
+    live_dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag(dag, order_strategy=order_strategy)
+    rendered = render_linearized_state_dag(live_dag, order_strategy=order_strategy)
+    return _prepend_dag_header_label(rendered, "POST_MUTATION_INFERRED — not canonical")
+
+
+def _prepend_dag_header_label(rendered: str, label: str) -> str:
+    """Replace ``render_linearized_state_dag``'s opening header with a
+    labeled variant so callers can distinguish persisted vs live-rebuild
+    output without scanning structurally.
+    """
+    lines = rendered.split("\n", 1)
+    first = lines[0] if lines else ""
+    if first.startswith("=== LINEARIZED STATE DAG"):
+        # Insert " (label)" before the trailing " ===".
+        if first.endswith(" ==="):
+            new_first = first[:-4] + f" ({label}) ==="
+        else:
+            new_first = first + f" ({label})"
+        rest = lines[1] if len(lines) > 1 else ""
+        return new_first + ("\n" + rest if rest else "")
+    return rendered
 
 
 def _build_block_payload_by_serial(
@@ -1287,12 +1329,24 @@ def build_live_linearized_program(
     boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
     comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
 ) -> RenderedProgramSnapshot:
-    """Build the linearized-program IR for a dispatcher."""
-    dag = _build_live_linearized_state_dag(
-        mba,
-        dispatcher_entry_serial,
-        state_var_stkoff=state_var_stkoff,
-    )
+    """Build the linearized-program IR for a dispatcher.
+
+    Prefers the canonical recon-time DAG (persisted by
+    ``build_round_discovery_context``) when available so the rendered
+    program reflects what HCC actually consumed.  Falls back to live
+    rebuild from the post-mutation MBA only when no persisted DAG
+    exists; live rebuilds are intrinsically less stable across pipeline
+    mutations and may produce different anchor selections than recon
+    time.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    if dag is None:
+        dag = _build_live_linearized_state_dag(
+            mba,
+            dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+        )
     block_payload_by_serial = _build_block_payload_by_serial(mba)
     return build_linearized_state_program(
         dag,
@@ -1357,13 +1411,41 @@ def dump_linearized_dag_dot(
     *,
     expanded: bool = False,
 ) -> str:
-    """Build and render the unified state-level DAG as Graphviz DOT."""
+    """Build and render the unified state-level DAG as Graphviz DOT.
+
+    Prefers the canonical recon-time DAG (persisted by
+    ``build_round_discovery_context``) when available so the rendered
+    graph reflects what HCC actually consumed.  Falls back to live
+    rebuild from the post-mutation MBA only when no persisted DAG
+    exists; live rebuilds are intrinsically less stable across pipeline
+    mutations and may produce different anchor selections than recon
+    time.  The fallback output is explicitly labeled
+    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as
+    semantic ground truth.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    rendered = None
+    if dag is not None:
+        rendered = render_linearized_state_dag_dot(dag, expanded=expanded)
+        return _prepend_dot_header_label(rendered, "persisted recon-time")
     dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag_dot(dag, expanded=expanded)
+    rendered = render_linearized_state_dag_dot(dag, expanded=expanded)
+    return _prepend_dot_header_label(rendered, "POST_MUTATION_INFERRED — not canonical")
+
+
+def _prepend_dot_header_label(rendered: str, label: str) -> str:
+    """Prepend a DOT comment header so callers can distinguish persisted
+    vs live-rebuild output without scanning structurally.
+
+    Uses a ``// `` comment line which is valid Graphviz syntax and is
+    preserved verbatim by ``dot`` rendering tools (or simply ignored).
+    """
+    return f"// LINEARIZED STATE DAG ({label})\n{rendered}"
 
 
 # -----------------------------------------------------------------------------
