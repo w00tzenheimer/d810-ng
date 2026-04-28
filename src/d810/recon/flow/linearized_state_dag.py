@@ -5699,6 +5699,95 @@ def render_linearized_state_dag(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True, slots=True)
+class StateAnchorDivergence:
+    """Per-state mismatch between two DAGs' anchor selections.
+
+    Diagnostic-only.  Constructed by :func:`compute_dag_anchor_divergence`
+    when comparing the persisted recon-time DAG against a live rebuild.
+    """
+
+    state_const: int
+    persisted_entry: int | None
+    persisted_kind: str | None
+    live_entry: int | None
+    live_kind: str | None
+
+
+def _index_state_to_node(
+    dag: "LinearizedStateDag",
+) -> dict[int, "StateDagNode"]:
+    """Return ``{state_const_u32: node}`` for nodes that have a concrete state."""
+    out: dict[int, StateDagNode] = {}
+    for node in dag.nodes:
+        state_const = getattr(node.key, "state_const", None)
+        if state_const is None:
+            continue
+        out.setdefault(int(state_const) & 0xFFFFFFFF, node)
+    return out
+
+
+def compute_dag_anchor_divergence(
+    persisted: "LinearizedStateDag",
+    live: "LinearizedStateDag",
+) -> tuple[StateAnchorDivergence, ...]:
+    """Per-state comparison of two DAGs' anchor selections.
+
+    Only returns rows where ``entry_anchor`` (or kind) differs between the
+    persisted and live DAGs, sorted by ``state_const`` for deterministic
+    output. States present only in one DAG are also emitted with the
+    missing side as ``None``.
+    """
+    persisted_index = _index_state_to_node(persisted)
+    live_index = _index_state_to_node(live)
+    states = sorted(set(persisted_index) | set(live_index))
+    rows: list[StateAnchorDivergence] = []
+    for state in states:
+        p_node = persisted_index.get(state)
+        l_node = live_index.get(state)
+        p_entry = int(p_node.entry_anchor) if p_node is not None else None
+        p_kind = p_node.kind.name.lower() if p_node is not None else None
+        l_entry = int(l_node.entry_anchor) if l_node is not None else None
+        l_kind = l_node.kind.name.lower() if l_node is not None else None
+        if p_entry == l_entry and p_kind == l_kind:
+            continue
+        rows.append(
+            StateAnchorDivergence(
+                state_const=int(state) & 0xFFFFFFFF,
+                persisted_entry=p_entry,
+                persisted_kind=p_kind,
+                live_entry=l_entry,
+                live_kind=l_kind,
+            )
+        )
+    return tuple(rows)
+
+
+def render_dag_anchor_divergence(
+    rows: tuple[StateAnchorDivergence, ...],
+) -> str:
+    """Render a ``StateAnchorDivergence`` sequence as a labeled text block."""
+    if not rows:
+        return "=== DAG ANCHOR DIVERGENCE: 0 states diverge ==="
+    lines: list[str] = []
+    lines.append("=== DAG ANCHOR DIVERGENCE (persisted vs live rebuild) ===")
+    for row in rows:
+        p_entry = (
+            f"blk[{row.persisted_entry}]" if row.persisted_entry is not None else "<none>"
+        )
+        l_entry = (
+            f"blk[{row.live_entry}]" if row.live_entry is not None else "<none>"
+        )
+        p_kind = row.persisted_kind or "<none>"
+        l_kind = row.live_kind or "<none>"
+        lines.append(
+            f"state=0x{row.state_const:08X} "
+            f"persisted_entry={p_entry} persisted_kind={p_kind} "
+            f"live_entry={l_entry} live_kind={l_kind}"
+        )
+    return "\n".join(lines)
+
+
 def _unique_render_keys(
     ordered_keys: tuple[StateDagNodeKey, ...],
 ) -> tuple[StateDagNodeKey, ...]:
