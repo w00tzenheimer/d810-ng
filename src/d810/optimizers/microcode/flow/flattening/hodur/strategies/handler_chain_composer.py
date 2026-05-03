@@ -56,13 +56,16 @@ For each ``StateDagNode`` in the region, walk live ``mblock_t`` for
 * the state-write ``m_mov #STATE, %var_<state_var_stkoff>``;
 * trailing ``m_goto`` / ``m_nop``.
 
-Default-OFF
------------
-Behavior is gated on
-``HandlerChainComposerStrategy.HANDLER_CHAIN_COMPOSER_ENABLED`` (class
-flag, defaults to ``False``).  Set ``D810_ENABLE_HANDLER_CHAIN_COMPOSER=1``
-to opt in.  When the flag is False, ``plan()`` returns ``None`` and emits
-no modifications.
+Default behavior
+----------------
+HCC is the default live Hodur reconstruction path.  Disable it only for
+archaeology or regression isolation with
+``D810_DISABLE_HANDLER_CHAIN_COMPOSER=1`` or
+``D810_ENABLE_HANDLER_CHAIN_COMPOSER=0``.
+
+See ``docs/hodur/env_flags.md`` for the full Hodur/unflattening env-var
+manifest.  When the class flag is False, ``plan()`` returns ``None`` and
+emits no modifications.
 
 Family: ``FAMILY_DIRECT``.
 Prerequisites: ``[]`` -- this strategy IS the linearizer.
@@ -2278,22 +2281,25 @@ class HandlerChainComposerStrategy:
 
     Class flag
     ----------
-    ``HANDLER_CHAIN_COMPOSER_ENABLED`` (bool, default ``False``).  When
-    ``False`` (the default), ``plan()`` always returns ``None`` and the
-    strategy emits no modifications.  Set to ``True`` only for targeted
-    experiments.
+    ``HANDLER_CHAIN_COMPOSER_ENABLED`` (bool, default ``True``).  HCC owns the
+    live Hodur reconstruction path; set ``D810_DISABLE_HANDLER_CHAIN_COMPOSER``
+    or ``D810_ENABLE_HANDLER_CHAIN_COMPOSER=0`` only for archaeology or
+    regression isolation.
     """
 
-    # CLASS-LEVEL GATE: explicit enable, or any HCC feature flag.  This keeps
-    # a no-flag run inert while making targeted HCC experiments less brittle:
-    # setting D810_HCC_TAIL_EXTENSION=1 should actually run HCC.
+    # CLASS-LEVEL GATE: HCC is the default live Hodur reconstruction path.
+    # Feature flags remain accepted so older reproducer commands keep working,
+    # while explicit disable flags give us an escape hatch for bisects.
     HANDLER_CHAIN_COMPOSER_ENABLED: bool = (
-        _env_flag("D810_ENABLE_HANDLER_CHAIN_COMPOSER")
-        or _env_flag("D810_HCC_REGION_FUSION")
-        or _env_flag("D810_HCC_EXPERIMENTAL_CONVERGENCE_DUPLICATION")
-        or _env_flag("D810_HCC_TAIL_EXTENSION")
-        or _env_flag("D810_HCC_CALL_BARRIER")
-        or _env_flag("D810_HCC_CHAINED_GUARDED_SOURCE")
+        not _env_flag("D810_DISABLE_HANDLER_CHAIN_COMPOSER")
+        and (
+            os.environ.get("D810_ENABLE_HANDLER_CHAIN_COMPOSER", "").strip() != "0"
+            or _env_flag("D810_HCC_REGION_FUSION")
+            or _env_flag("D810_HCC_EXPERIMENTAL_CONVERGENCE_DUPLICATION")
+            or _env_flag("D810_HCC_TAIL_EXTENSION")
+            or _env_flag("D810_HCC_CALL_BARRIER")
+            or _env_flag("D810_HCC_CHAINED_GUARDED_SOURCE")
+        )
     )
 
     # uee-b7ze Step 2: opt-in flag for FUSABLE_LINEAR region fusion.
@@ -2324,19 +2330,19 @@ class HandlerChainComposerStrategy:
     # approach.  Instead of cloning the convergence block (which broke
     # SSA versioning), we preserve the original convergence and redirect
     # only its outgoing edge through a single InsertBlock that carries
-    # R2's body and lands at R2's exit.  Default off.
+    # R2's body and lands at R2's exit.  Default on for the live HCC pipeline.
     HCC_TAIL_EXTENSION_ENABLED: bool = bool(
-        int(os.environ.get("D810_HCC_TAIL_EXTENSION", "0"))
+        int(os.environ.get("D810_HCC_TAIL_EXTENSION", "1"))
     )
 
     # uee-b7ze Step 2: call-barrier segmentation.  Handlers whose bodies
     # contain m_call/m_icall must be PRESERVED as anchors (their
     # original blocks stay in the CFG, calls untouched), with
     # surrounding semantic flow rewired around them via RedirectGoto
-    # pairs ONLY.  Runs ON TOP OF FUSABLE_TAIL_EXTENSION; baseline is
-    # ``D810_HCC_TAIL_EXTENSION=1``.  Default off.
+    # pairs ONLY.  Runs ON TOP OF FUSABLE_TAIL_EXTENSION.  Default on for the
+    # live HCC pipeline.
     HCC_CALL_BARRIER_ENABLED: bool = bool(
-        int(os.environ.get("D810_HCC_CALL_BARRIER", "0"))
+        int(os.environ.get("D810_HCC_CALL_BARRIER", "1"))
     )
 
     # Experimental semantic-equivalence guard for CHAINED_CALL_ANCHOR.
@@ -2344,9 +2350,10 @@ class HandlerChainComposerStrategy:
     # a later InsertBlock.  That preserves reaching defs but can erase the
     # original conditional guard that made the writer reachable.  When this
     # flag is set, a single guarded walk-back writer is kept in the real CFG
-    # and becomes the InsertBlock predecessor instead of being copied.
+    # and becomes the InsertBlock predecessor instead of being copied.  Default
+    # on for the live HCC pipeline.
     HCC_CHAINED_GUARDED_SOURCE_ENABLED: bool = bool(
-        int(os.environ.get("D810_HCC_CHAINED_GUARDED_SOURCE", "0"))
+        int(os.environ.get("D810_HCC_CHAINED_GUARDED_SOURCE", "1"))
     )
 
     # Planner-level use-def veto for direct reconstruction redirects.  This is
