@@ -1085,6 +1085,35 @@ class StateWriteReconstructionStrategy:
                 "RECON DAG: force-keeping late per-pred shared groups=%s",
                 tuple(sorted(int(block) for block in force_keep_per_pred_shared_blocks)),
             )
+
+        def _shared_block_still_needs_late_clone(block_serial: int) -> bool:
+            projected_block = (
+                projected_flow_graph.get_block(int(block_serial))
+                if projected_flow_graph is not None
+                else None
+            )
+            if projected_block is None:
+                return True
+            succs = tuple(int(succ) for succ in getattr(projected_block, "succs", ()) or ())
+            if len(succs) != 1:
+                return True
+            return int(succs[0]) in dispatcher_region
+
+        fixpoint_resolved_shared_blocks = frozenset(
+            int(entry.source_block)
+            for entry in (
+                postprocess.postprocess_plan.fixpoint_feeder_plan.log_entries
+                if postprocess.postprocess_plan is not None
+                else ()
+            )
+            if not _shared_block_still_needs_late_clone(int(entry.source_block))
+        )
+        if fixpoint_resolved_shared_blocks:
+            logger.info(
+                "RECON DAG: force-keeping fixpoint-resolved shared groups=%s",
+                tuple(sorted(fixpoint_resolved_shared_blocks)),
+            )
+
         log_reconstruction_phase_probe(
             phase="pre_late_shared_fallback",
             flow_graph=flow_graph,
@@ -1112,8 +1141,12 @@ class StateWriteReconstructionStrategy:
                 and int(result.shared_block) in corrected_boundary_shared_blocks
                 and int(result.shared_block) not in relaxed_lateclone_shared_blocks
                 and int(result.shared_block) not in force_keep_per_pred_shared_blocks
+                and _shared_block_still_needs_late_clone(int(result.shared_block))
             ),
-            force_keep_per_pred_shared_blocks=force_keep_per_pred_shared_blocks,
+            force_keep_per_pred_shared_blocks=frozenset(
+                set(force_keep_per_pred_shared_blocks)
+                | set(fixpoint_resolved_shared_blocks)
+            ),
         )
         log_reconstruction_phase_probe(
             phase="post_late_shared_fallback",

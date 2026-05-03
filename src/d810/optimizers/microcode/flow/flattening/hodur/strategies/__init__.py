@@ -152,30 +152,29 @@ def _filter_strategies(strategies: list[type]) -> list[type]:
     return out
 
 
-# Experimental pipeline: reconstruction-first with direct cleanup.
-# LinearizedFlowGraphStrategy remains importable for targeted tests and manual
-# experiments, but it is no longer part of the live Hodur pipeline.
-# Dead legacy shells and dormant reference strategies have been deleted once
-# their behavior was either harvested into shared recon/cfg modules or fully
-# superseded by reconstruction/LFG.
-ALL_STRATEGIES: list[type] = _filter_strategies([
-    StateWriteReconstructionStrategy,
-    StateConstantReturnFixupStrategy,
-    DeadStateVariableEliminationStrategy,
-    # DISCRIMINATOR TEST: topo disabled
-    # TopologicalSortStrategy,
-])
-
-# Scratch-reset pipeline: one experimental strategy only.
+# Live pipeline: semantic regions plus HCC-owned reconstruction orchestration.
 #
 # ``HandlerChainComposerStrategy`` is included for registration but is
-# default-OFF via ``HANDLER_CHAIN_COMPOSER_ENABLED = False`` on the class
-# itself.  When the flag is False, ``plan()`` returns ``None`` immediately
-# and no modifications are emitted.  Set to ``True`` only for targeted
-# byte-handler-chain experiments (ticket ``uee-b7ze``).
+# controlled via ``HANDLER_CHAIN_COMPOSER_ENABLED`` on the class itself.
+# Standalone ``StateWriteReconstructionStrategy`` remains importable for
+# targeted archaeology/regression tests, but HCC owns the live SWR-style
+# orchestration and conflict handling.
 EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     SemanticStructuredRegionStrategy,
     HandlerChainComposerStrategy,
+])
+
+_STANDALONE_SRW_ENABLED = (
+    os.getenv("D810_RECON_ENABLE_STANDALONE_SRW", "").strip() == "1"
+    and os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() != "1"
+)
+
+ALL_STRATEGIES: list[type] = _filter_strategies([
+    SemanticStructuredRegionStrategy,
+    HandlerChainComposerStrategy,
+    StateConstantReturnFixupStrategy,
+    DeadStateVariableEliminationStrategy,
+    *([StateWriteReconstructionStrategy] if _STANDALONE_SRW_ENABLED else []),
 ])
 
 # Legacy pipeline preserved for reference/fallback.

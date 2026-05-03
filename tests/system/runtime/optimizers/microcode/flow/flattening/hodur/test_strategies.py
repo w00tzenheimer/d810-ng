@@ -97,10 +97,12 @@ def test_strategy_names_unique():
 
 
 def test_strategy_count():
-    """Worktree ALL_STRATEGIES uses the reconstruction-first 3-strategy stack."""
+    """Worktree ALL_STRATEGIES uses HCC-owned reconstruction, not standalone SRW."""
     names = {cls().name for cls in ALL_STRATEGIES}
-    assert len(ALL_STRATEGIES) == 3
-    assert "state_write_reconstruction" in names
+    assert len(ALL_STRATEGIES) == 4
+    assert "semantic_structured_region" in names
+    assert "handler_chain_composer" in names
+    assert "state_write_reconstruction" not in names
     assert "state_constant_return_fixup" in names
     assert "dead_state_variable_elimination" in names
     assert "linearized_flow_graph" not in names

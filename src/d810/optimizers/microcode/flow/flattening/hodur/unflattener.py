@@ -207,6 +207,13 @@ class HodurUnflattener(GenericUnflatteningRule):
         # construction, and strategy registration through the shared engine
         # family surface rather than owning those responsibilities directly.
         self._cfg_translator = IDAIRTranslator()
+        enable_standalone_srw = (
+            os.getenv("D810_RECON_ENABLE_STANDALONE_SRW", "").strip() == "1"
+            and os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() != "1"
+        )
+        strategy_classes = [*EXPERIMENTAL_STRATEGIES]
+        if enable_standalone_srw:
+            strategy_classes.append(StateWriteReconstructionStrategy)
         self._family = HodurStrategyFamily(
             cfg_translator=self._cfg_translator,
             disabled_strategy_names={
@@ -215,21 +222,15 @@ class HodurUnflattener(GenericUnflatteningRule):
             # Region-first experimental strategy runs first; late-residual
             # cleanup strategies are added ONE AT A TIME (see
             # .claude/handoffs/2026-04-20-region-first-reconstruction-fold.md).
-            # Currently wired: StateWriteReconstructionStrategy — the
-            # direct-source / frontier / shared-group residual redirect driver.
             #
-            # D810_RECON_SKIP_SRW_STRATEGY=1 → unregister
-            # StateWriteReconstructionStrategy entirely. Diagnostic knob for
-            # the reconstruction-contribution harness — needed to measure
-            # SSR-alone output cleanly, because the SRW strategy's postprocess
-            # phase reads primary's ``modifications``/``owned_*`` contract and
-            # would emit flood-redirects on an empty contract (see
-            # tools/reconstruction_contribution.py).
-            strategy_classes=(
-                [*EXPERIMENTAL_STRATEGIES]
-                if os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() == "1"
-                else [*EXPERIMENTAL_STRATEGIES, StateWriteReconstructionStrategy]
-            ),
+            # Standalone StateWriteReconstructionStrategy is retired from the
+            # live pipeline: HandlerChainComposer owns the SWR-style
+            # orchestration and resolves conflicts in the same fragment.  Keep
+            # the old strategy opt-in for archaeology/contribution tests only.
+            #
+            # D810_RECON_ENABLE_STANDALONE_SRW=1 → append old SRW strategy.
+            # D810_RECON_SKIP_SRW_STRATEGY=1 still force-disables it.
+            strategy_classes=strategy_classes,
             recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,
@@ -593,10 +594,20 @@ class HodurUnflattener(GenericUnflatteningRule):
             if bst_cleanup_edges > 0:
                 nb_changes += bst_cleanup_edges
                 bst_cleanup_ran = True
+            # Intermediate snapshot AFTER bst cleanup ran
+            self._capture_intermediate_snapshot("post_bst_cleanup")
+        else:
+            # Take an explicit "skipped" snapshot anyway so the bisection chain
+            # is unambiguous regardless of whether cleanup ran.
+            self._capture_intermediate_snapshot("post_bst_cleanup_skipped")
 
             # Diagnostic: backward dispatcher-predecessor scan
             state_var = getattr(snapshot.state_machine, "state_var", None)
-            if state_var is not None and state_var.t == ida_hexrays.mop_S:
+            if (
+                state_var is not None
+                and state_var.t == ida_hexrays.mop_S
+                and snapshot.bst_result is not None
+            ):
                 self._diagnostic_backward_scan(
                     dispatcher_serial=snapshot.bst_dispatcher_serial,
                     bst_node_blocks=snapshot.bst_result.bst_node_blocks,
@@ -609,8 +620,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             # (PruneUnreachable disabled: remove_block fails at GLBOPT1
             # with INTERR 51920 regardless of preparation. Keeping
             # diagnostic BFS to track unreachability.)
-            bst_serials = set(snapshot.bst_result.bst_node_blocks) | {snapshot.bst_dispatcher_serial}
-            self._prune_unreachable_bst_blocks(bst_serials)
+            bst_serials = set()
+            if snapshot.bst_result is not None:
+                bst_serials = set(snapshot.bst_result.bst_node_blocks) | {
+                    snapshot.bst_dispatcher_serial
+                }
+                self._prune_unreachable_bst_blocks(bst_serials)
+            self._capture_intermediate_snapshot("post_prune_unreachable")
 
             # Remove dispatcher and BST from live set — they're cleanup targets
             self._reconstruction_live_blocks -= bst_serials
@@ -623,6 +639,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
             if dead_cleanup_applied > 0:
                 nb_changes += dead_cleanup_applied
+            self._capture_intermediate_snapshot("post_dead_block_elim")
 
             # --- Diagnostic snapshot: MBA + reachability after Gut-and-Wire ---
             try:
@@ -704,6 +721,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                 self._last_dispatcher_ea = 0
 
         # 6. Log summary
+        # Intermediate snapshot just before the pipeline summary log; if the
+        # CFG was mutated by anything between post_dead_block_elim and here
+        # (currently nothing — sanity anchor only), this catches it.
+        self._capture_intermediate_snapshot("pre_pipeline_log")
         self._log_pipeline_results(results, nb_changes)
         unflat_logger.info("Provenance: %s", provenance.phase_summary())
         if unflat_logger.debug_on:
@@ -755,6 +776,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         bundle_stabilized = self._stabilize_sub7ffd_post_pipeline_bundle()
         if bundle_stabilized:
             nb_changes += bundle_stabilized
+        self._capture_intermediate_snapshot("post_bundle_stabilize")
 
         probe_blocks, probe_targets = self._collect_post_apply_may_only_probe_blocks(
             pipeline, results
@@ -1038,6 +1060,39 @@ class HodurUnflattener(GenericUnflatteningRule):
         except Exception:
             unflat_logger.debug(
                 "post_pipeline diagnostic snapshot failed (non-critical)",
+                exc_info=True,
+            )
+
+    def _capture_intermediate_snapshot(
+        self, label: str, *, phase: str = "post_apply"
+    ) -> None:
+        """Take a labeled MBA snapshot at an arbitrary intermediate point.
+
+        Best-effort: failure is logged debug-only and never gates the pipeline.
+        Used to bisect the post-HCC/pre-post_pipeline window when investigating
+        which pass kills which block.
+        """
+        try:
+            from d810.core.diag import get_diag_db
+            from d810.core.diag.mba_serializer import mba_to_block_snapshots
+            from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+
+            conn = get_diag_db(self.mba.entry_ea)
+            if conn is None:
+                return
+            blocks = mba_to_block_snapshots(self.mba)
+            _snap_mba(
+                conn,
+                blocks,
+                label=label,
+                func_ea=self.mba.entry_ea,
+                maturity="MMAT_GLBOPT1",
+                phase=phase,
+            )
+        except Exception:
+            unflat_logger.debug(
+                "intermediate snapshot %s failed (non-critical)",
+                label,
                 exc_info=True,
             )
 
@@ -1592,6 +1647,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                 "BST cleanup: severed 1-way blk[%d] -> dispatcher edge",
                 blk.serial,
             )
+            try:
+                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                log_cfg_provenance(
+                    pass_name="bst_cleanup",
+                    action="SEVER_EDGE",
+                    block_serial=blk.serial,
+                    target_serial=dispatcher_serial,
+                    reason="sever_1way_handler_to_dispatcher",
+                )
+            except Exception:
+                pass
 
         # Handle 2-way blocks with one arm going to dispatcher.
         # Convert them to 1-way gotos keeping the non-dispatcher successor.
@@ -1615,6 +1681,18 @@ class HodurUnflattener(GenericUnflatteningRule):
             try:
                 make_2way_block_goto(blk, keep_serial, verify=False)
                 severed_2way += 1
+                try:
+                    from d810.core.diag.cfg_provenance import log_cfg_provenance
+                    log_cfg_provenance(
+                        pass_name="bst_cleanup",
+                        action="REDIRECT_EDGE",
+                        block_serial=serial,
+                        target_serial=keep_serial,
+                        reason="convert_2way_to_goto_drop_dispatcher_arm",
+                        extra={"old_succs": [int(succ0), int(succ1)]},
+                    )
+                except Exception:
+                    pass
             except Exception as exc:
                 unflat_logger.warning(
                     "BST cleanup: failed to convert 2-way blk[%d]: %s",
@@ -1675,6 +1753,17 @@ class HodurUnflattener(GenericUnflatteningRule):
                 if succ_blk is not None:
                     succ_blk.predset._del(dispatcher_serial)
                     succ_blk.mark_lists_dirty()
+                try:
+                    from d810.core.diag.cfg_provenance import log_cfg_provenance
+                    log_cfg_provenance(
+                        pass_name="bst_cleanup",
+                        action="SEVER_EDGE",
+                        block_serial=dispatcher_serial,
+                        target_serial=succ_serial,
+                        reason="dispatcher_outgoing_to_bst_comparison",
+                    )
+                except Exception:
+                    pass
             disp_blk.succset.clear()
             disp_blk.mark_lists_dirty()
             if succ_serials:
@@ -1930,6 +2019,18 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             blk.mark_lists_dirty()
             gutted += 1
+            try:
+                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                log_cfg_provenance(
+                    pass_name="gut_and_wire",
+                    action="SOFT_KILL",
+                    block_serial=serial,
+                    target_serial=(blk.succ(0) if blk.nsucc() > 0 else None),
+                    reason="unreachable_after_bst_cleanup",
+                    extra={"original_nsucc": int(nsucc)},
+                )
+            except Exception:
+                pass
 
         if gutted == 0:
             unflat_logger.info(
@@ -1991,6 +2092,18 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             blk.mark_lists_dirty()
             redirected += 1
+            try:
+                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                log_cfg_provenance(
+                    pass_name="gut_and_wire",
+                    action="REDIRECT_EDGE",
+                    block_serial=serial,
+                    target_serial=stop_serial,
+                    reason="forward_redirect_to_blt_stop",
+                    extra={"old_target": int(succ)},
+                )
+            except Exception:
+                pass
 
         # Mark chains dirty once after all mutations.
         mba.mark_chains_dirty()

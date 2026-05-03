@@ -11,6 +11,7 @@ the late orphan-goto cases that previously required backward_pred_resolution.
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 
 import ida_hexrays
 
@@ -188,6 +189,9 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
+from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+    check_redirect_severs_use_def,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -249,6 +253,14 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
+
+
+def _lfg_bounded_postprocess_enabled() -> bool:
+    return os.environ.get("D810_LFG_BOUNDED_POSTPROCESS", "1").strip() != "0"
+
+
+def _lfg_use_def_veto_enabled() -> bool:
+    return os.environ.get("D810_HCC_USE_DEF_VETO", "1").strip() != "0"
 
 
 def _accepted_region_site_signature(site: object) -> tuple[int, int, int, int, tuple[int, ...]]:
@@ -1501,15 +1513,21 @@ class LinearizedFlowGraphStrategy:
             logger.info("LFG: DAG produced no redirect modifications")
             return None
 
-        dag_result = self._apply_bounded_postprocess(
-            snapshot=snapshot,
-            state_machine=sm,
-            bst_result=bst_result,
-            flow_graph=flow_graph,
-            mba=mba,
-            dag_setup=dag_setup,
-            dag_result=dag_result,
-        )
+        if _lfg_bounded_postprocess_enabled():
+            dag_result = self._apply_bounded_postprocess(
+                snapshot=snapshot,
+                state_machine=sm,
+                bst_result=bst_result,
+                flow_graph=flow_graph,
+                mba=mba,
+                dag_setup=dag_setup,
+                dag_result=dag_result,
+            )
+        else:
+            logger.info(
+                "LFG DAG: bounded postprocess disabled"
+                " (set D810_LFG_BOUNDED_POSTPROCESS=0 to disable)"
+            )
 
         (
             sanitized_modifications,
@@ -2209,7 +2227,6 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             (int(src), int(dst))
             for src, dst in (getattr(dag_result, "owned_edges", ()) or ())
         }
-
         postprocess = execute_reconstruction_postprocess(
             dag=dag,
             corrected_dag=corrected_dag,
@@ -2281,6 +2298,64 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
                 len(appended_modifications) - len(filtered_appended_modifications),
             )
             appended_modifications = filtered_appended_modifications
+
+        if _lfg_use_def_veto_enabled() and mba is not None:
+            use_def_filtered_modifications = []
+            vetoed_use_def_count = 0
+            for modification in appended_modifications:
+                if not isinstance(modification, RedirectGoto):
+                    use_def_filtered_modifications.append(modification)
+                    continue
+                try:
+                    violations = check_redirect_severs_use_def(
+                        modification,
+                        mba,
+                        flow_graph,
+                    )
+                except Exception:
+                    logger.debug(
+                        "LFG DAG: bounded postprocess use-def veto check raised for %r",
+                        modification,
+                        exc_info=True,
+                    )
+                    use_def_filtered_modifications.append(modification)
+                    continue
+                if not violations:
+                    use_def_filtered_modifications.append(modification)
+                    continue
+                real_violations = tuple(
+                    violation
+                    for violation in violations
+                    if int(violation.var_stkoff) != int(state_var_stkoff)
+                )
+                if not real_violations:
+                    use_def_filtered_modifications.append(modification)
+                    logger.info(
+                        "LFG DAG: bounded postprocess use-def warning ignored"
+                        " for %r because only state-variable dispatcher uses"
+                        " would be severed",
+                        modification,
+                    )
+                    continue
+                details = "; ".join(
+                    f"var_stk[{violation.var_stkoff:#x}]@blk[{violation.use_block}]"
+                    for violation in real_violations[:8]
+                )
+                if len(real_violations) > 8:
+                    details = f"{details}; ..."
+                logger.warning(
+                    "LFG DAG: bounded postprocess use-def vetoed %r orphaned_uses=%d details=%s",
+                    modification,
+                    len(real_violations),
+                    details,
+                )
+                vetoed_use_def_count += 1
+            if vetoed_use_def_count:
+                logger.info(
+                    "LFG DAG: bounded postprocess use-def veto filtered %d redirect(s)",
+                    vetoed_use_def_count,
+                )
+                appended_modifications = tuple(use_def_filtered_modifications)
 
         modifications = [
             *modifications[:original_modification_count],
