@@ -325,6 +325,34 @@ def snapshot_mba(
             insn_rows,
         )
 
+    # Flush any pending CFG provenance entries under this snapshot_id. Each
+    # call to ``log_cfg_provenance`` appends to a per-process buffer; the
+    # next ``snapshot_mba`` call drains that buffer and persists it to
+    # ``cfg_provenance``. Best-effort: failure here must NOT break snapshots.
+    try:
+        from d810.core.diag.cfg_provenance import drain_pending_provenance
+        prov_entries = drain_pending_provenance()
+        if prov_entries:
+            prov_rows = [
+                (
+                    snap_id,
+                    seq_idx,
+                    e.pass_name,
+                    e.action,
+                    int(e.block_serial),
+                    (int(e.target_serial) if e.target_serial is not None else None),
+                    e.reason,
+                    e.extra_json,
+                )
+                for seq_idx, e in enumerate(prov_entries)
+            ]
+            conn.executemany(
+                "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
+                prov_rows,
+            )
+    except Exception:
+        pass
+
     conn.commit()
     return snap_id
 

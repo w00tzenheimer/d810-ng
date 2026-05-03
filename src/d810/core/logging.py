@@ -348,6 +348,11 @@ conf: dict[str, typing.Any] = {
             "handlers": ["z3FileHandler"],
             "propagate": False,
         },
+        "D810.cfg.provenance": {
+            "level": "INFO",
+            "handlers": ["defaultFileHandler"],
+            "propagate": False,
+        },
     },
     "root": {
         "level": "DEBUG",
@@ -499,6 +504,32 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     conf["handlers"]["z3FileHandler"]["filename"] = (
         log_dir / Z3_TEST_FILENAME
     ).as_posix()
+
+    # When ``D810_DEBUG_LOGGING`` is set (also propagated by
+    # ``run_system_tests_docker.sh --enable-debug-logging``), force every
+    # logger declared in ``conf["loggers"]`` to DEBUG -- including the
+    # ones that explicitly request a higher level (e.g. WARNING or
+    # ERROR).  This is the "turn DEBUG on for every logger instance"
+    # knob: useful when investigating silent gaps in the d810.log where
+    # specific logger families (D810.emulator at WARNING, D810.ui at
+    # ERROR, etc.) would otherwise hide their finer-grained activity.
+    # The file handler is already at DEBUG so log records reach the
+    # file; promote the console handler too so an interactive run
+    # shows them.  The ``getLogger`` default-level promotion in this
+    # module remains independent and continues to handle dynamically-
+    # created loggers that aren't in the dict-config.
+    try:
+        from d810.core.settings import get_settings
+        if get_settings().debug_logging:
+            for _name, _cfg in conf.get("loggers", {}).items():
+                _cfg["level"] = "DEBUG"
+            console_handler = conf.get("handlers", {}).get("consoleHandler")
+            if console_handler is not None:
+                console_handler["level"] = "DEBUG"
+    except Exception:
+        # Settings module not importable yet (early bootstrap); silently
+        # fall back to the per-logger levels as authored.
+        pass
 
     # Apply the configuration
     logging.config.dictConfig(conf)

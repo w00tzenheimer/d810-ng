@@ -187,6 +187,18 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     mba: ida_hexrays.mbl_array_t = blk.mba
     previous_blk_successor_serial = blk.succset[0]
     previous_blk_successor = mba.get_mblock(previous_blk_successor_serial)
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="change_1way_block_successor",
+            extra={"old_target": int(previous_blk_successor_serial)},
+        )
+    except Exception:
+        pass
 
     if blk.tail is None:
         # We add a goto instruction
@@ -305,6 +317,20 @@ def change_2way_block_conditional_successor(
             "but current branch target is %d",
             blk.serial, old_target, previous_blk_conditional_successor_serial,
         )
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="change_2way_block_conditional_successor",
+            extra={
+                "old_target": int(previous_blk_conditional_successor_serial),
+            },
+        )
+    except Exception:
+        pass
     previous_blk_conditional_successor = mba.get_mblock(
         previous_blk_conditional_successor_serial
     )
@@ -369,6 +395,20 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
         return False
     mba = blk.mba
     previous_blk_successor_serials = [x for x in blk.succset]
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="make_2way_block_goto",
+            extra={
+                "old_succs": [int(s) for s in previous_blk_successor_serials],
+            },
+        )
+    except Exception:
+        pass
     previous_blk_successors = [
         mba.get_mblock(x) for x in previous_blk_successor_serials
     ]
@@ -479,6 +519,22 @@ def create_standalone_block(
 
     # 1. Copy ref_blk to get a fresh block at the end of the MBA
     new_blk = mba.copy_block(ref_blk, mba.qty - 1)
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="CREATE",
+            block_serial=int(new_blk.serial),
+            target_serial=(int(target_serial) if target_serial is not None else None),
+            reason="create_standalone_block",
+            extra={
+                "ref_blk": int(ref_blk.serial),
+                "is_0_way": bool(is_0_way),
+                "n_instructions": len(blk_ins),
+            },
+        )
+    except Exception:
+        pass
 
     # 2. Clean ALL inherited successor edges (copy_block clones them)
     prev_successor_serials = [x for x in new_blk.succset]
@@ -943,6 +999,21 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # Append the new block at the end of the MBA (before the dummy last
         # block) to avoid serial shifts for generic rewrites.
         nop_block = mba.copy_block(blk, mba.qty - 1)
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="CREATE",
+            block_serial=int(nop_block.serial),
+            target_serial=int(original_successor_serial),
+            reason="insert_nop_blk",
+            extra={
+                "ref_blk": int(blk.serial),
+                "insert_after_blk": bool(insert_after_blk),
+            },
+        )
+    except Exception:
+        pass
     # Use mba.entry_ea for synthesized NOP instructions to guarantee the EA
     # is within the decompiled function's range (prevents INTERR 50863).
     safe_ea = mba.entry_ea
@@ -1285,6 +1356,18 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                 nb_change += update_blk_successor(
                     father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
                 )
+                try:
+                    from d810.core.diag.cfg_provenance import log_cfg_provenance
+                    log_cfg_provenance(
+                        pass_name="remove_simple_goto",
+                        action="REDIRECT_EDGE",
+                        block_serial=int(father_serial),
+                        target_serial=int(goto_blk_dst_serial),
+                        reason="bypass_simple_goto_block",
+                        extra={"old_target": int(goto_blk_serial)},
+                    )
+                except Exception:
+                    pass
     return nb_change
 
 
@@ -1293,18 +1376,63 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
         # Doing this optimization before MMAT_CALLS may create blocks with call instruction (not last instruction)
         # IDA does like that and will raise a 50864 error
         return 0
+    pre_qty = int(mba.qty)
+    pre_serials = set(range(pre_qty))
     if call_mba_combine_block:
         # Ideally we want IDA to simplify the graph for us with combine_blocks
         # However, We observe several crashes when this option is activated
         # (especially when it is used during  O-LLVM unflattening)
         # TODO: investigate the root cause of this issue
         mba.merge_blocks()
+        action_kind = "MERGE"
+        api_call = "mba.merge_blocks"
     else:
         if idaapi.IDA_SDK_VERSION >= 760:
             # In IDA Pro 7.6, remove_empty_blocks is removed and replaced (?) by remove_empty_and_unreachable_blocks
             mba.remove_empty_and_unreachable_blocks()
+            api_call = "mba.remove_empty_and_unreachable_blocks"
         else:
             mba.remove_empty_blocks()  # type: ignore
+            api_call = "mba.remove_empty_blocks"
+        action_kind = "DELETE"
+    post_qty = int(mba.qty)
+    delta = pre_qty - post_qty
+
+    # Provenance: we cannot tell exactly which serials IDA removed/merged
+    # (the API gives no callback), but we can record the call site and the
+    # qty delta, plus emit per-serial DELETE rows for any pre-serials that
+    # are now out-of-range (qty shrunk).
+    try:
+        from d810.core.diag.cfg_provenance import log_cfg_provenance
+        log_cfg_provenance(
+            pass_name="mba_deep_cleaning",
+            action="BULK_DEEP_CLEAN",
+            block_serial=-1,
+            target_serial=None,
+            reason=api_call,
+            extra={
+                "pre_qty": pre_qty,
+                "post_qty": post_qty,
+                "delta": delta,
+                "kind": action_kind,
+                "maturity": int(getattr(mba, "maturity", -1)),
+            },
+        )
+        if delta > 0:
+            # Per-serial DELETE rows for any serial out-of-range now.
+            for s in sorted(pre_serials):
+                if s >= post_qty:
+                    log_cfg_provenance(
+                        pass_name="mba_deep_cleaning",
+                        action=action_kind,
+                        block_serial=s,
+                        target_serial=None,
+                        reason=f"{api_call}_qty_shrunk",
+                        extra={"pre_qty": pre_qty, "post_qty": post_qty},
+                    )
+    except Exception:
+        pass
+
     nb_change = mba_remove_simple_goto_blocks(mba)
     return nb_change
 
