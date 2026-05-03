@@ -963,14 +963,22 @@ class DeferredGraphModifier:
                         "ref_serial": pred,
                     })
 
-            nextb = int(getattr(blk, "nextb", -1))
+            # ``mblock_t.nextb`` / ``mblock_t.prevb`` return block POINTERS
+            # (mblock_t), not serial integers.  ``int(mblock_t)`` raises
+            # TypeError("int() argument must be ... not 'mblock_t'") and
+            # propagates as a ``raw_apply`` failure at the engine's
+            # backend_apply phase.  Read the linked block's ``.serial``
+            # instead, defaulting to -1 when the link is None.
+            _nextb_blk = getattr(blk, "nextb", None)
+            nextb = int(getattr(_nextb_blk, "serial", -1)) if _nextb_blk is not None else -1
             if nextb >= qty:
                 issues.append({
                     "kind": "nextb",
                     "block_serial": serial,
                     "ref_serial": nextb,
                 })
-            prevb = int(getattr(blk, "prevb", -1))
+            _prevb_blk = getattr(blk, "prevb", None)
+            prevb = int(getattr(_prevb_blk, "serial", -1)) if _prevb_blk is not None else -1
             if prevb >= qty:
                 issues.append({
                     "kind": "prevb",
@@ -5070,6 +5078,76 @@ class DeferredGraphModifier:
                 new_block.serial, source_blk.serial, new_block.serial,
                 final_target, nsucc,
             )
+            # ---- INSERT_BLOCK_INVARIANT: planner-claim vs CFG-state ----
+            # User-directed instrumentation (uee-b7ze): verify that the
+            # newly created block actually matches what we asked for.
+            # Re-read the block from mba so the assertion sees the
+            # post-redirect state, not the cached new_block reference.
+            try:
+                check_blk = mba.get_mblock(new_block.serial)
+                check_type = (
+                    int(getattr(check_blk, "type", -1))
+                    if check_blk is not None else -1
+                )
+                check_nsucc = (
+                    int(check_blk.nsucc())
+                    if check_blk is not None else -1
+                )
+                check_succ0 = (
+                    int(check_blk.succ(0))
+                    if (check_blk is not None and check_nsucc >= 1)
+                    else -1
+                )
+                check_head_op = (
+                    int(check_blk.head.opcode)
+                    if (check_blk is not None and check_blk.head is not None)
+                    else -1
+                )
+                check_ninsns = 0
+                if check_blk is not None:
+                    cur = check_blk.head
+                    while cur is not None:
+                        check_ninsns += 1
+                        cur = cur.next
+
+                planned_n = (
+                    len(instructions_to_copy)
+                    if instructions_to_copy is not None
+                    else 0
+                )
+                # Allow trailing m_goto + leading m_nop in the count.
+                expected_n_min = planned_n
+                expected_n_max = planned_n + 2
+
+                expected_type = (
+                    ida_hexrays.BLT_0WAY if actual_is_0_way
+                    else ida_hexrays.BLT_1WAY
+                )
+                pass_type = (check_type == int(expected_type))
+                pass_succ = (
+                    actual_is_0_way
+                    or check_succ0 == int(final_target)
+                )
+                pass_ninsns = expected_n_min <= check_ninsns <= expected_n_max
+                pass_all = pass_type and pass_succ and pass_ninsns
+
+                logger.info(
+                    "INSERT_BLOCK_INVARIANT serial=blk[%d]"
+                    " expected_type=%d actual_type=%d"
+                    " expected_succ=blk[%d] actual_succ=blk[%d] (nsucc=%d)"
+                    " planned_ninsns=%d actual_ninsns=%d (head_op=%d)"
+                    " result=%s",
+                    new_block.serial,
+                    int(expected_type), check_type,
+                    int(final_target), check_succ0, check_nsucc,
+                    planned_n, check_ninsns, check_head_op,
+                    "PASS" if pass_all else "FAIL",
+                )
+            except Exception:
+                logger.debug(
+                    "INSERT_BLOCK_INVARIANT: post-create check raised",
+                    exc_info=True,
+                )
             return True
 
         except Exception as e:

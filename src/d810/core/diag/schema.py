@@ -262,6 +262,28 @@ CREATE INDEX IF NOT EXISTS idx_watch_block_transitions_session
     ON watch_block_transitions(apply_session_id, mod_index);
 CREATE INDEX IF NOT EXISTS idx_watch_block_transitions_block
     ON watch_block_transitions(block_serial, apply_session_id);
+
+-- CFG mutation provenance.  One row per CFG-mutating site call (block delete,
+-- soft-kill, edge sever/redirect, block create, etc.).  Persisted under the
+-- snapshot_id of the snapshot taken AFTER the mutation, so SQL queries can
+-- correlate "block X gone in snapshot Y" with "pass P removed it".
+CREATE TABLE IF NOT EXISTS cfg_provenance (
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    seq             INTEGER NOT NULL,
+    pass_name       TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    block_serial    INTEGER NOT NULL,
+    target_serial   INTEGER,
+    reason          TEXT,
+    extra_json      TEXT,
+    PRIMARY KEY (snapshot_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_provenance_block
+    ON cfg_provenance(snapshot_id, block_serial);
+CREATE INDEX IF NOT EXISTS idx_provenance_action
+    ON cfg_provenance(snapshot_id, action);
+CREATE INDEX IF NOT EXISTS idx_provenance_pass
+    ON cfg_provenance(snapshot_id, pass_name);
 """
 
 

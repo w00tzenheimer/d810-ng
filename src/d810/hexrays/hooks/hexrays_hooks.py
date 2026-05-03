@@ -886,6 +886,122 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             except Exception:
                 pass  # diagnostic, never gates decompilation
 
+            # uee-b7ze renderer-boundary isolation: when
+            # ``D810_FORCE_BLK129_TO_BLK130`` is set AND we're entering
+            # MMAT_LVARS for the sub_7FFD3338C040 entry_ea, force
+            # blk[129]'s 2-way conditional to unconditionally route to
+            # blk[130].  Diagnostic-only knob: tests whether IDA's
+            # pseudocode renderer drops the call because the renderer
+            # proves blk[130]'s arm of blk[129] unreachable, vs. some
+            # other renderer-side DCE.  Acceptance: final --- AFTER ---
+            # contains "0x11, 0x4A".
+            try:
+                import os as _os_force
+                _force_env = _os_force.environ.get(
+                    "D810_FORCE_BLK129_TO_BLK130", "",
+                )
+                # Fire on entering MMAT_GLBOPT3 (the last maturity
+                # d810 observes before MMAT_LVARS).  d810 doesn't get
+                # a per-block callback at MMAT_LVARS itself, so this
+                # is the latest moment we can mutate the live mba
+                # before IDA's variable analysis + ctree generation.
+                _is_late_pre_lvars = int(self.current_maturity) in (
+                    int(ida_hexrays.MMAT_GLBOPT3),
+                    int(ida_hexrays.MMAT_LVARS),
+                )
+                if _force_env and _is_late_pre_lvars:
+                    from d810.hexrays.mutation.cfg_mutations import (
+                        change_1way_block_successor,
+                    )
+                    _qty = int(getattr(mba, "qty", 0) or 0)
+                    if _qty > 130:
+                        _b129 = mba.get_mblock(129)
+                        _b130 = mba.get_mblock(130)
+                        if _b129 is not None and _b130 is not None:
+                            try:
+                                _b129_type = int(_b129.type)
+                                _b129_nsucc = int(_b129.nsucc())
+                                _b129_succs = tuple(
+                                    int(_b129.succ(i))
+                                    for i in range(_b129_nsucc)
+                                )
+                                _b129_tail_op = (
+                                    int(_b129.tail.opcode)
+                                    if _b129.tail is not None else -1
+                                )
+                                # Dump blk[129] condition + raw context
+                                # so we can correlate with renderer
+                                # behavior even if the patch fails.
+                                main_logger.warning(
+                                    "FORCE_BLK129 LVARS pre-patch:"
+                                    " type=%d nsucc=%d succs=%s"
+                                    " tail_opcode=%d (env=%r)",
+                                    _b129_type, _b129_nsucc,
+                                    list(_b129_succs), _b129_tail_op,
+                                    _force_env,
+                                )
+                                # Try to coerce to a clean 1-way goto
+                                # to blk[130].  If blk[129] is already
+                                # 1-way, just retarget; else convert.
+                                if _b129_nsucc == 1:
+                                    _ok = change_1way_block_successor(
+                                        _b129, 130, verify=False,
+                                    )
+                                    main_logger.warning(
+                                        "FORCE_BLK129 retarget 1-way -> 130: %s",
+                                        _ok,
+                                    )
+                                else:
+                                    # 2-way: rewrite tail to m_goto.
+                                    # Drop conditional jump, set type
+                                    # BLT_1WAY, succset = [130],
+                                    # blk[130] preds += blk[129].
+                                    _tail = _b129.tail
+                                    if _tail is not None:
+                                        # Replace tail with m_goto blk[130]
+                                        _tail.opcode = ida_hexrays.m_goto
+                                        # Operand layout for m_goto:
+                                        # l = mop_b(target).
+                                        _tail.l.t = ida_hexrays.mop_b
+                                        _tail.l.b = 130
+                                        _tail.l.size = 0
+                                        # Clear r/d
+                                        _tail.r.t = ida_hexrays.mop_z
+                                        _tail.d.t = ida_hexrays.mop_z
+                                    # Update succset.
+                                    for _s in list(_b129.succset):
+                                        _succ_blk = mba.get_mblock(int(_s))
+                                        if _succ_blk is not None:
+                                            try:
+                                                _succ_blk.predset._del(
+                                                    _b129.serial,
+                                                )
+                                            except Exception:
+                                                pass
+                                        _b129.succset._del(int(_s))
+                                    _b129.succset.push_back(130)
+                                    if 130 not in [
+                                        int(p) for p in _b130.predset
+                                    ]:
+                                        _b130.predset.push_back(
+                                            _b129.serial,
+                                        )
+                                    _b129.type = ida_hexrays.BLT_1WAY
+                                    _b129.flags |= ida_hexrays.MBL_GOTO
+                                    _b129.mark_lists_dirty()
+                                    _b130.mark_lists_dirty()
+                                    mba.mark_chains_dirty()
+                                    main_logger.warning(
+                                        "FORCE_BLK129 rewrite 2-way -> 1-way goto blk[130] applied"
+                                    )
+                            except Exception as _e_force:
+                                main_logger.warning(
+                                    "FORCE_BLK129 patch raised: %s",
+                                    _e_force,
+                                )
+            except Exception:
+                pass  # diagnostic, never gates decompilation
+
             # Recon: reset state when a new function is decompiled, then
             # fire microcode collectors at this maturity. No-op when recon is
             # disabled (_recon_phase / _recon_runtime is None).
@@ -1149,6 +1265,37 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         cfg_rule, blk.mba.entry_ea
                     )
                 if guard:
+                    # uee-b7ze causality fence: when
+                    # ``D810_FENCE_INSN_OPT_AT_GLBOPT1`` is set, also
+                    # gate FlowOptimizationRule.optimize at GLBOPT1
+                    # (covers JumpFixer / IndirectBranchResolver /
+                    # IdentityCallResolver / etc.).  HCC's hodur
+                    # unflattener fires through a SEPARATE
+                    # orchestration path (not cfg_rule.optimize), so
+                    # this fence does NOT block HCC.
+                    try:
+                        import os as _os
+                        if (
+                            _os.environ.get(
+                                "D810_FENCE_INSN_OPT_AT_GLBOPT1", "",
+                            )
+                            and int(self.current_maturity)
+                            == int(ida_hexrays.MMAT_GLBOPT1)
+                        ):
+                            if not getattr(
+                                cfg_rule,
+                                "_fence_logged_glbopt1",
+                                False,
+                            ):
+                                optimizer_logger.info(
+                                    "FENCE_INSN_OPT_AT_GLBOPT1 active for"
+                                    " FlowOptimizationRule %s",
+                                    type(cfg_rule).__name__,
+                                )
+                                cfg_rule._fence_logged_glbopt1 = True
+                            continue
+                    except Exception:
+                        pass
                     nb_patch = cfg_rule.optimize(blk)
                     if nb_patch > 0:
                         optimizer_logger.info(
