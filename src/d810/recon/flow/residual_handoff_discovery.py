@@ -817,15 +817,6 @@ def resolve_nonexact_dispatch_target(
     if dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
         return None
 
-    normalized_alias_target = resolve_normalized_alias_entry_for_state(
-        dag,
-        state_value,
-        source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
-    )
-    if normalized_alias_target is not None:
-        return normalized_alias_target
-
     lookup_callable = getattr(dispatcher, "lookup", None) if dispatcher is not None else None
     if lookup_callable is None and callable(dispatcher_lookup):
         lookup_callable = dispatcher_lookup
@@ -848,6 +839,15 @@ def resolve_nonexact_dispatch_target(
             and int(resolved) != source_block
         ):
             return int(resolved)
+
+    normalized_alias_target = resolve_normalized_alias_entry_for_state(
+        dag,
+        state_value,
+        source_block=source_block,
+        bst_node_blocks=bst_node_blocks,
+    )
+    if normalized_alias_target is not None:
+        return normalized_alias_target
 
     cover_fallback_entry = resolve_cover_fallback_entry_for_state(
         dag,
@@ -1331,12 +1331,6 @@ def resolve_immediate_handoff_target(
             return None
         return (state_value, direct_entry)
 
-    normalized_alias_target = resolve_normalized_alias_entry_for_state(
-        dag,
-        state_value,
-        source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
-    )
     nonexact_target = resolve_nonexact_dispatch_target(
         dag,
         state_value,
@@ -1345,13 +1339,19 @@ def resolve_immediate_handoff_target(
         dispatcher=dispatcher,
         dispatcher_lookup=dispatcher_lookup,
     )
+    normalized_alias_target = resolve_normalized_alias_entry_for_state(
+        dag,
+        state_value,
+        source_block=block_serial,
+        bst_node_blocks=bst_node_blocks,
+    )
     contextual_target = resolve_contextual_dag_entry_for_state(
         dag,
         state_value,
         source_block=block_serial,
         bst_node_blocks=bst_node_blocks,
     )
-    target_entry = direct_entry or nonexact_target or normalized_alias_target or contextual_target
+    target_entry = nonexact_target or direct_entry or normalized_alias_target or contextual_target
     if target_entry is None or target_entry == block_serial:
         return None
     return (state_value, target_entry)
@@ -1515,6 +1515,17 @@ def resolve_synthesized_handoff_target(
             return None
         return (state_value, direct_entry)
     contextual_source = via_pred if via_pred is not None else block_serial
+    nonexact_target = resolve_nonexact_dispatch_target(
+        dag,
+        state_value,
+        source_block=contextual_source,
+        bst_node_blocks=bst_node_blocks,
+        dispatcher=dispatcher,
+        dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
+    )
+    if nonexact_target is not None and nonexact_target != block_serial:
+        return (state_value, nonexact_target)
+
     target_entry = resolve_contextual_dag_entry_for_state(
         dag,
         state_value,
@@ -1574,16 +1585,6 @@ def resolve_synthesized_handoff_target(
     if dispatcher is not None and not state_has_semantic_support(dag, state_value):
         return None
 
-    target_entry = resolve_nonexact_dispatch_target(
-        dag,
-        state_value,
-        source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
-        dispatcher=dispatcher,
-        dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
-    )
-    if target_entry is not None:
-        return (state_value, target_entry)
     return None
 
 

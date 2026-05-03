@@ -139,6 +139,36 @@ def resolve_edge_target_entry(
     target_node = node_by_key.get(edge.target_key)
     resolved_non_bst: int | None = None
 
+    def _node_local_blocks(node: StateDagNode | None) -> set[int]:
+        if node is None:
+            return set()
+        blocks = {int(node.entry_anchor)}
+        blocks.update(int(b) for b in node.exclusive_blocks)
+        blocks.update(int(b) for b in node.owned_blocks)
+        blocks.update(int(b) for b in node.shared_suffix_blocks)
+        return blocks
+
+    # ``target_entry_anchor`` is already the DAG builder's concrete routing
+    # decision.  If it names a non-dispatcher block outside the target node's
+    # own local corridor, honor it before same-state exact-node lookup.  This
+    # preserves dispatcher overrides for transient exact aliases such as
+    # state 0x1864829A (edge routes to blk[152], stale exact node is blk[147]).
+    # When the edge merely points into the target node's local corridor, keep
+    # the older head-first behavior below.
+    if target_entry not in dispatcher_region:
+        target_node_blocks = _node_local_blocks(target_node)
+        target_node_state = (
+            target_node.key.state_const if target_node is not None else None
+        )
+        if (
+            target_node_state is not None
+            and edge.target_state is not None
+            and int(target_node_state) != int(edge.target_state)
+        ):
+            return EdgeTargetEntryResolution(target_entry=target_entry)
+        if not target_node_blocks or target_entry not in target_node_blocks:
+            return EdgeTargetEntryResolution(target_entry=target_entry)
+
     def _iter_same_state_nodes() -> list[tuple[StateDagNodeKey | None, StateDagNode]]:
         if edge.target_state is None:
             return []
