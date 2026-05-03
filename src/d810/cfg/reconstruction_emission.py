@@ -804,6 +804,8 @@ def execute_primary_reconstruction_modifications(
     owned_edges: set[tuple[int, int]],
     force_clone_shared_blocks: frozenset[int] = frozenset(),
     allow_divergent_shared_group_redirects: bool = True,
+    direct_redirect_veto=None,
+    conditional_redirect_veto=None,
 ) -> PrimaryReconstructionExecutionResult:
     direct_groups: defaultdict[int, list] = defaultdict(list)
     shared_groups: defaultdict[int, list] = defaultdict(list)
@@ -831,6 +833,7 @@ def execute_primary_reconstruction_modifications(
             if len(succs) != 2:
                 continue
             emitted_old_targets: set[int] = set()
+            accepted_candidates: list[object] = []
             for candidate in group.candidates:
                 old_target = _resolve_candidate_horizon_old_target(
                     candidate=candidate,
@@ -840,18 +843,64 @@ def execute_primary_reconstruction_modifications(
                 if old_target is None or old_target in emitted_old_targets:
                     continue
                 emitted_old_targets.add(int(old_target))
-                if (
-                    int(old_target) == int(candidate.target_entry)
-                    or int(candidate.target_entry) == int(group.horizon_block)
-                ):
+                if int(old_target) == int(candidate.target_entry):
+                    accepted_candidates.append(candidate)
                     continue
-                modifications.append(
-                    RedirectBranch(
-                        from_serial=int(group.horizon_block),
-                        old_target=int(old_target),
-                        new_target=int(candidate.target_entry),
+                if int(candidate.target_entry) == int(group.horizon_block):
+                    continue
+                modification = RedirectBranch(
+                    from_serial=int(group.horizon_block),
+                    old_target=int(old_target),
+                    new_target=int(candidate.target_entry),
+                )
+                veto_reason = None
+                if callable(conditional_redirect_veto):
+                    try:
+                        veto_reason = conditional_redirect_veto(
+                            modification=modification,
+                            candidate=candidate,
+                            source_block=int(group.horizon_block),
+                            old_target=int(old_target),
+                            target_block=int(candidate.target_entry),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "RECON EXEC: conditional redirect veto callback raised",
+                            exc_info=True,
+                        )
+                        veto_reason = None
+                if veto_reason:
+                    logger.warning(
+                        "RECON EXEC: conditional redirect vetoed blk[%d] -> blk[%d]"
+                        " old=blk[%d] reason=%s",
+                        int(group.horizon_block),
+                        int(candidate.target_entry),
+                        int(old_target),
+                        veto_reason,
+                    )
+                    continue
+                modifications.append(modification)
+                accepted_candidates.append(candidate)
+            if not accepted_candidates:
+                continue
+            owned_blocks.add(int(group.source_block))
+            for candidate in accepted_candidates:
+                owned_edges.add((int(group.source_block), int(candidate.target_entry)))
+            modifications.extend(
+                _collect_zero_state_write_modifications(
+                    tuple(accepted_candidates),
+                    existing_modifications=modifications,
+                )
+            )
+            for candidate in accepted_candidates:
+                conditional_results.append(
+                    ConditionalArmExecutionResult(
+                        candidate=candidate,
+                        redirect_count=1,
+                        passthrough_count=0,
                     )
                 )
+            continue
         elif group.emission_kind == "create_conditional_redirect":
             modifications.append(
                 CreateConditionalRedirect(
@@ -918,7 +967,39 @@ def execute_primary_reconstruction_modifications(
                 )
             continue
 
-        modifications.extend(cond_plan.modifications)
+        effective_cond_modifications: list[object] = []
+        for modification in cond_plan.modifications:
+            veto_reason = None
+            if callable(conditional_redirect_veto):
+                try:
+                    veto_reason = conditional_redirect_veto(
+                        modification=modification,
+                        candidate=candidate,
+                        source_block=getattr(modification, "from_serial", None),
+                        old_target=getattr(modification, "old_target", None),
+                        target_block=getattr(modification, "new_target", None),
+                    )
+                except Exception:
+                    logger.debug(
+                        "RECON EXEC: conditional redirect veto callback raised",
+                        exc_info=True,
+                    )
+                    veto_reason = None
+            if veto_reason:
+                logger.warning(
+                    "RECON EXEC: conditional redirect vetoed blk[%s] -> blk[%s]"
+                    " old=blk[%s] reason=%s",
+                    getattr(modification, "from_serial", "?"),
+                    getattr(modification, "new_target", "?"),
+                    getattr(modification, "old_target", "?"),
+                    veto_reason,
+                )
+                continue
+            effective_cond_modifications.append(modification)
+        if not effective_cond_modifications:
+            continue
+
+        modifications.extend(effective_cond_modifications)
         owned_blocks.add(int(candidate.horizon_block))
         owned_edges.add((int(candidate.horizon_block), int(candidate.target_entry)))
         modifications.extend(
@@ -1005,7 +1086,65 @@ def execute_primary_reconstruction_modifications(
             )
             continue
 
-        modifications.extend(direct_plan.modifications)
+        veto_reason: str | None = None
+        replacement_modifications: tuple[object, ...] | None = None
+        if direct_redirect_veto is not None:
+            for modification in direct_plan.modifications:
+                try:
+                    veto_result = direct_redirect_veto(
+                        modification,
+                        direct_candidate,
+                    )
+                except Exception:
+                    logger.debug(
+                        "RECON EXEC: direct redirect veto callback raised",
+                        exc_info=True,
+                    )
+                    veto_result = None
+                if isinstance(veto_result, str) and veto_result:
+                    veto_reason = veto_result
+                    break
+                if isinstance(veto_result, (tuple, list)) and veto_result:
+                    replacement_modifications = tuple(veto_result)
+                    break
+                if veto_result:
+                    veto_reason = str(veto_result)
+                    break
+        if veto_reason:
+            if _is_sub7ffd_poll_candidate(direct_candidate):
+                logger.info(
+                    "RECON EXEC: poll-target direct reject src=%d horizon=%d target=%d reason=%s path=%s",
+                    int(direct_candidate.edge.source_anchor.block_serial),
+                    int(direct_candidate.horizon_block),
+                    int(direct_candidate.target_entry),
+                    veto_reason,
+                    tuple(int(serial) for serial in direct_candidate.edge.ordered_path),
+                )
+            direct_results.append(
+                DirectExecutionResult(
+                    accepted_candidate=None,
+                    rejected_candidates=(direct_candidate,),
+                    rejection_reason=veto_reason,
+                )
+            )
+            continue
+
+        effective_direct_modifications = (
+            replacement_modifications
+            if replacement_modifications is not None
+            else direct_plan.modifications
+        )
+        if replacement_modifications is not None:
+            logger.info(
+                "RECON EXEC: direct redirect replacement src=%d target=%d"
+                " replacement_count=%d replacement_types=%s path=%s",
+                int(direct_candidate.horizon_block),
+                int(direct_candidate.target_entry),
+                len(replacement_modifications),
+                tuple(type(mod).__name__ for mod in replacement_modifications),
+                tuple(int(serial) for serial in direct_candidate.edge.ordered_path),
+            )
+        modifications.extend(effective_direct_modifications)
         owned_blocks.add(int(direct_candidate.horizon_block))
         owned_edges.add(
             (int(direct_candidate.horizon_block), int(direct_candidate.target_entry))

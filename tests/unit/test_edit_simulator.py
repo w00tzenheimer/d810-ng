@@ -287,6 +287,39 @@ class TestSimulateEdits:
         assert sim.adj[11] == [12]
         assert sim.adj[12] == []
 
+    def test_duplicate_block_private_target_split_redirects_1way_predecessor(self):
+        cfg = FlowGraph(
+            blocks={
+                2: _block(2, (), (9,)),
+                9: _block(9, (2,), ()),
+                10: _block(10, (11,), ()),
+                11: _block(11, (), (10,)),
+            },
+            entry_serial=9,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=10,
+                    target_block=None,
+                    pred_serial=9,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(),
+            patch_plan_to_simulated_edits(patch_plan),
+        )
+
+        assert sim.adj[9] == [11]
+        assert sim.adj[10] == [12]
+        assert sim.adj[11] == [12]
+        assert sim.adj[12] == []
+
     def test_duplicate_block_preserves_conditional_shape(self):
         edits = [
             SimulatedEdit(

@@ -183,6 +183,52 @@ class TestPlanReconstructionReturnModifications:
         assert [entry.tag for entry in result.log_entries] == ["redirect_artifact"]
         assert result.skipped_entries == ()
 
+    def test_bypasses_artifact_arm0_when_already_wired_to_return_corridor(self):
+        flow_graph = _DummyFlowGraph({
+            10: ((4,), (40, 6)),
+            40: ((10,), (50,)),
+        })
+        dag = _DummyDag(
+            edges=(
+                _DummyEdge(
+                    kind_name="CONDITIONAL_RETURN",
+                    ordered_path=(10, 40, 50),
+                    source_anchor=_DummyAnchor(block_serial=10, branch_arm=0),
+                    source_key=_DummySourceKey(),
+                ),
+            )
+        )
+
+        result = plan_reconstruction_return_modifications(
+            dag=dag,
+            flow_graph=flow_graph,
+            builder=_DummyBuilder(),
+            claimed_sources=set(),
+            dispatcher_serial=6,
+            bst_node_blocks={6},
+            common_return_corridor={20, 50},
+            artifact_return_blocks={40},
+            node_by_key={},
+        )
+
+        assert result.modifications == (
+            RedirectBranch(from_serial=10, old_target=40, new_target=50),
+        )
+        assert [entry.tag for entry in result.log_entries] == ["wire_2way"]
+        logged_edges = [
+            (
+                entry.source_block,
+                entry.branch_arm,
+                entry.target_block,
+                entry.bypass_block,
+            )
+            for entry in result.log_entries
+        ]
+        assert logged_edges == [
+            (10, 0, 50, 40),
+        ]
+        assert result.skipped_entries == ()
+
     def test_skips_claimed_anchor(self):
         flow_graph = _DummyFlowGraph({
             10: ((4,), (6,)),

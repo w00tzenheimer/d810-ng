@@ -1011,6 +1011,61 @@ class TestExecutePrimaryReconstructionModifications:
             202,
         }
 
+    def test_paired_conditional_rewrite_honors_redirect_veto(self) -> None:
+        flow_blocks = {
+            15: SimpleNamespace(serial=15, preds=(13,), succs=(16, 17), npred=1, nsucc=2),
+        }
+        flow_graph = SimpleNamespace(get_block=lambda serial: flow_blocks.get(int(serial)))
+
+        fallthrough_candidate = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=15,
+            target_entry=66,
+            ordered_path=(158, 15, 16),
+            branch_arm=0,
+            state_const=0x6107F8EC,
+            source_anchor_block=158,
+            conditional_group_policy="rewrite_horizon",
+        )
+        conditional_candidate = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=15,
+            target_entry=202,
+            ordered_path=(158, 15, 17),
+            branch_arm=1,
+            state_const=0x6107F8EC,
+            source_anchor_block=158,
+            conditional_group_policy="rewrite_horizon",
+        )
+
+        def _veto_old_target_17(**kwargs):
+            if int(kwargs["old_target"]) == 17:
+                return "intermediate_payload:blk[17]"
+            return None
+
+        modifications: list[object] = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+        result = execute_primary_reconstruction_modifications(
+            raw_candidates=[fallthrough_candidate, conditional_candidate],
+            flow_graph=flow_graph,
+            node_by_key={},
+            dispatcher_serial=6,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            conditional_redirect_veto=_veto_old_target_17,
+        )
+
+        assert modifications == [
+            RedirectBranch(from_serial=15, old_target=16, new_target=66),
+        ]
+        assert owned_blocks == {15}
+        assert owned_edges == {(15, 66)}
+        assert [entry.candidate for entry in result.conditional_results] == [
+            fallthrough_candidate,
+        ]
+
     def test_direct_candidate_appends_zero_state_write_for_matching_site(self, monkeypatch) -> None:
         monkeypatch.setattr(
             exec_mod,
