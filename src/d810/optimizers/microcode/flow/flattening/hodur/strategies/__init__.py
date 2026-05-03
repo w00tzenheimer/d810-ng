@@ -152,15 +152,24 @@ def _filter_strategies(strategies: list[type]) -> list[type]:
     return out
 
 
-# Live pipeline: semantic regions plus HCC-owned reconstruction orchestration.
+# Live pipeline: HCC-owned reconstruction orchestration.
 #
-# ``HandlerChainComposerStrategy`` is included for registration but is
-# controlled via ``HANDLER_CHAIN_COMPOSER_ENABLED`` on the class itself.
+# HCC absorbs the old SRW-style reconstruction work and owns conflict handling
+# in one fragment.  ``SemanticStructuredRegionStrategy`` remains available for
+# archaeology/regression isolation, but is no longer part of the default live
+# pipeline because it competes with HCC's region absorption.
+_LEGACY_SEMANTIC_REGION_ENABLED = (
+    os.getenv("D810_HODUR_ENABLE_SEMANTIC_STRUCTURED_REGION", "").strip() == "1"
+    or "SemanticStructuredRegionStrategy"
+    in {n.strip() for n in os.environ.get("D810_HODUR_ONLY", "").split(",") if n.strip()}
+)
+
+# ``HandlerChainComposerStrategy`` can still be disabled through its class gate.
 # Standalone ``StateWriteReconstructionStrategy`` remains importable for
 # targeted archaeology/regression tests, but HCC owns the live SWR-style
 # orchestration and conflict handling.
 EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
-    SemanticStructuredRegionStrategy,
+    *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
     HandlerChainComposerStrategy,
 ])
 
@@ -170,7 +179,7 @@ _STANDALONE_SRW_ENABLED = (
 )
 
 ALL_STRATEGIES: list[type] = _filter_strategies([
-    SemanticStructuredRegionStrategy,
+    *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
     HandlerChainComposerStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,

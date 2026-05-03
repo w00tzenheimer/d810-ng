@@ -6,7 +6,7 @@ and emits ONE ``InsertBlock`` per region containing the composed bodies
 of every handler in the region.
 
 Tests cover:
-* Default-OFF behavior (gate flag).
+* Default-ON live behavior plus explicit disable escape hatch.
 * Region detection on a hand-crafted DAG stub.
 * Composition correctness (all instructions concatenated; state-writes
   and trailing m_goto/m_nop dropped).
@@ -280,22 +280,23 @@ def _call_insn(ea: int) -> _StubInsn:
 
 # ---- Tests ----
 
-class TestDefaultOff:
-    """Verify the strategy is OFF by default."""
+class TestDefaultOn:
+    """Verify HCC is ON by default for the live Hodur pipeline."""
 
-    def test_class_flag_default_false(self) -> None:
-        assert HandlerChainComposerStrategy.HANDLER_CHAIN_COMPOSER_ENABLED is False
+    def test_class_flag_default_true(self) -> None:
+        assert HandlerChainComposerStrategy.HANDLER_CHAIN_COMPOSER_ENABLED is True
 
-    def test_is_applicable_returns_false_when_disabled(self) -> None:
+    def test_is_applicable_returns_true_when_enabled(self) -> None:
         strat = HandlerChainComposerStrategy()
-        assert strat.HANDLER_CHAIN_COMPOSER_ENABLED is False
+        assert strat.HANDLER_CHAIN_COMPOSER_ENABLED is True
         mba = _StubMba({0: _StubBlock(0, (), ())})
         sm = _StubStateMachine([0])
         snap = _StubSnapshot(mba, sm, discovery=None)
-        assert strat.is_applicable(snap) is False
+        assert strat.is_applicable(snap) is True
 
-    def test_plan_returns_none_when_disabled(self) -> None:
+    def test_plan_returns_none_when_explicitly_disabled(self) -> None:
         strat = HandlerChainComposerStrategy()
+        strat.HANDLER_CHAIN_COMPOSER_ENABLED = False
         mba = _make_three_handler_chain_mba()
         sm = _StubStateMachine([10, 11, 12])
         dag = _make_three_node_region_dag()
