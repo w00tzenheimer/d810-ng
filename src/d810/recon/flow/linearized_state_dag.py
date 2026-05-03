@@ -373,6 +373,7 @@ class LinearizedStateDag:
     edges: tuple[StateDagEdge, ...]
     transient_entry_blocks: tuple[int, ...] = ()
     transient_state_values: tuple[int, ...] = ()
+    denylisted_state_values: tuple[int, ...] = ()
     supplemental_selected_entries: tuple[tuple[int, int], ...] = ()
     diagnostics: tuple[str, ...] = ()
 
@@ -1380,6 +1381,7 @@ def _build_state_resolver(
     dispatcher: IntervalDispatcher | None,
     flow_graph: object | None = None,
     prefer_local_corridors: bool = False,
+    transient_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
 ) -> tuple[dict[int, int], Callable[[int], int | None]]:
     exact_state_to_handler = {
         row.state_const: row.handler_serial
@@ -1392,13 +1394,28 @@ def _build_state_resolver(
     valid_handler_serials = {row.handler_serial for row in report.rows}
 
     bst_block_set = set(report.bst_node_blocks)
+    transient_target_states = {
+        int(state) & 0xFFFFFFFF for state in transient_state_values
+    }
     def resolve_handler(state_value: int) -> int | None:
         handler_serial = exact_state_to_handler.get(state_value)
         if handler_serial is not None:
+            masked_state_value = int(state_value) & 0xFFFFFFFF
             exact_row = exact_state_to_row.get(state_value)
-            preserve_exact_raw_row = (
+            handler_is_range_backed_only = (
+                handler_serial not in report.handler_state_map
+                and handler_serial in report.handler_range_map
+            )
+            exact_row_is_point_state = (
                 exact_row is not None
+                and exact_row.state_range_lo is None
+                and exact_row.state_range_hi is None
+                and not handler_is_range_backed_only
+            )
+            preserve_exact_raw_row = (
+                exact_row_is_point_state
                 and exact_row.handler_serial == handler_serial
+                and masked_state_value not in transient_target_states
                 and _is_raw_state_label(exact_row.state_label, state_value)
                 and (
                     exact_row.kind == TransitionKind.CONDITIONAL
@@ -1409,8 +1426,9 @@ def _build_state_resolver(
                 and not exact_row.transition_label.lower().startswith("range alias")
             )
             preserve_exact_semantic_alias_row = (
-                exact_row is not None
+                exact_row_is_point_state
                 and exact_row.handler_serial == handler_serial
+                and masked_state_value not in transient_target_states
                 and not _is_raw_state_label(exact_row.state_label, state_value)
                 and exact_row.kind != TransitionKind.UNKNOWN
                 and not exact_row.path.unresolved
@@ -3318,7 +3336,13 @@ def _discover_supplemental_states(
                 candidate_anchor
             )
 
-    return supplemental_states, collapsed_target_anchors, supplemental_source_contexts
+    return (
+        supplemental_states,
+        collapsed_target_anchors,
+        supplemental_source_contexts,
+        transient_states,
+        terminal_alias_states,
+    )
 
 
 def _discover_shadowed_range_handlers(
@@ -3673,11 +3697,15 @@ def build_live_linearized_state_dag_from_graph(
                 handler_paths_by_handler=handler_paths_by_handler,
                 conditional_transitions_by_handler=conditional_transitions_by_handler,
                 prefer_local_corridors=prefer_local_corridors,
+                transient_state_values=suppressed_target_states,
+                terminal_alias_state_values=terminal_alias_target_states,
             )
         )
 
     report_with_supplemental = report
     supplemental_selected_entries: dict[int, int] = {}
+    suppressed_target_states: set[int] = set()
+    terminal_alias_target_states: set[int] = set()
     dag = build_linearized_state_dag_from_graph(
         flow_graph,
         report_with_supplemental,
@@ -3703,6 +3731,8 @@ def build_live_linearized_state_dag_from_graph(
             supplemental_states,
             collapsed_target_anchors,
             supplemental_source_contexts,
+            discovered_transient_states,
+            discovered_terminal_alias_states,
         ) = _discover_supplemental_states(
             report_with_supplemental,
             transition_result,
@@ -3715,6 +3745,24 @@ def build_live_linearized_state_dag_from_graph(
             state_var_stkoff=state_var_stkoff,
             prefer_local_corridors=prefer_local_corridors,
         )
+        suppressed_target_states.update(
+            int(state) & 0xFFFFFFFF for state in discovered_transient_states
+        )
+        terminal_alias_target_states.update(
+            int(state) & 0xFFFFFFFF for state in discovered_terminal_alias_states
+        )
+        if suppressed_target_states or terminal_alias_target_states:
+            dag = build_linearized_state_dag_from_graph(
+                flow_graph,
+                report_with_supplemental,
+                transition_result,
+                dispatcher=dispatcher,
+                handler_paths_by_handler=handler_paths_by_handler,
+                conditional_transitions_by_handler=conditional_transitions_by_handler,
+                prefer_local_corridors=prefer_local_corridors,
+                transient_state_values=suppressed_target_states,
+                terminal_alias_state_values=terminal_alias_target_states,
+            )
         pending_states = sorted(state for state in supplemental_states if state not in existing_states)
         if not pending_states:
             # --- Shadowed range-backed handler retention ---
@@ -3753,6 +3801,18 @@ def build_live_linearized_state_dag_from_graph(
                         sorted(
                             int(state) & 0xFFFFFFFF
                             for state in getattr(dag, "transient_state_values", ()) or ()
+                        )
+                    ),
+                    denylisted_state_values=tuple(
+                        sorted(
+                            {
+                                int(state) & 0xFFFFFFFF
+                                for state in getattr(dag, "denylisted_state_values", ()) or ()
+                            }
+                            | {
+                                int(state) & 0xFFFFFFFF
+                                for state in suppressed_target_states
+                            }
                         )
                     ),
                     supplemental_selected_entries=tuple(
@@ -4469,7 +4529,21 @@ def build_live_linearized_state_dag_from_graph(
 
         if not supplemental_rows:
             _maybe_build_corrected_dag(report_with_supplemental)
-            return dag
+            return replace(
+                dag,
+                denylisted_state_values=tuple(
+                    sorted(
+                        {
+                            int(state) & 0xFFFFFFFF
+                            for state in getattr(dag, "denylisted_state_values", ()) or ()
+                        }
+                        | {
+                            int(state) & 0xFFFFFFFF
+                            for state in suppressed_target_states
+                        }
+                    )
+                ),
+            )
 
         rows = tuple(
             sorted(
@@ -4502,6 +4576,8 @@ def build_live_linearized_state_dag_from_graph(
             handler_paths_by_handler=handler_paths_by_handler,
             conditional_transitions_by_handler=conditional_transitions_by_handler,
             prefer_local_corridors=prefer_local_corridors,
+            transient_state_values=suppressed_target_states,
+            terminal_alias_state_values=terminal_alias_target_states,
         )
 
 
@@ -4517,8 +4593,16 @@ def build_linearized_state_dag_from_graph(
     ]
     | None = None,
     prefer_local_corridors: bool = False,
+    transient_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
+    terminal_alias_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
 ) -> LinearizedStateDag:
     """Build a state-level DAG from structured graph-backed inputs."""
+    transient_target_states = {
+        int(state) & 0xFFFFFFFF for state in transient_state_values
+    }
+    terminal_alias_target_states = {
+        int(state) & 0xFFFFFFFF for state in terminal_alias_state_values
+    }
     paths_by_handler = {
         serial: tuple(paths)
         for serial, paths in (handler_paths_by_handler or {}).items()
@@ -4561,6 +4645,7 @@ def build_linearized_state_dag_from_graph(
         dispatcher,
         flow_graph=flow_graph,
         prefer_local_corridors=prefer_local_corridors,
+        transient_state_values=transient_target_states,
     )
 
     nodes: list[StateDagNode] = []
@@ -4677,13 +4762,73 @@ def build_linearized_state_dag_from_graph(
         target_handler_serial: int | None,
         target_state: int | None,
     ) -> StateDagNode | None:
+        resolved_node = (
+            primary_node_by_handler.get(int(target_handler_serial))
+            if target_handler_serial is not None
+            else None
+        )
         if target_state is not None:
-            direct_node = node_by_state.get(target_state & 0xFFFFFFFF)
+            masked_target_state = target_state & 0xFFFFFFFF
+            direct_node = node_by_state.get(masked_target_state)
             if direct_node is not None:
+                # ``target_handler_serial`` is produced by ``resolve_handler``,
+                # which already applies exact-vs-dispatcher arbitration.  For
+                # transient/terminal-alias states, do not let the state index
+                # resurrect a stale exact-match node after that arbitration has
+                # preferred the dispatcher route.
+                if (
+                    target_handler_serial is not None
+                    and int(direct_node.handler_serial) != int(target_handler_serial)
+                    and getattr(direct_node, "kind", None) == StateNodeKind.RANGE_BACKED
+                ):
+                    if resolved_node is not None:
+                        logger.info(
+                            "DAG: target-node range-backed override: state 0x%X "
+                            "state_node=blk[%d] resolved=blk[%d]",
+                            masked_target_state,
+                            int(direct_node.handler_serial),
+                            int(target_handler_serial),
+                        )
+                        return resolved_node
+                    logger.info(
+                        "DAG: target-node stale range-backed suppressed: state 0x%X "
+                        "state_node=blk[%d] resolved=blk[%d] has_resolved_node=no",
+                        masked_target_state,
+                        int(direct_node.handler_serial),
+                        int(target_handler_serial),
+                    )
+                    return None
+                if (
+                    target_handler_serial is not None
+                    and int(direct_node.handler_serial) != int(target_handler_serial)
+                    and (
+                        masked_target_state in transient_target_states
+                        or masked_target_state in terminal_alias_target_states
+                    )
+                ):
+                    if resolved_node is not None:
+                        logger.info(
+                            "DAG: target-node dispatcher override: state 0x%X "
+                            "state_node=blk[%d] resolved=blk[%d]",
+                            masked_target_state,
+                            int(direct_node.handler_serial),
+                            int(target_handler_serial),
+                        )
+                        return resolved_node
+                    logger.info(
+                        "DAG: target-node stale exact suppressed: state 0x%X "
+                        "state_node=blk[%d] resolved=blk[%d] has_resolved_node=no",
+                        masked_target_state,
+                        int(direct_node.handler_serial),
+                        int(target_handler_serial),
+                    )
+                    return None
                 return direct_node
+        if resolved_node is not None:
+            return resolved_node
         if target_handler_serial is None:
             return None
-        return primary_node_by_handler.get(target_handler_serial)
+        return None
 
     edges: list[StateDagEdge] = []
     seen_edge_keys: set[
@@ -5108,6 +5253,7 @@ def build_linearized_state_dag_from_graph(
         nodes=tuple(nodes),
         edges=tuple(edges),
         transient_state_values=tuple(sorted(live_transient_states)),
+        denylisted_state_values=tuple(sorted(transient_target_states)),
         diagnostics=report.diagnostics,
     )
 

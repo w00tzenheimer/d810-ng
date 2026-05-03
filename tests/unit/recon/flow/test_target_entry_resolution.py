@@ -106,6 +106,29 @@ class TestResolveEdgeTargetEntry:
         assert result.rejection_reason is None
         assert result.original_dispatcher_entry is None
 
+    def test_preserves_dispatcher_resolved_entry_over_stale_raw_exact_node(self):
+        stale_exact = _node(entry=110, handler=110, state=0x3E7EA8B8)
+        dispatcher_resolved = _node(entry=111, handler=111, state=0x3FFC21D1)
+        edge = _edge(
+            source_handler=211,
+            target_key=dispatcher_resolved.key,
+            target_entry=111,
+            target_state=0x3E7EA8B8,
+        )
+
+        result = resolve_edge_target_entry(
+            edge,
+            node_by_key={
+                stale_exact.key: stale_exact,
+                dispatcher_resolved.key: dispatcher_resolved,
+            },
+            dispatcher_region={2, 107},
+        )
+
+        assert result.target_entry == 111
+        assert result.rejection_reason is None
+        assert result.original_dispatcher_entry is None
+
     def test_resolves_dispatcher_target_to_non_bst_block_from_target_node(self):
         node = _node(entry=2, handler=2, state=0x11, exclusive=(24,))
         edge = _edge(

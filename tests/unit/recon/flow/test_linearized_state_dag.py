@@ -1601,6 +1601,75 @@ def test_build_state_resolver_preserves_raw_exact_row_over_dispatcher_corridor()
     assert resolve_handler(0x4C77464F) == 66
 
 
+def test_build_state_resolver_overrides_transient_raw_exact_row_to_dispatcher() -> None:
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x6107F8EC,
+        handler_state_map={66: 0x4C77464F},
+        handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x4C77464F,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=66,
+                kind=TransitionKind.CONDITIONAL,
+                next_state=None,
+                conditional_states=(0x296F2452, 0x474EEEBB),
+                state_label="State 0x4c77464f",
+                transition_label="conditional transition -> {0x296f2452, 0x474eeebb}",
+                chain_preview=(66,),
+                path=TransitionPath(
+                    handler_serial=66,
+                    chain=(66, 67),
+                    next_state=None,
+                    conditional_states=(0x296F2452, 0x474EEEBB),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=1,
+            known_count=0,
+            conditional_count=1,
+            exit_count=0,
+            unknown_count=0,
+        ),
+        diagnostics=(),
+    )
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(lo=0x474EEEBC, hi=0x4E69F350, target=71),
+        ]
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            66: BlockSnapshot(66, 0, (68,), (), 0, 0, ()),
+            68: BlockSnapshot(68, 0, (), (66,), 0, 0, ()),
+            71: BlockSnapshot(71, 0, (), (), 0, 0, ()),
+        },
+        entry_serial=66,
+        func_ea=0x401000,
+    )
+
+    _, resolve_handler = _build_state_resolver(
+        report,
+        TransitionResult(),
+        dispatcher,
+        flow_graph=flow_graph,
+        transient_state_values={0x4C77464F},
+    )
+
+    assert resolve_handler(0x4C77464F) == 71
+
+
 def test_build_state_resolver_still_overrides_nonraw_exact_row_to_dispatcher() -> None:
     report = DispatcherTransitionReport(
         dispatcher_entry_serial=2,
