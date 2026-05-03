@@ -245,6 +245,7 @@ def execute_reconstruction_postprocess(
     build_reconstruction_candidate=None,
     build_projected_mba=None,
     discover_residual_alias_overrides_fn: DiscoverResidualAliasOverridesFn | None = None,
+    fixpoint_redirect_veto=None,
 ) -> ReconstructionPostprocessExecutionResult:
     initial_modification_count = len(modifications)
     projected_flow_graph = flow_graph
@@ -422,6 +423,7 @@ def execute_reconstruction_postprocess(
         artifact_return_blocks=artifact_return_blocks,
         common_return_corridor=common_return_corridor,
         node_by_key=node_by_key,
+        fixpoint_redirect_veto=fixpoint_redirect_veto,
     )
 
     preheader_bridge = postprocess_plan.preheader_bridge

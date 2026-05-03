@@ -382,6 +382,49 @@ def test_compile_patch_plan_finalizes_duplicate_block():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split():
+    cfg = FlowGraph(
+        blocks={
+            2: _block(2, (), (9,)),
+            9: _block(9, (2,), ()),
+            10: _block(10, (11,), ()),
+            11: _block(11, (), (10,)),
+        },
+        entry_serial=9,
+        func_ea=0,
+    )
+
+    patch_plan = compile_patch_plan(
+        [
+            DuplicateBlock(
+                source_block=10,
+                target_block=None,
+                pred_serial=9,
+            )
+        ],
+        cfg,
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchDuplicateBlock(
+            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
+            assigned_serial=11,
+            source_serial=10,
+            pred_serial=9,
+            pred_redirect_kind="one_way",
+            source_successors=(12,),
+            target_serial=None,
+            conditional_target=None,
+            fallthrough_target=None,
+            fallthrough_block_id=None,
+            fallthrough_serial=None,
+        ),
+    )
+    assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
+    assert patch_plan.legacy_block_operations == ()
+
+
 def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
     cfg = FlowGraph(
         blocks={

@@ -31,8 +31,6 @@ from d810.cfg.residual_handoff_planning import (
     ResidualPrefixAttempt,
     ResidualPredSplitAttempt,
 )
-
-
 logger = logging.getLogger("D810.cfg.residual_dispatcher_handoff_execution", logging.DEBUG)
 
 @dataclass(frozen=True, slots=True)
