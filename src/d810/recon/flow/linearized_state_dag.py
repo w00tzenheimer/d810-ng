@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, replace
 from enum import Enum, auto
@@ -48,6 +49,123 @@ _SUB7FFD_CORRIDOR_DISPATCHER_ANCHOR_STATES = frozenset({0x0B2FECE0, 0x385BBE2D})
 _SUB7FFD_CORRIDOR_DISPATCHER_EXACT_STATES = frozenset()
 
 _SIMPLE_CONST_ASSIGN_RE = re.compile(r"^\s*.+?=\s*(0x[0-9A-F]+)\s*$")
+
+# ---------------------------------------------------------------------------
+# Exact-vs-dispatcher arbitration: side-effect corridor preservation
+# ---------------------------------------------------------------------------
+# Empirically, range-backed dispatcher resolution can override an exact
+# handler whose local block-corridor owns side effects (m_stx writes,
+# m_call, ++counter, byte-emit OR-stores).  Routing through the dispatcher
+# instead of the exact corridor drops those side effects from the linearized
+# DAG, which IDA's structurer then renders as a missing tail-cascade
+# (e.g. sub_7FFD3338C040's byte-emit corridor collapsing from 7 sequential
+# `if (v53==K) return result` blocks to a 2-iteration loop).
+#
+# This gate is OFF by default; flip on with
+# ``D810_RECON_PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS=1`` to make exact
+# handlers that own a local side-effect corridor win the override.
+
+_PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV = (
+    "D810_RECON_PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS"
+)
+
+
+def _preserve_exact_side_effect_corridors_gate() -> bool:
+    return (
+        os.environ.get(_PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV, "")
+        .strip()
+        == "1"
+    )
+
+
+def _classify_exact_handler_side_effect_corridor(
+    handler_serial: int,
+    dispatcher_target: int | None,
+    flow_graph: FlowGraph | None,
+    *,
+    depth: int = 4,
+) -> tuple[bool, tuple[str, ...], tuple[int, ...]]:
+    """Inspect the local CFG corridor rooted at ``handler_serial`` and
+    return ``(has_side_effects, signature, walked_serials)``.
+
+    ``has_side_effects`` is ``True`` when the exact handler block — or any
+    block within ``depth`` forward steps that does **not** pass through
+    ``dispatcher_target`` — contains an ``m_stx``/``m_call``/``m_icall``
+    instruction.  Such corridors carry semantically meaningful side effects
+    (buffer writes, counter increments, callees) that would be silently
+    discarded if recon overrides the exact handler with a range-backed
+    dispatcher anchor.
+
+    ``signature`` is an ordered tuple of human-readable markers in the form
+    ``"blk[N]@0xEA:op=K"`` for each detected side-effect instruction (capped
+    at the first 8 to keep log output bounded).
+
+    ``walked_serials`` is the BFS frontier visited (for diagnostic dumping).
+
+    The detection is intentionally conservative: zero/m_mov/m_jcnd-only
+    blocks are ignored, so simple state-routing cascades that contain no
+    real work do **not** get preserved by mistake.
+    """
+    if flow_graph is None or handler_serial is None:
+        return False, (), ()
+    try:
+        import ida_hexrays  # local import — recon-flow is allowed to use it
+    except ImportError:
+        return False, (), ()
+    m_stx = getattr(ida_hexrays, "m_stx", -1)
+    m_call = getattr(ida_hexrays, "m_call", -1)
+    m_icall = getattr(ida_hexrays, "m_icall", -1)
+    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
+    if not side_effect_ops:
+        return False, (), ()
+
+    visited: set[int] = set()
+    queue: deque[tuple[int, int]] = deque([(int(handler_serial), 0)])
+    signature: list[str] = []
+    walked: list[int] = []
+    found = False
+
+    while queue:
+        serial, distance = queue.popleft()
+        if serial in visited or distance > int(depth):
+            continue
+        visited.add(serial)
+        walked.append(serial)
+
+        blk = flow_graph.get_block(serial)
+        if blk is None:
+            continue
+
+        for insn in getattr(blk, "insn_snapshots", ()):
+            try:
+                opcode = int(getattr(insn, "opcode", -1))
+            except (TypeError, ValueError):
+                continue
+            if opcode in side_effect_ops:
+                found = True
+                if len(signature) < 8:
+                    ea = int(getattr(insn, "ea", 0))
+                    signature.append(
+                        f"blk[{serial}]@0x{ea:x}:op={opcode}"
+                    )
+
+        for succ in getattr(blk, "succs", ()):
+            try:
+                succ_int = int(succ)
+            except (TypeError, ValueError):
+                continue
+            if (
+                dispatcher_target is not None
+                and succ_int == int(dispatcher_target)
+            ):
+                # Stop walking when we reach the dispatcher target — we only
+                # care whether the *exact* corridor (between handler and
+                # dispatcher) contains side effects.
+                continue
+            if succ_int not in visited:
+                queue.append((succ_int, distance + 1))
+
+    return found, tuple(signature), tuple(walked)
 _SIMPLE_COMPARE_RE = re.compile(
     r"^\s*(?P<lhs>.+?)\s+"
     r"(?P<op>==|!=|>=u|<=u|>u|<u|>=s|<=s|>s|<s)\s+"
@@ -1478,6 +1596,43 @@ def _build_state_resolver(
                             }
                             adjacent = int(dispatcher_target) in exact_succs
                     if not adjacent:
+                        # Side-effect corridor preservation: when the exact
+                        # handler owns a local corridor with m_stx/m_call/
+                        # m_icall side effects, routing through the
+                        # range-backed dispatcher silently drops them.
+                        owns_corridor, side_effect_signature, walked = (
+                            _classify_exact_handler_side_effect_corridor(
+                                handler_serial,
+                                int(dispatcher_target),
+                                flow_graph,
+                                depth=4,
+                            )
+                        )
+                        logger.info(
+                            "DAG: exact-vs-dispatcher signature: state 0x%X "
+                            "exact=blk[%d] dispatcher=blk[%d] "
+                            "owns_corridor=%s walked=%s side_effects=%s",
+                            state_value & 0xFFFFFFFF,
+                            handler_serial,
+                            int(dispatcher_target),
+                            owns_corridor,
+                            list(walked[:8]),
+                            list(side_effect_signature),
+                        )
+                        if (
+                            _preserve_exact_side_effect_corridors_gate()
+                            and owns_corridor
+                        ):
+                            logger.info(
+                                "DAG: PRESERVE_EXACT_CORRIDOR (gate %s=1): "
+                                "state 0x%X exact=blk[%d] "
+                                "dispatcher=blk[%d] — keeping exact",
+                                _PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV,
+                                state_value & 0xFFFFFFFF,
+                                handler_serial,
+                                int(dispatcher_target),
+                            )
+                            return handler_serial
                         logger.info(
                             "DAG: exact-vs-dispatcher override: state 0x%X "
                             "exact=blk[%d] dispatcher=blk[%d], "

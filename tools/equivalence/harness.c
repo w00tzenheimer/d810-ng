@@ -170,9 +170,12 @@ int main(int argc, char **argv) {
             if (rv_diff)  rv_diffs++;
             if (m_diff)   mem_diffs++;
             if (t_diff)   trace_diffs++;
-            if (first_fail_seed == -1) {
-                first_fail_seed = trial;
-                first_fail_idx = t_first;
+            int dump_all = (getenv("EQ_DUMP_ALL") != NULL);
+            if (first_fail_seed == -1 || (dump_all && fail <= 8)) {
+                if (first_fail_seed == -1) {
+                    first_fail_seed = trial;
+                    first_fail_idx = t_first;
+                }
                 printf("FAIL trial=%d (seed=%lu+%d) init_v49=0x%lx\n",
                        trial, (unsigned long)seed, trial, (unsigned long)init_v49);
                 printf("  rv_ref=0x%lx rv_our=0x%lx %s\n",
