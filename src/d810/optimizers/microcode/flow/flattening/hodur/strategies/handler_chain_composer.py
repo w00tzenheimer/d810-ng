@@ -83,6 +83,11 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
+from d810.cfg.block_identity import (
+    block_label as flow_block_label,
+    edge_label as flow_edge_label,
+    flow_graph_context_label,
+)
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.cfg.frontier_override_emission import emit_frontier_overrides
 from d810.cfg.graph_modification import (
@@ -2998,7 +3003,7 @@ class HandlerChainComposerStrategy:
             if candidate_flow_graph is None:
                 logger.debug(
                     "RECON DAG: use-def direct-veto skipped for"
-                    " blk[%d]->blk[%d] because flow_graph is unavailable",
+                    " blk[%d]@?->blk[%d]@? because flow_graph is unavailable",
                     int(mod.from_serial),
                     int(mod.new_target),
                 )
@@ -3034,9 +3039,13 @@ class HandlerChainComposerStrategy:
             except Exception:
                 logger.debug(
                     "RECON DAG: use-def direct-veto check raised for"
-                    " blk[%d]->blk[%d]",
-                    int(mod.from_serial),
-                    int(mod.new_target),
+                    " %s %s",
+                    flow_edge_label(
+                        candidate_flow_graph,
+                        int(mod.from_serial),
+                        int(mod.new_target),
+                    ),
+                    flow_graph_context_label(candidate_flow_graph),
                     exc_info=True,
                 )
                 return None
@@ -3051,10 +3060,13 @@ class HandlerChainComposerStrategy:
             if not real_violations:
                 logger.info(
                     "RECON DAG: direct redirect use-def warning ignored"
-                    " for blk[%d]->blk[%d] because only state-variable"
+                    " for %s because only state-variable"
                     " dispatcher uses would be severed",
-                    int(mod.from_serial),
-                    int(mod.new_target),
+                    flow_edge_label(
+                        candidate_flow_graph,
+                        int(mod.from_serial),
+                        int(mod.new_target),
+                    ),
                 )
                 return None
             violations = real_violations
@@ -3072,14 +3084,18 @@ class HandlerChainComposerStrategy:
                 return None
             logger.warning(
                 "RECON DAG: direct redirect vetoed for use-def severance"
-                " blk[%d] state=0x%08X -> blk[%d] target_entry=blk[%d]"
-                " orphaned_uses=%d path=%s",
-                int(mod.from_serial),
+                " %s state=0x%08X target_entry=%s orphaned_uses=%d"
+                " path=%s %s",
+                flow_edge_label(
+                    candidate_flow_graph,
+                    int(mod.from_serial),
+                    int(mod.new_target),
+                ),
                 state_value,
-                int(mod.new_target),
-                int(target_entry_for_log),
+                flow_block_label(candidate_flow_graph, int(target_entry_for_log)),
                 len(violations),
                 ordered_path,
+                flow_graph_context_label(candidate_flow_graph),
             )
             direct_use_def_veto_sources.add(int(mod.from_serial))
             return f"use_def_severance:{len(violations)}"
@@ -3117,9 +3133,13 @@ class HandlerChainComposerStrategy:
             except Exception:
                 logger.debug(
                     "RECON FIXPOINT FEEDER: use-def veto check raised"
-                    " for blk[%d]->blk[%d]",
-                    int(modification.from_serial),
-                    int(modification.new_target),
+                    " for %s %s",
+                    flow_edge_label(
+                        flow_graph,
+                        int(modification.from_serial),
+                        int(modification.new_target),
+                    ),
+                    flow_graph_context_label(flow_graph),
                     exc_info=True,
                 )
                 return None
@@ -4520,10 +4540,13 @@ class HandlerChainComposerStrategy:
             emit_outbound = True
             if current_succ == next_semantic_target:
                 logger.info(
-                    "HCC_CALL_BARRIER_OUTBOUND_SKIPPED handler=blk[%d]"
+                    "HCC_CALL_BARRIER_OUTBOUND_SKIPPED handler=%s"
                     " head_state=0x%08X reason=outbound_already_correct"
-                    " current_succ=blk[%d]",
-                    anchor_serial, head_state, current_succ,
+                    " current_succ=%s %s",
+                    flow_block_label(flow_graph, anchor_serial),
+                    head_state,
+                    flow_block_label(flow_graph, current_succ),
+                    flow_graph_context_label(flow_graph),
                 )
                 emit_outbound = False
             elif flow_graph is not None:
@@ -4541,21 +4564,27 @@ class HandlerChainComposerStrategy:
                 except Exception:
                     logger.debug(
                         "HCC_CALL_BARRIER_OUTBOUND_CHECK_RAISED"
-                        " handler=blk[%d] current_succ=blk[%d]"
-                        " next_semantic_target=blk[%d]",
-                        anchor_serial, current_succ, next_semantic_target,
+                        " handler=%s current_succ=%s"
+                        " next_semantic_target=%s %s",
+                        flow_block_label(flow_graph, anchor_serial),
+                        flow_block_label(flow_graph, current_succ),
+                        flow_block_label(flow_graph, next_semantic_target),
+                        flow_graph_context_label(flow_graph),
                         exc_info=True,
                     )
                     severed_uses = ()
                 if severed_uses:
                     logger.info(
-                        "HCC_CALL_BARRIER_OUTBOUND_SKIPPED handler=blk[%d]"
+                        "HCC_CALL_BARRIER_OUTBOUND_SKIPPED handler=%s"
                         " head_state=0x%08X reason=use_def_severance"
-                        " current_succ=blk[%d] next_semantic_target=blk[%d]"
-                        " orphaned_uses=%d",
-                        anchor_serial, head_state,
-                        current_succ, next_semantic_target,
+                        " current_succ=%s next_semantic_target=%s"
+                        " orphaned_uses=%d %s",
+                        flow_block_label(flow_graph, anchor_serial),
+                        head_state,
+                        flow_block_label(flow_graph, current_succ),
+                        flow_block_label(flow_graph, next_semantic_target),
                         len(severed_uses),
+                        flow_graph_context_label(flow_graph),
                     )
                     emit_outbound = False
 

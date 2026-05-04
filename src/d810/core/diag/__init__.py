@@ -17,9 +17,47 @@ from pathlib import Path
 
 from d810.core.diag.schema import create_tables
 from d810.core.settings import get_settings
+from d810.core.typing import Callable
 
 _current_conn: sqlite3.Connection | None = None
 _current_func_ea: int | None = None
+
+# Inversion-of-control hook for cfg-layer block-lineage drain.
+#
+# core.diag.snapshot needs to flush pending block-lineage rows under the
+# active snapshot_id, but the lineage data lives in d810.cfg (planner-owned).
+# core cannot import cfg (layer contract).  cfg.block_lineage registers a
+# drainer callable here at module load; snapshot.py invokes it through this
+# indirection.  When cfg.block_lineage was never imported (no PatchPlan with
+# new_blocks has been applied), the drainer stays None and the drain is a
+# no-op — there are no pending rows to flush anyway.
+_lineage_drainer: Callable[[sqlite3.Connection, int], int] | None = None
+
+
+def register_lineage_drainer(
+    drainer: Callable[[sqlite3.Connection, int], int],
+) -> None:
+    """Register a callable that drains pending block-lineage rows.
+
+    The callable receives ``(conn, snapshot_id)`` and writes any pending
+    rows to ``conn`` under ``snapshot_id``, returning the number of rows
+    inserted.  Called by :func:`snapshot_mba` after CFG provenance flush.
+    """
+    global _lineage_drainer
+    _lineage_drainer = drainer
+
+
+def drain_lineage_into_snapshot(
+    conn: sqlite3.Connection, snapshot_id: int
+) -> int:
+    """Drain any registered cfg-layer lineage drainer; no-op if unregistered."""
+    drainer = _lineage_drainer
+    if drainer is None:
+        return 0
+    try:
+        return drainer(conn, snapshot_id)
+    except Exception:
+        return 0
 
 
 def _resolve_log_dir(log_dir: str | None = None) -> Path:

@@ -7,6 +7,11 @@ import sqlite3
 import pytest
 
 from d810.core.diag.schema import create_tables
+from d810.cfg.block_lineage import (
+    BlockLineageEntry,
+    buffer_block_lineage,
+    reset_pending_block_lineage,
+)
 from d810.core.diag.snapshot import (
     BlockSnapshot,
     DagEdge,
@@ -119,6 +124,164 @@ class TestSnapshotMba:
             "SELECT COUNT(*) FROM instructions WHERE snapshot_id=1"
         ).fetchone()
         assert rows[0] == 6  # 3 blocks * 2 insns
+
+    def test_writes_block_observations(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        block = BlockSnapshot(
+            serial=33,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x18001340F,
+            nsucc=1,
+            npred=1,
+            succs=[24],
+            preds=[28],
+            instructions=[
+                _make_insn(
+                    0,
+                    ea=0x18001340F,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dest_type="mop_S",
+                    dest_stkoff=0x400,
+                    src_l_type="mop_n",
+                    src_l_value=0x27EEEA11,
+                ),
+                _make_insn(
+                    1,
+                    ea=0x180013421,
+                    opcode=6,
+                    opcode_name="m_goto",
+                ),
+            ],
+        )
+        snapshot_mba(
+            conn,
+            [block],
+            label="test",
+            func_ea=0x1000,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+
+        row = conn.execute(
+            "SELECT maturity, phase, start_ea_hex, insn_count, "
+            "insn_ea_fingerprint, opcode_fingerprint, operand_fingerprint, "
+            "body_fingerprint "
+            "FROM block_observations WHERE snapshot_id=1 AND serial=33"
+        ).fetchone()
+        assert row[0] == "MMAT_GLBOPT1"
+        assert row[1] == "post_apply"
+        assert row[2] == "0x000000018001340f"
+        assert row[3] == 2
+        assert json.loads(row[4]) == [
+            "0x000000018001340f",
+            "0x0000000180013421",
+        ]
+        assert json.loads(row[5]) == [4, 6]
+        operand_fp = json.loads(row[6])
+        assert operand_fp[0]["d_o"] == 0x400
+        assert operand_fp[0]["l_v"] == "0x0000000027eeea11"
+        assert row[7].startswith("fnv1a64:0x")
+
+    def test_duplicate_ea_observations_remain_distinct_by_serial(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        original = BlockSnapshot(
+            serial=32,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[2],
+            preds=[24],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        clone = BlockSnapshot(
+            serial=220,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[62],
+            preds=[31],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        snapshot_mba(
+            conn,
+            [original, clone],
+            label="post_hcc",
+            func_ea=0x1000,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+
+        rows = conn.execute(
+            "SELECT serial, start_ea_hex, body_fingerprint "
+            "FROM block_observations WHERE start_ea_hex=? ORDER BY serial",
+            ("0x0000000180013274",),
+        ).fetchall()
+        assert [row[0] for row in rows] == [32, 220]
+        assert rows[0][1] == rows[1][1]
+        assert rows[0][2] == rows[1][2]
+
+    def test_snapshot_mba_flushes_pending_block_lineage(self) -> None:
+        reset_pending_block_lineage()
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        block = BlockSnapshot(
+            serial=220,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[62],
+            preds=[31],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        buffer_block_lineage([
+            BlockLineageEntry(
+                serial=220,
+                origin_snapshot_id=7,
+                origin_serial=32,
+                origin_start_ea_hex="0x180013274",
+                origin_body_fingerprint="fp=[0x180013274:op4]",
+                creation_kind="edge_split_trampoline",
+                creation_reason="patch_plan:edge_split_trampoline",
+                planner_block_id="edge_split:0",
+                source_mod_type="EdgeRedirectViaPredSplit",
+                extra_json='{"origin_label":"blk[32]@0x180013274"}',
+            )
+        ])
+        try:
+            snap_id = snapshot_mba(
+                conn,
+                [block],
+                label="post_hcc",
+                func_ea=0x1000,
+                maturity="MMAT_GLBOPT1",
+                phase="post_apply",
+            )
+            row = conn.execute(
+                "SELECT snapshot_id, serial, origin_snapshot_id, origin_serial, "
+                "creation_kind, planner_block_id "
+                "FROM block_lineage WHERE snapshot_id=? AND serial=220",
+                (snap_id,),
+            ).fetchone()
+            assert row == (
+                snap_id,
+                220,
+                7,
+                32,
+                "edge_split_trampoline",
+                "edge_split:0",
+            )
+        finally:
+            reset_pending_block_lineage()
 
     def test_snapshot_id_increments(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
         conn = sqlite3.connect(":memory:")

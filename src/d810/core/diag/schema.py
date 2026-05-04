@@ -37,6 +37,29 @@ CREATE TABLE IF NOT EXISTS blocks (
     PRIMARY KEY (snapshot_id, serial)
 );
 
+-- Derived block observation identity.  ``(snapshot_id, serial)`` is the only
+-- exact identity; EA and fingerprints are correlation features for matching
+-- blocks across maturities and detecting duplicated bodies.
+CREATE TABLE IF NOT EXISTS block_observations (
+    snapshot_id             INTEGER NOT NULL REFERENCES snapshots(id),
+    serial                  INTEGER NOT NULL,
+    maturity                TEXT NOT NULL,
+    phase                   TEXT NOT NULL,
+    start_ea_hex            TEXT,
+    start_ea_i64            INTEGER,
+    insn_count              INTEGER NOT NULL,
+    insn_ea_fingerprint     TEXT NOT NULL,
+    opcode_fingerprint      TEXT NOT NULL,
+    operand_fingerprint     TEXT NOT NULL,
+    body_fingerprint        TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, serial)
+);
+
+CREATE INDEX IF NOT EXISTS idx_block_observations_ea
+    ON block_observations(start_ea_hex);
+CREATE INDEX IF NOT EXISTS idx_block_observations_body_fp
+    ON block_observations(body_fingerprint);
+
 -- One row per microcode instruction
 CREATE TABLE IF NOT EXISTS instructions (
     snapshot_id       INTEGER NOT NULL REFERENCES snapshots(id),
@@ -284,6 +307,27 @@ CREATE INDEX IF NOT EXISTS idx_provenance_action
     ON cfg_provenance(snapshot_id, action);
 CREATE INDEX IF NOT EXISTS idx_provenance_pass
     ON cfg_provenance(snapshot_id, pass_name);
+
+-- Created-block lineage.  Observation rows say "what is blk[N] in this
+-- snapshot"; lineage rows say "where did this created block come from".
+CREATE TABLE IF NOT EXISTS block_lineage (
+    snapshot_id                 INTEGER NOT NULL REFERENCES snapshots(id),
+    serial                      INTEGER NOT NULL,
+    origin_snapshot_id          INTEGER,
+    origin_serial               INTEGER,
+    origin_start_ea_hex         TEXT,
+    origin_body_fingerprint     TEXT,
+    creation_kind               TEXT NOT NULL,
+    creation_reason             TEXT,
+    planner_block_id            TEXT,
+    source_mod_type             TEXT,
+    extra_json                  TEXT,
+    PRIMARY KEY (snapshot_id, serial)
+);
+CREATE INDEX IF NOT EXISTS idx_block_lineage_origin
+    ON block_lineage(origin_snapshot_id, origin_serial);
+CREATE INDEX IF NOT EXISTS idx_block_lineage_origin_ea
+    ON block_lineage(origin_start_ea_hex);
 """
 
 

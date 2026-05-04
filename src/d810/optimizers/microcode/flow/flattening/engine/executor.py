@@ -25,6 +25,11 @@ import ida_hexrays
 
 from d810.cfg.contracts import IDACfgContract
 from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
+from d810.cfg.block_identity import (
+    block_fingerprint,
+    block_label,
+    flow_graph_context_label,
+)
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     graph_modifications_to_simulated_edits,
@@ -429,6 +434,8 @@ class TransactionalExecutor:
 
         changes = tx_result.applied_count
         self._total_changes += changes
+        post_cfg = self.translator.lift(self.mba)
+        self._log_new_block_origins(patch_plan, pre_cfg, post_cfg)
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
@@ -450,7 +457,6 @@ class TransactionalExecutor:
                 "Diagnostic snapshot failed (non-critical)", exc_info=True,
             )
 
-        post_cfg = self.translator.lift(self.mba)
         reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
         qty = len(post_cfg.blocks)
         block_reachability = len(reachable_blocks) / qty if qty > 0 else 0.0
@@ -555,6 +561,99 @@ class TransactionalExecutor:
             )
 
         return result
+
+    def _log_new_block_origins(
+        self,
+        patch_plan: PatchPlan,
+        pre_cfg: FlowGraph,
+        post_cfg: FlowGraph,
+    ) -> None:
+        """Log concrete origin identity for all planner-created blocks."""
+        if not patch_plan.new_blocks:
+            return
+        try:
+            from d810.cfg.block_lineage import buffer_patch_plan_block_lineage
+            buffer_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+        except Exception:
+            executor_logger.debug(
+                "BLOCK_ORIGIN lineage buffering failed (non-critical)",
+                exc_info=True,
+            )
+        try:
+            from d810.core.diag.cfg_provenance import log_cfg_provenance
+        except Exception:
+            log_cfg_provenance = None
+
+        for spec in patch_plan.new_blocks:
+            assigned_serial = patch_plan.relocation_map.assigned_serial_for(spec.block_id)
+            if assigned_serial is None:
+                continue
+            origin_serial = spec.template_block
+            if origin_serial is None and spec.incoming_edge is not None:
+                incoming_source = spec.incoming_edge.source
+                if isinstance(incoming_source, int):
+                    origin_serial = incoming_source
+            outgoing_targets = [
+                edge.target
+                for edge in spec.outgoing_edges
+                if isinstance(edge.target, int)
+            ]
+            origin_label = (
+                block_label(pre_cfg, origin_serial)
+                if origin_serial is not None
+                else "synthetic"
+            )
+            assigned_label = block_label(post_cfg, assigned_serial)
+            extra = {
+                "block_id": str(spec.block_id),
+                "kind": str(spec.kind),
+                "assigned_label": assigned_label,
+                "origin_label": origin_label,
+                "origin_fingerprint": (
+                    block_fingerprint(pre_cfg, origin_serial)
+                    if origin_serial is not None
+                    else "fp=[]"
+                ),
+                "assigned_fingerprint": block_fingerprint(post_cfg, assigned_serial),
+                "outgoing_targets": [
+                    block_label(post_cfg, int(target)) for target in outgoing_targets
+                ],
+                "context": flow_graph_context_label(post_cfg),
+            }
+            executor_logger.info(
+                "BLOCK_ORIGIN assigned=%s origin=%s clone_reason=%s %s "
+                "assigned_%s origin_%s",
+                assigned_label,
+                origin_label,
+                spec.kind,
+                flow_graph_context_label(post_cfg),
+                block_fingerprint(post_cfg, assigned_serial),
+                (
+                    block_fingerprint(pre_cfg, origin_serial)
+                    if origin_serial is not None
+                    else "fp=[]"
+                ),
+            )
+            if log_cfg_provenance is None:
+                continue
+            try:
+                log_cfg_provenance(
+                    pass_name="transaction_executor",
+                    action="CREATE",
+                    block_serial=int(assigned_serial),
+                    target_serial=(
+                        int(origin_serial) if origin_serial is not None else None
+                    ),
+                    reason=f"patch_plan:{spec.kind}",
+                    extra=extra,
+                    mba=self.mba,
+                )
+            except Exception:
+                executor_logger.debug(
+                    "BLOCK_ORIGIN provenance logging failed for %s",
+                    assigned_label,
+                    exc_info=True,
+                )
 
     def _supports_live_mba(self) -> bool:
         return hasattr(self.mba, "get_mblock") and hasattr(self.mba, "qty")

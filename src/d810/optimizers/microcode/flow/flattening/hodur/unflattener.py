@@ -1655,6 +1655,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     block_serial=blk.serial,
                     target_serial=dispatcher_serial,
                     reason="sever_1way_handler_to_dispatcher",
+                    mba=mba,
                 )
             except Exception:
                 pass
@@ -1690,6 +1691,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         target_serial=keep_serial,
                         reason="convert_2way_to_goto_drop_dispatcher_arm",
                         extra={"old_succs": [int(succ0), int(succ1)]},
+                        mba=mba,
                     )
                 except Exception:
                     pass
@@ -1761,6 +1763,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         block_serial=dispatcher_serial,
                         target_serial=succ_serial,
                         reason="dispatcher_outgoing_to_bst_comparison",
+                        mba=mba,
                     )
                 except Exception:
                     pass
@@ -2028,6 +2031,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     target_serial=(blk.succ(0) if blk.nsucc() > 0 else None),
                     reason="unreachable_after_bst_cleanup",
                     extra={"original_nsucc": int(nsucc)},
+                    mba=mba,
                 )
             except Exception:
                 pass
@@ -2101,6 +2105,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     target_serial=stop_serial,
                     reason="forward_redirect_to_blt_stop",
                     extra={"old_target": int(succ)},
+                    mba=mba,
                 )
             except Exception:
                 pass

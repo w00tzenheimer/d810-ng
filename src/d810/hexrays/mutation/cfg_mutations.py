@@ -196,6 +196,7 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
             target_serial=int(blk_successor_serial),
             reason="change_1way_block_successor",
             extra={"old_target": int(previous_blk_successor_serial)},
+            mba=mba,
         )
     except Exception:
         pass
@@ -328,6 +329,7 @@ def change_2way_block_conditional_successor(
             extra={
                 "old_target": int(previous_blk_conditional_successor_serial),
             },
+            mba=mba,
         )
     except Exception:
         pass
@@ -406,6 +408,7 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
             extra={
                 "old_succs": [int(s) for s in previous_blk_successor_serials],
             },
+            mba=mba,
         )
     except Exception:
         pass
@@ -532,6 +535,7 @@ def create_standalone_block(
                 "is_0_way": bool(is_0_way),
                 "n_instructions": len(blk_ins),
             },
+            mba=mba,
         )
     except Exception:
         pass
@@ -1011,6 +1015,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
                 "ref_blk": int(blk.serial),
                 "insert_after_blk": bool(insert_after_blk),
             },
+            mba=mba,
         )
     except Exception:
         pass
@@ -1365,6 +1370,7 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                         target_serial=int(goto_blk_dst_serial),
                         reason="bypass_simple_goto_block",
                         extra={"old_target": int(goto_blk_serial)},
+                        mba=mba,
                     )
                 except Exception:
                     pass
@@ -1417,6 +1423,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
                 "kind": action_kind,
                 "maturity": int(getattr(mba, "maturity", -1)),
             },
+            mba=mba,
         )
         if delta > 0:
             # Per-serial DELETE rows for any serial out-of-range now.
@@ -1429,6 +1436,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
                         target_serial=None,
                         reason=f"{api_call}_qty_shrunk",
                         extra={"pre_qty": pre_qty, "post_qty": post_qty},
+                        mba=mba,
                     )
     except Exception:
         pass

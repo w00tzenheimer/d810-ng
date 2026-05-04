@@ -11,6 +11,9 @@ Usage::
     python -m d810.core.diag program --db path.sqlite3 --snapshot 12 --variant semantic_reference_like
     python -m d810.core.diag program --db path.sqlite3 --maturity GLBOPT1 --phase post_d810
     python -m d810.core.diag state-local --db path.sqlite3 --snapshot 6 0x298372CC
+    python -m d810.core.diag block-trace --db path.sqlite3 --ea 0x1800134A5
+    python -m d810.core.diag block-trace --db path.sqlite3 --snapshot 12 --serial 206
+    python -m d810.core.diag block-lineage --db path.sqlite3 --snapshot 12 --serial 206
     PYTHONPATH=src python3 -m d810.core.diag program \\
       --db /Users/mahmoud/src/idapro/d810/.worktrees/state-label-linearization/.tmp/logs/d810_logs/0000000180012b60_1774805543_33.diag.sqlite3 \\
       --maturity GLBOPT1 \\
@@ -37,6 +40,9 @@ import sys
 
 from d810.core.diag.query import (
     block_detail,
+    block_lineage,
+    block_trace_by_ea,
+    block_trace_by_serial,
     chain,
     merge_causality,
     rendered_program_nodes,
@@ -582,6 +588,156 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
     return "\n".join(lines)
 
 
+def _short_fp(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 32:
+        return text
+    return text[:29] + "..."
+
+
+def _format_trace_match(row: dict) -> str:
+    label = row.get("snapshot_label") or "?"
+    type_name = row.get("type_name") or "?"
+    start = row.get("start_ea_hex") or "?"
+    end = row.get("end_ea_hex") or "?"
+    insns = row.get("insn_count")
+    match = row.get("match_kind") or "match"
+    parts = [
+        f"snap {row['snapshot_id']} ({label})",
+        f"blk[{row['serial']}]",
+        str(type_name),
+        f"match={match}",
+        f"start={start}",
+        f"end={end}",
+    ]
+    if insns is not None:
+        parts.append(f"insns={insns}")
+    if row.get("matching_eas") is not None:
+        parts.append(f"shared_eas={row['matching_eas']}")
+    if row.get("body_fingerprint"):
+        parts.append(f"body={_short_fp(row['body_fingerprint'])}")
+    return " ".join(parts)
+
+
+def _format_block_trace(result: dict) -> str:
+    """Render block correlation trace output."""
+    matches = result.get("matches") or []
+    lines: list[str] = []
+    if result.get("mode") == "ea":
+        lines.append(
+            f"BLOCK TRACE ea=0x{int(result['ea']) & 0xFFFFFFFFFFFFFFFF:X} "
+            f"source={result['source']}"
+        )
+        if result.get("ambiguous"):
+            lines.append(
+                f"AMBIGUOUS: {len(matches)} matching blocks; "
+                "refine with --snapshot/--serial if needed"
+            )
+    else:
+        lines.append(
+            f"BLOCK TRACE snap {result['snapshot_id']} "
+            f"blk[{result['serial']}] source={result['source']}"
+        )
+        anchor = result.get("anchor")
+        if anchor is None:
+            lines.append("anchor: (not found)")
+        else:
+            lines.append(f"anchor: {_format_trace_match(anchor)}")
+
+    for msg in result.get("messages") or []:
+        lines.append(f"note: {msg}")
+
+    if not matches:
+        lines.append("matches: (none)")
+        return "\n".join(lines)
+
+    lines.append("matches:")
+    for row in matches:
+        lines.append(f"  {_format_trace_match(row)}")
+    return "\n".join(lines)
+
+
+def _format_lineage_row(row: dict) -> str:
+    label = row.get("snapshot_label") or "?"
+    origin_snapshot = row.get("origin_snapshot_id")
+    origin_serial = row.get("origin_serial")
+    if origin_snapshot is not None and origin_serial is not None:
+        origin = f"origin=snap {origin_snapshot} blk[{origin_serial}]"
+    elif row.get("origin_start_ea_hex"):
+        origin = f"origin_ea={row['origin_start_ea_hex']}"
+    else:
+        origin = "origin=?"
+    parts = [
+        f"snap {row['snapshot_id']} ({label}) blk[{row['serial']}]",
+        f"creation_kind={row.get('creation_kind') or '?'}",
+        origin,
+    ]
+    if row.get("creation_reason"):
+        parts.append(f"reason={row['creation_reason']}")
+    if row.get("planner_block_id"):
+        parts.append(f"planner={row['planner_block_id']}")
+    if row.get("source_mod_type"):
+        parts.append(f"mod={row['source_mod_type']}")
+    return " ".join(parts)
+
+
+def _format_provenance_row(row: dict) -> str:
+    target = (
+        f"blk[{row['target_serial']}]"
+        if row.get("target_serial") is not None
+        else "-"
+    )
+    reason = row.get("reason") or ""
+    return (
+        f"seq={row['seq']} pass={row['pass_name']} action={row['action']} "
+        f"block=blk[{row['block_serial']}] target={target} reason={reason}"
+    )
+
+
+def _format_block_lineage(result: dict) -> str:
+    """Render direct block lineage plus fallback provenance."""
+    lines: list[str] = [
+        f"BLOCK LINEAGE snap {result['snapshot_id']} blk[{result['serial']}]"
+    ]
+    for msg in result.get("messages") or []:
+        lines.append(f"note: {msg}")
+
+    observation = result.get("observation")
+    if observation is None:
+        lines.append("observation: (not found)")
+    else:
+        lines.append(f"observation: {_format_trace_match(observation)}")
+
+    lineage_rows = result.get("lineage") or []
+    if lineage_rows:
+        lines.append("direct lineage:")
+        for row in lineage_rows:
+            lines.append(f"  {_format_lineage_row(row)}")
+    else:
+        lines.append("direct lineage: (none)")
+
+    origins = result.get("origins") or []
+    if origins:
+        lines.append("origin observations:")
+        for row in origins:
+            lines.append(f"  {_format_trace_match(row)}")
+
+    children = result.get("children") or []
+    if children:
+        lines.append("derived blocks:")
+        for row in children:
+            lines.append(f"  {_format_lineage_row(row)}")
+
+    provenance = result.get("provenance") or []
+    if provenance:
+        lines.append("cfg_provenance:")
+        for row in provenance:
+            lines.append(f"  {_format_provenance_row(row)}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
@@ -652,6 +808,41 @@ def main(argv: list[str] | None = None) -> int:
         help="Show typed local CFG facts for one LinearizedStateDag state",
     )
     p_state_local.add_argument("state", type=lambda x: int(x, 0))
+
+    p_block_trace = sub.add_parser(
+        "block-trace",
+        parents=[common],
+        help=(
+            "Correlate blocks by EA or by a snapshot/serial anchor. "
+            "Uses block_observations when present, with old-table fallbacks."
+        ),
+    )
+    trace_selector = p_block_trace.add_mutually_exclusive_group(required=True)
+    trace_selector.add_argument(
+        "--ea",
+        type=lambda x: int(x, 0),
+        help="Trace all blocks whose start/range/instruction EA matches",
+    )
+    trace_selector.add_argument(
+        "--serial",
+        type=int,
+        help="Trace one block from the resolved --snapshot",
+    )
+
+    p_block_lineage = sub.add_parser(
+        "block-lineage",
+        parents=[common],
+        help=(
+            "Show direct block_lineage rows for one block, plus "
+            "cfg_provenance fallback when lineage rows are unavailable."
+        ),
+    )
+    p_block_lineage.add_argument(
+        "--serial",
+        required=True,
+        type=int,
+        help="Block serial in the resolved --snapshot",
+    )
 
     p_ea = sub.add_parser(
         "ea-trace", parents=[common],
@@ -796,6 +987,17 @@ def main(argv: list[str] | None = None) -> int:
                 state=args.state,
             )
         )
+    elif args.command == "block-trace":
+        if args.ea is not None:
+            print(_format_block_trace(block_trace_by_ea(conn, args.ea)))
+        else:
+            print(
+                _format_block_trace(
+                    block_trace_by_serial(conn, snap_id, args.serial)
+                )
+            )
+    elif args.command == "block-lineage":
+        print(_format_block_lineage(block_lineage(conn, snap_id, args.serial)))
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
     elif args.command == "merge-causality":
