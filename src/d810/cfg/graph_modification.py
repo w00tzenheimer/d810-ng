@@ -361,6 +361,42 @@ class ZeroStateWrite:
 
 
 @dataclass(frozen=True)
+class PromoteOperandToScalar:
+    """Promote a fused sub-instruction operand (mop_d) into its own
+    standalone microcode instruction with a fresh scalar destination.
+
+    LLVM-style mem2reg analog: extracts an embedded compute (e.g. the
+    ``m_ldx`` carried inside an ``m_add``'s ``l`` operand) and binds
+    its result to a fresh kreg so downstream passes see an explicit
+    def-use chain. Used to defeat IDA's MMAT_LVARS DCE on fused
+    load-add-store induction patterns where the load only appears as
+    a sub-operand and gets eliminated.
+
+    Maps to DeferredGraphModifier's INSN_PROMOTE_OPERAND_TO_SCALAR.
+
+    Attributes:
+        block_serial: Block containing the host instruction.
+        host_ea: Effective address of the host instruction (the
+            instruction whose operand will be hoisted).
+        host_opcode: Microcode opcode of the host (m_add, m_sub, etc.) —
+            used to disambiguate when multiple insns share an EA.
+        operand_side: Which operand to promote: ``"l"`` or ``"r"``.
+
+    Example:
+        >>> mod = PromoteOperandToScalar(
+        ...     block_serial=23, host_ea=0x180013d08, host_opcode=0x21,
+        ...     operand_side="l",
+        ... )
+        >>> mod.operand_side
+        'l'
+    """
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    operand_side: str
+
+
+@dataclass(frozen=True)
 class PrivateTerminalSuffix:
     """Clone a shared terminal epilogue suffix chain for one anchor block.
 
@@ -546,6 +582,7 @@ GraphModification = Union[
     RemoveEdge,
     NopInstructions,
     ZeroStateWrite,
+    PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringGroup,
@@ -566,6 +603,7 @@ __all__ = [
     "RemoveEdge",
     "NopInstructions",
     "ZeroStateWrite",
+    "PromoteOperandToScalar",
     "PrivateTerminalSuffix",
     "PrivateTerminalSuffixGroup",
     "DirectTerminalLoweringKind",
