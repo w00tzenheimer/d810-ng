@@ -98,6 +98,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_co
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
     DispatcherTrampolineSkipStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.counter_hoist import (
+    CounterHoistStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
@@ -130,6 +133,7 @@ __all__ = [
     "ExactNodeFrontierBypassStrategy",
     "HandlerChainComposerStrategy",
     "DispatcherTrampolineSkipStrategy",
+    "CounterHoistStrategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -179,6 +183,10 @@ EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     # D810_HODUR_ENABLE_TRAMPOLINE_SKIP=1).  is_applicable() returns False
     # when the gate is off, so this is a no-op by default.
     DispatcherTrampolineSkipStrategy,
+    # Promote fused load-arith-store induction operands so IDA's MMAT_LVARS
+    # DCE cannot eliminate the increment (default-on; opt-out via
+    # D810_HODUR_DISABLE_COUNTER_HOIST=1).
+    CounterHoistStrategy,
 ])
 
 _STANDALONE_SRW_ENABLED = (
@@ -190,6 +198,7 @@ ALL_STRATEGIES: list[type] = _filter_strategies([
     *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
     HandlerChainComposerStrategy,
     DispatcherTrampolineSkipStrategy,
+    CounterHoistStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     *([StateWriteReconstructionStrategy] if _STANDALONE_SRW_ENABLED else []),

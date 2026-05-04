@@ -198,6 +198,7 @@ import os
 import time
 
 import ida_hexrays
+import idaapi
 
 from d810.core import getLogger
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
@@ -411,6 +412,7 @@ class ModificationType(Enum):
     INSN_REMOVE = auto()              # Remove a specific instruction
     INSN_NOP = auto()                 # NOP a specific instruction
     INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
+    INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
@@ -496,6 +498,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.INSN_REMOVE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_NOP: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.BLOCK_NOP_INSNS: StagedAtomicClassification.INSTRUCTION_ONLY,
     # Destructive-expressible: mutate an existing block's tail/succset in-place.
     # Lowered to copy-and-swap under staged_atomic.
@@ -785,6 +788,10 @@ class GraphModification:
     old_to_new: dict[int, int] | None = None
     # For REORDER_BLOCKS: pre-computed old_serial -> trampoline_serial for 2WAY blocks
     old_to_trampoline: dict[int, int] | None = None
+    # For INSN_PROMOTE_OPERAND_TO_SCALAR: opcode of the host instruction
+    host_opcode: int | None = None
+    # For INSN_PROMOTE_OPERAND_TO_SCALAR: which operand side to extract ("l" | "r")
+    operand_side: str | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1250,6 +1257,47 @@ class DeferredGraphModifier:
             description=description or f"zero state write at {hex(insn_ea)} in block {block_serial}",
         ))
         logger.debug("Queued zero state write: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_promote_operand_to_scalar(
+        self,
+        block_serial: int,
+        host_ea: int,
+        host_opcode: int,
+        operand_side: str,
+        description: str = "",
+    ) -> None:
+        """Queue promotion of a fused sub-instruction operand into a fresh
+        scalar (kreg) standalone instruction.
+
+        At apply-time, the host instruction's ``operand_side`` (``"l"`` or
+        ``"r"``) — which must be a ``mop_d`` — is hoisted into a new
+        instruction inserted before the host, with its result bound to a
+        freshly-allocated kreg. The host's operand is then rewritten to
+        reference that kreg. Defeats IDA's MMAT_LVARS DCE on fused
+        load-add-store induction patterns.
+        """
+        if operand_side not in ("l", "r"):
+            raise ValueError(
+                f"operand_side must be 'l' or 'r', got {operand_side!r}"
+            )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR,
+            block_serial=block_serial,
+            insn_ea=host_ea,
+            host_opcode=host_opcode,
+            operand_side=operand_side,
+            priority=900,
+            description=description or (
+                f"promote operand {operand_side} of insn at "
+                f"{hex(host_ea)} in block {block_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued promote_operand_to_scalar: block %d, host_ea=%s, side=%s",
+            block_serial, hex(host_ea), operand_side,
+        )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
@@ -4629,6 +4677,11 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.INSN_ZERO_STATE_WRITE:
             return self._apply_zero_state_write(blk, mod.insn_ea)
 
+        elif mod.mod_type == ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR:
+            return self._apply_promote_operand_to_scalar(
+                blk, mod.insn_ea, mod.host_opcode, mod.operand_side,
+            )
+
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
             return self._apply_create_and_redirect(
                 blk,
@@ -4894,6 +4947,92 @@ class DeferredGraphModifier:
             hex(insn_ea), blk.serial,
         )
         return False
+
+    def _apply_promote_operand_to_scalar(
+        self,
+        blk: ida_hexrays.mblock_t,
+        host_ea: int,
+        host_opcode: int | None,
+        operand_side: str | None,
+    ) -> bool:
+        """Promote a fused sub-instruction operand (mop_d) into its own
+        standalone microcode instruction with a fresh kreg destination.
+
+        See PromoteOperandToScalar dataclass for semantics. Recipe verified
+        against hexrays.hpp by microcode-expert: kreg (not lvar), deep clone
+        via copy ctor (not move), insert before host via insert_into_block
+        with om=host.prev, prefer sub-insn EA, fallback to host EA.
+        """
+        if operand_side not in ("l", "r"):
+            logger.warning(
+                "promote_operand_to_scalar: invalid operand_side=%r at "
+                "blk[%d]@0x%x",
+                operand_side, blk.serial, host_ea,
+            )
+            return False
+
+        host = blk.head
+        prev = None
+        while host is not None:
+            if host.ea == host_ea and (
+                host_opcode is None or host.opcode == host_opcode
+            ):
+                break
+            prev = host
+            host = host.next
+        if host is None:
+            logger.warning(
+                "promote_operand_to_scalar: host insn at EA %s not found "
+                "in block %d",
+                hex(host_ea), blk.serial,
+            )
+            return False
+
+        sub_mop = host.l if operand_side == "l" else host.r
+        if sub_mop.t != ida_hexrays.mop_d or sub_mop.d is None:
+            logger.warning(
+                "promote_operand_to_scalar: blk[%d]@0x%x operand %s is not "
+                "mop_d (t=%d) — nothing to promote",
+                blk.serial, host_ea, operand_side, int(sub_mop.t),
+            )
+            return False
+
+        sub_size = sub_mop.size
+        sub_ea = sub_mop.d.ea
+        if sub_ea == idaapi.BADADDR:
+            sub_ea = host.ea
+
+        kreg = self.mba.alloc_kreg(sub_size, True)
+        if kreg == ida_hexrays.mr_none:
+            logger.warning(
+                "promote_operand_to_scalar: alloc_kreg(%d) returned mr_none "
+                "at blk[%d]@0x%x",
+                sub_size, blk.serial, host_ea,
+            )
+            return False
+
+        # Deep clone via copy ctor — never move ownership of mop_d.d.
+        promoted = ida_hexrays.minsn_t(sub_mop.d)
+        promoted.ea = sub_ea
+        promoted.d.erase()
+        promoted.d.make_reg(kreg, sub_size)
+        promoted.d.size = sub_size
+
+        # insert_into_block(nm, om) inserts nm AFTER om; om=prev → before host.
+        blk.insert_into_block(promoted, prev)
+
+        # Replace the host's sub-operand with a register read of the kreg.
+        sub_mop.make_reg(kreg, sub_size)
+
+        # Re-seal use/def bookkeeping for the block.
+        blk.mark_lists_dirty()
+
+        logger.info(
+            "PROMOTE_OPERAND_TO_SCALAR: blk[%d]@0x%x — hoisted operand "
+            "%s (sub_ea=0x%x size=%d) into fresh kreg=%d",
+            blk.serial, host_ea, operand_side, sub_ea, sub_size, kreg,
+        )
+        return True
 
     def _apply_create_and_redirect(
         self,
@@ -7943,6 +8082,32 @@ class ImmediateGraphModifier:
         if self._apply_zero_state_write(blk, insn_ea):
             self.modifications_applied += 1
 
+    def queue_promote_operand_to_scalar(
+        self,
+        block_serial: int,
+        host_ea: int,
+        host_opcode: int,
+        operand_side: str,
+        description: str = "",
+    ) -> None:
+        """Promote a fused sub-instruction operand to a fresh kreg immediately."""
+        if operand_side not in ("l", "r"):
+            raise ValueError(
+                f"operand_side must be 'l' or 'r', got {operand_side!r}"
+            )
+        blk = self.mba.get_mblock(block_serial)
+        if blk is None:
+            logger.warning("Block %d not found", block_serial)
+            return
+        logger.debug(
+            "Immediate promote_operand_to_scalar: block %d, host_ea=%s, side=%s",
+            block_serial, hex(host_ea), operand_side,
+        )
+        if self._apply_promote_operand_to_scalar(
+            blk, host_ea, host_opcode, operand_side,
+        ):
+            self.modifications_applied += 1
+
     def queue_create_and_redirect(
         self,
         source_block_serial: int,
@@ -8149,6 +8314,92 @@ class ImmediateGraphModifier:
             hex(insn_ea), blk.serial,
         )
         return False
+
+    def _apply_promote_operand_to_scalar(
+        self,
+        blk: ida_hexrays.mblock_t,
+        host_ea: int,
+        host_opcode: int | None,
+        operand_side: str | None,
+    ) -> bool:
+        """Promote a fused sub-instruction operand (mop_d) into its own
+        standalone microcode instruction with a fresh kreg destination.
+
+        See PromoteOperandToScalar dataclass for semantics. Recipe verified
+        against hexrays.hpp by microcode-expert: kreg (not lvar), deep clone
+        via copy ctor (not move), insert before host via insert_into_block
+        with om=host.prev, prefer sub-insn EA, fallback to host EA.
+        """
+        if operand_side not in ("l", "r"):
+            logger.warning(
+                "promote_operand_to_scalar: invalid operand_side=%r at "
+                "blk[%d]@0x%x",
+                operand_side, blk.serial, host_ea,
+            )
+            return False
+
+        host = blk.head
+        prev = None
+        while host is not None:
+            if host.ea == host_ea and (
+                host_opcode is None or host.opcode == host_opcode
+            ):
+                break
+            prev = host
+            host = host.next
+        if host is None:
+            logger.warning(
+                "promote_operand_to_scalar: host insn at EA %s not found "
+                "in block %d",
+                hex(host_ea), blk.serial,
+            )
+            return False
+
+        sub_mop = host.l if operand_side == "l" else host.r
+        if sub_mop.t != ida_hexrays.mop_d or sub_mop.d is None:
+            logger.warning(
+                "promote_operand_to_scalar: blk[%d]@0x%x operand %s is not "
+                "mop_d (t=%d) — nothing to promote",
+                blk.serial, host_ea, operand_side, int(sub_mop.t),
+            )
+            return False
+
+        sub_size = sub_mop.size
+        sub_ea = sub_mop.d.ea
+        if sub_ea == idaapi.BADADDR:
+            sub_ea = host.ea
+
+        kreg = self.mba.alloc_kreg(sub_size, True)
+        if kreg == ida_hexrays.mr_none:
+            logger.warning(
+                "promote_operand_to_scalar: alloc_kreg(%d) returned mr_none "
+                "at blk[%d]@0x%x",
+                sub_size, blk.serial, host_ea,
+            )
+            return False
+
+        # Deep clone via copy ctor — never move ownership of mop_d.d.
+        promoted = ida_hexrays.minsn_t(sub_mop.d)
+        promoted.ea = sub_ea
+        promoted.d.erase()
+        promoted.d.make_reg(kreg, sub_size)
+        promoted.d.size = sub_size
+
+        # insert_into_block(nm, om) inserts nm AFTER om; om=prev → before host.
+        blk.insert_into_block(promoted, prev)
+
+        # Replace the host's sub-operand with a register read of the kreg.
+        sub_mop.make_reg(kreg, sub_size)
+
+        # Re-seal use/def bookkeeping for the block.
+        blk.mark_lists_dirty()
+
+        logger.info(
+            "PROMOTE_OPERAND_TO_SCALAR: blk[%d]@0x%x — hoisted operand "
+            "%s (sub_ea=0x%x size=%d) into fresh kreg=%d",
+            blk.serial, host_ea, operand_side, sub_ea, sub_size, kreg,
+        )
+        return True
 
     def _apply_create_and_redirect(
         self,

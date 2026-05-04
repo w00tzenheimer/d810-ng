@@ -31,6 +31,7 @@ from d810.cfg.graph_modification import (
     GraphModification,
     NopInstructions,
     ZeroStateWrite,
+    PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectBranch,
@@ -235,6 +236,24 @@ class ModificationBuilder:
 
     def zero_state_write(self, source_block: int, instruction_ea: int) -> ZeroStateWrite:
         return ZeroStateWrite(block_serial=source_block, insn_ea=instruction_ea)
+
+    def promote_operand_to_scalar(
+        self,
+        source_block: int,
+        host_ea: int,
+        host_opcode: int,
+        operand_side: str,
+    ) -> PromoteOperandToScalar:
+        if operand_side not in ("l", "r"):
+            raise ValueError(
+                f"operand_side must be 'l' or 'r', got {operand_side!r}"
+            )
+        return PromoteOperandToScalar(
+            block_serial=source_block,
+            host_ea=host_ea,
+            host_opcode=host_opcode,
+            operand_side=operand_side,
+        )
 
     def conditional_redirect(
         self,

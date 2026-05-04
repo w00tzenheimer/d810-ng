@@ -44,6 +44,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     NopInstructions,
     ZeroStateWrite,
+    PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringSite,
@@ -179,6 +180,23 @@ class PatchZeroStateWrite:
 
     def to_graph_modification(self) -> ZeroStateWrite:
         return ZeroStateWrite(block_serial=self.block_serial, insn_ea=self.insn_ea)
+
+
+@dataclass(frozen=True)
+class PatchPromoteOperandToScalar:
+    """Promote a fused sub-instruction operand into a fresh kreg standalone insn."""
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    operand_side: str  # "l" | "r"
+
+    def to_graph_modification(self) -> PromoteOperandToScalar:
+        return PromoteOperandToScalar(
+            block_serial=self.block_serial,
+            host_ea=self.host_ea,
+            host_opcode=self.host_opcode,
+            operand_side=self.operand_side,
+        )
 
 
 @dataclass(frozen=True)
@@ -384,6 +402,7 @@ PatchOperation = Union[
     PatchRemoveEdge,
     PatchNopInstructions,
     PatchZeroStateWrite,
+    PatchPromoteOperandToScalar,
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
     PatchInsertBlock,
@@ -906,6 +925,9 @@ def _finalize_step(
         case PatchZeroStateWrite():
             return step
 
+        case PatchPromoteOperandToScalar():
+            return step
+
         case _PendingEdgeSplitTrampoline(
             modification=EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -1195,6 +1217,19 @@ def compile_patch_plan(
 
             case ZeroStateWrite(block_serial=serial, insn_ea=ea):
                 raw_steps.append(PatchZeroStateWrite(block_serial=serial, insn_ea=ea))
+
+            case PromoteOperandToScalar(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                operand_side=side,
+            ):
+                raw_steps.append(PatchPromoteOperandToScalar(
+                    block_serial=serial,
+                    host_ea=host_ea,
+                    host_opcode=opcode,
+                    operand_side=side,
+                ))
 
             case EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -1524,6 +1559,7 @@ __all__ = [
     "PatchRemoveEdge",
     "PatchNopInstructions",
     "PatchZeroStateWrite",
+    "PatchPromoteOperandToScalar",
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
     "PatchInsertBlock",
