@@ -166,6 +166,172 @@ def _classify_exact_handler_side_effect_corridor(
                 queue.append((succ_int, distance + 1))
 
     return found, tuple(signature), tuple(walked)
+
+
+# ---------------------------------------------------------------------------
+# Side-effect corridor identification (ordered linear cascade)
+# ---------------------------------------------------------------------------
+# A "side-effect corridor" is an ordered linear chain of blocks where each
+# block writes to memory (m_stx / buffer-or-store) and falls through to
+# the next, optionally with a single conditional return arm.  These are
+# the byte-emit cascade tails in OLLVM-flattened functions: every block
+# emits one byte from a per-step constant index into a caller buffer,
+# increments a counter, and tests `if (state == K) return`.
+#
+# These corridors are SEMANTICALLY ORDERED — the byte at index K is
+# emitted by step K of the chain, with the order encoded by the
+# fall-through edges.  D810's HCC bulk linearization can shred these
+# corridors by:
+#   * inserting handler blocks between corridor steps,
+#   * redirecting a step's tail to a non-adjacent target, or
+#   * adding new predecessors that violate the natural single-pred chain.
+# When that happens, IDA's structurer cannot recover the cascade and
+# rolls remaining blocks into a `while(1)` with only the first-step gates.
+#
+# This detector identifies the corridors so HCC can refuse to plan
+# rewrites that would shred them.
+
+
+def _block_has_side_effect_opcode(blk: object, side_effect_ops: set[int]) -> bool:
+    """Check whether ``blk`` contains any ``m_stx``/``m_call``/``m_icall``."""
+    if blk is None:
+        return False
+    for insn in getattr(blk, "insn_snapshots", ()):
+        try:
+            opcode = int(getattr(insn, "opcode", -1))
+        except (TypeError, ValueError):
+            continue
+        if opcode in side_effect_ops:
+            return True
+    return False
+
+
+def detect_side_effect_corridors(
+    flow_graph: FlowGraph | None,
+    *,
+    bst_block_set: frozenset[int] | set[int] | None = None,
+    min_chain_length: int = 3,
+    max_chain_length: int = 16,
+) -> tuple[tuple[int, ...], ...]:
+    """Return ordered linear cascades of side-effect-bearing blocks.
+
+    A corridor is a tuple ``(B_0, B_1, ..., B_k)`` of block serials such that:
+      * each ``B_i`` has at least one ``m_stx``/``m_call``/``m_icall`` insn
+        (semantically meaningful side effect)
+      * each ``B_i`` has ``nsucc <= 2`` (linear fall-through, or 1-
+        conditional with a single return/exit arm)
+      * for ``i < k``, ``B_{i+1}`` is a *direct fall-through successor* of
+        ``B_i`` (i.e., ``B_{i+1} in B_i.succs``)
+      * for ``i > 0``, ``B_i`` has only ``B_{i-1}`` as predecessor coming
+        from inside the corridor (joins from outside disqualify the chain
+        because they prove the ordered semantics is already broken)
+      * none of the ``B_i`` are BST dispatcher/route blocks
+      * ``k + 1 >= min_chain_length`` (default 3 — short pairs aren't
+        a meaningful "corridor")
+
+    Detection is conservative — it intentionally rejects:
+      * cascades that include a BST node (those are routing, not side-effect)
+      * cascades whose head already has a non-trivial predecessor merge
+        (HCC may have pre-emptively shredded them)
+
+    Returns a tuple of corridors, each itself a tuple of serials in
+    forward order (head -> tail / sink direction).
+    """
+    if flow_graph is None:
+        return ()
+    try:
+        import ida_hexrays
+    except ImportError:
+        return ()
+    m_stx = getattr(ida_hexrays, "m_stx", -1)
+    m_call = getattr(ida_hexrays, "m_call", -1)
+    m_icall = getattr(ida_hexrays, "m_icall", -1)
+    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
+    if not side_effect_ops:
+        return ()
+
+    bst_set: set[int] = (
+        set(int(s) for s in (bst_block_set or ())) if bst_block_set else set()
+    )
+
+    # Collect side-effect candidates AND traversable transit blocks.
+    # The OLLVM byte-emit cascade alternates TEST(m_jcnd) -> EMIT(m_stx),
+    # so the corridor walk must hop through small transit blocks (no
+    # m_stx but nsucc<=2 and not in BST set) between side-effect steps.
+    candidate_set: set[int] = set()
+    transit_set: set[int] = set()
+    blocks_by_serial: dict[int, object] = {}
+    for blk in flow_graph.blocks.values():
+        try:
+            serial = int(getattr(blk, "serial", -1))
+        except (TypeError, ValueError):
+            continue
+        if serial < 0:
+            continue
+        if serial in bst_set:
+            continue
+        nsucc = len(tuple(getattr(blk, "succs", ()) or ()))
+        if nsucc not in (1, 2):
+            continue
+        blocks_by_serial[serial] = blk
+        if _block_has_side_effect_opcode(blk, side_effect_ops):
+            candidate_set.add(serial)
+        else:
+            transit_set.add(serial)
+
+    if not candidate_set:
+        return ()
+
+    # Walk forward from each candidate; collect maximal ordered chains.
+    # Heuristic: at each step, take the first successor that is itself a
+    # side-effect candidate.  We deliberately do NOT require the next
+    # block to have a single predecessor — a byte-emit cascade with
+    # multiple entry points (handlers entering at different byte offsets)
+    # legitimately has npred > 1 at internal cascade blocks.  The
+    # signal we want to capture is the *forward chain shape*; topology
+    # mutations that shred the chain show up as either a missing succ
+    # link (next block isn't a candidate) or a divergent succ choice
+    # (multiple succs are candidates — cascade has been duplicated).
+    in_chain: set[int] = set()
+    corridors: list[tuple[int, ...]] = []
+    for head_serial in sorted(candidate_set):
+        if head_serial in in_chain:
+            continue
+        chain = [head_serial]
+        side_effect_count = 1
+        current = blocks_by_serial[head_serial]
+        consecutive_transits = 0
+        for _ in range(int(max_chain_length) * 2):
+            succs = tuple(int(s) for s in (getattr(current, "succs", ()) or ()))
+            next_step: int | None = None
+            for cand in succs:
+                if cand in blocks_by_serial and cand not in chain:
+                    next_step = cand
+                    break
+            if next_step is None:
+                break
+            chain.append(next_step)
+            if next_step in candidate_set:
+                side_effect_count += 1
+                consecutive_transits = 0
+            else:
+                consecutive_transits += 1
+                if consecutive_transits > 2:
+                    # Don't keep hopping through endless transit; bail out.
+                    chain.pop()
+                    break
+            current = blocks_by_serial[next_step]
+        # Trim trailing transit blocks (corridor should end at a sink
+        # side-effect step, not a downstream routing block).
+        while chain and chain[-1] not in candidate_set:
+            chain.pop()
+        if side_effect_count >= int(min_chain_length):
+            corridors.append(tuple(chain))
+            in_chain.update(chain)
+
+    # Order by chain head serial for determinism.
+    corridors.sort(key=lambda c: c[0])
+    return tuple(corridors)
 _SIMPLE_COMPARE_RE = re.compile(
     r"^\s*(?P<lhs>.+?)\s+"
     r"(?P<op>==|!=|>=u|<=u|>u|<u|>=s|<=s|>s|<s)\s+"
@@ -503,6 +669,7 @@ class LinearizedStateDag:
     diagnostics: tuple[str, ...] = ()
     sccs: tuple["StateSCC", ...] = ()
     loop_regions: tuple["LoopRegion", ...] = ()
+    side_effect_corridors: tuple[tuple[int, ...], ...] = ()
 
     def node_by_handler(self) -> dict[int, StateDagNode]:
         return {node.handler_serial: node for node in self.nodes}
@@ -5429,7 +5596,22 @@ def build_linearized_state_dag_from_graph(
     loop_regions = classify_loop_regions(
         dag, dispatcher_region=dispatcher_region
     )
-    return replace(dag, loop_regions=loop_regions)
+    dag = replace(dag, loop_regions=loop_regions)
+    side_effect_corridors = detect_side_effect_corridors(
+        flow_graph,
+        bst_block_set=frozenset(report.bst_node_blocks),
+    )
+    if side_effect_corridors:
+        for corridor in side_effect_corridors:
+            logger.info(
+                "DAG: side-effect corridor detected: len=%d serials=%s "
+                "head=blk[%d] sink=blk[%d]",
+                len(corridor),
+                list(corridor[:8]),
+                corridor[0],
+                corridor[-1],
+            )
+    return replace(dag, side_effect_corridors=side_effect_corridors)
 
 
 def _format_anchor(anchor: StateRedirectAnchor) -> str:

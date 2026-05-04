@@ -152,6 +152,7 @@ from d810.recon.flow.linearized_state_dag import (
     SemanticEdgeKind,
     StateDagNode,
     build_live_linearized_state_dag_from_graph,
+    detect_side_effect_corridors,
 )
 from d810.recon.flow.narrow_branch_local_discovery import (
     discover_narrow_branch_local_reconstruction_candidates,
@@ -2714,6 +2715,31 @@ class HandlerChainComposerStrategy:
                 bst_node_blocks=filter_bst_node_blocks,
                 state_var_stkoff=filter_state_var_stkoff,
             )
+            # Corridor-shred guard for the SWR + region-collapse path.
+            if (
+                os.environ.get(
+                    self._PRESERVE_TERMINAL_BYTE_CORRIDORS_ENV, ""
+                ).strip()
+                == "1"
+            ):
+                _swr_corridors = detect_side_effect_corridors(
+                    getattr(snapshot, "flow_graph", None),
+                    bst_block_set=frozenset(filter_bst_node_blocks),
+                )
+                if _swr_corridors:
+                    for _c in _swr_corridors:
+                        logger.info(
+                            "CORRIDOR_GUARD: corridor detected (SWR+region "
+                            "path): len=%d serials=%s",
+                            len(_c),
+                            list(_c[:8]),
+                        )
+                    combined_modifications = (
+                        self._filter_corridor_shredding_mods(
+                            combined_modifications,
+                            _swr_corridors,
+                        )
+                    )
             combined_owned_blocks = set(swr_result["owned_blocks"])
             combined_owned_blocks.update(region_owned_blocks)
             combined_owned_blocks.update(call_barrier_owned_blocks)
@@ -2777,6 +2803,34 @@ class HandlerChainComposerStrategy:
         if not region_modifications and not call_barrier_modifications:
             return None
         bst_result_for_filter = getattr(snapshot, "bst_result", None)
+        # Optional: detect ordered byte-emission corridors and reject any
+        # modification that would shred them.  Default off until validated.
+        corridor_guard_enabled = (
+            os.environ.get(
+                self._PRESERVE_TERMINAL_BYTE_CORRIDORS_ENV, ""
+            ).strip()
+            == "1"
+        )
+        side_effect_corridors: tuple[tuple[int, ...], ...] = ()
+        if corridor_guard_enabled:
+            side_effect_corridors = detect_side_effect_corridors(
+                getattr(snapshot, "flow_graph", None),
+                bst_block_set=frozenset(
+                    int(b) for b in (
+                        getattr(bst_result_for_filter, "bst_node_blocks", set())
+                        if bst_result_for_filter is not None
+                        else set()
+                    )
+                ),
+            )
+            if side_effect_corridors:
+                for corridor in side_effect_corridors:
+                    logger.info(
+                        "CORRIDOR_GUARD: corridor detected (region-collapse "
+                        "path): len=%d serials=%s",
+                        len(corridor),
+                        list(corridor[:8]),
+                    )
         filtered_modifications = self._filter_payload_intermediate_redirects(
             region_modifications + list(call_barrier_modifications),
             mba=snapshot.mba,
@@ -2793,6 +2847,11 @@ class HandlerChainComposerStrategy:
             ),
             state_var_stkoff=_resolve_state_var_stkoff_loose(snapshot),
         )
+        if corridor_guard_enabled and side_effect_corridors:
+            filtered_modifications = self._filter_corridor_shredding_mods(
+                filtered_modifications,
+                side_effect_corridors,
+            )
         owned_blocks_combined = set(region_owned_blocks)
         owned_blocks_combined.update(call_barrier_owned_blocks)
         ownership = OwnershipScope(
@@ -3775,6 +3834,111 @@ class HandlerChainComposerStrategy:
         # Other mod kinds (NopInstructions, ZeroStateWrite, etc.) leave the
         # CFG topology intact, so they coexist safely with InsertBlock.
         return False
+
+    # Env gate: when set, refuse to emit modifications that would shred a
+    # detected ordered terminal byte-emission corridor (m_stx-bearing
+    # linear cascade).  Off by default until validated; flip on with
+    # ``D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS=1``.
+    _PRESERVE_TERMINAL_BYTE_CORRIDORS_ENV = (
+        "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"
+    )
+
+    @staticmethod
+    def _filter_corridor_shredding_mods(
+        modifications: list,
+        corridors: tuple[tuple[int, ...], ...],
+    ) -> list:
+        """Reject modifications that would mutate edges inside a side-effect
+        corridor in a way that breaks the ordered byte-emission cascade.
+
+        For each corridor ``(B_0, B_1, ..., B_k)``, we compute:
+          * ``corridor_blocks``: the set of all ``B_i``
+          * ``corridor_edges``: the set of ``(B_i, B_{i+1})`` ordered pairs
+          * ``corridor_interiors``: ``{B_1, ..., B_k}`` (everything except
+            the head — these are the blocks an external mod must NOT
+            inject a new predecessor into)
+          * ``corridor_tails``: ``{B_0, ..., B_{k-1}}`` (everything except
+            the sink — these are the blocks whose tail must NOT be
+            redirected away from the next corridor step)
+
+        A modification is rejected if:
+          * ``RedirectGoto(src, target, old_target)`` where
+            ``(src, old_target)`` matches a corridor edge (rewriting a
+            corridor block's tail to a non-corridor target).
+          * ``RedirectGoto(src, target)`` where ``target`` is a
+            corridor interior block (injecting a foreign predecessor
+            into the corridor's middle).
+          * ``RedirectBranch`` with the same shape.
+          * ``InsertBlock(pred, succ)`` where ``(pred, succ)`` matches a
+            corridor edge (splitting the corridor with an inserted block).
+          * ``DuplicateAndRedirect(source_serial)`` where
+            ``source_serial`` is in the corridor (cloning a corridor
+            block destroys the ordered cascade).
+
+        Diagnostic-rich logger: each rejection logs the rule that fired
+        and the offending modification's serial fields.
+        """
+        if not corridors or not modifications:
+            return modifications
+        corridor_blocks: set[int] = set()
+        corridor_edges: set[tuple[int, int]] = set()
+        corridor_interiors: set[int] = set()
+        for chain in corridors:
+            corridor_blocks.update(int(b) for b in chain)
+            corridor_interiors.update(int(b) for b in chain[1:])
+            for i in range(len(chain) - 1):
+                corridor_edges.add((int(chain[i]), int(chain[i + 1])))
+
+        kept: list = []
+        rejected_count = 0
+        for mod in modifications:
+            reject_reason: str | None = None
+            if isinstance(mod, (RedirectGoto, RedirectBranch)):
+                src = int(getattr(mod, "source_block", -1))
+                old = getattr(mod, "old_target", None)
+                tgt = int(getattr(mod, "new_target", -1))
+                if old is not None and (src, int(old)) in corridor_edges:
+                    reject_reason = (
+                        f"would rewrite corridor edge {src}->{int(old)}"
+                    )
+                elif tgt in corridor_interiors:
+                    reject_reason = (
+                        f"would inject foreign pred into corridor block {tgt}"
+                    )
+            elif isinstance(mod, InsertBlock):
+                pred = int(getattr(mod, "pred_serial", -1))
+                succ = int(getattr(mod, "succ_serial", -1))
+                if (pred, succ) in corridor_edges:
+                    reject_reason = (
+                        f"would split corridor edge {pred}->{succ} "
+                        f"with an inserted block"
+                    )
+            elif isinstance(mod, DuplicateAndRedirect):
+                src = int(getattr(mod, "source_serial", -1))
+                if src in corridor_blocks:
+                    reject_reason = (
+                        f"would duplicate corridor block {src}"
+                    )
+
+            if reject_reason is None:
+                kept.append(mod)
+            else:
+                rejected_count += 1
+                logger.info(
+                    "CORRIDOR_GUARD: rejected %s — %s",
+                    type(mod).__name__,
+                    reject_reason,
+                )
+
+        if rejected_count:
+            logger.info(
+                "CORRIDOR_GUARD: kept=%d rejected=%d corridors=%d "
+                "(gate D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS=1)",
+                len(kept),
+                rejected_count,
+                len(corridors),
+            )
+        return kept
 
     @staticmethod
     def _filter_payload_intermediate_redirects(
