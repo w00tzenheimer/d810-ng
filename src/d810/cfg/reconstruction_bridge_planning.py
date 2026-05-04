@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.cfg.block_identity import (
+    block_label,
+    edge_label,
+    flow_graph_context_label,
+)
 from d810.cfg.reconstruction_redirect_log import log_redirect_attempt
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
@@ -239,22 +244,22 @@ def plan_reconstruction_bridge_modifications(
                     except Exception:
                         logger.debug(
                             "RECON BRIDGE: redirect veto callback raised"
-                            " for blk[%d] -> blk[%d] state=0x%08X",
-                            int(exit_block),
-                            int(target_entry),
+                            " for %s state=0x%08X %s",
+                            edge_label(flow_graph, int(exit_block), int(target_entry)),
                             int(edge_state) & 0xFFFFFFFF,
+                            flow_graph_context_label(flow_graph),
                             exc_info=True,
                         )
                         veto_reason = None
                 if veto_reason:
                     logger.warning(
-                        "RECON BRIDGE: redirect vetoed blk[%d] -> blk[%d]"
-                        " old=blk[%d] state=0x%08X reason=%s",
-                        int(exit_block),
-                        int(target_entry),
-                        int(old_target),
+                        "RECON BRIDGE: redirect vetoed %s old=%s state=0x%08X"
+                        " reason=%s %s",
+                        edge_label(flow_graph, int(exit_block), int(target_entry)),
+                        block_label(flow_graph, int(old_target)),
                         int(edge_state) & 0xFFFFFFFF,
                         veto_reason,
+                        flow_graph_context_label(flow_graph),
                     )
                     continue
                 bridge_mods.append(modification)
@@ -307,22 +312,22 @@ def plan_reconstruction_bridge_modifications(
                             except Exception:
                                 logger.debug(
                                     "RECON BRIDGE: redirect veto callback raised"
-                                    " for blk[%d] -> blk[%d] state=0x%08X",
-                                    int(exit_block),
-                                    int(target_entry),
+                                    " for %s state=0x%08X %s",
+                                    edge_label(flow_graph, int(exit_block), int(target_entry)),
                                     int(edge_state) & 0xFFFFFFFF,
+                                    flow_graph_context_label(flow_graph),
                                     exc_info=True,
                                 )
                                 veto_reason = None
                         if veto_reason:
                             logger.warning(
-                                "RECON BRIDGE: redirect vetoed blk[%d] -> blk[%d]"
-                                " old=blk[%d] state=0x%08X reason=%s",
-                                int(exit_block),
-                                int(target_entry),
-                                int(arm_target),
+                                "RECON BRIDGE: redirect vetoed %s old=%s state=0x%08X"
+                                " reason=%s %s",
+                                edge_label(flow_graph, int(exit_block), int(target_entry)),
+                                block_label(flow_graph, int(arm_target)),
                                 int(edge_state) & 0xFFFFFFFF,
                                 veto_reason,
+                                flow_graph_context_label(flow_graph),
                             )
                             continue
                         bridge_mods.append(modification)
@@ -584,22 +589,22 @@ def plan_fixpoint_feeder_modifications(
             except Exception:
                 logger.debug(
                     "RECON FIXPOINT FEEDER: redirect veto callback raised"
-                    " for blk[%d] -> blk[%d] state=0x%08X",
-                    int(blk_serial),
-                    int(resolved),
+                    " for %s state=0x%08X %s",
+                    edge_label(flow_graph, int(blk_serial), int(resolved)),
                     int(state_val) & 0xFFFFFFFF,
+                    flow_graph_context_label(flow_graph),
                     exc_info=True,
                 )
                 veto_reason = None
         if veto_reason:
             logger.warning(
-                "RECON FIXPOINT FEEDER: redirect vetoed blk[%d] -> blk[%d]"
-                " old=blk[%d] state=0x%08X reason=%s",
-                int(blk_serial),
-                int(resolved),
-                int(old_target),
+                "RECON FIXPOINT FEEDER: redirect vetoed %s old=%s state=0x%08X"
+                " reason=%s %s",
+                edge_label(flow_graph, int(blk_serial), int(resolved)),
+                block_label(flow_graph, int(old_target)),
                 int(state_val) & 0xFFFFFFFF,
                 veto_reason,
+                flow_graph_context_label(flow_graph),
             )
             continue
         feeder_mods.append(modification)

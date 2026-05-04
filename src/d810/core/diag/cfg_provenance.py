@@ -63,34 +63,35 @@ def log_cfg_provenance(
     target_serial: int | None = None,
     reason: str = "",
     extra: dict[str, Any] | None = None,
+    mba: Any | None = None,
 ) -> None:
     """Emit a single canonical provenance line and buffer for DB flush."""
-    target_str = (
-        f"blk[{int(target_serial)}]" if target_serial is not None else "-"
-    )
+    block_int = _safe_serial(block_serial)
+    target_int = _safe_serial(target_serial) if target_serial is not None else None
+    block_str = _live_block_label(mba, block_int)
+    target_str = _live_block_label(mba, target_int) if target_int is not None else "-"
+
+    merged_extra: dict[str, Any] = dict(extra or {})
+    if mba is not None:
+        merged_extra.setdefault("block_label", block_str)
+        if target_int is not None:
+            merged_extra.setdefault("target_label", target_str)
+        merged_extra.setdefault("maturity", _live_maturity_label(mba))
+
     extra_str = "-"
     extra_json: str | None = None
-    if extra:
+    if merged_extra:
         try:
-            extra_json = json.dumps(extra, default=str, sort_keys=True)
+            extra_json = json.dumps(merged_extra, default=str, sort_keys=True)
             extra_str = extra_json
         except Exception:
             extra_json = None
-            extra_str = str(extra)
-    try:
-        block_int = int(block_serial)
-    except Exception:
-        block_int = -1
-    target_int: int | None
-    try:
-        target_int = int(target_serial) if target_serial is not None else None
-    except Exception:
-        target_int = None
+            extra_str = str(merged_extra)
     _logger.info(
-        "CFG_PROVENANCE pass=%s action=%s block=blk[%d] target=%s reason=%s extra=%s",
+        "CFG_PROVENANCE pass=%s action=%s block=%s target=%s reason=%s extra=%s",
         pass_name,
         action,
-        block_int,
+        block_str,
         target_str,
         reason,
         extra_str,
@@ -105,6 +106,47 @@ def log_cfg_provenance(
     )
     with _pending_lock:
         _pending.append(entry)
+
+
+def _safe_serial(value: object) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return -1
+
+
+def _live_maturity_label(mba: Any | None) -> str:
+    if mba is None:
+        return "maturity=?"
+    try:
+        value = int(getattr(mba, "maturity"))
+    except Exception:
+        return "maturity=?"
+    names = {
+        0: "MMAT_ZERO",
+        1: "MMAT_GENERATED",
+        2: "MMAT_PREOPTIMIZED",
+        3: "MMAT_LOCOPT",
+        4: "MMAT_CALLS",
+        5: "MMAT_GLBOPT1",
+        6: "MMAT_GLBOPT2",
+        7: "MMAT_GLBOPT3",
+        8: "MMAT_LVARS",
+    }
+    return names.get(value, f"MMAT_{value}")
+
+
+def _live_block_label(mba: Any | None, serial: int | None) -> str:
+    if serial is None:
+        return "blk[?]@?"
+    serial_int = int(serial)
+    if mba is None:
+        return f"blk[{serial_int}]@?"
+    try:
+        blk = mba.get_mblock(serial_int)
+        return f"blk[{serial_int}]@0x{int(blk.start):x}"
+    except Exception:
+        return f"blk[{serial_int}]@?"
 
 
 def drain_pending_provenance() -> list[_ProvenanceEntry]:

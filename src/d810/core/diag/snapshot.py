@@ -158,6 +158,84 @@ class BlockSnapshot:
         return "\n".join(lines)
 
 
+def _hex64_or_none(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return f"0x{int(value) & _MASK64:016x}"
+
+
+def _insn_ea_fingerprint(block: BlockSnapshot) -> str:
+    return json.dumps(
+        [_hex64_or_none(insn.ea) for insn in block.instructions],
+        separators=(",", ":"),
+    )
+
+
+def _opcode_fingerprint(block: BlockSnapshot) -> str:
+    return json.dumps(
+        [int(insn.opcode) for insn in block.instructions],
+        separators=(",", ":"),
+    )
+
+
+def _operand_fingerprint(block: BlockSnapshot) -> str:
+    """Return a stable operand-shape fingerprint for a block body.
+
+    This deliberately avoids ``dstr`` because the display string is a human
+    rendering and can change independently of the microcode shape.
+    """
+    rows: list[dict[str, object | None]] = []
+    for insn in block.instructions:
+        rows.append({
+            "d_t": insn.dest_type,
+            "d_o": _safe_int(insn.dest_stkoff),
+            "d_s": _safe_int(insn.dest_size),
+            "l_t": insn.src_l_type,
+            "l_o": _safe_int(insn.src_l_stkoff),
+            "l_v": _hex64_or_none(insn.src_l_value),
+            "r_t": insn.src_r_type,
+            "r_o": _safe_int(insn.src_r_stkoff),
+            "r_v": _hex64_or_none(insn.src_r_value),
+        })
+    return json.dumps(rows, sort_keys=True, separators=(",", ":"))
+
+
+def _body_fingerprint(block: BlockSnapshot) -> str:
+    payload = json.dumps(
+        {
+            "ea": _insn_ea_fingerprint(block),
+            "op": _opcode_fingerprint(block),
+            "operand": _operand_fingerprint(block),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"fnv1a64:0x{_fnv1a_64(payload):016x}"
+
+
+def _block_observation_row(
+    snapshot_id: int,
+    block: BlockSnapshot,
+    *,
+    maturity: str,
+    phase: str,
+) -> tuple[object, ...]:
+    start_hex, start_i64 = _dual(block.start_ea)
+    return (
+        int(snapshot_id),
+        int(block.serial),
+        str(maturity),
+        str(phase),
+        start_hex,
+        start_i64,
+        len(block.instructions),
+        _insn_ea_fingerprint(block),
+        _opcode_fingerprint(block),
+        _operand_fingerprint(block),
+        _body_fingerprint(block),
+    )
+
+
 @dataclass
 class DagNode:
     """Snapshot of a DAG node (handler state).
@@ -288,6 +366,20 @@ def snapshot_mba(
         "INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         block_rows,
     )
+    observation_rows = [
+        _block_observation_row(
+            snap_id,
+            b,
+            maturity=maturity,
+            phase=phase,
+        )
+        for b in blocks
+    ]
+    if observation_rows:
+        conn.executemany(
+            "INSERT INTO block_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            observation_rows,
+        )
 
     # Bulk insert instructions
     insn_rows = []
@@ -350,6 +442,18 @@ def snapshot_mba(
                 "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
                 prov_rows,
             )
+    except Exception:
+        pass
+
+    # Flush any pending created-block lineage entries under this snapshot_id.
+    # The executor buffers these after PatchPlan apply and before taking the
+    # post-apply snapshot so clone/insert origins are attached to the concrete
+    # assigned serials visible in this snapshot.  cfg.block_lineage owns the
+    # buffer and registers itself as a drainer through the inversion-of-control
+    # hook in core.diag — see register_lineage_drainer().
+    try:
+        from d810.core.diag import drain_lineage_into_snapshot
+        drain_lineage_into_snapshot(conn, snap_id)
     except Exception:
         pass
 

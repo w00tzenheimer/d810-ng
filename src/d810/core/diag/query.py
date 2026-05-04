@@ -215,6 +215,520 @@ def _state_i64(value: int) -> int:
     return value
 
 
+def _unique(values: list[Any]) -> list[Any]:
+    """Return values in first-seen order, dropping duplicates and ``None``."""
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _ea_hex_candidates(ea: int) -> list[str]:
+    """Return likely persisted spellings for an EA value."""
+    value = int(ea)
+    masked = value & 0xFFFFFFFFFFFFFFFF
+    candidates = [
+        f"0x{masked:x}",
+        f"0x{masked:X}",
+        f"0x{masked:016x}",
+        f"0x{masked:016X}",
+    ]
+    if masked <= 0xFFFFFFFF:
+        candidates.extend((f"0x{masked:08x}", f"0x{masked:08X}"))
+    return _unique(candidates)
+
+
+def _placeholders(values: list[Any]) -> str:
+    return ",".join("?" for _ in values)
+
+
+def _observation_select(where_sql: str) -> str:
+    return (
+        "SELECT bo.snapshot_id, s.label AS snapshot_label, "
+        "       bo.serial, bo.maturity, bo.phase, "
+        "       bo.start_ea_hex, bo.start_ea_i64, "
+        "       b.end_ea_hex, b.end_ea_i64, b.type_name, b.succs, b.preds, "
+        "       bo.insn_count, bo.insn_ea_fingerprint, "
+        "       bo.opcode_fingerprint, bo.operand_fingerprint, "
+        "       bo.body_fingerprint "
+        "FROM block_observations bo "
+        "LEFT JOIN snapshots s ON s.id = bo.snapshot_id "
+        "LEFT JOIN blocks b "
+        "  ON b.snapshot_id = bo.snapshot_id AND b.serial = bo.serial "
+        f"WHERE {where_sql} "
+        "ORDER BY bo.snapshot_id, bo.serial"
+    )
+
+
+def _mark_rows(rows: list[dict[str, Any]], source: str, match_kind: str) -> None:
+    for row in rows:
+        row["source"] = source
+        row.setdefault("match_kind", match_kind)
+
+
+def _observation_by_serial(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> dict[str, Any] | None:
+    if not _table_exists(conn, "block_observations"):
+        return None
+    conn.row_factory = _dict_factory
+    row = conn.execute(
+        _observation_select("bo.snapshot_id=? AND bo.serial=?"),
+        (snapshot_id, serial),
+    ).fetchone()
+    if row is not None:
+        row["source"] = "block_observations"
+        row["match_kind"] = "anchor"
+    return row
+
+
+def _observations_by_ea(
+    conn: sqlite3.Connection,
+    ea: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "block_observations"):
+        return []
+    conn.row_factory = _dict_factory
+    hexes = _ea_hex_candidates(ea)
+    rows = conn.execute(
+        _observation_select(
+            f"bo.start_ea_i64=? OR bo.start_ea_hex IN ({_placeholders(hexes)})"
+        ),
+        (_state_i64(ea), *hexes),
+    ).fetchall()
+    _mark_rows(rows, "block_observations", "start_ea")
+    return rows
+
+
+def _observation_correlations(
+    conn: sqlite3.Connection,
+    anchor: dict[str, Any],
+) -> list[dict[str, Any]]:
+    clauses = ["(bo.snapshot_id=? AND bo.serial=?)"]
+    params: list[Any] = [anchor["snapshot_id"], anchor["serial"]]
+    start_ea_i64 = anchor.get("start_ea_i64")
+    start_ea_hex = anchor.get("start_ea_hex")
+    body_fp = anchor.get("body_fingerprint")
+    if start_ea_i64 is not None:
+        clauses.append("bo.start_ea_i64=?")
+        params.append(start_ea_i64)
+    elif start_ea_hex:
+        clauses.append("bo.start_ea_hex=?")
+        params.append(start_ea_hex)
+    if body_fp:
+        clauses.append("bo.body_fingerprint=?")
+        params.append(body_fp)
+
+    conn.row_factory = _dict_factory
+    rows = conn.execute(
+        _observation_select(" OR ".join(clauses)),
+        params,
+    ).fetchall()
+    for row in rows:
+        row["source"] = "block_observations"
+        if (
+            row["snapshot_id"] == anchor["snapshot_id"]
+            and row["serial"] == anchor["serial"]
+        ):
+            row["match_kind"] = "anchor"
+            continue
+        same_start = (
+            start_ea_i64 is not None and row.get("start_ea_i64") == start_ea_i64
+        ) or (
+            start_ea_i64 is None
+            and start_ea_hex is not None
+            and row.get("start_ea_hex") == start_ea_hex
+        )
+        same_body = bool(body_fp and row.get("body_fingerprint") == body_fp)
+        if same_start and same_body:
+            row["match_kind"] = "same_start_ea+same_body"
+        elif same_start:
+            row["match_kind"] = "same_start_ea"
+        elif same_body:
+            row["match_kind"] = "same_body"
+        else:
+            row["match_kind"] = "related"
+    return rows
+
+
+def _basic_block_select(where_sql: str) -> str:
+    return (
+        "SELECT b.snapshot_id, s.label AS snapshot_label, "
+        "       s.maturity, s.phase, b.serial, b.start_ea_hex, "
+        "       b.start_ea_i64, b.end_ea_hex, b.end_ea_i64, "
+        "       b.type_name, b.succs, b.preds, b.insn_count "
+        "FROM blocks b "
+        "LEFT JOIN snapshots s ON s.id = b.snapshot_id "
+        f"WHERE {where_sql} "
+        "ORDER BY b.snapshot_id, b.serial"
+    )
+
+
+def _basic_block_by_serial(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> dict[str, Any] | None:
+    if not _table_exists(conn, "blocks"):
+        return None
+    conn.row_factory = _dict_factory
+    row = conn.execute(
+        _basic_block_select("b.snapshot_id=? AND b.serial=?"),
+        (snapshot_id, serial),
+    ).fetchone()
+    if row is not None:
+        row["source"] = "blocks"
+        row["match_kind"] = "anchor"
+    return row
+
+
+def _fallback_block_rows_by_ea(
+    conn: sqlite3.Connection,
+    ea: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "blocks"):
+        return []
+    conn.row_factory = _dict_factory
+    ea_i64 = _state_i64(ea)
+    hexes = _ea_hex_candidates(ea)
+    rows = conn.execute(
+        _basic_block_select(
+            "b.start_ea_i64=? "
+            f"OR b.start_ea_hex IN ({_placeholders(hexes)}) "
+            "OR (b.start_ea_i64 IS NOT NULL AND b.end_ea_i64 IS NOT NULL "
+            "    AND ? >= b.start_ea_i64 AND ? < b.end_ea_i64)"
+        ),
+        (ea_i64, *hexes, ea_i64, ea_i64),
+    ).fetchall()
+    for row in rows:
+        row["source"] = "blocks"
+        start_match = (
+            row.get("start_ea_i64") == ea_i64
+            or row.get("start_ea_hex") in hexes
+        )
+        row["match_kind"] = "start_ea" if start_match else "range_contains"
+    return rows
+
+
+def _fallback_instruction_rows_by_ea(
+    conn: sqlite3.Connection,
+    ea: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "instructions"):
+        return []
+    conn.row_factory = _dict_factory
+    hexes = _ea_hex_candidates(ea)
+    rows = conn.execute(
+        "SELECT i.snapshot_id, s.label AS snapshot_label, "
+        "       s.maturity, s.phase, i.block_serial AS serial, "
+        "       b.start_ea_hex, b.start_ea_i64, b.end_ea_hex, b.end_ea_i64, "
+        "       b.type_name, b.succs, b.preds, b.insn_count, "
+        "       COUNT(*) AS matching_eas, "
+        "       GROUP_CONCAT(i.insn_index) AS matching_insn_indexes "
+        "FROM instructions i "
+        "LEFT JOIN snapshots s ON s.id = i.snapshot_id "
+        "LEFT JOIN blocks b "
+        "  ON b.snapshot_id = i.snapshot_id AND b.serial = i.block_serial "
+        f"WHERE i.ea_i64=? OR i.ea_hex IN ({_placeholders(hexes)}) "
+        "GROUP BY i.snapshot_id, i.block_serial "
+        "ORDER BY i.snapshot_id, i.block_serial",
+        (_state_i64(ea), *hexes),
+    ).fetchall()
+    _mark_rows(rows, "instructions", "instruction_ea")
+    return rows
+
+
+def _real_instruction_eas(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> list[int]:
+    if not _table_exists(conn, "instructions"):
+        return []
+    conn.row_factory = _dict_factory
+    rows = conn.execute(
+        "SELECT DISTINCT ea_i64 FROM instructions "
+        "WHERE snapshot_id=? AND block_serial=? "
+        "AND ea_i64 IS NOT NULL AND ea_i64 != 0 "
+        "ORDER BY ea_i64",
+        (snapshot_id, serial),
+    ).fetchall()
+    return [int(row["ea_i64"]) for row in rows]
+
+
+def _fallback_instruction_correlations(
+    conn: sqlite3.Connection,
+    eas: list[int],
+) -> list[dict[str, Any]]:
+    if not eas or not _table_exists(conn, "instructions"):
+        return []
+    conn.row_factory = _dict_factory
+    ea_values = _unique([int(ea) for ea in eas if ea])
+    rows = conn.execute(
+        "SELECT i.snapshot_id, s.label AS snapshot_label, "
+        "       s.maturity, s.phase, i.block_serial AS serial, "
+        "       b.start_ea_hex, b.start_ea_i64, b.end_ea_hex, b.end_ea_i64, "
+        "       b.type_name, b.succs, b.preds, b.insn_count, "
+        "       COUNT(DISTINCT i.ea_i64) AS matching_eas "
+        "FROM instructions i "
+        "LEFT JOIN snapshots s ON s.id = i.snapshot_id "
+        "LEFT JOIN blocks b "
+        "  ON b.snapshot_id = i.snapshot_id AND b.serial = i.block_serial "
+        f"WHERE i.ea_i64 IN ({_placeholders(ea_values)}) "
+        "GROUP BY i.snapshot_id, i.block_serial "
+        "ORDER BY i.snapshot_id, i.block_serial",
+        ea_values,
+    ).fetchall()
+    _mark_rows(rows, "instructions", "shared_instruction_ea")
+    return rows
+
+
+def block_trace_by_ea(conn: sqlite3.Connection, ea: int) -> dict[str, Any]:
+    """Trace all blocks whose observation/start/range/instruction EA matches.
+
+    New databases are queried via ``block_observations`` first.  Older
+    databases fall back to ``blocks`` start/range data, then instruction EAs.
+    EA-only traces intentionally return all matches and set ``ambiguous`` when
+    more than one row matches the same EA.
+    """
+    messages: list[str] = []
+    source = "block_observations"
+    if _table_exists(conn, "block_observations"):
+        matches = _observations_by_ea(conn, ea)
+        if matches:
+            return {
+                "mode": "ea",
+                "ea": int(ea),
+                "source": source,
+                "messages": messages,
+                "ambiguous": len(matches) > 1,
+                "matches": matches,
+            }
+        messages.append(
+            "block_observations has no matching rows; falling back to blocks"
+        )
+    else:
+        messages.append(
+            "block_observations table not available; falling back to blocks"
+        )
+
+    matches = _fallback_block_rows_by_ea(conn, ea)
+    source = "blocks"
+    if not matches:
+        messages.append("blocks had no matching start/range rows; trying instructions")
+        matches = _fallback_instruction_rows_by_ea(conn, ea)
+        source = "instructions"
+
+    return {
+        "mode": "ea",
+        "ea": int(ea),
+        "source": source,
+        "messages": messages,
+        "ambiguous": len(matches) > 1,
+        "matches": matches,
+    }
+
+
+def block_trace_by_serial(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> dict[str, Any]:
+    """Trace a block identity from one ``(snapshot_id, serial)`` anchor."""
+    messages: list[str] = []
+    if _table_exists(conn, "block_observations"):
+        anchor = _observation_by_serial(conn, snapshot_id, serial)
+        if anchor is not None:
+            matches = _observation_correlations(conn, anchor)
+            return {
+                "mode": "serial",
+                "snapshot_id": int(snapshot_id),
+                "serial": int(serial),
+                "source": "block_observations",
+                "messages": messages,
+                "anchor": anchor,
+                "matches": matches,
+                "ambiguous": False,
+            }
+        messages.append(
+            "block_observations has no row for the requested block; "
+            "falling back to blocks/instructions"
+        )
+    else:
+        messages.append(
+            "block_observations table not available; "
+            "falling back to blocks/instructions"
+        )
+
+    anchor = _basic_block_by_serial(conn, snapshot_id, serial)
+    if anchor is None:
+        messages.append("requested block was not found in blocks")
+        return {
+            "mode": "serial",
+            "snapshot_id": int(snapshot_id),
+            "serial": int(serial),
+            "source": "blocks",
+            "messages": messages,
+            "anchor": None,
+            "matches": [],
+            "ambiguous": False,
+        }
+
+    real_eas = _real_instruction_eas(conn, snapshot_id, serial)
+    matches = _fallback_instruction_correlations(conn, real_eas)
+    source = "instructions" if matches else "blocks"
+    if not matches and anchor.get("start_ea_i64") is not None:
+        matches = _fallback_block_rows_by_ea(conn, int(anchor["start_ea_i64"]))
+        source = "blocks"
+    if not matches:
+        matches = [anchor]
+
+    return {
+        "mode": "serial",
+        "snapshot_id": int(snapshot_id),
+        "serial": int(serial),
+        "source": source,
+        "messages": messages,
+        "anchor": anchor,
+        "matches": matches,
+        "ambiguous": False,
+    }
+
+
+def _lineage_rows(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: list[Any],
+) -> list[dict[str, Any]]:
+    conn.row_factory = _dict_factory
+    return conn.execute(
+        "SELECT bl.snapshot_id, s.label AS snapshot_label, bl.serial, "
+        "       bl.origin_snapshot_id, bl.origin_serial, "
+        "       bl.origin_start_ea_hex, bl.origin_body_fingerprint, "
+        "       bl.creation_kind, bl.creation_reason, bl.planner_block_id, "
+        "       bl.source_mod_type, bl.extra_json "
+        "FROM block_lineage bl "
+        "LEFT JOIN snapshots s ON s.id = bl.snapshot_id "
+        f"WHERE {where_sql} "
+        "ORDER BY bl.snapshot_id, bl.serial",
+        params,
+    ).fetchall()
+
+
+def _cfg_provenance_rows(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> list[dict[str, Any]]:
+    if not _table_exists(conn, "cfg_provenance"):
+        return []
+    conn.row_factory = _dict_factory
+    return conn.execute(
+        "SELECT * FROM cfg_provenance "
+        "WHERE snapshot_id=? AND (block_serial=? OR target_serial=?) "
+        "ORDER BY seq",
+        (snapshot_id, serial, serial),
+    ).fetchall()
+
+
+def block_lineage(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    serial: int,
+) -> dict[str, Any]:
+    """Return direct lineage plus provenance fallback for one block."""
+    messages: list[str] = []
+    observation = (
+        _observation_by_serial(conn, snapshot_id, serial)
+        if _table_exists(conn, "block_observations")
+        else None
+    )
+    if observation is None:
+        observation = _basic_block_by_serial(conn, snapshot_id, serial)
+
+    lineage: list[dict[str, Any]] = []
+    origins: list[dict[str, Any]] = []
+    children: list[dict[str, Any]] = []
+    if _table_exists(conn, "block_lineage"):
+        lineage = _lineage_rows(
+            conn,
+            "bl.snapshot_id=? AND bl.serial=?",
+            [snapshot_id, serial],
+        )
+        if not lineage:
+            messages.append(
+                "block_lineage has no direct row for the requested block; "
+                "checking cfg_provenance fallback"
+            )
+        for row in lineage:
+            origin_snapshot = row.get("origin_snapshot_id")
+            origin_serial = row.get("origin_serial")
+            if origin_snapshot is None or origin_serial is None:
+                continue
+            origin = (
+                _observation_by_serial(conn, int(origin_snapshot), int(origin_serial))
+                if _table_exists(conn, "block_observations")
+                else None
+            )
+            if origin is None:
+                origin = _basic_block_by_serial(
+                    conn, int(origin_snapshot), int(origin_serial)
+                )
+            if origin is not None:
+                origins.append(origin)
+
+        child_clauses = ["(bl.origin_snapshot_id=? AND bl.origin_serial=?)"]
+        child_params: list[Any] = [snapshot_id, serial]
+        if observation is not None and observation.get("start_ea_hex"):
+            child_clauses.append("bl.origin_start_ea_hex=?")
+            child_params.append(observation["start_ea_hex"])
+        if observation is not None and observation.get("body_fingerprint"):
+            child_clauses.append("bl.origin_body_fingerprint=?")
+            child_params.append(observation["body_fingerprint"])
+        children = _lineage_rows(
+            conn,
+            " OR ".join(child_clauses),
+            child_params,
+        )
+        children = [
+            row for row in children
+            if not (
+                row["snapshot_id"] == snapshot_id
+                and row["serial"] == serial
+            )
+        ]
+    else:
+        messages.append(
+            "block_lineage table not available; using cfg_provenance fallback"
+        )
+
+    provenance = _cfg_provenance_rows(conn, snapshot_id, serial)
+    if not provenance and not lineage:
+        if _table_exists(conn, "cfg_provenance"):
+            messages.append("cfg_provenance has no rows for the requested block")
+        else:
+            messages.append("cfg_provenance table not available")
+
+    return {
+        "snapshot_id": int(snapshot_id),
+        "serial": int(serial),
+        "observation": observation,
+        "lineage": lineage,
+        "origins": origins,
+        "children": children,
+        "provenance": provenance,
+        "messages": messages,
+        "lineage_available": _table_exists(conn, "block_lineage"),
+        "provenance_available": _table_exists(conn, "cfg_provenance"),
+    }
+
+
 def state_local(
     conn: sqlite3.Connection,
     snapshot_id: int,
