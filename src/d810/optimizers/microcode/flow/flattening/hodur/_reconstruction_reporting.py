@@ -123,24 +123,68 @@ def snapshot_reconstruction_post_apply(
             mod_snapshots = []
             for midx, mod in enumerate(modifications):
                 mod_type = type(mod).__name__
-                source_block = (
-                    getattr(mod, "from_serial", None)
-                    or getattr(mod, "source_block", None)
-                    or getattr(mod, "src_block", None)
-                    or getattr(mod, "block_serial", None)
-                )
-                target_block = (
-                    getattr(mod, "new_target", None)
-                    or getattr(mod, "goto_target", None)
-                    or getattr(mod, "conditional_target", None)
-                )
-                old_target = getattr(mod, "old_target", None)
+                # Mod-type-specific extraction: each GraphModification dataclass
+                # carries different field names for "where the edge starts /
+                # ends / used to end."  The previous getattr chain only matched
+                # RedirectGoto/RedirectBranch/EdgeRedirectViaPredSplit, leaving
+                # InsertBlock/DuplicateAndRedirect/CreateConditionalRedirect/
+                # DuplicateBlock with all three columns NULL — making the
+                # modifications table useless for tracing corridor topology
+                # mutations driven by HCC's bulk-splice operations.
+                source_block: int | None = None
+                target_block: int | None = None
+                old_target: int | None = None
+                # 1) source-of-edit candidates by field name
+                for src_attr in (
+                    "from_serial",
+                    "src_block",          # EdgeRedirectViaPredSplit
+                    "source_block",       # RedirectGoto, RedirectBranch,
+                                          # ConvertToGoto, RemoveEdge,
+                                          # CreateConditionalRedirect,
+                                          # DuplicateBlock
+                    "source_serial",      # DuplicateAndRedirect, ReorderBlocks
+                    "pred_serial",        # InsertBlock
+                    "block_serial",       # NopInstructions, ZeroStateWrite,
+                                          # PromoteOperandToScalar
+                    "anchor_serial",      # PrivateTerminalSuffix
+                ):
+                    val = getattr(mod, src_attr, None)
+                    if val is not None:
+                        source_block = int(val)
+                        break
+                # 2) target-of-edit candidates by field name
+                for tgt_attr in (
+                    "new_target",         # RedirectGoto, RedirectBranch,
+                                          # EdgeRedirectViaPredSplit
+                    "goto_target",        # ConvertToGoto
+                    "conditional_target", # CreateConditionalRedirect,
+                                          # DuplicateAndRedirect (per-pred)
+                    "succ_serial",        # InsertBlock
+                    "target_block",       # DuplicateBlock
+                    "to_serial",          # RemoveEdge
+                    "shared_entry_serial",  # PrivateTerminalSuffix
+                ):
+                    val = getattr(mod, tgt_attr, None)
+                    if val is not None:
+                        target_block = int(val)
+                        break
+                # 3) old-target candidates: explicit field, then fall through
+                #    to InsertBlock's old_target_serial alias.
+                for old_attr in (
+                    "old_target",         # EdgeRedirectViaPredSplit,
+                                          # RedirectBranch
+                    "old_target_serial",  # InsertBlock
+                ):
+                    val = getattr(mod, old_attr, None)
+                    if val is not None:
+                        old_target = int(val)
+                        break
                 mod_snapshots.append(Modification(
                     mod_index=midx,
                     mod_type=mod_type,
-                    source_block=int(source_block) if source_block is not None else None,
-                    target_block=int(target_block) if target_block is not None else None,
-                    old_target=int(old_target) if old_target is not None else None,
+                    source_block=source_block,
+                    target_block=target_block,
+                    old_target=old_target,
                     status="emitted",
                 ))
 
