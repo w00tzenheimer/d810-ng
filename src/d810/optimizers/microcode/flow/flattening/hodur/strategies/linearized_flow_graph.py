@@ -418,7 +418,7 @@ def _build_narrow_branch_local_region_fallback_candidates(
 
     for site in unresolved_sites:
         site_kind = str(getattr(site, "site_kind", ""))
-        if site_kind not in {"exit", "exit_alias_candidate"}:
+        if site_kind not in {"exit", "exit_alias_candidate", "terminal_self_anchor"}:
             continue
 
         edge = getattr(site, "edge", None)

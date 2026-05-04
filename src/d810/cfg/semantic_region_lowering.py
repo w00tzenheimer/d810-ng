@@ -286,6 +286,21 @@ def collect_admissible_region_lowering_sites(
                 )
             ):
                 site_kind = "exit_alias_candidate"
+        # Terminal self-anchor: the region wraps a single state X with no
+        # internal edges (no chain inside the region). For incoming DAG edges
+        # from outside the region, treat the predecessor handler as a redirect
+        # site so HCC can lower the dispatcher arm directly to X's entry anchor
+        # instead of bouncing through the BST. This makes single-state terminal
+        # regions actionable even when their semantic-program exit_state edges
+        # are not present in the live DAG.
+        if (
+            site_kind is None
+            and not allowed_pairs
+            and len(region_states) == 1
+            and target_state_value in region_states
+            and source_state_value not in region_states
+        ):
+            site_kind = "terminal_self_anchor"
         if site_kind is None:
             if debug_branch_alias:
                 logger.info(

@@ -95,6 +95,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_front
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer import (
     HandlerChainComposerStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
+    DispatcherTrampolineSkipStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
@@ -126,6 +129,7 @@ __all__ = [
     "ExactConditionalBridgeNodeLoweringStrategy",
     "ExactNodeFrontierBypassStrategy",
     "HandlerChainComposerStrategy",
+    "DispatcherTrampolineSkipStrategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -171,6 +175,10 @@ _LEGACY_SEMANTIC_REGION_ENABLED = (
 EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
     HandlerChainComposerStrategy,
+    # Post-HCC trampoline-skip cleanup (gated on
+    # D810_HODUR_ENABLE_TRAMPOLINE_SKIP=1).  is_applicable() returns False
+    # when the gate is off, so this is a no-op by default.
+    DispatcherTrampolineSkipStrategy,
 ])
 
 _STANDALONE_SRW_ENABLED = (
@@ -181,6 +189,7 @@ _STANDALONE_SRW_ENABLED = (
 ALL_STRATEGIES: list[type] = _filter_strategies([
     *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
     HandlerChainComposerStrategy,
+    DispatcherTrampolineSkipStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     *([StateWriteReconstructionStrategy] if _STANDALONE_SRW_ENABLED else []),

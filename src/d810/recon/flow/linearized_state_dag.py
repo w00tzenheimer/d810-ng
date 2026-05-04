@@ -12,6 +12,13 @@ from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
 from d810.recon.flow.dispatch_region import DispatchRegionDetector
+from d810.recon.flow.scc_analysis import (
+    LoopRegion,
+    StateSCC,
+    classify_loop_regions,
+    compute_state_sccs,
+    log_sccs,
+)
 from d810.recon.flow.state_machine_analysis import (
     ConditionalTransition,
     ExitStateKind,
@@ -376,6 +383,8 @@ class LinearizedStateDag:
     denylisted_state_values: tuple[int, ...] = ()
     supplemental_selected_entries: tuple[tuple[int, int], ...] = ()
     diagnostics: tuple[str, ...] = ()
+    sccs: tuple["StateSCC", ...] = ()
+    loop_regions: tuple["LoopRegion", ...] = ()
 
     def node_by_handler(self) -> dict[int, StateDagNode]:
         return {node.handler_serial: node for node in self.nodes}
@@ -5244,7 +5253,7 @@ def build_linearized_state_dag_from_graph(
         )
     )
 
-    return LinearizedStateDag(
+    dag = LinearizedStateDag(
         dispatcher_entry_serial=report.dispatcher_entry_serial,
         state_var_stkoff=report.state_var_stkoff,
         pre_header_serial=report.pre_header_serial,
@@ -5256,6 +5265,16 @@ def build_linearized_state_dag_from_graph(
         denylisted_state_values=tuple(sorted(transient_target_states)),
         diagnostics=report.diagnostics,
     )
+    sccs = compute_state_sccs(dag)
+    log_sccs(sccs)
+    dag = replace(dag, sccs=sccs)
+    dispatcher_region = set(report.bst_node_blocks) | {
+        report.dispatcher_entry_serial
+    }
+    loop_regions = classify_loop_regions(
+        dag, dispatcher_region=dispatcher_region
+    )
+    return replace(dag, loop_regions=loop_regions)
 
 
 def _format_anchor(anchor: StateRedirectAnchor) -> str:
