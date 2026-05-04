@@ -79,7 +79,12 @@ def build_patch_plan_block_lineage(
         if assigned_serial is None:
             continue
 
-        origin_serial = _infer_origin_serial(spec)
+        origin_serial = _infer_origin_serial(
+            spec,
+            pre_cfg=pre_cfg,
+            post_cfg=post_cfg,
+            assigned_serial=assigned_serial,
+        )
         origin_block = (
             pre_cfg.get_block(origin_serial)
             if pre_cfg is not None and origin_serial is not None
@@ -185,14 +190,77 @@ def _assigned_serial_for(patch_plan: PatchPlan, block_id: object | None) -> int 
     return _safe_int(assigned)
 
 
-def _infer_origin_serial(spec: object) -> int | None:
+def _infer_origin_serial(
+    spec: object,
+    *,
+    pre_cfg: FlowGraph | None,
+    post_cfg: FlowGraph | None,
+    assigned_serial: int,
+) -> int | None:
     origin = _safe_int(getattr(spec, "template_block", None))
     if origin is not None:
         return origin
+    if str(getattr(spec, "kind", "")) == "insert_block":
+        return _infer_insert_block_origin_serial(
+            spec,
+            pre_cfg=pre_cfg,
+            post_cfg=post_cfg,
+            assigned_serial=assigned_serial,
+        )
     incoming_edge = getattr(spec, "incoming_edge", None)
     if incoming_edge is None:
         return None
     return _safe_int(getattr(incoming_edge, "source", None))
+
+
+def _infer_insert_block_origin_serial(
+    spec: object,
+    *,
+    pre_cfg: FlowGraph | None,
+    post_cfg: FlowGraph | None,
+    assigned_serial: int,
+) -> int | None:
+    """Infer copied-body origin for an InsertBlock without using routing edges.
+
+    InsertBlock.incoming_edge describes the predecessor edge being replaced; it
+    is not the source of the inserted body.  Prefer a unique pre-CFG block that
+    matches the concrete assigned block's EA/opcode shape.  If that fails, fall
+    back to the instruction list carried by the spec.  Ambiguous/no match stays
+    synthetic rather than recording a false origin.
+    """
+    assigned_block = (
+        post_cfg.get_block(assigned_serial)
+        if post_cfg is not None
+        else None
+    )
+    if pre_cfg is not None and assigned_block is not None:
+        assigned_opcodes = _opcode_tuple(assigned_block.insn_snapshots)
+        assigned_start_ea = int(assigned_block.start_ea)
+        candidates = [
+            block.serial
+            for block in pre_cfg.blocks.values()
+            if int(block.start_ea) == assigned_start_ea
+            and _opcode_tuple(block.insn_snapshots) == assigned_opcodes
+        ]
+        if len(candidates) == 1:
+            return int(candidates[0])
+
+    spec_instructions = tuple(getattr(spec, "instructions", ()) or ())
+    if pre_cfg is None or not spec_instructions:
+        return None
+    spec_opcodes = _opcode_tuple(spec_instructions)
+    candidates = [
+        block.serial
+        for block in pre_cfg.blocks.values()
+        if _opcode_tuple(block.insn_snapshots) == spec_opcodes
+    ]
+    if len(candidates) == 1:
+        return int(candidates[0])
+    return None
+
+
+def _opcode_tuple(instructions: tuple[object, ...]) -> tuple[int, ...]:
+    return tuple(int(getattr(insn, "opcode")) for insn in instructions)
 
 
 def _snapshot_id(flow_graph: FlowGraph | None) -> int | None:

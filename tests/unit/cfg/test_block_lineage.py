@@ -4,7 +4,11 @@ from __future__ import annotations
 import json
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import CreateConditionalRedirect, EdgeRedirectViaPredSplit
+from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
+    InsertBlock,
+)
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.block_lineage import (
     build_patch_plan_block_lineage,
@@ -206,3 +210,72 @@ def test_buffer_patch_plan_block_lineage_drains_every_created_block() -> None:
         assert drain_pending_block_lineage() == []
     finally:
         reset_pending_block_lineage()
+
+
+def test_insert_block_lineage_uses_body_origin_not_incoming_edge() -> None:
+    pre_cfg = FlowGraph(
+        blocks={
+            9: _block(9, (10,), (), start_ea=0x1009),
+            10: _block(
+                10,
+                (11,),
+                (9,),
+                start_ea=0x1010,
+                insns=(_insn(1, 0x1010), _insn(2, 0x1014)),
+            ),
+            40: _block(
+                40,
+                (42,),
+                (),
+                start_ea=0x1040,
+                insns=(_insn(0x44, 0x1040),),
+            ),
+            42: _block(42, (), (40,), start_ea=0x1042),
+        },
+        entry_serial=9,
+        func_ea=0x1000,
+        metadata={"snapshot_id": 77},
+    )
+    post_cfg = FlowGraph(
+        blocks={
+            9: _block(9, (10,), (), start_ea=0x1009),
+            10: _block(10, (11,), (9,), start_ea=0x1010),
+            11: _block(11, (), (10,), start_ea=0x101C),
+            40: _block(40, (42,), (), start_ea=0x1040),
+            42: _block(
+                42,
+                (43,),
+                (40,),
+                start_ea=0x1010,
+                insns=(_insn(1, 0x2000), _insn(2, 0x2000)),
+            ),
+            43: _block(43, (), (42,), start_ea=0x1042),
+        },
+        entry_serial=9,
+        func_ea=0x1000,
+        metadata={"snapshot_id": 78},
+    )
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=40,
+                succ_serial=42,
+                instructions=(
+                    _insn(1, 0x2000),
+                    _insn(2, 0x2000),
+                ),
+            )
+        ],
+        pre_cfg,
+    )
+
+    entries = build_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.serial == 42
+    assert entry.origin_serial == 10
+    assert entry.origin_start_ea_hex == "0x0000000000001010"
+    extra = json.loads(entry.extra_json or "{}")
+    assert extra["incoming_edge"] == {"source": 40, "target": 43}
+    assert extra["origin_label"] == "blk[10]@0x1010"
