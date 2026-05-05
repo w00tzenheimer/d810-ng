@@ -71,6 +71,23 @@ def test_show_command_prints_case_json(capsys) -> None:
     assert data["observation"]["to_block_count"] == 3
 
 
+def test_show_command_prints_multi_pred_observation(capsys) -> None:
+    rc = main(["show", "multi_pred_boundary_barrier"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["id"] == "multi_pred_boundary_barrier"
+    assert data["status"] == "observed"
+    assert data["cfg_validation"]["status"] == "passed"
+    assert (
+        data["observation_artifact"]
+        == "tools/hexrays_structuring_lab/observations/"
+        "multi_pred_boundary_barrier.json"
+    )
+    assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
+    assert data["observation"]["from_block_count"] == 9
+    assert data["observation"]["to_block_count"] == 5
+
+
 def test_registry_does_not_point_at_tmp_artifacts() -> None:
     registry = load_registry()
     tmp_paths = [

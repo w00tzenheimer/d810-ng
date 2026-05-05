@@ -142,7 +142,7 @@
     },
     {
       "id": "multi_pred_boundary_barrier",
-      "status": "planned",
+      "status": "observed",
       "fixture_kind": "c_with_compiled_cfg_validation",
       "function": "hexrays_lab_multi_pred_boundary_barrier",
       "binary": "libobfuscated.dll",
@@ -167,21 +167,77 @@
       ],
       "question": "What is the smallest CFG change that prevents Hex-Rays from merging across a handler boundary without leaking bad pseudocode?",
       "cfg_validation": {
-        "status": "not_run",
+        "status": "passed",
         "compiler_flags": [
           "-O0"
         ],
-        "binary_hash": null,
-        "artifact_path": null,
+        "binary_hash": "sha256:b2c97510463d290a66ec3e07f94b5abd9b1798437bdbe2a7f15e8d15c27adedb",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/multi_pred_boundary_barrier.json",
         "expected": {
-          "block_count": ">= 3",
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 9",
+          "boundary_relative_start_ea": "0x55",
+          "boundary_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            21,
+            9,
+            4,
+            55
+          ],
+          "boundary_incoming_relative_start_eas": [
+            "0x1b",
+            "0x41"
+          ],
+          "boundary_successor_relative_start_ea": "0x2d",
           "edge_predicates": [
-            "target boundary block exists before Hex-Rays structuring",
-            "target boundary block has a genuine second predecessor",
-            "boundary anchor labels/EAs survive in the compiled binary"
+            "boundary block exists at fixture relative EA 0x55",
+            "boundary block has npred == 2 and nsucc == 1",
+            "boundary predecessor relative EAs are exactly 0x1b and 0x41",
+            "boundary successor relative EA is exactly 0x2d",
+            "body opcode groups match the fixture operation sequence"
           ]
         },
-        "observed": null
+        "observed": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "boundary_serial": 7,
+          "boundary_pred_relative_start_eas": [
+            "0x1b",
+            "0x41"
+          ],
+          "boundary_succ_relative_start_eas": [
+            "0x2d"
+          ],
+          "block_count_by_maturity": {
+            "MMAT_GENERATED": 9,
+            "MMAT_PREOPTIMIZED": 9,
+            "MMAT_LOCOPT": 9
+          }
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/multi_pred_boundary_barrier.json",
+      "observation": {
+        "status": "observed",
+        "from_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_LOCOPT",
+        "to_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_GLBOPT1",
+        "from_block_count": 9,
+        "to_block_count": 5,
+        "vanished_count": 4,
+        "disposition_counts": {
+          "absorbed": 1,
+          "deleted": 2,
+          "synthesized_only": 1
+        },
+        "pseudocode": {
+          "before_lines": 12,
+          "after_lines": 12,
+          "changed": false,
+          "shape": "one guarded multiply plus folded xor/sub assignment and return"
+        },
+        "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
       },
       "expected_evidence": [
         "compiled CFG validation report",
