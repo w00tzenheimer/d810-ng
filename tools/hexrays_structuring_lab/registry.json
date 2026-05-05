@@ -245,6 +245,116 @@
         "merge-causality disposition for protected boundary",
         "pseudocode shape after optimization"
       ]
+    },
+    {
+      "id": "side_effect_boundary_anchor",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_side_effect_boundary_anchor",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "multi-pred",
+        "boundary-barrier",
+        "side-effect-anchor",
+        "noinline-helper",
+        "volatile"
+      ],
+      "question": "Does a boundary-local noinline volatile side-effect anchor prevent Hex-Rays from folding a multi-pred handler boundary?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:16fa6f22d1534ce4f0a9af48b0b3ba3534c731b5b7c77c428648b300415f8e12",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/side_effect_boundary_anchor.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 10",
+          "boundary_relative_start_ea": "0x64",
+          "boundary_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            9,
+            21,
+            9,
+            4,
+            56
+          ],
+          "boundary_incoming_relative_start_eas": [
+            "0x1f",
+            "0x4d"
+          ],
+          "boundary_successor_relative_start_ea": "0x81",
+          "edge_predicates": [
+            "boundary block exists at fixture relative EA 0x64",
+            "boundary block has npred == 2 and nsucc == 1",
+            "boundary predecessor relative EAs are exactly 0x1f and 0x4d",
+            "boundary successor relative EA is exactly 0x81",
+            "boundary body ends in a call to the noinline volatile anchor",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        },
+        "observed": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "boundary_serial": 7,
+          "boundary_pred_relative_start_eas": [
+            "0x1f",
+            "0x4d"
+          ],
+          "boundary_succ_relative_start_eas": [
+            "0x81"
+          ],
+          "block_count_by_maturity": {
+            "MMAT_GENERATED": 10,
+            "MMAT_PREOPTIMIZED": 10,
+            "MMAT_LOCOPT": 10
+          }
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/side_effect_boundary_anchor.json",
+      "observation": {
+        "status": "observed",
+        "from_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_LOCOPT",
+        "to_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_GLBOPT1",
+        "from_block_count": 10,
+        "to_block_count": 5,
+        "vanished_count": 5,
+        "disposition_counts": {
+          "absorbed": 1,
+          "deleted": 3,
+          "synthesized_only": 1
+        },
+        "pseudocode": {
+          "before_lines": 12,
+          "after_lines": 12,
+          "changed": false,
+          "shape": "guarded multiply followed by helper-call expression folded into final assignment"
+        },
+        "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "boundary-local helper call appears in LOCOPT boundary block",
+        "merge-causality disposition for protected boundary",
+        "pseudocode retains the helper call in readable form"
+      ]
     }
   ]
 }

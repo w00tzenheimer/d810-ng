@@ -20,6 +20,7 @@ def test_registry_loads_initial_cases() -> None:
     assert case_ids == {
         "single_pred_chain_merge",
         "multi_pred_boundary_barrier",
+        "side_effect_boundary_anchor",
     }
 
 
@@ -53,6 +54,7 @@ def test_list_command_prints_cases(capsys) -> None:
     out = capsys.readouterr().out
     assert "single_pred_chain_merge" in out
     assert "multi_pred_boundary_barrier" in out
+    assert "side_effect_boundary_anchor" in out
     assert "c_with_compiled_cfg_validation" in out
 
 
@@ -85,6 +87,23 @@ def test_show_command_prints_multi_pred_observation(capsys) -> None:
     )
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
     assert data["observation"]["from_block_count"] == 9
+    assert data["observation"]["to_block_count"] == 5
+
+
+def test_show_command_prints_side_effect_observation(capsys) -> None:
+    rc = main(["show", "side_effect_boundary_anchor"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["id"] == "side_effect_boundary_anchor"
+    assert data["status"] == "observed"
+    assert data["cfg_validation"]["status"] == "passed"
+    assert (
+        data["observation_artifact"]
+        == "tools/hexrays_structuring_lab/observations/"
+        "side_effect_boundary_anchor.json"
+    )
+    assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
+    assert data["observation"]["from_block_count"] == 10
     assert data["observation"]["to_block_count"] == 5
 
 
