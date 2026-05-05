@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.logging import getLogger
 from d810.core.typing import Callable, Mapping
 
 from d810.cfg.lowering_selector import (
@@ -10,11 +11,16 @@ from d810.cfg.lowering_selector import (
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.path_tail_modification_planning import (
+    LoopBoundWriterDiagnostic,
     PathTailEmissionKind,
     PathTailRedirectContext,
     apply_path_tail_emission_plan,
+    detect_loop_bound_writer_redirect,
     plan_path_tail_redirect,
 )
+
+
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +165,22 @@ def execute_path_tail_redirect(
             dispatcher_lookup=context.dispatcher_lookup,
             dispatcher=context.dispatcher,
         )
+    shared_handoff_target = (
+        int(shared_handoff[1]) if shared_handoff is not None else None
+    )
+    if (
+        allow_semantic_handoff
+        and shared_handoff_target is not None
+        and shared_handoff_target != int(target_entry)
+    ):
+        shared_handoff_target = int(target_entry)
     via_pred = context.edge.ordered_path[-2] if len(context.edge.ordered_path) >= 2 else None
     other_preds = tuple(
         pred for pred in tuple(getattr(source_snapshot, "preds", ()))
         if pred != via_pred
+    )
+    loop_bound_writer_diag: LoopBoundWriterDiagnostic | None = (
+        detect_loop_bound_writer_redirect(context.mba, source_block)
     )
     decision = plan_path_tail_redirect(
         PathTailRedirectContext(
@@ -196,9 +214,7 @@ def execute_path_tail_redirect(
             source_preds=tuple(int(pred) for pred in getattr(source_snapshot, "preds", ())),
             old_target=(int(old_target) if old_target is not None else None),
             emitted_already=(emit_key in state.emitted),
-            shared_handoff_target=(
-                int(shared_handoff[1]) if shared_handoff is not None else None
-            ),
+            shared_handoff_target=shared_handoff_target,
             via_pred=(int(via_pred) if via_pred is not None else None),
             via_pred_succs=tuple(
                 int(succ) for succ in context.block_succ_map.get(via_pred, ())
@@ -224,9 +240,25 @@ def execute_path_tail_redirect(
                 else None
             ),
             other_preds=tuple(int(pred) for pred in other_preds),
+            loop_bound_writer_diag=loop_bound_writer_diag,
         )
     )
     if not decision.accepted or decision.emission_plan is None:
+        if (
+            decision.rejection_reason == "loop_bound_writer_guard"
+            and loop_bound_writer_diag is not None
+        ):
+            logger.info(
+                "PATH_TAIL_REJECTED_BOUND_WRITER source=blk[%d] target=blk[%d] "
+                "bound_stkoff=0x%x bound_writer_ea=0x%x loop_test_ea=0x%x "
+                "counter_stkoff=0x%x",
+                source_block,
+                int(target_entry),
+                loop_bound_writer_diag.bound_stkoff,
+                loop_bound_writer_diag.bound_writer_ea,
+                loop_bound_writer_diag.loop_test_ea,
+                loop_bound_writer_diag.counter_stkoff,
+            )
         return PathTailRedirectExecutionResult(
             accepted=False,
             rejection_reason=decision.rejection_reason,
