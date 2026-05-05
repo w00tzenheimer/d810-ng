@@ -658,7 +658,7 @@ def detect_hybrid_terminal_byte_corridors(
     dag: "LinearizedStateDag",
     flow_graph: FlowGraph | None,
     *,
-    min_total_blocks: int = 3,
+    min_total_blocks: int = 2,
     max_chain_handlers: int = 12,
 ) -> tuple[tuple[int, ...], ...]:
     """Hybrid corridor detector: per-handler fragments + DAG stitching.
@@ -757,11 +757,22 @@ def detect_hybrid_terminal_byte_corridors(
             continue
         forward[src_h].append(tgt_h)
 
-    # 3-4. Walk forward from each fragment as a potential head.  Track
-    #      the longest valid chain per (head, terminal_handler) pair.
-    best_chain: list[int] = []
-    best_terminal_score = (0, 0)  # (has_terminal, total_blocks)
+    # 3-4. Walk forward from each fragment as a potential head.  Collect
+    #      *every* qualifying chain (not just the single best) — the
+    #      byte-emit cascade is distributed across multiple disjoint
+    #      handler chains that all terminate at the same shared suffix,
+    #      so emitting only the highest-scoring chain leaves the other
+    #      cascade-fragments unprotected.
+    qualifying_chains: list[tuple[int, ...]] = []
 
+    terminal_exit_kinds = {"terminal", "local_terminal_edge"}
+
+    # Even single-fragment chains qualify if the fragment is large
+    # enough on its own (>= min_total_blocks side-effect blocks).
+    # This is the essential change vs. the prior strict-terminal
+    # variant: TRANSITION-exited fragments contribute to the
+    # side-effect family even if they don't end at the function
+    # terminal, because a downstream handler in the cascade does.
     for head_handler in sorted(fragments):
         # DFS expansion; cap at max_chain_handlers depth.
         stack: list[tuple[list[int], set[int]]] = [(
@@ -772,26 +783,13 @@ def detect_hybrid_terminal_byte_corridors(
             chain_handlers, visited = stack.pop()
             current_handler = chain_handlers[-1]
             current_frag = fragments[current_handler]
-            # Compute total side-effect block count.
             total_blocks = sum(
                 len(fragments[h].blocks) for h in chain_handlers
             )
-            has_terminal = any(
-                fragments[h].exit_kind
-                in ("terminal", "local_terminal_edge")
-                for h in chain_handlers
-            )
-            score = (1 if has_terminal else 0, total_blocks)
-            # Update best when chain qualifies.
-            if total_blocks >= int(min_total_blocks) and has_terminal:
-                if score > best_terminal_score:
-                    best_terminal_score = score
-                    best_chain = list(chain_handlers)
+            if total_blocks >= int(min_total_blocks):
+                qualifying_chains.append(tuple(chain_handlers))
             # Stop expanding when current fragment has terminal-style exit.
-            if current_frag.exit_kind in (
-                "terminal",
-                "local_terminal_edge",
-            ):
+            if current_frag.exit_kind in terminal_exit_kinds:
                 continue
             if len(chain_handlers) >= int(max_chain_handlers):
                 continue
@@ -800,23 +798,60 @@ def detect_hybrid_terminal_byte_corridors(
                     continue
                 stack.append((chain_handlers + [nxt], visited | {nxt}))
 
-    if not best_chain:
+    if not qualifying_chains:
         return ()
 
-    # 5. Flatten into a single ordered corridor.
-    seen: set[int] = set()
-    ordered_blocks: list[int] = []
-    for handler in best_chain:
-        for owned in fragments[handler].blocks:
-            if owned in seen:
-                continue
-            seen.add(owned)
-            ordered_blocks.append(owned)
+    # 5. Deduplicate: drop chains that are strict subsequences of
+    #    another collected chain.  Keep only maximal chains so we
+    #    emit each distinct corridor once.
+    qualifying_chains.sort(key=len, reverse=True)
+    maximal_chains: list[tuple[int, ...]] = []
+    seen_handler_sets: list[frozenset[int]] = []
+    for chain in qualifying_chains:
+        chain_set = frozenset(chain)
+        is_subset_of_existing = any(
+            chain_set.issubset(prev) and chain_set != prev
+            for prev in seen_handler_sets
+        )
+        if is_subset_of_existing:
+            continue
+        # If this chain is a *superset* of a kept maximal chain,
+        # replace that one (we kept the smaller version too eagerly).
+        # Since we sort by length desc, this rarely fires — guard
+        # anyway for the equal-length case.
+        kept_idx_to_drop: list[int] = []
+        for i, prev in enumerate(seen_handler_sets):
+            if prev.issubset(chain_set) and prev != chain_set:
+                kept_idx_to_drop.append(i)
+        for i in reversed(kept_idx_to_drop):
+            del maximal_chains[i]
+            del seen_handler_sets[i]
+        maximal_chains.append(chain)
+        seen_handler_sets.append(chain_set)
 
-    if len(ordered_blocks) < int(min_total_blocks):
-        return ()
+    # 6. Flatten each chain into an ordered corridor (de-duplicated
+    #    block serials, forward order across handlers).
+    out_corridors: list[tuple[int, ...]] = []
+    seen_corridor_blocks: set[tuple[int, ...]] = set()
+    for chain in maximal_chains:
+        seen: set[int] = set()
+        ordered_blocks: list[int] = []
+        for handler in chain:
+            for owned in fragments[handler].blocks:
+                if owned in seen:
+                    continue
+                seen.add(owned)
+                ordered_blocks.append(owned)
+        if len(ordered_blocks) < int(min_total_blocks):
+            continue
+        corridor = tuple(ordered_blocks)
+        if corridor in seen_corridor_blocks:
+            continue
+        seen_corridor_blocks.add(corridor)
+        out_corridors.append(corridor)
 
-    return (tuple(ordered_blocks),)
+    out_corridors.sort(key=lambda c: c[0])
+    return tuple(out_corridors)
 
 
 def detect_state_dag_terminal_byte_corridors(
