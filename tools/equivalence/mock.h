@@ -40,6 +40,22 @@ extern CallEvent our_trace[TRACE_CAP];
 extern int       our_idx;
 
 extern int g_active_side; /* 0 = ref, 1 = ours */
+
+/* Iteration-cap watchdog: when one side records more than EVENT_CAP_PER_SIDE
+ * events in a single trial, treat it as a runaway loop and abort cleanly via
+ * SIGALRM (the same path the time-based watchdog uses).  This converts
+ * non-progressing do-while loops in either ref.c or ours.c into a structured
+ * OVERRUN classification with the partial trace intact, instead of a black-box
+ * "hang".  The cap is a hard upper bound on call events, deliberately well
+ * below TRACE_CAP=8192 so we leave headroom for legitimate long traces. */
+#define EVENT_CAP_PER_SIDE 4096
+extern int g_overrun;          /* 1 if last trial overran the event cap */
+extern int g_event_count_ref;  /* events recorded by REF this trial */
+extern int g_event_count_our;  /* events recorded by OUR this trial */
+
+#include <signal.h>
+extern void _trigger_overrun_abort(void);
+
 static inline void record(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     if (g_active_side == 0) {
         if (ref_idx < TRACE_CAP) {
@@ -50,6 +66,11 @@ static inline void record(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t
             ref_trace[ref_idx].d = d;
             ref_idx++;
         }
+        g_event_count_ref++;
+        if (g_event_count_ref > EVENT_CAP_PER_SIDE && !g_overrun) {
+            g_overrun = 1;
+            _trigger_overrun_abort();
+        }
     } else {
         if (our_idx < TRACE_CAP) {
             our_trace[our_idx].kind = kind;
@@ -58,6 +79,11 @@ static inline void record(int kind, uint64_t a, uint64_t b, uint64_t c, uint64_t
             our_trace[our_idx].c = c;
             our_trace[our_idx].d = d;
             our_idx++;
+        }
+        g_event_count_our++;
+        if (g_event_count_our > EVENT_CAP_PER_SIDE && !g_overrun) {
+            g_overrun = 1;
+            _trigger_overrun_abort();
         }
     }
 }

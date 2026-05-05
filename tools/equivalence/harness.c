@@ -79,6 +79,7 @@ int main(int argc, char **argv) {
     int rv_diffs = 0, mem_diffs = 0, trace_diffs = 0;
     int ref_hangs = 0, our_hangs = 0;
     int ref_crashes = 0, our_crashes = 0;
+    int ref_overruns = 0, our_overruns = 0;
 
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
@@ -125,9 +126,12 @@ int main(int argc, char **argv) {
         long long rv_ref = 0, rv_our = 0;
         int ref_hung = 0, our_hung = 0;
         int ref_crashed = 0, our_crashed = 0;
+        int ref_overran = 0, our_overran = 0;
 
         g_active_side = 0;
         g_last_sig = 0;
+        g_overrun = 0;
+        g_event_count_ref = 0;
         if (verbose) fprintf(stderr, "REF ");
         if (sigsetjmp(g_jmp, 1) == 0) {
             arm_watchdog_ms(50);
@@ -137,12 +141,28 @@ int main(int argc, char **argv) {
             disarm_watchdog();
         } else {
             disarm_watchdog();
-            if (g_last_sig == SIGALRM) ref_hung = 1;
-            else                       ref_crashed = 1;
+            /* Classification:
+             *   OVERRUN — caught by event-cap inside record(), OR
+             *             time-watchdog fired but the side recorded
+             *             very few events (suggests non-progressing
+             *             pure-C loop in the function body — REF/OUR
+             *             never got back to a callee site).
+             *   HANG    — time-watchdog with normal event progress
+             *             (legitimate but slow path).
+             *   CRASH   — non-SIGALRM signal (SIGSEGV/SIGBUS/SIGFPE).
+             * Threshold: 8 events.  A side that calls fewer than 8
+             * stub-callees in 50ms but doesn't return is almost
+             * certainly stuck in a tight pure-C loop (the documented
+             * D810 induction-restoration defect class). */
+            if (g_last_sig != SIGALRM)              ref_crashed = 1;
+            else if (g_overrun || g_event_count_ref < 8) ref_overran = 1;
+            else                                    ref_hung    = 1;
         }
 
         g_active_side = 1;
         g_last_sig = 0;
+        g_overrun = 0;
+        g_event_count_our = 0;
         if (verbose) fprintf(stderr, "OUR ");
         if (sigsetjmp(g_jmp, 1) == 0) {
             arm_watchdog_ms(50);
@@ -151,22 +171,57 @@ int main(int argc, char **argv) {
             disarm_watchdog();
         } else {
             disarm_watchdog();
-            if (g_last_sig == SIGALRM) our_hung = 1;
-            else                       our_crashed = 1;
+            if (g_last_sig != SIGALRM)              our_crashed = 1;
+            else if (g_overrun || g_event_count_our < 8) our_overran = 1;
+            else                                    our_hung    = 1;
         }
         if (verbose) fprintf(stderr, "done\n");
-        if (ref_hung)    ref_hangs++;
-        if (our_hung)    our_hangs++;
-        if (ref_crashed) ref_crashes++;
-        if (our_crashed) our_crashes++;
-        if (ref_hung || our_hung || ref_crashed || our_crashed) {
+        if (ref_hung)     ref_hangs++;
+        if (our_hung)     our_hangs++;
+        if (ref_crashed)  ref_crashes++;
+        if (our_crashed)  our_crashes++;
+        if (ref_overran)  ref_overruns++;
+        if (our_overran)  our_overruns++;
+        if (
+            ref_hung || our_hung
+            || ref_crashed || our_crashed
+            || ref_overran || our_overran
+        ) {
             fail++;
-            if (first_fail_seed == -1) {
-                first_fail_seed = trial;
-                printf("ABNORMAL trial=%d ref_hung=%d our_hung=%d "
-                       "ref_crash=%d our_crash=%d init_v49=0x%lx\n",
-                       trial, ref_hung, our_hung,
-                       ref_crashed, our_crashed, (unsigned long)init_v49);
+            int dump_all = (getenv("EQ_DUMP_ALL") != NULL);
+            if (first_fail_seed == -1 || (dump_all && fail <= 8)) {
+                if (first_fail_seed == -1) first_fail_seed = trial;
+                /* Per-cause label so OVERRUN is distinguishable from
+                 * legitimate time-watchdog hangs and crashes. */
+                const char *cause =
+                    (ref_overran || our_overran) ? "OVERRUN"
+                  : (ref_hung || our_hung)       ? "HANG"
+                  :                                "CRASH";
+                printf("ABNORMAL[%s] trial=%d ref_hung=%d our_hung=%d "
+                       "ref_crash=%d our_crash=%d ref_overrun=%d "
+                       "our_overrun=%d ref_events=%d our_events=%d "
+                       "init_v49=0x%lx\n",
+                       cause, trial, ref_hung, our_hung,
+                       ref_crashed, our_crashed,
+                       ref_overran, our_overran,
+                       g_event_count_ref, g_event_count_our,
+                       (unsigned long)init_v49);
+                /* On overrun, the partial trace up to ref_idx/our_idx
+                 * is intact.  Surface the first divergent event index
+                 * so the divergence point is auditable. */
+                if (ref_overran || our_overran) {
+                    int t_first = -1;
+                    (void)trace_diff(&t_first);
+                    printf("  partial ref_idx=%d our_idx=%d "
+                           "first_diff=%d\n",
+                           ref_idx, our_idx, t_first);
+                    if (t_first >= 0) {
+                        if (t_first < ref_idx)
+                            print_event("REF", &ref_trace[t_first]);
+                        if (t_first < our_idx)
+                            print_event("OUR", &our_trace[t_first]);
+                    }
+                }
             }
             continue;
         }
@@ -218,6 +273,8 @@ int main(int argc, char **argv) {
     printf("  trace_diffs : %d\n", trace_diffs);
     printf("  ref_hangs   : %d\n", ref_hangs);
     printf("  our_hangs   : %d\n", our_hangs);
+    printf("  ref_overruns: %d\n", ref_overruns);
+    printf("  our_overruns: %d\n", our_overruns);
     printf("  ref_crashes : %d\n", ref_crashes);
     printf("  our_crashes : %d\n", our_crashes);
     if (first_fail_seed >= 0) {

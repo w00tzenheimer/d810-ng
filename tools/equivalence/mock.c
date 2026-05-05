@@ -1,11 +1,25 @@
 /* mock.c — trace buffers, callee stubs, and MEM() dispatch shared by both sides. */
 #include "mock.h"
+#include <signal.h>
 
 CallEvent ref_trace[TRACE_CAP];
 int       ref_idx = 0;
 CallEvent our_trace[TRACE_CAP];
 int       our_idx = 0;
 int       g_active_side = 0;
+
+/* Iteration-cap watchdog state (see mock.h:EVENT_CAP_PER_SIDE). */
+int g_overrun = 0;
+int g_event_count_ref = 0;
+int g_event_count_our = 0;
+
+/* When the per-side event cap is exceeded inside record(), raise SIGALRM
+ * to drop into the harness's existing siglongjmp-based abort path.  The
+ * harness disambiguates overrun vs time-watchdog by inspecting g_overrun
+ * after the longjmp returns. */
+void _trigger_overrun_abort(void) {
+    raise(SIGALRM);
+}
 
 const char         D810_ZERO_OWORD[16] = {0};
 const unsigned char unk_180018E95[16]  = {0};
