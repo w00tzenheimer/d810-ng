@@ -95,16 +95,29 @@ int main(int argc, char **argv) {
 
     setbuf(stdout, NULL); /* unbuffered, so partial output survives crash */
     int verbose = (getenv("EQ_VERBOSE") != NULL);
+    /* EQ_TARGETED=1: deterministic sweep of init_v49 = trial (mod 256).
+     * a3_buf is also driven deterministically from trial so each trial
+     * has reproducible inputs.  Used to verify byte-emit cascade
+     * equivalence (v53 coverage) instead of random fuzz. */
+    int targeted = (getenv("EQ_TARGETED") != NULL);
     for (int trial = 0; trial < K; trial++) {
         if (verbose) fprintf(stderr, "[trial=%d] ", trial);
-        xs_state = seed + (uint64_t)trial * 0x9E3779B97F4A7C15ULL + 1;
+        if (targeted) {
+            xs_state = (uint64_t)trial * 0x9E3779B97F4A7C15ULL + 1;
+        } else {
+            xs_state = seed + (uint64_t)trial * 0x9E3779B97F4A7C15ULL + 1;
+        }
         for (int i = 0; i < A3_SIZE; i++) a3_buf[i] = (unsigned char)(xs64() & 0xFF);
 
         memset(a5_ref, 0, A5_SIZE);
         memset(a5_our, 0, A5_SIZE);
-        /* Seed *(a5+0xD0) (== v49) so the function takes varied paths.
-         * Use low byte from RNG, mask to keep it interesting. */
-        uint64_t init_v49 = xs64() & 0xFF;
+        /* Seed *(a5+0xD0) (== v49) so the function takes varied paths. */
+        uint64_t init_v49;
+        if (targeted) {
+            init_v49 = (uint64_t)(trial & 0xFF);
+        } else {
+            init_v49 = xs64() & 0xFF;
+        }
         memcpy(a5_ref + 0xD0, &init_v49, 8);
         memcpy(a5_our + 0xD0, &init_v49, 8);
 
