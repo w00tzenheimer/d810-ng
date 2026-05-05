@@ -2346,6 +2346,22 @@ class HandlerChainComposerStrategy:
         int(os.environ.get("D810_HCC_TAIL_EXTENSION", "1"))
     )
 
+    # DIAGNOSTIC GATE (default off): when set, suppress
+    # FUSABLE_TAIL_EXTENSION candidates whose materialization corresponds
+    # to the cfg_provenance ``ref_blk=236`` cascade (the
+    # ``InsertBlock(pred=125, succ=66, old_target=127)`` shape on
+    # sub_7FFD3338C040).  Because ``_apply_fusable_tail_extension`` does
+    # not produce the bound-writer ``DuplicateAndRedirect(source=184)``
+    # cascade (that originates in ``path_tail_modification_planning``),
+    # this gate effectively short-circuits the routine for the 237
+    # cascade only.  Used as bisection infrastructure to determine
+    # whether the inner-loop fold at EA 0x180013b0e requires the
+    # ``237->66`` multi-pred injection in addition to the ``183->224``
+    # bound-writer redirect, or whether ``183->224`` alone is sufficient.
+    HCC_TAIL_EXTENSION_SKIP_REF236: bool = (
+        os.environ.get("D810_HCC_TAIL_EXTENSION_SKIP_REF236", "0") == "1"
+    )
+
     # uee-b7ze Step 2: call-barrier segmentation.  Handlers whose bodies
     # contain m_call/m_icall must be PRESERVED as anchors (their
     # original blocks stay in the CFG, calls untouched), with
@@ -4527,6 +4543,17 @@ class HandlerChainComposerStrategy:
         # race on the same physical edge.
         claimed_splice_sources: set[int] = set()
 
+        # Diagnostic gate: read once at routine entry so the per-candidate
+        # check is a cheap class attribute load (no env re-read in the hot
+        # loop). When set, skip every FUSABLE_TAIL_EXTENSION candidate --
+        # operationally equivalent to "skip the ref236 cascade" because
+        # this routine only produces the InsertBlock(pred=convergence,
+        # succ=exit, old_target=splice_old_target) shape; the bound-writer
+        # 224 cascade originates in path_tail_modification_planning, NOT
+        # here.  Used as bisection infrastructure for the inner-loop fold
+        # at EA 0x180013b0e on sub_7FFD3338C040.
+        skip_ref236 = type(self).HCC_TAIL_EXTENSION_SKIP_REF236
+
         for info in raw_region_table:
             label, plan = _classify_convergence_or_linear(
                 self_info=info,
@@ -4538,6 +4565,17 @@ class HandlerChainComposerStrategy:
             if label != "FUSABLE_TAIL_EXTENSION":
                 continue
             if not isinstance(plan, _TailExtensionPlan):  # defensive
+                continue
+            if skip_ref236:
+                logger.info(
+                    "HCC_TAIL_EXTENSION_DIAG_SKIP_REF236"
+                    " convergence_block=blk[%d] splice_old_target=blk[%d]"
+                    " exit_target=blk[%d] reason=diagnostic_gate"
+                    " (D810_HCC_TAIL_EXTENSION_SKIP_REF236=1)",
+                    int(plan.convergence_block),
+                    int(plan.splice_old_target),
+                    int(plan.exit_target),
+                )
                 continue
 
             covers = _find_cover_regions(
