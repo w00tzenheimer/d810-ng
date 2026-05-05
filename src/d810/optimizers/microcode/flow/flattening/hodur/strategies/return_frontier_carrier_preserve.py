@@ -81,9 +81,21 @@ class ReturnFrontierCarrierPreserveStrategy:
         return FAMILY_CLEANUP
 
     def is_applicable(self, snapshot: "AnalysisSnapshot") -> bool:
-        if os.environ.get(_GATE_ENV, "").strip() != "1":
-            return False
-        return getattr(snapshot, "mba", None) is not None
+        # SUPERSEDED: per user directive (2026-05-03), downstream
+        # carrier-rebranding is the wrong fix.  The correct fix is the
+        # upstream HCC carrier-shred guard
+        # (``HandlerChainComposerStrategy._filter_carrier_shredding_mods``),
+        # which preserves the original carrier-def path before it can
+        # be collapsed into a copy-prop-vulnerable shape.  This
+        # strategy is retained as documentation/scaffold only and is
+        # never applicable.
+        if os.environ.get(_GATE_ENV, "").strip() == "1":
+            logger.info(
+                "RETURN_FRONTIER_CARRIER_PRESERVE: deprecated; superseded "
+                "by HCC upstream carrier-shred guard "
+                "(_filter_carrier_shredding_mods)"
+            )
+        return False
 
     def plan(self, snapshot: "AnalysisSnapshot") -> "PlanFragment | None":
         if not self.is_applicable(snapshot):

@@ -93,6 +93,7 @@ from d810.cfg.frontier_override_emission import emit_frontier_overrides
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     DuplicateAndRedirect,
+    EdgeRedirectViaPredSplit,
     InsertBlock,
     RedirectBranch,
     RedirectGoto,
@@ -156,6 +157,10 @@ from d810.recon.flow.linearized_state_dag import (
 )
 from d810.recon.flow.narrow_branch_local_discovery import (
     discover_narrow_branch_local_reconstruction_candidates,
+)
+from d810.recon.flow.return_frontier_carrier_facts import (
+    ReturnFrontierCarrierFact,
+    detect_return_frontier_carrier_facts,
 )
 from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
@@ -2750,6 +2755,54 @@ class HandlerChainComposerStrategy:
                             _swr_corridors,
                         )
                     )
+            # Return-frontier carrier-shred guard (SWR+region path).
+            # Reject mods that would collapse a return-frontier carrier-def
+            # path before IDA's MMAT_GLBOPT1 copy-prop sweep can substitute
+            # the lvar carrier identity into the return-slot store.
+            if (
+                os.environ.get(
+                    self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
+                ).strip()
+                == "1"
+            ):
+                _swr_dag = swr_result.get("dag") if swr_result else None
+                _carrier_facts: tuple[ReturnFrontierCarrierFact, ...] = ()
+                if _swr_dag is not None:
+                    _carrier_facts = tuple(
+                        getattr(_swr_dag, "return_frontier_carrier_facts", ())
+                        or ()
+                    )
+                if not _carrier_facts:
+                    _carrier_facts = detect_return_frontier_carrier_facts(
+                        getattr(snapshot, "flow_graph", None)
+                    )
+                if _carrier_facts:
+                    for _f in _carrier_facts:
+                        logger.info(
+                            "RETURN_FRONTIER_CARRIER_GUARD: fact (SWR+region "
+                            "path): ret=blk[%d] writer=blk[%d] "
+                            "carrier_lvar=%s|stkoff=%s "
+                            "path_blocks=%s",
+                            _f.ret_block,
+                            _f.writer_block,
+                            (
+                                str(_f.carrier_lvar_idx)
+                                if _f.carrier_lvar_idx is not None
+                                else "None"
+                            ),
+                            (
+                                f"0x{_f.carrier_stkoff:x}"
+                                if _f.carrier_stkoff is not None
+                                else "None"
+                            ),
+                            sorted(_f.writer_path_blocks),
+                        )
+                    combined_modifications = (
+                        self._filter_carrier_shredding_mods(
+                            combined_modifications,
+                            _carrier_facts,
+                        )
+                    )
             combined_owned_blocks = set(swr_result["owned_blocks"])
             combined_owned_blocks.update(region_owned_blocks)
             combined_owned_blocks.update(call_barrier_owned_blocks)
@@ -2869,6 +2922,51 @@ class HandlerChainComposerStrategy:
                 filtered_modifications,
                 side_effect_corridors,
             )
+        # Return-frontier carrier-shred guard (region-collapse path).
+        if (
+            os.environ.get(
+                self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
+            ).strip()
+            == "1"
+        ):
+            _region_dag = swr_result.get("dag") if swr_result else None
+            _carrier_facts2: tuple[ReturnFrontierCarrierFact, ...] = ()
+            if _region_dag is not None:
+                _carrier_facts2 = tuple(
+                    getattr(
+                        _region_dag, "return_frontier_carrier_facts", ()
+                    )
+                    or ()
+                )
+            if not _carrier_facts2:
+                _carrier_facts2 = detect_return_frontier_carrier_facts(
+                    getattr(snapshot, "flow_graph", None)
+                )
+            if _carrier_facts2:
+                for _f in _carrier_facts2:
+                    logger.info(
+                        "RETURN_FRONTIER_CARRIER_GUARD: fact (region-collapse "
+                        "path): ret=blk[%d] writer=blk[%d] "
+                        "carrier_lvar=%s|stkoff=%s "
+                        "path_blocks=%s",
+                        _f.ret_block,
+                        _f.writer_block,
+                        (
+                            str(_f.carrier_lvar_idx)
+                            if _f.carrier_lvar_idx is not None
+                            else "None"
+                        ),
+                        (
+                            f"0x{_f.carrier_stkoff:x}"
+                            if _f.carrier_stkoff is not None
+                            else "None"
+                        ),
+                        sorted(_f.writer_path_blocks),
+                    )
+                filtered_modifications = self._filter_carrier_shredding_mods(
+                    filtered_modifications,
+                    _carrier_facts2,
+                )
         owned_blocks_combined = set(region_owned_blocks)
         owned_blocks_combined.update(call_barrier_owned_blocks)
         ownership = OwnershipScope(
@@ -3954,6 +4052,164 @@ class HandlerChainComposerStrategy:
                 len(kept),
                 rejected_count,
                 len(corridors),
+            )
+        return kept
+
+    # Env gate: when set, refuse to emit modifications that would collapse
+    # a return-frontier carrier-def path into a single-def/single-use
+    # shape that downstream copy-prop will substitute, severing the lvar
+    # carrier identity (e.g. ``return v49`` becoming ``return a5 + 0xD0``).
+    # Off by default until validated; flip on with
+    # ``D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1``.
+    _RETURN_FRONTIER_CARRIER_PRESERVE_ENV = (
+        "D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE"
+    )
+
+    @staticmethod
+    def _filter_carrier_shredding_mods(
+        modifications: list,
+        carrier_facts: tuple[ReturnFrontierCarrierFact, ...],
+    ) -> list:
+        """Reject mods that would collapse a return-frontier carrier-def
+        path into a single-use single-def shape.
+
+        For each :class:`ReturnFrontierCarrierFact`, the writer's
+        ``writer_path_blocks`` set names the blocks that must remain
+        topologically intact for IDA's MMAT_GLBOPT1 copy-prop pass to
+        keep the lvar carrier identity (e.g., ``%var_178``) attached
+        to the return-slot store.  If we inject a foreign predecessor
+        into one of those blocks, or rewrite an edge inside the
+        chain, the resulting single-def/single-use shape is what
+        copy-prop substitutes — and the carrier evaporates.
+
+        Reject:
+          * RedirectGoto / RedirectBranch where ``new_target`` is in any
+            ``fact.writer_path_blocks`` (foreign-pred injection).
+          * RedirectGoto / RedirectBranch where ``from_serial`` AND
+            ``old_target`` are both in ``fact.writer_path_blocks``
+            (intra-chain edge rewrite).
+          * EdgeRedirectViaPredSplit where ``new_target`` or
+            ``via_pred`` is in any ``fact.writer_path_blocks``.
+          * InsertBlock where ``pred_serial`` OR ``succ_serial`` is in
+            any ``fact.writer_path_blocks`` (corridor split).
+          * DuplicateAndRedirect where ``source_serial`` is in any
+            ``fact.writer_path_blocks`` (cloning the carrier-def block
+            destroys the SSA value identity).
+
+        Each rejection logs a structured ``RETURN_FRONTIER_CARRIER_GUARD``
+        line naming the offending mod and the protecting fact.
+        """
+        if not carrier_facts or not modifications:
+            return modifications
+
+        # Build a per-fact membership index plus the union for fast first-
+        # pass triage; on hit we walk each fact to find the responsible one
+        # for diagnostic.
+        union_protected: set[int] = set()
+        for fact in carrier_facts:
+            for b in fact.writer_path_blocks:
+                union_protected.add(int(b))
+        if not union_protected:
+            return modifications
+
+        def _matching_fact(blocks: tuple[int, ...]) -> ReturnFrontierCarrierFact | None:
+            block_set = {int(b) for b in blocks}
+            for fact in carrier_facts:
+                if block_set & {int(b) for b in fact.writer_path_blocks}:
+                    return fact
+            return None
+
+        kept: list = []
+        rejected_count = 0
+        for mod in modifications:
+            reject_reason: str | None = None
+            offending_blocks: tuple[int, ...] = ()
+
+            if isinstance(mod, (RedirectGoto, RedirectBranch)):
+                src = int(getattr(mod, "from_serial", -1))
+                tgt = int(getattr(mod, "new_target", -1))
+                old = getattr(mod, "old_target", None)
+                if tgt in union_protected:
+                    reject_reason = (
+                        f"would inject foreign pred blk[{src}] into "
+                        f"carrier-def block blk[{tgt}]"
+                    )
+                    offending_blocks = (tgt,)
+                elif (
+                    old is not None
+                    and src in union_protected
+                    and int(old) in union_protected
+                ):
+                    reject_reason = (
+                        f"would rewrite intra-carrier edge "
+                        f"blk[{src}]->blk[{int(old)}]"
+                    )
+                    offending_blocks = (src, int(old))
+            elif isinstance(mod, EdgeRedirectViaPredSplit):
+                tgt = int(getattr(mod, "new_target", -1))
+                via_pred = int(getattr(mod, "via_pred", -1))
+                src = int(getattr(mod, "src_block", -1))
+                if tgt in union_protected:
+                    reject_reason = (
+                        f"pred-split would route into carrier-def block "
+                        f"blk[{tgt}] (via_pred=blk[{via_pred}], "
+                        f"src=blk[{src}])"
+                    )
+                    offending_blocks = (tgt,)
+                elif via_pred in union_protected:
+                    reject_reason = (
+                        f"pred-split via_pred=blk[{via_pred}] is on "
+                        f"carrier-def path"
+                    )
+                    offending_blocks = (via_pred,)
+            elif isinstance(mod, InsertBlock):
+                pred = int(getattr(mod, "pred_serial", -1))
+                succ = int(getattr(mod, "succ_serial", -1))
+                if pred in union_protected or succ in union_protected:
+                    reject_reason = (
+                        f"would splice insertion into carrier-def chain "
+                        f"between blk[{pred}] and blk[{succ}]"
+                    )
+                    offending_blocks = tuple(
+                        b for b in (pred, succ) if b in union_protected
+                    )
+            elif isinstance(mod, DuplicateAndRedirect):
+                src = int(getattr(mod, "source_serial", -1))
+                if src in union_protected:
+                    reject_reason = (
+                        f"would clone carrier-def block blk[{src}], "
+                        f"breaking SSA carrier identity"
+                    )
+                    offending_blocks = (src,)
+
+            if reject_reason is None:
+                kept.append(mod)
+                continue
+
+            rejected_count += 1
+            fact = _matching_fact(offending_blocks)
+            fact_repr = (
+                f"ret=blk[{fact.ret_block}] writer=blk[{fact.writer_block}] "
+                f"carrier_lvar={fact.carrier_lvar_idx}|"
+                f"stkoff={fact.carrier_stkoff if fact.carrier_stkoff is None else hex(fact.carrier_stkoff)}"
+                if fact is not None
+                else "<no-fact>"
+            )
+            logger.info(
+                "RETURN_FRONTIER_CARRIER_GUARD: rejected %s — %s "
+                "(fact: %s)",
+                type(mod).__name__,
+                reject_reason,
+                fact_repr,
+            )
+
+        if rejected_count:
+            logger.info(
+                "RETURN_FRONTIER_CARRIER_GUARD: kept=%d rejected=%d "
+                "facts=%d (gate D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1)",
+                len(kept),
+                rejected_count,
+                len(carrier_facts),
             )
         return kept
 
