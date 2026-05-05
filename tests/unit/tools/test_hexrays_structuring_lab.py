@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tools.hexrays_structuring_lab.__main__ import (
     LabError,
+    build_matrix,
     build_summary,
     case_with_observation_artifact,
     load_registry,
@@ -182,6 +183,42 @@ def test_case_hydration_loads_observation_artifact() -> None:
         hydrated["observation_artifact_data"]["case_id"]
         == "multi_pred_boundary_barrier"
     )
+
+
+def test_matrix_hydrates_observed_outcomes() -> None:
+    rows = build_matrix(load_registry())
+    rows_by_case = {row["case"]: row for row in rows}
+
+    assert rows_by_case["single_pred_chain_merge"]["outcome_class"] == (
+        "expression_folded_deleted"
+    )
+    assert rows_by_case["side_effect_boundary_anchor"]["outcome_class"] == (
+        "semantic_visible_boundary_folded"
+    )
+    assert rows_by_case["clean_conditional_fork"]["outcome_class"] == (
+        "clean_structured_compaction"
+    )
+    assert rows_by_case["clean_conditional_fork"]["locopt_blocks"] == 9
+    assert rows_by_case["clean_conditional_fork"]["glbopt1_blocks"] == 6
+    assert rows_by_case["clean_conditional_fork"]["pseudocode_changed"] is False
+
+
+def test_matrix_command_prints_decision_table(capsys) -> None:
+    rc = main(["matrix"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "case\tlocopt_blocks\tglbopt1_blocks" in out
+    assert "single_pred_chain_merge\t6\t3\t3" in out
+    assert "clean_conditional_fork\t9\t6\t3" in out
+    assert "clean_structured_compaction" in out
+
+
+def test_compare_alias_prints_matrix_markdown(capsys) -> None:
+    rc = main(["compare", "--format", "markdown"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "| case | LOCOPT blocks | GLBOPT1 blocks |" in out
+    assert "| clean_conditional_fork | 9 | 6 | 3 |" in out
 
 
 def test_registry_does_not_point_at_tmp_artifacts() -> None:

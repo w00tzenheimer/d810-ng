@@ -148,6 +148,7 @@
       "empty": 1,
       "has_content": 3
     },
+    "outcome_class": "expression_folded_deleted",
     "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
   },
   "pseudocode": {

@@ -88,6 +88,7 @@
       "empty": 1,
       "has_content": 2
     },
+    "outcome_class": "expression_folded_deleted",
     "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
   },
   "pseudocode": {
