@@ -101,6 +101,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_tramp
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.counter_hoist import (
     CounterHoistStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_carrier_preserve import (
+    ReturnFrontierCarrierPreserveStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
@@ -134,6 +137,7 @@ __all__ = [
     "HandlerChainComposerStrategy",
     "DispatcherTrampolineSkipStrategy",
     "CounterHoistStrategy",
+    "ReturnFrontierCarrierPreserveStrategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -187,6 +191,12 @@ EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     # DCE cannot eliminate the increment (default-on; opt-out via
     # D810_HODUR_DISABLE_COUNTER_HOIST=1).
     CounterHoistStrategy,
+    # Restore lvar carrier identity at return-frontier writers
+    # classified POINTER_IDENTITY_PROPAGATED.  Default-OFF; opt-in
+    # via D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1.  Must run
+    # AFTER counter_hoist so the protected corridor is fully
+    # established before this strategy reads it.
+    ReturnFrontierCarrierPreserveStrategy,
 ])
 
 _STANDALONE_SRW_ENABLED = (
@@ -199,6 +209,7 @@ ALL_STRATEGIES: list[type] = _filter_strategies([
     HandlerChainComposerStrategy,
     DispatcherTrampolineSkipStrategy,
     CounterHoistStrategy,
+    ReturnFrontierCarrierPreserveStrategy,
     StateConstantReturnFixupStrategy,
     DeadStateVariableEliminationStrategy,
     *([StateWriteReconstructionStrategy] if _STANDALONE_SRW_ENABLED else []),
