@@ -142,6 +142,10 @@ def test_show_command_prints_clean_fork_observation(capsys) -> None:
         "0x1c",
         "0x1e",
     ]
+    assert data["cfg_validation"]["observed"]["arm_paths_relative_start_eas"] == [
+        ["0x1c", "0x58", "0x2e"],
+        ["0x1e", "0x44", "0x2e"],
+    ]
     assert data["cfg_validation"]["observed"]["join_pred_relative_start_eas"] == [
         "0x44",
         "0x58",

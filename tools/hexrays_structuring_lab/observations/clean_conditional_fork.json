@@ -16,6 +16,18 @@
       "0x1c",
       "0x1e"
     ],
+    "arm_paths_relative_start_eas": [
+      [
+        "0x1c",
+        "0x58",
+        "0x2e"
+      ],
+      [
+        "0x1e",
+        "0x44",
+        "0x2e"
+      ]
+    ],
     "join_serial": 5,
     "join_relative_start_ea": "0x2e",
     "join_pred_relative_start_eas": [
