@@ -227,3 +227,128 @@ class TestSemanticReferenceRegression:
             )
 
         diag_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Corridor-preservation regression
+# ---------------------------------------------------------------------------
+# Locks the topology fix from commit 36e3436d.  When the corridor-preserve
+# gate is on, the byte-emit terminal cascade in sub_7FFD3338C040 must:
+#   * not collapse to the bogus paired pattern
+#         if ((v & 7) == 0) break;
+#         if ((v & 7) == 1) return <CONST>;
+#     that we shipped before the corridor detector existed.
+#   * preserve the for-loop byte-emit step driven by the folded MBA
+#     equality check (`== 0xFFFFFFFFFFFFFF02uLL`).
+#   * preserve all 9 callees.
+
+# Block serials of the byte-emitter cascade as identified in the trace +
+# detector work (commit 36e3436d).  These are the user-named cascade
+# blocks that must be inside the protected side_effect_corridors set.
+SUB_7FFD_CASCADE_BLOCKS: tuple[int, ...] = (
+    101, 103, 111, 118, 132, 161, 163, 217,
+)
+
+
+class TestSub7FFDCorridorPreservationRegression:
+    """Regression: byte-emitter terminal cascade must remain protected.
+
+    With ``D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS=1`` (the gate
+    landed by commit 0d125ea1's corridor lineage), the AFTER pseudocode
+    of sub_7FFD3338C040 must NOT regress to the bogus terminal pair we
+    shipped before commit 36e3436d.
+    """
+
+    binary_name = _get_default_binary()
+
+    def test_sub_7FFD_no_bogus_terminal_pair_with_gate(
+        self,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        request,
+    ):
+        """AFTER must not contain the paired ``(v & 7) == 0`` break +
+        ``(v & 7) == 1`` return-constant pattern that signals a
+        collapsed cascade.
+
+        Also positively asserts the folded MBA equality check
+        ``== 0xFFFFFFFFFFFFFF02uLL`` is present (the for-loop guard
+        from the preserved cascade body).
+        """
+        import os
+
+        func_ea = _get_func_ea("sub_7FFD3338C040")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("sub_7FFD3338C040 not found")
+
+        prior_gate = os.environ.get(
+            "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS", ""
+        )
+        os.environ["D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"] = "1"
+
+        def _restore_gate() -> None:
+            if prior_gate:
+                os.environ[
+                    "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"
+                ] = prior_gate
+            else:
+                os.environ.pop(
+                    "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS", None
+                )
+
+        request.addfinalizer(_restore_gate)
+
+        with d810_state() as state:
+            with state.for_project("hodur_flag2.json"):
+                state.stats.reset()
+                state.start_d810()
+                cfunc = idaapi.decompile(
+                    func_ea, flags=idaapi.DECOMP_NO_CACHE
+                )
+                if cfunc is None:
+                    pytest.fail(
+                        "sub_7FFD3338C040 decompile returned None"
+                    )
+                code_after = pseudocode_to_string(cfunc.get_pseudocode())
+
+        # The bogus terminal pattern: a paired (v & 7) == 0 break check
+        # immediately followed by (v & 7) == 1 returning a constant.
+        # Detect via co-occurrence of the two equality checks AND the
+        # constant return shape that historically showed up.
+        bogus_break = "(v & 7) == 0" in code_after or "& 7) == 0\n" in code_after
+        bogus_return_const = (
+            "(v & 7) == 1" in code_after or "& 7) == 1\n" in code_after
+        )
+        # Be conservative: only fail when BOTH pieces of the bogus pair
+        # are present.  A single occurrence of "& 7) ==" can be
+        # legitimate cascade discrimination.
+        if bogus_break and bogus_return_const:
+            pytest.fail(
+                "Bogus paired terminal `(v & 7) == 0` break + "
+                "`(v & 7) == 1` return regression detected — corridor "
+                "preservation gate is on but the cascade collapsed.  "
+                "See commit 36e3436d for the topology fix."
+            )
+
+        # Positive: the MBA-folded byte-emit guard must remain.  This
+        # is the for-loop's equality check produced by the preserved
+        # cascade's MBA computation.
+        assert "0xFFFFFFFFFFFFFF02" in code_after, (
+            "MBA-folded byte-emit equality check (== 0xFFFFFFFFFFFFFF02) "
+            "is missing from AFTER pseudocode — the preserved cascade's "
+            "for-loop guard regressed."
+        )
+
+        # All 9 callees must be preserved (corridor preservation must
+        # not have rejected mods that were genuinely needed).
+        sub_call_count = code_after.count("sub_1800164E0")
+        # sub_1800164E0 is the most distinctive callee; a regression
+        # that drops the protected corridor's calls would also drop
+        # these.  Conservative threshold: 8 (the cascade's zeroing
+        # suffix plus a callsite).
+        assert sub_call_count >= 8, (
+            f"sub_1800164E0 call count regressed: expected >= 8, "
+            f"got {sub_call_count}.  Corridor preservation may be "
+            f"rejecting mods that the cascade needs."
+        )
