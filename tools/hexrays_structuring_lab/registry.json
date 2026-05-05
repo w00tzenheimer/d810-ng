@@ -315,6 +315,17 @@
             "0x1b",
             "0x1d"
           ],
+          "entry_to_shell_paths_relative_start_eas": [
+            [
+              "0x1b",
+              "0x76"
+            ],
+            [
+              "0x1d",
+              "0x62",
+              "0x76"
+            ]
+          ],
           "shell_relative_start_ea": "0x76",
           "shell_incoming_relative_start_eas": [
             "0x1b",
@@ -344,6 +355,7 @@
           "edge_predicates": [
             "entry block exists at fixture relative EA 0x0",
             "entry block has BLT_2WAY type with nsucc == 2",
+            "entry-to-shell paths are exactly 0x1b -> 0x76 and 0x1d -> 0x62 -> 0x76",
             "shell block exists at fixture relative EA 0x76",
             "shell block has npred == 2 and nsucc == 2",
             "shell arm paths are exactly 0x84 -> 0x57 -> 0x41 and 0x86 -> 0x41",
@@ -357,6 +369,7 @@
       "expected_evidence": [
         "compiled CFG validation report",
         "entry BLT_2WAY successor shape",
+        "explicit entry-arm-to-shell relative-EA paths",
         "explicit shell-arm-to-boundary relative-EA paths",
         "LOCOPT-to-GLBOPT1 merge-causality disposition",
         "pseudocode before/after metrics"

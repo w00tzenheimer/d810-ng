@@ -16,6 +16,17 @@
       "0x1b",
       "0x1d"
     ],
+    "entry_to_shell_paths_relative_start_eas": [
+      [
+        "0x1b",
+        "0x76"
+      ],
+      [
+        "0x1d",
+        "0x62",
+        "0x76"
+      ]
+    ],
     "shell_serial": 9,
     "shell_relative_start_ea": "0x76",
     "shell_pred_relative_start_eas": [
