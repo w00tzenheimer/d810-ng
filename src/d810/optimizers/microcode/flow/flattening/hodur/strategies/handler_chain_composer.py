@@ -2716,16 +2716,26 @@ class HandlerChainComposerStrategy:
                 state_var_stkoff=filter_state_var_stkoff,
             )
             # Corridor-shred guard for the SWR + region-collapse path.
+            # Prefer the DAG's pre-computed side_effect_corridors (which
+            # combines CFG-level + state-DAG-level detection); fall back
+            # to a fresh CFG-level scan if the DAG didn't expose any.
             if (
                 os.environ.get(
                     self._PRESERVE_TERMINAL_BYTE_CORRIDORS_ENV, ""
                 ).strip()
                 == "1"
             ):
-                _swr_corridors = detect_side_effect_corridors(
-                    getattr(snapshot, "flow_graph", None),
-                    bst_block_set=frozenset(filter_bst_node_blocks),
-                )
+                _swr_dag = swr_result.get("dag") if swr_result else None
+                _swr_corridors: tuple[tuple[int, ...], ...] = ()
+                if _swr_dag is not None:
+                    _swr_corridors = tuple(
+                        getattr(_swr_dag, "side_effect_corridors", ()) or ()
+                    )
+                if not _swr_corridors:
+                    _swr_corridors = detect_side_effect_corridors(
+                        getattr(snapshot, "flow_graph", None),
+                        bst_block_set=frozenset(filter_bst_node_blocks),
+                    )
                 if _swr_corridors:
                     for _c in _swr_corridors:
                         logger.info(
@@ -2813,16 +2823,23 @@ class HandlerChainComposerStrategy:
         )
         side_effect_corridors: tuple[tuple[int, ...], ...] = ()
         if corridor_guard_enabled:
-            side_effect_corridors = detect_side_effect_corridors(
-                getattr(snapshot, "flow_graph", None),
-                bst_block_set=frozenset(
-                    int(b) for b in (
-                        getattr(bst_result_for_filter, "bst_node_blocks", set())
-                        if bst_result_for_filter is not None
-                        else set()
-                    )
-                ),
-            )
+            # Prefer the DAG's combined CFG+state-DAG corridor list.
+            _region_dag = swr_result.get("dag") if swr_result else None
+            if _region_dag is not None:
+                side_effect_corridors = tuple(
+                    getattr(_region_dag, "side_effect_corridors", ()) or ()
+                )
+            if not side_effect_corridors:
+                side_effect_corridors = detect_side_effect_corridors(
+                    getattr(snapshot, "flow_graph", None),
+                    bst_block_set=frozenset(
+                        int(b) for b in (
+                            getattr(bst_result_for_filter, "bst_node_blocks", set())
+                            if bst_result_for_filter is not None
+                            else set()
+                        )
+                    ),
+                )
             if side_effect_corridors:
                 for corridor in side_effect_corridors:
                     logger.info(

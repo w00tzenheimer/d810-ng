@@ -332,6 +332,189 @@ def detect_side_effect_corridors(
     # Order by chain head serial for determinism.
     corridors.sort(key=lambda c: c[0])
     return tuple(corridors)
+
+
+def detect_state_dag_terminal_byte_corridors(
+    dag: "LinearizedStateDag",
+    flow_graph: FlowGraph | None,
+    *,
+    min_chain_length: int = 3,
+) -> tuple[tuple[int, ...], ...]:
+    """Detect ordered corridors at the *state-DAG* layer.
+
+    Unlike :func:`detect_side_effect_corridors`, which walks the live CFG,
+    this detector walks the *semantic state DAG* — i.e. the graph of
+    handler-level state nodes connected by logical state-transition edges,
+    independent of physical CFG fallthrough.
+
+    Why a DAG-level detector?  In OLLVM-flattened pre-unflattening form,
+    the byte-emitter terminal cascade routes through the dispatcher
+    between every step (cyclic state-machine, no physical fallthrough
+    chain).  A CFG-level walk cannot find it.  Post-unflattening the
+    cascade *becomes* a linear chain, but by then HCC's bulk redirects
+    have already shredded its topology.  The semantic ordering is
+    visible only in the state DAG.
+
+    Algorithm:
+      1. Identify *side-effect state nodes*: nodes whose ``owned_blocks``
+         contain at least one ``m_stx``/``m_call``/``m_icall`` insn (real
+         work, not state-routing trampolines).
+      2. Build forward adjacency from ``dag.edges``: for each
+         ``StateDagEdge``, link ``source_key.handler_serial`` ->
+         ``target_key.handler_serial`` (state-DAG edges, NOT physical
+         CFG edges).
+      3. Walk forward from each side-effect node that has no
+         side-effect predecessor (chain heads), through edges where
+         the target is also a side-effect node.
+      4. For each maximal chain of length >= ``min_chain_length`` nodes,
+         emit the **union of owned_blocks** across the chain — in
+         forward (head -> sink) order — as a corridor block tuple.
+
+    The output type matches :func:`detect_side_effect_corridors` so the
+    HCC plan-emission guard can consume both kinds of corridors via the
+    same field.
+    """
+    if dag is None or flow_graph is None:
+        return ()
+    try:
+        import ida_hexrays
+    except ImportError:
+        return ()
+    m_stx = getattr(ida_hexrays, "m_stx", -1)
+    m_call = getattr(ida_hexrays, "m_call", -1)
+    m_icall = getattr(ida_hexrays, "m_icall", -1)
+    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
+    if not side_effect_ops:
+        return ()
+
+    # Index nodes by handler_serial; classify each as side-effect or
+    # transit by inspecting its owned_blocks.
+    nodes_by_handler: dict[int, "StateDagNode"] = {}
+    side_effect_nodes: set[int] = set()
+    for node in dag.nodes:
+        try:
+            handler = int(getattr(node, "handler_serial", -1))
+        except (TypeError, ValueError):
+            continue
+        if handler < 0:
+            continue
+        nodes_by_handler[handler] = node
+        for owned_serial in (
+            int(b) for b in (getattr(node, "owned_blocks", ()) or ())
+        ):
+            owned_blk = flow_graph.get_block(owned_serial)
+            if owned_blk is None:
+                continue
+            if _block_has_side_effect_opcode(owned_blk, side_effect_ops):
+                side_effect_nodes.add(handler)
+                break
+
+    if not side_effect_nodes:
+        return ()
+
+    # Build forward adjacency between side-effect nodes via the DAG's
+    # semantic edges (NOT the physical CFG fallthrough).
+    forward: dict[int, list[int]] = {h: [] for h in side_effect_nodes}
+    inbound_count: dict[int, int] = {h: 0 for h in side_effect_nodes}
+    for edge in dag.edges:
+        try:
+            src_handler = int(edge.source_key.handler_serial)
+        except AttributeError:
+            continue
+        if src_handler not in side_effect_nodes:
+            continue
+        tgt_key = getattr(edge, "target_key", None)
+        if tgt_key is None:
+            continue
+        try:
+            tgt_handler = int(tgt_key.handler_serial)
+        except AttributeError:
+            continue
+        if tgt_handler not in side_effect_nodes:
+            continue
+        if tgt_handler in forward[src_handler]:
+            continue
+        forward[src_handler].append(tgt_handler)
+        inbound_count[tgt_handler] = inbound_count.get(tgt_handler, 0) + 1
+
+    # Find chain heads (side-effect nodes with no inbound side-effect
+    # edges) and walk forward.  Rely on DAG-edge linearity.
+    in_chain: set[int] = set()
+    corridors: list[tuple[int, ...]] = []
+    for head_handler in sorted(side_effect_nodes):
+        if head_handler in in_chain:
+            continue
+        if inbound_count.get(head_handler, 0) > 0:
+            # Internal node — would already be picked up by some chain
+            # head.  Skip to avoid duplicate corridors.
+            continue
+        chain_handlers: list[int] = [head_handler]
+        current = head_handler
+        for _ in range(len(side_effect_nodes)):
+            outs = forward.get(current, ())
+            # Pick the first unvisited side-effect successor.
+            next_handler: int | None = None
+            for cand in outs:
+                if cand not in chain_handlers:
+                    next_handler = cand
+                    break
+            if next_handler is None:
+                break
+            chain_handlers.append(next_handler)
+            current = next_handler
+
+        if len(chain_handlers) < int(min_chain_length):
+            continue
+
+        # Flatten owned_blocks across the chain in forward order,
+        # de-duplicated while preserving first-seen order.
+        seen: set[int] = set()
+        ordered_blocks: list[int] = []
+        for handler in chain_handlers:
+            node = nodes_by_handler.get(handler)
+            if node is None:
+                continue
+            for owned in (
+                int(b) for b in (getattr(node, "owned_blocks", ()) or ())
+            ):
+                if owned in seen:
+                    continue
+                seen.add(owned)
+                ordered_blocks.append(owned)
+        if len(ordered_blocks) < int(min_chain_length):
+            continue
+        # Constrain: only keep corridors whose final block in the
+        # last side-effect node is a *terminal* (nsucc == 0).  Without
+        # this, the detector greedily includes dispatcher-routing
+        # state chains whose owned blocks contain m_stx state-writes
+        # — those are exactly the corridors HCC is supposed to
+        # rewrite, NOT preserve.  The byte-emitter terminal corridor
+        # must lead to a function-exit block.
+        sink_handler = chain_handlers[-1]
+        sink_node = nodes_by_handler.get(sink_handler)
+        if sink_node is None:
+            continue
+        sink_owned = tuple(
+            int(b) for b in (getattr(sink_node, "owned_blocks", ()) or ())
+        )
+        sink_is_terminal = False
+        for owned_serial in sink_owned:
+            owned_blk = flow_graph.get_block(owned_serial)
+            if owned_blk is None:
+                continue
+            owned_succs = tuple(
+                int(s) for s in (getattr(owned_blk, "succs", ()) or ())
+            )
+            if not owned_succs:
+                sink_is_terminal = True
+                break
+        if not sink_is_terminal:
+            continue
+        corridors.append(tuple(ordered_blocks))
+        in_chain.update(chain_handlers)
+
+    corridors.sort(key=lambda c: c[0])
+    return tuple(corridors)
 _SIMPLE_COMPARE_RE = re.compile(
     r"^\s*(?P<lhs>.+?)\s+"
     r"(?P<op>==|!=|>=u|<=u|>u|<u|>=s|<=s|>s|<s)\s+"
@@ -5597,20 +5780,40 @@ def build_linearized_state_dag_from_graph(
         dag, dispatcher_region=dispatcher_region
     )
     dag = replace(dag, loop_regions=loop_regions)
-    side_effect_corridors = detect_side_effect_corridors(
+    cfg_level_corridors = detect_side_effect_corridors(
         flow_graph,
         bst_block_set=frozenset(report.bst_node_blocks),
     )
-    if side_effect_corridors:
-        for corridor in side_effect_corridors:
-            logger.info(
-                "DAG: side-effect corridor detected: len=%d serials=%s "
-                "head=blk[%d] sink=blk[%d]",
-                len(corridor),
-                list(corridor[:8]),
-                corridor[0],
-                corridor[-1],
-            )
+    dag_level_corridors = detect_state_dag_terminal_byte_corridors(
+        dag, flow_graph
+    )
+    # Union, preserving first-seen order; deduplicate by full tuple.
+    seen_corridors: set[tuple[int, ...]] = set()
+    side_effect_corridors_list: list[tuple[int, ...]] = []
+    for c in cfg_level_corridors + dag_level_corridors:
+        if c in seen_corridors:
+            continue
+        seen_corridors.add(c)
+        side_effect_corridors_list.append(c)
+    side_effect_corridors = tuple(side_effect_corridors_list)
+    for corridor in cfg_level_corridors:
+        logger.info(
+            "DAG: side-effect corridor detected (CFG-level): len=%d "
+            "serials=%s head=blk[%d] sink=blk[%d]",
+            len(corridor),
+            list(corridor[:8]),
+            corridor[0],
+            corridor[-1],
+        )
+    for corridor in dag_level_corridors:
+        logger.info(
+            "DAG: side-effect corridor detected (DAG-level): len=%d "
+            "serials=%s head=blk[%d] sink=blk[%d]",
+            len(corridor),
+            list(corridor[:8]),
+            corridor[0],
+            corridor[-1],
+        )
     return replace(dag, side_effect_corridors=side_effect_corridors)
 
 
