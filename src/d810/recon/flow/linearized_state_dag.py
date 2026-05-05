@@ -31,6 +31,10 @@ from d810.recon.flow.state_machine_analysis import (
     resolve_exit_via_bst_default_snapshot,
 )
 
+from d810.recon.flow.return_frontier_carrier_facts import (
+    ReturnFrontierCarrierFact,
+    detect_return_frontier_carrier_facts,
+)
 from d810.recon.flow.transition_builder import TransitionResult
 from d810.recon.flow.transition_report import (
     DispatcherTransitionReport,
@@ -1571,6 +1575,7 @@ class LinearizedStateDag:
     sccs: tuple["StateSCC", ...] = ()
     loop_regions: tuple["LoopRegion", ...] = ()
     side_effect_corridors: tuple[tuple[int, ...], ...] = ()
+    return_frontier_carrier_facts: tuple["ReturnFrontierCarrierFact", ...] = ()
 
     def node_by_handler(self) -> dict[int, StateDagNode]:
         return {node.handler_serial: node for node in self.nodes}
@@ -6561,7 +6566,14 @@ def build_linearized_state_dag_from_graph(
             corridor[0],
             corridor[-1],
         )
-    return replace(dag, side_effect_corridors=side_effect_corridors)
+    return_frontier_carrier_facts = detect_return_frontier_carrier_facts(
+        flow_graph
+    )
+    return replace(
+        dag,
+        side_effect_corridors=side_effect_corridors,
+        return_frontier_carrier_facts=return_frontier_carrier_facts,
+    )
 
 
 def _format_anchor(anchor: StateRedirectAnchor) -> str:
