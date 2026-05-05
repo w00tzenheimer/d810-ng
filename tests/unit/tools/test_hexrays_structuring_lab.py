@@ -40,6 +40,10 @@ def test_validate_cfg_command_rendering_is_separate_from_dump() -> None:
     assert "test_structuring_lab_cfg_validation.py" in command
     assert "--hexrays-lab-case single_pred_chain_merge" in command
     assert "--hexrays-lab-function hexrays_lab_single_pred_chain_merge" in command
+    assert (
+        "--hexrays-lab-output-json "
+        ".tmp/cfg_out/single_pred_chain_merge.json"
+    ) in command
     assert "-o cfg_out/single_pred_chain_merge.txt" in command
 
 
@@ -57,8 +61,23 @@ def test_show_command_prints_case_json(capsys) -> None:
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
     assert data["id"] == "single_pred_chain_merge"
-    assert data["status"] == "planned"
-    assert data["cfg_validation"]["status"] == "not_run"
+    assert data["status"] == "observed"
+    assert data["cfg_validation"]["status"] == "passed"
+    assert (
+        data["observation_artifact"]
+        == "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json"
+    )
+    assert data["observation"]["from_block_count"] == 6
+    assert data["observation"]["to_block_count"] == 3
+
+
+def test_registry_does_not_point_at_tmp_artifacts() -> None:
+    registry = load_registry()
+    tmp_paths = [
+        value for value in _json_strings(registry)
+        if value.startswith(".tmp/") or "/.tmp/" in value
+    ]
+    assert tmp_paths == []
 
 
 def test_summarize_reports_absorbed_block(tmp_path: Path) -> None:
@@ -223,3 +242,19 @@ def _create_merge_db(path: Path) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def _json_strings(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        strings = []
+        for item in value:
+            strings.extend(_json_strings(item))
+        return strings
+    if isinstance(value, dict):
+        strings = []
+        for item in value.values():
+            strings.extend(_json_strings(item))
+        return strings
+    return []

@@ -137,6 +137,47 @@ Fixture approach:
 - If compiled-CFG validation fails after a reasonable C attempt, replace the
   fixture with assembly. Do not treat the failed C shape as Hex-Rays evidence.
 
+Authoritative DLL build loop:
+
+1. Add or update only the first fixture under `samples/src/c/`, initially:
+   `samples/src/c/hexrays_structuring_lab.c`.
+2. Sync sample sources to the Windows build tree:
+
+   ```bash
+   rsync -av samples/src/ /Volumes/re/idapro/plugins/d810-ng/samples/src/
+   ```
+
+3. Build the Windows DLL on `reversepc.local`:
+
+   ```powershell
+   cd G:\idapro\plugins\d810-ng\samples
+   .\scripts\build_windows.ps1
+   ```
+
+4. Sync the produced DLL/PDB back into this worktree:
+
+   ```bash
+   rsync -av \
+     /Volumes/re/idapro/plugins/d810-ng/samples/bins/libobfuscated.dll \
+     /Volumes/re/idapro/plugins/d810-ng/samples/bins/libobfuscated.pdb \
+     samples/bins/
+   ```
+
+5. Run the compiled-CFG validation gate:
+
+   ```bash
+   python -m tools.hexrays_structuring_lab validate-cfg single_pred_chain_merge
+   ```
+
+Notes:
+
+- If `/Volumes/re` is not mounted, use SSH to copy the same paths to/from
+  `reversepc.local`.
+- Do not sync the whole repo unless the sample build requires it. Start with
+  `samples/src/` and add `samples/include/` only if headers changed.
+- The lab evidence should be generated against `samples/bins/libobfuscated.dll`,
+  because that is the binary the Docker/IDA system tests decompile.
+
 Captured evidence:
 
 - Compiled-CFG validation report.
