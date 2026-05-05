@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,7 @@ SIDE_EFFECT_OUTPUT_JSON = (
     ".tmp/hexrays_structuring_lab/cfg_validation/"
     "side_effect_boundary_anchor.json"
 )
+SIDE_EFFECT_HELPER_FUNCTION = "hexrays_lab_boundary_anchor_helper"
 SIDE_EFFECT_EXPECTED_BLOCK_COUNT = 10
 SIDE_EFFECT_BOUNDARY_RELATIVE_START = "0x64"
 SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE = [
@@ -151,8 +153,45 @@ def _opcode_names(opcodes: list[int]) -> list[str]:
     return [f"op_{opcode}" for opcode in opcodes]
 
 
+def _call_target_from_dstr(dstr: str) -> str | None:
+    match = re.search(r"\bcall\s+\$([A-Za-z_][A-Za-z0-9_@$?]*)", dstr)
+    return match.group(1) if match else None
+
+
+def _name_ea(name: str | None) -> str | None:
+    if not name:
+        return None
+    try:
+        import ida_name
+        import idaapi
+    except ImportError:
+        return None
+    ea = ida_name.get_name_ea(idaapi.BADADDR, name)
+    return _hex_ea(int(ea))
+
+
+def _instruction_records(blk) -> list[dict[str, object]]:
+    records = []
+    ins = blk.head
+    while ins is not None:
+        opcode = int(ins.opcode)
+        dstr = str(ins.dstr())
+        call_target_name = _call_target_from_dstr(dstr)
+        records.append({
+            "ea": _hex_ea(int(ins.ea)),
+            "opcode": opcode,
+            "opcode_name": f"op_{opcode}",
+            "dstr": dstr,
+            "call_target_name": call_target_name,
+            "call_target_ea": _name_ea(call_target_name),
+        })
+        ins = ins.next
+    return records
+
+
 def _block_record(ida_hexrays, blk) -> dict[str, object]:
     instruction_opcodes = _instruction_opcodes(blk)
+    instruction_records = _instruction_records(blk)
     return {
         "serial": int(blk.serial),
         "type": _block_type_name(ida_hexrays, int(blk.type)),
@@ -172,6 +211,15 @@ def _block_record(ida_hexrays, blk) -> dict[str, object]:
         "instruction_count": len(instruction_opcodes),
         "instruction_opcodes": instruction_opcodes,
         "instruction_opcode_names": _opcode_names(instruction_opcodes),
+        "instructions": instruction_records,
+        "call_targets": [
+            {
+                "name": record["call_target_name"],
+                "ea": record["call_target_ea"],
+            }
+            for record in instruction_records
+            if record["call_target_name"] is not None
+        ],
     }
 
 
@@ -406,6 +454,8 @@ def _matches_side_effect_boundary_fixture(
     assert isinstance(boundary, dict)
     body_opcodes = signature["body_opcode_signatures_by_relative_start"]
     assert isinstance(body_opcodes, dict)
+    call_targets = boundary["call_targets"]
+    assert isinstance(call_targets, list)
     return (
         maturity_name == EXPECTED_MATURITY
         and block_count == SIDE_EFFECT_EXPECTED_BLOCK_COUNT
@@ -419,6 +469,10 @@ def _matches_side_effect_boundary_fixture(
         and signature["boundary_succ_relative_start_eas"]
         == [SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START]
         and body_opcodes == SIDE_EFFECT_BODY_OPCODE_SIGNATURES
+        and call_targets == [{
+            "name": SIDE_EFFECT_HELPER_FUNCTION,
+            "ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
+        }]
     )
 
 
@@ -488,6 +542,8 @@ def _case_expected(case_id: str) -> dict[str, object]:
             "boundary_successor_relative_start_ea": (
                 SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START
             ),
+            "boundary_call_target_name": SIDE_EFFECT_HELPER_FUNCTION,
+            "boundary_call_target_ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
             "body_opcode_signatures_by_relative_start": (
                 SIDE_EFFECT_BODY_OPCODE_SIGNATURES
             ),
@@ -501,7 +557,10 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 "boundary block has npred == 2 and nsucc == 1",
                 "boundary predecessor relative EAs are exactly 0x1f and 0x4d",
                 "boundary successor relative EA is exactly 0x81",
-                "boundary body ends in a call to the noinline volatile anchor",
+                (
+                    "boundary body calls hexrays_lab_boundary_anchor_helper "
+                    "as the noinline volatile anchor"
+                ),
                 "body opcode groups match the fixture operation sequence",
             ],
         }
@@ -737,3 +796,8 @@ class TestHexraysStructuringLabCfgValidation:
                 else SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
             )
             assert boundary["instruction_opcodes"] == expected_opcodes
+            if case_id == "side_effect_boundary_anchor":
+                assert boundary["call_targets"] == [{
+                    "name": SIDE_EFFECT_HELPER_FUNCTION,
+                    "ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
+                }]
