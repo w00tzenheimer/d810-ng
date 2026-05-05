@@ -143,3 +143,43 @@ boundary:
     );
     goto step2;
 }
+
+/*
+ * Intended CFG:
+ *          /-> left  -\
+ *   entry                -> join -> done
+ *          \-> right -/
+ *
+ * This is the friendly baseline for a two-child fork with a single join. It
+ * should tell the lab what Hex-Rays does when d810 emits a clean conditional
+ * region instead of a flattened handler chain.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_clean_conditional_fork(int x)
+{
+    int result = x + 1;
+
+    if ((g_hexrays_lab_sink & 1) != 0) {
+        goto left;
+    }
+    goto right;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+join:
+    result = result ^ 0x5A5A;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+right:
+    result = result - 13;
+    g_hexrays_lab_sink = result;
+    goto join;
+
+left:
+    result = result + 11;
+    g_hexrays_lab_sink = result;
+    goto join;
+}

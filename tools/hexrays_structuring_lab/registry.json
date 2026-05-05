@@ -270,6 +270,103 @@
         "vanished_count": 5,
         "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
       }
+    },
+    {
+      "id": "clean_conditional_fork",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_clean_conditional_fork",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "conditional",
+        "fork",
+        "join",
+        "exact-conditional-baseline"
+      ],
+      "question": "How does Hex-Rays structure a clean two-child conditional fork with a single two-pred join?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:966b81fd4adc7a117a5cf4b8dda1addf0d5c7382a16e02ebbcd9c93e9648adb5",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/clean_conditional_fork.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 9",
+          "entry_relative_start_ea": "0x0",
+          "entry_opcode_signature": [
+            4,
+            12,
+            9,
+            4,
+            4,
+            33,
+            31,
+            4,
+            44
+          ],
+          "entry_successor_relative_start_eas": [
+            "0x1c",
+            "0x1e"
+          ],
+          "join_relative_start_ea": "0x2e",
+          "join_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            21,
+            9,
+            4,
+            55
+          ],
+          "join_incoming_relative_start_eas": [
+            "0x44",
+            "0x58"
+          ],
+          "join_successor_relative_start_ea": "0x20",
+          "edge_predicates": [
+            "entry block exists at fixture relative EA 0x0",
+            "entry block has BLT_2WAY type with nsucc == 2",
+            "entry successors are exactly relative EAs 0x1c and 0x1e",
+            "join block exists at fixture relative EA 0x2e",
+            "join block has npred == 2 and nsucc == 1",
+            "join predecessor relative EAs are exactly 0x44 and 0x58",
+            "join successor relative EA is exactly 0x20",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/clean_conditional_fork.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "entry BLT_2WAY successor shape",
+        "two-pred join block shape",
+        "LOCOPT-to-GLBOPT1 merge-causality disposition",
+        "pseudocode before/after metrics"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 9,
+        "to_block_count": 6,
+        "vanished_count": 3,
+        "classification": "validated clean conditional fork compacts from 9 LOCOPT blocks to 6 GLBOPT1 blocks while preserving a simple if/else pseudocode shape; this is the friendly baseline for exact conditional-region emission"
+      }
     }
   ]
 }

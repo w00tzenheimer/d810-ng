@@ -92,6 +92,28 @@ SIDE_EFFECT_BODY_OPCODE_SIGNATURES = {
     "0x64": SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE,
     "0x81": [4, 55],
 }
+CLEAN_FORK_FUNCTION = "hexrays_lab_clean_conditional_fork"
+CLEAN_FORK_OUTPUT_JSON = (
+    ".tmp/hexrays_structuring_lab/cfg_validation/"
+    "clean_conditional_fork.json"
+)
+CLEAN_FORK_EXPECTED_BLOCK_COUNT = 9
+CLEAN_FORK_ENTRY_RELATIVE_START = "0x0"
+CLEAN_FORK_ENTRY_OPCODE_SIGNATURE = [4, 12, 9, 4, 4, 33, 31, 4, 44]
+CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS = ["0x1c", "0x1e"]
+CLEAN_FORK_JOIN_RELATIVE_START = "0x2e"
+CLEAN_FORK_JOIN_OPCODE_SIGNATURE = [4, 4, 33, 31, 29, 21, 9, 4, 55]
+CLEAN_FORK_JOIN_INCOMING_RELATIVE_STARTS = ["0x44", "0x58"]
+CLEAN_FORK_JOIN_SUCCESSOR_RELATIVE_START = "0x20"
+CLEAN_FORK_BODY_OPCODE_SIGNATURES = {
+    "0x0": CLEAN_FORK_ENTRY_OPCODE_SIGNATURE,
+    "0x1c": [55],
+    "0x1e": [55],
+    "0x20": [4, 9, 4, 55],
+    "0x2e": CLEAN_FORK_JOIN_OPCODE_SIGNATURE,
+    "0x44": [25, 26, 33, 31, 29, 13, 9, 4, 55],
+    "0x58": [25, 26, 33, 31, 29, 12, 9, 4, 55],
+}
 
 CASE_DEFAULTS = {
     "single_pred_chain_merge": {
@@ -105,6 +127,10 @@ CASE_DEFAULTS = {
     "side_effect_boundary_anchor": {
         "function": SIDE_EFFECT_FUNCTION,
         "output_json": SIDE_EFFECT_OUTPUT_JSON,
+    },
+    "clean_conditional_fork": {
+        "function": CLEAN_FORK_FUNCTION,
+        "output_json": CLEAN_FORK_OUTPUT_JSON,
     },
 }
 
@@ -422,6 +448,49 @@ def _side_effect_boundary_signature(
     )
 
 
+def _clean_fork_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    signature = _boundary_signature(
+        blocks,
+        func_ea=func_ea,
+        boundary_relative_start=CLEAN_FORK_JOIN_RELATIVE_START,
+    )
+    if signature is None:
+        return None
+
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    blocks_by_serial = {
+        int(block["serial"]): block for block in blocks
+    }
+    body_by_relative_start = {
+        _relative_ea(block["start_ea"], func_ea): block
+        for block in body_blocks
+    }
+    entry = body_by_relative_start.get(CLEAN_FORK_ENTRY_RELATIVE_START)
+    if entry is None:
+        return None
+
+    entry_succ_blocks = [
+        blocks_by_serial[serial]
+        for serial in [int(serial) for serial in entry["succs"]]
+        if serial in blocks_by_serial
+    ]
+    signature["entry_serial"] = entry["serial"]
+    signature["entry_relative_start_ea"] = CLEAN_FORK_ENTRY_RELATIVE_START
+    signature["entry"] = entry
+    signature["entry_succ_relative_start_eas"] = [
+        _relative_ea(block["start_ea"], func_ea)
+        for block in entry_succ_blocks
+    ]
+    return signature
+
+
 def _matches_multi_pred_boundary_fixture(
     signature: dict[str, object] | None,
     *,
@@ -485,6 +554,41 @@ def _matches_side_effect_boundary_fixture(
     )
 
 
+def _matches_clean_fork_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    entry = signature["entry"]
+    boundary = signature["boundary"]
+    assert isinstance(entry, dict)
+    assert isinstance(boundary, dict)
+    body_opcodes = signature["body_opcode_signatures_by_relative_start"]
+    assert isinstance(body_opcodes, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == CLEAN_FORK_EXPECTED_BLOCK_COUNT
+        and entry["type"] == "BLT_2WAY"
+        and entry["npred"] == 1
+        and entry["nsucc"] == 2
+        and entry["instruction_opcodes"] == CLEAN_FORK_ENTRY_OPCODE_SIGNATURE
+        and signature["entry_succ_relative_start_eas"]
+        == CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS
+        and boundary["type"] == "BLT_1WAY"
+        and boundary["npred"] == 2
+        and boundary["nsucc"] == 1
+        and boundary["instruction_opcodes"] == CLEAN_FORK_JOIN_OPCODE_SIGNATURE
+        and sorted(signature["boundary_pred_relative_start_eas"])
+        == CLEAN_FORK_JOIN_INCOMING_RELATIVE_STARTS
+        and signature["boundary_succ_relative_start_eas"]
+        == [CLEAN_FORK_JOIN_SUCCESSOR_RELATIVE_START]
+        and body_opcodes == CLEAN_FORK_BODY_OPCODE_SIGNATURES
+    )
+
+
 def _case_expected(case_id: str) -> dict[str, object]:
     if case_id == "single_pred_chain_merge":
         return {
@@ -502,6 +606,48 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 "each successor in the accepted chain has npred == 1",
                 "each non-terminal chain block has nsucc == 1",
                 "body block relative EA starts match the fixture label layout",
+                "body opcode groups match the fixture operation sequence",
+            ],
+        }
+    if case_id == "clean_conditional_fork":
+        return {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {CLEAN_FORK_EXPECTED_BLOCK_COUNT}",
+            "entry_relative_start_ea": CLEAN_FORK_ENTRY_RELATIVE_START,
+            "entry_opcode_signature": CLEAN_FORK_ENTRY_OPCODE_SIGNATURE,
+            "entry_opcode_names": _opcode_names(
+                CLEAN_FORK_ENTRY_OPCODE_SIGNATURE
+            ),
+            "entry_successor_relative_start_eas": (
+                CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS
+            ),
+            "join_relative_start_ea": CLEAN_FORK_JOIN_RELATIVE_START,
+            "join_opcode_signature": CLEAN_FORK_JOIN_OPCODE_SIGNATURE,
+            "join_opcode_names": _opcode_names(
+                CLEAN_FORK_JOIN_OPCODE_SIGNATURE
+            ),
+            "join_incoming_relative_start_eas": (
+                CLEAN_FORK_JOIN_INCOMING_RELATIVE_STARTS
+            ),
+            "join_successor_relative_start_ea": (
+                CLEAN_FORK_JOIN_SUCCESSOR_RELATIVE_START
+            ),
+            "body_opcode_signatures_by_relative_start": (
+                CLEAN_FORK_BODY_OPCODE_SIGNATURES
+            ),
+            "body_opcode_names_by_relative_start": {
+                relative_start: _opcode_names(opcodes)
+                for relative_start, opcodes
+                in CLEAN_FORK_BODY_OPCODE_SIGNATURES.items()
+            },
+            "edge_predicates": [
+                "entry block exists at fixture relative EA 0x0",
+                "entry block has BLT_2WAY type with nsucc == 2",
+                "entry successors are exactly relative EAs 0x1c and 0x1e",
+                "join block exists at fixture relative EA 0x2e",
+                "join block has npred == 2 and nsucc == 1",
+                "join predecessor relative EAs are exactly 0x44 and 0x58",
+                "join successor relative EA is exactly 0x20",
                 "body opcode groups match the fixture operation sequence",
             ],
         }
@@ -620,6 +766,17 @@ def _case_match(
         signature = _side_effect_boundary_signature(blocks, func_ea=func_ea)
         candidates = [signature] if signature is not None else []
         if _matches_side_effect_boundary_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "clean_conditional_fork":
+        signature = _clean_fork_signature(blocks, func_ea=func_ea)
+        candidates = [signature] if signature is not None else []
+        if _matches_clean_fork_fixture(
             signature,
             block_count=int(mba.qty),
             maturity_name=maturity_name,
@@ -795,17 +952,22 @@ class TestHexraysStructuringLabCfgValidation:
         elif case_id in {
             "multi_pred_boundary_barrier",
             "side_effect_boundary_anchor",
+            "clean_conditional_fork",
         }:
             signature = observed["accepted_signature"]
             assert isinstance(signature, dict)
             boundary = signature["boundary"]
             assert isinstance(boundary, dict)
             assert boundary["npred"] == 2
-            expected_opcodes = (
-                MULTI_PRED_BOUNDARY_OPCODE_SIGNATURE
-                if case_id == "multi_pred_boundary_barrier"
-                else SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
-            )
+            expected_opcodes = {
+                "multi_pred_boundary_barrier": (
+                    MULTI_PRED_BOUNDARY_OPCODE_SIGNATURE
+                ),
+                "side_effect_boundary_anchor": (
+                    SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
+                ),
+                "clean_conditional_fork": CLEAN_FORK_JOIN_OPCODE_SIGNATURE,
+            }[case_id]
             assert boundary["instruction_opcodes"] == expected_opcodes
             if case_id == "side_effect_boundary_anchor":
                 helper_ea = _required_name_ea(SIDE_EFFECT_HELPER_FUNCTION)
@@ -813,3 +975,10 @@ class TestHexraysStructuringLabCfgValidation:
                     "name": SIDE_EFFECT_HELPER_FUNCTION,
                     "ea": helper_ea,
                 }]
+            if case_id == "clean_conditional_fork":
+                entry = signature["entry"]
+                assert isinstance(entry, dict)
+                assert entry["type"] == "BLT_2WAY"
+                assert entry["instruction_opcodes"] == (
+                    CLEAN_FORK_ENTRY_OPCODE_SIGNATURE
+                )
