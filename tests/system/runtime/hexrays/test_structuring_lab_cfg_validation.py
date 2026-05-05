@@ -118,6 +118,60 @@ CLEAN_FORK_BODY_OPCODE_SIGNATURES = {
     "0x44": [25, 26, 33, 31, 29, 13, 9, 4, 55],
     "0x58": [25, 26, 33, 31, 29, 12, 9, 4, 55],
 }
+CONDITIONAL_SHELL_FUNCTION = "hexrays_lab_conditional_shell_boundary"
+CONDITIONAL_SHELL_OUTPUT_JSON = (
+    ".tmp/hexrays_structuring_lab/cfg_validation/"
+    "conditional_shell_boundary.json"
+)
+CONDITIONAL_SHELL_EXPECTED_BLOCK_COUNT = 13
+CONDITIONAL_SHELL_ENTRY_RELATIVE_START = "0x0"
+CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE = [
+    4,
+    12,
+    9,
+    35,
+    30,
+    33,
+    31,
+    29,
+    43,
+]
+CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS = ["0x1b", "0x1d"]
+CONDITIONAL_SHELL_RELATIVE_START = "0x76"
+CONDITIONAL_SHELL_OPCODE_SIGNATURE = [9, 4, 4, 33, 31, 4, 44]
+CONDITIONAL_SHELL_INCOMING_RELATIVE_STARTS = ["0x1b", "0x62"]
+CONDITIONAL_SHELL_SUCCESSOR_RELATIVE_STARTS = ["0x84", "0x86"]
+CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS = [
+    ["0x84", "0x57", "0x41"],
+    ["0x86", "0x41"],
+]
+CONDITIONAL_SHELL_BOUNDARY_RELATIVE_START = "0x41"
+CONDITIONAL_SHELL_BOUNDARY_OPCODE_SIGNATURE = [
+    4,
+    4,
+    33,
+    31,
+    29,
+    21,
+    9,
+    4,
+    55,
+]
+CONDITIONAL_SHELL_BOUNDARY_INCOMING_RELATIVE_STARTS = ["0x57", "0x86"]
+CONDITIONAL_SHELL_BOUNDARY_SUCCESSOR_RELATIVE_START = "0x2d"
+CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES = {
+    "0x0": CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE,
+    "0x1b": [4, 55],
+    "0x1d": [55],
+    "0x1f": [4, 9, 4, 55],
+    "0x2d": [25, 26, 33, 31, 29, 13, 9, 4, 55],
+    "0x41": CONDITIONAL_SHELL_BOUNDARY_OPCODE_SIGNATURE,
+    "0x57": [9, 4, 55],
+    "0x62": [9, 14, 9, 4],
+    "0x76": CONDITIONAL_SHELL_OPCODE_SIGNATURE,
+    "0x84": [55],
+    "0x86": [55],
+}
 
 CASE_DEFAULTS = {
     "single_pred_chain_merge": {
@@ -135,6 +189,10 @@ CASE_DEFAULTS = {
     "clean_conditional_fork": {
         "function": CLEAN_FORK_FUNCTION,
         "output_json": CLEAN_FORK_OUTPUT_JSON,
+    },
+    "conditional_shell_boundary": {
+        "function": CONDITIONAL_SHELL_FUNCTION,
+        "output_json": CONDITIONAL_SHELL_OUTPUT_JSON,
     },
 }
 
@@ -513,6 +571,105 @@ def _clean_fork_signature(
     return signature
 
 
+def _successor_path_relative_starts(
+    *,
+    blocks_by_serial: dict[int, dict[str, object]],
+    start_block: dict[str, object],
+    func_ea: int,
+    max_steps: int = 3,
+    stop_relative_start: str | None = None,
+) -> list[str | None]:
+    path = [_relative_ea(start_block["start_ea"], func_ea)]
+    current = start_block
+    for _step in range(max_steps - 1):
+        if current["nsucc"] != 1:
+            break
+        next_serial = int(current["succs"][0])
+        next_block = blocks_by_serial.get(next_serial)
+        if next_block is None:
+            break
+        relative_start = _relative_ea(next_block["start_ea"], func_ea)
+        path.append(relative_start)
+        if relative_start == stop_relative_start:
+            break
+        current = next_block
+    return path
+
+
+def _conditional_shell_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    signature = _boundary_signature(
+        blocks,
+        func_ea=func_ea,
+        boundary_relative_start=CONDITIONAL_SHELL_BOUNDARY_RELATIVE_START,
+    )
+    if signature is None:
+        return None
+
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    blocks_by_serial = {
+        int(block["serial"]): block for block in blocks
+    }
+    body_by_relative_start = {
+        _relative_ea(block["start_ea"], func_ea): block
+        for block in body_blocks
+    }
+    entry = body_by_relative_start.get(CONDITIONAL_SHELL_ENTRY_RELATIVE_START)
+    shell = body_by_relative_start.get(CONDITIONAL_SHELL_RELATIVE_START)
+    if entry is None or shell is None:
+        return None
+
+    entry_succ_blocks = [
+        blocks_by_serial[serial]
+        for serial in [int(serial) for serial in entry["succs"]]
+        if serial in blocks_by_serial
+    ]
+    shell_pred_blocks = [
+        blocks_by_serial[serial]
+        for serial in [int(serial) for serial in shell["preds"]]
+        if serial in blocks_by_serial
+    ]
+    shell_succ_blocks = [
+        blocks_by_serial[serial]
+        for serial in [int(serial) for serial in shell["succs"]]
+        if serial in blocks_by_serial
+    ]
+    signature["entry_serial"] = entry["serial"]
+    signature["entry_relative_start_ea"] = CONDITIONAL_SHELL_ENTRY_RELATIVE_START
+    signature["entry"] = entry
+    signature["entry_succ_relative_start_eas"] = [
+        _relative_ea(block["start_ea"], func_ea)
+        for block in entry_succ_blocks
+    ]
+    signature["shell_serial"] = shell["serial"]
+    signature["shell_relative_start_ea"] = CONDITIONAL_SHELL_RELATIVE_START
+    signature["shell"] = shell
+    signature["shell_pred_relative_start_eas"] = [
+        _relative_ea(block["start_ea"], func_ea)
+        for block in shell_pred_blocks
+    ]
+    signature["shell_succ_relative_start_eas"] = [
+        _relative_ea(block["start_ea"], func_ea)
+        for block in shell_succ_blocks
+    ]
+    signature["shell_arm_paths_relative_start_eas"] = [
+        _successor_path_relative_starts(
+            blocks_by_serial=blocks_by_serial,
+            start_block=block,
+            func_ea=func_ea,
+            stop_relative_start=CONDITIONAL_SHELL_BOUNDARY_RELATIVE_START,
+        )
+        for block in shell_succ_blocks
+    ]
+    return signature
+
+
 def _matches_multi_pred_boundary_fixture(
     signature: dict[str, object] | None,
     *,
@@ -613,6 +770,55 @@ def _matches_clean_fork_fixture(
     )
 
 
+def _matches_conditional_shell_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    entry = signature["entry"]
+    shell = signature["shell"]
+    boundary = signature["boundary"]
+    assert isinstance(entry, dict)
+    assert isinstance(shell, dict)
+    assert isinstance(boundary, dict)
+    body_opcodes = signature["body_opcode_signatures_by_relative_start"]
+    assert isinstance(body_opcodes, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == CONDITIONAL_SHELL_EXPECTED_BLOCK_COUNT
+        and entry["type"] == "BLT_2WAY"
+        and entry["npred"] == 1
+        and entry["nsucc"] == 2
+        and entry["instruction_opcodes"]
+        == CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE
+        and signature["entry_succ_relative_start_eas"]
+        == CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS
+        and shell["type"] == "BLT_2WAY"
+        and shell["npred"] == 2
+        and shell["nsucc"] == 2
+        and shell["instruction_opcodes"] == CONDITIONAL_SHELL_OPCODE_SIGNATURE
+        and sorted(signature["shell_pred_relative_start_eas"])
+        == CONDITIONAL_SHELL_INCOMING_RELATIVE_STARTS
+        and signature["shell_succ_relative_start_eas"]
+        == CONDITIONAL_SHELL_SUCCESSOR_RELATIVE_STARTS
+        and signature["shell_arm_paths_relative_start_eas"]
+        == CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS
+        and boundary["type"] == "BLT_1WAY"
+        and boundary["npred"] == 2
+        and boundary["nsucc"] == 1
+        and boundary["instruction_opcodes"]
+        == CONDITIONAL_SHELL_BOUNDARY_OPCODE_SIGNATURE
+        and sorted(signature["boundary_pred_relative_start_eas"])
+        == CONDITIONAL_SHELL_BOUNDARY_INCOMING_RELATIVE_STARTS
+        and signature["boundary_succ_relative_start_eas"]
+        == [CONDITIONAL_SHELL_BOUNDARY_SUCCESSOR_RELATIVE_START]
+        and body_opcodes == CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES
+    )
+
+
 def _case_expected(case_id: str) -> dict[str, object]:
     if case_id == "single_pred_chain_merge":
         return {
@@ -676,6 +882,57 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 "join block has npred == 2 and nsucc == 1",
                 "join predecessor relative EAs are exactly 0x44 and 0x58",
                 "join successor relative EA is exactly 0x20",
+                "body opcode groups match the fixture operation sequence",
+            ],
+        }
+    if case_id == "conditional_shell_boundary":
+        return {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {CONDITIONAL_SHELL_EXPECTED_BLOCK_COUNT}",
+            "entry_relative_start_ea": CONDITIONAL_SHELL_ENTRY_RELATIVE_START,
+            "entry_opcode_signature": CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE,
+            "entry_successor_relative_start_eas": (
+                CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS
+            ),
+            "shell_relative_start_ea": CONDITIONAL_SHELL_RELATIVE_START,
+            "shell_opcode_signature": CONDITIONAL_SHELL_OPCODE_SIGNATURE,
+            "shell_incoming_relative_start_eas": (
+                CONDITIONAL_SHELL_INCOMING_RELATIVE_STARTS
+            ),
+            "shell_successor_relative_start_eas": (
+                CONDITIONAL_SHELL_SUCCESSOR_RELATIVE_STARTS
+            ),
+            "shell_arm_paths_relative_start_eas": (
+                CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS
+            ),
+            "boundary_relative_start_ea": (
+                CONDITIONAL_SHELL_BOUNDARY_RELATIVE_START
+            ),
+            "boundary_opcode_signature": (
+                CONDITIONAL_SHELL_BOUNDARY_OPCODE_SIGNATURE
+            ),
+            "boundary_incoming_relative_start_eas": (
+                CONDITIONAL_SHELL_BOUNDARY_INCOMING_RELATIVE_STARTS
+            ),
+            "boundary_successor_relative_start_ea": (
+                CONDITIONAL_SHELL_BOUNDARY_SUCCESSOR_RELATIVE_START
+            ),
+            "body_opcode_signatures_by_relative_start": (
+                CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES
+            ),
+            "body_opcode_names_by_relative_start": {
+                relative_start: _opcode_names(opcodes)
+                for relative_start, opcodes
+                in CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES.items()
+            },
+            "edge_predicates": [
+                "entry block exists at fixture relative EA 0x0",
+                "entry block has BLT_2WAY type with nsucc == 2",
+                "shell block exists at fixture relative EA 0x76",
+                "shell block has npred == 2 and nsucc == 2",
+                "shell arm paths are exactly 0x84 -> 0x57 -> 0x41 and 0x86 -> 0x41",
+                "boundary block exists at fixture relative EA 0x41",
+                "boundary block has npred == 2 and nsucc == 1",
                 "body opcode groups match the fixture operation sequence",
             ],
         }
@@ -805,6 +1062,17 @@ def _case_match(
         signature = _clean_fork_signature(blocks, func_ea=func_ea)
         candidates = [signature] if signature is not None else []
         if _matches_clean_fork_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "conditional_shell_boundary":
+        signature = _conditional_shell_signature(blocks, func_ea=func_ea)
+        candidates = [signature] if signature is not None else []
+        if _matches_conditional_shell_fixture(
             signature,
             block_count=int(mba.qty),
             maturity_name=maturity_name,
@@ -981,6 +1249,7 @@ class TestHexraysStructuringLabCfgValidation:
             "multi_pred_boundary_barrier",
             "side_effect_boundary_anchor",
             "clean_conditional_fork",
+            "conditional_shell_boundary",
         }:
             signature = observed["accepted_signature"]
             assert isinstance(signature, dict)
@@ -995,6 +1264,9 @@ class TestHexraysStructuringLabCfgValidation:
                     SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
                 ),
                 "clean_conditional_fork": CLEAN_FORK_JOIN_OPCODE_SIGNATURE,
+                "conditional_shell_boundary": (
+                    CONDITIONAL_SHELL_BOUNDARY_OPCODE_SIGNATURE
+                ),
             }[case_id]
             assert boundary["instruction_opcodes"] == expected_opcodes
             if case_id == "side_effect_boundary_anchor":
@@ -1012,4 +1284,14 @@ class TestHexraysStructuringLabCfgValidation:
                 )
                 assert signature["arm_paths_relative_start_eas"] == (
                     CLEAN_FORK_ARM_PATHS_RELATIVE_STARTS
+                )
+            if case_id == "conditional_shell_boundary":
+                shell = signature["shell"]
+                assert isinstance(shell, dict)
+                assert shell["type"] == "BLT_2WAY"
+                assert shell["instruction_opcodes"] == (
+                    CONDITIONAL_SHELL_OPCODE_SIGNATURE
+                )
+                assert signature["shell_arm_paths_relative_start_eas"] == (
+                    CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS
                 )

@@ -275,6 +275,102 @@
       }
     },
     {
+      "id": "conditional_shell_boundary",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_conditional_shell_boundary",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "conditional",
+        "boundary-barrier",
+        "conditional-shell",
+        "semantic-structure"
+      ],
+      "question": "Does a real opaque conditional shell around a boundary produce better pseudocode than direct boundary preservation attempts?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:c7cf189dd4d0c98939879a8922c7a7af2e73b0d03d8a6344ed7784ff0d34dd5d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/conditional_shell_boundary.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 13",
+          "entry_relative_start_ea": "0x0",
+          "entry_successor_relative_start_eas": [
+            "0x1b",
+            "0x1d"
+          ],
+          "shell_relative_start_ea": "0x76",
+          "shell_incoming_relative_start_eas": [
+            "0x1b",
+            "0x62"
+          ],
+          "shell_successor_relative_start_eas": [
+            "0x84",
+            "0x86"
+          ],
+          "shell_arm_paths_relative_start_eas": [
+            [
+              "0x84",
+              "0x57",
+              "0x41"
+            ],
+            [
+              "0x86",
+              "0x41"
+            ]
+          ],
+          "boundary_relative_start_ea": "0x41",
+          "boundary_incoming_relative_start_eas": [
+            "0x57",
+            "0x86"
+          ],
+          "boundary_successor_relative_start_ea": "0x2d",
+          "edge_predicates": [
+            "entry block exists at fixture relative EA 0x0",
+            "entry block has BLT_2WAY type with nsucc == 2",
+            "shell block exists at fixture relative EA 0x76",
+            "shell block has npred == 2 and nsucc == 2",
+            "shell arm paths are exactly 0x84 -> 0x57 -> 0x41 and 0x86 -> 0x41",
+            "boundary block exists at fixture relative EA 0x41",
+            "boundary block has npred == 2 and nsucc == 1",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/conditional_shell_boundary.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "entry BLT_2WAY successor shape",
+        "explicit shell-arm-to-boundary relative-EA paths",
+        "LOCOPT-to-GLBOPT1 merge-causality disposition",
+        "pseudocode before/after metrics"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 13,
+        "to_block_count": 8,
+        "vanished_count": 5,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated conditional shell boundary compacts from 13 LOCOPT blocks to 8 GLBOPT1 blocks while preserving the shell as readable two-if pseudocode; it is semantically acceptable but heavier than the clean conditional fork baseline"
+      }
+    },
+    {
       "id": "clean_conditional_fork",
       "status": "observed",
       "fixture_kind": "c_with_compiled_cfg_validation",
