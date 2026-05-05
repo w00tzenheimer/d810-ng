@@ -22,6 +22,7 @@ def test_registry_loads_initial_cases() -> None:
         "single_pred_chain_merge",
         "multi_pred_boundary_barrier",
         "side_effect_boundary_anchor",
+        "clean_conditional_fork",
     }
 
 
@@ -56,6 +57,7 @@ def test_list_command_prints_cases(capsys) -> None:
     assert "single_pred_chain_merge" in out
     assert "multi_pred_boundary_barrier" in out
     assert "side_effect_boundary_anchor" in out
+    assert "clean_conditional_fork" in out
     assert "c_with_compiled_cfg_validation" in out
 
 
@@ -120,6 +122,32 @@ def test_show_command_prints_side_effect_observation(capsys) -> None:
             "name": "hexrays_lab_boundary_anchor_helper",
         }]
     )
+
+
+def test_show_command_prints_clean_fork_observation(capsys) -> None:
+    rc = main(["show", "clean_conditional_fork"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["id"] == "clean_conditional_fork"
+    assert data["status"] == "observed"
+    assert data["cfg_validation"]["status"] == "passed"
+    assert (
+        data["observation_artifact"]
+        == "tools/hexrays_structuring_lab/observations/"
+        "clean_conditional_fork.json"
+    )
+    assert data["cfg_validation"]["observed"]["entry_serial"] == 1
+    assert data["cfg_validation"]["observed"]["join_serial"] == 5
+    assert data["cfg_validation"]["observed"]["entry_succ_relative_start_eas"] == [
+        "0x1c",
+        "0x1e",
+    ]
+    assert data["cfg_validation"]["observed"]["join_pred_relative_start_eas"] == [
+        "0x44",
+        "0x58",
+    ]
+    assert data["observation"]["from_block_count"] == 9
+    assert data["observation"]["to_block_count"] == 6
 
 
 def test_registry_observed_cases_keep_observations_in_artifacts() -> None:
