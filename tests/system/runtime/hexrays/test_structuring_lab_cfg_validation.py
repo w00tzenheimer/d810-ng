@@ -167,7 +167,15 @@ def _name_ea(name: str | None) -> str | None:
     except ImportError:
         return None
     ea = ida_name.get_name_ea(idaapi.BADADDR, name)
+    if ea == idaapi.BADADDR:
+        return None
     return _hex_ea(int(ea))
+
+
+def _required_name_ea(name: str) -> str:
+    ea = _name_ea(name)
+    assert ea is not None, f"failed to resolve required symbol: {name}"
+    return ea
 
 
 def _instruction_records(blk) -> list[dict[str, object]]:
@@ -456,6 +464,7 @@ def _matches_side_effect_boundary_fixture(
     assert isinstance(body_opcodes, dict)
     call_targets = boundary["call_targets"]
     assert isinstance(call_targets, list)
+    helper_ea = _required_name_ea(SIDE_EFFECT_HELPER_FUNCTION)
     return (
         maturity_name == EXPECTED_MATURITY
         and block_count == SIDE_EFFECT_EXPECTED_BLOCK_COUNT
@@ -471,7 +480,7 @@ def _matches_side_effect_boundary_fixture(
         and body_opcodes == SIDE_EFFECT_BODY_OPCODE_SIGNATURES
         and call_targets == [{
             "name": SIDE_EFFECT_HELPER_FUNCTION,
-            "ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
+            "ea": helper_ea,
         }]
     )
 
@@ -543,7 +552,9 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START
             ),
             "boundary_call_target_name": SIDE_EFFECT_HELPER_FUNCTION,
-            "boundary_call_target_ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
+            "boundary_call_target_ea": _required_name_ea(
+                SIDE_EFFECT_HELPER_FUNCTION
+            ),
             "body_opcode_signatures_by_relative_start": (
                 SIDE_EFFECT_BODY_OPCODE_SIGNATURES
             ),
@@ -797,7 +808,8 @@ class TestHexraysStructuringLabCfgValidation:
             )
             assert boundary["instruction_opcodes"] == expected_opcodes
             if case_id == "side_effect_boundary_anchor":
+                helper_ea = _required_name_ea(SIDE_EFFECT_HELPER_FUNCTION)
                 assert boundary["call_targets"] == [{
                     "name": SIDE_EFFECT_HELPER_FUNCTION,
-                    "ea": _name_ea(SIDE_EFFECT_HELPER_FUNCTION),
+                    "ea": helper_ea,
                 }]
