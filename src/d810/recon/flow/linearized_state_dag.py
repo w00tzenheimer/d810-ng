@@ -334,6 +334,241 @@ def detect_side_effect_corridors(
     return tuple(corridors)
 
 
+def detect_intra_node_terminal_byte_corridors(
+    dag: "LinearizedStateDag",
+    flow_graph: FlowGraph | None,
+    *,
+    min_chain_length: int = 3,
+    max_chain_length: int = 24,
+) -> tuple[tuple[int, ...], ...]:
+    """Detect terminal byte-emission corridors *inside* a single state node.
+
+    The byte-emitter terminal cascade in OLLVM-flattened functions
+    (e.g. sub_7FFD3338C040's tail) is **not** a state-DAG chain — it's a
+    sequential C ``if (state == K) return result;`` ladder living inside
+    one handler body.  In :class:`LinearizedStateDag`, that ladder
+    appears as the ``local_segments`` / ``local_edges`` of a single
+    :class:`StateDagNode`.
+
+    Algorithm per state node:
+      1. Index segments by id; build forward adjacency over
+         ``local_edges`` (excluding JOIN/SHARED_SUFFIX edges, which are
+         merge points, not sequential cascade hops).
+      2. Classify each segment as *side-effect* (any block has
+         m_stx/m_call/m_icall) vs *transit*.
+      3. From each side-effect segment with no inbound side-effect
+         predecessor (chain head), walk forward through the segment
+         graph.  Allow up to two consecutive transit segments between
+         side-effect steps — the ``EMIT -> TEST -> EMIT`` alternation
+         of the byte-emit cascade.
+      4. A chain qualifies if it terminates at a segment whose
+         outbound edges include a ``TERMINAL`` kind, OR whose
+         downstream blocks reach a function-exit block (nsucc==0).
+      5. Output the ordered union of blocks across the segments in the
+         chain.
+
+    Each handler can contribute at most one corridor (its longest chain
+    that meets the qualification rules).  Corridors are returned sorted
+    by head block serial for determinism.
+    """
+    if dag is None or flow_graph is None:
+        return ()
+    try:
+        import ida_hexrays
+    except ImportError:
+        return ()
+    m_stx = getattr(ida_hexrays, "m_stx", -1)
+    m_call = getattr(ida_hexrays, "m_call", -1)
+    m_icall = getattr(ida_hexrays, "m_icall", -1)
+    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
+    if not side_effect_ops:
+        return ()
+
+    # Local-edge kinds that participate in the sequential cascade.
+    # SHARED_SUFFIX is critical: the byte-emit terminal cascade is a
+    # tail shared across handler exits; the local-graph models that as
+    # SHARED_SUFFIX edges, not raw FALLTHROUGH, even though the
+    # underlying microcode falls through linearly.
+    seq_edge_kinds = {
+        LocalEdgeKind.FALLTHROUGH,
+        LocalEdgeKind.TAKEN,
+        LocalEdgeKind.GOTO,
+        LocalEdgeKind.SHARED_SUFFIX,
+    }
+    terminal_edge_kind = LocalEdgeKind.TERMINAL
+
+    corridors: list[tuple[int, ...]] = []
+    debug_intra = (
+        os.environ.get("D810_RECON_DEBUG_INTRA_CORRIDOR", "").strip() == "1"
+    )
+
+    for node in dag.nodes:
+        local_segments = tuple(getattr(node, "local_segments", ()) or ())
+        local_edges = tuple(getattr(node, "local_edges", ()) or ())
+        if len(local_segments) < int(min_chain_length):
+            continue
+        if debug_intra:
+            logger.info(
+                "intra-corridor probe: handler=%d segs=%d edges=%d",
+                int(getattr(node, "handler_serial", -1)),
+                len(local_segments),
+                len(local_edges),
+            )
+
+        # Index segments by id.
+        segs_by_id: dict[str, "StateLocalSegment"] = {}
+        for seg in local_segments:
+            try:
+                segs_by_id[str(seg.segment_id)] = seg
+            except AttributeError:
+                continue
+        if not segs_by_id:
+            continue
+
+        # Forward adjacency on sequential edges; track terminal exits.
+        forward: dict[str, list[str]] = {sid: [] for sid in segs_by_id}
+        terminal_exit: set[str] = set()
+        inbound_seq: dict[str, int] = {sid: 0 for sid in segs_by_id}
+        for edge in local_edges:
+            try:
+                src_id = str(edge.source_segment_id)
+                tgt_id = str(edge.target_segment_id)
+            except AttributeError:
+                continue
+            if edge.kind == terminal_edge_kind:
+                terminal_exit.add(src_id)
+                continue
+            if edge.kind not in seq_edge_kinds:
+                continue
+            if src_id not in segs_by_id or tgt_id not in segs_by_id:
+                continue
+            if tgt_id in forward[src_id]:
+                continue
+            forward[src_id].append(tgt_id)
+            inbound_seq[tgt_id] = inbound_seq.get(tgt_id, 0) + 1
+
+        # Classify segments as side-effect vs transit.
+        seg_has_side_effect: dict[str, bool] = {}
+        for sid, seg in segs_by_id.items():
+            has_se = False
+            for owned in (int(b) for b in (getattr(seg, "blocks", ()) or ())):
+                blk = flow_graph.get_block(owned)
+                if blk is None:
+                    continue
+                if _block_has_side_effect_opcode(blk, side_effect_ops):
+                    has_se = True
+                    break
+            seg_has_side_effect[sid] = has_se
+
+        side_effect_seg_ids = {
+            sid for sid, has_se in seg_has_side_effect.items() if has_se
+        }
+        if debug_intra:
+            logger.info(
+                "intra-corridor probe: handler=%d se_segs=%d (%s) terminals=%d",
+                int(getattr(node, "handler_serial", -1)),
+                len(side_effect_seg_ids),
+                sorted(side_effect_seg_ids)[:10],
+                len(terminal_exit),
+            )
+        if len(side_effect_seg_ids) < int(min_chain_length):
+            continue
+
+        # Find chain heads (side-effect segments with no inbound
+        # side-effect predecessor in the segment graph).
+        # We compute this by scanning forward edges and noting which
+        # side-effect segments are reachable from another side-effect.
+        reached_from_se: set[str] = set()
+        for src in side_effect_seg_ids:
+            visited: set[str] = set()
+            stack = list(forward.get(src, ()))
+            while stack:
+                cand = stack.pop()
+                if cand in visited:
+                    continue
+                visited.add(cand)
+                if cand in side_effect_seg_ids:
+                    reached_from_se.add(cand)
+                    continue
+                # Otherwise transit — keep walking forward.
+                stack.extend(forward.get(cand, ()))
+        head_candidates = sorted(side_effect_seg_ids - reached_from_se)
+
+        # For each head, walk forward chain.
+        best_chain_segments: list[str] = []
+        for head_id in head_candidates:
+            chain_segments = [head_id]
+            side_effect_count = 1
+            consecutive_transits = 0
+            current = head_id
+            for _ in range(int(max_chain_length)):
+                outs = forward.get(current, ())
+                next_seg: str | None = None
+                for cand in outs:
+                    if cand in chain_segments:
+                        continue
+                    next_seg = cand
+                    break
+                if next_seg is None:
+                    break
+                chain_segments.append(next_seg)
+                if next_seg in side_effect_seg_ids:
+                    side_effect_count += 1
+                    consecutive_transits = 0
+                else:
+                    consecutive_transits += 1
+                    if consecutive_transits > 2:
+                        chain_segments.pop()
+                        break
+                current = next_seg
+            # Trim trailing transit segments.
+            while (
+                chain_segments
+                and chain_segments[-1] not in side_effect_seg_ids
+            ):
+                chain_segments.pop()
+            if side_effect_count < int(min_chain_length):
+                continue
+            # Qualifier: chain's last segment exits to a TERMINAL edge,
+            # OR any block in the last segment has nsucc==0.
+            sink_id = chain_segments[-1]
+            qualifies = sink_id in terminal_exit
+            if not qualifies:
+                sink_seg = segs_by_id[sink_id]
+                for owned in (
+                    int(b) for b in (getattr(sink_seg, "blocks", ()) or ())
+                ):
+                    blk = flow_graph.get_block(owned)
+                    if blk is None:
+                        continue
+                    if not (getattr(blk, "succs", ()) or ()):
+                        qualifies = True
+                        break
+            if not qualifies:
+                continue
+            if len(chain_segments) > len(best_chain_segments):
+                best_chain_segments = chain_segments
+
+        if not best_chain_segments:
+            continue
+
+        # Flatten owned_blocks across the chain segments in forward order.
+        seen: set[int] = set()
+        ordered_blocks: list[int] = []
+        for sid in best_chain_segments:
+            seg = segs_by_id[sid]
+            for owned in (int(b) for b in (getattr(seg, "blocks", ()) or ())):
+                if owned in seen:
+                    continue
+                seen.add(owned)
+                ordered_blocks.append(owned)
+        if len(ordered_blocks) >= int(min_chain_length):
+            corridors.append(tuple(ordered_blocks))
+
+    corridors.sort(key=lambda c: (c[0] if c else 0))
+    return tuple(corridors)
+
+
 def detect_state_dag_terminal_byte_corridors(
     dag: "LinearizedStateDag",
     flow_graph: FlowGraph | None,
@@ -5787,10 +6022,13 @@ def build_linearized_state_dag_from_graph(
     dag_level_corridors = detect_state_dag_terminal_byte_corridors(
         dag, flow_graph
     )
+    intra_node_corridors = detect_intra_node_terminal_byte_corridors(
+        dag, flow_graph, min_chain_length=2
+    )
     # Union, preserving first-seen order; deduplicate by full tuple.
     seen_corridors: set[tuple[int, ...]] = set()
     side_effect_corridors_list: list[tuple[int, ...]] = []
-    for c in cfg_level_corridors + dag_level_corridors:
+    for c in cfg_level_corridors + dag_level_corridors + intra_node_corridors:
         if c in seen_corridors:
             continue
         seen_corridors.add(c)
@@ -5808,6 +6046,15 @@ def build_linearized_state_dag_from_graph(
     for corridor in dag_level_corridors:
         logger.info(
             "DAG: side-effect corridor detected (DAG-level): len=%d "
+            "serials=%s head=blk[%d] sink=blk[%d]",
+            len(corridor),
+            list(corridor[:8]),
+            corridor[0],
+            corridor[-1],
+        )
+    for corridor in intra_node_corridors:
+        logger.info(
+            "DAG: side-effect corridor detected (intra-node): len=%d "
             "serials=%s head=blk[%d] sink=blk[%d]",
             len(corridor),
             list(corridor[:8]),
