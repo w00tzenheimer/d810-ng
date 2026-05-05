@@ -285,8 +285,31 @@ manual archaeology every time, the lab has failed.
 
 ## Milestone 5: Expand Only After The Slice Works
 
+Current decision rule:
+
+```text
+Do not optimize for preserving blocks. Optimize for preserving semantic
+structure that Hex-Rays can render cleanly.
+```
+
+Observed outcome vocabulary:
+
+- `expression_folded_deleted`: GLBOPT1 deletes/folds content into expressions.
+- `absorbed_cleanly`: GLBOPT1 absorbs blocks without degrading pseudocode.
+- `semantic_visible_boundary_folded`: the semantic side effect remains visible,
+  but the boundary block identity does not.
+- `clean_structured_compaction`: GLBOPT1 compacts the CFG into readable,
+  semantically faithful structured pseudocode.
+- `bad_topology_collapse`: compaction creates misleading or unreadable
+  pseudocode and should not be copied into d810 lowering.
+
+The `matrix` and `compare` commands are the decision surface for these cases.
+They summarize LOCOPT blocks, GLBOPT1 blocks, vanished count, disposition,
+pseudocode-change status, and outcome class across all observed fixtures.
+
 Candidate next patterns:
 
+- `conditional_shell_boundary`
 - `clean_conditional_fork`
 - `fallthrough_alias_tail`
 - `shared_tail_fold`

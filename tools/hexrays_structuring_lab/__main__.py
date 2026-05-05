@@ -30,6 +30,13 @@ ALLOWED_CFG_VALIDATION_STATUSES = frozenset({
     "failed",
     "not_provided",
 })
+ALLOWED_OUTCOME_CLASSES = frozenset({
+    "expression_folded_deleted",
+    "absorbed_cleanly",
+    "semantic_visible_boundary_folded",
+    "clean_structured_compaction",
+    "bad_topology_collapse",
+})
 
 
 class LabError(Exception):
@@ -74,6 +81,18 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, object]:
                 f"case '{case_id}' has invalid cfg_validation.status "
                 f"{validation_status!r}; expected one of: {allowed}"
             )
+        observation_summary = case.get("observation_summary")
+        if isinstance(observation_summary, dict):
+            outcome_class = observation_summary.get("outcome_class")
+            if (
+                outcome_class is not None
+                and outcome_class not in ALLOWED_OUTCOME_CLASSES
+            ):
+                allowed = ", ".join(sorted(ALLOWED_OUTCOME_CLASSES))
+                raise LabError(
+                    f"case '{case_id}' has invalid outcome_class "
+                    f"{outcome_class!r}; expected one of: {allowed}"
+                )
         seen.add(case_id)
     return data
 
@@ -503,6 +522,87 @@ def format_summary_markdown(summary: dict[str, object], *, limit: int = 10) -> s
     return "\n".join(lines)
 
 
+def _format_counts(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return ",".join(
+        f"{key}:{value[key]}"
+        for key in sorted(value)
+    )
+
+
+def build_matrix(registry: dict[str, object]) -> list[dict[str, object]]:
+    """Build one row per lab case with hydrated observation outcomes."""
+    rows = []
+    for case in _cases(registry):
+        hydrated = case_with_observation_artifact(case)
+        observation = hydrated.get("observation")
+        if not isinstance(observation, dict):
+            observation = {}
+        pseudocode = observation.get("pseudocode")
+        if not isinstance(pseudocode, dict):
+            pseudocode = {}
+        cfg_validation = hydrated.get("cfg_validation")
+        if not isinstance(cfg_validation, dict):
+            cfg_validation = {}
+        rows.append({
+            "case": _string_field(hydrated, "id"),
+            "status": _string_field(hydrated, "status"),
+            "cfg_validation": str(cfg_validation.get("status", "not_run")),
+            "locopt_blocks": observation.get("from_block_count", "-"),
+            "glbopt1_blocks": observation.get("to_block_count", "-"),
+            "vanished_count": observation.get("vanished_count", "-"),
+            "disposition": _format_counts(
+                observation.get("disposition_counts"),
+            ),
+            "pseudocode_changed": pseudocode.get("changed", "-"),
+            "outcome_class": str(observation.get("outcome_class", "-")),
+            "classification": str(observation.get("classification", "")),
+        })
+    return rows
+
+
+def format_matrix_text(rows: list[dict[str, object]]) -> str:
+    """Format the lab matrix as TSV for shell-friendly comparison."""
+    columns = [
+        "case",
+        "locopt_blocks",
+        "glbopt1_blocks",
+        "vanished_count",
+        "disposition",
+        "pseudocode_changed",
+        "outcome_class",
+    ]
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(str(row[column]) for column in columns))
+    return "\n".join(lines)
+
+
+def format_matrix_markdown(rows: list[dict[str, object]]) -> str:
+    """Format the lab matrix as Markdown."""
+    columns = [
+        ("case", "case"),
+        ("LOCOPT blocks", "locopt_blocks"),
+        ("GLBOPT1 blocks", "glbopt1_blocks"),
+        ("vanished", "vanished_count"),
+        ("disposition", "disposition"),
+        ("pseudocode changed", "pseudocode_changed"),
+        ("outcome", "outcome_class"),
+    ]
+    lines = [
+        "| " + " | ".join(title for title, _key in columns) + " |",
+        "|" + "|".join("-" for _title, _key in columns) + "|",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(str(row[key]) for _title, key in columns)
+            + " |"
+        )
+    return "\n".join(lines)
+
+
 def _write_or_print(text: str, output: Path | None) -> None:
     if output is None:
         print(text)
@@ -578,6 +678,19 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
         text = format_summary_markdown(summary, limit=args.limit)
     else:
         text = format_summary_text(summary, limit=args.limit)
+    _write_or_print(text, Path(args.output) if args.output else None)
+    return 0
+
+
+def _cmd_matrix(args: argparse.Namespace) -> int:
+    registry = load_registry(Path(args.registry))
+    rows = build_matrix(registry)
+    if args.format == "json":
+        text = json.dumps(rows, indent=2, sort_keys=True)
+    elif args.format == "markdown":
+        text = format_matrix_markdown(rows)
+    else:
+        text = format_matrix_text(rows)
     _write_or_print(text, Path(args.output) if args.output else None)
     return 0
 
@@ -685,6 +798,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional output file. Parent directories are created.",
     )
     p_summary.set_defaults(func=_cmd_summarize)
+
+    for command_name in ("matrix", "compare"):
+        p_matrix = sub.add_parser(
+            command_name,
+            help="Print the observed lab outcome matrix",
+        )
+        p_matrix.add_argument(
+            "--format",
+            choices=("text", "json", "markdown"),
+            default="text",
+        )
+        p_matrix.add_argument(
+            "--output",
+            default=None,
+            help="Optional output file. Parent directories are created.",
+        )
+        p_matrix.set_defaults(func=_cmd_matrix)
 
     return parser
 

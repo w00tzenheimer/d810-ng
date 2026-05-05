@@ -177,6 +177,7 @@
         "absorbed": 2
       }
     },
+    "outcome_class": "clean_structured_compaction",
     "classification": "validated clean conditional fork compacts from 9 LOCOPT blocks to 6 GLBOPT1 blocks while preserving a simple if/else pseudocode shape; this is the friendly baseline for exact conditional-region emission"
   },
   "pseudocode": {

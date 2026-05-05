@@ -236,6 +236,7 @@
       "empty": 1,
       "has_content": 4
     },
+    "outcome_class": "semantic_visible_boundary_folded",
     "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
   },
   "pseudocode": {
