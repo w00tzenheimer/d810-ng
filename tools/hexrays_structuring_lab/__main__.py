@@ -167,11 +167,7 @@ def render_validate_cfg_command(
     output_subdir: str = CFG_VALIDATION_OUTPUT_SUBDIR,
     worktree: str | None = None,
 ) -> str:
-    """Render the intended compiled-CFG validation command for one lab case.
-
-    This is scaffolding until the validation test/harness lands. Keeping the
-    command explicit prevents the lab from treating C source shape as evidence.
-    """
+    """Render the compiled-CFG validation command for one lab case."""
     case_id = _string_field(case, "id")
     function = _string_field(case, "function")
     if not case_id or not function:
@@ -193,6 +189,8 @@ def render_validate_cfg_command(
         case_id,
         "--hexrays-lab-function",
         function,
+        "--hexrays-lab-output-json",
+        f".tmp/{output_subdir}/{case_id}.json",
     ])
     binary = _string_field(case, "binary")
     env = _env_field(case)
@@ -482,12 +480,6 @@ def _cmd_command(args: argparse.Namespace) -> int:
 def _cmd_validate_cfg(args: argparse.Namespace) -> int:
     registry = load_registry(Path(args.registry))
     case = _case_by_id(registry, args.case_id)
-    print(
-        "warning: validate-cfg is scaffolded; implement "
-        "tests/system/runtime/hexrays/test_structuring_lab_cfg_validation.py "
-        "before treating this as executable evidence",
-        file=sys.stderr,
-    )
     print(
         render_validate_cfg_command(
             case,

@@ -134,10 +134,12 @@ python -m tools.hexrays_structuring_lab command single_pred_chain_merge
 python -m tools.hexrays_structuring_lab summarize --db path/to/diag.sqlite3
 ```
 
-The first two cases are intentionally marked `planned`. The CLI can
-render the Docker dump command and the intended compiled-CFG validation command
-now, but the fixture functions and validation test still need to be added before
-those commands produce real lab evidence.
+The first case has a complete vertical slice: fixture, compiled-CFG validation,
+Docker dump, and checked-in observation artifact under `observations/`.
+Additional cases should follow the same gate: no structuring conclusion unless
+compiled-CFG validation passes first. The registry should not point at local
+`.tmp` dump or diagnostic DB paths; durable observations belong in checked-in
+JSON artifacts.
 
 ## Status Model
 

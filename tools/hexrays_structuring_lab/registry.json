@@ -3,7 +3,7 @@
   "cases": [
     {
       "id": "single_pred_chain_merge",
-      "status": "planned",
+      "status": "observed",
       "fixture_kind": "c_with_compiled_cfg_validation",
       "function": "hexrays_lab_single_pred_chain_merge",
       "binary": "libobfuscated.dll",
@@ -28,27 +28,115 @@
       ],
       "question": "When Hex-Rays sees a BLT_1WAY chain where each successor has exactly one predecessor, does it merge the chain after cleanup?",
       "cfg_validation": {
-        "status": "not_run",
+        "status": "passed",
         "compiler_flags": [
           "-O0"
         ],
-        "binary_hash": null,
-        "artifact_path": null,
+        "binary_hash": "sha256:9de9b2f211f81b020ba66566a1c8e1b9af4f71fa297db93e15c22d6d6bc15c1b",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json",
         "expected": {
-          "block_count": ">= 3",
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 6",
+          "chain_length": "== 6",
+          "body_relative_start_eas": [
+            "0x0",
+            "0x33",
+            "0x1f",
+            "0x11"
+          ],
+          "body_opcode_signatures": [
+            [
+              4,
+              25,
+              26,
+              33,
+              31,
+              29,
+              9,
+              12,
+              55
+            ],
+            [
+              9,
+              14,
+              4,
+              4,
+              33,
+              31,
+              29,
+              21,
+              9,
+              4,
+              55
+            ],
+            [
+              25,
+              26,
+              33,
+              31,
+              29,
+              13,
+              9,
+              4,
+              55
+            ],
+            [
+              4,
+              9,
+              4,
+              55
+            ]
+          ],
           "edge_predicates": [
-            "BLT_1WAY chain length >= 3",
+            "BLT_1WAY chain length == 6",
             "each middle block has npred == 1",
             "each middle block has nsucc == 1",
-            "expected label EAs survive in the compiled binary"
+            "body block relative EA starts match the fixture label layout",
+            "body opcode groups match the fixture operation sequence"
           ]
         },
-        "observed": null
+        "observed": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "accepted_chain": [
+            0,
+            1,
+            4,
+            3,
+            2,
+            5
+          ],
+          "accepted_chain_length": 6,
+          "block_count_by_maturity": {
+            "MMAT_GENERATED": 6,
+            "MMAT_PREOPTIMIZED": 6,
+            "MMAT_LOCOPT": 6
+          }
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json",
+      "observation": {
+        "status": "observed",
+        "from_label": "dump_raw_hexrays_lab_single_pred_chain_merge_LOCOPT",
+        "to_label": "dump_raw_hexrays_lab_single_pred_chain_merge_GLBOPT1",
+        "from_block_count": 6,
+        "to_block_count": 3,
+        "vanished_count": 3,
+        "disposition_counts": {
+          "deleted": 2,
+          "synthesized_only": 1
+        },
+        "pseudocode": {
+          "before_lines": 5,
+          "after_lines": 5,
+          "changed": false,
+          "shape": "single expression assignment plus return"
+        },
+        "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
       },
       "expected_evidence": [
         "compiled CFG validation report",
         "post-apply and post-d810 snapshots",
-        "merge-causality absorbed rows",
+        "merge-causality disposition rows",
         "pseudocode before/after metrics"
       ]
     },
