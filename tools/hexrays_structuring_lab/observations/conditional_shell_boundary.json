@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "case_id": "conditional_shell_boundary",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:c7cf189dd4d0c98939879a8922c7a7af2e73b0d03d8a6344ed7784ff0d34dd5d",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "entry_serial": 1,
+    "entry_relative_start_ea": "0x0",
+    "entry_succ_relative_start_eas": [
+      "0x1b",
+      "0x1d"
+    ],
+    "shell_serial": 9,
+    "shell_relative_start_ea": "0x76",
+    "shell_pred_relative_start_eas": [
+      "0x1b",
+      "0x62"
+    ],
+    "shell_succ_relative_start_eas": [
+      "0x84",
+      "0x86"
+    ],
+    "shell_arm_paths_relative_start_eas": [
+      [
+        "0x84",
+        "0x57",
+        "0x41"
+      ],
+      [
+        "0x86",
+        "0x41"
+      ]
+    ],
+    "boundary_serial": 6,
+    "boundary_relative_start_ea": "0x41",
+    "boundary_pred_relative_start_eas": [
+      "0x57",
+      "0x86"
+    ],
+    "boundary_succ_relative_start_eas": [
+      "0x2d"
+    ],
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 13,
+      "MMAT_PREOPTIMIZED": 13,
+      "MMAT_LOCOPT": 13
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        4,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x1b": [
+        4,
+        55
+      ],
+      "0x1d": [
+        55
+      ],
+      "0x1f": [
+        4,
+        9,
+        4,
+        55
+      ],
+      "0x2d": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        13,
+        9,
+        4,
+        55
+      ],
+      "0x41": [
+        4,
+        4,
+        33,
+        31,
+        29,
+        21,
+        9,
+        4,
+        55
+      ],
+      "0x57": [
+        9,
+        4,
+        55
+      ],
+      "0x62": [
+        9,
+        14,
+        9,
+        4
+      ],
+      "0x76": [
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        44
+      ],
+      "0x84": [
+        55
+      ],
+      "0x86": [
+        55
+      ]
+    }
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_conditional_shell_boundary_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_conditional_shell_boundary_GLBOPT1",
+    "from_block_count": 13,
+    "to_block_count": 8,
+    "vanished_count": 5,
+    "disposition_counts": {
+      "absorbed": 3,
+      "deleted": 1,
+      "synthesized_only": 1
+    },
+    "cross_tab": {
+      "empty": {
+        "synthesized_only": 1
+      },
+      "goto_only": {
+        "absorbed": 1,
+        "deleted": 1
+      },
+      "has_content": {
+        "absorbed": 2
+      }
+    },
+    "outcome_class": "clean_structured_compaction",
+    "classification": "validated conditional shell boundary compacts from 13 LOCOPT blocks to 8 GLBOPT1 blocks while preserving the shell as readable two-if pseudocode; it is semantically acceptable but heavier than the clean conditional fork baseline"
+  },
+  "pseudocode": {
+    "before_lines": 14,
+    "after_lines": 14,
+    "changed": false,
+    "shape": "guarded multiply, visible conditional shell store, folded xor/sub store and return",
+    "before_metrics": {
+      "returns": 1,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 2
+    },
+    "after_metrics": {
+      "returns": 1,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 2
+    }
+  },
+  "reproduce": {
+    "validate_cfg": "python -m tools.hexrays_structuring_lab validate-cfg conditional_shell_boundary",
+    "dump": "python -m tools.hexrays_structuring_lab command conditional_shell_boundary",
+    "summary_template": "python -m tools.hexrays_structuring_lab summarize --db <diag.sqlite3> --cfg-validation <validation.json> --require-cfg-validation"
+  }
+}

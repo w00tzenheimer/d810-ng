@@ -23,6 +23,7 @@ def test_registry_loads_initial_cases() -> None:
         "single_pred_chain_merge",
         "multi_pred_boundary_barrier",
         "side_effect_boundary_anchor",
+        "conditional_shell_boundary",
         "clean_conditional_fork",
     }
 
@@ -58,6 +59,7 @@ def test_list_command_prints_cases(capsys) -> None:
     assert "single_pred_chain_merge" in out
     assert "multi_pred_boundary_barrier" in out
     assert "side_effect_boundary_anchor" in out
+    assert "conditional_shell_boundary" in out
     assert "clean_conditional_fork" in out
     assert "c_with_compiled_cfg_validation" in out
 
@@ -155,6 +157,28 @@ def test_show_command_prints_clean_fork_observation(capsys) -> None:
     assert data["observation"]["to_block_count"] == 6
 
 
+def test_show_command_prints_conditional_shell_observation(capsys) -> None:
+    rc = main(["show", "conditional_shell_boundary"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["id"] == "conditional_shell_boundary"
+    assert data["status"] == "observed"
+    assert data["cfg_validation"]["status"] == "passed"
+    assert (
+        data["observation_artifact"]
+        == "tools/hexrays_structuring_lab/observations/"
+        "conditional_shell_boundary.json"
+    )
+    assert data["cfg_validation"]["observed"]["shell_serial"] == 9
+    assert data["cfg_validation"]["observed"]["boundary_serial"] == 6
+    assert data["cfg_validation"]["observed"]["shell_arm_paths_relative_start_eas"] == [
+        ["0x84", "0x57", "0x41"],
+        ["0x86", "0x41"],
+    ]
+    assert data["observation"]["from_block_count"] == 13
+    assert data["observation"]["to_block_count"] == 8
+
+
 def test_registry_observed_cases_keep_observations_in_artifacts() -> None:
     registry = load_registry()
     for case in registry["cases"]:
@@ -198,6 +222,11 @@ def test_matrix_hydrates_observed_outcomes() -> None:
     assert rows_by_case["clean_conditional_fork"]["outcome_class"] == (
         "clean_structured_compaction"
     )
+    assert rows_by_case["conditional_shell_boundary"]["outcome_class"] == (
+        "clean_structured_compaction"
+    )
+    assert rows_by_case["conditional_shell_boundary"]["locopt_blocks"] == 13
+    assert rows_by_case["conditional_shell_boundary"]["glbopt1_blocks"] == 8
     assert rows_by_case["clean_conditional_fork"]["locopt_blocks"] == 9
     assert rows_by_case["clean_conditional_fork"]["glbopt1_blocks"] == 6
     assert rows_by_case["clean_conditional_fork"]["pseudocode_changed"] is False
@@ -209,6 +238,7 @@ def test_matrix_command_prints_decision_table(capsys) -> None:
     out = capsys.readouterr().out
     assert "case\tlocopt_blocks\tglbopt1_blocks" in out
     assert "single_pred_chain_merge\t6\t3\t3" in out
+    assert "conditional_shell_boundary\t13\t8\t5" in out
     assert "clean_conditional_fork\t9\t6\t3" in out
     assert "clean_structured_compaction" in out
 

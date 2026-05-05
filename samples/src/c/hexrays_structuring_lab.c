@@ -183,3 +183,54 @@ left:
     g_hexrays_lab_sink = result;
     goto join;
 }
+
+/*
+ * Intended CFG:
+ *   entry -> step1 -> shell -> boundary -> step2 -> done
+ *     \----------------^
+ *                   \-> trace -/
+ *
+ * This tests whether a real opaque conditional shell around a handler boundary
+ * changes Hex-Rays compaction behavior. The shell is not a fake barrier: the
+ * trace arm performs an observable volatile store before rejoining the boundary
+ * body.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_conditional_shell_boundary(int x)
+{
+    int result = x + 1;
+
+    if (g_hexrays_lab_sink == 0x31415926) {
+        goto shell;
+    }
+    goto step1;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+step2:
+    result = result - 7;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+boundary:
+    result = result ^ 0x55AA;
+    g_hexrays_lab_sink = result;
+    goto step2;
+
+trace:
+    g_hexrays_lab_sink = result;
+    goto boundary;
+
+step1:
+    result = result * 3;
+    g_hexrays_lab_sink = result;
+    goto shell;
+
+shell:
+    if ((g_hexrays_lab_sink & 2) != 0) {
+        goto trace;
+    }
+    goto boundary;
+}
