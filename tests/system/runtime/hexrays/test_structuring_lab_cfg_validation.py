@@ -101,6 +101,10 @@ CLEAN_FORK_EXPECTED_BLOCK_COUNT = 9
 CLEAN_FORK_ENTRY_RELATIVE_START = "0x0"
 CLEAN_FORK_ENTRY_OPCODE_SIGNATURE = [4, 12, 9, 4, 4, 33, 31, 4, 44]
 CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS = ["0x1c", "0x1e"]
+CLEAN_FORK_ARM_PATHS_RELATIVE_STARTS = [
+    ["0x1c", "0x58", "0x2e"],
+    ["0x1e", "0x44", "0x2e"],
+]
 CLEAN_FORK_JOIN_RELATIVE_START = "0x2e"
 CLEAN_FORK_JOIN_OPCODE_SIGNATURE = [4, 4, 33, 31, 29, 21, 9, 4, 55]
 CLEAN_FORK_JOIN_INCOMING_RELATIVE_STARTS = ["0x44", "0x58"]
@@ -481,6 +485,23 @@ def _clean_fork_signature(
         for serial in [int(serial) for serial in entry["succs"]]
         if serial in blocks_by_serial
     ]
+    arm_paths = []
+    for succ_block in entry_succ_blocks:
+        path = [_relative_ea(succ_block["start_ea"], func_ea)]
+        if succ_block["nsucc"] == 1:
+            arm_serial = int(succ_block["succs"][0])
+            arm_block = blocks_by_serial.get(arm_serial)
+            if arm_block is not None:
+                path.append(_relative_ea(arm_block["start_ea"], func_ea))
+                if arm_block["nsucc"] == 1:
+                    join_serial = int(arm_block["succs"][0])
+                    join_block = blocks_by_serial.get(join_serial)
+                    if join_block is not None:
+                        path.append(_relative_ea(
+                            join_block["start_ea"],
+                            func_ea,
+                        ))
+        arm_paths.append(path)
     signature["entry_serial"] = entry["serial"]
     signature["entry_relative_start_ea"] = CLEAN_FORK_ENTRY_RELATIVE_START
     signature["entry"] = entry
@@ -488,6 +509,7 @@ def _clean_fork_signature(
         _relative_ea(block["start_ea"], func_ea)
         for block in entry_succ_blocks
     ]
+    signature["arm_paths_relative_start_eas"] = arm_paths
     return signature
 
 
@@ -577,6 +599,8 @@ def _matches_clean_fork_fixture(
         and entry["instruction_opcodes"] == CLEAN_FORK_ENTRY_OPCODE_SIGNATURE
         and signature["entry_succ_relative_start_eas"]
         == CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS
+        and signature["arm_paths_relative_start_eas"]
+        == CLEAN_FORK_ARM_PATHS_RELATIVE_STARTS
         and boundary["type"] == "BLT_1WAY"
         and boundary["npred"] == 2
         and boundary["nsucc"] == 1
@@ -621,6 +645,9 @@ def _case_expected(case_id: str) -> dict[str, object]:
             "entry_successor_relative_start_eas": (
                 CLEAN_FORK_ENTRY_SUCCESSOR_RELATIVE_STARTS
             ),
+            "arm_paths_relative_start_eas": (
+                CLEAN_FORK_ARM_PATHS_RELATIVE_STARTS
+            ),
             "join_relative_start_ea": CLEAN_FORK_JOIN_RELATIVE_START,
             "join_opcode_signature": CLEAN_FORK_JOIN_OPCODE_SIGNATURE,
             "join_opcode_names": _opcode_names(
@@ -644,6 +671,7 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 "entry block exists at fixture relative EA 0x0",
                 "entry block has BLT_2WAY type with nsucc == 2",
                 "entry successors are exactly relative EAs 0x1c and 0x1e",
+                "entry arm paths are exactly 0x1c -> 0x58 -> 0x2e and 0x1e -> 0x44 -> 0x2e",
                 "join block exists at fixture relative EA 0x2e",
                 "join block has npred == 2 and nsucc == 1",
                 "join predecessor relative EAs are exactly 0x44 and 0x58",
@@ -981,4 +1009,7 @@ class TestHexraysStructuringLabCfgValidation:
                 assert entry["type"] == "BLT_2WAY"
                 assert entry["instruction_opcodes"] == (
                     CLEAN_FORK_ENTRY_OPCODE_SIGNATURE
+                )
+                assert signature["arm_paths_relative_start_eas"] == (
+                    CLEAN_FORK_ARM_PATHS_RELATIVE_STARTS
                 )
