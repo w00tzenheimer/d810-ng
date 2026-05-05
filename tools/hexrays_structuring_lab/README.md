@@ -52,28 +52,39 @@ The lab should prioritize small fixtures with one hypothesis each.
 The lab should support three fixture levels because no single representation is
 enough.
 
-### C Fixtures
+### C Fixtures With Compiled-CFG Validation
 
-C fixtures are useful for broad source-level behavior: ordinary conditionals,
-loops, switches, gotos, shared returns, and compiler-generated cleanup patterns.
+C fixtures are the default first attempt because they are fast to iterate on and
+easy to maintain. They are useful for broad source-level behavior: ordinary
+conditionals, loops, switches, gotos, shared returns, and compiler-generated
+cleanup patterns.
 
-They are not enough for precise CFG experiments because the compiler may erase
-or normalize the shape before Hex-Rays sees it.
+They are acceptable only when the compiled binary CFG matches the intended
+pattern. The contract is:
+
+```text
+C fixture is valid evidence only after compiled-CFG validation passes.
+```
+
+If the compiler erases or normalizes the intended shape, the fixture is invalid.
+That is not negative Hex-Rays evidence.
 
 ### Assembly Fixtures
 
-Assembly fixtures are useful when the exact binary CFG matters. These should be
-used for single-pred chains, multi-pred boundaries, irreducible flow, dispatcher
-loops, and branch/fallthrough layout experiments.
+Assembly fixtures are the fallback when C cannot force the required block/edge
+shape. These should be used for single-pred chains, multi-pred boundaries,
+irreducible flow, dispatcher loops, and branch/fallthrough layout experiments
+only after a reasonable C attempt fails validation.
 
 ### Microcode Mutation Fixtures
 
-Microcode mutation fixtures are closest to d810's real problem. They start from
-a known function, apply controlled mblock/instruction/edge mutations, capture
-diagnostic snapshots, and then observe what Hex-Rays does after optimization.
+Microcode mutation fixtures are the last resort for d810-specific backend
+behavior. They start from a known function, apply controlled
+mblock/instruction/edge mutations, capture diagnostic snapshots, and then
+observe what Hex-Rays does after optimization.
 
-These are the most important fixtures for reconstruction and semantic-region
-lowering work.
+These are useful, but they should not be the default if manual microcode
+fixtures are too brittle in practice.
 
 ## Pattern Registry
 
@@ -111,6 +122,55 @@ project:
 - CFG provenance logging: `src/d810/core/diag/cfg_provenance.py`
 - Existing C/ASM samples under `samples/src/c` and `samples/src/asm`
 
+## Current CLI
+
+The lab has a small registry-driven CLI:
+
+```bash
+python -m tools.hexrays_structuring_lab list
+python -m tools.hexrays_structuring_lab show single_pred_chain_merge
+python -m tools.hexrays_structuring_lab validate-cfg single_pred_chain_merge
+python -m tools.hexrays_structuring_lab command single_pred_chain_merge
+python -m tools.hexrays_structuring_lab summarize --db path/to/diag.sqlite3
+```
+
+The first two cases are intentionally marked `planned`. The CLI can
+render the Docker dump command and the intended compiled-CFG validation command
+now, but the fixture functions and validation test still need to be added before
+those commands produce real lab evidence.
+
+## Status Model
+
+Registry case statuses are intentionally narrow:
+
+- `planned`: the case is designed but not validated.
+- `compiled_cfg_validated`: the compiled binary CFG matches the hypothesis.
+- `observed`: the case has a Hex-Rays observation summary.
+- `invalid_compiled_cfg`: the compiled C fixture did not match the hypothesis.
+
+Compiled-CFG validation statuses are:
+
+- `not_run`
+- `passed`
+- `failed`
+- `not_provided`
+
+Once validation is implemented, `validate-cfg` is a gate. A failed validation
+means the fixture is invalid; it does not produce a Hex-Rays structuring
+conclusion.
+
+Run summaries should include the compiled-CFG validation result:
+
+```bash
+python -m tools.hexrays_structuring_lab summarize \
+  --db path/to/diag.sqlite3 \
+  --cfg-validation path/to/cfg_validation.json \
+  --require-cfg-validation
+```
+
+With `--require-cfg-validation`, the summary hard-fails unless the validation
+result has `status=passed`.
+
 ## Success Criteria
 
 The lab is useful only if it produces decisions for d810.
@@ -125,4 +185,3 @@ A successful pattern entry should answer:
 
 If a pattern does not feed back into a d810 invariant, it is documentation, not
 engineering leverage.
-

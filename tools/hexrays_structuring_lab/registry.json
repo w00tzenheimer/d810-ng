@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "single_pred_chain_merge",
+      "status": "planned",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_single_pred_chain_merge",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "single-pred",
+        "single-succ",
+        "boundary-collapse"
+      ],
+      "question": "When Hex-Rays sees a BLT_1WAY chain where each successor has exactly one predecessor, does it merge the chain after cleanup?",
+      "cfg_validation": {
+        "status": "not_run",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": null,
+        "artifact_path": null,
+        "expected": {
+          "block_count": ">= 3",
+          "edge_predicates": [
+            "BLT_1WAY chain length >= 3",
+            "each middle block has npred == 1",
+            "each middle block has nsucc == 1",
+            "expected label EAs survive in the compiled binary"
+          ]
+        },
+        "observed": null
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "post-apply and post-d810 snapshots",
+        "merge-causality absorbed rows",
+        "pseudocode before/after metrics"
+      ]
+    },
+    {
+      "id": "multi_pred_boundary_barrier",
+      "status": "planned",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_multi_pred_boundary_barrier",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "multi-pred",
+        "boundary-barrier",
+        "cfg-shaping"
+      ],
+      "question": "What is the smallest CFG change that prevents Hex-Rays from merging across a handler boundary without leaking bad pseudocode?",
+      "cfg_validation": {
+        "status": "not_run",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": null,
+        "artifact_path": null,
+        "expected": {
+          "block_count": ">= 3",
+          "edge_predicates": [
+            "target boundary block exists before Hex-Rays structuring",
+            "target boundary block has a genuine second predecessor",
+            "boundary anchor labels/EAs survive in the compiled binary"
+          ]
+        },
+        "observed": null
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "boundary block survives or vanishes by block-trace",
+        "merge-causality disposition for protected boundary",
+        "pseudocode shape after optimization"
+      ]
+    }
+  ]
+}

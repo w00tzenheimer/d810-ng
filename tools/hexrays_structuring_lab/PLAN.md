@@ -12,6 +12,20 @@ helps d810 make a concrete lowering decision.
 The first fixtures should target the current d810 pain point: block-boundary
 collapse after d810 emits or removes state-transition scaffolding.
 
+Use C fixtures first, but require compiled-CFG validation before treating them
+as evidence. Assembly is the fallback when C cannot force the intended shape.
+Microcode mutation is the last resort for d810-specific backend behavior.
+
+The case lifecycle is:
+
+```text
+planned -> compiled_cfg_validated -> observed
+planned -> invalid_compiled_cfg
+```
+
+`validate-cfg` must fail hard once implemented. A failed compiled-CFG validation
+invalidates the fixture; it does not produce a Hex-Rays structuring conclusion.
+
 ## Parallel Execution Model
 
 This work should be split by artifact ownership, not by vague research themes.
@@ -60,17 +74,22 @@ Subagent boundaries:
 
 Deliverables:
 
-- Add a small registry file, likely `registry.json` or `registry.yaml`.
-- Add a minimal lab CLI under `tools/hexrays_structuring_lab/`.
+- Add a small registry file, likely `registry.json` or `registry.yaml`. Done:
+  `registry.json`.
+- Add a minimal lab CLI under `tools/hexrays_structuring_lab/`. Done:
+  `python -m tools.hexrays_structuring_lab`.
 - Teach the CLI to list cases and print the exact Docker command needed to run
-  one case.
-- Reuse the existing dump harness instead of writing a new IDA runner.
-- Store generated outputs under `.tmp/hexrays_structuring_lab/`.
+  one case. Done for planned fixtures.
+- Reuse the existing dump harness instead of writing a new IDA runner. Done:
+  command rendering targets `tools/scripts/run_system_tests_docker.sh dump`.
+- Store generated outputs under `.tmp/hexrays_structuring_lab/`. Done in the
+  rendered command layout.
 
 Initial command shape:
 
 ```bash
 python -m tools.hexrays_structuring_lab list
+python -m tools.hexrays_structuring_lab validate-cfg single_pred_chain_merge
 python -m tools.hexrays_structuring_lab command single_pred_chain_merge
 python -m tools.hexrays_structuring_lab summarize --db path/to/diag.sqlite3
 ```
@@ -104,15 +123,25 @@ chain coalescing.
 
 Fixture approach:
 
-- Prefer an assembly fixture or microcode mutation fixture.
-- Avoid relying only on C source because the compiler may erase the exact chain.
-- Create a tiny function with three or four linear blocks.
-- Ensure each intermediate block has `npred == 1`, `nsucc == 1`, and `BLT_1WAY`.
+- Start with a C fixture.
+- Use `volatile` locals/globals, `noinline`, opaque external calls, `goto`
+  labels, and `asm volatile("" ::: "memory")` only as needed.
+- Compile with the least surprising flags first, likely `-O0`, then adjust if
+  Hex-Rays needs a different shape.
+- Validate the compiled CFG before running the Hex-Rays experiment.
+- Assert a tiny function with three or four linear blocks.
+- Assert each intermediate block has `npred == 1`, `nsucc == 1`, and `BLT_1WAY`.
+- Assert expected label EAs or anchors survive in the compiled binary.
 - Include at least one cleanup candidate that becomes `m_und` or a goto-only
   shell, if practical.
+- If compiled-CFG validation fails after a reasonable C attempt, replace the
+  fixture with assembly. Do not treat the failed C shape as Hex-Rays evidence.
 
 Captured evidence:
 
+- Compiled-CFG validation report.
+- Validation status, expected predicates, observed predicates, compiler flags,
+  binary hash, and artifact path in the run summary.
 - Snapshot before mutation or baseline microcode.
 - Snapshot after controlled d810-style mutation.
 - Snapshot after Hex-Rays optimization.
@@ -160,15 +189,21 @@ barrier candidates directly, instead of assuming which predecessor matters.
 Fixture approach:
 
 - Start from the same chain shape as `single_pred_chain_merge`.
+- Start as a C fixture and validate the compiled CFG first.
 - Add one boundary-preservation candidate at the middle block.
 - Candidate A: a genuine second predecessor.
 - Candidate B: a small non-empty anchor instruction that survives cleanup.
 - Candidate C: a conditional shell that Hex-Rays will not flatten immediately.
 - Only test one candidate first; do not branch into a matrix until the harness
   works.
+- If C cannot reliably produce the boundary shape, drop to assembly for this
+  case. Keep microcode mutation as a last resort.
 
 Captured evidence:
 
+- Compiled-CFG validation report.
+- Validation status, expected predicates, observed predicates, compiler flags,
+  binary hash, and artifact path in the run summary.
 - Same snapshots and pseudocode as Pattern 1.
 - `block` query for the protected boundary before and after optimization.
 - `block-trace` or `ea-trace` proving where the protected block's body landed.
