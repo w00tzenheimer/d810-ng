@@ -59,6 +59,37 @@ MULTI_PRED_BODY_OPCODE_SIGNATURES = {
     "0x41": [9, 14, 9, 4],
     "0x55": MULTI_PRED_BOUNDARY_OPCODE_SIGNATURE,
 }
+SIDE_EFFECT_FUNCTION = "hexrays_lab_side_effect_boundary_anchor"
+SIDE_EFFECT_OUTPUT_JSON = (
+    ".tmp/hexrays_structuring_lab/cfg_validation/"
+    "side_effect_boundary_anchor.json"
+)
+SIDE_EFFECT_EXPECTED_BLOCK_COUNT = 10
+SIDE_EFFECT_BOUNDARY_RELATIVE_START = "0x64"
+SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE = [
+    4,
+    4,
+    33,
+    31,
+    29,
+    9,
+    21,
+    9,
+    4,
+    56,
+]
+SIDE_EFFECT_BOUNDARY_INCOMING_RELATIVE_STARTS = ["0x1f", "0x4d"]
+SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START = "0x81"
+SIDE_EFFECT_BODY_OPCODE_SIGNATURES = {
+    "0x0": [4, 12, 9, 35, 30, 33, 31, 29, 43],
+    "0x1f": [4, 55],
+    "0x21": [55],
+    "0x23": [4, 9, 55],
+    "0x36": [25, 26, 33, 31, 29, 13, 9, 4, 55],
+    "0x4d": [9, 14, 9, 4],
+    "0x64": SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE,
+    "0x81": [4, 55],
+}
 
 CASE_DEFAULTS = {
     "single_pred_chain_merge": {
@@ -68,6 +99,10 @@ CASE_DEFAULTS = {
     "multi_pred_boundary_barrier": {
         "function": MULTI_PRED_FUNCTION,
         "output_json": MULTI_PRED_OUTPUT_JSON,
+    },
+    "side_effect_boundary_anchor": {
+        "function": SIDE_EFFECT_FUNCTION,
+        "output_json": SIDE_EFFECT_OUTPUT_JSON,
     },
 }
 
@@ -240,10 +275,11 @@ def _matches_single_pred_chain_fixture(
     )
 
 
-def _multi_pred_boundary_signature(
+def _boundary_signature(
     blocks: list[dict[str, object]],
     *,
     func_ea: int,
+    boundary_relative_start: str,
 ) -> dict[str, object] | None:
     body_blocks = [
         block for block in blocks
@@ -256,7 +292,7 @@ def _multi_pred_boundary_signature(
         _relative_ea(block["start_ea"], func_ea): block
         for block in body_blocks
     }
-    boundary = body_by_relative_start.get(MULTI_PRED_BOUNDARY_RELATIVE_START)
+    boundary = body_by_relative_start.get(boundary_relative_start)
     if boundary is None:
         return None
 
@@ -274,7 +310,7 @@ def _multi_pred_boundary_signature(
     ]
     return {
         "boundary_serial": boundary["serial"],
-        "boundary_relative_start_ea": MULTI_PRED_BOUNDARY_RELATIVE_START,
+        "boundary_relative_start_ea": boundary_relative_start,
         "boundary": boundary,
         "boundary_pred_serials": pred_serials,
         "boundary_succ_serials": succ_serials,
@@ -306,6 +342,30 @@ def _multi_pred_boundary_signature(
     }
 
 
+def _multi_pred_boundary_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _boundary_signature(
+        blocks,
+        func_ea=func_ea,
+        boundary_relative_start=MULTI_PRED_BOUNDARY_RELATIVE_START,
+    )
+
+
+def _side_effect_boundary_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _boundary_signature(
+        blocks,
+        func_ea=func_ea,
+        boundary_relative_start=SIDE_EFFECT_BOUNDARY_RELATIVE_START,
+    )
+
+
 def _matches_multi_pred_boundary_fixture(
     signature: dict[str, object] | None,
     *,
@@ -331,6 +391,34 @@ def _matches_multi_pred_boundary_fixture(
         and signature["boundary_succ_relative_start_eas"]
         == [MULTI_PRED_BOUNDARY_SUCCESSOR_RELATIVE_START]
         and body_opcodes == MULTI_PRED_BODY_OPCODE_SIGNATURES
+    )
+
+
+def _matches_side_effect_boundary_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    boundary = signature["boundary"]
+    assert isinstance(boundary, dict)
+    body_opcodes = signature["body_opcode_signatures_by_relative_start"]
+    assert isinstance(body_opcodes, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == SIDE_EFFECT_EXPECTED_BLOCK_COUNT
+        and boundary["type"] == "BLT_1WAY"
+        and boundary["npred"] == 2
+        and boundary["nsucc"] == 1
+        and boundary["instruction_opcodes"]
+        == SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
+        and sorted(signature["boundary_pred_relative_start_eas"])
+        == SIDE_EFFECT_BOUNDARY_INCOMING_RELATIVE_STARTS
+        and signature["boundary_succ_relative_start_eas"]
+        == [SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START]
+        and body_opcodes == SIDE_EFFECT_BODY_OPCODE_SIGNATURES
     )
 
 
@@ -385,6 +473,38 @@ def _case_expected(case_id: str) -> dict[str, object]:
                 "body opcode groups match the fixture operation sequence",
             ],
         }
+    if case_id == "side_effect_boundary_anchor":
+        return {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {SIDE_EFFECT_EXPECTED_BLOCK_COUNT}",
+            "boundary_relative_start_ea": SIDE_EFFECT_BOUNDARY_RELATIVE_START,
+            "boundary_opcode_signature": SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE,
+            "boundary_opcode_names": _opcode_names(
+                SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
+            ),
+            "boundary_incoming_relative_start_eas": (
+                SIDE_EFFECT_BOUNDARY_INCOMING_RELATIVE_STARTS
+            ),
+            "boundary_successor_relative_start_ea": (
+                SIDE_EFFECT_BOUNDARY_SUCCESSOR_RELATIVE_START
+            ),
+            "body_opcode_signatures_by_relative_start": (
+                SIDE_EFFECT_BODY_OPCODE_SIGNATURES
+            ),
+            "body_opcode_names_by_relative_start": {
+                relative_start: _opcode_names(opcodes)
+                for relative_start, opcodes
+                in SIDE_EFFECT_BODY_OPCODE_SIGNATURES.items()
+            },
+            "edge_predicates": [
+                "boundary block exists at fixture relative EA 0x64",
+                "boundary block has npred == 2 and nsucc == 1",
+                "boundary predecessor relative EAs are exactly 0x1f and 0x4d",
+                "boundary successor relative EA is exactly 0x81",
+                "boundary body ends in a call to the noinline volatile anchor",
+                "body opcode groups match the fixture operation sequence",
+            ],
+        }
     raise AssertionError(f"unknown lab case: {case_id}")
 
 
@@ -419,6 +539,17 @@ def _case_match(
         signature = _multi_pred_boundary_signature(blocks, func_ea=func_ea)
         candidates = [signature] if signature is not None else []
         if _matches_multi_pred_boundary_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "side_effect_boundary_anchor":
+        signature = _side_effect_boundary_signature(blocks, func_ea=func_ea)
+        candidates = [signature] if signature is not None else []
+        if _matches_side_effect_boundary_fixture(
             signature,
             block_count=int(mba.qty),
             maturity_name=maturity_name,
@@ -591,12 +722,18 @@ class TestHexraysStructuringLabCfgValidation:
             accepted = observed["accepted_chain"]
             assert isinstance(accepted, list)
             assert len(accepted) == EXPECTED_CHAIN_LENGTH
-        elif case_id == "multi_pred_boundary_barrier":
+        elif case_id in {
+            "multi_pred_boundary_barrier",
+            "side_effect_boundary_anchor",
+        }:
             signature = observed["accepted_signature"]
             assert isinstance(signature, dict)
             boundary = signature["boundary"]
             assert isinstance(boundary, dict)
             assert boundary["npred"] == 2
-            assert boundary["instruction_opcodes"] == (
+            expected_opcodes = (
                 MULTI_PRED_BOUNDARY_OPCODE_SIGNATURE
+                if case_id == "multi_pred_boundary_barrier"
+                else SIDE_EFFECT_BOUNDARY_OPCODE_SIGNATURE
             )
+            assert boundary["instruction_opcodes"] == expected_opcodes

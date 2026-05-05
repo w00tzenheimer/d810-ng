@@ -19,6 +19,13 @@ volatile int g_hexrays_lab_sink = 0;
 #define HEXRAYS_LAB_NOINLINE
 #endif
 
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_boundary_anchor_helper(volatile int *slot, int value)
+{
+    *slot = value;
+    return *slot;
+}
+
 /*
  * Intended CFG:
  *   entry -> step1 -> step2 -> step3 -> done
@@ -90,5 +97,49 @@ step1:
 boundary:
     result = result ^ 0x55AA;
     g_hexrays_lab_sink = result;
+    goto step2;
+}
+
+/*
+ * Intended CFG:
+ *   entry -> step1 -> boundary(anchor call) -> step2 -> done
+ *     \--------------------------^
+ *
+ * This starts from the same multi-pred boundary shape as
+ * hexrays_lab_multi_pred_boundary_barrier, but the boundary consumes its local
+ * value through a noinline volatile helper before handing off to the successor.
+ * The side effect is semantically real, so if Hex-Rays preserves it, that is
+ * stronger evidence than predecessor topology alone.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_side_effect_boundary_anchor(int x)
+{
+    int result = x + 1;
+
+    if (g_hexrays_lab_sink == 0x24681357) {
+        goto boundary;
+    }
+    goto step1;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+step2:
+    result = result - 7;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+step1:
+    result = result * 3;
+    g_hexrays_lab_sink = result;
+    goto boundary;
+
+boundary:
+    result = result ^ 0x55AA;
+    result = hexrays_lab_boundary_anchor_helper(
+        &g_hexrays_lab_sink,
+        result
+    );
     goto step2;
 }
