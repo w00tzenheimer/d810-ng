@@ -569,6 +569,256 @@ def detect_intra_node_terminal_byte_corridors(
     return tuple(corridors)
 
 
+@dataclass(frozen=True, slots=True)
+class SideEffectFragment:
+    """Per-handler fragment of side-effect activity.
+
+    A fragment is the ordered set of side-effect-bearing local blocks
+    inside one :class:`StateDagNode`, plus a coarse classification of
+    how the fragment exits:
+      * ``"terminal"`` — at least one block in the fragment has nsucc==0
+        (function-exit / BLT_STOP).
+      * ``"local_terminal_edge"`` — the fragment's last side-effect
+        segment is the source of a TERMINAL local edge.
+      * ``"transition"`` — the fragment exits via a state transition
+        (the corresponding state-DAG edge has TRANSITION /
+        CONDITIONAL_TRANSITION / CONDITIONAL_RETURN kind).
+      * ``"none"`` — fragment has no side effects worth tracking.
+
+    Used by :func:`detect_hybrid_terminal_byte_corridors` to stitch
+    per-handler fragments into a cross-handler corridor via DAG
+    semantic edges.
+    """
+    handler_serial: int
+    blocks: tuple[int, ...]
+    exit_kind: str
+
+
+def _extract_side_effect_fragment(
+    node: "StateDagNode",
+    flow_graph: FlowGraph,
+    side_effect_ops: set[int],
+) -> SideEffectFragment | None:
+    """Build the ordered side-effect fragment for one handler.
+
+    Walks the node's ``local_segments`` in declaration order, picking
+    out blocks whose owned bytes contain ``m_stx``/``m_call``/
+    ``m_icall``.  The resulting fragment preserves the segment
+    declaration order — local_edges are consulted only to decide
+    ``exit_kind``.
+    """
+    local_segments = tuple(getattr(node, "local_segments", ()) or ())
+    local_edges = tuple(getattr(node, "local_edges", ()) or ())
+    if not local_segments:
+        return None
+
+    side_effect_blocks: list[int] = []
+    last_se_seg_id: str | None = None
+    seg_owns_terminal: bool = False
+    for seg in local_segments:
+        seg_id = str(getattr(seg, "segment_id", ""))
+        for owned in (int(b) for b in (getattr(seg, "blocks", ()) or ())):
+            blk = flow_graph.get_block(owned)
+            if blk is None:
+                continue
+            if not (getattr(blk, "succs", ()) or ()):
+                seg_owns_terminal = True
+            if _block_has_side_effect_opcode(blk, side_effect_ops):
+                side_effect_blocks.append(owned)
+                last_se_seg_id = seg_id
+
+    if not side_effect_blocks:
+        return None
+
+    # Classify exit kind.
+    exit_kind = "transition"
+    if seg_owns_terminal:
+        exit_kind = "terminal"
+    elif last_se_seg_id is not None:
+        for edge in local_edges:
+            try:
+                if (
+                    edge.kind == LocalEdgeKind.TERMINAL
+                    and str(edge.source_segment_id) == last_se_seg_id
+                ):
+                    exit_kind = "local_terminal_edge"
+                    break
+            except AttributeError:
+                continue
+
+    handler_serial = int(getattr(node, "handler_serial", -1))
+    return SideEffectFragment(
+        handler_serial=handler_serial,
+        blocks=tuple(side_effect_blocks),
+        exit_kind=exit_kind,
+    )
+
+
+def detect_hybrid_terminal_byte_corridors(
+    dag: "LinearizedStateDag",
+    flow_graph: FlowGraph | None,
+    *,
+    min_total_blocks: int = 3,
+    max_chain_handlers: int = 12,
+) -> tuple[tuple[int, ...], ...]:
+    """Hybrid corridor detector: per-handler fragments + DAG stitching.
+
+    The byte-emitter terminal cascade is distributed across multiple
+    handlers (each contributes 1-3 emit blocks) plus a shared
+    terminal suffix.  None of:
+      * pure CFG forward walk (cascade routes through dispatcher),
+      * pure state-DAG node walk (cascade isn't a chain of state-DAG
+        nodes — it lives inside individual handlers),
+      * pure intra-node local-segment walk (each handler's fragment
+        is too short to qualify on its own; only one handler has a
+        local terminal exit),
+    captures it correctly.
+
+    This detector consumes both layers: extracts a
+    :class:`SideEffectFragment` per state node from its
+    ``local_segments`` (intra-handler view), then stitches fragments
+    together using DAG semantic edges (handler-to-handler view).
+
+    Algorithm:
+      1. For every StateDagNode, extract its SideEffectFragment.  Skip
+         nodes with no side-effect blocks.
+      2. Build forward adjacency between fragments via DAG edges
+         whose kind is TRANSITION / CONDITIONAL_TRANSITION /
+         CONDITIONAL_RETURN — these chain handlers along execution
+         flow.
+      3. From each fragment as a potential head, walk forward through
+         the adjacency, collecting fragments.  Stop when:
+           * the current fragment's exit_kind ∈ {"terminal",
+             "local_terminal_edge"} (corridor naturally ends),
+           * no outbound DAG edge to another side-effect fragment
+             (corridor truncates),
+           * the chain exceeds max_chain_handlers.
+      4. Score: keep chains with >= min_total_blocks side-effect
+         blocks AND that end in a terminal / local_terminal_edge
+         fragment OR have at least one such fragment in the chain.
+      5. Emit the de-duplicated, forward-ordered union of blocks
+         across the chain.
+    """
+    if dag is None or flow_graph is None:
+        return ()
+    try:
+        import ida_hexrays
+    except ImportError:
+        return ()
+    m_stx = getattr(ida_hexrays, "m_stx", -1)
+    m_call = getattr(ida_hexrays, "m_call", -1)
+    m_icall = getattr(ida_hexrays, "m_icall", -1)
+    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
+    if not side_effect_ops:
+        return ()
+
+    # 1. Extract one fragment per state node.
+    fragments: dict[int, SideEffectFragment] = {}
+    for node in dag.nodes:
+        frag = _extract_side_effect_fragment(node, flow_graph, side_effect_ops)
+        if frag is None or not frag.blocks:
+            continue
+        fragments[frag.handler_serial] = frag
+
+    if not fragments:
+        return ()
+
+    # 2. Forward adjacency via DAG semantic edges.  Allow only edge
+    #    kinds that represent real handler-to-handler control flow.
+    semantic_succ_kinds = {
+        SemanticEdgeKind.TRANSITION,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+    }
+    forward: dict[int, list[int]] = {h: [] for h in fragments}
+    for edge in dag.edges:
+        try:
+            kind = edge.kind
+        except AttributeError:
+            continue
+        if kind not in semantic_succ_kinds:
+            continue
+        try:
+            src_h = int(edge.source_key.handler_serial)
+        except AttributeError:
+            continue
+        if src_h not in fragments:
+            continue
+        tgt_key = getattr(edge, "target_key", None)
+        if tgt_key is None:
+            continue
+        try:
+            tgt_h = int(tgt_key.handler_serial)
+        except AttributeError:
+            continue
+        if tgt_h not in fragments:
+            continue
+        if tgt_h in forward[src_h]:
+            continue
+        forward[src_h].append(tgt_h)
+
+    # 3-4. Walk forward from each fragment as a potential head.  Track
+    #      the longest valid chain per (head, terminal_handler) pair.
+    best_chain: list[int] = []
+    best_terminal_score = (0, 0)  # (has_terminal, total_blocks)
+
+    for head_handler in sorted(fragments):
+        # DFS expansion; cap at max_chain_handlers depth.
+        stack: list[tuple[list[int], set[int]]] = [(
+            [head_handler],
+            {head_handler},
+        )]
+        while stack:
+            chain_handlers, visited = stack.pop()
+            current_handler = chain_handlers[-1]
+            current_frag = fragments[current_handler]
+            # Compute total side-effect block count.
+            total_blocks = sum(
+                len(fragments[h].blocks) for h in chain_handlers
+            )
+            has_terminal = any(
+                fragments[h].exit_kind
+                in ("terminal", "local_terminal_edge")
+                for h in chain_handlers
+            )
+            score = (1 if has_terminal else 0, total_blocks)
+            # Update best when chain qualifies.
+            if total_blocks >= int(min_total_blocks) and has_terminal:
+                if score > best_terminal_score:
+                    best_terminal_score = score
+                    best_chain = list(chain_handlers)
+            # Stop expanding when current fragment has terminal-style exit.
+            if current_frag.exit_kind in (
+                "terminal",
+                "local_terminal_edge",
+            ):
+                continue
+            if len(chain_handlers) >= int(max_chain_handlers):
+                continue
+            for nxt in forward.get(current_handler, ()):
+                if nxt in visited:
+                    continue
+                stack.append((chain_handlers + [nxt], visited | {nxt}))
+
+    if not best_chain:
+        return ()
+
+    # 5. Flatten into a single ordered corridor.
+    seen: set[int] = set()
+    ordered_blocks: list[int] = []
+    for handler in best_chain:
+        for owned in fragments[handler].blocks:
+            if owned in seen:
+                continue
+            seen.add(owned)
+            ordered_blocks.append(owned)
+
+    if len(ordered_blocks) < int(min_total_blocks):
+        return ()
+
+    return (tuple(ordered_blocks),)
+
+
 def detect_state_dag_terminal_byte_corridors(
     dag: "LinearizedStateDag",
     flow_graph: FlowGraph | None,
@@ -6025,10 +6275,18 @@ def build_linearized_state_dag_from_graph(
     intra_node_corridors = detect_intra_node_terminal_byte_corridors(
         dag, flow_graph, min_chain_length=2
     )
+    hybrid_corridors = detect_hybrid_terminal_byte_corridors(
+        dag, flow_graph
+    )
     # Union, preserving first-seen order; deduplicate by full tuple.
     seen_corridors: set[tuple[int, ...]] = set()
     side_effect_corridors_list: list[tuple[int, ...]] = []
-    for c in cfg_level_corridors + dag_level_corridors + intra_node_corridors:
+    for c in (
+        cfg_level_corridors
+        + dag_level_corridors
+        + intra_node_corridors
+        + hybrid_corridors
+    ):
         if c in seen_corridors:
             continue
         seen_corridors.add(c)
@@ -6058,6 +6316,15 @@ def build_linearized_state_dag_from_graph(
             "serials=%s head=blk[%d] sink=blk[%d]",
             len(corridor),
             list(corridor[:8]),
+            corridor[0],
+            corridor[-1],
+        )
+    for corridor in hybrid_corridors:
+        logger.info(
+            "DAG: side-effect corridor detected (hybrid): len=%d "
+            "serials=%s head=blk[%d] sink=blk[%d]",
+            len(corridor),
+            list(corridor[:12]),
             corridor[0],
             corridor[-1],
         )
