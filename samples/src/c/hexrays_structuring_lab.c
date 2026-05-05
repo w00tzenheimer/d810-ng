@@ -53,3 +53,42 @@ step2:
     g_hexrays_lab_sink = result;
     goto step3;
 }
+
+/*
+ * Intended CFG:
+ *   entry -> step1 -> boundary -> step2 -> done
+ *     \----------------^
+ *
+ * The volatile guard creates a genuine second predecessor for boundary. The
+ * lab uses this to test whether a multi-pred boundary blocks Hex-Rays chain
+ * coalescing across a handler-style edge.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_multi_pred_boundary_barrier(int x)
+{
+    int result = x + 1;
+
+    if (g_hexrays_lab_sink == 0x13572468) {
+        goto boundary;
+    }
+    goto step1;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+step2:
+    result = result - 7;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+step1:
+    result = result * 3;
+    g_hexrays_lab_sink = result;
+    goto boundary;
+
+boundary:
+    result = result ^ 0x55AA;
+    g_hexrays_lab_sink = result;
+    goto step2;
+}

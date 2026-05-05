@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "case_id": "multi_pred_boundary_barrier",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:b2c97510463d290a66ec3e07f94b5abd9b1798437bdbe2a7f15e8d15c27adedb",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "boundary_serial": 7,
+    "boundary_relative_start_ea": "0x55",
+    "boundary_pred_relative_start_eas": [
+      "0x1b",
+      "0x41"
+    ],
+    "boundary_succ_relative_start_eas": [
+      "0x2d"
+    ],
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 9,
+      "MMAT_PREOPTIMIZED": 9,
+      "MMAT_LOCOPT": 9
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        4,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x1b": [
+        4,
+        55
+      ],
+      "0x1d": [
+        55
+      ],
+      "0x1f": [
+        4,
+        9,
+        4,
+        55
+      ],
+      "0x2d": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        13,
+        9,
+        4,
+        55
+      ],
+      "0x41": [
+        9,
+        14,
+        9,
+        4
+      ],
+      "0x55": [
+        4,
+        4,
+        33,
+        31,
+        29,
+        21,
+        9,
+        4,
+        55
+      ]
+    },
+    "body_opcode_names_by_relative_start": {
+      "0x0": [
+        "op_4",
+        "op_12",
+        "op_9",
+        "op_35",
+        "op_30",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_43"
+      ],
+      "0x1b": [
+        "op_4",
+        "op_55"
+      ],
+      "0x1d": [
+        "op_55"
+      ],
+      "0x1f": [
+        "op_4",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x2d": [
+        "op_25",
+        "op_26",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_13",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x41": [
+        "op_9",
+        "op_14",
+        "op_9",
+        "op_4"
+      ],
+      "0x55": [
+        "op_4",
+        "op_4",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_21",
+        "op_9",
+        "op_4",
+        "op_55"
+      ]
+    }
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_GLBOPT1",
+    "from_block_count": 9,
+    "to_block_count": 5,
+    "vanished_count": 4,
+    "disposition_counts": {
+      "absorbed": 1,
+      "deleted": 2,
+      "synthesized_only": 1
+    },
+    "content_counts": {
+      "empty": 1,
+      "has_content": 3
+    },
+    "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
+  },
+  "pseudocode": {
+    "before_lines": 12,
+    "after_lines": 12,
+    "changed": false,
+    "shape": "one guarded multiply plus folded xor/sub assignment and return"
+  },
+  "reproduce": {
+    "validate_cfg": "python -m tools.hexrays_structuring_lab validate-cfg multi_pred_boundary_barrier",
+    "dump": "python -m tools.hexrays_structuring_lab command multi_pred_boundary_barrier",
+    "summary_template": "python -m tools.hexrays_structuring_lab summarize --db <diag.sqlite3> --cfg-validation <validation.json> --require-cfg-validation"
+  }
+}
