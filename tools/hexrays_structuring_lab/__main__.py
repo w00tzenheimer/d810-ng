@@ -90,6 +90,77 @@ def _case_by_id(registry: dict[str, object], case_id: str) -> dict[str, object]:
     raise LabError(f"unknown case '{case_id}'. Available cases: {available}")
 
 
+def _repo_relative_path(path_text: str) -> Path:
+    path = Path(path_text)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def load_observation_artifact(case: dict[str, object]) -> dict[str, object] | None:
+    """Load the durable observation artifact for an observed case."""
+    artifact_path = _string_field(case, "observation_artifact")
+    if not artifact_path:
+        return None
+    path = _repo_relative_path(artifact_path)
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise LabError(f"observation artifact not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise LabError(f"observation artifact is not valid JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LabError(f"observation artifact must be a JSON object: {path}")
+    case_id = _string_field(case, "id")
+    if data.get("case_id") != case_id:
+        raise LabError(
+            f"observation artifact case_id mismatch for {case_id}: "
+            f"{data.get('case_id')!r}"
+        )
+    return data
+
+
+def _observed_payload_from_artifact(
+    cfg_validation: dict[str, object],
+) -> dict[str, object]:
+    observed = dict(cfg_validation)
+    observed.pop("status", None)
+    return observed
+
+
+def case_with_observation_artifact(
+    case: dict[str, object],
+) -> dict[str, object]:
+    """Return a case with observed data hydrated from its artifact."""
+    hydrated = dict(case)
+    artifact = load_observation_artifact(case)
+    if artifact is None:
+        return hydrated
+
+    artifact_cfg = artifact.get("cfg_validation")
+    registry_cfg = hydrated.get("cfg_validation", {})
+    if isinstance(artifact_cfg, dict) and isinstance(registry_cfg, dict):
+        cfg_validation = dict(registry_cfg)
+        cfg_validation["status"] = artifact_cfg.get(
+            "status",
+            cfg_validation.get("status"),
+        )
+        cfg_validation["observed"] = _observed_payload_from_artifact(artifact_cfg)
+        hydrated["cfg_validation"] = cfg_validation
+
+    structuring_observation = artifact.get("structuring_observation")
+    if isinstance(structuring_observation, dict):
+        observation = {
+            "status": artifact.get("status", "observed"),
+            **structuring_observation,
+        }
+        pseudocode = artifact.get("pseudocode")
+        if isinstance(pseudocode, dict):
+            observation["pseudocode"] = pseudocode
+        hydrated["observation"] = observation
+
+    hydrated["observation_artifact_data"] = artifact
+    return hydrated
+
+
 def _string_field(case: dict[str, object], key: str, *, default: str = "") -> str:
     value = case.get(key, default)
     return value if isinstance(value, str) else default
@@ -453,6 +524,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 def _cmd_show(args: argparse.Namespace) -> int:
     registry = load_registry(Path(args.registry))
     case = _case_by_id(registry, args.case_id)
+    case = case_with_observation_artifact(case)
     print(json.dumps(case, indent=2, sort_keys=True))
     return 0
 

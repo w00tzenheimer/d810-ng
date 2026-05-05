@@ -94,51 +94,22 @@
             "body block relative EA starts match the fixture label layout",
             "body opcode groups match the fixture operation sequence"
           ]
-        },
-        "observed": {
-          "accepted_maturity": "MMAT_LOCOPT",
-          "accepted_chain": [
-            0,
-            1,
-            4,
-            3,
-            2,
-            5
-          ],
-          "accepted_chain_length": 6,
-          "block_count_by_maturity": {
-            "MMAT_GENERATED": 6,
-            "MMAT_PREOPTIMIZED": 6,
-            "MMAT_LOCOPT": 6
-          }
         }
       },
       "observation_artifact": "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json",
-      "observation": {
-        "status": "observed",
-        "from_label": "dump_raw_hexrays_lab_single_pred_chain_merge_LOCOPT",
-        "to_label": "dump_raw_hexrays_lab_single_pred_chain_merge_GLBOPT1",
-        "from_block_count": 6,
-        "to_block_count": 3,
-        "vanished_count": 3,
-        "disposition_counts": {
-          "deleted": 2,
-          "synthesized_only": 1
-        },
-        "pseudocode": {
-          "before_lines": 5,
-          "after_lines": 5,
-          "changed": false,
-          "shape": "single expression assignment plus return"
-        },
-        "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
-      },
       "expected_evidence": [
         "compiled CFG validation report",
         "post-apply and post-d810 snapshots",
         "merge-causality disposition rows",
         "pseudocode before/after metrics"
-      ]
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 6,
+        "to_block_count": 3,
+        "vanished_count": 3,
+        "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
+      }
     },
     {
       "id": "multi_pred_boundary_barrier",
@@ -200,51 +171,22 @@
             "boundary successor relative EA is exactly 0x2d",
             "body opcode groups match the fixture operation sequence"
           ]
-        },
-        "observed": {
-          "accepted_maturity": "MMAT_LOCOPT",
-          "boundary_serial": 7,
-          "boundary_pred_relative_start_eas": [
-            "0x1b",
-            "0x41"
-          ],
-          "boundary_succ_relative_start_eas": [
-            "0x2d"
-          ],
-          "block_count_by_maturity": {
-            "MMAT_GENERATED": 9,
-            "MMAT_PREOPTIMIZED": 9,
-            "MMAT_LOCOPT": 9
-          }
         }
       },
       "observation_artifact": "tools/hexrays_structuring_lab/observations/multi_pred_boundary_barrier.json",
-      "observation": {
-        "status": "observed",
-        "from_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_LOCOPT",
-        "to_label": "dump_raw_hexrays_lab_multi_pred_boundary_barrier_GLBOPT1",
-        "from_block_count": 9,
-        "to_block_count": 5,
-        "vanished_count": 4,
-        "disposition_counts": {
-          "absorbed": 1,
-          "deleted": 2,
-          "synthesized_only": 1
-        },
-        "pseudocode": {
-          "before_lines": 12,
-          "after_lines": 12,
-          "changed": false,
-          "shape": "one guarded multiply plus folded xor/sub assignment and return"
-        },
-        "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
-      },
       "expected_evidence": [
         "compiled CFG validation report",
         "boundary block survives or vanishes by block-trace",
         "merge-causality disposition for protected boundary",
         "pseudocode shape after optimization"
-      ]
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 9,
+        "to_block_count": 5,
+        "vanished_count": 4,
+        "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
+      }
     },
     {
       "id": "side_effect_boundary_anchor",
@@ -307,54 +249,27 @@
             "boundary block has npred == 2 and nsucc == 1",
             "boundary predecessor relative EAs are exactly 0x1f and 0x4d",
             "boundary successor relative EA is exactly 0x81",
-            "boundary body ends in a call to the noinline volatile anchor",
+            "boundary body calls hexrays_lab_boundary_anchor_helper as the noinline volatile anchor",
             "body opcode groups match the fixture operation sequence"
-          ]
-        },
-        "observed": {
-          "accepted_maturity": "MMAT_LOCOPT",
-          "boundary_serial": 7,
-          "boundary_pred_relative_start_eas": [
-            "0x1f",
-            "0x4d"
           ],
-          "boundary_succ_relative_start_eas": [
-            "0x81"
-          ],
-          "block_count_by_maturity": {
-            "MMAT_GENERATED": 10,
-            "MMAT_PREOPTIMIZED": 10,
-            "MMAT_LOCOPT": 10
-          }
+          "boundary_call_target_name": "hexrays_lab_boundary_anchor_helper",
+          "boundary_call_target_ea": "0x18000b000"
         }
       },
       "observation_artifact": "tools/hexrays_structuring_lab/observations/side_effect_boundary_anchor.json",
-      "observation": {
-        "status": "observed",
-        "from_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_LOCOPT",
-        "to_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_GLBOPT1",
-        "from_block_count": 10,
-        "to_block_count": 5,
-        "vanished_count": 5,
-        "disposition_counts": {
-          "absorbed": 1,
-          "deleted": 3,
-          "synthesized_only": 1
-        },
-        "pseudocode": {
-          "before_lines": 12,
-          "after_lines": 12,
-          "changed": false,
-          "shape": "guarded multiply followed by helper-call expression folded into final assignment"
-        },
-        "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
-      },
       "expected_evidence": [
         "compiled CFG validation report",
         "boundary-local helper call appears in LOCOPT boundary block",
         "merge-causality disposition for protected boundary",
         "pseudocode retains the helper call in readable form"
-      ]
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 10,
+        "to_block_count": 5,
+        "vanished_count": 5,
+        "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
+      }
     }
   ]
 }

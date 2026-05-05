@@ -7,6 +7,7 @@ from pathlib import Path
 from tools.hexrays_structuring_lab.__main__ import (
     LabError,
     build_summary,
+    case_with_observation_artifact,
     load_registry,
     main,
     render_case_command,
@@ -71,6 +72,7 @@ def test_show_command_prints_case_json(capsys) -> None:
     )
     assert data["observation"]["from_block_count"] == 6
     assert data["observation"]["to_block_count"] == 3
+    assert data["observation_artifact_data"]["case_id"] == "single_pred_chain_merge"
 
 
 def test_show_command_prints_multi_pred_observation(capsys) -> None:
@@ -103,8 +105,51 @@ def test_show_command_prints_side_effect_observation(capsys) -> None:
         "side_effect_boundary_anchor.json"
     )
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
+    assert data["cfg_validation"]["observed"]["boundary_call_target_name"] == (
+        "hexrays_lab_boundary_anchor_helper"
+    )
+    assert data["cfg_validation"]["observed"]["boundary_call_target_ea"] == (
+        "0x18000b000"
+    )
     assert data["observation"]["from_block_count"] == 10
     assert data["observation"]["to_block_count"] == 5
+    assert (
+        data["observation_artifact_data"]["cfg_validation"]["boundary_call_targets"]
+        == [{
+            "ea": "0x18000b000",
+            "name": "hexrays_lab_boundary_anchor_helper",
+        }]
+    )
+
+
+def test_registry_observed_cases_keep_observations_in_artifacts() -> None:
+    registry = load_registry()
+    for case in registry["cases"]:
+        if case["status"] != "observed":
+            continue
+        assert "observation" not in case
+        assert "observed" not in case["cfg_validation"]
+        assert case["observation_artifact"].startswith(
+            "tools/hexrays_structuring_lab/observations/"
+        )
+        assert case["observation_summary"]["status"] == "observed"
+
+
+def test_case_hydration_loads_observation_artifact() -> None:
+    registry = load_registry()
+    case = next(
+        case for case in registry["cases"]
+        if case["id"] == "multi_pred_boundary_barrier"
+    )
+
+    hydrated = case_with_observation_artifact(case)
+
+    assert hydrated["cfg_validation"]["observed"]["boundary_serial"] == 7
+    assert hydrated["observation"]["from_block_count"] == 9
+    assert (
+        hydrated["observation_artifact_data"]["case_id"]
+        == "multi_pred_boundary_barrier"
+    )
 
 
 def test_registry_does_not_point_at_tmp_artifacts() -> None:

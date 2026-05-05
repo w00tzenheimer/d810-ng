@@ -134,12 +134,14 @@ python -m tools.hexrays_structuring_lab command single_pred_chain_merge
 python -m tools.hexrays_structuring_lab summarize --db path/to/diag.sqlite3
 ```
 
-The first case has a complete vertical slice: fixture, compiled-CFG validation,
-Docker dump, and checked-in observation artifact under `observations/`.
-Additional cases should follow the same gate: no structuring conclusion unless
-compiled-CFG validation passes first. The registry should not point at local
-`.tmp` dump or diagnostic DB paths; durable observations belong in checked-in
-JSON artifacts.
+The observed cases have complete vertical slices: fixture, compiled-CFG
+validation, Docker dump, and checked-in observation artifacts under
+`observations/`. Additional cases should follow the same gate: no structuring
+conclusion unless compiled-CFG validation passes first. The registry should not
+point at local `.tmp` dump or diagnostic DB paths, and it should only keep
+compact observation summaries. Durable observed predicates and structuring
+details belong in checked-in JSON artifacts; `show` hydrates those artifacts
+when printing a case.
 
 ## Status Model
 
