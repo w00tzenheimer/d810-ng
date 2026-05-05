@@ -939,6 +939,115 @@ def detect_hybrid_terminal_byte_corridors(
         seen_corridor_blocks.add(corridor)
         out_corridors.append(corridor)
 
+    # Family-based singleton admission.  After collecting maximal
+    # chains, look at every fragment NOT yet covered.  If a singleton
+    # transition-exit fragment is graph-adjacent (one DAG semantic edge
+    # away) to a handler whose fragment IS in an accepted corridor,
+    # admit it as a family singleton — the side-effect family
+    # (same output buffer / counter / cascade) is structurally
+    # established by the DAG edge.  This catches mid-cascade emit
+    # blocks like blk[111] whose owning handler doesn't itself reach
+    # a terminal but is a direct semantic predecessor of one that does.
+    accepted_handlers: set[int] = set()
+    for chain in maximal_chains:
+        accepted_handlers.update(chain)
+    accepted_blocks: set[int] = set()
+    for chain in maximal_chains:
+        for h in chain:
+            for b in fragments[h].blocks:
+                accepted_blocks.add(b)
+
+    # Build a *full* DAG-edge adjacency that traverses ALL state nodes
+    # (not just side-effect fragments).  Mid-cascade handlers like
+    # blk[111] frequently have their semantic edges bridged through
+    # non-side-effect transit handlers, so the side-effect-only
+    # adjacency from earlier doesn't surface the connection.
+    all_forward: dict[int, set[int]] = {}
+    all_inbound: dict[int, set[int]] = {}
+    for edge in dag.edges:
+        try:
+            kind = edge.kind
+        except AttributeError:
+            continue
+        if kind not in semantic_succ_kinds:
+            continue
+        try:
+            src_h = int(edge.source_key.handler_serial)
+        except AttributeError:
+            continue
+        tgt_key = getattr(edge, "target_key", None)
+        if tgt_key is None:
+            continue
+        try:
+            tgt_h = int(tgt_key.handler_serial)
+        except AttributeError:
+            continue
+        all_forward.setdefault(src_h, set()).add(tgt_h)
+        all_inbound.setdefault(tgt_h, set()).add(src_h)
+
+    for handler, frag in sorted(fragments.items()):
+        if handler in accepted_handlers:
+            continue
+        # Singleton transition fragments only — multi-block ones would
+        # already qualify via min_total_blocks; non-singleton terminal
+        # fragments are already covered by the chain logic.
+        if len(frag.blocks) > 1:
+            continue
+        if frag.exit_kind in terminal_exit_kinds:
+            continue
+        # Family proximity via the full state-DAG adjacency: traverse
+        # transit handlers (not just side-effect ones) so blk[111]-
+        # style mid-cascade emits chain through their non-side-effect
+        # state-routing nodes back to an accepted cascade handler.
+        proximity_hops = 3
+        reachable_handlers: set[int] = {handler}
+        frontier: set[int] = {handler}
+        for _ in range(proximity_hops):
+            next_frontier: set[int] = set()
+            for h in frontier:
+                next_frontier.update(all_forward.get(h, ()))
+                next_frontier.update(all_inbound.get(h, ()))
+            next_frontier -= reachable_handlers
+            if not next_frontier:
+                break
+            reachable_handlers.update(next_frontier)
+            frontier = next_frontier
+        family_neighbors = (reachable_handlers - {handler}) & accepted_handlers
+        if not family_neighbors:
+            logger.info(
+                "DAG: FAMILY_SINGLETON_REJECTED block=%s handler=%d "
+                "exit_kind=%s reason=no_accepted_neighbor",
+                list(frag.blocks),
+                handler,
+                frag.exit_kind,
+            )
+            continue
+        # Avoid emitting a corridor identical to an existing one.
+        corridor = tuple(frag.blocks)
+        if corridor in seen_corridor_blocks:
+            continue
+        if any(b in accepted_blocks for b in corridor):
+            # Block already covered by a multi-handler chain; nothing
+            # new to emit.
+            logger.info(
+                "DAG: FAMILY_SINGLETON_REDUNDANT block=%s handler=%d "
+                "matched_corridor=blocks_already_protected",
+                list(frag.blocks),
+                handler,
+            )
+            continue
+        seen_corridor_blocks.add(corridor)
+        out_corridors.append(corridor)
+        accepted_blocks.update(corridor)
+        logger.info(
+            "DAG: FAMILY_SINGLETON_ACCEPTED block=%s handler=%d "
+            "exit_kind=%s family_neighbors=%s",
+            list(frag.blocks),
+            handler,
+            frag.exit_kind,
+            sorted(family_neighbors),
+        )
+
     out_corridors.sort(key=lambda c: c[0])
     return tuple(out_corridors)
 
