@@ -27,6 +27,7 @@ hint influence.  See :class:`~d810.core.gate_modes.GateOperationMode`.
 from __future__ import annotations
 
 import os
+import traceback
 
 import ida_hexrays
 from pathlib import Path
@@ -37,6 +38,10 @@ from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
+)
+from d810.recon.flow.return_frontier_carrier_audit import (
+    audit_return_frontier_carriers,
+    is_audit_enabled as is_return_carrier_audit_enabled,
 )
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
@@ -768,6 +773,31 @@ class HodurUnflattener(GenericUnflatteningRule):
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
 
+        # Observability-only: classify return-frontier carrier identity.
+        # Default off; gated by D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT=1.
+        if is_return_carrier_audit_enabled():
+            try:
+                corridors: tuple[tuple[int, ...], ...] = ()
+                dag = getattr(snapshot, "dag", None)
+                if dag is not None:
+                    raw = getattr(dag, "side_effect_corridors", ()) or ()
+                    try:
+                        corridors = tuple(
+                            tuple(int(b) for b in chain) for chain in raw
+                        )
+                    except (TypeError, ValueError):
+                        corridors = ()
+                audit_return_frontier_carriers(
+                    mba=self.mba,
+                    side_effect_corridors=corridors,
+                    label="post_pipeline",
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "return-frontier carrier audit failed (non-critical)",
+                    exc_info=True,
+                )
+
         self._capture_post_pipeline_diagnostic_snapshot()
 
         if not pipeline:
@@ -863,6 +893,20 @@ class HodurUnflattener(GenericUnflatteningRule):
         predecessor ``80`` and migrate the setup instructions into that private
         conditional clone so defs and immediate uses are kept together.
         """
+        # NOTE: This legacy sample-specific repair bypasses PatchPlan by using
+        # DeferredGraphModifier directly.  That means block creation here has
+        # no planner lineage and no transaction-engine provenance.  Keep it
+        # disabled until we can either port it to a PlanFragment/PatchPlan or
+        # prove it is dead enough to delete.  The stack trace below is
+        # intentional diagnostic noise while we track why this hook is still
+        # reached from the orchestrator.
+        unflat_logger.warning(
+            "sub7ffd bundle stabilize DISABLED: direct DeferredGraphModifier path"
+            " bypasses PatchPlan; HodurUnflattener currently calls this after"
+            " any non-empty pipeline before post_bundle_stabilize\ncaller stack:\n%s",
+            "".join(traceback.format_stack()[-40:]),
+        )
+        return 0
         if int(getattr(self.mba, "entry_ea", 0) or 0) != _SUB7FFD_FUNC_EA:
             return 0
         unflat_logger.info(
@@ -1331,6 +1375,23 @@ class HodurUnflattener(GenericUnflatteningRule):
         Returns:
             True if a redirect was successfully queued or already resolved, False on failure.
         """
+        # NOTE: This legacy helper queues directly on DeferredGraphModifier
+        # instead of returning graph modifications through PlanFragment ->
+        # PatchPlan.  It should not be used by the modern Hodur pipeline.  If
+        # this warning fires, treat it as a call-site bug and port that caller
+        # to ModificationBuilder/PatchPlan before re-enabling behavior.
+        unflat_logger.warning(
+            "legacy _queue_handler_redirect DISABLED: direct deferred path"
+            " bypasses PatchPlan\ncaller stack:\n%s",
+            "".join(traceback.format_stack()[-40:]),
+        )
+        self._last_redirect_meta = {
+            "kind": "disabled_legacy_queue_handler_redirect",
+            "source_block": getattr(path, "exit_block", None),
+            "via_pred": None,
+            "target": target,
+        }
+        return False
         def _safe_npred(blk: "ida_hexrays.mblock_t | None") -> int:
             if blk is None:
                 return -1
@@ -1851,14 +1912,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         wired by the reconstruction strategy.
         """
         mba = self.mba
-        if mba is None or mba.qty <= 1:
+        qty = int(getattr(mba, "qty", 0) or 0) if mba is not None else 0
+        if qty <= 1:
             return 0
 
         visited: set[int] = set()
         queue: list[int] = [0]
         while queue:
             serial = queue.pop(0)
-            if serial in visited or serial < 0 or serial >= mba.qty:
+            if serial in visited or serial < 0 or serial >= qty:
                 continue
             visited.add(serial)
             blk = mba.get_mblock(serial)
@@ -1869,7 +1931,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 if succ not in visited:
                     queue.append(succ)
 
-        stop_serial = mba.qty - 1
+        stop_serial = qty - 1
         unreachable = {
             serial
             for serial in range(mba.qty)
