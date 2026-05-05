@@ -421,6 +421,7 @@ class StateWriteReconstructionStrategy:
             modifications=modifications,
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
+            mba=mba,
         )
         if not shared_result.accepted_candidates and not shared_result.rejected_candidates:
             return 0
@@ -794,6 +795,7 @@ class StateWriteReconstructionStrategy:
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
             force_clone_shared_blocks=force_clone_primary_shared_blocks,
+            mba=mba,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(run)
         primary_probe_rejected_candidates = _collect_rejected_reconstruction_candidates(run)
@@ -916,6 +918,7 @@ class StateWriteReconstructionStrategy:
                 modifications=modifications,
                 owned_blocks=owned_blocks,
                 owned_edges=owned_edges,
+                mba=mba,
             )
             fallback_accepted_candidates = _collect_accepted_reconstruction_candidates(
                 fallback_run
@@ -1134,6 +1137,7 @@ class StateWriteReconstructionStrategy:
             owned_edges=owned_edges,
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
+            mba=mba,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results

@@ -1912,6 +1912,12 @@ class LinearizedFlowGraphStrategy:
                 int(collapsed_same_target_conditionals),
             )
 
+        # TODO(loop-bound-writer-guard): mba is not currently in scope at
+        # this LFG entry point.  execute_shared_group_reconstruction logs a
+        # RECON_SHARED_GROUP_BOUND_WRITER_GUARD_SKIPPED line when mba is
+        # None, so any bound-writer cascade routed through this path will
+        # be visible in d810.log.  Plumb mba here once the surrounding LFG
+        # snapshot/state object exposes it.
         run = execute_primary_reconstruction_modifications(
             raw_candidates=raw_candidates,
             flow_graph=flow_graph,
@@ -1942,6 +1948,9 @@ class LinearizedFlowGraphStrategy:
                 region.region_name,
                 len(narrow_branch_local_fallback_candidates),
             )
+            # TODO(loop-bound-writer-guard): same plumbing gap as the
+            # primary call above; relies on the explicit skip-log inside
+            # execute_shared_group_reconstruction for visibility.
             fallback_run = execute_primary_reconstruction_modifications(
                 raw_candidates=list(narrow_branch_local_fallback_candidates),
                 flow_graph=flow_graph,
@@ -2686,3 +2695,23 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
                 blk_label(mba, dispatcher_serial) if mba else f"blk[{dispatcher_serial}]",
             ),
         )
+
+
+# NOTE: The legacy LinearizedFlowGraphStrategy still owns the callback wiring
+# for these helper seams, while the region-first subclass is no longer part of
+# the default Hodur strategy list. Keep the base class method surface intact
+# until this file is split cleanly or the legacy strategy is deleted outright.
+for _lfg_helper_name in (
+    "_apply_bounded_postprocess",
+    "_emit_residual_dispatcher_handoffs",
+    "_normalize_projected_alias_handoffs",
+    "_emit_path_tail_redirect",
+    "_emit_dag_redirect",
+    "_disconnect_bst_comparison_nodes",
+):
+    setattr(
+        LinearizedFlowGraphStrategy,
+        _lfg_helper_name,
+        SemanticStructuredRegionStrategy.__dict__[_lfg_helper_name],
+    )
+del _lfg_helper_name

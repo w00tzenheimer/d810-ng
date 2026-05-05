@@ -14,6 +14,10 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
+from d810.cfg.loop_bound_writer_guard import (
+    LoopBoundWriterDiagnostic,
+    detect_loop_bound_writer_redirect,
+)
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
 from d810.cfg.reconstruction_modification_planning import (
@@ -444,6 +448,7 @@ def execute_shared_group_reconstruction(
     owned_edges: set[tuple[int, int]],
     force_clone: bool = False,
     allow_divergent_per_pred_redirect: bool = False,
+    mba=None,
 ) -> SharedGroupExecutionResult:
     if _should_hoist_sub7ffd_shared_group(int(shared_block), candidates):
         modification = RedirectBranch(
@@ -485,6 +490,45 @@ def execute_shared_group_reconstruction(
             rejected_candidates=(),
             rejection_reason=None,
         )
+
+    if mba is None:
+        # Surfaced explicitly so we can audit which call paths bypass the
+        # bound-writer guard.  A silent skip here is what masked the
+        # original cascade -- never let the absence of mba happen quietly.
+        logger.debug(
+            "RECON_SHARED_GROUP_BOUND_WRITER_GUARD_SKIPPED shared=blk[%d] "
+            "reason=mba_unavailable via_preds=%s",
+            int(shared_block),
+            tuple(int(c.via_pred) for c in ordered_input_candidates),
+        )
+    else:
+        bound_writer_match: tuple[int, LoopBoundWriterDiagnostic] | None = None
+        for candidate in ordered_input_candidates:
+            diag = detect_loop_bound_writer_redirect(mba, int(candidate.via_pred))
+            if diag is not None:
+                bound_writer_match = (int(candidate.via_pred), diag)
+                break
+        if bound_writer_match is not None:
+            via_pred_serial, diag = bound_writer_match
+            logger.info(
+                "RECON_SHARED_GROUP_REJECTED_BOUND_WRITER shared=blk[%d] "
+                "via_pred=blk[%d] bound_stkoff=0x%x bound_writer_ea=0x%x "
+                "loop_test_ea=0x%x counter_stkoff=0x%x",
+                int(shared_block),
+                via_pred_serial,
+                diag.bound_stkoff,
+                diag.bound_writer_ea,
+                diag.loop_test_ea,
+                diag.counter_stkoff,
+            )
+            return SharedGroupExecutionResult(
+                shared_block=int(shared_block),
+                accepted_candidates=(),
+                rejected_candidates=tuple(
+                    candidate for candidate in candidates if candidate.via_pred is not None
+                ),
+                rejection_reason="loop_bound_writer_guard",
+            )
 
     shared_plan = plan_shared_group_reconstruction_modifications(
         flow_graph=flow_graph,
@@ -595,6 +639,7 @@ def apply_shared_group_reachability_fallback(
     allow_divergent_per_pred_redirect: bool = True,
     force_clone_shared_blocks: frozenset[int] | set[int] = frozenset(),
     force_keep_per_pred_shared_blocks: frozenset[int] | set[int] = frozenset(),
+    mba=None,
 ) -> tuple[SharedGroupExecutionResult, ...]:
     has_per_pred_shared_groups = any(
         result.emission_mode == "per_pred_redirect"
@@ -739,6 +784,7 @@ def apply_shared_group_reachability_fallback(
                     allow_divergent_per_pred_redirect=bool(
                         allow_divergent_per_pred_redirect
                     ),
+                    mba=mba,
                 )
                 continue
             trial_modifications = list(modifications)
@@ -776,6 +822,7 @@ def apply_shared_group_reachability_fallback(
                 allow_divergent_per_pred_redirect=bool(
                     allow_divergent_per_pred_redirect
                 ),
+                mba=mba,
             )
 
         rebuilt_results: list[SharedGroupExecutionResult] = []
@@ -806,6 +853,7 @@ def execute_primary_reconstruction_modifications(
     allow_divergent_shared_group_redirects: bool = True,
     direct_redirect_veto=None,
     conditional_redirect_veto=None,
+    mba=None,
 ) -> PrimaryReconstructionExecutionResult:
     direct_groups: defaultdict[int, list] = defaultdict(list)
     shared_groups: defaultdict[int, list] = defaultdict(list)
@@ -1231,6 +1279,7 @@ def execute_primary_reconstruction_modifications(
             allow_divergent_per_pred_redirect=bool(
                 allow_divergent_shared_group_redirects
             ),
+            mba=mba,
         )
         zero_mods = _collect_zero_state_write_modifications(
             tuple(shared_result.accepted_candidates),

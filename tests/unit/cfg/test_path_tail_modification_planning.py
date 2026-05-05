@@ -6,6 +6,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.path_tail_modification_planning import (
+    LoopBoundWriterDiagnostic,
     PathTailEmissionKind,
     PathTailRedirectContext,
     apply_path_tail_emission_plan,
@@ -259,3 +260,90 @@ class TestApplyPathTailEmissionPlan:
         assert claimed_exits == {}
         assert claimed_path_edges == {}
         assert blocked_sources == {10}
+
+
+class TestLoopBoundWriterGuard:
+    def test_rejects_when_diagnostic_present(self):
+        decision = plan_path_tail_redirect(
+            PathTailRedirectContext(
+                source_block=183,
+                target_entry=224,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_in_report_exit_owned=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                foreign_exact_owner_label=None,
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_nsucc=1,
+                source_npred=1,
+                source_succs=(184,),
+                source_preds=(181,),
+                old_target=184,
+                emitted_already=False,
+                shared_handoff_target=None,
+                via_pred=None,
+                via_pred_succs=(),
+                existing_exit_target=None,
+                existing_1way_target=None,
+                existing_path_edge_target=None,
+                via_pred_blocked=False,
+                via_pred_terminal_protected=False,
+                source_is_conditional_branch=False,
+                source_anchor_block=183,
+                source_branch_arm=None,
+                other_preds=(),
+                loop_bound_writer_diag=LoopBoundWriterDiagnostic(
+                    bound_stkoff=0x388,
+                    bound_writer_ea=0x180015EDC,
+                    loop_test_ea=0x180013B0E,
+                    counter_stkoff=0x508,
+                ),
+            )
+        )
+
+        assert not decision.accepted
+        assert decision.rejection_reason == "loop_bound_writer_guard"
+        assert decision.emission_plan is None
+
+    def test_accepts_when_diagnostic_absent(self):
+        decision = plan_path_tail_redirect(
+            PathTailRedirectContext(
+                source_block=20,
+                target_entry=30,
+                source_handler_is_report_exit=False,
+                ordered_path_head_is_report_exit=False,
+                source_in_report_exit_owned=False,
+                source_blocked=False,
+                source_terminal_protected=False,
+                foreign_exact_owner_label=None,
+                backward_same_corridor=False,
+                allow_semantic_handoff=False,
+                target_reaches_source=False,
+                source_nsucc=1,
+                source_npred=1,
+                source_succs=(6,),
+                source_preds=(10,),
+                old_target=6,
+                emitted_already=False,
+                shared_handoff_target=None,
+                via_pred=None,
+                via_pred_succs=(),
+                existing_exit_target=None,
+                existing_1way_target=None,
+                existing_path_edge_target=None,
+                via_pred_blocked=False,
+                via_pred_terminal_protected=False,
+                source_is_conditional_branch=False,
+                source_anchor_block=20,
+                source_branch_arm=None,
+                other_preds=(),
+            )
+        )
+
+        assert decision.accepted
+        assert decision.rejection_reason == ""
+        assert decision.emission_plan is not None
+        assert decision.emission_plan.kind == PathTailEmissionKind.DIRECT_GOTO

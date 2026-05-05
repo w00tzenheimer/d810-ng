@@ -3382,6 +3382,7 @@ class HandlerChainComposerStrategy:
                 else None
             ),
             conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
+            mba=mba,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(
             run
@@ -3494,6 +3495,7 @@ class HandlerChainComposerStrategy:
                     else None
                 ),
                 conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
+                mba=mba,
             )
             for result in fallback_run.conditional_results:
                 candidate = result.candidate
@@ -3652,6 +3654,7 @@ class HandlerChainComposerStrategy:
             owned_edges=owned_edges,
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
+            mba=mba,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results
