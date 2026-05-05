@@ -139,7 +139,87 @@
         "op_4",
         "op_55"
       ]
-    }
+    },
+    "boundary_call_target_name": "hexrays_lab_boundary_anchor_helper",
+    "boundary_call_target_ea": "0x18000b000",
+    "boundary_call_targets": [
+      {
+        "ea": "0x18000b000",
+        "name": "hexrays_lab_boundary_anchor_helper"
+      }
+    ],
+    "boundary_instructions": [
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_4",
+        "dstr": "mov    #0.1, cf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_4",
+        "dstr": "mov    #0.1, of.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_33",
+        "dstr": "setz   (%var_8.4 ^ #0x55AA.4), #0.4, zf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_31",
+        "dstr": "setp   (%var_8.4 ^ #0x55AA.4), #0.4, pf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_29",
+        "dstr": "sets   %var_8.4, sf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_9",
+        "dstr": "xdu    (%var_8.4 ^ #0x55AA.4), rax.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b16d",
+        "opcode_name": "op_21",
+        "dstr": "xor    %var_8.4, #0x55AA.4, %var_8.4",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b171",
+        "opcode_name": "op_9",
+        "dstr": "xdu    %var_8.4, rdx.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b175",
+        "opcode_name": "op_4",
+        "dstr": "mov    &($dword_18001C454).8, rcx.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b17c",
+        "opcode_name": "op_56",
+        "dstr": "call   $hexrays_lab_boundary_anchor_helper",
+        "call_target_name": "hexrays_lab_boundary_anchor_helper",
+        "call_target_ea": "0x18000b000"
+      }
+    ]
   },
   "structuring_observation": {
     "from_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_LOCOPT",
