@@ -720,6 +720,73 @@ def detect_hybrid_terminal_byte_corridors(
             continue
         fragments[frag.handler_serial] = frag
 
+    # Per-named-block diagnostic.  When env var
+    # ``D810_RECON_DEBUG_CORRIDOR_BLOCKS=N,M,K`` is set, for each named
+    # block report which state node owns it, which local segment, the
+    # side-effect classification, the fragment exit_kind, and whether
+    # it was kept in any qualifying chain.  Distinguishes the four
+    # rejection causes:
+    #   * "missing fragment" (no state node owns this block)
+    #   * "block not in side-effect segment of fragment"
+    #   * "fragment too small" (caller's min_total_blocks bound)
+    #   * "in shared suffix not attached to chain"
+    debug_blocks_env = os.environ.get(
+        "D810_RECON_DEBUG_CORRIDOR_BLOCKS", ""
+    )
+    debug_blocks: set[int] = set()
+    if debug_blocks_env.strip():
+        for tok in debug_blocks_env.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                debug_blocks.add(int(tok, 0))
+            except ValueError:
+                continue
+    if debug_blocks:
+        # Build reverse maps: block_serial -> (node, segment_id).
+        block_to_node: dict[int, "StateDagNode"] = {}
+        block_to_segment: dict[int, str] = {}
+        block_in_side_effect_seg: dict[int, bool] = {}
+        for node in dag.nodes:
+            for seg in tuple(getattr(node, "local_segments", ()) or ()):
+                seg_id = str(getattr(seg, "segment_id", ""))
+                seg_blocks = tuple(
+                    int(b) for b in (getattr(seg, "blocks", ()) or ())
+                )
+                seg_has_se = False
+                for owned in seg_blocks:
+                    blk = flow_graph.get_block(owned)
+                    if blk is None:
+                        continue
+                    if _block_has_side_effect_opcode(blk, side_effect_ops):
+                        seg_has_se = True
+                        break
+                for owned in seg_blocks:
+                    block_to_node[owned] = node
+                    block_to_segment[owned] = seg_id
+                    block_in_side_effect_seg[owned] = seg_has_se
+        for nb in sorted(debug_blocks):
+            owning_node = block_to_node.get(nb)
+            seg_id = block_to_segment.get(nb)
+            in_se_seg = block_in_side_effect_seg.get(nb)
+            handler = (
+                int(getattr(owning_node, "handler_serial", -1))
+                if owning_node is not None
+                else None
+            )
+            frag = fragments.get(handler) if handler is not None else None
+            logger.info(
+                "DAG: corridor-debug block=%d node_handler=%s segment=%s "
+                "in_se_seg=%s fragment_blocks=%s fragment_exit_kind=%s",
+                nb,
+                handler,
+                seg_id,
+                in_se_seg,
+                list(frag.blocks) if frag is not None else None,
+                frag.exit_kind if frag is not None else None,
+            )
+
     if not fragments:
         return ()
 
@@ -767,12 +834,16 @@ def detect_hybrid_terminal_byte_corridors(
 
     terminal_exit_kinds = {"terminal", "local_terminal_edge"}
 
-    # Even single-fragment chains qualify if the fragment is large
-    # enough on its own (>= min_total_blocks side-effect blocks).
-    # This is the essential change vs. the prior strict-terminal
-    # variant: TRANSITION-exited fragments contribute to the
-    # side-effect family even if they don't end at the function
-    # terminal, because a downstream handler in the cascade does.
+    # Single-fragment chains qualify when:
+    #   * the fragment has >= min_total_blocks side-effect blocks
+    #     (e.g. handler=101 owns blk[101]+blk[103]), OR
+    #   * the fragment's exit_kind is terminal/local_terminal_edge —
+    #     the cascade's tail-emit blocks (e.g. handler=118 owns just
+    #     blk[118] with terminal exit, handler=217 owns blk[217] with
+    #     terminal exit) are semantically part of the corridor's sink
+    #     even when they're singletons; HCC must not rewrite them
+    #     because the structurer reaches them only via the cascade's
+    #     ordered exit edge.
     for head_handler in sorted(fragments):
         # DFS expansion; cap at max_chain_handlers depth.
         stack: list[tuple[list[int], set[int]]] = [(
@@ -786,7 +857,15 @@ def detect_hybrid_terminal_byte_corridors(
             total_blocks = sum(
                 len(fragments[h].blocks) for h in chain_handlers
             )
-            if total_blocks >= int(min_total_blocks):
+            chain_has_terminal = any(
+                fragments[h].exit_kind in terminal_exit_kinds
+                for h in chain_handlers
+            )
+            qualifies = (
+                total_blocks >= int(min_total_blocks)
+                or chain_has_terminal
+            )
+            if qualifies:
                 qualifying_chains.append(tuple(chain_handlers))
             # Stop expanding when current fragment has terminal-style exit.
             if current_frag.exit_kind in terminal_exit_kinds:
@@ -842,7 +921,17 @@ def detect_hybrid_terminal_byte_corridors(
                     continue
                 seen.add(owned)
                 ordered_blocks.append(owned)
-        if len(ordered_blocks) < int(min_total_blocks):
+        chain_has_terminal = any(
+            fragments[h].exit_kind in terminal_exit_kinds for h in chain
+        )
+        # Accept singletons when the chain reaches a terminal exit;
+        # otherwise fall back to the min_total_blocks bound.
+        if not ordered_blocks:
+            continue
+        if (
+            len(ordered_blocks) < int(min_total_blocks)
+            and not chain_has_terminal
+        ):
             continue
         corridor = tuple(ordered_blocks)
         if corridor in seen_corridor_blocks:
