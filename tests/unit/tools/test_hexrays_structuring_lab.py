@@ -171,6 +171,15 @@ def test_show_command_prints_conditional_shell_observation(capsys) -> None:
     )
     assert data["cfg_validation"]["observed"]["shell_serial"] == 9
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 6
+    assert (
+        data["cfg_validation"]["observed"][
+            "entry_to_shell_paths_relative_start_eas"
+        ]
+        == [
+            ["0x1b", "0x76"],
+            ["0x1d", "0x62", "0x76"],
+        ]
+    )
     assert data["cfg_validation"]["observed"]["shell_arm_paths_relative_start_eas"] == [
         ["0x84", "0x57", "0x41"],
         ["0x86", "0x41"],
@@ -230,6 +239,37 @@ def test_matrix_hydrates_observed_outcomes() -> None:
     assert rows_by_case["clean_conditional_fork"]["locopt_blocks"] == 9
     assert rows_by_case["clean_conditional_fork"]["glbopt1_blocks"] == 6
     assert rows_by_case["clean_conditional_fork"]["pseudocode_changed"] is False
+
+
+def test_matrix_rejects_invalid_artifact_outcome(tmp_path: Path) -> None:
+    artifact = tmp_path / "bad_observation.json"
+    artifact.write_text(json.dumps({
+        "case_id": "bad_case",
+        "status": "observed",
+        "cfg_validation": {"status": "passed"},
+        "structuring_observation": {
+            "from_block_count": 1,
+            "to_block_count": 1,
+            "vanished_count": 0,
+            "outcome_class": "typo_class",
+        },
+    }))
+    registry = {
+        "cases": [{
+            "id": "bad_case",
+            "status": "observed",
+            "cfg_validation": {"status": "passed"},
+            "observation_artifact": str(artifact),
+        }],
+    }
+
+    try:
+        build_matrix(registry)
+    except LabError as exc:
+        assert "invalid outcome_class" in str(exc)
+        assert "typo_class" in str(exc)
+    else:
+        raise AssertionError("expected invalid artifact outcome_class to fail")
 
 
 def test_matrix_command_prints_decision_table(capsys) -> None:

@@ -137,6 +137,10 @@ CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE = [
     43,
 ]
 CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS = ["0x1b", "0x1d"]
+CONDITIONAL_SHELL_ENTRY_TO_SHELL_PATHS_RELATIVE_STARTS = [
+    ["0x1b", "0x76"],
+    ["0x1d", "0x62", "0x76"],
+]
 CONDITIONAL_SHELL_RELATIVE_START = "0x76"
 CONDITIONAL_SHELL_OPCODE_SIGNATURE = [9, 4, 4, 33, 31, 4, 44]
 CONDITIONAL_SHELL_INCOMING_RELATIVE_STARTS = ["0x1b", "0x62"]
@@ -647,6 +651,15 @@ def _conditional_shell_signature(
         _relative_ea(block["start_ea"], func_ea)
         for block in entry_succ_blocks
     ]
+    signature["entry_to_shell_paths_relative_start_eas"] = [
+        _successor_path_relative_starts(
+            blocks_by_serial=blocks_by_serial,
+            start_block=block,
+            func_ea=func_ea,
+            stop_relative_start=CONDITIONAL_SHELL_RELATIVE_START,
+        )
+        for block in entry_succ_blocks
+    ]
     signature["shell_serial"] = shell["serial"]
     signature["shell_relative_start_ea"] = CONDITIONAL_SHELL_RELATIVE_START
     signature["shell"] = shell
@@ -796,6 +809,8 @@ def _matches_conditional_shell_fixture(
         == CONDITIONAL_SHELL_ENTRY_OPCODE_SIGNATURE
         and signature["entry_succ_relative_start_eas"]
         == CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS
+        and signature["entry_to_shell_paths_relative_start_eas"]
+        == CONDITIONAL_SHELL_ENTRY_TO_SHELL_PATHS_RELATIVE_STARTS
         and shell["type"] == "BLT_2WAY"
         and shell["npred"] == 2
         and shell["nsucc"] == 2
@@ -894,6 +909,9 @@ def _case_expected(case_id: str) -> dict[str, object]:
             "entry_successor_relative_start_eas": (
                 CONDITIONAL_SHELL_ENTRY_SUCCESSOR_RELATIVE_STARTS
             ),
+            "entry_to_shell_paths_relative_start_eas": (
+                CONDITIONAL_SHELL_ENTRY_TO_SHELL_PATHS_RELATIVE_STARTS
+            ),
             "shell_relative_start_ea": CONDITIONAL_SHELL_RELATIVE_START,
             "shell_opcode_signature": CONDITIONAL_SHELL_OPCODE_SIGNATURE,
             "shell_incoming_relative_start_eas": (
@@ -928,6 +946,7 @@ def _case_expected(case_id: str) -> dict[str, object]:
             "edge_predicates": [
                 "entry block exists at fixture relative EA 0x0",
                 "entry block has BLT_2WAY type with nsucc == 2",
+                "entry-to-shell paths are exactly 0x1b -> 0x76 and 0x1d -> 0x62 -> 0x76",
                 "shell block exists at fixture relative EA 0x76",
                 "shell block has npred == 2 and nsucc == 2",
                 "shell arm paths are exactly 0x84 -> 0x57 -> 0x41 and 0x86 -> 0x41",
@@ -1291,6 +1310,9 @@ class TestHexraysStructuringLabCfgValidation:
                 assert shell["type"] == "BLT_2WAY"
                 assert shell["instruction_opcodes"] == (
                     CONDITIONAL_SHELL_OPCODE_SIGNATURE
+                )
+                assert signature["entry_to_shell_paths_relative_start_eas"] == (
+                    CONDITIONAL_SHELL_ENTRY_TO_SHELL_PATHS_RELATIVE_STARTS
                 )
                 assert signature["shell_arm_paths_relative_start_eas"] == (
                     CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS

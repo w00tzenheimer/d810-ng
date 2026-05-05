@@ -83,16 +83,10 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, object]:
             )
         observation_summary = case.get("observation_summary")
         if isinstance(observation_summary, dict):
-            outcome_class = observation_summary.get("outcome_class")
-            if (
-                outcome_class is not None
-                and outcome_class not in ALLOWED_OUTCOME_CLASSES
-            ):
-                allowed = ", ".join(sorted(ALLOWED_OUTCOME_CLASSES))
-                raise LabError(
-                    f"case '{case_id}' has invalid outcome_class "
-                    f"{outcome_class!r}; expected one of: {allowed}"
-                )
+            _validate_outcome_class(
+                case_id,
+                observation_summary.get("outcome_class"),
+            )
         seen.add(case_id)
     return data
 
@@ -145,6 +139,17 @@ def _observed_payload_from_artifact(
     return observed
 
 
+def _validate_outcome_class(case_id: str, outcome_class: object) -> None:
+    if outcome_class is None:
+        return
+    if outcome_class not in ALLOWED_OUTCOME_CLASSES:
+        allowed = ", ".join(sorted(ALLOWED_OUTCOME_CLASSES))
+        raise LabError(
+            f"case '{case_id}' has invalid outcome_class "
+            f"{outcome_class!r}; expected one of: {allowed}"
+        )
+
+
 def case_with_observation_artifact(
     case: dict[str, object],
 ) -> dict[str, object]:
@@ -167,6 +172,11 @@ def case_with_observation_artifact(
 
     structuring_observation = artifact.get("structuring_observation")
     if isinstance(structuring_observation, dict):
+        case_id = _string_field(hydrated, "id")
+        _validate_outcome_class(
+            case_id,
+            structuring_observation.get("outcome_class"),
+        )
         observation = {
             "status": artifact.get("status", "observed"),
             **structuring_observation,
