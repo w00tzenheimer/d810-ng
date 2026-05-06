@@ -445,3 +445,97 @@ class TestDetectLoopCounterWritebackTail:
         )
 
         assert detect_loop_counter_writeback_tail(None, tail_block_serial=2) is None
+
+
+# Extended ``_Mop`` shim with a ``dstr`` attribute so the
+# ``collect_const_var_refs_in_block`` helper can extract ``%var_NNN``
+# tokens from the destination operand.  The helper inspects the dest
+# mop's ``dstr`` (either a callable or a string).
+class _MopWithDstr(_Mop):
+    def __init__(self, t: int, *, s=None, nnn=None, d=None, dstr_text: str = ""):
+        super().__init__(t, s=s, nnn=nnn, d=d)
+        self.dstr = dstr_text
+
+
+class TestCollectConstVarRefsInBlock:
+    def _build_const_writer(
+        self,
+        const_pairs: tuple[tuple[int, str], ...],
+    ) -> _Mblock:
+        """Build a block with ``m_mov #const, %var_NNN`` per pair."""
+        insns: list[_Insn] = []
+        for stkoff, var_token in const_pairs:
+            src = _Mop(_MOP_N, nnn=_NumValue(0xC0FFEE0000 + stkoff))
+            dst = _MopWithDstr(
+                _MOP_S, s=_StkOff(stkoff), dstr_text=f"%var_{var_token}.8"
+            )
+            insns.append(_Insn(0x04, l=src, d=dst))  # m_mov
+        return _Mblock(_chain(*insns))
+
+    def test_returns_var_refs_for_const_writes(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        block = self._build_const_writer(
+            (
+                (0x228, "228"),
+                (0x650, "650"),
+                (0x658, "658"),
+                (0x660, "660"),
+            )
+        )
+        mba = _Mba([block])
+
+        refs = collect_const_var_refs_in_block(mba, block_serial=0)
+
+        assert refs == frozenset({"228", "650", "658", "660"})
+
+    def test_returns_empty_when_block_has_no_const_writes(
+        self, fake_ida_hexrays_with_lvar,
+    ):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        # Block has only an arithmetic instruction, no m_mov #const, K.
+        var_x = _Mop(_MOP_S, s=_StkOff(0x100))
+        var_y = _Mop(_MOP_S, s=_StkOff(0x108))
+        dest = _Mop(_MOP_S, s=_StkOff(0x200))
+        arith = _Insn(_M_ADD, l=var_x, r=var_y, d=dest)
+        mba = _Mba([_Mblock(_chain(arith))])
+
+        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
+
+    def test_returns_empty_when_block_serial_out_of_range(
+        self, fake_ida_hexrays_with_lvar,
+    ):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        block = self._build_const_writer(((0x228, "228"),))
+        mba = _Mba([block])
+
+        # Block 5 is past mba.qty == 1.
+        assert collect_const_var_refs_in_block(mba, block_serial=5) == frozenset()
+
+    def test_returns_empty_when_mba_is_none(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        assert collect_const_var_refs_in_block(None, block_serial=0) == frozenset()
+
+    def test_skips_non_constant_movs(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        # m_mov mop_S(K1), mop_S(K2) -- not a constant, must not match.
+        src_var = _Mop(_MOP_S, s=_StkOff(0x100))
+        dst_var = _MopWithDstr(_MOP_S, s=_StkOff(0x200), dstr_text="%var_200.8")
+        insn = _Insn(0x04, l=src_var, d=dst_var)
+        mba = _Mba([_Mblock(_chain(insn))])
+
+        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()

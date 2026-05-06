@@ -112,3 +112,105 @@ def test_validated_view_filters_inactive_observations() -> None:
 
 def test_canonical_json_is_stable() -> None:
     assert canonical_json({"z": 1, "a": {"b": 2}}) == '{"a":{"b":2},"z":1}'
+
+
+def test_return_carrier_sites_for_block_filters_by_block_serial() -> None:
+    """``ValidatedFactView.return_carrier_sites_for_block`` returns
+    only ``ReturnCarrierFact`` observations whose payload's
+    ``upstream_writer_block_serial`` matches the requested serial,
+    after stale / REMAPPED / CONTRADICTED / SUPERSEDED / IDENTITY_LOST
+    filtering applied by ``active_observations``."""
+    matching = FactObservation(
+        fact_id="return:matching",
+        kind="ReturnCarrierFact",
+        semantic_key="return:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    other_block = FactObservation(
+        fact_id="return:other",
+        kind="ReturnCarrierFact",
+        semantic_key="return:other:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 100},
+    )
+    other_kind = FactObservation(
+        fact_id="byte_emit:matching_block",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    no_payload = FactObservation(
+        fact_id="return:nopayload",
+        kind="ReturnCarrierFact",
+        semantic_key="return:nopayload:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(matching, other_block, other_kind, no_payload),
+    )
+
+    sites = view.return_carrier_sites_for_block(93)
+
+    # Only the ReturnCarrierFact with the matching block_serial returns.
+    assert len(sites) == 1
+    assert sites[0].fact_id == "return:matching"
+
+
+def test_return_carrier_sites_for_block_excludes_stale_facts() -> None:
+    """A ReturnCarrierFact whose lifecycle status is IDENTITY_LOST /
+    STALE / etc. must NOT appear in the result -- the helper goes
+    through ``active_observations``."""
+    stale = FactObservation(
+        fact_id="return:stale",
+        kind="ReturnCarrierFact",
+        semantic_key="return:stale:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.return_carrier_sites_for_block(93) == ()
+
+
+def test_return_carrier_sites_for_block_returns_empty_on_invalid_input() -> None:
+    """Non-int / out-of-range block serials must return an empty tuple
+    rather than raising."""
+    obs = FactObservation(
+        fact_id="return:matching",
+        kind="ReturnCarrierFact",
+        semantic_key="return:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    view = ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,))
+
+    assert view.return_carrier_sites_for_block("not-an-int") == ()  # type: ignore[arg-type]
+    # Block serial 0 is not "matching" since the fact is for blk[93].
+    assert view.return_carrier_sites_for_block(0) == ()

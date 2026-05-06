@@ -123,6 +123,11 @@ class AnalysisSnapshot:
     # tolerate ``None`` during the Phase A scaffolding rollout.
     discovery: ReconRoundDiscoveryContext | None = None
 
+    # Validated maturity fact view. Most strategy uses are diagnostic, but
+    # narrow consumers may use validated facts as semantic safety gates when
+    # the behavior is explicitly fact-backed and does not rediscover intent.
+    diagnostic_fact_view: object | None = None
+
     # Cumulative planner-context view built from prior fragments' metadata
     # entries under the "planner_ctx" key. The engine rebuilds this before
     # each strategy's plan() call, aggregating every LinearizationDecision /
