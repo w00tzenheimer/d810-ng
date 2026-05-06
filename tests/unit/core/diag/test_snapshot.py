@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+from d810.core.diag.formatting import format_block_id
 from d810.core.diag.schema import create_tables
 from d810.cfg.block_lineage import (
     BlockLineageEntry,
@@ -23,6 +24,10 @@ from d810.core.diag.snapshot import (
     dag_node_diagnostic_state,
     snapshot_dag,
     snapshot_dag_local_facts,
+    snapshot_fact_conflicts,
+    snapshot_fact_consumers,
+    snapshot_fact_mappings,
+    snapshot_fact_observations,
     snapshot_mba,
     snapshot_modifications,
     snapshot_rendered_program,
@@ -45,6 +50,13 @@ from d810.recon.flow.linearized_state_dag import (
     StateLocalEdge,
     StateLocalSegment,
     StateNodeKind,
+)
+from d810.recon.facts import (
+    FactConflict,
+    FactConsumerRecord,
+    FactMapping,
+    FactObservation,
+    FactStatus,
 )
 
 
@@ -358,11 +370,199 @@ class TestSnapshotMba:
         ).fetchone()
         assert row[0] == "unknown"
 
+
+class TestSnapshotFacts:
+    def test_writes_fact_lifecycle_rows(
+        self, mock_mba_3_blocks: list[BlockSnapshot]
+    ) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        snap_id = snapshot_mba(
+            conn,
+            mock_mba_3_blocks,
+            label="facts",
+            func_ea=0x180012B60,
+            maturity="MMAT_LOCOPT",
+            phase="pre_d810",
+        )
+
+        snapshot_fact_observations(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                FactObservation(
+                    fact_id="induction:10",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:byte-counter",
+                    maturity="MMAT_LOCOPT",
+                    phase="pre_d810",
+                    confidence=0.95,
+                    source_block=10,
+                    source_ea=0x180013000,
+                    payload={"stkoff": 0x680},
+                    evidence=("write dominates loop",),
+                )
+            ],
+        )
+        snapshot_fact_mappings(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                FactMapping(
+                    source_fact_id="induction:10",
+                    source_maturity="MMAT_LOCOPT",
+                    target_maturity="MMAT_GLBOPT1",
+                    status=FactStatus.REMAPPED,
+                    confidence=0.8,
+                    target_block=20,
+                    reason="block duplicated",
+                )
+            ],
+        )
+        snapshot_fact_consumers(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                FactConsumerRecord(
+                    consumer="hodur.hcc",
+                    strategy="HandlerChainComposer",
+                    fact_id="induction:10",
+                    maturity="MMAT_GLBOPT1",
+                    decision="observed",
+                    payload={"mode": "dry_run"},
+                )
+            ],
+        )
+        snapshot_fact_conflicts(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                FactConflict(
+                    conflict_id="conflict:1",
+                    fact_id="induction:10",
+                    other_fact_id="induction:11",
+                    maturity="MMAT_GLBOPT1",
+                    conflict_kind="different_counter",
+                    reason="two counters claim same loop",
+                )
+            ],
+        )
+
+        obs = conn.execute(
+            "SELECT kind, payload, evidence, source_ea_hex "
+            "FROM fact_observations WHERE fact_id='induction:10'"
+        ).fetchone()
+        assert obs[0] == "InductionCarrierFact"
+        assert json.loads(obs[1]) == {"stkoff": 0x680}
+        assert json.loads(obs[2]) == ["write dominates loop"]
+        assert obs[3] == "0x0000000180013000"
+        assert conn.execute("SELECT status FROM fact_mappings").fetchone()[0] == "REMAPPED"
+        assert conn.execute("SELECT decision FROM fact_consumers").fetchone()[0] == "observed"
+        assert (
+            conn.execute("SELECT conflict_kind FROM fact_conflicts").fetchone()[0]
+            == "different_counter"
+        )
+
+    def test_fact_mapping_and_consumer_indices_append_across_calls(
+        self, mock_mba_3_blocks: list[BlockSnapshot]
+    ) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        snap_id = snapshot_mba(
+            conn,
+            mock_mba_3_blocks,
+            label="facts",
+            func_ea=0x180012B60,
+        )
+
+        snapshot_fact_mappings(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                {
+                    "source_fact_id": "a",
+                    "source_maturity": "MMAT_LOCOPT",
+                    "target_maturity": "MMAT_GLBOPT1",
+                    "status": "ACTIVE",
+                    "confidence": 1.0,
+                }
+            ],
+        )
+        snapshot_fact_mappings(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                {
+                    "source_fact_id": "b",
+                    "source_maturity": "MMAT_LOCOPT",
+                    "target_maturity": "MMAT_GLBOPT1",
+                    "status": "ACTIVE",
+                    "confidence": 1.0,
+                }
+            ],
+        )
+        snapshot_fact_consumers(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                {
+                    "consumer": "one",
+                    "strategy": "s",
+                    "fact_id": "a",
+                    "maturity": "MMAT_GLBOPT1",
+                    "decision": "used",
+                }
+            ],
+        )
+        snapshot_fact_consumers(
+            conn,
+            snap_id,
+            0x180012B60,
+            [
+                {
+                    "consumer": "two",
+                    "strategy": "s",
+                    "fact_id": "b",
+                    "maturity": "MMAT_GLBOPT1",
+                    "decision": "used",
+                }
+            ],
+        )
+
+        assert conn.execute(
+            "SELECT mapping_index, source_fact_id FROM fact_mappings "
+            "ORDER BY mapping_index"
+        ).fetchall() == [(0, "a"), (1, "b")]
+        assert conn.execute(
+            "SELECT consumer_index, consumer FROM fact_consumers "
+            "ORDER BY consumer_index"
+        ).fetchall() == [(0, "one"), (1, "two")]
+
     def test_block_snapshot_str(self) -> None:
         blk = _make_block(5, succs=[6], preds=[4])
         text = str(blk)
-        assert "blk[5]" in text
+        assert "blk[5]@synthetic" in text
         assert "BLT_1WAY" in text
+
+    def test_block_snapshot_str_uses_start_ea(self) -> None:
+        blk = _make_block(5, succs=[6], preds=[4])
+        blk.start_ea = 0x180015F08
+        text = str(blk)
+        assert "blk[5]@0x180015F08" in text
+
+    def test_format_block_id_marks_copy_lineage_and_unknown(self) -> None:
+        assert format_block_id(245, lineage_ea=0x180014848) == (
+            "blk[245]@copy-of:0x180014848"
+        )
+        assert format_block_id(245, synthetic=True) == "blk[245]@synthetic"
+        assert format_block_id(245) == "blk[245]@unknown"
 
     def test_instruction_snapshot_str(self) -> None:
         insn = _make_insn(0, dstr="mov #0xABC, %var_8.8")

@@ -98,6 +98,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_terminal_return_audit_from_store,
     load_transition_report_from_store,
 )
+from d810.recon.facts.model import FactConsumerRecord, FactStatus
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
@@ -253,6 +254,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Return frontier audit components
         self._return_site_provider = HodurReturnSiteProvider()
         self._audit_return_sites: tuple = ()  # Populated at pre_plan, reused across stages
+        self._fact_view_observed_keys: set[tuple[int, int, int]] = set()
 
     def configure(self, kwargs: dict) -> None:
         super().configure(kwargs)
@@ -309,6 +311,129 @@ class HodurUnflattener(GenericUnflatteningRule):
             return None
         transitions = family.initial_transitions
         return list(transitions) if transitions else None
+
+    def _observe_induction_fact_view(self, snapshot: AnalysisSnapshot) -> None:
+        """Record Hodur's read-only view of induction-carrier facts.
+
+        This is an observability adapter only.  It does not influence strategy
+        selection, planner inputs, or CFG modifications.
+        """
+        if self.flow_context is None:
+            return
+        func_ea = int(getattr(self.mba, "entry_ea", 0) or 0)
+        maturity = int(self.cur_maturity)
+        key = (func_ea, maturity, id(self.mba))
+        if key in self._fact_view_observed_keys:
+            return
+        self._fact_view_observed_keys.add(key)
+
+        try:
+            view = self.flow_context.validated_fact_view(maturity)
+        except Exception:
+            unflat_logger.exception(
+                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%d reason=view-error",
+                func_ea,
+                maturity,
+            )
+            return
+        if view is None:
+            return
+
+        induction_observations = tuple(
+            observation
+            for observation in view.observations
+            if observation.kind == "InductionCarrierFact"
+        )
+        if not induction_observations:
+            unflat_logger.info(
+                "HODUR_FACT_VIEW func=0x%x maturity=%s induction_total=0 "
+                "active=0 stale=0 lost=0 persisted=0",
+                func_ea,
+                view.maturity,
+            )
+            return
+
+        active_ids = {
+            observation.fact_id
+            for observation in view.active_observations
+            if observation.kind == "InductionCarrierFact"
+        }
+        stale_statuses = {
+            FactStatus.STALE,
+            FactStatus.CONTRADICTED,
+            FactStatus.SUPERSEDED,
+            FactStatus.IDENTITY_LOST,
+        }
+        status_by_fact: dict[str, list[str]] = {}
+        for mapping in view.mappings:
+            if mapping.source_fact_id not in {obs.fact_id for obs in induction_observations}:
+                continue
+            status_by_fact.setdefault(mapping.source_fact_id, []).append(
+                mapping.status.value
+            )
+
+        records: list[FactConsumerRecord] = []
+        lost_count = 0
+        stale_count = 0
+        for observation in induction_observations:
+            statuses = tuple(status_by_fact.get(observation.fact_id, ()))
+            is_active = observation.fact_id in active_ids
+            if not is_active:
+                stale_count += 1
+            if FactStatus.IDENTITY_LOST.value in statuses:
+                lost_count += 1
+            decision = "active" if is_active else "stale"
+            reason = (
+                "active induction fact visible to Hodur"
+                if is_active
+                else "induction fact inactive in Hodur view"
+            )
+            records.append(
+                FactConsumerRecord(
+                    consumer="hodur.unflattener",
+                    strategy="HodurUnflattener",
+                    fact_id=observation.fact_id,
+                    maturity=view.maturity,
+                    decision=decision,
+                    reason=reason,
+                    payload={
+                        "semantic_key": observation.semantic_key,
+                        "source_block": observation.source_block,
+                        "source_ea": observation.source_ea,
+                        "mop_signature": observation.mop_signature,
+                        "confidence": observation.confidence,
+                        "statuses": list(statuses),
+                        "has_stale_mapping": any(
+                            FactStatus(status) in stale_statuses for status in statuses
+                        ),
+                        "handler_count": snapshot.handler_count,
+                        "pass_index": self._actual_pass_count,
+                        "generation": int(getattr(self, "current_generation", 0)),
+                    },
+                )
+            )
+
+        persisted = 0
+        try:
+            persisted = self.flow_context.report_fact_consumers(tuple(records))
+        except Exception:
+            unflat_logger.exception(
+                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%s reason=persist-error",
+                func_ea,
+                view.maturity,
+            )
+        unflat_logger.info(
+            "HODUR_FACT_VIEW func=0x%x maturity=%s induction_total=%d "
+            "active=%d stale=%d lost=%d persisted=%d fact_ids=%s",
+            func_ea,
+            view.maturity,
+            len(induction_observations),
+            len(active_ids),
+            stale_count,
+            lost_count,
+            persisted,
+            [observation.fact_id for observation in induction_observations],
+        )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         """Check if this rule should be applied."""
@@ -375,6 +500,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             self._audit_return_sites = ()
         else:
             self._log_state_machine()
+        self._observe_induction_fact_view(snapshot)
 
         # 3-4. PLANNER_AUTHORITY: planner owns strategy polling + pipeline composition
         if state_machine is None:

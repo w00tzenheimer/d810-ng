@@ -32,6 +32,18 @@ from d810.recon.outcome import (
 )
 from d810.recon.phase import ReconPhase
 from d810.recon.flow_hints import derive_flow_context_summary
+from d810.recon.facts.model import (
+    FactConflict,
+    FactConsumerRecord,
+    FactMapping,
+    FactObservation,
+)
+from d810.recon.facts.model import ValidatedFactView
+from d810.recon.facts.runtime import (
+    FactCaptureSummary,
+    FactCollector,
+    FactLifecycleRuntime,
+)
 from d810.recon.store import ReconStore
 
 if TYPE_CHECKING:
@@ -87,6 +99,9 @@ class ReconAnalysisRuntime:
         self._current_func_ea: int = -1
         self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
         self._outcome_seen: set[tuple] = set()
+        self._fact_lifecycle = FactLifecycleRuntime(
+            persistence_callback=self._persist_maturity_facts,
+        )
 
     def reset_for_func(self, func_ea: int) -> bool:
         """Reset recon state -- deduplicates across managers.
@@ -105,6 +120,7 @@ class ReconAnalysisRuntime:
             self._persist_outcomes(prev_ea)
         self._current_func_ea = func_ea
         self._phase.reset(func_ea=func_ea)
+        self._fact_lifecycle.reset_for_func(func_ea)
         get_recon_writer(self._store.db_path).submit_sync(
             lambda store: store.clear_func(func_ea=func_ea)
         )
@@ -285,6 +301,126 @@ class ReconAnalysisRuntime:
             )
 
         return hints
+
+    def capture_maturity_facts(
+        self,
+        target: Any,
+        *,
+        func_ea: int,
+        maturity: int,
+        phase: str = "pre_d810",
+        snapshot_id: int | None = None,
+        diag_conn: Any = None,
+    ) -> FactCaptureSummary:
+        """Invoke maturity fact collection.
+
+        With the initial empty registry this is an observability hook only.
+        """
+        return self._fact_lifecycle.capture(
+            target,
+            func_ea=func_ea,
+            maturity=maturity,
+            phase=phase,
+            snapshot_id=snapshot_id,
+            diag_conn=diag_conn,
+        )
+
+    def register_fact_collector(self, collector: FactCollector) -> None:
+        """Register a maturity fact collector."""
+        self._fact_lifecycle.register(collector)
+
+    def validated_fact_view(self, func_ea: int, maturity: int | str) -> ValidatedFactView:
+        """Return the current validated fact view for one function."""
+        return self._fact_lifecycle.validated_view(func_ea, maturity)
+
+    def record_fact_consumers(
+        self,
+        func_ea: int,
+        consumers: tuple[FactConsumerRecord, ...],
+    ) -> int:
+        """Persist fact-consumer diagnostic rows into the latest diag snapshot.
+
+        This is intentionally observability-only. Missing diag DB state is
+        logged and ignored so consumers cannot affect decompilation behavior.
+        """
+        if not consumers:
+            return 0
+        try:
+            from d810.core.diag import get_diag_db
+            from d810.core.diag.snapshot import snapshot_fact_consumers
+
+            diag_conn = get_diag_db(func_ea)
+            if diag_conn is None:
+                logger.warning(
+                    "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=no-diag-db",
+                    func_ea,
+                    len(consumers),
+                )
+                return 0
+            func_hex = f"0x{int(func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+            row = diag_conn.execute(
+                "SELECT id FROM snapshots WHERE func_ea_hex=? "
+                "ORDER BY id DESC LIMIT 1",
+                (func_hex,),
+            ).fetchone()
+            if row is None:
+                logger.warning(
+                    "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=no-snapshot",
+                    func_ea,
+                    len(consumers),
+                )
+                return 0
+            pending: list[FactConsumerRecord] = []
+            for consumer in consumers:
+                exists = diag_conn.execute(
+                    "SELECT 1 FROM fact_consumers "
+                    "WHERE func_ea_hex=? AND consumer=? AND strategy=? "
+                    "AND fact_id=? AND maturity=? AND decision=? LIMIT 1",
+                    (
+                        func_hex,
+                        consumer.consumer,
+                        consumer.strategy,
+                        consumer.fact_id,
+                        consumer.maturity,
+                        consumer.decision,
+                    ),
+                ).fetchone()
+                if exists is None:
+                    pending.append(consumer)
+            if not pending:
+                return 0
+            snapshot_fact_consumers(diag_conn, int(row[0]), func_ea, tuple(pending))
+            return len(pending)
+        except Exception:
+            logger.exception(
+                "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=exception",
+                func_ea,
+                len(consumers),
+            )
+            return 0
+
+    @staticmethod
+    def _persist_maturity_facts(
+        diag_conn: Any,
+        snapshot_id: int,
+        func_ea: int,
+        observations: tuple[FactObservation, ...],
+        mappings: tuple[FactMapping, ...],
+        conflicts: tuple[FactConflict, ...] = (),
+    ) -> None:
+        """Persist collected maturity facts into the active diag DB snapshot."""
+        from d810.core.diag.snapshot import (
+            snapshot_fact_conflicts,
+            snapshot_fact_mappings,
+            snapshot_fact_observations,
+        )
+
+        if observations:
+            snapshot_fact_observations(diag_conn, snapshot_id, func_ea, observations)
+        if mappings:
+            snapshot_fact_mappings(diag_conn, snapshot_id, func_ea, mappings)
+        if conflicts:
+            snapshot_fact_conflicts(diag_conn, snapshot_id, func_ea, conflicts)
 
     def analyze_and_persist(self, func_ea: int) -> DeobfuscationHints | None:
         """Run analysis on current store contents and persist hints.

@@ -28,6 +28,10 @@ def test_create_tables_creates_all_expected_tables():
     assert "rendered_programs" in tables
     assert "rendered_program_nodes" in tables
     assert "rendered_program_lines" in tables
+    assert "fact_observations" in tables
+    assert "fact_mappings" in tables
+    assert "fact_consumers" in tables
+    assert "fact_conflicts" in tables
 
 
 def test_create_tables_idempotent():

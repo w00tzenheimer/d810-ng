@@ -52,12 +52,35 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         (218, 1, "BLT_1WAY", 1, 0, [219], [175, 207, 217], 1, None),
         (219, 0, "BLT_STOP", 0, 0, [], [218], 0, None),
     ]
+    block_eas = {
+        131: (0x180014852, 0x180014856),
+        32: (0x180013405, 0x180013409),
+        175: (0x180015C7A, 0x180015C7E),
+        207: (0x1800161C8, 0x1800161CC),
+        217: (0x1800164C5, 0x1800164C9),
+        218: (0x1800164CD, 0x1800164D1),
+    }
     for serial, btype, tname, nsucc, npred, succs, preds, icnt, meta in blocks:
+        start_hex, start_i64 = _dual(block_eas.get(serial, (None, None))[0])
+        end_hex, end_i64 = _dual(block_eas.get(serial, (None, None))[1])
         conn.execute(
             "INSERT INTO blocks VALUES "
-            "(1,?,?,?,NULL,NULL,NULL,NULL,?,?,?,?,?,?)",
-            (serial, btype, tname, nsucc, len(preds),
-             json.dumps(succs), json.dumps(preds), icnt, meta),
+            "(1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                serial,
+                btype,
+                tname,
+                start_hex,
+                start_i64,
+                end_hex,
+                end_i64,
+                nsucc,
+                len(preds),
+                json.dumps(succs),
+                json.dumps(preds),
+                icnt,
+                meta,
+            ),
         )
 
     # Key instructions -- the ones that matter for variable provenance
@@ -205,7 +228,7 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
             "state_family",
             "inline_single_level",
             "minimal",
-            6,
+            8,
             1,
         ),
     )
@@ -220,16 +243,18 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
             136,
             None,
             3,
-            6,
+            8,
         ),
     )
     rendered_lines = [
         (1, "semantic_reference_like", 1, None, 0, "statement", None, "=== LINEARIZED STATE PROGRAM (starting from 0x5D0AEBD3) ==="),
         (1, "semantic_reference_like", 2, None, 0, "blank", None, ""),
         (1, "semantic_reference_like", 3, 0, 0, "label", None, "STATE_139F2922:"),
-        (1, "semantic_reference_like", 4, 0, 1, "statement", None, "    v56 = v135 + v136 + v137;"),
-        (1, "semantic_reference_like", 5, 0, 1, "if", None, "    if (v56 == 0)"),
-        (1, "semantic_reference_like", 6, 0, 2, "goto", "STATE_16F7FF74", "        goto STATE_16F7FF74;"),
+        (1, "semantic_reference_like", 4, 0, 1, "comment", None, "    // entry blk[131]"),
+        (1, "semantic_reference_like", 5, 0, 1, "comment", None, "    // local-cfg: blk[131] -> blk[174]"),
+        (1, "semantic_reference_like", 6, 0, 1, "statement", None, "    v56 = v135 + v136 + v137;"),
+        (1, "semantic_reference_like", 7, 0, 1, "if", None, "    if (v56 == 0)"),
+        (1, "semantic_reference_like", 8, 0, 2, "goto", "STATE_16F7FF74", "        goto STATE_16F7FF74;"),
     ]
     conn.executemany(
         "INSERT INTO rendered_program_lines VALUES (?,?,?,?,?,?,?,?)",
