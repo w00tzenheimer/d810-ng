@@ -349,3 +349,122 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
     assert fact.payload["carrier_class"] == "stack_identity_carrier"
     assert "upstream_writer_ea" not in fact.payload
     assert "upstream_writer_var_refs" not in fact.payload
+
+
+def _multi_block_target(blocks: dict[int, list[InstructionSnapshot]]) -> SimpleNamespace:
+    """Build a snapshot with multiple blocks.  Each entry in ``blocks``
+    maps a block serial to its ordered instructions list."""
+    block_snapshots = {}
+    sorted_serials = sorted(blocks.keys())
+    for idx, serial in enumerate(sorted_serials):
+        succs = (
+            [sorted_serials[idx + 1]] if idx + 1 < len(sorted_serials) else []
+        )
+        preds = [sorted_serials[idx - 1]] if idx > 0 else []
+        block_snapshots[serial] = BlockSnapshot(
+            serial=serial,
+            block_type=1,
+            type_name="BLT_1WAY",
+            nsucc=len(succs),
+            npred=len(preds),
+            succs=succs,
+            preds=preds,
+            instructions=list(blocks[serial]),
+        )
+    return SimpleNamespace(blocks=block_snapshots)
+
+
+def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() -> None:
+    """Regression for the iteration-order scoping fix.
+
+    Function has THREE writers to the carrier slot ``%var_7C8`` (stkoff
+    0x7C8).  The carrier-mov is in the middle block.  A *later* block
+    overrides ``%var_7C8`` with an unrelated MBA.  The collector must
+    pick the writer that *precedes* the carrier-mov, not the
+    function-wide last writer.
+
+    Pre-fix the collector returned the late writer's payload (mirroring
+    the sub_7FFD ``upstream_writer_block_serial=254`` regression seen
+    on the live binary).  Post-fix the collector returns the canonical
+    writer in the predecessor block.
+    """
+    canonical_dstr = (
+        "add (9.8*(%var_40.8 & %var_228.8)), "
+        "(0x15.8*(bnot(%var_228.8) & ((%var_660.8+%var_650.8) ^ %var_658.8))), "
+        "%var_7C8.8"
+    )
+    late_unrelated_dstr = (
+        "add ((((4.8*(xdu.8(%var_1C8.1) | -0x80.8)))+#0xFE.8), %var_7C8.8"
+    )
+
+    canonical_writer = _insn(
+        index=0,
+        opcode_name="m_add",
+        dest_type="mop_S",
+        dest_stkoff=0x7C8,
+        dest_size=8,
+        src_l_type="mop_d",
+        src_l_stkoff=None,
+        src_r_type="mop_d",
+        src_r_stkoff=None,
+        dstr=canonical_dstr,
+    )
+    carrier_mov = _insn(
+        index=0,
+        opcode_name="m_mov",
+        dest_type="mop_S",
+        dest_stkoff=0x8,
+        dest_size=8,
+        src_l_type="mop_S",
+        src_l_stkoff=0x7C8,
+        dstr="mov %var_7C8.8, %var_8.8",
+    )
+    rax_trampoline = _insn(
+        index=1,
+        opcode_name="m_mov",
+        dest_type="mop_r",
+        dest_stkoff=None,
+        src_l_type="mop_S",
+        src_l_stkoff=0x8,
+        dstr="mov %var_8.8, rax.8",
+    )
+    late_writer = _insn(
+        index=0,
+        opcode_name="m_add",
+        dest_type="mop_S",
+        dest_stkoff=0x7C8,
+        dest_size=8,
+        src_l_type="mop_d",
+        src_l_stkoff=None,
+        src_r_type="mop_d",
+        src_r_stkoff=None,
+        dstr=late_unrelated_dstr,
+    )
+
+    target = _multi_block_target({
+        140: [canonical_writer],          # the canonical OLLVM MBA
+        141: [carrier_mov, rax_trampoline],  # the trampoline mov
+        254: [late_writer],               # function-wide LAST writer; not the reaching def
+    })
+
+    collector = ReturnCarrierFactCollector()
+    facts = collector.collect(
+        target,
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    # The canonical writer's identity must be recorded -- not the late
+    # function-wide writer.
+    assert fact.payload["upstream_writer_block_serial"] == 140
+    assert fact.payload["upstream_writer_dstr"] == canonical_dstr
+    refs = set(fact.payload["upstream_writer_var_refs"])
+    # Canonical OLLVM source vars must be present.
+    assert {"40", "228", "650", "658", "660"}.issubset(refs)
+    # The unrelated late writer's only operand var (var_1C8) must NOT
+    # appear -- proving we picked the canonical producer, not the late
+    # function-wide last writer.
+    assert "1c8" not in refs
