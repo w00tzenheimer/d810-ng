@@ -121,8 +121,19 @@ class HodurStrategyFamily(CFFStrategyFamily):
         min_state_constant: int = MIN_STATE_CONSTANT,
         min_state_constants: int = MIN_STATE_CONSTANTS,
         max_state_constants: int = MAX_STATE_CONSTANTS_HODUR,
+        fact_runtime: object | None = None,
         logger=None,
     ) -> None:
+        """Initialize the Hodur family adapter.
+
+        ``fact_runtime`` is the optional recon fact lifecycle runtime
+        (concretely a ``d810.recon.facts.runtime.FactLifecycleRuntime`` or any
+        object exposing ``validated_fact_view(func_ea, maturity)``).  When
+        provided, ``build_snapshot`` will populate
+        ``AnalysisSnapshot.diagnostic_fact_view`` so fact-rooted strategy
+        gates can consult validated facts.  Typed loosely to avoid an import
+        cycle into ``d810.recon.facts``.
+        """
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._disabled_strategy_names = frozenset(disabled_strategy_names or ())
         self._recon_only = bool(recon_only)
@@ -130,6 +141,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.min_state_constant = int(min_state_constant)
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
+        self._fact_runtime: object | None = fact_runtime
         selected_strategy_classes = (
             list(strategy_classes) if strategy_classes is not None else ALL_STRATEGIES
         )
@@ -139,6 +151,15 @@ class HodurStrategyFamily(CFFStrategyFamily):
             if cls.__name__ not in self._disabled_strategy_names
         ]
         self.reset_runtime_state()
+
+    def set_fact_runtime(self, fact_runtime: object | None) -> None:
+        """Late-binding setter for the recon fact lifecycle runtime.
+
+        ``HodurUnflattener`` constructs the family at __init__ time but the
+        recon runtime is wired in later via ``set_flow_context``.  Use this
+        setter to attach (or detach) the runtime once it becomes known.
+        """
+        self._fact_runtime = fact_runtime
 
     @property
     def name(self) -> str:
@@ -244,6 +265,11 @@ class HodurStrategyFamily(CFFStrategyFamily):
         dispatcher_cache = DispatcherCache.get_or_create(mba)
         reachability = self.compute_reachability_info(mba)
 
+        # Attach the recon fact view for this (func_ea, maturity), if a
+        # runtime is available.  Strategies may consult this for fact-rooted
+        # safety gates.  Never falls back to heuristics when absent.
+        fact_view = self._resolve_fact_view(mba)
+
         if state_machine is None:
             return AnalysisSnapshot(
                 mba=mba,
@@ -253,6 +279,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 maturity=mba.maturity,
                 pass_number=self._pass_number,
                 flow_graph=flow_graph,
+                diagnostic_fact_view=fact_view,
             )
 
         bst_result = None
@@ -383,6 +410,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
             initial_transitions=tuple(self._initial_transitions or ()),
             flow_graph=flow_graph,
             discovery=discovery,
+            diagnostic_fact_view=fact_view,
         )
 
     def record_progress(self, *, nb_changes: int) -> None:
@@ -942,6 +970,23 @@ class HodurStrategyFamily(CFFStrategyFamily):
         if sm.state_var.t == ida_hexrays.mop_S:
             return sm.state_var.s.off
         return None
+
+    def _resolve_fact_view(self, mba: object) -> object | None:
+        """Return the validated fact view for ``(func_ea, mba.maturity)``.
+
+        Returns ``None`` when no fact runtime is attached or when the
+        runtime fails to produce a view.  Strategy consumers must tolerate
+        ``None`` (no heuristic fallback).
+        """
+        runtime = self._fact_runtime
+        if runtime is None:
+            return None
+        try:
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            maturity = getattr(mba, "maturity", 0)
+            return runtime.validated_fact_view(func_ea, maturity)
+        except Exception:
+            return None
 
     def compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
         qty = mba.qty
