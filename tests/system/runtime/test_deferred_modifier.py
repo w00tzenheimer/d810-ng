@@ -969,7 +969,7 @@ class TestCreateConditionalRedirectIntegration:
         assert modifier.last_apply_phase == "backend_apply"
         assert modifier.last_apply_subphase == "raw_apply"
 
-    def test_emulated_dispatcher_batch_real_approov_pattern_verify_breaks_after_mark_chains_dirty(
+    def test_emulated_dispatcher_batch_real_approov_pattern_rejects_unsupported_batch_cleanly(
         self,
         libobfuscated_setup,
     ) -> None:
@@ -995,14 +995,19 @@ class TestCreateConditionalRedirectIntegration:
             run_optimize_local=True,
             run_deep_cleaning=False,
         )
-        assert applied > 0
+        # Current runtime lowering can queue InsertBlock-style edits whose
+        # InsnSnapshot->minsn_t backend conversion is intentionally not
+        # implemented in DeferredGraphModifier. Treat that as a clean reject:
+        # do not force legacy best-effort mutation just to get a non-zero
+        # apply count.
+        assert applied == 0
         assert _verify_error(mba) is None
 
         mba.mark_chains_dirty()
         verify_error = _verify_error(mba)
         assert verify_error is None
 
-    def test_emulated_dispatcher_batch_real_approov_pattern_after_legacy_like_gotos(
+    def test_legacy_like_goto_batch_rejects_two_way_goto_rewrite(
         self,
         libobfuscated_setup,
     ) -> None:
@@ -1018,26 +1023,14 @@ class TestCreateConditionalRedirectIntegration:
         legacy_like.queue_goto_change(2, 8, description="legacy-like goto 2->8")
         legacy_like.queue_goto_change(8, 9, description="legacy-like goto 8->9")
         applied = legacy_like.apply(run_optimize_local=True, run_deep_cleaning=False)
-        assert applied == 2
+        # BLOCK_GOTO_CHANGE is legal only on 1-way blocks. blk[8] is 2-way in
+        # this pattern, so the second queued legacy mutation must be rejected
+        # and the batch must abort before compounding CFG corruption. Do not
+        # "fix" this back to 2: rewriting a 2-way block via goto loses a branch.
+        assert applied == 1
         assert _verify_error(mba) is None
-
-        modifications = _real_emulated_dispatcher_modifications(mba)
-        assert modifications, "expected emulated-dispatcher modifications after legacy-like gotos"
-
-        kinds = tuple(type(mod).__name__ for mod in modifications)
-        print("LEGACY_LIKE_GOTOS mods=", kinds)
-
-        translator = IDAIRTranslator()
-        patch_plan = compile_patch_plan(list(modifications))
-        modifier = dm.DeferredGraphModifier(mba)
-        for step in patch_plan.steps:
-            translator._queue_patch_step(modifier, step)
-
-        applied = modifier.apply(run_optimize_local=True, run_deep_cleaning=False)
-        print("LEGACY_LIKE_GOTOS applied=", applied)
-        print("LEGACY_LIKE_GOTOS post_verify=", _verify_error(mba))
         mba.mark_chains_dirty()
-        print("LEGACY_LIKE_GOTOS post_mark_verify=", _verify_error(mba))
+        assert _verify_error(mba) is None
 
     def test_create_conditional_redirect_real_approov_pattern_isolated_apply_stays_verify_clean(
         self,

@@ -31,6 +31,7 @@ for the flow-context consumer.
 from __future__ import annotations
 
 import enum
+from copy import copy
 from dataclasses import dataclass, field, replace
 from d810.core.typing import TYPE_CHECKING
 
@@ -806,6 +807,7 @@ def _format_disagreement_detail(record: DagDisagreementRecord) -> str:
     )
 
 
+@dataclass
 class PipelinePolicy:
     """Policy for strategy selection and ordering."""
 
@@ -886,9 +888,13 @@ class UnflatteningPlanner:
             cumulative_view = CumulativePlannerView.compile(
                 fragments, dag_authority=dag_authority,
             )
-            snapshot_for_strategy = replace(
-                snapshot, cumulative_planner_view=cumulative_view
-            )
+            try:
+                snapshot_for_strategy = replace(
+                    snapshot, cumulative_planner_view=cumulative_view
+                )
+            except TypeError:
+                snapshot_for_strategy = copy(snapshot)
+                setattr(snapshot_for_strategy, "cumulative_planner_view", cumulative_view)
             try:
                 fragment = strategy.plan(snapshot_for_strategy)
             except Exception as e:
