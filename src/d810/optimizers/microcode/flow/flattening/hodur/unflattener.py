@@ -256,6 +256,37 @@ class HodurUnflattener(GenericUnflatteningRule):
         self._audit_return_sites: tuple = ()  # Populated at pre_plan, reused across stages
         self._fact_view_observed_keys: set[tuple[int, int, int]] = set()
 
+    def set_flow_context(self, flow_context):
+        """Propagate the fact-view provider down to the family adapter.
+
+        ``FlowMaturityContext.validated_fact_view(maturity)`` already calls
+        the recon runtime's view provider with the current ``func_ea`` baked
+        in; the family expects ``validated_fact_view(func_ea, maturity)``.
+        Wrap with a small adapter so the existing recon plumbing is reused
+        without exposing a new side-channel.
+        """
+        super().set_flow_context(flow_context)
+        if flow_context is None:
+            self._family.set_fact_runtime(None)
+            return
+
+        flow_ctx = flow_context
+
+        class _FactRuntimeAdapter:
+            __slots__ = ("_ctx",)
+
+            def __init__(self, ctx) -> None:
+                self._ctx = ctx
+
+            def validated_fact_view(self, func_ea, maturity):
+                # ``func_ea`` is determined by the flow context itself (the
+                # context is per-decompilation), so we forward only the
+                # maturity argument.  Returns None when no fact lifecycle
+                # callbacks are attached.
+                return self._ctx.validated_fact_view(maturity)
+
+        self._family.set_fact_runtime(_FactRuntimeAdapter(flow_ctx))
+
     def configure(self, kwargs: dict) -> None:
         super().configure(kwargs)
         if "min_state_constant" in self.config:

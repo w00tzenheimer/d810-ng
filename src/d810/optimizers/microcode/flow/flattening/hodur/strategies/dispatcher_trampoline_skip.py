@@ -32,6 +32,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
+from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
@@ -123,7 +124,8 @@ class DispatcherTrampolineSkipStrategy:
         builder = ModificationBuilder.from_snapshot(snapshot)
         modifications: list = []
         owned_blocks: set[int] = set()
-        skip_count = 0
+        skip_count: int = 0
+        skipped_return_carrier_const_feed: int = 0
 
         for i in range(mba.qty):
             blk = mba.get_mblock(i)
@@ -166,6 +168,53 @@ class DispatcherTrampolineSkipStrategy:
             if tgt_blk is None:
                 continue
 
+            # Return-carrier const-feed gate.  Only fact-rooted, never
+            # heuristic.  ``bst_root_serial`` is, by construction, the
+            # redirect's old_target (the dispatcher root state-flow node), so
+            # the user's "old_target is dispatcher/root state-flow" condition
+            # is auto-satisfied here.
+            fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+            should_reject = False
+            if fact_view is not None:
+                sites = fact_view.return_carrier_sites_for_block(target_serial)
+                if sites:
+                    introduced = collect_const_var_refs_in_block(mba, serial)
+                    if introduced:
+                        for site in sites:
+                            fact_refs = frozenset(
+                                str(ref).lower()
+                                for ref in (site.payload or {}).get(
+                                    "upstream_writer_var_refs", ()
+                                )
+                            )
+                            overlap = introduced & fact_refs
+                            if overlap:
+                                logger.info(
+                                    "RECON_REDIRECT_REJECTED_RETURN_CARRIER_CONST_FEED "
+                                    "source=blk[%d] target=blk[%d] old_target=blk[%d] "
+                                    "fact_id=%s overlap=%s "
+                                    "upstream_writer_ea=0x%x upstream_writer_block=%s",
+                                    serial,
+                                    target_serial,
+                                    bst_root_serial,
+                                    site.fact_id,
+                                    sorted(overlap),
+                                    int(
+                                        (site.payload or {}).get(
+                                            "upstream_writer_ea"
+                                        )
+                                        or 0
+                                    ),
+                                    (site.payload or {}).get(
+                                        "upstream_writer_block_serial"
+                                    ),
+                                )
+                                should_reject = True
+                                break
+            if should_reject:
+                skipped_return_carrier_const_feed += 1
+                continue
+
             modifications.append(
                 builder.goto_redirect(
                     source_block=serial,
@@ -185,6 +234,11 @@ class DispatcherTrampolineSkipStrategy:
         logger.info(
             "DispatcherTrampolineSkip: %d trampolines redirected",
             skip_count,
+        )
+        logger.info(
+            "DispatcherTrampolineSkip: skipped %d redirects rejected by "
+            "return-carrier const-feed gate",
+            skipped_return_carrier_const_feed,
         )
 
         if not modifications:
