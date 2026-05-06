@@ -254,5 +254,37 @@ class ValidatedFactView:
         }
         return tuple(obs for obs in self.observations if obs.fact_id not in stale_ids)
 
+    def return_carrier_sites_for_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active ``ReturnCarrierFact`` observations whose
+        ``upstream_writer_block_serial`` payload entry matches ``block_serial``.
+
+        Only observations surfaced via :pyattr:`active_observations` are
+        considered: STALE, REMAPPED, CONTRADICTED, SUPERSEDED, and
+        IDENTITY_LOST mappings are excluded so consumers never act on
+        invalidated facts.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "ReturnCarrierFact":
+                continue
+            payload = obs.payload or {}
+            raw = payload.get("upstream_writer_block_serial")
+            if raw is None:
+                continue
+            try:
+                if int(raw) != target:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
     def with_mapping(self, mapping: FactMapping) -> "ValidatedFactView":
         return replace(self, mappings=(*self.mappings, mapping))

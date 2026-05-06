@@ -20,9 +20,18 @@ chain:
 
 Both detectors are read-only and return ``None`` on any failure so the
 surrounding code can keep its existing fast-path semantics.
+
+This module also exposes :func:`collect_const_var_refs_in_block`, a
+neutral helper that returns the set of ``%var_NNN`` *name tokens*
+(matching the format used by ``ReturnCarrierFact.payload
+['upstream_writer_var_refs']``) that the given block writes via the
+canonical ``m_mov #const, %var_NNN`` shape.  It exists here because the
+existing fakes/conventions for this file cover the same opcode/mop
+surface.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # Loop-bound mask values seen on OLLVM-style flattened functions where the
@@ -633,7 +642,85 @@ def detect_loop_counter_writeback_tail(
     )
 
 
+# Match ``%var_NNN`` references in microcode dstr text.  Mirrors the
+# pattern used by ``ReturnCarrierFactCollector._extract_var_refs`` so
+# the result of :func:`collect_const_var_refs_in_block` can be
+# intersected directly with the
+# ``ReturnCarrierFact.payload["upstream_writer_var_refs"]`` payload.
+_VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
+
+
+def collect_const_var_refs_in_block(mba, block_serial: int) -> frozenset[str]:
+    """Return the set of ``%var_NNN`` name tokens written via
+    ``m_mov #const, %var_NNN`` in the given block.
+
+    Names are parsed from the destination operand's ``dstr`` (the
+    textual rendering used by the IDA microcode dump) rather than from
+    raw ``mop_S.s.off``.  This matches the format stored in
+    ``ReturnCarrierFact.payload["upstream_writer_var_refs"]``, so the
+    two sets can be intersected without an additional translation step.
+
+    The walk is read-only and returns an empty set on any failure
+    (missing block, missing instructions, bad opcodes, parse errors).
+    """
+    if mba is None:
+        return frozenset()
+    try:
+        import ida_hexrays  # local import for the lazy IDA-runtime guard
+    except ImportError:
+        return frozenset()
+    try:
+        m_mov = int(getattr(ida_hexrays, "m_mov"))
+        mop_n = int(getattr(ida_hexrays, "mop_n"))
+        mop_S = int(getattr(ida_hexrays, "mop_S"))
+    except (AttributeError, TypeError):
+        return frozenset()
+    try:
+        serial = int(block_serial)
+        qty = int(getattr(mba, "qty", 0))
+    except (TypeError, ValueError):
+        return frozenset()
+    if serial < 0 or serial >= qty:
+        return frozenset()
+    try:
+        blk = mba.get_mblock(serial)
+    except Exception:
+        return frozenset()
+    if blk is None:
+        return frozenset()
+
+    found: set[str] = set()
+    for insn in _iter_block_insns(blk):
+        if _safe_int_attr(insn, "opcode") != m_mov:
+            continue
+        l = getattr(insn, "l", None)
+        d = getattr(insn, "d", None)
+        if l is None or d is None:
+            continue
+        try:
+            if int(l.t) != mop_n or int(d.t) != mop_S:
+                continue
+        except (AttributeError, TypeError):
+            continue
+        # Parse %var_NNN from the destination's dstr so the result
+        # matches the ReturnCarrierFact upstream_writer_var_refs format.
+        dstr_method = getattr(d, "dstr", None)
+        text: str | None = None
+        if callable(dstr_method):
+            try:
+                text = dstr_method()
+            except Exception:
+                text = None
+        elif isinstance(dstr_method, str):
+            text = dstr_method
+        if text:
+            for match in _VAR_REF_RE.finditer(text):
+                found.add(match.group(1).lower())
+    return frozenset(found)
+
+
 __all__ = [
+    "collect_const_var_refs_in_block",
     "detect_loop_bound_writer_redirect",
     "detect_loop_counter_writeback_tail",
     "LoopBoundWriterDiagnostic",
