@@ -31,12 +31,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 
+from d810.core.diag.formatting import format_block_id
 from d810.core.diag.query import (
     block_detail,
     chain,
+    fact_conflicts,
+    fact_consumers,
+    fact_diff,
+    fact_mappings,
+    fact_observations,
+    fact_trace,
     rendered_program_nodes,
     rendered_program_text,
     rendered_program_variants,
@@ -120,22 +128,101 @@ def _snapshot_header(conn: sqlite3.Connection, snapshot_id: int) -> str:
     return f"snapshot {snapshot_id} [{maturity} / {phase}]"
 
 
-def _format_chain(results: list[dict]) -> str:
+def _metadata_lineage_ea(meta: dict | None) -> str | int | None:
+    if not meta:
+        return None
+    for key in (
+        "lineage_ea",
+        "copy_of_ea",
+        "copied_from_ea",
+        "source_ea",
+        "body_source_ea",
+    ):
+        value = meta.get(key)
+        if value is not None:
+            return value[0] if isinstance(value, list) and value else value
+    lineage_eas = meta.get("lineage_eas")
+    if isinstance(lineage_eas, list) and lineage_eas:
+        return lineage_eas[0]
+    return None
+
+
+def _block_identity_lookup(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, str]:
+    rows = conn.execute(
+        "SELECT serial, start_ea_hex, meta FROM blocks WHERE snapshot_id=?",
+        (snapshot_id,),
+    ).fetchall()
+    lookup: dict[int, str] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            serial = row["serial"]
+            start_ea_hex = row["start_ea_hex"]
+            meta_text = row["meta"]
+        else:
+            serial, start_ea_hex, meta_text = row
+        meta: dict | None = None
+        if meta_text:
+            try:
+                meta = json.loads(meta_text)
+            except json.JSONDecodeError:
+                meta = None
+        lookup[int(serial)] = format_block_id(
+            int(serial),
+            start_ea=start_ea_hex,
+            lineage_ea=_metadata_lineage_ea(meta),
+            synthetic=start_ea_hex is None,
+        )
+    return lookup
+
+
+def _block_id_from_lookup(serial: int | None, lookup: dict[int, str]) -> str:
+    if serial is None:
+        return format_block_id(None)
+    return lookup.get(int(serial), format_block_id(int(serial)))
+
+
+def _block_id_from_row(row: dict, serial_key: str = "serial") -> str:
+    serial = row.get(serial_key)
+    start_ea = row.get("start_ea_hex") or row.get("block_start_ea_hex")
+    meta = row.get("meta_parsed")
+    if meta is None and row.get("meta"):
+        try:
+            meta = json.loads(row["meta"])
+        except json.JSONDecodeError:
+            meta = None
+    return format_block_id(
+        serial,
+        start_ea=start_ea,
+        lineage_ea=_metadata_lineage_ea(meta),
+        synthetic=start_ea is None,
+    )
+
+
+def _format_block_list(serials: list[int], lookup: dict[int, str]) -> str:
+    return "[" + ", ".join(_block_id_from_lookup(serial, lookup) for serial in serials) + "]"
+
+
+def _format_chain(results: list[dict], block_lookup: dict[int, str] | None = None) -> str:
     """Format chain query output as compact per-block summary."""
+    lookup = block_lookup or {}
     lines: list[str] = []
     for blk in results:
         if blk is None:
             lines.append("  (missing)")
             continue
         serial = blk["serial"]
+        block_id = _block_id_from_row(blk)
         tname = blk["type_name"]
         succs = blk["succs"]
+        succs_str = _format_block_list(succs, lookup)
         hop_status = ""
         if "hop_ok" in blk:
             expected = blk["expected_next"]
-            ok_str = "OK" if blk["hop_ok"] else f"BROKEN (actual: {succs[0] if succs else '?'})"
-            hop_status = f" hop->{expected} {ok_str}"
-        lines.append(f"blk[{serial}] {tname} succs={succs}{hop_status}")
+            expected_str = _block_id_from_lookup(expected, lookup)
+            actual_str = _block_id_from_lookup(succs[0], lookup) if succs else "?"
+            ok_str = "OK" if blk["hop_ok"] else f"BROKEN (actual: {actual_str})"
+            hop_status = f" hop->{expected_str} {ok_str}"
+        lines.append(f"{block_id} {tname} succs={succs_str}{hop_status}")
         for insn in blk.get("instructions", []):
             idx = insn["insn_index"]
             dstr = insn["dstr"] or ""
@@ -147,31 +234,37 @@ def _format_var_writes(writes: list[dict]) -> str:
     """Format var-writes query output as table."""
     lines: list[str] = []
     for w in writes:
-        blk = w["block_serial"]
+        blk = _block_id_from_row(w, "block_serial")
         idx = w["insn_index"]
         dstr = w.get("dstr", "") or ""
         stkoff = w.get("dest_stkoff")
         stkoff_str = f"stkoff=0x{stkoff:X}" if stkoff is not None else "stkoff=None"
         src_stkoff = w.get("src_l_stkoff")
         src_str = f"src_stkoff=0x{src_stkoff:X}" if src_stkoff is not None else "src=None"
-        lines.append(f"blk[{blk}].{idx}  {dstr:<40s} {stkoff_str} {src_str}")
+        lines.append(f"{blk}.{idx}  {dstr:<40s} {stkoff_str} {src_str}")
     return "\n".join(lines)
 
 
-def _format_block(blk: dict | None, show_insns: bool) -> str:
+def _format_block(
+    blk: dict | None,
+    show_insns: bool,
+    block_lookup: dict[int, str] | None = None,
+) -> str:
     """Format block detail output."""
     if blk is None:
         return "(block not found)"
+    lookup = block_lookup or {}
     lines: list[str] = []
     serial = blk["serial"]
+    block_id = _block_id_from_row(blk)
     tname = blk["type_name"]
     succs = blk["succs"]
     preds = blk["preds"]
     nsucc = blk["nsucc"]
     npred = blk["npred"]
-    lines.append(f"blk[{serial}] {tname} nsucc={nsucc} npred={npred}")
-    lines.append(f"  succs={succs}")
-    lines.append(f"  preds={preds}")
+    lines.append(f"{block_id} {tname} nsucc={nsucc} npred={npred}")
+    lines.append(f"  succs={_format_block_list(succs, lookup)}")
+    lines.append(f"  preds={_format_block_list(preds, lookup)}")
     meta = blk.get("meta_parsed", {})
     if meta:
         lines.append(f"  meta={json.dumps(meta, indent=2)}")
@@ -187,25 +280,33 @@ def _format_block(blk: dict | None, show_insns: bool) -> str:
     return "\n".join(lines)
 
 
-def _format_return_paths(paths: list[dict]) -> str:
+def _format_return_paths(
+    paths: list[dict],
+    block_lookup: dict[int, str] | None = None,
+) -> str:
     """Format return-paths query output."""
+    lookup = block_lookup or {}
     lines: list[str] = []
     for p in paths:
         src_hex = p.get("source_state") or "None"
         lines.append(f"edge[{p['edge_id']}] src={src_hex} CONDITIONAL_RETURN")
-        lines.append(f"  path={p['path_serials']}")
+        lines.append(f"  path={_format_block_list(p['path_serials'], lookup)}")
         for hop in p.get("hops", []):
             serial = hop["serial"]
             flag = "*" if hop.get("has_return_slot_write") else " "
             opcode = hop.get("write_opcode") or ""
-            lines.append(f"    [{flag}] blk[{serial}] {opcode}")
+            lines.append(f"    [{flag}] {_block_id_from_lookup(serial, lookup)} {opcode}")
     return "\n".join(lines)
 
 
-def _format_rendered_program_nodes(nodes: list[dict]) -> str:
+def _format_rendered_program_nodes(
+    nodes: list[dict],
+    block_lookup: dict[int, str] | None = None,
+) -> str:
     """Format rendered program node metadata."""
     if not nodes:
         return "(rendered program not found)"
+    lookup = block_lookup or {}
     lines: list[str] = []
     for node in nodes:
         parts = [
@@ -217,9 +318,9 @@ def _format_rendered_program_nodes(nodes: list[dict]) -> str:
         if node.get("state_label"):
             parts.append(f"state={node['state_label']}")
         if node.get("handler_serial") is not None:
-            parts.append(f"handler=blk[{node['handler_serial']}]")
+            parts.append(f"handler={_block_id_from_lookup(node['handler_serial'], lookup)}")
         if node.get("entry_anchor") is not None:
-            parts.append(f"entry=blk[{node['entry_anchor']}]")
+            parts.append(f"entry={_block_id_from_lookup(node['entry_anchor'], lookup)}")
         lines.append(" ".join(parts))
     return "\n".join(lines)
 
@@ -237,6 +338,73 @@ def _format_rendered_program_variants(variants: list[dict]) -> str:
             f"{variant['label_render_mode']}/{variant['boundary_inline_mode']}/"
             f"{variant['comment_mode']}"
         )
+    return "\n".join(lines)
+
+
+_RAW_BLOCK_ID_RE = re.compile(r"\bblk\[(\d+)\](?!@)")
+
+
+def _format_rendered_program_text(text: str | None, block_lookup: dict[int, str]) -> str:
+    """Format stored rendered program text with EA-qualified block IDs."""
+    if text is None:
+        return "(rendered program not found)"
+
+    def _replace(match: re.Match[str]) -> str:
+        return _block_id_from_lookup(int(match.group(1)), block_lookup)
+
+    return _RAW_BLOCK_ID_RE.sub(_replace, text)
+
+
+def _format_fact_rows(rows: list[dict], columns: list[str]) -> str:
+    """Format fact lifecycle table rows as compact tab-separated output."""
+    if not rows:
+        return "(no fact rows found)"
+    lines = ["\t".join(columns)]
+    for row in rows:
+        values = []
+        for column in columns:
+            value = row.get(column)
+            if column == "source_block" and value is not None:
+                value = format_block_id(value, start_ea=row.get("source_ea_hex"))
+            elif column == "target_block" and value is not None:
+                value = format_block_id(value, start_ea=row.get("target_ea_hex"))
+            values.append("" if value is None else str(value))
+        lines.append("\t".join(values))
+    return "\n".join(lines)
+
+
+def _format_fact_trace(result: dict[str, list[dict]]) -> str:
+    """Format one semantic-key fact trace."""
+    lines: list[str] = []
+    lines.append("observations:")
+    lines.append(_format_fact_rows(
+        result["observations"],
+        [
+            "snapshot_id",
+            "fact_id",
+            "kind",
+            "semantic_key",
+            "maturity",
+            "phase",
+            "source_block",
+        ],
+    ))
+    lines.append("")
+    lines.append("mappings:")
+    lines.append(_format_fact_rows(
+        result["mappings"],
+        [
+            "snapshot_id",
+            "source_fact_id",
+            "source_maturity",
+            "target_maturity",
+            "status",
+            "confidence",
+            "source_block",
+            "target_block",
+            "reason",
+        ],
+    ))
     return "\n".join(lines)
 
 
@@ -308,7 +476,7 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
                         _, _, serial, s_ea, e_ea, succs, preds, tname = r
                         lines.append(
                             f"  snap {sid:>{max_snap_digits}} ({label:<{max_label}s})"
-                            f" : serial={serial:<4d}"
+                            f" : {format_block_id(serial, start_ea=s_ea):<24s}"
                             f" [{s_ea}..{e_ea})"
                             f" succs={succs:<12s}"
                             f" preds={preds:<12s}"
@@ -392,6 +560,93 @@ def main(argv: list[str] | None = None) -> int:
     p_ea.add_argument("--exact", action="store_true",
                       help="Match start_ea exactly (default: range containment)")
 
+    p_fact_obs = sub.add_parser(
+        "fact-observations",
+        parents=[common],
+        help="Query fact_observations rows for a snapshot",
+    )
+    p_fact_obs.add_argument("--fact-id")
+    p_fact_obs.add_argument("--kind")
+    p_fact_obs.add_argument("--semantic-key")
+    p_fact_obs.add_argument("--fact-maturity")
+    p_fact_obs.add_argument("--limit", type=int)
+    p_fact_obs.add_argument(
+        "--all-snapshots",
+        action="store_true",
+        help="Query matching fact rows across all snapshots instead of one snapshot",
+    )
+    p_fact_obs.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fact_map = sub.add_parser(
+        "fact-mappings",
+        parents=[common],
+        help="Query fact_mappings rows for a snapshot",
+    )
+    p_fact_map.add_argument("--source-fact-id")
+    p_fact_map.add_argument("--status")
+    p_fact_map.add_argument("--source-maturity")
+    p_fact_map.add_argument("--target-maturity")
+    p_fact_map.add_argument("--limit", type=int)
+    p_fact_map.add_argument(
+        "--all-snapshots",
+        action="store_true",
+        help="Query matching fact rows across all snapshots instead of one snapshot",
+    )
+    p_fact_map.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fact_cons = sub.add_parser(
+        "fact-consumers",
+        parents=[common],
+        help="Query fact_consumers rows for a snapshot",
+    )
+    p_fact_cons.add_argument("--consumer")
+    p_fact_cons.add_argument("--strategy")
+    p_fact_cons.add_argument("--fact-id")
+    p_fact_cons.add_argument("--decision")
+    p_fact_cons.add_argument("--limit", type=int)
+    p_fact_cons.add_argument(
+        "--all-snapshots",
+        action="store_true",
+        help="Query matching fact rows across all snapshots instead of one snapshot",
+    )
+    p_fact_cons.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fact_conf = sub.add_parser(
+        "fact-conflicts",
+        parents=[common],
+        help="Query fact_conflicts rows for a snapshot",
+    )
+    p_fact_conf.add_argument("--fact-id")
+    p_fact_conf.add_argument("--conflict-kind")
+    p_fact_conf.add_argument("--fact-maturity")
+    p_fact_conf.add_argument("--limit", type=int)
+    p_fact_conf.add_argument(
+        "--all-snapshots",
+        action="store_true",
+        help="Query matching fact rows across all snapshots instead of one snapshot",
+    )
+    p_fact_conf.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fact_trace = sub.add_parser(
+        "fact-trace",
+        parents=[common],
+        help="Trace one fact semantic key across observations and mappings",
+    )
+    p_fact_trace.add_argument("--semantic-key", required=True)
+    p_fact_trace.add_argument("--kind")
+    p_fact_trace.add_argument("--json", action="store_true", dest="json_output")
+
+    p_fact_diff = sub.add_parser(
+        "fact-diff",
+        parents=[common],
+        help="Compare fact lifecycle state between two maturities",
+    )
+    p_fact_diff.add_argument("--from-maturity", required=True)
+    p_fact_diff.add_argument("--to-maturity", required=True)
+    p_fact_diff.add_argument("--kind")
+    p_fact_diff.add_argument("--semantic-key")
+    p_fact_diff.add_argument("--json", action="store_true", dest="json_output")
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -409,33 +664,181 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chain":
         print(_snapshot_header(conn, snap_id))
         result = chain(conn, snap_id, args.serials)
-        print(_format_chain(result))
+        print(_format_chain(result, _block_identity_lookup(conn, snap_id)))
     elif args.command == "var-writes":
         result = var_writes(conn, snap_id, args.stkoff)
         print(_format_var_writes(result))
     elif args.command == "block":
         print(_snapshot_header(conn, snap_id))
         result = block_detail(conn, snap_id, args.serial)
-        print(_format_block(result, show_insns=args.insns))
+        print(_format_block(
+            result,
+            show_insns=args.insns,
+            block_lookup=_block_identity_lookup(conn, snap_id),
+        ))
     elif args.command == "return-paths":
         result = return_paths(conn, snap_id)
-        print(_format_return_paths(result))
+        print(_format_return_paths(result, _block_identity_lookup(conn, snap_id)))
     elif args.command == "program":
         print(_snapshot_header(conn, snap_id))
         if args.nodes:
             print(
                 _format_rendered_program_nodes(
-                    rendered_program_nodes(conn, snap_id, args.variant)
+                    rendered_program_nodes(conn, snap_id, args.variant),
+                    _block_identity_lookup(conn, snap_id),
                 )
             )
         else:
             result = rendered_program_text(conn, snap_id, args.variant)
-            print(result if result is not None else "(rendered program not found)")
+            print(_format_rendered_program_text(
+                result,
+                _block_identity_lookup(conn, snap_id),
+            ))
     elif args.command == "program-variants":
         print(_snapshot_header(conn, snap_id))
         print(_format_rendered_program_variants(rendered_program_variants(conn, snap_id)))
     elif args.command == "ea-trace":
         print(_ea_trace(conn, args.eas, args.exact))
+    elif args.command == "fact-observations":
+        fact_snapshot_id = None if args.all_snapshots else snap_id
+        rows = fact_observations(
+            conn,
+            fact_snapshot_id,
+            fact_id=args.fact_id,
+            kind=args.kind,
+            semantic_key=args.semantic_key,
+            maturity=args.fact_maturity,
+            limit=args.limit,
+        )
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            columns = [
+                "fact_id",
+                "kind",
+                "semantic_key",
+                "maturity",
+                "phase",
+                "confidence",
+                "source_block",
+            ]
+            if args.all_snapshots:
+                columns.insert(0, "snapshot_id")
+            print(_format_fact_rows(
+                rows,
+                columns,
+            ))
+    elif args.command == "fact-mappings":
+        fact_snapshot_id = None if args.all_snapshots else snap_id
+        rows = fact_mappings(
+            conn,
+            fact_snapshot_id,
+            source_fact_id=args.source_fact_id,
+            status=args.status,
+            source_maturity=args.source_maturity,
+            target_maturity=args.target_maturity,
+            limit=args.limit,
+        )
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            columns = [
+                "source_fact_id",
+                "target_fact_id",
+                "source_maturity",
+                "target_maturity",
+                "status",
+                "confidence",
+                "target_block",
+            ]
+            if args.all_snapshots:
+                columns.insert(0, "snapshot_id")
+            print(_format_fact_rows(
+                rows,
+                columns,
+            ))
+    elif args.command == "fact-consumers":
+        fact_snapshot_id = None if args.all_snapshots else snap_id
+        rows = fact_consumers(
+            conn,
+            fact_snapshot_id,
+            consumer=args.consumer,
+            strategy=args.strategy,
+            fact_id=args.fact_id,
+            decision=args.decision,
+            limit=args.limit,
+        )
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            columns = ["consumer", "strategy", "fact_id", "maturity", "decision", "reason"]
+            if args.all_snapshots:
+                columns.insert(0, "snapshot_id")
+            print(_format_fact_rows(
+                rows,
+                columns,
+            ))
+    elif args.command == "fact-conflicts":
+        fact_snapshot_id = None if args.all_snapshots else snap_id
+        rows = fact_conflicts(
+            conn,
+            fact_snapshot_id,
+            fact_id=args.fact_id,
+            conflict_kind=args.conflict_kind,
+            maturity=args.fact_maturity,
+            limit=args.limit,
+        )
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            columns = [
+                "conflict_id",
+                "fact_id",
+                "other_fact_id",
+                "maturity",
+                "conflict_kind",
+                "reason",
+            ]
+            if args.all_snapshots:
+                columns.insert(0, "snapshot_id")
+            print(_format_fact_rows(
+                rows,
+                columns,
+            ))
+    elif args.command == "fact-trace":
+        result = fact_trace(conn, semantic_key=args.semantic_key, kind=args.kind)
+        if args.json_output:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(_format_fact_trace(result))
+    elif args.command == "fact-diff":
+        rows = fact_diff(
+            conn,
+            source_maturity=_normalize_maturity_name(args.from_maturity)
+            or args.from_maturity,
+            target_maturity=_normalize_maturity_name(args.to_maturity)
+            or args.to_maturity,
+            kind=args.kind,
+            semantic_key=args.semantic_key,
+        )
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            columns = [
+                "source_fact_id",
+                "target_fact_id",
+                "semantic_key",
+                "source_maturity",
+                "target_maturity",
+                "status",
+                "source_block",
+                "target_block",
+            ]
+            print(_format_fact_rows(rows, columns))
 
     conn.close()
     return 0

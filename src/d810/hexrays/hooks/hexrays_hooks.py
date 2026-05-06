@@ -866,17 +866,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._invalidate_flow_context("maturity changed")
 
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
+            _pre_snap_id = None
+            _pre_diag_conn = None
             try:
                 from d810.core.diag import get_diag_db
                 from d810.core.diag.mba_serializer import mba_to_block_snapshots
                 from d810.core.diag.snapshot import snapshot_mba as _snap_mba
 
                 _new_mat_name = maturity_to_string(self.current_maturity)
-                _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-                if _diag_conn is not None:
+                _pre_diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+                if _pre_diag_conn is not None:
                     _snap_blocks = mba_to_block_snapshots(mba)
-                    _snap_mba(
-                        _diag_conn,
+                    _pre_snap_id = _snap_mba(
+                        _pre_diag_conn,
                         _snap_blocks,
                         label=f"maturity_{_new_mat_name}_pre_d810",
                         func_ea=int(getattr(mba, "entry_ea", 0) or 0),
@@ -914,6 +916,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     )
                 except Exception:
                     optimizer_logger.exception("ReconPhase (block) failed")
+                if self._recon_runtime is not None:
+                    try:
+                        self._recon_runtime.capture_maturity_facts(
+                            mba,
+                            func_ea=mba_ea,
+                            maturity=mba.maturity,
+                            phase="pre_d810",
+                            snapshot_id=_pre_snap_id,
+                            diag_conn=_pre_diag_conn,
+                        )
+                    except Exception:
+                        optimizer_logger.exception("FactLifecycleRuntime (block) failed")
                 if self._recon_runtime is not None:
                     try:
                         hints = self._recon_runtime.analyze_and_persist(mba_ea)
@@ -1060,6 +1074,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._attach_hint_summary(self._flow_context)
             if self._recon_runtime is not None:
                 self._flow_context.set_outcome_callback(self._record_flow_outcome)
+                self._flow_context.set_fact_lifecycle_callbacks(
+                    view_provider=self._recon_runtime.validated_fact_view,
+                    consumer_callback=self._recon_runtime.record_fact_consumers,
+                )
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_phase(

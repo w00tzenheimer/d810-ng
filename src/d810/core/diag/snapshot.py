@@ -4,7 +4,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
+
+from d810.core.diag.formatting import format_block_id
+from d810.core.typing import Any, Iterable, Mapping
 
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -106,8 +110,13 @@ class BlockSnapshot:
     meta: str | None = None
 
     def __str__(self) -> str:
+        block_id = format_block_id(
+            self.serial,
+            start_ea=self.start_ea,
+            synthetic=self.start_ea is None,
+        )
         header = (
-            f"blk[{self.serial}] {self.type_name} "
+            f"{block_id} {self.type_name} "
             f"succs={self.succs} preds={self.preds}"
         )
         lines = [header]
@@ -503,4 +512,182 @@ def snapshot_reachability(
         "INSERT INTO block_classification VALUES (?,?,?,?,?,?)",
         rows,
     )
+    conn.commit()
+
+
+def _mapping_value(row: Mapping[str, Any] | object, key: str, default: Any = None) -> Any:
+    if isinstance(row, MappingABC):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _json_text(value: Any, default: Any) -> str:
+    if value is None:
+        value = default
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def _next_table_index(
+    conn: sqlite3.Connection,
+    table_name: str,
+    index_column: str,
+    snapshot_id: int,
+) -> int:
+    row = conn.execute(
+        f"SELECT COALESCE(MAX({index_column}), -1) + 1 "
+        f"FROM {table_name} WHERE snapshot_id=?",
+        (snapshot_id,),
+    ).fetchone()
+    return int(row[0] if row is not None else 0)
+
+
+def snapshot_fact_observations(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    func_ea: int,
+    observations: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Snapshot maturity fact observations.
+
+    Rows may be plain mappings or dataclass-like objects.  This keeps the core
+    diag layer independent of ``d810.recon.facts`` while still accepting those
+    model objects directly.
+    """
+    func_hex, func_i64 = _dual(func_ea)
+    rows = []
+    for obs in observations:
+        source_ea_hex, source_ea_i64 = _dual(_mapping_value(obs, "source_ea"))
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            str(_mapping_value(obs, "fact_id")),
+            str(_mapping_value(obs, "kind")),
+            str(_mapping_value(obs, "semantic_key")),
+            str(_mapping_value(obs, "maturity")),
+            str(_mapping_value(obs, "phase")),
+            float(_mapping_value(obs, "confidence")),
+            _mapping_value(obs, "source_block"),
+            source_ea_hex,
+            source_ea_i64,
+            _mapping_value(obs, "block_fingerprint"),
+            _mapping_value(obs, "mop_signature"),
+            _json_text(_mapping_value(obs, "payload"), {}),
+            _json_text(_mapping_value(obs, "evidence"), []),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_observations VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+    conn.commit()
+
+
+def snapshot_fact_mappings(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    func_ea: int,
+    mappings: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Snapshot fact lifecycle mappings for a maturity transition."""
+    func_hex, func_i64 = _dual(func_ea)
+    rows = []
+    start_index = _next_table_index(conn, "fact_mappings", "mapping_index", snapshot_id)
+    for offset, mapping in enumerate(mappings):
+        index = start_index + offset
+        target_ea_hex, target_ea_i64 = _dual(_mapping_value(mapping, "target_ea"))
+        status = _mapping_value(mapping, "status")
+        status_text = getattr(status, "value", status)
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            index,
+            str(_mapping_value(mapping, "source_fact_id")),
+            _mapping_value(mapping, "target_fact_id"),
+            str(_mapping_value(mapping, "source_maturity")),
+            str(_mapping_value(mapping, "target_maturity")),
+            str(status_text),
+            float(_mapping_value(mapping, "confidence")),
+            _mapping_value(mapping, "target_block"),
+            target_ea_hex,
+            target_ea_i64,
+            _mapping_value(mapping, "target_mop_signature"),
+            _mapping_value(mapping, "reason"),
+            _json_text(_mapping_value(mapping, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_mappings VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+    conn.commit()
+
+
+def snapshot_fact_consumers(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    func_ea: int,
+    consumers: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Snapshot strategy decisions that consumed facts."""
+    func_hex, func_i64 = _dual(func_ea)
+    rows = []
+    start_index = _next_table_index(conn, "fact_consumers", "consumer_index", snapshot_id)
+    for offset, consumer in enumerate(consumers):
+        index = start_index + offset
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            index,
+            str(_mapping_value(consumer, "consumer")),
+            str(_mapping_value(consumer, "strategy")),
+            str(_mapping_value(consumer, "fact_id")),
+            str(_mapping_value(consumer, "maturity")),
+            str(_mapping_value(consumer, "decision")),
+            _mapping_value(consumer, "reason"),
+            _json_text(_mapping_value(consumer, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_consumers VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+    conn.commit()
+
+
+def snapshot_fact_conflicts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    func_ea: int,
+    conflicts: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Snapshot conflicts between facts or mappings."""
+    func_hex, func_i64 = _dual(func_ea)
+    rows = []
+    for conflict in conflicts:
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            str(_mapping_value(conflict, "conflict_id")),
+            str(_mapping_value(conflict, "fact_id")),
+            str(_mapping_value(conflict, "other_fact_id")),
+            str(_mapping_value(conflict, "maturity")),
+            str(_mapping_value(conflict, "conflict_kind")),
+            str(_mapping_value(conflict, "reason")),
+            _json_text(_mapping_value(conflict, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_conflicts VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
     conn.commit()
