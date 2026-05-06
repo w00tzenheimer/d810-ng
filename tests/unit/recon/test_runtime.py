@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import MagicMock, call, create_autospec, patch
@@ -9,7 +11,10 @@ from unittest.mock import MagicMock, call, create_autospec, patch
 import pytest
 
 from d810.core import logging
+from d810.core.diag.schema import create_tables
+from d810.core.settings import configure_settings, reset_settings
 from d810.recon.analysis import AnalysisPhase
+from d810.recon.facts import FactConsumerRecord, FactObservation
 from d810.recon.models import DeobfuscationHints, ReconResult
 from d810.recon.phase import ReconPhase
 from d810.recon.runtime import ReconAnalysisRuntime, logger
@@ -95,6 +100,7 @@ def _cleanup_writer_patchers():
     for p in _active_patchers:
         p.stop()
     _active_patchers.clear()
+    reset_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +183,184 @@ def test_load_hints_returns_none_when_absent() -> None:
 
     assert returned is None
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
+
+
+def test_fact_lifecycle_capture_disabled_by_default() -> None:
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    summary = rt.capture_maturity_facts(
+        object(),
+        func_ea=_FUNC_EA,
+        maturity=1,
+        phase="pre_d810",
+    )
+
+    assert summary.enabled is False
+    assert summary.invoked is False
+    assert summary.reason == "disabled"
+
+
+def test_fact_lifecycle_capture_invokes_empty_registry_once() -> None:
+    configure_settings(fact_lifecycle=True)
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+
+    first = rt.capture_maturity_facts(
+        object(),
+        func_ea=_FUNC_EA,
+        maturity=1,
+        phase="pre_d810",
+    )
+    second = rt.capture_maturity_facts(
+        object(),
+        func_ea=_FUNC_EA,
+        maturity=1,
+        phase="pre_d810",
+    )
+
+    assert first.enabled is True
+    assert first.invoked is True
+    assert first.collector_count == 0
+    assert first.observation_count == 0
+    assert second.invoked is False
+    assert second.reason == "already-fired"
+
+
+def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
+    class _Collector:
+        name = "fake-induction"
+        maturities = frozenset({_MATURITY})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="induction:runtime",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:runtime",
+                    maturity=f"MMAT_{maturity}",
+                    phase=phase,
+                    confidence=1.0,
+                    source_block=42,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    rt._fact_lifecycle.register(_Collector())  # targeted substrate test
+
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000401000', 0x401000, 'MMAT_GLBOPT1', "
+        "'pre_d810', 1, 0.0)"
+    )
+
+    summary = rt.capture_maturity_facts(
+        object(),
+        func_ea=_FUNC_EA,
+        maturity=_MATURITY,
+        phase="pre_d810",
+        snapshot_id=1,
+        diag_conn=conn,
+    )
+
+    assert summary.observation_count == 1
+    row = conn.execute(
+        "SELECT kind, source_block FROM fact_observations "
+        "WHERE fact_id='induction:runtime'"
+    ).fetchone()
+    assert row == ("InductionCarrierFact", 42)
+
+
+def test_validated_fact_view_is_exposed_from_runtime() -> None:
+    class _Collector:
+        name = "fake-induction"
+        maturities = frozenset({_MATURITY})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="induction:runtime",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:runtime",
+                    maturity=f"MMAT_{maturity}",
+                    phase=phase,
+                    confidence=1.0,
+                    source_block=42,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    rt.register_fact_collector(_Collector())
+
+    rt.capture_maturity_facts(
+        object(),
+        func_ea=_FUNC_EA,
+        maturity=_MATURITY,
+        phase="pre_d810",
+    )
+
+    view = rt.validated_fact_view(_FUNC_EA, _MATURITY)
+
+    assert len(view.observations) == 1
+    assert len(view.active_observations) == 1
+    assert view.observations[0].fact_id == "induction:runtime"
+
+
+def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots "
+        "(id, label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            7,
+            "pre",
+            f"0x{_FUNC_EA:016x}",
+            _FUNC_EA,
+            "MMAT_GLBOPT1",
+            "pre_d810",
+            3,
+            0.0,
+        ),
+    )
+    conn.commit()
+    rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
+    record = FactConsumerRecord(
+        consumer="hodur.unflattener",
+        strategy="HodurUnflattener",
+        fact_id="induction:runtime",
+        maturity="MMAT_GLBOPT1",
+        decision="stale",
+        reason="unit-test",
+        payload={"active": 0},
+    )
+
+    configure_settings(diag_snapshots=True)
+    with patch("d810.core.diag.get_diag_db", return_value=conn):
+        persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
+
+    assert persisted == 1
+    row = conn.execute(
+        "SELECT snapshot_id, consumer, strategy, fact_id, decision, payload "
+        "FROM fact_consumers"
+    ).fetchone()
+    assert row[0] == 7
+    assert row[1:5] == (
+        "hodur.unflattener",
+        "HodurUnflattener",
+        "induction:runtime",
+        "stale",
+    )
+    assert json.loads(row[5]) == {"active": 0}
+
+    with patch("d810.core.diag.get_diag_db", return_value=conn):
+        persisted_again = rt.record_fact_consumers(_FUNC_EA, (record,))
+
+    assert persisted_again == 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_consumers").fetchone()[0] == 1
 
 
 def test_load_or_analyze_cache_hit() -> None:

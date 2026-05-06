@@ -10,7 +10,20 @@ from pathlib import Path
 import pytest
 
 from d810.core.diag.__main__ import main
-from d810.core.diag.snapshot import _dual
+from d810.core.diag.snapshot import (
+    _dual,
+    snapshot_fact_conflicts,
+    snapshot_fact_consumers,
+    snapshot_fact_mappings,
+    snapshot_fact_observations,
+)
+from d810.recon.facts import (
+    FactConflict,
+    FactConsumerRecord,
+    FactMapping,
+    FactObservation,
+    FactStatus,
+)
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
@@ -34,15 +47,15 @@ class TestChainCommand:
         rc = main(["chain", "--db", str(loaded_db_path), "131", "174", "176"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "blk[131]" in out
-        assert "blk[174]" in out
-        assert "blk[176]" in out
+        assert "blk[131]@0x180014852" in out
+        assert "blk[174]@synthetic" in out
+        assert "blk[176]@synthetic" in out
 
     def test_chain_shows_hop_ok(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
         rc = main(["chain", "--db", str(loaded_db_path), "131", "174"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "hop->174 OK" in out
+        assert "hop->blk[174]@synthetic OK" in out
 
     def test_chain_shows_broken_hop(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
@@ -99,9 +112,10 @@ class TestBlockCommand:
         rc = main(["block", "--db", str(loaded_db_path), "206"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "blk[206]" in out
+        assert "blk[206]@synthetic" in out
         assert "BLT_2WAY" in out
-        assert "[207, 208]" in out
+        assert "blk[207]@0x1800161C8" in out
+        assert "blk[208]@unknown" in out
 
     def test_block_with_insns(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
@@ -267,6 +281,8 @@ class TestRenderedProgramCommand:
         assert rc == 0
         out = capsys.readouterr().out
         assert "STATE_139F2922:" in out
+        assert "entry blk[131]@0x180014852" in out
+        assert "local-cfg: blk[131]@0x180014852 -> blk[174]@synthetic" in out
         assert "goto STATE_16F7FF74;" in out
 
     def test_program_nodes(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
@@ -282,6 +298,334 @@ class TestRenderedProgramCommand:
         assert rc == 0
         out = capsys.readouterr().out
         assert "semantic_reference_like" in out
+
+
+class TestFactCommands:
+    def _load_fact_rows(self, db_path: Path) -> None:
+        conn = sqlite3.connect(str(db_path))
+        snapshot_fact_observations(
+            conn,
+            1,
+            0x180012B60,
+            [
+                FactObservation(
+                    fact_id="induction:loop-a",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:a",
+                    maturity="MMAT_LOCOPT",
+                    phase="pre_d810",
+                    confidence=0.9,
+                    source_block=265,
+                    source_ea=0x180015F08,
+                )
+            ],
+        )
+        snapshot_fact_mappings(
+            conn,
+            1,
+            0x180012B60,
+            [
+                FactMapping(
+                    source_fact_id="induction:loop-a",
+                    source_maturity="MMAT_LOCOPT",
+                    target_maturity="MMAT_GLBOPT1",
+                    status=FactStatus.REMAPPED,
+                    confidence=0.8,
+                    target_block=184,
+                    target_ea=0x180015F08,
+                )
+            ],
+        )
+        snapshot_fact_consumers(
+            conn,
+            1,
+            0x180012B60,
+            [
+                FactConsumerRecord(
+                    consumer="hodur.hcc",
+                    strategy="HandlerChainComposer",
+                    fact_id="induction:loop-a",
+                    maturity="MMAT_GLBOPT1",
+                    decision="protected",
+                )
+            ],
+        )
+        snapshot_fact_conflicts(
+            conn,
+            1,
+            0x180012B60,
+            [
+                FactConflict(
+                    conflict_id="conflict:a",
+                    fact_id="induction:loop-a",
+                    other_fact_id="induction:loop-b",
+                    maturity="MMAT_GLBOPT1",
+                    conflict_kind="overlap",
+                    reason="same byte corridor",
+                )
+            ],
+        )
+        conn.close()
+
+    def test_fact_observations_command(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+        rc = main([
+            "fact-observations",
+            "--db",
+            str(loaded_db_path),
+            "--kind",
+            "InductionCarrierFact",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "induction:loop-a" in out
+        assert "loop:a" in out
+
+    def test_fact_observations_all_snapshots(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+        conn = sqlite3.connect(str(loaded_db_path))
+        snapshot_fact_observations(
+            conn,
+            99,
+            0x180012B60,
+            [
+                FactObservation(
+                    fact_id="induction:loop-b",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:b",
+                    maturity="MMAT_GLBOPT1",
+                    phase="pre_d810",
+                    confidence=0.7,
+                    source_block=202,
+                )
+            ],
+        )
+        conn.close()
+
+        rc = main([
+            "fact-observations",
+            "--db",
+            str(loaded_db_path),
+            "--kind",
+            "InductionCarrierFact",
+            "--all-snapshots",
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "snapshot_id" in out
+        assert "induction:loop-a" in out
+        assert "induction:loop-b" in out
+
+    def test_fact_mappings_command_json(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+        rc = main([
+            "fact-mappings",
+            "--db",
+            str(loaded_db_path),
+            "--status",
+            "REMAPPED",
+            "--json",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert '"source_fact_id": "induction:loop-a"' in out
+        assert '"target_block": 184' in out
+
+    def test_fact_consumers_and_conflicts_commands(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+        rc = main([
+            "fact-consumers",
+            "--db",
+            str(loaded_db_path),
+            "--decision",
+            "protected",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "hodur.hcc" in out
+
+        rc = main([
+            "fact-conflicts",
+            "--db",
+            str(loaded_db_path),
+            "--conflict-kind",
+            "overlap",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "same byte corridor" in out
+
+    def test_fact_trace_command(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+
+        rc = main([
+            "fact-trace",
+            "--db",
+            str(loaded_db_path),
+            "--semantic-key",
+            "loop:a",
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "observations:" in out
+        assert "mappings:" in out
+        assert "induction:loop-a" in out
+        assert "REMAPPED" in out
+        assert "blk[265]@0x180015F08" in out
+        assert "blk[184]@0x180015F08" in out
+
+    def test_fact_diff_command(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._load_fact_rows(loaded_db_path)
+
+        rc = main([
+            "fact-diff",
+            "--db",
+            str(loaded_db_path),
+            "--from-maturity",
+            "MMAT_LOCOPT",
+            "--to-maturity",
+            "MMAT_GLBOPT1",
+            "--kind",
+            "InductionCarrierFact",
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "source_fact_id" in out
+        assert "induction:loop-a" in out
+        assert "REMAPPED" in out
+        assert "blk[265]@0x180015F08" in out
+        assert "blk[184]@0x180015F08" in out
+
+    def test_fact_diff_is_scoped_by_function_identity(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        conn = sqlite3.connect(str(loaded_db_path))
+        snapshot_fact_observations(
+            conn,
+            1,
+            0x180012B60,
+            [
+                FactObservation(
+                    fact_id="induction:shared-map",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:cross-map",
+                    maturity="MMAT_LOCOPT",
+                    phase="pre_d810",
+                    confidence=0.9,
+                    source_block=10,
+                ),
+                FactObservation(
+                    fact_id="induction:shared-active",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:cross-active",
+                    maturity="MMAT_LOCOPT",
+                    phase="pre_d810",
+                    confidence=0.9,
+                    source_block=11,
+                ),
+            ],
+        )
+        snapshot_fact_mappings(
+            conn,
+            2,
+            0x180099999,
+            [
+                FactMapping(
+                    source_fact_id="induction:shared-map",
+                    source_maturity="MMAT_LOCOPT",
+                    target_maturity="MMAT_GLBOPT1",
+                    status=FactStatus.REMAPPED,
+                    confidence=0.8,
+                    target_block=132,
+                )
+            ],
+        )
+        snapshot_fact_observations(
+            conn,
+            3,
+            0x180099999,
+            [
+                FactObservation(
+                    fact_id="induction:shared-active",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:cross-active",
+                    maturity="MMAT_GLBOPT1",
+                    phase="pre_d810",
+                    confidence=0.9,
+                    source_block=99,
+                )
+            ],
+        )
+        conn.close()
+
+        rc = main([
+            "fact-diff",
+            "--db",
+            str(loaded_db_path),
+            "--from-maturity",
+            "MMAT_LOCOPT",
+            "--to-maturity",
+            "MMAT_GLBOPT1",
+            "--kind",
+            "InductionCarrierFact",
+            "--semantic-key",
+            "loop:cross-map",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "induction:shared-map" in out
+        assert "CARRIED_FORWARD" in out
+        assert "REMAPPED" not in out
+        assert "132" not in out
+
+        rc = main([
+            "fact-trace",
+            "--db",
+            str(loaded_db_path),
+            "--kind",
+            "InductionCarrierFact",
+            "--semantic-key",
+            "loop:cross-map",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "induction:shared-map" in out
+        assert "REMAPPED" not in out
+        assert "132" not in out
+
+        rc = main([
+            "fact-diff",
+            "--db",
+            str(loaded_db_path),
+            "--from-maturity",
+            "MMAT_LOCOPT",
+            "--to-maturity",
+            "MMAT_GLBOPT1",
+            "--kind",
+            "InductionCarrierFact",
+            "--semantic-key",
+            "loop:cross-active",
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "induction:shared-active" in out
+        assert "CARRIED_FORWARD" in out
+        assert "ACTIVE" not in out
 
 
 # ---------------------------------------------------------------------------
