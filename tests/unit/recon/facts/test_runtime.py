@@ -13,6 +13,7 @@ from d810.recon.facts import (
 
 class _Collector:
     name = "fake-induction"
+    fact_kinds = frozenset({"InductionCarrierFact"})
     maturities = frozenset({1})
 
     def collect(self, target, *, func_ea: int, maturity: int, phase: str):
@@ -177,9 +178,29 @@ def test_validated_view_is_historically_scoped() -> None:
 
 
 def test_induction_fact_absence_creates_identity_lost_mapping() -> None:
+    class _InductionCollector:
+        name = "induction-runs-at-both-maturities"
+        fact_kinds = frozenset({"InductionCarrierFact"})
+        maturities = frozenset({1, 2})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            if maturity != 1:
+                return ()
+            return (
+                FactObservation(
+                    fact_id="induction:blk10",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:counter",
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=1.0,
+                    source_block=10,
+                ),
+            )
+
     configure_settings(fact_lifecycle=True)
     runtime = FactLifecycleRuntime()
-    runtime.register(_Collector())
+    runtime.register(_InductionCollector())
 
     runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
     runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
@@ -196,6 +217,19 @@ def test_induction_fact_absence_creates_identity_lost_mapping() -> None:
     assert mapping.target_mop_signature is None
     assert mapping.payload["source_block"] == 10
     assert calls_view.active_observations == ()
+
+
+def test_induction_does_not_infer_loss_when_collector_did_not_run() -> None:
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Collector())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    calls_view = runtime.validated_view(0x401000, "MMAT_2")
+
+    assert calls_view.mappings == ()
+    assert len(calls_view.active_observations) == 1
 
 
 def test_induction_identity_lost_is_per_fact_id_not_semantic_key() -> None:
@@ -570,9 +604,29 @@ def test_induction_prior_current_semantic_mismatch_is_contradicted() -> None:
 
 
 def test_induction_identity_lost_mapping_is_not_duplicated() -> None:
+    class _InductionCollector:
+        name = "induction-runs-at-both-maturities-dedupe"
+        fact_kinds = frozenset({"InductionCarrierFact"})
+        maturities = frozenset({1, 2})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            if maturity != 1:
+                return ()
+            return (
+                FactObservation(
+                    fact_id="induction:blk10",
+                    kind="InductionCarrierFact",
+                    semantic_key="loop:counter",
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=1.0,
+                    source_block=10,
+                ),
+            )
+
     configure_settings(fact_lifecycle=True)
     runtime = FactLifecycleRuntime()
-    runtime.register(_Collector())
+    runtime.register(_InductionCollector())
 
     runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
     runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
@@ -587,9 +641,12 @@ def test_induction_identity_lost_mapping_is_not_duplicated() -> None:
 def test_return_carrier_fact_gets_identity_lost_mapping() -> None:
     class _ReturnCarrierCollector:
         name = "return-carrier"
-        maturities = frozenset({1})
+        fact_kinds = frozenset({"ReturnCarrierFact"})
+        maturities = frozenset({1, 2})
 
         def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            if maturity != 1:
+                return ()
             return (
                 FactObservation(
                     fact_id="return_carrier:slot=0x7f0:blk=10",
@@ -623,6 +680,42 @@ def test_return_carrier_fact_gets_identity_lost_mapping() -> None:
     assert mapping.target_block is None
     assert mapping.payload["kind"] == "ReturnCarrierFact"
     assert {obs.fact_id for obs in view.active_observations} == set()
+
+
+def test_return_carrier_does_not_infer_loss_when_collector_did_not_run() -> None:
+    class _ReturnCarrierCollector:
+        name = "return-carrier"
+        fact_kinds = frozenset({"ReturnCarrierFact"})
+        maturities = frozenset({1})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="return_carrier:slot=0x7f0:blk=10",
+                    kind="ReturnCarrierFact",
+                    semantic_key=(
+                        "return_carrier:slot=0x7f0:class=stack_identity_carrier:"
+                        "source=mop_S:0x680"
+                    ),
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=0.86,
+                    source_block=10,
+                    source_ea=0x1000,
+                    mop_signature="return_slot:mop_S:0x7f0:8",
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_ReturnCarrierCollector())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_2")
+
+    assert view.mappings == ()
+    assert len(view.active_observations) == 1
 
 
 def test_terminal_byte_emitter_fact_gets_identity_lost_mapping() -> None:
