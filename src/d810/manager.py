@@ -58,9 +58,13 @@ from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollecto
 from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 from d810.recon.facts.collectors import (
+    ByteEmitCorridorFactCollector,
+    CallAnchorFactCollector,
     InductionCarrierFactCollector,
     ReturnCarrierFactCollector,
+    ReturnFrontierFactCollector,
     TerminalByteEmitterFactCollector,
+    ZeroBlobFactCollector,
 )
 from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
@@ -750,6 +754,10 @@ class D810Manager:
             self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
             self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
+            self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
+            self._recon_runtime.register_fact_collector(CallAnchorFactCollector())
+            self._recon_runtime.register_fact_collector(ZeroBlobFactCollector())
+            self._recon_runtime.register_fact_collector(ReturnFrontierFactCollector())
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,

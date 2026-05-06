@@ -790,6 +790,9 @@ class FactLifecycleRuntime:
                 mappings.extend(result.mappings)
                 conflicts.extend(result.conflicts)
                 ran_fact_kinds.update(getattr(collector, "fact_kinds", frozenset()))
+                ran_fact_kinds.update(
+                    observation.kind for observation in result.observations
+                )
             except Exception:
                 logger.exception(
                     "FactCollector '%s' failed at func=0x%x maturity=%d",
@@ -798,18 +801,23 @@ class FactLifecycleRuntime:
                     maturity,
                 )
 
-        derived_mappings, derived_conflicts = self._derive_induction_lifecycle(
-            func_ea,
-            maturity=maturity,
-            current_observations=tuple(observations),
-            current_mappings=tuple(mappings),
-        )
-        return_carrier_mappings = self._derive_return_carrier_lifecycle(
-            func_ea,
-            maturity=maturity,
-            current_observations=tuple(observations),
-            current_mappings=(*tuple(mappings), *derived_mappings),
-        )
+        derived_mappings: tuple[FactMapping, ...] = ()
+        derived_conflicts: tuple[FactConflict, ...] = ()
+        if "InductionCarrierFact" in ran_fact_kinds:
+            derived_mappings, derived_conflicts = self._derive_induction_lifecycle(
+                func_ea,
+                maturity=maturity,
+                current_observations=tuple(observations),
+                current_mappings=tuple(mappings),
+            )
+        return_carrier_mappings: tuple[FactMapping, ...] = ()
+        if "ReturnCarrierFact" in ran_fact_kinds:
+            return_carrier_mappings = self._derive_return_carrier_lifecycle(
+                func_ea,
+                maturity=maturity,
+                current_observations=tuple(observations),
+                current_mappings=(*tuple(mappings), *derived_mappings),
+            )
         terminal_byte_mappings: tuple[FactMapping, ...] = ()
         if "TerminalByteEmitterFact" in ran_fact_kinds:
             terminal_byte_mappings = self._derive_terminal_byte_emitter_lifecycle(
