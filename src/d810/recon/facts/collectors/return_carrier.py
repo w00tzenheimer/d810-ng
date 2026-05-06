@@ -81,25 +81,53 @@ def _find_upstream_writer(
     *,
     exclude: _InstructionView | None = None,
 ) -> _InstructionView | None:
-    """Return the LAST instruction (function-wide, across blocks) that
-    writes ``target_stkoff`` with ``mop_S`` dest, or ``None``.
+    """Return the LAST instruction PRECEDING ``exclude`` in iteration
+    order that writes ``target_stkoff`` with ``mop_S`` dest, or
+    ``None`` if no such writer exists or ``exclude`` is missing.
 
-    A single-step backward scan is sufficient for the OLLVM-style
-    return-carrier MBA pattern observed in
-    ``sub_7FFD3338C040`` (one ``add 9*X + 0x15*Y -> %var_K`` followed
-    by ``mov %var_K -> %var_8``).  Multi-step chains require def/use
-    info that the diagnostic snapshot does not currently expose.
+    Iteration order from :func:`_iter_instruction_views` walks blocks
+    in serial-ascending order and instructions in ``insn_index`` order.
+    For a carrier-mov at position P, only writers strictly preceding P
+    are considered.  This avoids picking a function-wide LAST writer
+    that has no def/use relationship with the carrier-mov: previously
+    the function picked the last writer regardless of its position, so
+    on functions with many writers to the same return-carrier slot the
+    fact ended up pointing at an arbitrary later block instead of the
+    actual canonical producer.
+
+    Concrete observation: on ``sub_7FFD3338C040`` the canonical
+    return-carrier MBA at block 140 EA ``0x180014333`` precedes the
+    trampoline ``mov %var_7C8, %var_8`` at block 141 EA
+    ``0x1800143c5``; the older "function-wide LAST" heuristic skipped
+    block 140 because block 254 EA ``0x180015e84`` also writes
+    ``%var_7C8`` (a different MBA with shorter ``var_refs``) later in
+    iteration order.  Scoping by iteration position is sufficient to
+    recover the canonical producer in both cases: when a carrier-mov
+    ``mov %var_K, %var_8`` is reached, every reaching def of
+    ``%var_K`` lies earlier in the function-wide iteration (because
+    ``_iter_instruction_views`` walks blocks in topological order for
+    the captured snapshot).  Multi-step chains and CFG-aware
+    reaching-def analysis remain follow-up work.
     """
+    if exclude is None:
+        return None
+    anchor_block = int(exclude.block_serial)
+    anchor_index = int(exclude.insn_index)
     last: _InstructionView | None = None
     for insn in instructions:
+        ins_block = int(insn.block_serial)
+        ins_idx = int(insn.insn_index)
+        # Stop at or past the carrier-mov: writers at the same block
+        # AFTER the carrier-mov cannot be its reaching def, and writers
+        # in higher-numbered blocks come after the carrier-mov in the
+        # function-wide iteration order.
+        if ins_block > anchor_block:
+            break
+        if ins_block == anchor_block and ins_idx >= anchor_index:
+            break
         if insn.dest_stkoff is None or insn.dest_type != "mop_S":
             continue
         if int(insn.dest_stkoff) != int(target_stkoff):
-            continue
-        if exclude is not None and (
-            insn.block_serial == exclude.block_serial
-            and insn.insn_index == exclude.insn_index
-        ):
             continue
         last = insn
     return last
