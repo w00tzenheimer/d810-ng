@@ -227,3 +227,125 @@ def test_ignores_non_return_slot_write() -> None:
     )
 
     assert facts == ()
+
+
+def test_records_upstream_mba_for_stack_identity_carrier() -> None:
+    """Backward-trace the canonical OLLVM ``mov %var_K -> %var_8``
+    trampoline: the collector should record the upstream instruction
+    that defined ``%var_K`` (the return-carrier MBA materialization
+    site) so later GLBOPT1 consumers can recognise the site even after
+    IDA's CALLS phase folds the chain into a sub-instruction operand
+    tree.
+    """
+    collector = ReturnCarrierFactCollector()
+
+    # Upstream MBA producer at insn 0:
+    #   add (9*(%var_40 & %var_228)), (0x15*(~%var_228 & ((%var_660+%var_650) ^ %var_658))), %var_7C8
+    upstream_dstr = (
+        "add (9.8*(%var_40.8 & %var_228.8)), "
+        "(0x15.8*(bnot(%var_228.8) & ((%var_660.8+%var_650.8) ^ %var_658.8))), "
+        "%var_7C8.8"
+    )
+    upstream = _insn(
+        index=0,
+        opcode_name="m_add",
+        dest_type="mop_S",
+        dest_stkoff=0x7C8,
+        dest_size=8,
+        src_l_type="mop_d",
+        src_l_stkoff=None,
+        src_r_type="mop_d",
+        src_r_stkoff=None,
+        dstr=upstream_dstr,
+    )
+    # Identity carrier mov %var_7C8 -> %var_8 at insn 1.
+    carrier = _insn(
+        index=1,
+        opcode_name="m_mov",
+        dest_type="mop_S",
+        dest_stkoff=0x8,
+        dest_size=8,
+        src_l_type="mop_S",
+        src_l_stkoff=0x7C8,
+        dstr="mov %var_7C8.8, %var_8.8",
+    )
+    # Return-register trampoline so ``_return_slot_offsets`` resolves
+    # the slot to 0x8.
+    rax_trampoline = _insn(
+        index=2,
+        opcode_name="m_mov",
+        dest_type="mop_r",
+        dest_stkoff=None,
+        src_l_type="mop_S",
+        src_l_stkoff=0x8,
+        dstr="mov %var_8.8, rax.8",
+    )
+
+    facts = collector.collect(
+        _target(upstream, carrier, rax_trampoline),
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "ReturnCarrierFact"
+    assert fact.payload["carrier_class"] == "stack_identity_carrier"
+    # The carrier's source stkvar (var_7C8 at stkoff 0x7C8) must have
+    # been recorded as the upstream destination.
+    assert fact.payload["carrier_dst_stkoff"] == 0x7C8
+    assert fact.payload["upstream_writer_ea"] == 0x180010000  # _insn ea pattern
+    assert fact.payload["upstream_writer_block_serial"] == 10
+    assert fact.payload["upstream_writer_insn_index"] == 0
+    assert fact.payload["upstream_writer_opcode"] == "m_add"
+    assert fact.payload["upstream_writer_dest_stkoff"] == 0x7C8
+    assert fact.payload["upstream_writer_dstr"] == upstream_dstr
+    # The set of ``%var_NNN`` references the upstream MBA reads must
+    # surface so a later guard can intersect with handler-block
+    # constant writes.
+    refs = set(fact.payload["upstream_writer_var_refs"])
+    assert {"40", "228", "650", "658", "660", "7c8"}.issubset(refs)
+    # Both dstrs end up in the evidence tuple.
+    assert fact.evidence == ("mov %var_7C8.8, %var_8.8", upstream_dstr)
+
+
+def test_does_not_record_upstream_when_no_writer_present() -> None:
+    """If the ``%var_K`` source has no upstream definition in the
+    snapshot (e.g. it's an arg slot or comes from an earlier untracked
+    block), the upstream payload fields must stay absent rather than
+    populated with ``None``."""
+    collector = ReturnCarrierFactCollector()
+
+    carrier = _insn(
+        index=0,
+        opcode_name="m_mov",
+        dest_type="mop_S",
+        dest_stkoff=0x8,
+        dest_size=8,
+        src_l_type="mop_S",
+        src_l_stkoff=0x7C8,
+        dstr="mov %var_7C8.8, %var_8.8",
+    )
+    rax_trampoline = _insn(
+        index=1,
+        opcode_name="m_mov",
+        dest_type="mop_r",
+        dest_stkoff=None,
+        src_l_type="mop_S",
+        src_l_stkoff=0x8,
+        dstr="mov %var_8.8, rax.8",
+    )
+
+    facts = collector.collect(
+        _target(carrier, rax_trampoline),
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["carrier_class"] == "stack_identity_carrier"
+    assert "upstream_writer_ea" not in fact.payload
+    assert "upstream_writer_var_refs" not in fact.payload
