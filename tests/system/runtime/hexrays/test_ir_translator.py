@@ -343,6 +343,7 @@ class _FakeDeferredGraphModifier:
         is_0_way: bool = False,
         expected_serial: int | None = None,
         description: str = "",
+        old_target_serial: int | None = None,
     ) -> None:
         self.calls.append(
             (
@@ -353,6 +354,7 @@ class _FakeDeferredGraphModifier:
                 is_0_way,
                 expected_serial,
                 description,
+                old_target_serial,
             )
         )
 

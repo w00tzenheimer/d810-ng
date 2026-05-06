@@ -1105,6 +1105,11 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue a change to an unconditional goto's destination.
 
+        ``BLOCK_GOTO_CHANGE`` is intentionally limited to 1-way blocks at
+        apply time. Never use it to coerce a 2-way block into a goto: that
+        drops one branch and corrupts the CFG. Use an explicit branch-target
+        modification or a pred-split/clone primitive for conditional blocks.
+
         Args:
             block_serial: Serial number of the block to modify
             new_target: New goto target block serial
@@ -4764,6 +4769,9 @@ class DeferredGraphModifier:
 
     def _apply_goto_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
         """Redirect a 1-way block successor (tail may be non-goto)."""
+        # BLOCK_GOTO_CHANGE is a 1-way-only primitive. Rewriting a 2-way block
+        # as goto discards the other successor, which is exactly the legacy
+        # corruption mode this guard exists to prevent.
         if blk.nsucc() != 1:
             logger.warning(
                 "Block %d is not 1-way (nsucc=%d)",
@@ -8210,6 +8218,8 @@ class ImmediateGraphModifier:
     # Reuse the same implementation methods from DeferredGraphModifier
     def _apply_goto_change(self, blk: ida_hexrays.mblock_t, new_target: int) -> bool:
         """Redirect a 1-way block successor (tail may be non-goto)."""
+        # Keep this staged-atomic copy in lockstep with DeferredGraphModifier:
+        # BLOCK_GOTO_CHANGE must never coerce a 2-way block into a goto.
         if blk.nsucc() != 1:
             logger.warning(
                 "Block %d is not 1-way (nsucc=%d)",
