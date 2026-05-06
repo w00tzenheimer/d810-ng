@@ -18,6 +18,7 @@ from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
 
 if TYPE_CHECKING:
+    from d810.recon.facts.model import FactConsumerRecord, ValidatedFactView
     from d810.recon.flow.dispatcher_detection import (
         BlockAnalysis,
         DispatcherAnalysis,
@@ -121,6 +122,12 @@ class FlowMaturityContext:
         self._active_rule_names: tuple[str, ...] = tuple()
         self._hint_summary: FlowContextHintSummary | None = None
         self._outcome_callback: Callable[[int, object, str], None] | None = None
+        self._fact_view_provider: (
+            Callable[[int, int | str], "ValidatedFactView"] | None
+        ) = None
+        self._fact_consumer_callback: (
+            Callable[[int, tuple["FactConsumerRecord", ...]], int] | None
+        ) = None
         self._terminal_boundary_blocks: set[int] | None = None
 
     @property
@@ -156,6 +163,39 @@ class FlowMaturityContext:
         """Report a consumer outcome via the registered callback, if any."""
         if self._outcome_callback is not None:
             self._outcome_callback(self.func_ea, outcome_object, consumer_type)
+
+    def set_fact_lifecycle_callbacks(
+        self,
+        *,
+        view_provider: Callable[[int, int | str], "ValidatedFactView"] | None = None,
+        consumer_callback: (
+            Callable[[int, tuple["FactConsumerRecord", ...]], int] | None
+        ) = None,
+    ) -> None:
+        """Attach fact-lifecycle accessors for observability-only consumers."""
+        self._fact_view_provider = view_provider
+        self._fact_consumer_callback = consumer_callback
+
+    def validated_fact_view(
+        self,
+        maturity: int | str | None = None,
+    ) -> "ValidatedFactView | None":
+        """Return the validated fact view for this function, if available."""
+        if self._fact_view_provider is None:
+            return None
+        return self._fact_view_provider(
+            self.func_ea,
+            self.maturity if maturity is None else maturity,
+        )
+
+    def report_fact_consumers(
+        self,
+        records: tuple["FactConsumerRecord", ...],
+    ) -> int:
+        """Persist fact-consumer diagnostic rows, if a callback is available."""
+        if not records or self._fact_consumer_callback is None:
+            return 0
+        return self._fact_consumer_callback(self.func_ea, records)
 
     def refresh_mba(self, mba: ida_hexrays.mba_t) -> None:
         self.mba = mba

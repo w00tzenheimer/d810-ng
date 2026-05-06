@@ -328,6 +328,97 @@ CREATE INDEX IF NOT EXISTS idx_block_lineage_origin
     ON block_lineage(origin_snapshot_id, origin_serial);
 CREATE INDEX IF NOT EXISTS idx_block_lineage_origin_ea
     ON block_lineage(origin_start_ea_hex);
+
+-- Layer 4: Maturity fact lifecycle
+
+CREATE TABLE IF NOT EXISTS fact_observations (
+    snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
+    func_ea_hex         TEXT NOT NULL,
+    func_ea_i64         INTEGER NOT NULL,
+    fact_id             TEXT NOT NULL,
+    kind                TEXT NOT NULL,
+    semantic_key        TEXT NOT NULL,
+    maturity            TEXT NOT NULL,
+    phase               TEXT NOT NULL,
+    confidence          REAL NOT NULL,
+    source_block        INTEGER,
+    source_ea_hex       TEXT,
+    source_ea_i64       INTEGER,
+    block_fingerprint   TEXT,
+    mop_signature       TEXT,
+    payload             TEXT NOT NULL,
+    evidence            TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, fact_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_observations_key
+    ON fact_observations(func_ea_hex, semantic_key, maturity);
+CREATE INDEX IF NOT EXISTS idx_fact_observations_kind
+    ON fact_observations(snapshot_id, kind);
+CREATE INDEX IF NOT EXISTS idx_fact_observations_fact_id
+    ON fact_observations(fact_id);
+
+CREATE TABLE IF NOT EXISTS fact_mappings (
+    snapshot_id             INTEGER NOT NULL REFERENCES snapshots(id),
+    func_ea_hex             TEXT NOT NULL,
+    func_ea_i64             INTEGER NOT NULL,
+    mapping_index           INTEGER NOT NULL,
+    source_fact_id          TEXT NOT NULL,
+    target_fact_id          TEXT,
+    source_maturity         TEXT NOT NULL,
+    target_maturity         TEXT NOT NULL,
+    status                  TEXT NOT NULL,
+    confidence              REAL NOT NULL,
+    target_block            INTEGER,
+    target_ea_hex           TEXT,
+    target_ea_i64           INTEGER,
+    target_mop_signature    TEXT,
+    reason                  TEXT,
+    payload                 TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, mapping_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_mappings_source
+    ON fact_mappings(source_fact_id, source_maturity, target_maturity);
+CREATE INDEX IF NOT EXISTS idx_fact_mappings_status
+    ON fact_mappings(snapshot_id, status);
+
+CREATE TABLE IF NOT EXISTS fact_consumers (
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    func_ea_hex     TEXT NOT NULL,
+    func_ea_i64     INTEGER NOT NULL,
+    consumer_index  INTEGER NOT NULL,
+    consumer        TEXT NOT NULL,
+    strategy        TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    maturity        TEXT NOT NULL,
+    decision        TEXT NOT NULL,
+    reason          TEXT,
+    payload         TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, consumer_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_consumers_fact
+    ON fact_consumers(fact_id, maturity);
+CREATE INDEX IF NOT EXISTS idx_fact_consumers_consumer
+    ON fact_consumers(snapshot_id, consumer, strategy);
+
+CREATE TABLE IF NOT EXISTS fact_conflicts (
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    func_ea_hex     TEXT NOT NULL,
+    func_ea_i64     INTEGER NOT NULL,
+    conflict_id     TEXT NOT NULL,
+    fact_id         TEXT NOT NULL,
+    other_fact_id   TEXT NOT NULL,
+    maturity        TEXT NOT NULL,
+    conflict_kind   TEXT NOT NULL,
+    reason          TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_conflicts_fact
+    ON fact_conflicts(fact_id, other_fact_id, maturity);
 """
 
 

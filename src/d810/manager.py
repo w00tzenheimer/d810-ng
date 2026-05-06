@@ -57,6 +57,11 @@ from d810.recon.collectors.handler_transitions import HandlerTransitionsCollecto
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
 from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
+from d810.recon.facts.collectors import (
+    InductionCarrierFactCollector,
+    ReturnCarrierFactCollector,
+    TerminalByteEmitterFactCollector,
+)
 from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.inferences import unflattening_inference
@@ -742,6 +747,9 @@ class D810Manager:
                 AnalysisPhase(),
                 self._recon_phase._store,
             )
+            self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,

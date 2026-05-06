@@ -26,6 +26,7 @@ class TestD810Settings:
         assert s.verify_capture is True
         assert s.capture_post_maturity is None
         assert s.capture_post_file == "/tmp/d810_capture.txt"
+        assert s.fact_lifecycle is False
 
     def test_from_env_reads_diag_snapshot(self, monkeypatch):
         monkeypatch.setenv("D810_DIAG_SNAPSHOT", "1")
@@ -46,6 +47,11 @@ class TestD810Settings:
         monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "7")
         reset_settings()
         assert get_settings().capture_post_maturity == 7
+
+    def test_from_env_reads_fact_lifecycle(self, monkeypatch):
+        monkeypatch.setenv("D810_FACT_LIFECYCLE", "1")
+        reset_settings()
+        assert get_settings().fact_lifecycle is True
 
     def test_from_env_invalid_maturity_returns_none(self, monkeypatch):
         monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "not_a_number")

@@ -64,6 +64,9 @@ class D810Settings:
     capture_post_file: str = "/tmp/d810_capture.txt"
     """File path for post-maturity MBA capture (D810_CAPTURE_POST_FILE)."""
 
+    fact_lifecycle: bool = False
+    """Enable maturity fact lifecycle capture hooks (D810_FACT_LIFECYCLE)."""
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -76,6 +79,7 @@ class D810Settings:
             ),
             capture_post_maturity=_env_int("D810_CAPTURE_POST_MATURITY"),
             capture_post_file=_env_str("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"),
+            fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE"),
         )
 
 
