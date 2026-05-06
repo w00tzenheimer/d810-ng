@@ -1515,14 +1515,26 @@ def resolve_synthesized_handoff_target(
             return None
         return (state_value, direct_entry)
     contextual_source = via_pred if via_pred is not None else block_serial
-    nonexact_target = resolve_nonexact_dispatch_target(
+    cover_fallback_entry = resolve_cover_fallback_entry_for_state(
         dag,
         state_value,
         source_block=contextual_source,
         bst_node_blocks=bst_node_blocks,
         dispatcher=dispatcher,
-        dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
     )
+    if cover_fallback_entry is not None and cover_fallback_entry != block_serial:
+        return (state_value, cover_fallback_entry)
+
+    nonexact_target = None
+    if dispatcher is None or state_has_semantic_support(dag, state_value):
+        nonexact_target = resolve_nonexact_dispatch_target(
+            dag,
+            state_value,
+            source_block=contextual_source,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
+        )
     if nonexact_target is not None and nonexact_target != block_serial:
         return (state_value, nonexact_target)
 
@@ -1532,14 +1544,16 @@ def resolve_synthesized_handoff_target(
         source_block=contextual_source,
         bst_node_blocks=bst_node_blocks,
     )
-    normalized_alias_target = resolve_normalized_alias_entry_for_state(
-        dag,
-        state_value,
-        source_block=contextual_source,
-        bst_node_blocks=bst_node_blocks,
-    )
-    if normalized_alias_target is not None:
-        target_entry = normalized_alias_target
+    normalized_alias_target = None
+    if dispatcher is None or state_has_semantic_support(dag, state_value):
+        normalized_alias_target = resolve_normalized_alias_entry_for_state(
+            dag,
+            state_value,
+            source_block=contextual_source,
+            bst_node_blocks=bst_node_blocks,
+        )
+        if normalized_alias_target is not None:
+            target_entry = normalized_alias_target
     if target_entry is not None and via_pred is not None and target_entry == via_pred:
         fallback_target = resolve_loopback_alias_fallback_entry(
             dag,
@@ -1562,16 +1576,6 @@ def resolve_synthesized_handoff_target(
         )
         if target_entry is not None and target_entry != block_serial:
             return (state_value, target_entry)
-
-    cover_fallback_entry = resolve_cover_fallback_entry_for_state(
-        dag,
-        state_value,
-        source_block=contextual_source,
-        bst_node_blocks=bst_node_blocks,
-        dispatcher=dispatcher,
-    )
-    if cover_fallback_entry is not None and cover_fallback_entry != block_serial:
-        return (state_value, cover_fallback_entry)
 
     owner_entry = resolve_owner_semantic_entry_for_blocks(
         dag,
@@ -1820,6 +1824,20 @@ def resolve_effective_target_entry(
                     immediate_handoff=immediate_handoff,
                     synthesized_handoff=synthesized_handoff,
                 )
+        elif (
+            target_entry is not None
+            and target_entry not in bst_node_blocks
+            and immediate_target_entry != target_entry
+            and edge.target_state is not None
+            and (immediate_state & 0xFFFFFFFF) == (edge.target_state & 0xFFFFFFFF)
+        ):
+            return EffectiveTargetEntryResolution(
+                source_block=int(source_block),
+                target_entry=target_entry,
+                normalized_nonexact_target=normalized_nonexact_target,
+                immediate_handoff=immediate_handoff,
+                synthesized_handoff=synthesized_handoff,
+            )
         target_entry = immediate_target_entry
 
     return EffectiveTargetEntryResolution(

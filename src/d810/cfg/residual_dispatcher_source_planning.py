@@ -318,6 +318,13 @@ def plan_residual_dispatcher_source(
 ) -> ResidualDispatcherSourcePlan:
     """Plan one residual dispatcher source rewrite without touching live CFG state."""
 
+    prefix_before = _plan_prefix_attempts(
+        source_block=int(context.source_block),
+        attempts=tuple(context.prefix_before_attempts),
+    )
+    if prefix_before.accepted:
+        return prefix_before
+
     goto_plan: ResidualDispatcherSourcePlan | None = None
     if context.goto_attempt is not None:
         goto_plan = _plan_goto_attempt(
@@ -336,13 +343,6 @@ def plan_residual_dispatcher_source(
             "handoff_already_emitted",
         }:
             return goto_plan
-
-    prefix_before = _plan_prefix_attempts(
-        source_block=int(context.source_block),
-        attempts=tuple(context.prefix_before_attempts),
-    )
-    if prefix_before.accepted:
-        return prefix_before
 
     if context.goto_attempt is None:
         return _plan_pred_split_attempts(

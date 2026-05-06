@@ -1,7 +1,8 @@
 """Experimental lowering for exact conditional nodes with two semantic exits."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import os
 import re
 
 import ida_hexrays
@@ -74,6 +75,7 @@ class ConditionalForkExactNodeArm:
     target_entry: int
     first_hop: int
     tail: int
+    ordered_path: tuple[int, ...]
     transition_edge: object
     return_distance: int | None
 
@@ -91,7 +93,134 @@ class ExactConditionalForkInventory:
     candidate_blocks: tuple[int, ...]
     plannable_incomplete_blocks: tuple[int, ...]
     shape_rejected_blocks: tuple[int, ...]
+    clean_fork_blocks: tuple[int, ...] = ()
+    boundary_preservation_blocks: tuple[int, ...] = ()
     alias_handled_blocks: tuple[int, ...] = ()
+
+
+def _require_clean_fork_paths() -> bool:
+    """Default exact-fork lowering to Hex-Rays-friendly clean fork shapes.
+
+    The structuring lab showed that preserving physical block boundaries is a
+    weak objective: Hex-Rays may fold those blocks anyway. Exact fork lowering
+    should therefore only own sites that already look like a clean two-arm
+    fork. Shared-suffix or multi-pred arm tails are boundary-preservation
+    problems and should remain with HCC/SWR unless explicitly bisecting.
+    """
+
+    return (
+        os.environ.get("D810_EXACT_CONDITIONAL_FORK_REQUIRE_CLEAN", "1").strip()
+        != "0"
+    )
+
+
+def _path_from_source(
+    *,
+    source_block: int,
+    first_hop: int,
+    ordered_path: tuple[int, ...],
+) -> tuple[int, ...] | None:
+    if not ordered_path:
+        return None
+    try:
+        source_index = ordered_path.index(int(source_block))
+    except ValueError:
+        return None
+    path = ordered_path[source_index:]
+    if len(path) < 2:
+        return None
+    if int(path[1]) != int(first_hop):
+        return None
+    return path
+
+
+def _path_edges_exist(flow_graph, path: tuple[int, ...]) -> bool:
+    for current, nxt in zip(path, path[1:]):
+        block = flow_graph.get_block(int(current))
+        if block is None:
+            return False
+        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+        if int(nxt) not in succs:
+            return False
+    return True
+
+
+def _single_pred_path_blocks(flow_graph, path: tuple[int, ...]) -> bool:
+    for block_serial in path:
+        block = flow_graph.get_block(int(block_serial))
+        if block is None:
+            return False
+        if int(getattr(block, "npred", 0)) != 1:
+            return False
+    return True
+
+
+def _normalize_clean_fork_arms(
+    flow_graph,
+    *,
+    source_block: int,
+    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm],
+    dispatcher_region: set[int],
+) -> tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm] | None:
+    paths: list[tuple[int, ...]] = []
+    for arm in arms:
+        path = _path_from_source(
+            source_block=source_block,
+            first_hop=arm.first_hop,
+            ordered_path=arm.ordered_path,
+        )
+        if path is None or not _path_edges_exist(flow_graph, path):
+            return None
+        paths.append(path)
+
+    terminal_blocks = {int(path[-1]) for path in paths}
+    if len(terminal_blocks) == len(arms):
+        if all(_single_pred_path_blocks(flow_graph, path[1:]) for path in paths):
+            return arms
+        return None
+
+    if len(terminal_blocks) != 1:
+        return None
+
+    shared_join = next(iter(terminal_blocks))
+    join_block = flow_graph.get_block(shared_join)
+    if join_block is None:
+        return None
+    if shared_join in dispatcher_region:
+        return None
+    join_succs = tuple(int(succ) for succ in getattr(join_block, "succs", ()) or ())
+    if len(join_succs) != 1:
+        return None
+    if any(succ in dispatcher_region for succ in join_succs):
+        return None
+    if tuple(getattr(join_block, "insn_snapshots", ()) or ()):
+        return None
+
+    if any(len(path) < 3 for path in paths):
+        return None
+    arm_tails = tuple(int(path[-2]) for path in paths)
+    if len(set(arm_tails)) != len(arms):
+        return None
+    join_preds = {int(pred) for pred in getattr(join_block, "preds", ()) or ()}
+    if join_preds != set(arm_tails):
+        return None
+    if int(getattr(join_block, "npred", 0)) != len(arms):
+        return None
+
+    seen_path_blocks: set[int] = set()
+    for path in paths:
+        arm_path = path[1:-1]
+        if not _single_pred_path_blocks(flow_graph, arm_path):
+            return None
+        for block_serial in arm_path:
+            if int(block_serial) in seen_path_blocks:
+                return None
+            seen_path_blocks.add(int(block_serial))
+
+    return tuple(
+        replace(arm, tail=int(path[-2]))
+        for arm, path in zip(arms, paths)
+    )
 
 
 def _collect_conditional_fork_scope(
@@ -520,6 +649,7 @@ def analyze_exact_conditional_fork_sites(
     flow_graph,
     *,
     bst_node_blocks: set[int] | None = None,
+    dispatcher_region: set[int] | None = None,
     state_var_stkoff: int | None = None,
     dispatcher_lookup: object | None = None,
     dispatcher: object | None = None,
@@ -540,6 +670,10 @@ def analyze_exact_conditional_fork_sites(
         semantic_reference_program
     )
     bst_blocks = {int(block) for block in (bst_node_blocks or set())}
+    forbidden_corridor_blocks = {
+        int(block) for block in (dispatcher_region or set())
+    }
+    forbidden_corridor_blocks.update(bst_blocks)
     postdom_tree = _compute_postdominator_tree(flow_graph)
     return_distance = _conditional_distance_to_return(flow_graph)
     alias_handled_blocks = {
@@ -602,6 +736,9 @@ def analyze_exact_conditional_fork_sites(
     selected: list[ConditionalForkExactNodeSite] = []
     plannable_incomplete_blocks: set[int] = set()
     shape_rejected_blocks: set[int] = set()
+    clean_fork_blocks: set[int] = set()
+    boundary_preservation_blocks: set[int] = set()
+    require_clean_fork_paths = _require_clean_fork_paths()
     for source_block in sorted(transition_edges_by_source):
         dag_edges = _dedup_transition_edges(source_block)
         if source_block in alias_handled_blocks:
@@ -744,6 +881,7 @@ def analyze_exact_conditional_fork_sites(
                 target_entry=target_entry,
                 first_hop=first_hop,
                 tail=tail,
+                ordered_path=ordered_path,
                 transition_edge=edge,
                 return_distance=return_distance.get(first_hop),
             )
@@ -757,6 +895,37 @@ def analyze_exact_conditional_fork_sites(
             )
             continue
 
+        arms = tuple(arms_by_first_hop[succ] for succ in succs)
+        clean_arms = _normalize_clean_fork_arms(
+            flow_graph,
+            source_block=source_block,
+            arms=arms,
+            dispatcher_region=forbidden_corridor_blocks,
+        )
+        if clean_arms is not None:
+            arms = clean_arms
+            clean_fork_blocks.add(source_block)
+        else:
+            boundary_preservation_blocks.add(source_block)
+            if require_clean_fork_paths:
+                shape_rejected_blocks.add(source_block)
+                logger.info(
+                    "EXACT CONDITIONAL FORK: source blk=%d rejected"
+                    " reason=non_clean_fork_path succs=%s arms=%s",
+                    source_block,
+                    succs,
+                    tuple(
+                        (
+                            int(arm.first_hop),
+                            int(arm.tail),
+                            int(arm.target_entry),
+                            tuple(int(block) for block in arm.ordered_path),
+                        )
+                        for arm in arms
+                    ),
+                )
+                continue
+
         follow_block = None
         if postdom_tree is not None:
             follow_block = getattr(postdom_tree, "idom", {}).get(source_block)
@@ -764,7 +933,7 @@ def analyze_exact_conditional_fork_sites(
             ConditionalForkExactNodeSite(
                 source_block=source_block,
                 follow_block=follow_block,
-                arms=tuple(arms_by_first_hop[succ] for succ in succs),
+                arms=arms,
             )
         )
     return (
@@ -774,6 +943,10 @@ def analyze_exact_conditional_fork_sites(
             candidate_blocks=candidate_blocks,
             plannable_incomplete_blocks=tuple(sorted(plannable_incomplete_blocks)),
             shape_rejected_blocks=tuple(sorted(shape_rejected_blocks)),
+            clean_fork_blocks=tuple(sorted(clean_fork_blocks)),
+            boundary_preservation_blocks=tuple(
+                sorted(boundary_preservation_blocks)
+            ),
             alias_handled_blocks=tuple(sorted(alias_handled_blocks)),
         ),
     )
@@ -840,6 +1013,9 @@ class ExactConditionalForkNodeLoweringStrategy:
             round_summary,
             flow_graph,
             bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+            dispatcher_region=set(
+                int(block) for block in getattr(setup, "dispatcher_region", ())
+            ),
             state_var_stkoff=setup.state_var_stkoff,
             dispatcher_lookup=(
                 setup.dispatcher.lookup if setup.dispatcher is not None else None
@@ -849,18 +1025,26 @@ class ExactConditionalForkNodeLoweringStrategy:
         )
         if not sites:
             logger.info(
-                "EXACT CONDITIONAL FORK: no exact fork sites found (candidates=%s plannable_incomplete=%s shape_rejected=%s)",
+                "EXACT CONDITIONAL FORK: no exact fork sites found"
+                " (candidates=%s plannable_incomplete=%s shape_rejected=%s"
+                " clean_fork=%s boundary_preservation=%s)",
                 inventory.candidate_blocks,
                 inventory.plannable_incomplete_blocks,
                 inventory.shape_rejected_blocks,
+                inventory.clean_fork_blocks,
+                inventory.boundary_preservation_blocks,
             )
             return None
         logger.info(
-            "EXACT CONDITIONAL FORK: inventory selected=%d candidates=%s plannable_incomplete=%s shape_rejected=%s alias_handled=%s",
+            "EXACT CONDITIONAL FORK: inventory selected=%d candidates=%s"
+            " plannable_incomplete=%s shape_rejected=%s clean_fork=%s"
+            " boundary_preservation=%s alias_handled=%s",
             inventory.selected_count,
             inventory.candidate_blocks,
             inventory.plannable_incomplete_blocks,
             inventory.shape_rejected_blocks,
+            inventory.clean_fork_blocks,
+            inventory.boundary_preservation_blocks,
             inventory.alias_handled_blocks,
         )
 
@@ -994,5 +1178,9 @@ class ExactConditionalForkNodeLoweringStrategy:
                 "post_apply_bst_cleanup_reason": "exact_conditional_fork_lowering",
                 "residual_dispatcher_preds": tuple(int(serial) for serial in residual_dispatcher_preds),
                 "site_count": len(sites),
+                "clean_fork_blocks": inventory.clean_fork_blocks,
+                "boundary_preservation_blocks": (
+                    inventory.boundary_preservation_blocks
+                ),
             },
         )

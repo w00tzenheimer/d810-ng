@@ -216,6 +216,58 @@ def _normalize_residual_handoff(
     return handoff
 
 
+def _is_shared_suffix_block(dag: object, source_block: int) -> bool:
+    return any(
+        int(source_block) in getattr(node, "shared_suffix_blocks", ())
+        for node in getattr(dag, "nodes", ()) or ()
+    )
+
+
+def _is_exact_owner_entry(dag: object, block_serial: int) -> bool:
+    for node in getattr(dag, "nodes", ()) or ():
+        kind = getattr(getattr(node, "kind", None), "name", None)
+        if kind != "EXACT":
+            continue
+        if int(getattr(node, "entry_anchor", -1)) == int(block_serial):
+            return True
+    return False
+
+
+def _prefer_shared_suffix_family_source(
+    context: ResidualDispatcherHandoffExecutionContext,
+    *,
+    source_block: int,
+    current_preds: tuple[int, ...],
+    handoff: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    if handoff is None or len(current_preds) != 1:
+        return handoff
+    if not _is_shared_suffix_block(context.dag, int(source_block)):
+        return handoff
+    via_pred = int(current_preds[0])
+    if not _is_exact_owner_entry(context.dag, via_pred):
+        return handoff
+    state_value, target_entry = handoff
+    if int(target_entry) == via_pred:
+        return handoff
+    if not context.can_rewrite_shared_suffix_family_fallback(
+        context.dag,
+        source_block=int(source_block),
+        target_entry=int(target_entry),
+        current_preds=current_preds,
+        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+        flow_graph=context.projected_flow_graph,
+    ):
+        return handoff
+    logger.info(
+        "residual shared-suffix family source %d: target %d -> exact family pred %d",
+        int(source_block),
+        int(target_entry),
+        via_pred,
+    )
+    return (int(state_value), via_pred)
+
+
 def execute_residual_dispatcher_handoffs(
     context: ResidualDispatcherHandoffExecutionContext,
     *,
@@ -276,6 +328,12 @@ def execute_residual_dispatcher_handoffs(
             context,
             source_block=int(source_block),
             handoff=handoff_facts.handoff,
+        )
+        effective_handoff = _prefer_shared_suffix_family_source(
+            context,
+            source_block=int(source_block),
+            current_preds=current_preds,
+            handoff=effective_handoff,
         )
 
         prefix_before_attempts: list[ResidualPrefixAttempt] = []
@@ -458,6 +516,27 @@ def execute_residual_dispatcher_handoffs(
                 )
         else:
             state_value, target_entry = effective_handoff
+            source_is_shared_suffix_tail = (
+                context.is_shared_suffix_conditional_tail(
+                    context.dag,
+                    source_block=int(source_block),
+                )
+                or _is_shared_suffix_block(context.dag, int(source_block))
+            )
+            allow_family_fallback_tail = context.can_rewrite_shared_suffix_family_fallback(
+                context.dag,
+                source_block=int(source_block),
+                target_entry=int(target_entry),
+                current_preds=current_preds,
+                bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                flow_graph=context.projected_flow_graph,
+            )
+            if (
+                source_is_shared_suffix_tail
+                and len(current_preds) == 1
+                and int(target_entry) != int(current_preds[0])
+            ):
+                allow_family_fallback_tail = False
             goto_attempt = build_residual_goto_attempt(
                 ResidualGotoAttemptBuildContext(
                     target_entry=int(target_entry),
@@ -465,18 +544,8 @@ def execute_residual_dispatcher_handoffs(
                     source_block=int(source_block),
                     dispatcher_serial=int(context.dispatcher_serial),
                     bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
-                    allow_family_fallback_tail=context.can_rewrite_shared_suffix_family_fallback(
-                        context.dag,
-                        source_block=int(source_block),
-                        target_entry=int(target_entry),
-                        current_preds=current_preds,
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
-                        flow_graph=context.projected_flow_graph,
-                    ),
-                    is_shared_suffix_conditional_tail=context.is_shared_suffix_conditional_tail(
-                        context.dag,
-                        source_block=int(source_block),
-                    ),
+                    allow_family_fallback_tail=allow_family_fallback_tail,
+                    is_shared_suffix_conditional_tail=source_is_shared_suffix_tail,
                     has_prior_branch_cut=context.has_prior_branch_cut_for_state(
                         context.dag,
                         source_block=int(source_block),

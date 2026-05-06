@@ -41,6 +41,18 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     SemanticStructuredRegionStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer import (
+    HandlerChainComposerStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
+    DispatcherTrampolineSkipStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.counter_hoist import (
+    CounterHoistStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_carrier_preserve import (
+    ReturnFrontierCarrierPreserveStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     ExactConditionalNodeLoweringStrategy,
     collect_exact_conditional_sites,
@@ -244,20 +256,22 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     assert unflattener._initial_transitions == ["initial"]
 
 
-def test_hodur_unflattener_registers_region_first_experimental_strategy_only():
+def test_hodur_unflattener_registers_current_experimental_strategies():
     unflattener = HodurUnflattener()
 
-    assert len(unflattener._strategies) == 1
-    assert isinstance(
-        unflattener._strategies[0],
-        SemanticStructuredRegionStrategy,
-    )
+    assert [type(strategy) for strategy in unflattener._strategies] == [
+        HandlerChainComposerStrategy,
+        DispatcherTrampolineSkipStrategy,
+        CounterHoistStrategy,
+        ReturnFrontierCarrierPreserveStrategy,
+    ]
     strategies = unflattener._family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT1)
-    assert len(strategies) == 1
-    assert isinstance(
-        strategies[0],
-        SemanticStructuredRegionStrategy,
-    )
+    assert [type(strategy) for strategy in strategies] == [
+        HandlerChainComposerStrategy,
+        DispatcherTrampolineSkipStrategy,
+        CounterHoistStrategy,
+        ReturnFrontierCarrierPreserveStrategy,
+    ]
 
 
 def test_semantic_structured_region_strategy_only_runs_at_glbopt1():
@@ -283,10 +297,9 @@ def test_semantic_structured_region_strategy_only_runs_at_glbopt1():
 def test_hodur_strategy_family_defaults_to_live_strategies():
     family = HodurStrategyFamily()
 
-    assert any(isinstance(strategy, BadWhileLoopStrategy) for strategy in family.strategies)
-    assert any(
-        isinstance(strategy, SingleIterationStrategy) for strategy in family.strategies
-    )
+    assert any(isinstance(strategy, HandlerChainComposerStrategy) for strategy in family.strategies)
+    assert any(isinstance(strategy, DispatcherTrampolineSkipStrategy) for strategy in family.strategies)
+    assert any(isinstance(strategy, CounterHoistStrategy) for strategy in family.strategies)
 
 
 def test_hodur_strategy_family_accepts_explicit_strategy_override():
@@ -1077,9 +1090,9 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
     monkeypatch.setattr(unflattener, "_log_pipeline_results", lambda *_args, **_kwargs: None)
 
     assert unflattener.optimize(blk) == 1
-    assert unflattener._last_bst_serials is None
+    assert unflattener._last_bst_serials == set()
     assert unflattener._last_dispatcher_serial == -1
-    assert unflattener._last_func_ea == 0
+    assert unflattener._last_func_ea == 0x401000
     assert unflattener._last_bst_block_eas == set()
     assert unflattener._last_dispatcher_ea == 0
 
