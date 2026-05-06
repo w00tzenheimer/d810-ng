@@ -805,6 +805,204 @@ def test_exact_conditional_fork_uses_first_hop_relative_to_source_block():
     assert entries[17] == 202
 
 
+def test_exact_conditional_fork_accepts_clean_two_pred_join_shape():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 0, (11, 12), (), 0, 0, ()),
+            11: BlockSnapshot(11, 0, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 0, (13,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 0, (60,), (11, 12), 0, 0, ()),
+            40: BlockSnapshot(40, 0, (), (), 0, 0, ()),
+            50: BlockSnapshot(50, 0, (), (), 0, 0, ()),
+            60: BlockSnapshot(60, 0, (), (13,), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x180012B60,
+    )
+    edge_a = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=0),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        target_key=None,
+        ordered_path=(10, 11, 13),
+    )
+    edge_b = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=1),
+        target_state=0x33333333,
+        target_entry_anchor=50,
+        target_key=None,
+        ordered_path=(10, 12, 13),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(edge_a, edge_b), nodes=()),
+        plannable_edges=(),
+    )
+
+    sites, inventory = analyze_exact_conditional_fork_sites(round_summary, flow_graph)
+
+    assert inventory.selected_count == 1
+    assert inventory.clean_fork_blocks == (10,)
+    assert inventory.boundary_preservation_blocks == ()
+    site = sites[0]
+    assert {arm.first_hop: arm.tail for arm in site.arms} == {11: 11, 12: 12}
+    assert {arm.first_hop: arm.target_entry for arm in site.arms} == {
+        11: 40,
+        12: 50,
+    }
+
+
+def test_exact_conditional_fork_rejects_shared_tail_boundary_shape():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 0, (11, 12), (), 0, 0, ()),
+            11: BlockSnapshot(11, 0, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 0, (13,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 0, (2,), (11, 12), 0, 0, ()),
+            2: BlockSnapshot(2, 0, (), (13,), 0, 0, ()),
+            40: BlockSnapshot(40, 0, (), (), 0, 0, ()),
+            50: BlockSnapshot(50, 0, (), (), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x180012B60,
+    )
+    edge_a = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=0),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        target_key=None,
+        ordered_path=(10, 11, 13),
+    )
+    edge_b = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=1),
+        target_state=0x33333333,
+        target_entry_anchor=50,
+        target_key=None,
+        ordered_path=(10, 12, 13),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(edge_a, edge_b), nodes=()),
+        plannable_edges=(),
+    )
+
+    sites, inventory = analyze_exact_conditional_fork_sites(
+        round_summary,
+        flow_graph,
+        bst_node_blocks={2},
+    )
+
+    assert sites == ()
+    assert inventory.selected_count == 0
+    assert inventory.clean_fork_blocks == ()
+    assert inventory.boundary_preservation_blocks == (10,)
+    assert 10 in inventory.shape_rejected_blocks
+
+
+def test_exact_conditional_fork_rejects_join_to_dispatcher_outside_bst():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 0, (11, 12), (), 0, 0, ()),
+            11: BlockSnapshot(11, 0, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 0, (13,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 0, (99,), (11, 12), 0, 0, ()),
+            40: BlockSnapshot(40, 0, (), (), 0, 0, ()),
+            50: BlockSnapshot(50, 0, (), (), 0, 0, ()),
+            99: BlockSnapshot(99, 0, (), (13,), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x180012B60,
+    )
+    edge_a = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=0),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        target_key=None,
+        ordered_path=(10, 11, 13),
+    )
+    edge_b = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=1),
+        target_state=0x33333333,
+        target_entry_anchor=50,
+        target_key=None,
+        ordered_path=(10, 12, 13),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(edge_a, edge_b), nodes=()),
+        plannable_edges=(),
+    )
+
+    sites, inventory = analyze_exact_conditional_fork_sites(
+        round_summary,
+        flow_graph,
+        bst_node_blocks=set(),
+        dispatcher_region={99},
+    )
+
+    assert sites == ()
+    assert inventory.selected_count == 0
+    assert inventory.clean_fork_blocks == ()
+    assert inventory.boundary_preservation_blocks == (10,)
+    assert 10 in inventory.shape_rejected_blocks
+
+
+def test_exact_conditional_fork_rejects_empty_two_succ_branch_shell_join():
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 0, (11, 12), (), 0, 0, ()),
+            11: BlockSnapshot(11, 0, (13,), (10,), 0, 0, ()),
+            12: BlockSnapshot(12, 0, (13,), (10,), 0, 0, ()),
+            13: BlockSnapshot(13, 0, (60, 61), (11, 12), 0, 0, ()),
+            40: BlockSnapshot(40, 0, (), (), 0, 0, ()),
+            50: BlockSnapshot(50, 0, (), (), 0, 0, ()),
+            60: BlockSnapshot(60, 0, (), (13,), 0, 0, ()),
+            61: BlockSnapshot(61, 0, (), (13,), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x180012B60,
+    )
+    edge_a = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=0),
+        target_state=0x22222222,
+        target_entry_anchor=40,
+        target_key=None,
+        ordered_path=(10, 11, 13),
+    )
+    edge_b = SimpleNamespace(
+        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x11111111),
+        source_anchor=SimpleNamespace(block_serial=10, branch_arm=1),
+        target_state=0x33333333,
+        target_entry_anchor=50,
+        target_key=None,
+        ordered_path=(10, 12, 13),
+    )
+    round_summary = SimpleNamespace(
+        dag=SimpleNamespace(edges=(edge_a, edge_b), nodes=()),
+        plannable_edges=(),
+    )
+
+    sites, inventory = analyze_exact_conditional_fork_sites(round_summary, flow_graph)
+
+    assert sites == ()
+    assert inventory.selected_count == 0
+    assert inventory.clean_fork_blocks == ()
+    assert inventory.boundary_preservation_blocks == (10,)
+    assert 10 in inventory.shape_rejected_blocks
+
+
 def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
     flow_graph, round_summary = _make_prefixed_path_semantic_fork_fixture()
     builder = ModificationBuilder.from_snapshot(
