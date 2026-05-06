@@ -43,6 +43,9 @@ from d810.cfg.flow.graph_checks import (
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.loop_bound_writer_guard import (
+    detect_loop_counter_writeback_tail,
+)
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -75,6 +78,7 @@ from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
+from d810.recon.microcode_dump import mba_to_human_readable  # compatibility seam for legacy diagnostics/tests
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -273,6 +277,77 @@ class TransactionalExecutor:
             execution_policy = ExecutionPolicy.STRICT
 
         pre_cfg = self.translator.lift(self.mba)
+
+        # Loop-counter writeback-tail guard.  Any RedirectGoto whose
+        # ``old_target`` is the writeback-tail block of a loop-carried
+        # counter must be rejected: the redirect would route the
+        # predecessor away from the unique counter writeback site, IDA's
+        # MMAT_GLBOPT1 DCE would drop the writeback (no live preds), and
+        # the inner loop's induction never updates -- producing a
+        # non-progressing do-while.  Detector is read-only and narrow
+        # (four conjunctive conditions on the candidate tail block, see
+        # ``loop_bound_writer_guard.detect_loop_counter_writeback_tail``).
+        writeback_tail_blocks: set[int] = set()
+        try:
+            qty = int(getattr(self.mba, "qty", 0))
+        except (AttributeError, TypeError, ValueError):
+            qty = 0
+        for _i in range(qty):
+            _diag = detect_loop_counter_writeback_tail(self.mba, _i)
+            if _diag is not None:
+                writeback_tail_blocks.add(int(_diag.tail_block_serial))
+        if writeback_tail_blocks:
+            _filtered_mods: list = []
+            for _mod in modifications:
+                if not isinstance(_mod, RedirectGoto):
+                    _filtered_mods.append(_mod)
+                    continue
+                # Reject orphan-the-writeback shape: a predecessor's
+                # edge into the tail is being routed elsewhere.  The
+                # cumulative effect when all preds get this treatment
+                # is an orphaned tail whose writeback IDA's DCE drops.
+                if int(_mod.old_target) in writeback_tail_blocks:
+                    executor_logger.info(
+                        "REDIRECT_REJECTED_LOOP_COUNTER_WRITEBACK_TAIL "
+                        "blk[%d] -> blk[%d] (was blk[%d]); "
+                        "blk[%d] is a loop-counter writeback tail "
+                        "(orphans the writeback)",
+                        int(_mod.from_serial),
+                        int(_mod.new_target),
+                        int(_mod.old_target),
+                        int(_mod.old_target),
+                    )
+                    continue
+                # Reject back-edge-sever shape: the writeback tail's
+                # own successor is being changed.  Empirically the
+                # loop-carrier path runs body -> ... -> writeback_tail
+                # -> dispatcher_root -> body; if the tail's exit is
+                # rerouted to a non-cycle target, the structurer can
+                # no longer construct the loop body around the tail
+                # and folds the bound expression into the test,
+                # producing a non-progressing inner do-while
+                # (sub_7FFD postfix6: ``while ((v61 & 0x3E) != 2)``).
+                if int(_mod.from_serial) in writeback_tail_blocks:
+                    executor_logger.info(
+                        "REDIRECT_REJECTED_LOOP_COUNTER_WRITEBACK_TAIL "
+                        "blk[%d] -> blk[%d] (was blk[%d]); "
+                        "blk[%d] is a loop-counter writeback tail "
+                        "(severs back-edge after writeback)",
+                        int(_mod.from_serial),
+                        int(_mod.new_target),
+                        int(_mod.old_target),
+                        int(_mod.from_serial),
+                    )
+                    continue
+                _filtered_mods.append(_mod)
+            modifications = _filtered_mods
+            if not modifications:
+                return StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="all modifications rejected by loop-writeback guard",
+                    failure_phase="execution_filter",
+                )
 
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg, execution_policy)
         modifications, patch_plan_preview, backend_removed = (

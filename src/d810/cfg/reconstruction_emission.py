@@ -16,7 +16,9 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.loop_bound_writer_guard import (
     LoopBoundWriterDiagnostic,
+    LoopCounterWritebackDiagnostic,
     detect_loop_bound_writer_redirect,
+    detect_loop_counter_writeback_tail,
 )
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
@@ -493,15 +495,52 @@ def execute_shared_group_reconstruction(
 
     if mba is None:
         # Surfaced explicitly so we can audit which call paths bypass the
-        # bound-writer guard.  A silent skip here is what masked the
-        # original cascade -- never let the absence of mba happen quietly.
+        # loop-carried induction guards.  A silent skip here is what
+        # masked the original cascade -- never let the absence of mba
+        # happen quietly.
         logger.debug(
-            "RECON_SHARED_GROUP_BOUND_WRITER_GUARD_SKIPPED shared=blk[%d] "
+            "RECON_SHARED_GROUP_INDUCTION_GUARD_SKIPPED shared=blk[%d] "
             "reason=mba_unavailable via_preds=%s",
             int(shared_block),
             tuple(int(c.via_pred) for c in ordered_input_candidates),
         )
     else:
+        # Guard 1 (writeback tail): if the shared_block is itself the
+        # commit point of a loop-carried counter advance, redirecting
+        # any predecessor away from it leaves the writeback unreachable
+        # and IDA's DCE drops the counter update -- non-progressing
+        # do-while.  Reject the whole emission for this shared_block.
+        writeback_diag: LoopCounterWritebackDiagnostic | None = (
+            detect_loop_counter_writeback_tail(mba, int(shared_block))
+        )
+        if writeback_diag is not None:
+            logger.info(
+                "RECON_SHARED_GROUP_REJECTED_LOOP_COUNTER_WRITEBACK_TAIL "
+                "shared=blk[%d] tail_block=blk[%d] counter_stkoff=0x%x "
+                "bound_stkoff=0x%x loop_test_ea=0x%x advance_ea=0x%x "
+                "via_preds=%s",
+                int(shared_block),
+                writeback_diag.tail_block_serial,
+                writeback_diag.counter_stkoff,
+                writeback_diag.bound_stkoff,
+                writeback_diag.loop_test_ea,
+                writeback_diag.advance_ea,
+                tuple(int(c.via_pred) for c in ordered_input_candidates),
+            )
+            return SharedGroupExecutionResult(
+                shared_block=int(shared_block),
+                accepted_candidates=(),
+                rejected_candidates=tuple(
+                    candidate for candidate in candidates if candidate.via_pred is not None
+                ),
+                rejection_reason="loop_counter_writeback_tail",
+            )
+
+        # Guard 2 (bound writer): if any via_pred is the unique
+        # constant-mask writer for a loop bound, cloning the
+        # shared_block via DuplicateAndRedirect routes the writer
+        # through a fresh predecessor topology and IDA store-forwards
+        # the writer into the test, erasing the counter side.
         bound_writer_match: tuple[int, LoopBoundWriterDiagnostic] | None = None
         for candidate in ordered_input_candidates:
             diag = detect_loop_bound_writer_redirect(mba, int(candidate.via_pred))
@@ -509,17 +548,17 @@ def execute_shared_group_reconstruction(
                 bound_writer_match = (int(candidate.via_pred), diag)
                 break
         if bound_writer_match is not None:
-            via_pred_serial, diag = bound_writer_match
+            via_pred_serial, bw_diag = bound_writer_match
             logger.info(
                 "RECON_SHARED_GROUP_REJECTED_BOUND_WRITER shared=blk[%d] "
                 "via_pred=blk[%d] bound_stkoff=0x%x bound_writer_ea=0x%x "
                 "loop_test_ea=0x%x counter_stkoff=0x%x",
                 int(shared_block),
                 via_pred_serial,
-                diag.bound_stkoff,
-                diag.bound_writer_ea,
-                diag.loop_test_ea,
-                diag.counter_stkoff,
+                bw_diag.bound_stkoff,
+                bw_diag.bound_writer_ea,
+                bw_diag.loop_test_ea,
+                bw_diag.counter_stkoff,
             )
             return SharedGroupExecutionResult(
                 shared_block=int(shared_block),

@@ -1,17 +1,25 @@
-"""Loop-bound-writer detection used by path-tail and shared-group guards.
+"""Loop-carried induction guards (bound writer + counter writeback tail).
 
-Identifies the OLLVM-style ``m_xdu (X & K), %B`` (or ``m_and X, K, %B``)
-pattern where ``B`` is a stkvar bound that participates in a loop test
-of shape ``m_jnz/m_jz (counter + small_const), B``.  When a CFG mutation
-(redirect, duplicate-and-redirect, etc.) routes the bound writer through
-a fresh predecessor topology, IDA's MMAT_GLBOPT1 finalization
-forward-substitutes the unique writer into the loop test and erases the
-counter side, producing a non-progressing inner do-while.
+Two related detectors that protect inner loops on OLLVM-style flattened
+functions from CFG rewrites that would orphan the loop's induction
+chain:
 
-Used by the path-tail planner *and* the shared-group reconstruction
-planner.  The detector itself is identical; only the wiring differs.
-Returns ``None`` on any failure so the surrounding code can keep its
-existing fast-path semantics.
+* :func:`detect_loop_bound_writer_redirect` -- the *bound* writer.  When
+  a mutation routes the unique ``m_xdu (X & K), %B`` writer through a
+  fresh predecessor topology, IDA's MMAT_GLBOPT1 finalization
+  forward-substitutes the writer into the loop test and erases the
+  counter side, producing a non-progressing inner do-while.
+
+* :func:`detect_loop_counter_writeback_tail` -- the *counter* writeback
+  tail.  When a CFG redirect bypasses or orphans the block that commits
+  the counter advance (``m_mov temp -> counter_stkvar`` where
+  ``counter_stkvar`` participates in the loop test as
+  ``counter + small_const``), IDA's DCE drops the writeback during
+  finalization and the loop test never updates -- same observable
+  symptom (non-progressing do-while), different root cause.
+
+Both detectors are read-only and return ``None`` on any failure so the
+surrounding code can keep its existing fast-path semantics.
 """
 from __future__ import annotations
 
@@ -365,7 +373,269 @@ def detect_loop_bound_writer_redirect(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class LoopCounterWritebackDiagnostic:
+    """Verdict from the loop-counter writeback-tail detector.
+
+    Populated only when all four conjunctive conditions hold for the
+    candidate tail block:
+
+    1. The candidate block contains an ``m_mov src -> mop_S(K)`` where
+       ``src`` is a temp/stkvar (not a constant) -- i.e. the writeback
+       commits some loop-carried temp into stkoff ``K``.
+    2. Some block in the function reads ``K`` via ``m_jnz`` / ``m_jz``
+       with the *other* operand of the test having shape
+       ``K + small_const`` (delta in :data:`_COUNTER_ADVANCE_DELTAS`)
+       -- i.e. ``K`` is the counter consumed in a loop test.
+    3. Some block in the function emits ``m_add mop_S(K), small_const ->
+       <temp>`` -- the counter advance compute that feeds the writeback.
+    4. The other operand of the loop test is a stkvar (the loop bound).
+
+    When this diagnostic is non-None, any CFG redirect that bypasses or
+    orphans the tail block will sever the loop-carried induction chain
+    and IDA's MMAT_GLBOPT1 DCE will drop the writeback.  The guard
+    rejects such redirects so the writeback survives.
+    """
+
+    tail_block_serial: int
+    counter_stkoff: int
+    bound_stkoff: int
+    loop_test_ea: int
+    advance_ea: int
+
+
+def _operand_is_constant(mop, *, mop_n: int) -> bool:
+    if mop is None:
+        return False
+    try:
+        return int(mop.t) == mop_n
+    except (AttributeError, TypeError):
+        return False
+
+
+def _operand_temp_or_stkvar_kind(mop, *, mop_l: int, mop_S: int) -> bool:
+    if mop is None:
+        return False
+    try:
+        t = int(mop.t)
+    except (AttributeError, TypeError):
+        return False
+    return t == mop_l or t == mop_S
+
+
+def _find_writeback_to_stkvar(
+    blk,
+    *,
+    m_mov: int,
+    mop_n: int,
+    mop_l: int,
+    mop_S: int,
+) -> int | None:
+    """If ``blk`` contains an ``m_mov src -> mop_S(K)`` whose ``src`` is
+    a temp/stkvar (NOT a constant), return ``K``; else ``None``.
+
+    The constant-source check distinguishes a counter writeback from a
+    counter reset (``mov #0, %counter``) and from an unrelated stkvar
+    initialisation.
+    """
+    for insn in _iter_block_insns(blk):
+        if _safe_int_attr(insn, "opcode") != m_mov:
+            continue
+        d = getattr(insn, "d", None)
+        l = getattr(insn, "l", None)
+        if d is None or l is None:
+            continue
+        try:
+            if int(d.t) != mop_S:
+                continue
+        except (AttributeError, TypeError):
+            continue
+        if _operand_is_constant(l, mop_n=mop_n):
+            continue
+        if not _operand_temp_or_stkvar_kind(l, mop_l=mop_l, mop_S=mop_S):
+            continue
+        try:
+            return int(d.s.off)
+        except (AttributeError, TypeError):
+            continue
+    return None
+
+
+def _is_counter_advance_add(
+    insn,
+    counter_stkoff: int,
+    *,
+    mop_n: int,
+    mop_S: int,
+) -> bool:
+    """True iff ``insn`` is ``m_add mop_S(counter_stkoff) + small_const``
+    (in either operand order) where the constant delta is in
+    :data:`_COUNTER_ADVANCE_DELTAS`."""
+    l = getattr(insn, "l", None)
+    r = getattr(insn, "r", None)
+    if l is None or r is None:
+        return False
+    try:
+        lt = int(l.t)
+        rt = int(r.t)
+    except (AttributeError, TypeError):
+        return False
+    if lt == mop_S and rt == mop_n:
+        try:
+            if int(l.s.off) != counter_stkoff:
+                return False
+            return (int(r.nnn.value) & 0xFFFFFFFFFFFFFFFF) in _COUNTER_ADVANCE_DELTAS
+        except (AttributeError, TypeError):
+            return False
+    if lt == mop_n and rt == mop_S:
+        try:
+            if int(r.s.off) != counter_stkoff:
+                return False
+            return (int(l.nnn.value) & 0xFFFFFFFFFFFFFFFF) in _COUNTER_ADVANCE_DELTAS
+        except (AttributeError, TypeError):
+            return False
+    return False
+
+
+def detect_loop_counter_writeback_tail(
+    mba,
+    tail_block_serial: int,
+) -> LoopCounterWritebackDiagnostic | None:
+    """Inspect ``mba`` and return a diagnostic iff ``tail_block_serial``
+    is the writeback tail of a loop-carried counter (all four
+    conjunctive conditions hold).  Read-only; returns ``None`` on any
+    failure.
+
+    The four conditions are documented on
+    :class:`LoopCounterWritebackDiagnostic`.  The detector is
+    intentionally narrow -- the guard exists to suppress one specific
+    OLLVM-driven cascade that orphans the counter writeback block,
+    causing IDA to DCE the unique counter advance commit and produce a
+    non-progressing inner do-while.
+    """
+    if mba is None:
+        return None
+    try:
+        import ida_hexrays
+    except ImportError:
+        return None
+
+    m_mov = getattr(ida_hexrays, "m_mov", -1)
+    m_add = getattr(ida_hexrays, "m_add", -1)
+    m_jnz = getattr(ida_hexrays, "m_jnz", -1)
+    m_jz = getattr(ida_hexrays, "m_jz", -1)
+    mop_n = getattr(ida_hexrays, "mop_n", -1)
+    mop_l = getattr(ida_hexrays, "mop_l", -1)
+    mop_S = getattr(ida_hexrays, "mop_S", -1)
+    mop_d = getattr(ida_hexrays, "mop_d", -1)
+
+    qty = _safe_int_attr(mba, "qty", 0)
+    if qty <= 0:
+        return None
+
+    try:
+        tail_blk = mba.get_mblock(int(tail_block_serial))
+    except Exception:
+        return None
+    if tail_blk is None:
+        return None
+
+    # Condition (1): tail block has an m_mov writeback to some stkoff K
+    # whose source is a temp/stkvar (loop-carried), not a constant.
+    counter_stkoff = _find_writeback_to_stkvar(
+        tail_blk, m_mov=m_mov, mop_n=mop_n, mop_l=mop_l, mop_S=mop_S,
+    )
+    if counter_stkoff is None:
+        return None
+
+    # Conditions (2) + (4): some block reads K via m_jnz/m_jz with the
+    # other operand having ``K + small_const`` shape, and the test's
+    # other operand is a stkvar (the loop bound).
+    loop_test_ea: int | None = None
+    bound_stkoff: int | None = None
+    for i in range(qty):
+        try:
+            blk = mba.get_mblock(i)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        for ins in _iter_block_insns(blk):
+            op = _safe_int_attr(ins, "opcode")
+            if op != m_jnz and op != m_jz:
+                continue
+            a = getattr(ins, "l", None)
+            b = getattr(ins, "r", None)
+            if a is None or b is None:
+                continue
+            adv_a = _extract_counter_advance(
+                a, mop_n=mop_n, mop_S=mop_S, mop_d=mop_d, m_add=m_add,
+            )
+            adv_b = _extract_counter_advance(
+                b, mop_n=mop_n, mop_S=mop_S, mop_d=mop_d, m_add=m_add,
+            )
+            other = None
+            if adv_a == counter_stkoff and adv_b != counter_stkoff:
+                other = b
+            elif adv_b == counter_stkoff and adv_a != counter_stkoff:
+                other = a
+            if other is None:
+                continue
+            try:
+                if int(other.t) != mop_S:
+                    continue
+                bound_stkoff = int(other.s.off)
+            except (AttributeError, TypeError):
+                continue
+            ea = _safe_int_attr(ins, "ea")
+            if ea < 0:
+                continue
+            loop_test_ea = ea
+            break
+        if loop_test_ea is not None:
+            break
+    if loop_test_ea is None or bound_stkoff is None:
+        return None
+
+    # Condition (3): some block emits m_add mop_S(counter_stkoff) +
+    # small_const (the advance compute that feeds the writeback).
+    advance_ea: int | None = None
+    for i in range(qty):
+        try:
+            blk = mba.get_mblock(i)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        for ins in _iter_block_insns(blk):
+            if _safe_int_attr(ins, "opcode") != m_add:
+                continue
+            if not _is_counter_advance_add(
+                ins, counter_stkoff, mop_n=mop_n, mop_S=mop_S,
+            ):
+                continue
+            ea = _safe_int_attr(ins, "ea")
+            if ea < 0:
+                continue
+            advance_ea = ea
+            break
+        if advance_ea is not None:
+            break
+    if advance_ea is None:
+        return None
+
+    return LoopCounterWritebackDiagnostic(
+        tail_block_serial=int(tail_block_serial),
+        counter_stkoff=int(counter_stkoff),
+        bound_stkoff=int(bound_stkoff),
+        loop_test_ea=int(loop_test_ea),
+        advance_ea=int(advance_ea),
+    )
+
+
 __all__ = [
     "detect_loop_bound_writer_redirect",
+    "detect_loop_counter_writeback_tail",
     "LoopBoundWriterDiagnostic",
+    "LoopCounterWritebackDiagnostic",
 ]
