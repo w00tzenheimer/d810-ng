@@ -263,3 +263,185 @@ class TestDetectLoopBoundWriterRedirect:
         )
 
         assert detect_loop_bound_writer_redirect(None, source_block_serial=1) is None
+
+
+def _build_counter_advance_block(*, counter_stkoff: int, delta: int, ea: int) -> _Mblock:
+    """Block with ``m_add %counter, #delta -> %temp`` (the advance)."""
+    counter_var = _Mop(_MOP_S, s=_StkOff(counter_stkoff))
+    delta_const = _Mop(_MOP_N, nnn=_NumValue(delta))
+    temp_dest = _Mop(_MOP_S, s=_StkOff(0xABC))
+    advance = _Insn(_M_ADD, ea=ea, l=counter_var, r=delta_const, d=temp_dest)
+    return _Mblock(_chain(advance))
+
+
+_MOP_L = 0x09  # mop_l (lvar) sentinel for the writeback-tail tests
+
+
+@pytest.fixture
+def fake_ida_hexrays_with_lvar(monkeypatch):
+    fake = types.ModuleType("ida_hexrays")
+    fake.m_xdu = _M_XDU
+    fake.m_and = _M_AND
+    fake.m_jnz = _M_JNZ
+    fake.m_jz = _M_JZ
+    fake.m_add = _M_ADD
+    fake.m_mov = 0x04
+    fake.mop_n = _MOP_N
+    fake.mop_S = _MOP_S
+    fake.mop_d = _MOP_D
+    fake.mop_l = _MOP_L
+    monkeypatch.setitem(sys.modules, "ida_hexrays", fake)
+    yield fake
+
+
+class TestDetectLoopCounterWritebackTail:
+    COUNTER_STKOFF = 0x638
+    BOUND_STKOFF = 0x388
+    LOOP_TEST_EA = 0x180013C9E
+    ADVANCE_EA = 0x180013C82
+    WRITEBACK_EA = 0x180016098
+
+    def _build_lvar_writeback_block(self, *, counter_stkoff: int, ea: int) -> _Mblock:
+        """Block with ``m_mov %lvar -> %counter`` (writeback from a
+        loop-carried lvar/temp)."""
+        # mop_l source -- not constant, distinct from mop_S.
+        src_lvar = _Mop(_MOP_L)
+        dest = _Mop(_MOP_S, s=_StkOff(counter_stkoff))
+        writeback = _Insn(0x04, ea=ea, l=src_lvar, d=dest)  # m_mov
+        return _Mblock(_chain(writeback))
+
+    def _build_mba(
+        self,
+        *,
+        counter_stkoff: int = COUNTER_STKOFF,
+        bound_stkoff: int = BOUND_STKOFF,
+    ) -> _Mba:
+        # Block layout:
+        #   0: counter advance compute
+        #   1: loop test consumer (counter+#2 vs bound)
+        #   2: writeback tail (m_mov temp -> counter)
+        #   3: unrelated
+        return _Mba([
+            _build_counter_advance_block(
+                counter_stkoff=counter_stkoff,
+                delta=2,
+                ea=self.ADVANCE_EA,
+            ),
+            _build_loop_test_block(
+                bound_stkoff=bound_stkoff,
+                counter_stkoff=counter_stkoff,
+                delta=2,
+                ea=self.LOOP_TEST_EA,
+            ),
+            self._build_lvar_writeback_block(
+                counter_stkoff=counter_stkoff,
+                ea=self.WRITEBACK_EA,
+            ),
+            _build_unrelated_block(),
+        ])
+
+    def test_matches_writeback_tail_block(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        mba = self._build_mba()
+        diag = detect_loop_counter_writeback_tail(mba, tail_block_serial=2)
+
+        assert diag is not None
+        assert diag.tail_block_serial == 2
+        assert diag.counter_stkoff == self.COUNTER_STKOFF
+        assert diag.bound_stkoff == self.BOUND_STKOFF
+        assert diag.loop_test_ea == self.LOOP_TEST_EA
+        assert diag.advance_ea == self.ADVANCE_EA
+
+    def test_does_not_match_non_writeback_blocks(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        mba = self._build_mba()
+        # Block 0 has the advance compute, not a writeback to counter.
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=0) is None
+        # Block 1 has the loop test, not a writeback.
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=1) is None
+        # Block 3 is unrelated.
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=3) is None
+
+    def test_rejects_when_writeback_source_is_constant(
+        self, fake_ida_hexrays_with_lvar,
+    ):
+        """``mov #0, %counter`` is a counter RESET, not a loop-carried
+        writeback -- the detector must reject."""
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        const_zero = _Mop(_MOP_N, nnn=_NumValue(0))
+        dest = _Mop(_MOP_S, s=_StkOff(self.COUNTER_STKOFF))
+        reset = _Insn(0x04, ea=self.WRITEBACK_EA, l=const_zero, d=dest)
+        mba = _Mba([
+            _build_counter_advance_block(
+                counter_stkoff=self.COUNTER_STKOFF,
+                delta=2,
+                ea=self.ADVANCE_EA,
+            ),
+            _build_loop_test_block(
+                bound_stkoff=self.BOUND_STKOFF,
+                counter_stkoff=self.COUNTER_STKOFF,
+                delta=2,
+                ea=self.LOOP_TEST_EA,
+            ),
+            _Mblock(_chain(reset)),
+        ])
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+
+    def test_rejects_when_no_loop_test_present(self, fake_ida_hexrays_with_lvar):
+        """Without a ``counter+small_const`` loop test, the writeback is
+        not loop-carried."""
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        mba = _Mba([
+            _build_counter_advance_block(
+                counter_stkoff=self.COUNTER_STKOFF,
+                delta=2,
+                ea=self.ADVANCE_EA,
+            ),
+            _build_unrelated_block(),
+            self._build_lvar_writeback_block(
+                counter_stkoff=self.COUNTER_STKOFF,
+                ea=self.WRITEBACK_EA,
+            ),
+        ])
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+
+    def test_rejects_when_no_advance_compute(self, fake_ida_hexrays_with_lvar):
+        """Without an ``m_add counter+small_const`` somewhere in the
+        function, the writeback isn't connected to a counter advance."""
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        mba = _Mba([
+            _build_unrelated_block(),
+            _build_loop_test_block(
+                bound_stkoff=self.BOUND_STKOFF,
+                counter_stkoff=self.COUNTER_STKOFF,
+                delta=2,
+                ea=self.LOOP_TEST_EA,
+            ),
+            self._build_lvar_writeback_block(
+                counter_stkoff=self.COUNTER_STKOFF,
+                ea=self.WRITEBACK_EA,
+            ),
+        ])
+        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+
+    def test_returns_none_when_mba_is_none(self, fake_ida_hexrays_with_lvar):
+        from d810.cfg.loop_bound_writer_guard import (
+            detect_loop_counter_writeback_tail,
+        )
+
+        assert detect_loop_counter_writeback_tail(None, tail_block_serial=2) is None
