@@ -4,6 +4,16 @@ This collector observes writes into the microcode return-slot carrier before
 later optimizer passes can inline, fold, or sever the carrier identity.  It is
 diagnostic only: it records facts for the maturity lifecycle and does not make
 planner or CFG decisions.
+
+When the return-slot write's source is a stkvar ``K`` (a one-step
+``stack_identity_carrier``), the collector also performs a single-step backward
+trace to locate the upstream instruction that defines ``K`` and records that
+instruction's EA, block, opcode, full dstr, and the set of ``%var_NNN``
+references it reads.  Later passes consult this payload at GLBOPT1+ to know
+that a target block / stkvar set corresponds to a return-carrier MBA
+materialization site even after IDA's CALLS phase has folded the canonical
+``add ... -> %var_K; mov %var_K -> %var_8`` chain into a sub-instruction
+operand tree.
 """
 from __future__ import annotations
 
@@ -17,6 +27,12 @@ from d810.recon.facts.collectors.induction_carrier import (
     _maturity_name,
 )
 from d810.recon.facts.model import FactObservation
+
+
+# Match ``%var_NNN`` references in microcode dstr text.  The hex/decimal
+# offset suffix is captured so the upstream MBA's stkvar reads can be
+# enumerated without re-parsing the operand tree.
+_VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
 
 _TARGET_MATURITIES = frozenset({
     _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
@@ -57,6 +73,49 @@ def _source_signature(insn: _InstructionView) -> str:
     if insn.src_r_value is not None:
         return f"const:0x{int(insn.src_r_value):x}"
     return "computed"
+
+
+def _find_upstream_writer(
+    instructions: tuple[_InstructionView, ...],
+    target_stkoff: int,
+    *,
+    exclude: _InstructionView | None = None,
+) -> _InstructionView | None:
+    """Return the LAST instruction (function-wide, across blocks) that
+    writes ``target_stkoff`` with ``mop_S`` dest, or ``None``.
+
+    A single-step backward scan is sufficient for the OLLVM-style
+    return-carrier MBA pattern observed in
+    ``sub_7FFD3338C040`` (one ``add 9*X + 0x15*Y -> %var_K`` followed
+    by ``mov %var_K -> %var_8``).  Multi-step chains require def/use
+    info that the diagnostic snapshot does not currently expose.
+    """
+    last: _InstructionView | None = None
+    for insn in instructions:
+        if insn.dest_stkoff is None or insn.dest_type != "mop_S":
+            continue
+        if int(insn.dest_stkoff) != int(target_stkoff):
+            continue
+        if exclude is not None and (
+            insn.block_serial == exclude.block_serial
+            and insn.insn_index == exclude.insn_index
+        ):
+            continue
+        last = insn
+    return last
+
+
+def _extract_var_refs(dstr: str) -> tuple[str, ...]:
+    """Return the set of ``%var_NNN`` token suffixes referenced in
+    ``dstr``, in stable lexical order.  Used to expose the upstream
+    MBA's stkvar reads in the fact payload without parsing the operand
+    tree.  Names (not numeric stkoffs) because the dstr does not
+    record the raw mop_S offsets for nested operands.
+    """
+    seen: set[str] = set()
+    for match in _VAR_REF_RE.finditer(dstr):
+        seen.add(match.group(1).lower())
+    return tuple(sorted(seen))
 
 
 def _carrier_class(insn: _InstructionView) -> str:
@@ -116,6 +175,54 @@ class ReturnCarrierFactCollector:
                 f"{semantic_key}:blk={insn.block_serial}:"
                 f"insn={insn.insn_index}:ea=0x{int(insn.ea or 0):x}"
             )
+            payload: dict[str, Any] = {
+                "return_slot_stkoff": slot,
+                "dest_size": dest_size,
+                "opcode": insn.opcode_name,
+                "carrier_class": carrier_class,
+                "source_signature": source,
+                "source_l_type": insn.src_l_type,
+                "source_l_stkoff": insn.src_l_stkoff,
+                "source_l_value": insn.src_l_value,
+                "source_r_type": insn.src_r_type,
+                "source_r_stkoff": insn.src_r_stkoff,
+                "source_r_value": insn.src_r_value,
+                "block_serial": insn.block_serial,
+                "insn_index": insn.insn_index,
+            }
+
+            # When the carrier is a stack identity (the canonical
+            # OLLVM ``mov %var_K -> %var_8`` trampoline), record the
+            # upstream instruction that defines ``%var_K``.  This
+            # captures the return-carrier MBA's identity *before* IDA's
+            # CALLS phase folds the chain into a sub-instruction
+            # operand tree, so later GLBOPT1 consumers can recognise
+            # the materialization site even when its canonical form
+            # has been erased.
+            evidence: tuple[str, ...] = (insn.dstr,)
+            if (
+                carrier_class == "stack_identity_carrier"
+                and insn.src_l_stkoff is not None
+            ):
+                upstream = _find_upstream_writer(
+                    instructions,
+                    int(insn.src_l_stkoff),
+                    exclude=insn,
+                )
+                if upstream is not None:
+                    upstream_var_refs = _extract_var_refs(upstream.dstr)
+                    payload.update({
+                        "carrier_dst_stkoff": int(insn.src_l_stkoff),
+                        "upstream_writer_block_serial": upstream.block_serial,
+                        "upstream_writer_insn_index": upstream.insn_index,
+                        "upstream_writer_ea": upstream.ea,
+                        "upstream_writer_opcode": upstream.opcode_name,
+                        "upstream_writer_dest_stkoff": upstream.dest_stkoff,
+                        "upstream_writer_dstr": upstream.dstr,
+                        "upstream_writer_var_refs": list(upstream_var_refs),
+                    })
+                    evidence = (insn.dstr, upstream.dstr)
+
             observations.append(
                 FactObservation(
                     fact_id=fact_id,
@@ -131,22 +238,8 @@ class ReturnCarrierFactCollector:
                         f"{insn.opcode_name}"
                     ),
                     mop_signature=f"return_slot:mop_S:0x{slot:x}:{dest_size}",
-                    payload={
-                        "return_slot_stkoff": slot,
-                        "dest_size": dest_size,
-                        "opcode": insn.opcode_name,
-                        "carrier_class": carrier_class,
-                        "source_signature": source,
-                        "source_l_type": insn.src_l_type,
-                        "source_l_stkoff": insn.src_l_stkoff,
-                        "source_l_value": insn.src_l_value,
-                        "source_r_type": insn.src_r_type,
-                        "source_r_stkoff": insn.src_r_stkoff,
-                        "source_r_value": insn.src_r_value,
-                        "block_serial": insn.block_serial,
-                        "insn_index": insn.insn_index,
-                    },
-                    evidence=(insn.dstr,),
+                    payload=payload,
+                    evidence=evidence,
                 )
             )
         return tuple(observations)
