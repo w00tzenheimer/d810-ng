@@ -3082,6 +3082,28 @@ class HandlerChainComposerStrategy:
             int(getattr(mba, "entry_ea", 0) or 0),
             int(getattr(mba, "maturity", 0) or 0),
         )
+        # Snapshot + selected-alternate override BEFORE building
+        # indexes so candidate generation sees the corrected edges.
+        _snapshot_result = snapshot_reconstruction_dag(
+            logger,
+            dag=dag,
+            mba=mba,
+            strategy_name=self.name,
+        )
+        from d810.recon.flow.selected_alternate_edge_override import (
+            apply_selected_alternate_edge_overrides_from_diag,
+        )
+        dag = apply_selected_alternate_edge_overrides_from_diag(
+            dag,
+            _snapshot_result.diag_db,
+            _snapshot_result.snap_id,
+        )
+        corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
+            corrected_dag,
+            _snapshot_result.diag_db,
+            _snapshot_result.snap_id,
+        )
+
         indexes = build_reconstruction_discovery_indexes(
             dag=dag,
             corrected_dag=corrected_dag,
@@ -3094,13 +3116,6 @@ class HandlerChainComposerStrategy:
         corrected_boundary_shared_blocks = indexes.corrected_boundary_shared_blocks
         node_by_key = indexes.node_by_key
         dispatcher_serial = indexes.dispatcher_serial
-
-        snapshot_reconstruction_dag(
-            logger,
-            dag=dag,
-            mba=mba,
-            strategy_name=self.name,
-        )
 
         raw_candidates: list[ReconstructionCandidate] = []
         rejected_metadata: list[dict[str, int | str | None]] = []

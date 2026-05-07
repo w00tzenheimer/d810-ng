@@ -1,9 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 
 
-def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None:
+@dataclass(frozen=True, slots=True)
+class SnapshotReconstructionResult:
+    """Result of :func:`snapshot_reconstruction_dag`.
+
+    ``persisted`` is ``True`` only when the snapshot landed in the
+    diagnostic DB without raising.  Consumers (e.g. the selected-
+    alternate edge override helper) need both ``diag_db`` and
+    ``snap_id`` to read the just-written ``dag_edges`` rows; on any
+    failure both are ``None`` so callers can no-op cleanly.
+    """
+
+    diag_db: object | None
+    snap_id: int | None
+    persisted: bool
+
+
+def snapshot_reconstruction_dag(
+    logger,
+    *,
+    dag,
+    mba,
+    strategy_name: str,
+) -> SnapshotReconstructionResult:
     try:
         from d810.core.diag import get_diag_db
         diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
@@ -53,11 +77,21 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
 
             snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
             snapshot_dag_local_facts(diag_db, snap_id, dag)
+            return SnapshotReconstructionResult(
+                diag_db=diag_db,
+                snap_id=int(snap_id),
+                persisted=True,
+            )
     except Exception:
         logger.warning(
             "Early diagnostic DAG snapshot failed (non-critical)",
             exc_info=True,
         )
+    return SnapshotReconstructionResult(
+        diag_db=None,
+        snap_id=None,
+        persisted=False,
+    )
 
 
 def snapshot_reconstruction_post_apply(
