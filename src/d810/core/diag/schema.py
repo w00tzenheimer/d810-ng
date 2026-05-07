@@ -261,6 +261,29 @@ CREATE TABLE IF NOT EXISTS dag_edge_alternate_correlations (
 CREATE INDEX IF NOT EXISTS idx_dag_edge_alt_corr_collapsed
     ON dag_edge_alternate_correlations(snapshot_id, collapsed_edge_id);
 
+-- Per-alternate selection decisions: for each
+-- ``dag_edge_alternate_correlations`` row, did the alternate edge
+-- preserve terminal-tail byte progression (byte_index N -> N+k for
+-- some k >= 1)?  Computed by bounded BFS (depth <= 2) from the
+-- alternate's target state through ``dag_edges`` looking for a state
+-- whose owned blocks contain a ``terminal_tail``
+-- ``TerminalByteEmitterFact`` destination with a byte_index strictly
+-- greater than the source's byte_index.  Observability-only.
+CREATE TABLE IF NOT EXISTS dag_edge_alternate_selections (
+    snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
+    collapsed_edge_id      INTEGER NOT NULL,
+    alternate_edge_id      INTEGER NOT NULL,
+    selected               INTEGER NOT NULL,  -- 0 / 1
+    source_byte_index      INTEGER,
+    reached_byte_index     INTEGER,
+    reached_state_hex      TEXT,
+    reason                 TEXT NOT NULL,
+    evidence_json          TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, collapsed_edge_id, alternate_edge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dag_edge_alt_sel_selected
+    ON dag_edge_alternate_selections(snapshot_id, selected);
+
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
     snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),

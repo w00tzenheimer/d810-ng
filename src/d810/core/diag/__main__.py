@@ -44,6 +44,11 @@ from d810.core.diag.alternate_correlation import (
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )
+from d810.core.diag.alternate_selection import (
+    AlternateSelection,
+    persist_alternate_selections,
+    select_alternate_edges,
+)
 from d810.core.diag.bst_resolution import (
     BstResolution,
     parse_bst_intervals,
@@ -1531,6 +1536,52 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_alt_sel = sub.add_parser(
+        "dag-edge-alternate-selections",
+        parents=[common],
+        help=(
+            "Decide which correlated alternate edges preserve the "
+            "terminal-tail byte progression: bounded BFS (depth <= 2) "
+            "from each alternate target through dag_edges to find a "
+            "later terminal_tail TerminalByteEmitterFact byte_index. "
+            "Observability-only."
+        ),
+    )
+    p_alt_sel.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help="Snapshot id to select for (default: every snapshot with "
+             "dag_edge_alternate_correlations rows)",
+    )
+    p_alt_sel.add_argument(
+        "--collapsed-edge",
+        type=int,
+        default=None,
+        help="Filter to one collapsed edge id",
+    )
+    p_alt_sel.add_argument(
+        "--max-depth",
+        type=int,
+        default=4,
+        help=(
+            "Maximum BFS depth from the alternate target (default: 4 -- "
+            "covers the typical 4-hop OLLVM byte-tail chain "
+            "byteN_state -> transit -> byte(N+1)_state -> ... -> "
+            "byte(M)_emit_owner)"
+        ),
+    )
+    p_alt_sel.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist into dag_edge_alternate_selections",
+    )
+    p_alt_sel.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -2026,6 +2077,86 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"\n# {len(filtered)} correlation(s) shown "
                 f"(persisted={args.persist})"
+            )
+    elif args.command == "dag-edge-alternate-selections":
+        if args.snap_id is not None:
+            snap_ids = [int(args.snap_id)]
+        else:
+            snap_ids = [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT DISTINCT snapshot_id "
+                    "FROM dag_edge_alternate_correlations "
+                    "ORDER BY snapshot_id"
+                ).fetchall()
+            ]
+        all_selections: list[AlternateSelection] = []
+        for snap in snap_ids:
+            all_selections.extend(
+                select_alternate_edges(
+                    conn, snap, max_depth=int(args.max_depth)
+                )
+            )
+        if args.persist:
+            persist_alternate_selections(conn, all_selections)
+        filtered = list(all_selections)
+        if args.collapsed_edge is not None:
+            filtered = [
+                s for s in filtered
+                if s.collapsed_edge_id == int(args.collapsed_edge)
+            ]
+        if args.json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": s.snapshot_id,
+                            "collapsed_edge_id": s.collapsed_edge_id,
+                            "alternate_edge_id": s.alternate_edge_id,
+                            "selected": s.selected,
+                            "source_byte_index": s.source_byte_index,
+                            "reached_byte_index": s.reached_byte_index,
+                            "reached_state_hex": s.reached_state_hex,
+                            "reason": s.reason,
+                            "evidence": s.evidence,
+                        }
+                        for s in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "snap\tcollapsed\talt\tsel\tsrc_bi\treached_bi\t"
+                "reached_state\treason"
+            )
+            for s in filtered:
+                print(
+                    "\t".join(
+                        (
+                            str(s.snapshot_id),
+                            str(s.collapsed_edge_id),
+                            str(s.alternate_edge_id),
+                            "T" if s.selected else "-",
+                            (
+                                str(s.source_byte_index)
+                                if s.source_byte_index is not None else "-"
+                            ),
+                            (
+                                str(s.reached_byte_index)
+                                if s.reached_byte_index is not None else "-"
+                            ),
+                            s.reached_state_hex or "-",
+                            s.reason,
+                        )
+                    )
+                )
+            sel_count = sum(1 for s in filtered if s.selected)
+            rej_count = len(filtered) - sel_count
+            print(
+                f"\n# {sel_count} selected / {rej_count} rejected "
+                f"(persisted={args.persist}, max_depth={args.max_depth})"
             )
 
     conn.close()
