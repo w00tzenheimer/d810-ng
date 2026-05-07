@@ -2498,6 +2498,9 @@ class HandlerChainComposerStrategy:
                         bst_node_blocks=_bst_blocks,
                         dispatcher_serial=_dispatcher_serial,
                         bst_result=_bst_result,
+                        validated_fact_view=getattr(
+                            snapshot, "diagnostic_fact_view", None
+                        ),
                     )
                 )
             except Exception as exc:  # pragma: no cover - diagnostic only
@@ -4794,6 +4797,7 @@ class HandlerChainComposerStrategy:
         bst_node_blocks: frozenset[int] = frozenset(),
         dispatcher_serial: int = -1,
         bst_result: object | None = None,
+        validated_fact_view: object | None = None,
     ) -> list:
         """Atomically lower opaque-call anchors.
 
@@ -4850,6 +4854,7 @@ class HandlerChainComposerStrategy:
                     bst_node_blocks=bst_node_blocks,
                     dispatcher_serial=dispatcher_serial,
                     bst_result=bst_result,
+                    validated_fact_view=validated_fact_view,
                 )
                 if emitted is None:
                     rejected_chained_count += 1
@@ -5117,6 +5122,7 @@ class HandlerChainComposerStrategy:
         bst_node_blocks: frozenset[int] = frozenset(),
         dispatcher_serial: int = -1,
         bst_result: object | None = None,
+        validated_fact_view: object | None = None,
     ) -> list | None:
         """Emit ``CHAINED_CALL_ANCHOR`` lowering bundle, atomically.
 
@@ -5727,21 +5733,91 @@ class HandlerChainComposerStrategy:
             guard_preds.append((pred_serial, old_skip_target))
         if len(guard_preds) == 1:
             guard_pred, old_skip_target = guard_preds[0]
-            guard_skip_redirect = RedirectBranch(
-                from_serial=guard_pred,
-                old_target=old_skip_target,
-                new_target=outbound_target,
-            )
-            emitted.append(guard_skip_redirect)
-            logger.info(
-                "HCC_CALL_BARRIER_CHAINED_SKIP_REDIRECT"
-                " call_anchor=blk[%d] guard=blk[%d]"
-                " old_skip=blk[%d] new_skip=blk[%d]",
-                call_anchor_serial,
-                guard_pred,
-                old_skip_target,
-                outbound_target,
-            )
+            # Fact-rooted gate: the chained-skip RedirectBranch attaches
+            # the guard block as a new predecessor of ``outbound_target``.
+            # If ``outbound_target`` is a ``terminal_tail``
+            # ``TerminalByteEmitterFact`` block AND the guard is
+            # state-flow scaffolding (reads or writes ``%var_7BC``),
+            # the redirect widens IDA's reaching-def set enough to
+            # collapse the per-byte ``v52[k]`` cascade into a rolled
+            # ``*v47`` loop.  Suppress in that case.
+            #
+            # This emission path bypasses the executor-level
+            # ``terminal_byte_emit_fact_guard`` because the strategy
+            # appends the redirect to ``emitted`` outside the standard
+            # plan->executor filter ordering for some callers; gating
+            # here at the semantic emission point is the user-directed
+            # placement.
+            terminal_byte_emit_fact_id: str | None = None
+            if validated_fact_view is not None:
+                _sites_fn = getattr(
+                    validated_fact_view,
+                    "terminal_byte_emit_sites_for_block",
+                    None,
+                )
+                if callable(_sites_fn):
+                    try:
+                        _sites = _sites_fn(int(outbound_target)) or ()
+                    except Exception:
+                        _sites = ()
+                    if _sites:
+                        try:
+                            _guard_blk = self._safe_get_mblock(
+                                mba, int(guard_pred)
+                            )
+                        except Exception:
+                            _guard_blk = None
+                        _is_state_flow = False
+                        if _guard_blk is not None:
+                            _ins = getattr(_guard_blk, "head", None)
+                            while _ins is not None:
+                                _dstr = getattr(_ins, "dstr", None)
+                                _text: str | None = None
+                                if callable(_dstr):
+                                    try:
+                                        _text = _dstr()
+                                    except Exception:
+                                        _text = None
+                                elif isinstance(_dstr, str):
+                                    _text = _dstr
+                                if _text and "%var_7BC" in _text:
+                                    _is_state_flow = True
+                                    break
+                                _ins = getattr(_ins, "next", None)
+                        if _is_state_flow:
+                            try:
+                                terminal_byte_emit_fact_id = (
+                                    str(_sites[0].fact_id)
+                                )
+                            except Exception:
+                                terminal_byte_emit_fact_id = "<unknown>"
+            if terminal_byte_emit_fact_id is not None:
+                logger.info(
+                    "HCC_CALL_BARRIER_CHAINED_SKIP_REJECTED_TERMINAL_BYTE_EMITTER"
+                    " call_anchor=blk[%d] guard=blk[%d]"
+                    " old_skip=blk[%d] new_skip=blk[%d] fact_id=%s",
+                    call_anchor_serial,
+                    guard_pred,
+                    old_skip_target,
+                    outbound_target,
+                    terminal_byte_emit_fact_id,
+                )
+            else:
+                guard_skip_redirect = RedirectBranch(
+                    from_serial=guard_pred,
+                    old_target=old_skip_target,
+                    new_target=outbound_target,
+                )
+                emitted.append(guard_skip_redirect)
+                logger.info(
+                    "HCC_CALL_BARRIER_CHAINED_SKIP_REDIRECT"
+                    " call_anchor=blk[%d] guard=blk[%d]"
+                    " old_skip=blk[%d] new_skip=blk[%d]",
+                    call_anchor_serial,
+                    guard_pred,
+                    old_skip_target,
+                    outbound_target,
+                )
         elif len(guard_preds) > 1:
             logger.info(
                 "HCC_CALL_BARRIER_CHAINED_SKIP_REDIRECT_SKIPPED"
