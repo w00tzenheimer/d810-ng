@@ -905,6 +905,154 @@ def _format_block_lineage(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _state_write_trace(
+    conn: sqlite3.Connection,
+    *,
+    block: int,
+) -> dict[str, Any]:
+    """Return state-write anchor observations + rewrite mappings for ``block``.
+
+    Looks up rows by ``json_extract(payload, '$.block_serial')`` so the
+    query works against the canonical fact-observation payload regardless
+    of which collector emitted the row.
+    """
+    conn.row_factory = _dict_factory_for_state_writes  # type: ignore[assignment]
+    observations = conn.execute(
+        "SELECT * FROM fact_observations "
+        "WHERE kind='StateWriteAnchorFact' "
+        "  AND json_extract(payload, '$.block_serial')=? "
+        "ORDER BY snapshot_id, maturity, fact_id",
+        (int(block),),
+    ).fetchall()
+    if not observations:
+        return {"block": int(block), "observations": [], "mappings": []}
+    fact_ids = sorted({row["fact_id"] for row in observations})
+    placeholders = ",".join("?" for _ in fact_ids)
+    mappings = conn.execute(
+        f"SELECT * FROM fact_mappings "
+        f"WHERE source_fact_id IN ({placeholders}) "
+        f"ORDER BY snapshot_id, target_maturity, mapping_index",
+        fact_ids,
+    ).fetchall()
+    return {
+        "block": int(block),
+        "observations": observations,
+        "mappings": mappings,
+    }
+
+
+def _state_write_rewrites(
+    conn: sqlite3.Connection,
+    *,
+    block: int | None,
+) -> list[dict[str, Any]]:
+    """Return all STATE_CONST_REWRITTEN mapping rows.
+
+    Each row carries original_state_const + rewritten_state_const +
+    instruction_ea_hex in its payload, joined with the originating
+    observation's source maturity for display.
+    """
+    conn.row_factory = _dict_factory_for_state_writes  # type: ignore[assignment]
+    base_sql = (
+        "SELECT * FROM fact_mappings "
+        "WHERE status='STATE_CONST_REWRITTEN'"
+    )
+    params: list[Any] = []
+    if block is not None:
+        base_sql += " AND json_extract(payload, '$.block_serial')=?"
+        params.append(int(block))
+    base_sql += " ORDER BY snapshot_id, target_maturity, mapping_index"
+    return conn.execute(base_sql, params).fetchall()
+
+
+def _dict_factory_for_state_writes(cursor: sqlite3.Cursor, row: tuple) -> dict:
+    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
+
+
+def _format_state_write_trace(result: dict[str, Any]) -> str:
+    block = result["block"]
+    observations = result.get("observations") or []
+    mappings = result.get("mappings") or []
+    lines = [f"State-write anchor trace for blk[{block}]"]
+    if not observations:
+        lines.append("  (no StateWriteAnchorFact observations recorded)")
+        return "\n".join(lines)
+
+    lines.append("observations:")
+    for row in observations:
+        try:
+            payload = json.loads(row.get("payload") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        ea_hex = (
+            payload.get("instruction_ea_hex")
+            or row.get("source_ea_hex")
+            or "?"
+        )
+        const_hex = payload.get("state_const_hex") or "?"
+        stkoff_hex = payload.get("state_var_stkoff_hex") or "?"
+        dest_var = payload.get("dest_var_signature") or ""
+        maturity = row.get("maturity") or "?"
+        phase = row.get("phase") or "?"
+        lines.append(
+            f"  [{maturity:<20s} {phase:<12s}] "
+            f"const={const_hex} stkoff={stkoff_hex} "
+            f"dest={dest_var} ea={ea_hex} fact={row.get('fact_id')}"
+        )
+
+    if mappings:
+        lines.append("mappings:")
+        for row in mappings:
+            try:
+                payload = json.loads(row.get("payload") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            status = row.get("status") or "?"
+            src_mat = row.get("source_maturity") or "?"
+            tgt_mat = row.get("target_maturity") or "?"
+            orig = payload.get("original_state_const_hex") or "?"
+            new = payload.get("rewritten_state_const_hex")
+            transition = f"{src_mat} -> {tgt_mat}"
+            if status == "STATE_CONST_REWRITTEN" and new is not None:
+                lines.append(
+                    f"  [{transition}] {status}: {orig} -> {new}  "
+                    f"reason={row.get('reason')}"
+                )
+            else:
+                lines.append(
+                    f"  [{transition}] {status} "
+                    f"reason={row.get('reason')}"
+                )
+    else:
+        lines.append("mappings: (none)")
+    return "\n".join(lines)
+
+
+def _format_state_write_rewrites(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "(no STATE_CONST_REWRITTEN mappings recorded)"
+    lines = [
+        "block\toriginal_const\trewritten_const\tsource_maturity\ttarget_maturity\tinstruction_ea\tstkoff",
+    ]
+    for row in rows:
+        try:
+            payload = json.loads(row.get("payload") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        lines.append(
+            "\t".join((
+                str(payload.get("block_serial", "?")),
+                str(payload.get("original_state_const_hex", "?")),
+                str(payload.get("rewritten_state_const_hex", "?")),
+                str(row.get("source_maturity") or "?"),
+                str(row.get("target_maturity") or "?"),
+                str(payload.get("instruction_ea_hex", "?")),
+                str(payload.get("state_var_stkoff_hex", "?")),
+            ))
+        )
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
@@ -1187,6 +1335,50 @@ def main(argv: list[str] | None = None) -> int:
     p_fact_diff.add_argument("--semantic-key")
     p_fact_diff.add_argument("--json", action="store_true", dest="json_output")
 
+    p_state_write_trace = sub.add_parser(
+        "state-write-trace",
+        parents=[common],
+        help=(
+            "Trace state-write anchor facts (LOCOPT-pre original + later "
+            "rewrites) for one block. Shows the original "
+            "'mov #const, stkvar' at MMAT_LOCOPT pre_d810 and any later "
+            "mappings with status STATE_CONST_REWRITTEN."
+        ),
+    )
+    p_state_write_trace.add_argument(
+        "--block",
+        required=True,
+        type=int,
+        help="Block serial whose state-write anchors should be traced",
+    )
+    p_state_write_trace.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
+    p_state_write_rewrites = sub.add_parser(
+        "state-write-rewrites",
+        parents=[common],
+        help=(
+            "List every block whose state-write was rewritten between "
+            "an earlier maturity (e.g. MMAT_LOCOPT pre_d810) and a "
+            "later maturity, with original_const -> new_const and "
+            "the maturity transition that recorded the change."
+        ),
+    )
+    p_state_write_rewrites.add_argument(
+        "--block",
+        type=int,
+        default=None,
+        help="Filter to one block serial",
+    )
+    p_state_write_rewrites.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -1429,6 +1621,18 @@ def main(argv: list[str] | None = None) -> int:
                 "target_block",
             ]
             print(_format_fact_rows(rows, columns))
+    elif args.command == "state-write-trace":
+        result = _state_write_trace(conn, block=args.block)
+        if args.json_output:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(_format_state_write_trace(result))
+    elif args.command == "state-write-rewrites":
+        rows = _state_write_rewrites(conn, block=args.block)
+        if args.json_output:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+        else:
+            print(_format_state_write_rewrites(rows))
 
     conn.close()
     return 0

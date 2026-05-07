@@ -20,6 +20,7 @@ class FactStatus(str, Enum):
     SUPERSEDED = "SUPERSEDED"
     IDENTITY_LOST = "IDENTITY_LOST"
     OPTIMIZATION_FOLDED = "OPTIMIZATION_FOLDED"
+    STATE_CONST_REWRITTEN = "STATE_CONST_REWRITTEN"
     UNKNOWN = "UNKNOWN"
 
 
@@ -253,6 +254,42 @@ class ValidatedFactView:
             }
         }
         return tuple(obs for obs in self.observations if obs.fact_id not in stale_ids)
+
+    def state_write_anchors_for_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active ``StateWriteAnchorFact`` observations whose
+        payload's ``block_serial`` matches ``block_serial``.
+
+        Only observations surfaced via :pyattr:`active_observations` are
+        considered: STALE / REMAPPED / CONTRADICTED / SUPERSEDED /
+        IDENTITY_LOST mappings are excluded so consumers never act on
+        invalidated facts.  STATE_CONST_REWRITTEN mappings do NOT remove
+        the underlying observation from the active set: the original
+        LOCOPT-pre fact remains valuable as a "what was here before
+        IDA's CP rewrote it" record, and consumers can still inspect
+        the mapping for the rewritten value separately.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "StateWriteAnchorFact":
+                continue
+            payload = obs.payload or {}
+            raw = payload.get("block_serial")
+            if raw is None:
+                continue
+            try:
+                if int(raw) != target:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            matches.append(obs)
+        return tuple(matches)
 
     def return_carrier_sites_for_block(
         self,
