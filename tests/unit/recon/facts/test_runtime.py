@@ -9,6 +9,11 @@ from d810.recon.facts import (
     FactObservation,
     FactStatus,
 )
+from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+
+_MATURITY_LOCOPT = _MATURITY_VALUES["MMAT_LOCOPT"]
+_MATURITY_CALLS = _MATURITY_VALUES["MMAT_CALLS"]
+_MATURITY_GLBOPT1 = _MATURITY_VALUES["MMAT_GLBOPT1"]
 
 
 class _Collector:
@@ -900,6 +905,566 @@ def test_terminal_byte_emitter_fact_remaps_on_stable_source_ea_mop() -> None:
     assert {obs.fact_id for obs in view.active_observations} == {
         "terminal_byte_emitter:byte2:blk=132"
     }
+
+
+def _state_write_obs(
+    *,
+    fact_id: str,
+    maturity: str,
+    block_serial: int,
+    instruction_ea: int,
+    state_const: int,
+    state_var_stkoff: int = 0x3C,
+    insn_index: int = 0,
+) -> FactObservation:
+    payload = {
+        "state_const_hex": f"0x{state_const & 0xFFFFFFFFFFFFFFFF:016x}",
+        "state_const_u64": state_const & 0xFFFFFFFFFFFFFFFF,
+        "state_const": state_const & 0xFFFFFFFFFFFFFFFF,
+        "block_serial": block_serial,
+        "instruction_index": insn_index,
+        "instruction_ea_hex": f"0x{instruction_ea & 0xFFFFFFFFFFFFFFFF:016x}",
+        "instruction_ea": instruction_ea,
+        "state_var_stkoff": state_var_stkoff,
+        "state_var_stkoff_hex": f"0x{state_var_stkoff:x}",
+        "successor_blocks": [],
+        "opcode": "m_mov",
+    }
+    return FactObservation(
+        fact_id=fact_id,
+        kind="StateWriteAnchorFact",
+        semantic_key=fact_id,
+        maturity=maturity,
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=block_serial,
+        source_ea=instruction_ea,
+        mop_signature=f"state_write:mop_S:0x{state_var_stkoff:x}:4",
+        payload=payload,
+    )
+
+
+def test_state_write_anchor_rewrite_emits_state_const_rewritten_mapping() -> None:
+    """When LOCOPT-pre records state_const=A and a later maturity at the
+    SAME (block_serial, instruction_ea, state_var_stkoff) records state_const=B
+    with B != A, the lifecycle must emit STATE_CONST_REWRITTEN."""
+
+    locopt = _MATURITY_LOCOPT
+    glbopt1 = _MATURITY_GLBOPT1
+
+    class _Pre:
+        name = "state-write-pre"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x180014155,
+                    state_const=0x5A21D9DB,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({glbopt1})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c",
+                    maturity="MMAT_GLBOPT1",
+                    block_serial=100,
+                    instruction_ea=0x180014155,
+                    state_const=0x63D54755,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
+
+    rewrite_mappings = [
+        m for m in view.mappings if m.status is FactStatus.STATE_CONST_REWRITTEN
+    ]
+    assert len(rewrite_mappings) == 1
+    mapping = rewrite_mappings[0]
+    assert mapping.source_maturity == "MMAT_LOCOPT"
+    assert mapping.target_maturity == "MMAT_GLBOPT1"
+    assert mapping.payload["original_state_const"] == 0x5A21D9DB
+    assert mapping.payload["rewritten_state_const"] == 0x63D54755
+    assert mapping.payload["original_state_const_hex"] == "0x000000005a21d9db"
+    assert mapping.payload["rewritten_state_const_hex"] == "0x0000000063d54755"
+    assert mapping.payload["block_serial"] == 100
+    assert mapping.payload["instruction_ea"] == 0x180014155
+    assert mapping.payload["state_var_stkoff"] == 0x3C
+    # Original LOCOPT-pre observation must remain ACTIVE -- it's still
+    # the load-bearing record of the original const.
+    assert any(
+        obs.maturity == "MMAT_LOCOPT" for obs in view.active_observations
+    )
+
+
+def test_state_write_anchor_same_const_does_not_emit_rewrite() -> None:
+    locopt = _MATURITY_LOCOPT
+    glbopt1 = _MATURITY_GLBOPT1
+
+    class _Pre:
+        name = "state-write-pre-stable"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=42:insn=0:ea=0x42:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=42,
+                    instruction_ea=0x42,
+                    state_const=0xCAFE,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-stable"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({glbopt1})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=42:insn=0:ea=0x42:stkoff=0x3c",
+                    maturity="MMAT_GLBOPT1",
+                    block_serial=42,
+                    instruction_ea=0x42,
+                    state_const=0xCAFE,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
+
+    assert not any(
+        m.status is FactStatus.STATE_CONST_REWRITTEN for m in view.mappings
+    )
+
+
+def test_state_write_anchor_same_ea_const_changed_emits_rewrite() -> None:
+    """Primary-key path: same EA, same block, same stkoff, different
+    const -> STATE_CONST_REWRITTEN with original_ea_hex == rewritten_ea_hex."""
+
+    locopt = _MATURITY_LOCOPT
+    glbopt1 = _MATURITY_GLBOPT1
+
+    class _Pre:
+        name = "state-write-pre-same-ea"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x180014155,
+                    state_const=0x5A21D9DB,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-same-ea"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({glbopt1})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c",
+                    maturity="MMAT_GLBOPT1",
+                    block_serial=100,
+                    instruction_ea=0x180014155,
+                    state_const=0x63D54755,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
+
+    rewrites = [
+        m for m in view.mappings if m.status is FactStatus.STATE_CONST_REWRITTEN
+    ]
+    assert len(rewrites) == 1
+    payload = rewrites[0].payload
+    assert payload["original_ea_hex"] == payload["rewritten_ea_hex"]
+    assert payload["ea_changed"] is False
+    assert payload["continuity_kind"] == "primary_ea_block_stkoff"
+    assert payload["original_const_hex"] == "0x000000005a21d9db"
+    assert payload["rewritten_const_hex"] == "0x0000000063d54755"
+    assert payload["original_const_u64"] == 0x5A21D9DB
+    assert payload["rewritten_const_u64"] == 0x63D54755
+    assert payload["from_maturity"] == "MMAT_LOCOPT"
+    assert payload["to_maturity"] == "MMAT_GLBOPT1"
+    assert payload["block_serial"] == 100
+    assert payload["state_var_stkoff_hex"] == "0x3c"
+
+
+def test_state_write_anchor_ea_changed_canonical_stkoff_emits_rewrite() -> None:
+    """Fallback-key path: same block, same canonical stkoff, but EAs
+    differ -> STATE_CONST_REWRITTEN with original_ea_hex !=
+    rewritten_ea_hex and continuity_kind=fallback_canonical_state_var."""
+
+    locopt = _MATURITY_LOCOPT
+    calls = _MATURITY_CALLS
+
+    class _Pre:
+        name = "state-write-pre-ea-changed"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                # Several state-var writes plus one byte-table write so
+                # the canonical stkoff (0x3c, count=3) wins the mode
+                # vote against 0x68 (count=1).
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x180013c5b:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x180013C5B,
+                    state_const=0x5A21D9DB,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=54:insn=0:ea=0x180013800:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=54,
+                    instruction_ea=0x180013800,
+                    state_const=0x432DC789,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=161:insn=0:ea=0x180013a00:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=161,
+                    instruction_ea=0x180013A00,
+                    state_const=0x149AED27,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=5:ea=0x180013c80:stkoff=0x68",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x180013C80,
+                    state_const=0xAB,
+                    state_var_stkoff=0x68,
+                    insn_index=5,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-ea-changed"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({calls})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            # Same block 100, same stkoff 0x3c, NEW EA, NEW const.
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x18001450a:stkoff=0x3c",
+                    maturity="MMAT_CALLS",
+                    block_serial=100,
+                    instruction_ea=0x18001450A,
+                    state_const=0x63D54755,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_CALLS")
+
+    rewrites = [
+        m
+        for m in view.mappings
+        if m.status is FactStatus.STATE_CONST_REWRITTEN
+        and m.payload.get("block_serial") == 100
+        and m.payload.get("state_var_stkoff") == 0x3C
+    ]
+    assert len(rewrites) == 1
+    payload = rewrites[0].payload
+    assert payload["original_ea_hex"] == "0x0000000180013c5b"
+    assert payload["rewritten_ea_hex"] == "0x000000018001450a"
+    assert payload["original_ea_hex"] != payload["rewritten_ea_hex"]
+    assert payload["ea_changed"] is True
+    assert payload["continuity_kind"] == "fallback_canonical_state_var"
+    assert payload["original_const_hex"] == "0x000000005a21d9db"
+    assert payload["rewritten_const_hex"] == "0x0000000063d54755"
+    assert payload["from_maturity"] == "MMAT_LOCOPT"
+    assert payload["to_maturity"] == "MMAT_CALLS"
+
+
+def test_state_write_anchor_fallback_ignores_different_block() -> None:
+    """Fallback must NOT correlate observations across DIFFERENT blocks
+    even when the canonical stkoff matches."""
+
+    locopt = _MATURITY_LOCOPT
+    calls = _MATURITY_CALLS
+
+    class _Pre:
+        name = "state-write-pre-different-block"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                # Make canonical stkoff = 0x3c (3 hits).
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=10:insn=0:ea=0x10:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=10,
+                    instruction_ea=0x10,
+                    state_const=0x1111,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=20:insn=0:ea=0x20:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=20,
+                    instruction_ea=0x20,
+                    state_const=0x2222,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=30:insn=0:ea=0x30:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=30,
+                    instruction_ea=0x30,
+                    state_const=0x3333,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-different-block"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({calls})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            # Different block (40) with same canonical stkoff. None of
+            # the prior observations should map to this one.
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=40:insn=0:ea=0x40:stkoff=0x3c",
+                    maturity="MMAT_CALLS",
+                    block_serial=40,
+                    instruction_ea=0x40,
+                    state_const=0x4444,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_CALLS")
+
+    rewrites = [
+        m for m in view.mappings if m.status is FactStatus.STATE_CONST_REWRITTEN
+    ]
+    assert rewrites == []
+
+
+def test_state_write_anchor_fallback_skips_non_canonical_stkoff() -> None:
+    """Fallback must NOT trigger for non-canonical stkoffs (e.g. byte
+    table writes at 0x68/0x60). Different EAs at the same block but
+    non-canonical stkoff -> no STATE_CONST_REWRITTEN mapping."""
+
+    locopt = _MATURITY_LOCOPT
+    calls = _MATURITY_CALLS
+
+    class _Pre:
+        name = "state-write-pre-non-canonical"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            # Canonical stkoff = 0x3c (3 hits at OTHER blocks). Block
+            # 100 has a single 0x68 write (byte-table).
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=10:insn=0:ea=0x10:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=10,
+                    instruction_ea=0x10,
+                    state_const=0x1111,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=20:insn=0:ea=0x20:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=20,
+                    instruction_ea=0x20,
+                    state_const=0x2222,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=30:insn=0:ea=0x30:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=30,
+                    instruction_ea=0x30,
+                    state_const=0x3333,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=5:ea=0x100a:stkoff=0x68",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x100A,
+                    state_const=0xAA,
+                    state_var_stkoff=0x68,
+                    insn_index=5,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-non-canonical"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({calls})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            # Same block 100, same non-canonical stkoff 0x68, NEW EA,
+            # NEW const. Fallback MUST NOT correlate.
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=5:ea=0x100b:stkoff=0x68",
+                    maturity="MMAT_CALLS",
+                    block_serial=100,
+                    instruction_ea=0x100B,
+                    state_const=0xBB,
+                    state_var_stkoff=0x68,
+                    insn_index=5,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_CALLS")
+
+    rewrites = [
+        m for m in view.mappings if m.status is FactStatus.STATE_CONST_REWRITTEN
+    ]
+    assert rewrites == []
+
+
+def test_state_write_anchor_absent_at_later_maturity_emits_identity_lost() -> None:
+    locopt = _MATURITY_LOCOPT
+    glbopt1 = _MATURITY_GLBOPT1
+
+    class _Pre:
+        name = "state-write-pre-absent"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=88:insn=1:ea=0x88:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=88,
+                    instruction_ea=0x88,
+                    state_const=0xDEADBEEF,
+                ),
+            )
+
+    class _Post:
+        name = "state-write-post-absent"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({glbopt1})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return ()
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+    runtime.register(_Post())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
+
+    lost = [m for m in view.mappings if m.status is FactStatus.IDENTITY_LOST]
+    assert len(lost) == 1
+    assert lost[0].payload["block_serial"] == 88
+    assert lost[0].payload["original_state_const"] == 0xDEADBEEF
+
+
+def test_validated_fact_view_state_write_anchors_for_block() -> None:
+    locopt = _MATURITY_LOCOPT
+
+    class _Pre:
+        name = "state-write-pre-view"
+        fact_kinds = frozenset({"StateWriteAnchorFact"})
+        maturities = frozenset({locopt})
+
+        def collect(self, target, *, func_ea, maturity, phase):
+            return (
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=100:insn=0:ea=0x100:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=100,
+                    instruction_ea=0x100,
+                    state_const=0x5A21D9DB,
+                ),
+                _state_write_obs(
+                    fact_id="state_write_anchor:blk=200:insn=0:ea=0x200:stkoff=0x3c",
+                    maturity="MMAT_LOCOPT",
+                    block_serial=200,
+                    instruction_ea=0x200,
+                    state_const=0x432DC789,
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_Pre())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_LOCOPT")
+
+    blk100 = view.state_write_anchors_for_block(100)
+    blk200 = view.state_write_anchors_for_block(200)
+    blk999 = view.state_write_anchors_for_block(999)
+    assert len(blk100) == 1
+    assert blk100[0].payload["state_const"] == 0x5A21D9DB
+    assert len(blk200) == 1
+    assert blk200[0].payload["state_const"] == 0x432DC789
+    assert blk999 == ()
 
 
 def test_capture_does_not_dedupe_before_snapshot_backed_capture() -> None:
