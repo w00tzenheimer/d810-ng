@@ -69,6 +69,9 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
 from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
     filter_return_carrier_fact_redirects,
 )
+from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
+    filter_terminal_byte_emit_fact_redirects,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
@@ -381,6 +384,26 @@ class TransactionalExecutor:
                     ),
                 )
             )
+        modifications, terminal_byte_emit_rejections = (
+            filter_terminal_byte_emit_fact_redirects(
+                modifications,
+                mba=self.mba,
+                fact_view=self.validated_fact_view,
+                dispatcher_serial=self.dispatcher_serial,
+            )
+        )
+        if terminal_byte_emit_rejections:
+            gate_accounting = gate_accounting.add(
+                GateDecision(
+                    gate_name="terminal_byte_emit_fact_guard",
+                    verdict=GateVerdict.PASSED,
+                    reason=(
+                        f"rejected {len(terminal_byte_emit_rejections)} redirect(s) "
+                        "that would inject state-flow predecessors into "
+                        "terminal_tail byte-emit blocks"
+                    ),
+                )
+            )
         if not modifications:
             result = StageResult(
                 strategy_name=fragment.strategy_name,
@@ -390,6 +413,9 @@ class TransactionalExecutor:
             )
             result.metadata["return_carrier_fact_rejections"] = (
                 return_carrier_rejections
+            )
+            result.metadata["terminal_byte_emit_fact_rejections"] = (
+                terminal_byte_emit_rejections
             )
             result.metadata["gate_accounting"] = gate_accounting
             return result
