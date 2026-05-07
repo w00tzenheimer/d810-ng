@@ -553,6 +553,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
+        target: Any,
         maturity: int,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
@@ -583,6 +584,7 @@ class FactLifecycleRuntime:
             mapping_key = (observation.fact_id, maturity_rank)
             if mapping_key in existing_mapping_keys:
                 continue
+            target_block = self._find_block_for_ea(target, observation.source_ea)
             mappings.append(
                 FactMapping(
                     source_fact_id=observation.fact_id,
@@ -590,6 +592,8 @@ class FactLifecycleRuntime:
                     target_maturity=maturity_text,
                     status=FactStatus.IDENTITY_LOST,
                     confidence=0.72,
+                    target_block=target_block,
+                    target_ea=observation.source_ea if target_block is not None else None,
                     reason=(
                         "ReturnCarrierFact observation observed at an earlier "
                         "maturity but absent from this maturity's collection"
@@ -601,10 +605,41 @@ class FactLifecycleRuntime:
                         "source_block": observation.source_block,
                         "source_ea": observation.source_ea,
                         "source_mop_signature": observation.mop_signature,
+                        "source_payload": dict(observation.payload or {}),
                     },
                 )
             )
         return tuple(mappings)
+
+    @staticmethod
+    def _find_block_for_ea(target: Any, ea: int | None) -> int | None:
+        if ea is None:
+            return None
+        try:
+            wanted = int(ea)
+            qty = int(getattr(target, "qty", 0))
+        except (TypeError, ValueError):
+            return None
+        if qty <= 0:
+            return None
+        for serial in range(qty):
+            try:
+                blk = target.get_mblock(serial)
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            insn = getattr(blk, "head", None)
+            seen = 0
+            while insn is not None and seen < 10000:
+                seen += 1
+                try:
+                    if int(getattr(insn, "ea", -1)) == wanted:
+                        return serial
+                except (TypeError, ValueError):
+                    pass
+                insn = getattr(insn, "next", None)
+        return None
 
     @staticmethod
     def _terminal_byte_emitter_continuity_key(
@@ -814,6 +849,7 @@ class FactLifecycleRuntime:
         if "ReturnCarrierFact" in ran_fact_kinds:
             return_carrier_mappings = self._derive_return_carrier_lifecycle(
                 func_ea,
+                target=target,
                 maturity=maturity,
                 current_observations=tuple(observations),
                 current_mappings=(*tuple(mappings), *derived_mappings),

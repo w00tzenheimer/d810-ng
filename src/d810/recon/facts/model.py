@@ -286,5 +286,69 @@ class ValidatedFactView:
             matches.append(obs)
         return tuple(matches)
 
+    def stale_return_carrier_hazards_for_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return historical ``ReturnCarrierFact`` hazards for ``block_serial``.
+
+        These facts are explicitly not active. They were observed at an earlier
+        maturity and later mapped to ``IDENTITY_LOST``. That status means the
+        carrier surface was folded or removed, but the earlier observation can
+        still be a valid negative planning constraint when its identity payload
+        remains usable.
+
+        The helper is intentionally narrow: it requires a recorded upstream
+        writer block, an EA for the carrier/materialization site, and recorded
+        stkvar read references. It also rejects any fact that has a
+        ``CONTRADICTED`` mapping.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+
+        lost_blocks_by_id: dict[str, set[int]] = {}
+        for mapping in self.mappings:
+            if mapping.status is not FactStatus.IDENTITY_LOST:
+                continue
+            if mapping.target_block is not None:
+                try:
+                    lost_blocks_by_id.setdefault(mapping.source_fact_id, set()).add(
+                        int(mapping.target_block)
+                    )
+                except (TypeError, ValueError):
+                    pass
+        lost_ids = set(lost_blocks_by_id)
+        contradicted_ids = {
+            mapping.source_fact_id
+            for mapping in self.mappings
+            if mapping.status is FactStatus.CONTRADICTED
+        }
+        if not lost_ids:
+            return ()
+
+        matches: list[FactObservation] = []
+        for obs in self.observations:
+            if obs.kind != "ReturnCarrierFact":
+                continue
+            if obs.fact_id not in lost_ids or obs.fact_id in contradicted_ids:
+                continue
+            payload = obs.payload or {}
+            # Stale hazards must be associated with the current target by the
+            # lifecycle mapping's exact-EA block resolution. Earlier observed
+            # block serials are not stable across maturities and are therefore
+            # insufficient for a late negative constraint.
+            if target not in lost_blocks_by_id.get(obs.fact_id, set()):
+                continue
+            raw_refs = payload.get("upstream_writer_var_refs")
+            if not isinstance(raw_refs, (tuple, list)) or not raw_refs:
+                continue
+            raw_ea = payload.get("upstream_writer_ea")
+            if obs.source_ea is None and raw_ea is None:
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
     def with_mapping(self, mapping: FactMapping) -> "ValidatedFactView":
         return replace(self, mappings=(*self.mappings, mapping))

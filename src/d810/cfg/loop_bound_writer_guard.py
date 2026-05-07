@@ -713,6 +713,15 @@ def collect_const_var_refs_in_block(mba, block_serial: int) -> frozenset[str]:
                 text = None
         elif isinstance(dstr_method, str):
             text = dstr_method
+        if not text:
+            insn_dstr = getattr(insn, "dstr", None)
+            if callable(insn_dstr):
+                try:
+                    text = insn_dstr()
+                except Exception:
+                    text = None
+            elif isinstance(insn_dstr, str):
+                text = insn_dstr
         if text:
             for match in _VAR_REF_RE.finditer(text):
                 found.add(match.group(1).lower())

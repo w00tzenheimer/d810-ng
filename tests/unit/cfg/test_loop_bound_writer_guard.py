@@ -491,6 +491,23 @@ class TestCollectConstVarRefsInBlock:
 
         assert refs == frozenset({"228", "650", "658", "660"})
 
+    def test_falls_back_to_instruction_text_for_const_write_dest(
+        self, fake_ida_hexrays_with_lvar,
+    ):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        src = _Mop(_MOP_N, nnn=_NumValue(0xC0FFEE))
+        dst = _Mop(_MOP_S, s=_StkOff(0x648))
+        insn = _Insn(0x04, l=src, d=dst)
+        insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_648.8"
+        mba = _Mba([_Mblock(_chain(insn))])
+
+        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset({
+            "648",
+        })
+
     def test_returns_empty_when_block_has_no_const_writes(
         self, fake_ida_hexrays_with_lvar,
     ):
