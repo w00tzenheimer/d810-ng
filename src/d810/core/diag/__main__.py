@@ -39,6 +39,11 @@ import re
 import sqlite3
 import sys
 
+from d810.core.diag.edge_diagnostics import (
+    EdgeDiagnostic,
+    classify_dag_edges,
+    persist_edge_diagnostics,
+)
 from d810.core.diag.formatting import format_block_id
 from d810.core.diag.query import (
     block_detail,
@@ -1379,6 +1384,57 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_dag_edge_diag = sub.add_parser(
+        "dag-edge-diagnostics",
+        parents=[common],
+        help=(
+            "Classify recon-time dag_edges by correlating them with "
+            "StateWriteAnchor STATE_CONST_REWRITTEN mappings, "
+            "StateTransitionAnchor transit chains, and "
+            "TerminalByteEmitterFact destinations. "
+            "Observability-only: classifications never affect recon "
+            "edge target selection or HCC behavior."
+        ),
+    )
+    p_dag_edge_diag.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help=(
+            "Snapshot id to classify (default: every snapshot that has "
+            "dag_edges rows)"
+        ),
+    )
+    p_dag_edge_diag.add_argument(
+        "--kind",
+        choices=("all", "terminal_tail"),
+        default="all",
+        help="Restrict output to terminal-tail edges only",
+    )
+    p_dag_edge_diag.add_argument(
+        "--classification",
+        default=None,
+        help=(
+            "Filter to one classification "
+            "(LOCOPT_REWRITTEN_SOURCE / TARGET_UNRESOLVED_AFTER_REWRITE "
+            "/ COLLAPSED_TO_REWRITTEN_TARGET / SPURIOUS_CONDITIONAL_ARM "
+            "/ BENIGN)"
+        ),
+    )
+    p_dag_edge_diag.add_argument(
+        "--persist",
+        action="store_true",
+        help=(
+            "Persist classifications into dag_edge_diagnostics table "
+            "(idempotent: existing rows for the snapshot are replaced)"
+        ),
+    )
+    p_dag_edge_diag.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -1633,6 +1689,80 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(rows, indent=2, sort_keys=True))
         else:
             print(_format_state_write_rewrites(rows))
+    elif args.command == "dag-edge-diagnostics":
+        if args.snap_id is not None:
+            snap_ids = [int(args.snap_id)]
+        else:
+            snap_ids = [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT DISTINCT snapshot_id FROM dag_edges ORDER BY snapshot_id"
+                ).fetchall()
+            ]
+        all_diagnostics: list[EdgeDiagnostic] = []
+        for snap in snap_ids:
+            all_diagnostics.extend(classify_dag_edges(conn, snap))
+        if args.persist:
+            persist_edge_diagnostics(conn, all_diagnostics)
+        filtered = all_diagnostics
+        if args.kind == "terminal_tail":
+            filtered = [d for d in filtered if d.is_terminal_tail]
+        if args.classification:
+            filtered = [
+                d for d in filtered
+                if d.classification == args.classification
+            ]
+        if args.json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": d.snapshot_id,
+                            "edge_id": d.edge_id,
+                            "classification": d.classification,
+                            "source_state_hex": d.source_state_hex,
+                            "target_state_hex": d.target_state_hex,
+                            "edge_kind": d.edge_kind,
+                            "is_terminal_tail": d.is_terminal_tail,
+                            "original_state_const": d.original_state_const,
+                            "rewritten_state_const": d.rewritten_state_const,
+                            "related_fact_ids": list(d.related_fact_ids),
+                            "reason": d.reason,
+                        }
+                        for d in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            header = (
+                f"snap\tedge\tterm\tkind\tclass\t"
+                f"source\ttarget\torig\trewritten\treason"
+            )
+            print(header)
+            for d in filtered:
+                print(
+                    "\t".join(
+                        (
+                            str(d.snapshot_id),
+                            str(d.edge_id),
+                            "T" if d.is_terminal_tail else "-",
+                            d.edge_kind,
+                            d.classification,
+                            d.source_state_hex or "<null>",
+                            d.target_state_hex or "<null>",
+                            d.original_state_const or "-",
+                            d.rewritten_state_const or "-",
+                            d.reason,
+                        )
+                    )
+                )
+            print(
+                f"\n# {len(filtered)} edge(s) shown "
+                f"(persisted={args.persist}, filter={args.kind}/"
+                f"{args.classification or 'any'})"
+            )
 
     conn.close()
     return 0
