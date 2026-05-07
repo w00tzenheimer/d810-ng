@@ -39,6 +39,13 @@ import re
 import sqlite3
 import sys
 
+from d810.core.diag.bst_resolution import (
+    BstResolution,
+    parse_bst_intervals,
+    parse_latest_bst_intervals_from_log,
+    persist_bst_resolutions,
+    resolve_state_transition_facts,
+)
 from d810.core.diag.edge_diagnostics import (
     EdgeDiagnostic,
     classify_dag_edges,
@@ -1435,6 +1442,56 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_bst_resolve = sub.add_parser(
+        "state-transition-bst-resolutions",
+        parents=[common],
+        help=(
+            "Enrich LOCOPT-pre StateTransitionAnchorFacts with the "
+            "single-hop BST routing for their source_state_const, "
+            "and (when the resolved handler block has a canonical "
+            "state-write at LOCOPT-pre) the next state constant. "
+            "Observability-only; no recon edge target selection or "
+            "HCC behavior depends on these rows."
+        ),
+    )
+    p_bst_resolve.add_argument(
+        "--bst-log",
+        default=None,
+        help=(
+            "Path to a d810.log containing INTERVAL_DISPATCHER_ROWS "
+            "(default: .tmp/logs/d810_logs/d810.log relative to cwd)"
+        ),
+    )
+    p_bst_resolve.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help=(
+            "LOCOPT-pre snapshot id to enrich (default: pick the "
+            "first snapshot whose label contains MMAT_LOCOPT and "
+            "phase pre_d810)"
+        ),
+    )
+    p_bst_resolve.add_argument(
+        "--block",
+        type=int,
+        default=None,
+        help="Filter output to one source block",
+    )
+    p_bst_resolve.add_argument(
+        "--persist",
+        action="store_true",
+        help=(
+            "Persist resolutions into "
+            "state_transition_bst_resolutions table (idempotent)"
+        ),
+    )
+    p_bst_resolve.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -1762,6 +1819,94 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n# {len(filtered)} edge(s) shown "
                 f"(persisted={args.persist}, filter={args.kind}/"
                 f"{args.classification or 'any'})"
+            )
+    elif args.command == "state-transition-bst-resolutions":
+        bst_log = args.bst_log or ".tmp/logs/d810_logs/d810.log"
+        try:
+            intervals = parse_latest_bst_intervals_from_log(bst_log)
+        except FileNotFoundError:
+            intervals = ()
+        if args.snap_id is not None:
+            locopt_snap = int(args.snap_id)
+        else:
+            row = conn.execute(
+                "SELECT id FROM snapshots "
+                "WHERE label LIKE '%MMAT_LOCOPT%pre_d810%' "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                print(
+                    "no MMAT_LOCOPT pre_d810 snapshot found; "
+                    "pass --snap-id explicitly"
+                )
+                conn.close()
+                return 1
+            locopt_snap = int(row[0])
+        resolutions = resolve_state_transition_facts(
+            conn,
+            bst_intervals=intervals,
+            locopt_snapshot_id=locopt_snap,
+        )
+        if args.persist:
+            persist_bst_resolutions(conn, resolutions)
+        filtered = list(resolutions)
+        if args.block is not None:
+            filtered = [
+                r for r in filtered
+                if r.source_block_serial == int(args.block)
+            ]
+        if args.json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": r.snapshot_id,
+                            "fact_id": r.fact_id,
+                            "source_block_serial": r.source_block_serial,
+                            "source_state_const_hex": r.source_state_const_hex,
+                            "bst_resolved_next_block_serial":
+                                r.bst_resolved_next_block_serial,
+                            "bst_resolved_next_state_const_hex":
+                                r.bst_resolved_next_state_const_hex,
+                            "bst_resolved_next_state_const_u64":
+                                r.bst_resolved_next_state_const_u64,
+                            "bst_resolution_reason": r.bst_resolution_reason,
+                            "bst_resolution_maturity":
+                                r.bst_resolution_maturity,
+                        }
+                        for r in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "snap\tsource_blk\tsource_const\t"
+                "next_blk\tnext_const\treason\tmaturity"
+            )
+            for r in filtered:
+                print(
+                    "\t".join(
+                        (
+                            str(r.snapshot_id),
+                            str(r.source_block_serial),
+                            r.source_state_const_hex,
+                            (
+                                str(r.bst_resolved_next_block_serial)
+                                if r.bst_resolved_next_block_serial
+                                is not None else "-"
+                            ),
+                            r.bst_resolved_next_state_const_hex or "-",
+                            r.bst_resolution_reason,
+                            r.bst_resolution_maturity,
+                        )
+                    )
+                )
+            print(
+                f"\n# {len(filtered)} resolution(s) shown "
+                f"(persisted={args.persist}, "
+                f"intervals={len(intervals)})"
             )
 
     conn.close()

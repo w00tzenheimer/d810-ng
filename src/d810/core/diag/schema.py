@@ -213,6 +213,30 @@ CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_class
 CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_terminal
     ON dag_edge_diagnostics(is_terminal_tail, classification);
 
+-- BST-resolved next-state enrichment for StateTransitionAnchorFact rows.
+-- Computed by composing:
+--   * an existing LOCOPT-pre StateTransitionAnchorFact (source_state_const)
+--   * the GLBOPT1 BST INTERVAL_DISPATCHER_ROWS (single-hop value -> handler)
+--   * the LOCOPT-pre StateWriteAnchorFact at the resolved handler block
+-- Observability-only: NO recon edge target selection or HCC behavior
+-- depends on these rows.  Single-hop only; no recursive walking.
+CREATE TABLE IF NOT EXISTS state_transition_bst_resolutions (
+    snapshot_id                       INTEGER NOT NULL REFERENCES snapshots(id),
+    fact_id                           TEXT NOT NULL,
+    source_block_serial               INTEGER NOT NULL,
+    source_state_const_hex            TEXT NOT NULL,
+    bst_resolved_next_block_serial    INTEGER,
+    bst_resolved_next_state_const_hex TEXT,
+    bst_resolved_next_state_const_u64 INTEGER,
+    bst_resolution_reason             TEXT NOT NULL,
+    bst_resolution_maturity           TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, fact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_block
+    ON state_transition_bst_resolutions(source_block_serial);
+CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_resolved
+    ON state_transition_bst_resolutions(bst_resolved_next_state_const_hex);
+
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
     snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
