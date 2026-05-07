@@ -237,6 +237,30 @@ CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_block
 CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_resolved
     ON state_transition_bst_resolutions(bst_resolved_next_state_const_hex);
 
+-- Correlations between a ``COLLAPSED_TO_REWRITTEN_TARGET`` recon edge
+-- and an alternate already-persisted ``dag_edges`` row whose source
+-- state is a RANGE_BACKED sibling whose owned/shared blocks overlap
+-- the collapsed source's blocks.  The alternate edge IS the
+-- traversing route that the collapsed exact edge is missing.
+-- Observability-only: NO recon edge target selection or HCC behavior
+-- depends on these rows.
+CREATE TABLE IF NOT EXISTS dag_edge_alternate_correlations (
+    snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
+    collapsed_edge_id        INTEGER NOT NULL,
+    alternate_edge_id        INTEGER NOT NULL,
+    collapsed_source_state   TEXT,
+    collapsed_target_state   TEXT,
+    alternate_source_state   TEXT,
+    alternate_target_state   TEXT,
+    alternate_ordered_path   TEXT NOT NULL,
+    overlap_blocks           TEXT NOT NULL,
+    alternate_classification TEXT,
+    reason                   TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, collapsed_edge_id, alternate_edge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dag_edge_alt_corr_collapsed
+    ON dag_edge_alternate_correlations(snapshot_id, collapsed_edge_id);
+
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
     snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),

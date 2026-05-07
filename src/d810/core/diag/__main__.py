@@ -39,6 +39,11 @@ import re
 import sqlite3
 import sys
 
+from d810.core.diag.alternate_correlation import (
+    AlternateCorrelation,
+    correlate_collapsed_edges,
+    persist_alternate_correlations,
+)
 from d810.core.diag.bst_resolution import (
     BstResolution,
     parse_bst_intervals,
@@ -1492,6 +1497,40 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_alt_corr = sub.add_parser(
+        "dag-edge-alternate-correlations",
+        parents=[common],
+        help=(
+            "Pair COLLAPSED_TO_REWRITTEN_TARGET dag_edges rows with "
+            "alternate already-persisted edges from RANGE_BACKED "
+            "sibling nodes whose blocks overlap the collapsed source. "
+            "Observability-only."
+        ),
+    )
+    p_alt_corr.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help="Snapshot id to correlate (default: every snapshot with "
+             "COLLAPSED_TO_REWRITTEN_TARGET diagnostics)",
+    )
+    p_alt_corr.add_argument(
+        "--collapsed-edge",
+        type=int,
+        default=None,
+        help="Filter to one collapsed edge id",
+    )
+    p_alt_corr.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist correlations into dag_edge_alternate_correlations",
+    )
+    p_alt_corr.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -1907,6 +1946,86 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n# {len(filtered)} resolution(s) shown "
                 f"(persisted={args.persist}, "
                 f"intervals={len(intervals)})"
+            )
+    elif args.command == "dag-edge-alternate-correlations":
+        if args.snap_id is not None:
+            snap_ids = [int(args.snap_id)]
+        else:
+            snap_ids = [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT DISTINCT snapshot_id "
+                    "FROM dag_edge_diagnostics "
+                    "WHERE classification='COLLAPSED_TO_REWRITTEN_TARGET' "
+                    "ORDER BY snapshot_id"
+                ).fetchall()
+            ]
+        all_correlations: list[AlternateCorrelation] = []
+        for snap in snap_ids:
+            all_correlations.extend(correlate_collapsed_edges(conn, snap))
+        if args.persist:
+            persist_alternate_correlations(conn, all_correlations)
+        filtered = list(all_correlations)
+        if args.collapsed_edge is not None:
+            filtered = [
+                c for c in filtered
+                if c.collapsed_edge_id == int(args.collapsed_edge)
+            ]
+        if args.json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": c.snapshot_id,
+                            "collapsed_edge_id": c.collapsed_edge_id,
+                            "alternate_edge_id": c.alternate_edge_id,
+                            "collapsed_source_state":
+                                c.collapsed_source_state,
+                            "collapsed_target_state":
+                                c.collapsed_target_state,
+                            "alternate_source_state":
+                                c.alternate_source_state,
+                            "alternate_target_state":
+                                c.alternate_target_state,
+                            "alternate_ordered_path":
+                                c.alternate_ordered_path,
+                            "overlap_blocks": list(c.overlap_blocks),
+                            "alternate_classification":
+                                c.alternate_classification,
+                            "reason": c.reason,
+                        }
+                        for c in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "snap\tcollapsed_edge\talt_edge\t"
+                "collapsed_src->collapsed_tgt\t"
+                "alt_src->alt_tgt\tpath\toverlap\treason"
+            )
+            for c in filtered:
+                print(
+                    "\t".join(
+                        (
+                            str(c.snapshot_id),
+                            str(c.collapsed_edge_id),
+                            str(c.alternate_edge_id),
+                            f"{c.collapsed_source_state}->"
+                            f"{c.collapsed_target_state}",
+                            f"{c.alternate_source_state}->"
+                            f"{c.alternate_target_state}",
+                            c.alternate_ordered_path,
+                            ",".join(str(b) for b in c.overlap_blocks),
+                            c.reason,
+                        )
+                    )
+                )
+            print(
+                f"\n# {len(filtered)} correlation(s) shown "
+                f"(persisted={args.persist})"
             )
 
     conn.close()
