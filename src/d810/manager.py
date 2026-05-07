@@ -63,6 +63,7 @@ from d810.recon.facts.collectors import (
     InductionCarrierFactCollector,
     ReturnCarrierFactCollector,
     ReturnFrontierFactCollector,
+    StateTransitionAnchorFactCollector,
     StateWriteAnchorFactCollector,
     TerminalByteEmitterFactCollector,
     ZeroBlobFactCollector,
@@ -760,6 +761,7 @@ class D810Manager:
             self._recon_runtime.register_fact_collector(ZeroBlobFactCollector())
             self._recon_runtime.register_fact_collector(ReturnFrontierFactCollector())
             self._recon_runtime.register_fact_collector(StateWriteAnchorFactCollector())
+            self._recon_runtime.register_fact_collector(StateTransitionAnchorFactCollector())
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,
