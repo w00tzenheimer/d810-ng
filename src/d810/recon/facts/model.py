@@ -286,6 +286,59 @@ class ValidatedFactView:
             matches.append(obs)
         return tuple(matches)
 
+    def terminal_byte_emit_sites_for_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active ``TerminalByteEmitterFact`` observations whose
+        payload identifies ``block_serial`` as the byte-emit destination.
+
+        Filtering rules:
+
+        * ``obs.kind == "TerminalByteEmitterFact"``
+        * ``obs.payload["corridor_role"] == "terminal_tail"``  (we
+          deliberately ignore ``non_terminal_byte_emitter`` and
+          ``guard_only`` rows -- only terminal tail emit sites are
+          load-bearing for the per-byte ``v52[k]`` reads we want IDA's
+          structurer to keep).
+        * ``obs.payload["destination_block"] == block_serial`` OR
+          ``obs.payload["block_serial"] == block_serial`` -- the
+          collector populates both keys today; the helper accepts either
+          for safety against schema drift.
+
+        Only observations surfaced via :pyattr:`active_observations` are
+        considered: STALE / REMAPPED / CONTRADICTED / SUPERSEDED /
+        IDENTITY_LOST mappings are excluded so consumers never act on
+        invalidated facts.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "TerminalByteEmitterFact":
+                continue
+            payload = obs.payload or {}
+            if payload.get("corridor_role") != "terminal_tail":
+                continue
+            destination = payload.get("destination_block")
+            block_payload = payload.get("block_serial")
+            matched = False
+            for raw in (destination, block_payload):
+                if raw is None:
+                    continue
+                try:
+                    if int(raw) == target:
+                        matched = True
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if not matched:
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
     def stale_return_carrier_hazards_for_block(
         self,
         block_serial: int,
