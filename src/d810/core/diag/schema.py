@@ -182,6 +182,37 @@ CREATE INDEX IF NOT EXISTS idx_dag_local_segments_state
 CREATE INDEX IF NOT EXISTS idx_dag_local_edges_state
     ON dag_local_edges(snapshot_id, state_hex, entry_block, edge_index);
 
+-- Edge classification diagnostics computed by correlating dag_edges
+-- with StateWriteAnchor STATE_CONST_REWRITTEN mappings,
+-- StateTransitionAnchorFact transit chains, and TerminalByteEmitterFact
+-- destinations.  Observability-only: NO behavior of recon edge target
+-- selection depends on these rows.  See
+-- ``d810.core.diag.edge_diagnostics`` for classification rules.
+CREATE TABLE IF NOT EXISTS dag_edge_diagnostics (
+    snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
+    edge_id                INTEGER NOT NULL,
+    classification         TEXT NOT NULL CHECK(classification IN (
+        'BENIGN',
+        'LOCOPT_REWRITTEN_SOURCE',
+        'TARGET_UNRESOLVED_AFTER_REWRITE',
+        'COLLAPSED_TO_REWRITTEN_TARGET',
+        'SPURIOUS_CONDITIONAL_ARM'
+    )),
+    source_state_hex       TEXT,
+    target_state_hex       TEXT,
+    edge_kind              TEXT NOT NULL,
+    is_terminal_tail       INTEGER NOT NULL DEFAULT 0,
+    original_state_const   TEXT,
+    rewritten_state_const  TEXT,
+    related_fact_ids       TEXT NOT NULL DEFAULT '[]',
+    reason                 TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, edge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_class
+    ON dag_edge_diagnostics(snapshot_id, classification);
+CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_terminal
+    ON dag_edge_diagnostics(is_terminal_tail, classification);
+
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
     snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
