@@ -255,6 +255,42 @@ class ValidatedFactView:
         }
         return tuple(obs for obs in self.observations if obs.fact_id not in stale_ids)
 
+    def state_transitions_for_source_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active ``StateTransitionAnchorFact`` observations whose
+        payload ``source_block_serial`` matches ``block_serial``.
+
+        Only observations surfaced via :pyattr:`active_observations` are
+        considered.  Each observation carries the source state constant,
+        the chain of transit blocks, the next state constant (if found),
+        and the successor kind (``direct`` / ``transit`` / ``branch`` /
+        ``loop`` / ``exit`` / ``unresolved``).  Cross-link with
+        :meth:`terminal_byte_emit_sites_for_block` is performed by
+        callers, not embedded here, so this view stays purely block-
+        local.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "StateTransitionAnchorFact":
+                continue
+            payload = obs.payload or {}
+            raw = payload.get("source_block_serial")
+            if raw is None:
+                continue
+            try:
+                if int(raw) != target:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
     def state_write_anchors_for_block(
         self,
         block_serial: int,
