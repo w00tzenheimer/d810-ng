@@ -153,6 +153,9 @@ def execute_family_pipeline(
         )
 
     executor = executor_factory(snapshot.mba)
+    attach_snapshot = getattr(executor, "set_analysis_snapshot", None)
+    if callable(attach_snapshot):
+        attach_snapshot(snapshot)
     results = executor.execute_pipeline(
         planned.pipeline, total_handlers=snapshot.handler_count
     )

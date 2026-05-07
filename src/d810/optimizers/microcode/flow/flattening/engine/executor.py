@@ -66,6 +66,9 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     GateDecision,
     GateVerdict,
 )
+from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
+    filter_return_carrier_fact_redirects,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
@@ -148,6 +151,16 @@ class TransactionalExecutor:
             contract=self.cfg_contract,
         )
         self._total_changes = 0
+        self.validated_fact_view: object | None = None
+        self.dispatcher_serial: int = -1
+
+    def set_analysis_snapshot(self, snapshot: object) -> None:
+        """Attach per-round analysis context for fact-backed executor guards."""
+        self.validated_fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        try:
+            self.dispatcher_serial = int(getattr(snapshot, "bst_dispatcher_serial", -1))
+        except (TypeError, ValueError):
+            self.dispatcher_serial = -1
 
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
@@ -348,6 +361,38 @@ class TransactionalExecutor:
                     error="all modifications rejected by loop-writeback guard",
                     failure_phase="execution_filter",
                 )
+
+        modifications, return_carrier_rejections = (
+            filter_return_carrier_fact_redirects(
+                modifications,
+                mba=self.mba,
+                fact_view=self.validated_fact_view,
+                dispatcher_serial=self.dispatcher_serial,
+            )
+        )
+        if return_carrier_rejections:
+            gate_accounting = gate_accounting.add(
+                GateDecision(
+                    gate_name="return_carrier_fact_guard",
+                    verdict=GateVerdict.PASSED,
+                    reason=(
+                        f"rejected {len(return_carrier_rejections)} redirect(s) "
+                        "that would const-feed return-carrier facts"
+                    ),
+                )
+            )
+        if not modifications:
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="all modifications rejected by return-carrier fact guard",
+                failure_phase="execution_filter",
+            )
+            result.metadata["return_carrier_fact_rejections"] = (
+                return_carrier_rejections
+            )
+            result.metadata["gate_accounting"] = gate_accounting
+            return result
 
         patch_plan_preview = compile_patch_plan(modifications, pre_cfg, execution_policy)
         modifications, patch_plan_preview, backend_removed = (
