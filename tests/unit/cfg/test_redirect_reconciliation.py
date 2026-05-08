@@ -21,6 +21,24 @@ def _empty_signals() -> StrategyLogSignals:
     )
 
 
+def _hcc_signals(
+    *,
+    dup: frozenset[int] = frozenset(),
+    anchors: frozenset[int] = frozenset(),
+    preds: frozenset[int] = frozenset(),
+    handlers: frozenset[int] = frozenset(),
+) -> StrategyLogSignals:
+    return StrategyLogSignals(
+        prior_use_def_vetoed=frozenset(),
+        dag_disagreement={},
+        planner_ctx_conflict=frozenset(),
+        hcc_dup_redirect_sources=dup,
+        hcc_region_anchors=anchors,
+        hcc_region_preds=preds,
+        hcc_region_handlers=handlers,
+    )
+
+
 class TestParseLogSignals:
     def test_use_def_vetoed_extracted(self) -> None:
         text = (
@@ -112,6 +130,66 @@ class TestReconcileEdgeBuckets:
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_PLANNER_CTX
+
+    def test_agree_intent_dropped_hcc_dup_redirect(self) -> None:
+        sig = _hcc_signals(dup=frozenset({200}))
+        e = reconcile_edge(
+            src_serial=200, tgt_serial=2,
+            resolver_target=23, logged_intent_target=23, persisted_target=None,
+            state_const=0xABC, state_in_bst=True,
+            log_signals=sig,
+        )
+        assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT
+        assert "intra-fragment dedup" in e.note
+
+    def test_agree_intent_dropped_hcc_region_handler(self) -> None:
+        sig = _hcc_signals(handlers=frozenset({21}))
+        e = reconcile_edge(
+            src_serial=21, tgt_serial=2,
+            resolver_target=75, logged_intent_target=75, persisted_target=None,
+            state_const=0xABC, state_in_bst=True,
+            log_signals=sig,
+        )
+        assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_HANDLER
+
+    def test_agree_intent_dropped_hcc_region_pred(self) -> None:
+        sig = _hcc_signals(preds=frozenset({100}))
+        e = reconcile_edge(
+            src_serial=100, tgt_serial=2,
+            resolver_target=21, logged_intent_target=21, persisted_target=None,
+            state_const=0xABC, state_in_bst=True,
+            log_signals=sig,
+        )
+        assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_PRED
+
+    def test_agree_intent_dropped_hcc_region_target(self) -> None:
+        sig = _hcc_signals(anchors=frozenset({42}))
+        e = reconcile_edge(
+            src_serial=56, tgt_serial=2,
+            resolver_target=42, logged_intent_target=42, persisted_target=None,
+            state_const=0xABC, state_in_bst=True,
+            log_signals=sig,
+        )
+        assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_TARGET
+        assert "anchor" in e.note
+
+    def test_hcc_priority_below_dag_and_planner_ctx(self) -> None:
+        # If both DAG_DISAGREEMENT and HCC_DUP signals fire for the same
+        # source, DAG wins because it represents an EXPLICIT planner-level
+        # rejection rather than a downstream subsumption.
+        sig = StrategyLogSignals(
+            prior_use_def_vetoed=frozenset(),
+            dag_disagreement={42: (51, 50)},
+            planner_ctx_conflict=frozenset(),
+            hcc_dup_redirect_sources=frozenset({42}),
+        )
+        e = reconcile_edge(
+            src_serial=42, tgt_serial=2,
+            resolver_target=51, logged_intent_target=51, persisted_target=None,
+            state_const=0xABC, state_in_bst=True,
+            log_signals=sig,
+        )
+        assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_DAG
 
     def test_agree_intent_dropped_other_when_no_log_signal(self) -> None:
         # Resolver and strategy intent agreed, but pipeline dropped without
