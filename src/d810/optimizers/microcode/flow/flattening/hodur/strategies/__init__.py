@@ -104,6 +104,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.counter_hoist im
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_carrier_preserve import (
     ReturnFrontierCarrierPreserveStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies.spurious_backedge_redirect import (
+    SpuriousBackedgeRedirectStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
@@ -138,6 +141,7 @@ __all__ = [
     "DispatcherTrampolineSkipStrategy",
     "CounterHoistStrategy",
     "ReturnFrontierCarrierPreserveStrategy",
+    "SpuriousBackedgeRedirectStrategy",
     "TopologicalSortStrategy",
     "BadWhileLoopStrategy",
     "FakeJumpStrategy",
@@ -197,6 +201,11 @@ EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
     # AFTER counter_hoist so the protected corridor is fully
     # established before this strategy reads it.
     ReturnFrontierCarrierPreserveStrategy,
+    # Smoke-test SCC normalization: redirect SPURIOUS BLT_2WAY back-edges
+    # to forward goto. Default-OFF; opt-in via
+    # D810_HODUR_ENABLE_SPURIOUS_REDIRECT=1.  Composes Pieces 1+2+3a from
+    # ticket uee-32r3.
+    SpuriousBackedgeRedirectStrategy,
 ])
 
 _STANDALONE_SRW_ENABLED = (
