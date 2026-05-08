@@ -6,6 +6,7 @@ from d810.recon.facts.collectors.induction_carrier import (
 )
 from d810.recon.facts.collectors.byte_emit_corridor import ByteEmitCorridorFactCollector
 from d810.recon.facts.collectors.call_anchor import CallAnchorFactCollector
+from d810.recon.facts.collectors.loop_carrier import LoopCarrierFactCollector
 from d810.recon.facts.collectors.return_carrier import ReturnCarrierFactCollector
 from d810.recon.facts.collectors.return_frontier import ReturnFrontierFactCollector
 from d810.recon.facts.collectors.state_transition_anchor import (
@@ -23,6 +24,7 @@ __all__ = [
     "ByteEmitCorridorFactCollector",
     "CallAnchorFactCollector",
     "InductionCarrierFactCollector",
+    "LoopCarrierFactCollector",
     "ReturnCarrierFactCollector",
     "ReturnFrontierFactCollector",
     "StateTransitionAnchorFactCollector",
