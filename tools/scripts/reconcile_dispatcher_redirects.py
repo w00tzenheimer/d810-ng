@@ -75,6 +75,29 @@ def main() -> int:
 
     conn = sqlite3.connect(args.db)
 
+    # Also count persisted DupAndRedirect rows as HCC ownership — these
+    # may not produce per-source log lines but the modification table is
+    # ground truth for "this source was redirected via per-pred routing".
+    persisted_dup_sources = frozenset(
+        int(s) for (s,) in conn.execute(
+            "SELECT DISTINCT source_block FROM modifications "
+            "WHERE mod_type='DuplicateAndRedirect' AND status='emitted' "
+            "AND source_block IS NOT NULL"
+        )
+    )
+    if persisted_dup_sources:
+        log_signals = type(log_signals)(
+            prior_use_def_vetoed=log_signals.prior_use_def_vetoed,
+            dag_disagreement=log_signals.dag_disagreement,
+            planner_ctx_conflict=log_signals.planner_ctx_conflict,
+            hcc_dup_redirect_sources=(
+                log_signals.hcc_dup_redirect_sources | persisted_dup_sources
+            ),
+            hcc_region_anchors=log_signals.hcc_region_anchors,
+            hcc_region_preds=log_signals.hcc_region_preds,
+            hcc_region_handlers=log_signals.hcc_region_handlers,
+        )
+
     bst_table = {
         int(sc) & 0xFFFFFFFFFFFFFFFF: int(h)
         for sc, h in conn.execute(

@@ -41,6 +41,10 @@ class ReconciliationBucket(str, Enum):
     AGREE_FULL = "AGREE_FULL"
     AGREE_INTENT_DROPPED_DAG = "AGREE_INTENT_DROPPED_DAG"
     AGREE_INTENT_DROPPED_PLANNER_CTX = "AGREE_INTENT_DROPPED_PLANNER_CTX"
+    AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT = "AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT"
+    AGREE_INTENT_DROPPED_HCC_REGION_HANDLER = "AGREE_INTENT_DROPPED_HCC_REGION_HANDLER"
+    AGREE_INTENT_DROPPED_HCC_REGION_PRED = "AGREE_INTENT_DROPPED_HCC_REGION_PRED"
+    AGREE_INTENT_DROPPED_HCC_REGION_TARGET = "AGREE_INTENT_DROPPED_HCC_REGION_TARGET"
     AGREE_INTENT_DROPPED_OTHER = "AGREE_INTENT_DROPPED_OTHER"
     RESOLVER_OK_STRATEGY_USE_DEF_VETO = "RESOLVER_OK_STRATEGY_USE_DEF_VETO"
     RESOLVER_ONLY_STRATEGY_DIDNT_LOG = "RESOLVER_ONLY_STRATEGY_DIDNT_LOG"
@@ -54,11 +58,22 @@ class ReconciliationBucket(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class StrategyLogSignals:
-    """Per-source veto / conflict signals parsed from d810.log."""
+    """Per-source veto / conflict signals parsed from d810.log.
+
+    The HCC fields capture region-collapse ownership: when HCC composes
+    a region around a handler/pred/target, its DuplicateAndRedirect or
+    InsertBlock+region splice supersedes any plain RedirectGoto from
+    later strategies. The trampoline-skip emission is silently dropped
+    by intra-fragment dedup.
+    """
 
     prior_use_def_vetoed: frozenset[int]
     dag_disagreement: Mapping[int, tuple[int, int]]
     planner_ctx_conflict: frozenset[int]
+    hcc_dup_redirect_sources: frozenset[int] = frozenset()
+    hcc_region_anchors: frozenset[int] = frozenset()
+    hcc_region_preds: frozenset[int] = frozenset()
+    hcc_region_handlers: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +122,23 @@ _RX_PLANNER_CTX = re.compile(r"PLANNER_CTX_CONFLICT.*?src=(\d+)")
 _RX_LOGGED_INTENT = re.compile(
     r"trampoline skip: blk\[(\d+)\] state=0x([0-9A-Fa-f]+) -> blk\[(\d+)\]"
 )
+_RX_HCC_INTRA_DUP = re.compile(
+    r"intra-fragment duplicates of DuplicateAndRedirect on the same source.*?"
+    r"RedirectGoto\(src=(\d+) dropped_tgt=\d+\)",
+    re.DOTALL,
+)
+_RX_HCC_REGION_DROP = re.compile(
+    r"HandlerChainComposer: dropped \d+ SWR-style mod\(s\) overlapping "
+    r"region-collapse anchors=\[([0-9, ]*)\] preds=\[([0-9, ]*)\]"
+)
+_RX_HCC_COMPOSED_REGION = re.compile(
+    r"HandlerChainComposer: composed region pred=(\d+) succ=\d+ "
+    r"handlers=\(([0-9, ]+)\)"
+)
+
+
+def _parse_int_list(text: str) -> set[int]:
+    return {int(s) for s in text.replace(" ", "").split(",") if s}
 
 
 def parse_log_signals(log_text: str) -> StrategyLogSignals:
@@ -126,10 +158,23 @@ def parse_log_signals(log_text: str) -> StrategyLogSignals:
     planner_ctx = frozenset(
         int(m.group(1)) for m in _RX_PLANNER_CTX.finditer(log_text)
     )
+    hcc_dup = frozenset(int(m.group(1)) for m in _RX_HCC_INTRA_DUP.finditer(log_text))
+    hcc_anchors: set[int] = set()
+    hcc_preds: set[int] = set()
+    for m in _RX_HCC_REGION_DROP.finditer(log_text):
+        hcc_anchors.update(_parse_int_list(m.group(1)))
+        hcc_preds.update(_parse_int_list(m.group(2)))
+    hcc_handlers: set[int] = set()
+    for m in _RX_HCC_COMPOSED_REGION.finditer(log_text):
+        hcc_handlers.update(_parse_int_list(m.group(2)))
     return StrategyLogSignals(
         prior_use_def_vetoed=use_def,
         dag_disagreement=dag_d,
         planner_ctx_conflict=planner_ctx,
+        hcc_dup_redirect_sources=hcc_dup,
+        hcc_region_anchors=frozenset(hcc_anchors),
+        hcc_region_preds=frozenset(hcc_preds),
+        hcc_region_handlers=frozenset(hcc_handlers),
     )
 
 
@@ -177,6 +222,18 @@ def reconcile_edge(
             note = f"planner={planner} dag={dag}"
         elif src_serial in log_signals.planner_ctx_conflict:
             bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_PLANNER_CTX
+        elif src_serial in log_signals.hcc_dup_redirect_sources:
+            bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT
+            note = "intra-fragment dedup vs DuplicateAndRedirect on same source"
+        elif src_serial in log_signals.hcc_region_handlers:
+            bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_HANDLER
+            note = "src is a handler in an HCC composed region"
+        elif src_serial in log_signals.hcc_region_preds:
+            bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_PRED
+            note = "src is a pred in an HCC composed region"
+        elif rt in log_signals.hcc_region_anchors:
+            bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_TARGET
+            note = f"intent target {rt} is an HCC region anchor"
         else:
             bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_OTHER
             note = "no per-source drop log line"
