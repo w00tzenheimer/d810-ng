@@ -61,6 +61,7 @@ from d810.recon.facts.collectors import (
     ByteEmitCorridorFactCollector,
     CallAnchorFactCollector,
     InductionCarrierFactCollector,
+    LoopCarrierFactCollector,
     ReturnCarrierFactCollector,
     ReturnFrontierFactCollector,
     StateTransitionAnchorFactCollector,
@@ -503,6 +504,38 @@ class D810Manager:
         except Exception:
             logger.exception("Post-D810 capture failed")
 
+    def capture_post_d810_facts(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot_id: int | None = None,
+    ) -> None:
+        """Capture maturity facts on the post-D810 snapshot.
+
+        Pre-D810 fact capture happens in the Hex-Rays block hook before D810
+        runs at a maturity.  Some fact classes are specifically about what D810
+        leaves behind after reconstruction, so they need the matching
+        post-D810 view as well.  The lifecycle runtime deduplicates by
+        ``(func_ea, maturity, phase)``, making this a no-op on repeated events.
+        """
+        if self._recon_runtime is None:
+            return
+        try:
+            from d810.core.diag import get_diag_db
+
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            diag_db = get_diag_db(func_ea)
+            self._recon_runtime.capture_maturity_facts(
+                mba,
+                func_ea=func_ea,
+                maturity=int(maturity),
+                phase="post_d810",
+                snapshot_id=snapshot_id,
+                diag_conn=diag_db,
+            )
+        except Exception:
+            logger.exception("FactLifecycleRuntime post-D810 capture failed")
+
     def _resolve_post_d810_linearization_context(
         self,
         mba: typing.Any,
@@ -754,6 +787,7 @@ class D810Manager:
                 self._recon_phase._store,
             )
             self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(LoopCarrierFactCollector())
             self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
@@ -1108,6 +1142,9 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_mba
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_facts
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.attach_post_d810_rendered_program

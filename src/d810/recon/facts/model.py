@@ -412,6 +412,38 @@ class ValidatedFactView:
             matches.append(obs)
         return tuple(matches)
 
+    def loop_carriers_for_predicate_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active ``LoopCarrierFact`` observations for a predicate block.
+
+        The helper is deliberately keyed on the predicate block, not on the
+        carrier writer block: the current sub_7FFD failure is precisely that
+        the carrier writers sit outside the loop SCC, so consumers need to ask
+        "what carrier facts constrain this predicate?" and then inspect the
+        payload's ``carrier_writer_blocks_*`` fields.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "LoopCarrierFact":
+                continue
+            payload = obs.payload or {}
+            raw = payload.get("predicate_block_serial")
+            if raw is None:
+                continue
+            try:
+                if int(raw) != target:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
     def stale_return_carrier_hazards_for_block(
         self,
         block_serial: int,
