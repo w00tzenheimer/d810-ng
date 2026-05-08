@@ -1144,9 +1144,6 @@ class D810Manager:
             DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_mba
         )
         self.event_emitter.on(
-            DecompilationEvent.POST_D810_CAPTURE, self.capture_post_d810_facts
-        )
-        self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.attach_post_d810_rendered_program
         )
         self.event_emitter.on(
