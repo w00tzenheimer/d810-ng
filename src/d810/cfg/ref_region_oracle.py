@@ -1,0 +1,295 @@
+"""REF region-shape oracle (read-only).
+
+Compares D810 snapshot region-shape against REF (the manually
+unflattened ``tools/equivalence/ref.c``) and produces a normalized
+feature diff. Feeds into ``terminal_tail_dce_diagnosis`` to explain
+which snap17 → snap18 IDA finalization decisions kill byte_emit[k].
+
+The REF features are hard-encoded because REF for ``sub_7FFD3338C040``
+is a fixed reference artifact (the unflattened source compiled with
+trace mocks). A future pass can derive REF features from the actual
+source/microcode dump if a second function with a REF artifact is
+introduced.
+
+D810 features are computed from a diag DB snapshot using the same
+queries as ``terminal_tail_loss_localizer`` (block-level presence by
+``start_ea_hex``) plus the existing ``TerminalByteEmitterFact``
+observations for fact-level detection.
+
+Strictly read-only. No CFG edits, no behavior change.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+
+from d810.core.logging import getLogger
+from d810.core.typing import Iterable, Mapping
+
+logger = getLogger(__name__)
+
+
+class FeatureSource(str, Enum):
+    REF = "REF"
+    D810_SNAPSHOT = "D810_SNAPSHOT"
+
+
+class FeatureRegion(str, Enum):
+    HEAD_LOOP = "head_loop"
+    CHUNK_LOOP = "chunk_loop"
+    BLOCK_EMIT_LOOP = "block_emit_loop"
+    TERMINAL_TAIL = "terminal_tail"
+    CLEANUP = "cleanup"
+    SCC = "scc"
+
+
+@dataclass(frozen=True, slots=True)
+class RegionFeature:
+    """One normalized feature with evidence."""
+
+    source: FeatureSource
+    region: FeatureRegion
+    feature: str
+    value: str | bool | int
+    evidence: dict = field(default_factory=dict)
+    snapshot_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureDiff:
+    """One diff between REF and a D810 snapshot."""
+
+    feature: str
+    region: FeatureRegion
+    ref_value: object
+    d810_value: object
+    snapshot_id: int
+
+    @property
+    def matches(self) -> bool:
+        return self.ref_value == self.d810_value
+
+
+# ---------------------------------------------------------------------------
+# REF feature spec
+# ---------------------------------------------------------------------------
+
+# Hard-encoded REF features for sub_7FFD3338C040.
+# Source: tools/equivalence/ref.c lines 466-549 (terminal byte-tail) and
+# .tmp/ref_microcode_dump.txt MMAT_GLBOPT1 (215 blocks, 2 self-loops).
+#
+# Each tuple is (region, feature_name, value, evidence_path).
+
+_REF_FEATURE_TABLE: tuple[tuple[FeatureRegion, str, object, str], ...] = (
+    # Real loops — both isolated as self-loops in REF GLBOPT1.
+    (FeatureRegion.HEAD_LOOP, "head_2byte_stride_loop_isolated", True,
+     "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[9] BLT_2WAY succs=[10,9] self-loop"),
+    (FeatureRegion.CHUNK_LOOP, "chunk_block_loop_isolated", True,
+     "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[21] BLT_2WAY succs=[22,21] self-loop"),
+
+    # Terminal-tail byte_emit blocks present.
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_present", True, "ref.c:494"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_present", True, "ref.c:503"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_present", True, "ref.c:521"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_present", True, "ref.c:527"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_present", True, "ref.c:532"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_present", True, "ref.c:537"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_present", True, "ref.c:541"),
+
+    # Source form: each emit reads v52[k] explicitly.
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_source_form", "indexed_base_plus_k", "ref.c:494 *v52"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_source_form", "indexed_base_plus_k", "ref.c:503 v52[1]"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_source_form", "indexed_base_plus_k", "ref.c:521 v52[2]"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_source_form", "indexed_base_plus_k", "ref.c:527 v52[3]"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_source_form", "indexed_base_plus_k", "ref.c:532 v52[4]"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_source_form", "indexed_base_plus_k", "ref.c:537 v52[5]"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_source_form", "indexed_base_plus_k", "ref.c:541 v52[6]"),
+
+    # Destination + counter update for each byte.
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_destination_present", True, "ref.c:494 *(_QWORD*)"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_counter_update_present", True, "ref.c:495 *v49 + 1"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_destination_present", True, "ref.c:503"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_counter_update_present", True, "ref.c:504"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_destination_present", True, "ref.c:521"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_counter_update_present", True, "ref.c:523"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_destination_present", True, "ref.c:527"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_counter_update_present", True, "ref.c:528"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_destination_present", True, "ref.c:532"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_counter_update_present", True, "ref.c:533"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_destination_present", True, "ref.c:537"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_counter_update_present", True, "ref.c:539"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_destination_present", True, "ref.c:541"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_counter_update_present", True, "ref.c:542"),
+
+    # Early-return guards before each emit (REF cascade).
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_0_present", True, "ref.c:497 if(v152==1) return"),
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_1_present", True, "ref.c:515 if(v152==2)"),
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_2_present", True, "ref.c:525 if(v152!=3)"),
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_3_present", True, "ref.c:530 if(v152!=4)"),
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_4_present", True, "ref.c:535 if(v152!=6)"),
+    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_5_present", True, "ref.c:535 same gate"),
+    (FeatureRegion.TERMINAL_TAIL, "byte_6_fallthrough_return_present", True, "ref.c:542 ++*v49 then return"),
+
+    # Terminal tail topology.
+    (FeatureRegion.TERMINAL_TAIL, "terminal_tail_acyclic", True,
+     "ref_microcode_dump.txt:MMAT_GLBOPT1: terminal blocks 107..213 acyclic"),
+    (FeatureRegion.TERMINAL_TAIL, "tail_init_present", True, "ref.c:466 v53 = ... ;if (!v53) return"),
+
+    # Cleanup (zero store16) — present and separated from byte emits.
+    (FeatureRegion.CLEANUP, "zero_store16_cleanup_blocks_present", True,
+     "ref.c:245-252 + 291-298 + 306-313 (3x8=24 STORE_OWORD_N)"),
+    (FeatureRegion.CLEANUP, "cleanup_separated_from_byte_emits", True,
+     "ref_microcode_dump.txt: cleanup blocks 25..105 separate from terminal_tail"),
+
+    # SCC structure.
+    (FeatureRegion.SCC, "nontrivial_scc_count", 2,
+     "ref_microcode_dump.txt:MMAT_GLBOPT1: 2 self-loops, no giant SCC"),
+    (FeatureRegion.SCC, "max_scc_size", 1,
+     "self-loops are size-1 SCCs"),
+    (FeatureRegion.SCC, "max_in_degree", 9,
+     "blk[213] exit fanout"),
+)
+
+
+def ref_features() -> tuple[RegionFeature, ...]:
+    """Return REF normalized features for sub_7FFD3338C040."""
+    out: list[RegionFeature] = []
+    for region, feature, value, evidence in _REF_FEATURE_TABLE:
+        out.append(
+            RegionFeature(
+                source=FeatureSource.REF,
+                region=region,
+                feature=feature,
+                value=value,
+                evidence={"path": evidence},
+                snapshot_id=None,
+            )
+        )
+    return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# D810 snapshot feature extraction
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class D810SnapshotInputs:
+    """Inputs needed to compute a D810 snapshot's region-shape features."""
+
+    snapshot_id: int
+    nontrivial_scc_count: int
+    max_scc_size: int
+    max_in_degree: int
+    byte_emit_present: dict[int, bool]
+    byte_emit_block_serial: dict[int, int | None]
+    byte_emit_fact_detected: dict[int, bool]
+    early_return_guard_present: dict[int, bool] = field(default_factory=dict)
+    terminal_tail_acyclic: bool = False
+    head_loop_isolated: bool = False
+    chunk_loop_isolated: bool = False
+    cleanup_blocks_present: bool = False
+
+
+def d810_features(inputs: D810SnapshotInputs) -> tuple[RegionFeature, ...]:
+    """Compose normalized features from a D810 snapshot input record."""
+    snap = inputs.snapshot_id
+    out: list[RegionFeature] = []
+
+    def add(region: FeatureRegion, feature: str, value: object, **evidence: object) -> None:
+        out.append(
+            RegionFeature(
+                source=FeatureSource.D810_SNAPSHOT,
+                region=region,
+                feature=feature,
+                value=value,
+                evidence=dict(evidence),
+                snapshot_id=snap,
+            )
+        )
+
+    add(FeatureRegion.HEAD_LOOP, "head_2byte_stride_loop_isolated", inputs.head_loop_isolated)
+    add(FeatureRegion.CHUNK_LOOP, "chunk_block_loop_isolated", inputs.chunk_loop_isolated)
+    add(FeatureRegion.SCC, "nontrivial_scc_count", inputs.nontrivial_scc_count)
+    add(FeatureRegion.SCC, "max_scc_size", inputs.max_scc_size)
+    add(FeatureRegion.SCC, "max_in_degree", inputs.max_in_degree)
+    add(FeatureRegion.TERMINAL_TAIL, "terminal_tail_acyclic", inputs.terminal_tail_acyclic)
+    add(FeatureRegion.CLEANUP, "zero_store16_cleanup_blocks_present", inputs.cleanup_blocks_present)
+
+    for k in range(7):
+        present = inputs.byte_emit_present.get(k, False)
+        add(FeatureRegion.TERMINAL_TAIL, f"byte_emit_{k}_present", present,
+            block_serial=inputs.byte_emit_block_serial.get(k),
+            fact_detected=inputs.byte_emit_fact_detected.get(k, False))
+
+    for k in range(6):
+        add(FeatureRegion.TERMINAL_TAIL, f"early_return_guard_{k}_present",
+            inputs.early_return_guard_present.get(k, False))
+
+    return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# Diff
+# ---------------------------------------------------------------------------
+
+
+def diff_features(
+    ref: Iterable[RegionFeature],
+    d810: Iterable[RegionFeature],
+) -> tuple[FeatureDiff, ...]:
+    """Compute (feature, region) -> (ref_value vs d810_value) diffs."""
+    ref_index: dict[str, RegionFeature] = {f.feature: f for f in ref}
+    d810_index: dict[str, RegionFeature] = {f.feature: f for f in d810}
+    diffs: list[FeatureDiff] = []
+    keys = sorted(set(ref_index) | set(d810_index))
+    for key in keys:
+        rf = ref_index.get(key)
+        df = d810_index.get(key)
+        if rf is None or df is None:
+            # Feature only on one side — count as diff with placeholder.
+            diffs.append(
+                FeatureDiff(
+                    feature=key,
+                    region=(rf.region if rf else df.region),
+                    ref_value=rf.value if rf else "MISSING",
+                    d810_value=df.value if df else "MISSING",
+                    snapshot_id=df.snapshot_id if df else -1,
+                )
+            )
+            continue
+        if rf.value != df.value:
+            diffs.append(
+                FeatureDiff(
+                    feature=key, region=rf.region,
+                    ref_value=rf.value, d810_value=df.value,
+                    snapshot_id=df.snapshot_id or -1,
+                )
+            )
+    return tuple(diffs)
+
+
+def format_diff_table(diffs: tuple[FeatureDiff, ...]) -> str:
+    """Render markdown diff table."""
+    lines = [
+        "| feature | region | REF | D810 |",
+        "|-|-|-|-|",
+    ]
+    for d in diffs:
+        lines.append(
+            f"| {d.feature} | {d.region.value} | {d.ref_value!r} | {d.d810_value!r} |"
+        )
+    return "\n".join(lines)
+
+
+__all__ = [
+    "D810SnapshotInputs",
+    "FeatureDiff",
+    "FeatureRegion",
+    "FeatureSource",
+    "RegionFeature",
+    "d810_features",
+    "diff_features",
+    "format_diff_table",
+    "ref_features",
+]
