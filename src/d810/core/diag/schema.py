@@ -521,6 +521,42 @@ CREATE TABLE IF NOT EXISTS fact_conflicts (
 
 CREATE INDEX IF NOT EXISTS idx_fact_conflicts_fact
     ON fact_conflicts(fact_id, other_fact_id, maturity);
+
+-- Region-shape features captured for REF and D810 snapshots.
+-- Diagnostic-only; no behavior consumers. snapshot_id is NULL for REF rows.
+CREATE TABLE IF NOT EXISTS region_shape_features (
+    func_ea_hex   TEXT NOT NULL,
+    func_ea_i64   INTEGER NOT NULL,
+    snapshot_id   INTEGER,
+    source        TEXT NOT NULL,
+    region        TEXT NOT NULL,
+    feature       TEXT NOT NULL,
+    value_text    TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    PRIMARY KEY (func_ea_hex, source, snapshot_id, feature)
+);
+
+CREATE INDEX IF NOT EXISTS idx_region_shape_features_source
+    ON region_shape_features(source, region);
+
+-- Per-byte DCE cause classification for snap17 -> snap18 transitions.
+CREATE TABLE IF NOT EXISTS terminal_tail_dce_causes (
+    func_ea_hex                   TEXT NOT NULL,
+    func_ea_i64                   INTEGER NOT NULL,
+    byte_index                    INTEGER NOT NULL,
+    last_present_snapshot_id      INTEGER,
+    first_missing_snapshot_id     INTEGER,
+    last_block_serial             INTEGER,
+    last_ea_hex                   TEXT,
+    cause                         TEXT NOT NULL,
+    recommended_action            TEXT NOT NULL,
+    rationale                     TEXT NOT NULL,
+    evidence_json                 TEXT NOT NULL,
+    PRIMARY KEY (func_ea_hex, byte_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_terminal_tail_dce_causes_cause
+    ON terminal_tail_dce_causes(cause);
 """
 
 
