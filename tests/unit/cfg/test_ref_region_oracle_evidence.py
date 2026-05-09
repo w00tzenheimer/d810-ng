@@ -186,7 +186,7 @@ def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
             preds TEXT, succs TEXT, type_name TEXT
         );
         CREATE TABLE instructions (
-            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            snapshot_id INTEGER, block_serial INTEGER, insn_index INTEGER,
             opcode_name TEXT
         );
         INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
@@ -194,7 +194,7 @@ def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
                             npred, nsucc, preds, succs, type_name)
         VALUES (17, 161, 6442527728, 6442527760, 2, 1, '[120,142]', '[218]',
                 'BLT_1WAY');
-        INSERT INTO instructions (snapshot_id, block_serial, ord, opcode_name)
+        INSERT INTO instructions (snapshot_id, block_serial, insn_index, opcode_name)
         VALUES (17, 161, 0, 'm_mov'),
                (17, 161, 1, 'm_stx_byte'),
                (17, 161, 2, 'm_goto');
@@ -228,7 +228,7 @@ def test_collect_block_views_includes_scc_metadata():
             preds TEXT, succs TEXT, type_name TEXT
         );
         CREATE TABLE instructions (
-            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            snapshot_id INTEGER, block_serial INTEGER, insn_index INTEGER,
             opcode_name TEXT
         );
         INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
@@ -259,7 +259,7 @@ def test_collect_block_views_returns_empty_for_missing_snapshot():
             preds TEXT, succs TEXT, type_name TEXT
         );
         CREATE TABLE instructions (
-            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            snapshot_id INTEGER, block_serial INTEGER, insn_index INTEGER,
             opcode_name TEXT
         );
         INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
@@ -284,7 +284,7 @@ def test_collect_block_views_preserves_instruction_order_per_block():
             preds TEXT, succs TEXT, type_name TEXT
         );
         CREATE TABLE instructions (
-            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            snapshot_id INTEGER, block_serial INTEGER, insn_index INTEGER,
             opcode_name TEXT
         );
         INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
@@ -293,7 +293,7 @@ def test_collect_block_views_preserves_instruction_order_per_block():
         VALUES (17, 1, 100, 110, 0, 0, '[]', '[]', 'BLT_0WAY'),
                (17, 2, 110, 120, 0, 0, '[]', '[]', 'BLT_0WAY');
         -- Insert instructions out of natural row order to exercise the sort.
-        INSERT INTO instructions (snapshot_id, block_serial, ord, opcode_name)
+        INSERT INTO instructions (snapshot_id, block_serial, insn_index, opcode_name)
         VALUES (17, 2, 0, 'm_mov'),
                (17, 1, 2, 'm_goto'),
                (17, 2, 1, 'm_goto'),

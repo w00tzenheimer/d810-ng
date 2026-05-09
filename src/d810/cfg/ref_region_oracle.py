@@ -546,23 +546,24 @@ def collect_block_views_for_snapshot(
         for b in s.blocks:
             block_to_size[b] = s.size
 
-    # Capture (ord, InstructionView) pairs so we can defensively re-sort
-    # by ``ord`` even if a future query change drops the SQL ORDER BY.
+    # Capture (insn_index, InstructionView) pairs so we can defensively
+    # re-sort by ``insn_index`` even if a future query change drops the
+    # SQL ORDER BY.
     instructions_by_block: dict[int, list[tuple[int, InstructionView]]] = {}
     for row in conn.execute(
-        "SELECT block_serial, ord, opcode_name FROM instructions "
-        "WHERE snapshot_id=? ORDER BY block_serial, ord",
+        "SELECT block_serial, insn_index, opcode_name FROM instructions "
+        "WHERE snapshot_id=? ORDER BY block_serial, insn_index",
         (snapshot_id,),
     ):
-        bs, ord_, opcode = row
+        bs, _idx, opcode = row
         instructions_by_block.setdefault(int(bs), []).append(
-            (int(ord_ or 0), InstructionView(opcode_name=str(opcode or "")))
+            (int(_idx or 0), InstructionView(opcode_name=str(opcode or "")))
         )
 
     result: dict[int, BlockView] = {}
     for serial, (start_ea, end_ea, preds, succs, type_name) in raw_blocks.items():
         pairs = instructions_by_block.get(serial, ())
-        ordered = tuple(iv for _o, iv in sorted(pairs, key=lambda p: p[0]))
+        ordered = tuple(iv for _idx, iv in sorted(pairs, key=lambda p: p[0]))
         result[serial] = BlockView(
             serial=serial,
             start_ea=start_ea,
