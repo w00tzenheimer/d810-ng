@@ -109,6 +109,177 @@ def is_registered(func_ea_hex: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Microblock evidence model
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class InstructionView:
+    """Pure view onto one microcode instruction.
+
+    The implementer fills this from a real ``minsn_t`` at runtime, but
+    the oracle module never imports IDA — only the opcode name is
+    needed for canonical signatures.
+    """
+
+    opcode_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class BlockView:
+    """Pure view onto one microcode block.
+
+    Populated by adapters that read either the diag DB or a live mba.
+    The oracle never touches IDA types directly.
+    """
+
+    serial: int
+    start_ea: int
+    end_ea: int
+    instructions: tuple[InstructionView, ...]
+    preds: tuple[int, ...]
+    succs: tuple[int, ...]
+    in_scc: bool
+    scc_size: int | None
+    block_type: str
+
+
+def _ea_hex(ea: int) -> str:
+    return f"0x{ea & ((1 << 64) - 1):016x}"
+
+
+def opcode_signature(block: BlockView) -> str:
+    """Canonical ``; ``-joined opcode names. Operand-independent.
+
+    Stable under operand reordering or value changes. Used so
+    snap17/snap18 microblocks can be matched even if local IDs drifted.
+    """
+    return "; ".join(ins.opcode_name for ins in block.instructions)
+
+
+@dataclass(frozen=True, slots=True)
+class RefEvidence:
+    """Microblock evidence for a REF-side feature."""
+
+    side: str  # always "ref"
+    ref_block: str
+    ref_ea_or_line_range: str
+    opcode_signature: str
+    region_role: str
+    preds: tuple[str, ...]
+    succs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.side != "ref":
+            raise ValueError(f"RefEvidence.side must be 'ref', got {self.side!r}")
+        if not self.ref_block:
+            raise ValueError("RefEvidence.ref_block is required")
+        if not self.region_role:
+            raise ValueError("RefEvidence.region_role is required")
+
+    def to_json_dict(self) -> dict:
+        return {
+            "side": self.side,
+            "ref_block": self.ref_block,
+            "ref_ea_or_line_range": self.ref_ea_or_line_range,
+            "opcode_signature": self.opcode_signature,
+            "region_role": self.region_role,
+            "preds": list(self.preds),
+            "succs": list(self.succs),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class D810Evidence:
+    """Microblock evidence for a D810-side feature at a snapshot."""
+
+    side: str  # always "d810"
+    snapshot_id: int
+    snapshot_label: str
+    block_serial: int
+    start_ea_hex: str
+    end_ea_hex: str
+    opcode_signature: str
+    preds: tuple[int, ...]
+    succs: tuple[int, ...]
+    in_scc: bool
+    scc_size: int | None
+    block_type: str
+    region_role: str
+
+    def __post_init__(self) -> None:
+        if self.side != "d810":
+            raise ValueError(f"D810Evidence.side must be 'd810', got {self.side!r}")
+        if self.block_serial is None:
+            raise ValueError("D810Evidence.block_serial is required")
+        if not self.start_ea_hex:
+            raise ValueError("D810Evidence.start_ea_hex is required")
+        if not self.region_role:
+            raise ValueError("D810Evidence.region_role is required")
+
+    def to_json_dict(self) -> dict:
+        return {
+            "side": self.side,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_label": self.snapshot_label,
+            "block_serial": self.block_serial,
+            "start_ea_hex": self.start_ea_hex,
+            "end_ea_hex": self.end_ea_hex,
+            "opcode_signature": self.opcode_signature,
+            "preds": list(self.preds),
+            "succs": list(self.succs),
+            "in_scc": self.in_scc,
+            "scc_size": self.scc_size,
+            "block_type": self.block_type,
+            "region_role": self.region_role,
+        }
+
+
+def build_d810_evidence(
+    block: BlockView,
+    *,
+    snapshot_id: int,
+    snapshot_label: str,
+    region_role: str,
+) -> D810Evidence:
+    return D810Evidence(
+        side="d810",
+        snapshot_id=snapshot_id,
+        snapshot_label=snapshot_label,
+        block_serial=block.serial,
+        start_ea_hex=_ea_hex(block.start_ea),
+        end_ea_hex=_ea_hex(block.end_ea),
+        opcode_signature=opcode_signature(block),
+        preds=block.preds,
+        succs=block.succs,
+        in_scc=block.in_scc,
+        scc_size=block.scc_size,
+        block_type=block.block_type,
+        region_role=region_role,
+    )
+
+
+def build_ref_evidence_from_spec_path(
+    *,
+    ref_block: str,
+    path_string: str,
+    opcode_signature: str,
+    region_role: str,
+    preds: tuple[str, ...] = (),
+    succs: tuple[str, ...] = (),
+) -> RefEvidence:
+    return RefEvidence(
+        side="ref",
+        ref_block=ref_block,
+        ref_ea_or_line_range=path_string,
+        opcode_signature=opcode_signature,
+        region_role=region_role,
+        preds=preds,
+        succs=succs,
+    )
+
+
+# ---------------------------------------------------------------------------
 # REF feature spec
 # ---------------------------------------------------------------------------
 
@@ -335,16 +506,23 @@ def format_diff_table(diffs: tuple[FeatureDiff, ...]) -> str:
 
 
 __all__ = [
+    "BlockView",
+    "D810Evidence",
     "D810SnapshotInputs",
     "FeatureDiff",
     "FeatureRegion",
     "FeatureSource",
+    "InstructionView",
+    "RefEvidence",
     "RefSpec",
     "RegionFeature",
+    "build_d810_evidence",
+    "build_ref_evidence_from_spec_path",
     "d810_features",
     "diff_features",
     "format_diff_table",
     "is_registered",
+    "opcode_signature",
     "ref_features",
     "spec_for",
 ]
