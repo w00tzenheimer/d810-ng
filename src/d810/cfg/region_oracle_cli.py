@@ -540,18 +540,17 @@ def handle_region_diff(
         )
         return 2
 
-    # Block-view collection is best-effort: a sparse diag DB (e.g. no
-    # blocks/instructions tables populated) should still let us render the
-    # REF-side oracle. Treat schema/empty failures as "zero blocks" rather
-    # than aborting.
+    # Block-view collection MUST surface schema mismatches (missing
+    # columns / tables) as exit-code-2 errors. Silently producing a "0
+    # blocks" report masks real bugs in the diag schema or oracle
+    # queries. Sparse-population (no rows) is fine — the function
+    # naturally returns {} in that case without raising.
     try:
         blocks17 = collect_block_views_for_snapshot(conn, snapshot_id=snap17)
-    except sqlite3.OperationalError:
-        blocks17 = {}
-    try:
         blocks18 = collect_block_views_for_snapshot(conn, snapshot_id=snap18)
-    except sqlite3.OperationalError:
-        blocks18 = {}
+    except sqlite3.OperationalError as e:
+        print(f"oracle: schema mismatch: {e}", file=sys.stderr)
+        return 2
 
     ref = list(ref_features(spec))
     s17 = _build_snapshot_features(conn, spec, snap17, blocks=blocks17)
