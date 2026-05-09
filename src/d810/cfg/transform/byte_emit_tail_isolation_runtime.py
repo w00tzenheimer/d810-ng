@@ -321,6 +321,93 @@ class LiveMbaAdapter:
             return 0
         return int(blk.npred())
 
+    def split_block_at_tail_jcnd(self, block_serial: int) -> int:
+        """Split a 2-way block at its tail conditional jump.
+
+        Uses the native ``mba.split_block(blk, start_insn)`` SDK API
+        (``hexrays.hpp:5303``).  The instruction sequence is partitioned:
+        bytes-emission instructions stay in the original block (which
+        becomes BLT_1WAY); the tail conditional and its two-arm
+        successor list move to a fresh block inserted immediately after.
+
+        Layered-architecture note: ``d810.cfg`` is below ``d810.hexrays``,
+        so we cannot import ``CONDITIONAL_JUMP_OPCODES`` from
+        ``d810.hexrays.utils.hexrays_helpers`` nor the ``cfg_verify.n``
+        helper.  The cond-opcode set is inlined here (mirroring the set
+        already used by ``find_block_by_ea`` on this same adapter), and
+        post-split verification is left to downstream stages.
+
+        Returns the new tail block's serial.
+
+        Raises ``RuntimeError`` if the block cannot be resolved, is not
+        2-way, contains no conditional jump in its instruction stream,
+        or if ``mba.split_block`` itself fails.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        blk = mba.get_mblock(int(block_serial))
+        if blk is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: cannot resolve block "
+                f"{block_serial}"
+            )
+
+        nsucc = (
+            int(blk.nsucc())
+            if callable(getattr(blk, "nsucc", None))
+            else int(getattr(blk, "nsucc", 0) or 0)
+        )
+        if nsucc != 2:
+            raise RuntimeError(
+                f"split_block_at_tail_jcnd: block {block_serial} nsucc="
+                f"{nsucc}, expected 2"
+            )
+
+        # Walk head -> tail to locate the conditional jump.  DO NOT call
+        # dstr() / print on instructions before the split; ``maybe_use``
+        # / ``maybe_def`` are side-effecting on inspection per the IDA
+        # microcode SDK contract.
+        cond_opcodes = {
+            int(ida_hexrays.m_jnz),
+            int(ida_hexrays.m_jz),
+            int(ida_hexrays.m_jl),
+            int(ida_hexrays.m_jle),
+            int(ida_hexrays.m_jg),
+            int(ida_hexrays.m_jge),
+            int(ida_hexrays.m_jb),
+            int(ida_hexrays.m_jbe),
+            int(ida_hexrays.m_ja),
+            int(ida_hexrays.m_jae),
+            int(ida_hexrays.m_jcnd),
+            int(ida_hexrays.m_jtbl),
+        }
+        cur = blk.head
+        target = None
+        while cur is not None:
+            if int(cur.opcode) in cond_opcodes:
+                target = cur
+                break
+            cur = cur.next
+        if target is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: no conditional jump in "
+                f"block {block_serial}"
+            )
+
+        new_blk = mba.split_block(blk, target)
+        if new_blk is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: mba.split_block returned "
+                f"None for block {block_serial}"
+            )
+
+        blk.mark_lists_dirty()
+        new_blk.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(new_blk.serial)
+
 
 def maybe_run_tail_distinct(mba: Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
