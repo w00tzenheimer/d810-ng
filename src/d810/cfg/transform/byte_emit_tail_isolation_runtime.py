@@ -16,8 +16,10 @@ from d810.core.typing import Any, Iterable
 from d810.cfg.transform.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
+    duplicate_convergence_for_byte_path,
     isolate_byte_emit_tail,
     parse_tail_distinct_byte_env,
+    parse_tail_duplicate_convergence_byte_env,
 )
 
 
@@ -408,6 +410,200 @@ class LiveMbaAdapter:
 
         return int(new_blk.serial)
 
+    # ------------------------------------------------------------------
+    # ConvergenceAdapter Protocol implementation (uee-32r3 Track CTD)
+    # ------------------------------------------------------------------
+
+    def block_has_m_stx(self, block_serial: int) -> bool:
+        """True iff the block contains an ``m_stx`` instruction.
+
+        Walks ``head -> tail`` checking opcode integers only.  We never
+        call ``dstr()`` / ``print`` / ``maybe_use`` / ``maybe_def`` —
+        those are side-effecting on inspection per the IDA microcode
+        SDK contract.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        blk = self._mba.get_mblock(int(block_serial))
+        if blk is None:
+            return False
+        cur = blk.head
+        target_opcode = int(ida_hexrays.m_stx)
+        while cur is not None:
+            try:
+                if int(cur.opcode) == target_opcode:
+                    return True
+            except AttributeError:
+                pass
+            cur = cur.next
+        return False
+
+    def forward_walk_until_convergence(
+        self,
+        start_serial: int,
+        *,
+        max_depth: int = 8,
+    ) -> tuple[int | None, str]:
+        """BFS forward from ``start_serial`` for the first convergence.
+
+        A "convergence" is a block with ``npred > 1`` (i.e. genuinely
+        shared with sibling paths) that also reaches ``BLT_STOP`` within
+        a small bounded forward walk.
+
+        Reasons:
+          - ``"ok"`` (with serial): valid convergence found.
+          - ``"no_npred_gt_1_within_depth"``: BFS exhausted ``max_depth``
+            without ever seeing a ``npred>1`` candidate.
+          - ``"convergence_does_not_reach_return"``: at least one
+            ``npred>1`` candidate was visited but none reached
+            ``BLT_STOP``.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from collections import deque
+
+        mba = self._mba
+
+        def _succs_of(serial: int) -> tuple[int, ...]:
+            b = mba.get_mblock(int(serial))
+            if b is None:
+                return ()
+            n = int(b.nsucc()) if callable(getattr(b, "nsucc", None)) else 0
+            return tuple(int(b.succ(i)) for i in range(n))
+
+        def _reaches_stop(start: int, depth_cap: int = 12) -> bool:
+            seen: set[int] = set()
+            q: deque[tuple[int, int]] = deque([(int(start), 0)])
+            while q:
+                s, d = q.popleft()
+                if s in seen or d > depth_cap:
+                    continue
+                seen.add(s)
+                b = mba.get_mblock(s)
+                if b is None:
+                    continue
+                blk_type = int(getattr(b, "type", -1))
+                if blk_type == int(ida_hexrays.BLT_STOP):
+                    return True
+                for ns in _succs_of(s):
+                    q.append((ns, d + 1))
+            return False
+
+        saw_candidate = False
+        seen: set[int] = set()
+        q: deque[tuple[int, int]] = deque([(int(start_serial), 0)])
+        while q:
+            s, d = q.popleft()
+            if s in seen or d > max_depth:
+                continue
+            seen.add(s)
+            b = mba.get_mblock(s)
+            if b is None:
+                continue
+            npred = (
+                int(b.npred()) if callable(getattr(b, "npred", None)) else 0
+            )
+            if d > 0 and npred > 1:
+                saw_candidate = True
+                if _reaches_stop(s):
+                    return (s, "ok")
+                # else: keep searching deeper for a different convergence
+                continue
+            for ns in _succs_of(s):
+                q.append((ns, d + 1))
+
+        if saw_candidate:
+            return (None, "convergence_does_not_reach_return")
+        return (None, "no_npred_gt_1_within_depth")
+
+    def clone_convergence_for_byte_path(
+        self,
+        *,
+        predecessor_serial: int,
+        convergence_serial: int,
+    ) -> int:
+        """Clone the convergence block; rewire predecessor's edge to it.
+
+        Topology before:
+            predecessor -> convergence -> [convergence's succs]
+            (other preds) -> convergence
+        Topology after:
+            predecessor -> clone -> [convergence's succs]
+            (other preds) -> convergence -> [convergence's succs]
+
+        Mirrors the predset/succset pattern used by
+        ``insert_trampoline_after`` (push_back / _del).  ``copy_block``
+        is verified to auto-update goto operands in other blocks; the
+        explicit goto rewrite below is a belt-and-braces guard for the
+        ``predecessor -> convergence`` edge specifically.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        conv_blk = mba.get_mblock(int(convergence_serial))
+        if pred_blk is None or conv_blk is None:
+            raise RuntimeError(
+                "clone_convergence_for_byte_path: cannot resolve "
+                f"pred={predecessor_serial} conv={convergence_serial}"
+            )
+
+        # 1. Append clone at end of MBA via copy_block(ref, dest_serial).
+        end_serial = int(mba.qty) - 1
+        clone = mba.copy_block(conv_blk, end_serial)
+        if clone is None:
+            raise RuntimeError(
+                "clone_convergence_for_byte_path: mba.copy_block failed "
+                f"for conv={convergence_serial}"
+            )
+        clone_serial = int(getattr(clone, "serial", end_serial))
+
+        # 2. Reset clone's predset to {predecessor_serial}.
+        # copy_block carries the source's predset over to the clone;
+        # we want the clone to be reachable only from `predecessor`.
+        for stale_pred in [int(x) for x in clone.predset]:
+            clone.predset._del(stale_pred)
+        clone.predset.push_back(int(predecessor_serial))
+
+        # 3. Convergence loses `predecessor` from its predset (clone now
+        # owns that edge).
+        conv_blk.predset._del(int(predecessor_serial))
+
+        # 4. Each successor of clone gains `clone_serial` in its predset.
+        # copy_block already wired clone -> conv's successors (clone.succset
+        # mirrors conv.succset).
+        for succ_serial in [int(x) for x in clone.succset]:
+            succ_blk = mba.get_mblock(succ_serial)
+            if succ_blk is None:
+                continue
+            succ_blk.predset.push_back(clone_serial)
+            if succ_blk.serial != mba.qty - 1:
+                succ_blk.mark_lists_dirty()
+
+        # 5. Rewire predecessor: succset entry conv_serial -> clone_serial.
+        pred_blk.succset._del(int(convergence_serial))
+        pred_blk.succset.push_back(clone_serial)
+
+        # 6. If predecessor's tail is an explicit m_goto to the
+        # convergence, rewrite the operand.  copy_block auto-rewires
+        # goto operands when blocks are renumbered, but the goto on
+        # `predecessor` predates the clone and still names
+        # `convergence_serial` — fix it explicitly.
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(ida_hexrays.m_goto)
+            and pred_blk.tail.l is not None
+            and pred_blk.tail.l.t == ida_hexrays.mop_b
+            and int(pred_blk.tail.l.b) == int(convergence_serial)
+        ):
+            pred_blk.tail.l.make_blkref(clone_serial)
+
+        pred_blk.mark_lists_dirty()
+        conv_blk.mark_lists_dirty()
+        clone.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return clone_serial
+
 
 def maybe_run_tail_distinct(mba: Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
@@ -466,3 +662,78 @@ def maybe_run_tail_distinct(mba: Any) -> None:
         return
 
     logger.info("tail_distinct: %s", report)
+
+
+def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
+    """Env-gated hook: ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE`` probe.
+
+    Default-off.  When set to exactly ``"6"`` and
+    ``D810_TAIL_DISTINCT_BYTE`` is NOT set, this resolves the matching
+    ``TerminalByteEmitterFact`` for byte 6 from the diag DB, walks
+    forward to the first shared convergence block that reaches
+    ``BLT_STOP``, clones that convergence, and rewires the
+    byte-side predecessor's edge onto the clone.  The original
+    convergence remains intact for sibling paths.
+
+    Mutual exclusion with ``D810_TAIL_DISTINCT_BYTE``: if both are set
+    we refuse to run either probe (the call site invokes both hooks
+    unconditionally; this guard prevents double-mutation of the same
+    block).
+
+    Any failure (no fact, block missing, walk dead-ends, adapter not
+    wired) is logged and swallowed — the manager pipeline never breaks
+    because of this experiment.
+    """
+    raw = os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+    byte_index = parse_tail_duplicate_convergence_byte_env(raw)
+    if byte_index is None:
+        return  # default-off: no log, no mutation
+
+    if os.environ.get("D810_TAIL_DISTINCT_BYTE"):
+        logger.warning(
+            "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE "
+            "and D810_TAIL_DISTINCT_BYTE are both set; refusing to run "
+            "either probe."
+        )
+        return
+
+    try:
+        from d810.core.diag import get_diag_db
+
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        diag_conn = get_diag_db(func_ea)
+    except Exception:
+        logger.exception(
+            "tail_duplicate_convergence: cannot acquire diag DB; skipping"
+        )
+        return
+
+    if diag_conn is None:
+        logger.warning(
+            "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE="
+            "%r set but diag DB unavailable; skipping",
+            raw,
+        )
+        return
+
+    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
+    fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+    adapter = LiveMbaAdapter(mba)
+    try:
+        report = duplicate_convergence_for_byte_path(
+            byte_index=byte_index,
+            fact_view=fact_view,
+            adapter=adapter,
+        )
+    except NotImplementedError as exc:
+        logger.warning(
+            "tail_duplicate_convergence: adapter not wired: %s", exc,
+        )
+        return
+    except Exception:
+        logger.exception(
+            "tail_duplicate_convergence: unexpected failure; continuing"
+        )
+        return
+
+    logger.info("tail_duplicate_convergence: %s", report)

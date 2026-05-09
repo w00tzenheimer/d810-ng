@@ -969,9 +969,11 @@ class HodurUnflattener(GenericUnflatteningRule):
         try:
             from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
                 maybe_run_tail_distinct,
+                maybe_run_tail_duplicate_convergence,
             )
 
             maybe_run_tail_distinct(self.mba)
+            maybe_run_tail_duplicate_convergence(self.mba)
         except Exception:
             unflat_logger.debug(
                 "tail_distinct hook failed (non-critical)", exc_info=True,
