@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import sqlite3
 import textwrap
 
@@ -120,7 +121,7 @@ def test_persist_dce_causes_is_idempotent():
         "cause": "FOLDED_INTO_SURVIVING_BYTE_EMIT",
         "recommended_action": "STRUCTURER_SHAPING",
         "rationale": "tail-equivalent fold",
-        "evidence_json": json.dumps({"side": "d810"}),
+        "evidence": {"side": "d810"},
     }
     for _ in range(2):
         _oracle_persist_dce_causes(
@@ -138,13 +139,19 @@ def test_persistence_does_not_use_global_delete_where_func_ea():
     """
     src = inspect.getsource(_oracle_persist_features)
     src += "\n" + inspect.getsource(_oracle_persist_dce_causes)
-    pat = "DELETE FROM region_shape_features WHERE func_ea_hex"
-    assert pat not in src, (
+    pat = re.compile(
+        r"DELETE\s+FROM\s+region_shape_features\s+WHERE\s+func_ea_hex",
+        re.IGNORECASE,
+    )
+    assert pat.search(src) is None, (
         "Found unscoped DELETE in persistence helper:\n"
         f"{textwrap.indent(src, '  ')}"
     )
-    pat2 = "DELETE FROM terminal_tail_dce_causes WHERE func_ea_hex"
-    assert pat2 not in src, (
+    pat2 = re.compile(
+        r"DELETE\s+FROM\s+terminal_tail_dce_causes\s+WHERE\s+func_ea_hex",
+        re.IGNORECASE,
+    )
+    assert pat2.search(src) is None, (
         "Found unscoped DELETE in persistence helper:\n"
         f"{textwrap.indent(src, '  ')}"
     )

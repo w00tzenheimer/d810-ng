@@ -38,6 +38,7 @@ import json
 import re
 import sqlite3
 import sys
+from d810.core.typing import Any, Iterable, Mapping
 
 from d810.core.diag.alternate_correlation import (
     AlternateCorrelation,
@@ -1107,7 +1108,7 @@ def _oracle_persist_features(
     *,
     func_ea_hex: str,
     func_ea_i64: int,
-    features,  # iterable of RegionFeature
+    features: Iterable[Any],
 ) -> int:
     """Scoped upsert of region_shape_features.
 
@@ -1143,9 +1144,14 @@ def _oracle_persist_dce_causes(
     *,
     func_ea_hex: str,
     func_ea_i64: int,
-    causes,  # iterable of dict-like rows
+    causes: Iterable[Mapping[str, Any]],
 ) -> int:
     """Scoped upsert of terminal_tail_dce_causes.
+
+    Each cause row carries an ``evidence`` mapping (dict-like) which is
+    serialized internally via ``json.dumps(..., sort_keys=True)``. This
+    matches the ``_oracle_persist_features`` contract: callers pass a
+    structured value, not a pre-serialized string.
 
     Primary key is (func_ea_hex, byte_index); INSERT OR REPLACE
     naturally upserts per-byte without touching unrelated rows.
@@ -1170,7 +1176,7 @@ def _oracle_persist_dce_causes(
                 str(c["cause"]),
                 str(c["recommended_action"]),
                 str(c["rationale"]),
-                str(c["evidence_json"]),
+                json.dumps(c["evidence"], sort_keys=True),
             ),
         )
         n += 1
