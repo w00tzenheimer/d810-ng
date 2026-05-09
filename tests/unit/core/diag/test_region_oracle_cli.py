@@ -278,3 +278,153 @@ def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
     assert result.returncode == 0
     assert "FOLDED_INTO_SURVIVING_BYTE_EMIT" in result.stdout
     assert "DCE_DEAD_WRITE" not in result.stdout
+
+
+def test_region_diff_emits_real_d810_feature_values(tmp_path):
+    """Re-running region-diff against a populated diag DB must NOT
+    produce all-False D810 columns. byte_emit_<k>_present should reflect
+    actual TerminalByteEmitterFact rows.
+    """
+    import json as _json, os, sqlite3 as _sql, sys, subprocess
+    from d810.core.diag.schema import create_tables
+
+    db = tmp_path / "real.diag.sqlite3"
+    conn = _sql.connect(str(db))
+    create_tables(conn)
+    # Two snapshots: snap17 has byte_emit fact rows, snap18 has none.
+    for snap_id, label in (
+        (17, "post_bundle_stabilize"),
+        (18, "GLBOPT1_post_d810"),
+    ):
+        conn.execute(
+            "INSERT INTO snapshots (id, label, func_ea_hex, func_ea_i64, "
+            " maturity, phase, block_count, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (snap_id, label, "0x0000000180012df0", 0x180012df0,
+             "MMAT_GLBOPT1", "post_d810", 1, 0.0),
+        )
+
+    # Insert one byte_emit fact at snap17 for byte_index=3.
+    conn.execute(
+        "INSERT INTO fact_observations "
+        "(snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind, "
+        " semantic_key, maturity, phase, confidence, payload, evidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (17, "0x0000000180012df0", 0x180012df0, "1",
+         "TerminalByteEmitterFact", "byte_3", "MMAT_GLBOPT1",
+         "post_bundle_stabilize", 1.0,
+         _json.dumps({"byte_index": 3, "block_serial": 161,
+                      "corridor_role": "terminal_tail"}),
+         "{}"),
+    )
+    # Insert the matching block at snap17.
+    conn.execute(
+        "INSERT INTO blocks (snapshot_id, serial, block_type, type_name, "
+        " start_ea_hex, start_ea_i64, npred, nsucc, preds, succs, "
+        " insn_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (17, 161, 1, "BLT_1WAY", "0x0000000180012df0", 0x180012df0,
+         0, 1, "[]", "[218]", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "real.oracle.md"
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "d810.core.diag", "region-diff",
+         "--db", str(db), "--func-ea", "0x0000000180012df0",
+         "--persist", "--output", str(out), "--json"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = _json.loads(out.read_text())
+
+    # snap17: byte_emit_3_present must be True (we populated the fact).
+    s17_byte3 = next(
+        (f for f in payload["snap17_features"]
+         if f["feature"] == "byte_emit_3_present"),
+        None,
+    )
+    assert s17_byte3 is not None, "byte_emit_3_present row missing for snap17"
+    assert s17_byte3["value"] in (True, "True"), (
+        f"snap17.byte_emit_3_present should be truthy, got {s17_byte3['value']!r}"
+    )
+
+    # snap18: same byte should be False (no fact row at snap18).
+    s18_byte3 = next(
+        (f for f in payload["snap18_features"]
+         if f["feature"] == "byte_emit_3_present"),
+        None,
+    )
+    assert s18_byte3 is not None
+    assert s18_byte3["value"] in (False, "False"), (
+        f"snap18.byte_emit_3_present should be falsy, got {s18_byte3['value']!r}"
+    )
+
+    # Verify DCE rows persisted.
+    conn = _sql.connect(str(db))
+    n = conn.execute(
+        "SELECT COUNT(*) FROM terminal_tail_dce_causes"
+    ).fetchone()[0]
+    conn.close()
+    assert n > 0, "DCE causes should be persisted by --persist"
+
+
+def test_region_diff_microblocks_evidence_includes_block_serial(tmp_path):
+    """With --microblocks the evidence for byte_emit_3_present must carry
+    the witness block_serial (161) computed from the populated snapshot.
+    """
+    import json as _json, os, sqlite3 as _sql, sys, subprocess
+    from d810.core.diag.schema import create_tables
+
+    db = tmp_path / "real.diag.sqlite3"
+    conn = _sql.connect(str(db))
+    create_tables(conn)
+    for snap_id, label in (
+        (17, "post_bundle_stabilize"),
+        (18, "GLBOPT1_post_d810"),
+    ):
+        conn.execute(
+            "INSERT INTO snapshots (id, label, func_ea_hex, func_ea_i64, "
+            " maturity, phase, block_count, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (snap_id, label, "0x0000000180012df0", 0x180012df0,
+             "MMAT_GLBOPT1", "post_d810", 1, 0.0),
+        )
+    conn.execute(
+        "INSERT INTO fact_observations "
+        "(snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind, "
+        " semantic_key, maturity, phase, confidence, payload, evidence) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (17, "0x0000000180012df0", 0x180012df0, "1",
+         "TerminalByteEmitterFact", "byte_3", "MMAT_GLBOPT1",
+         "post_bundle_stabilize", 1.0,
+         _json.dumps({"byte_index": 3, "block_serial": 161,
+                      "corridor_role": "terminal_tail"}),
+         "{}"),
+    )
+    conn.execute(
+        "INSERT INTO blocks (snapshot_id, serial, block_type, type_name, "
+        " start_ea_hex, start_ea_i64, npred, nsucc, preds, succs, "
+        " insn_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (17, 161, 1, "BLT_1WAY", "0x0000000180012df0", 0x180012df0,
+         0, 1, "[]", "[218]", 0),
+    )
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "evidence.oracle.md"
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "d810.core.diag", "region-diff",
+         "--db", str(db), "--func-ea", "0x0000000180012df0",
+         "--microblocks", "--output", str(out)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    body = out.read_text()
+    assert "## Microblock Evidence" in body
+    # snap17 byte_emit_3 evidence should mention the witness block_serial.
+    assert "161" in body, "Microblock evidence should reference witness serial"
