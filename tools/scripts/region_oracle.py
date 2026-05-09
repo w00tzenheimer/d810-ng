@@ -28,6 +28,7 @@ from d810.cfg.ref_region_oracle import (
     diff_features,
     format_diff_table,
     ref_features,
+    spec_for,
 )
 from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.cfg.terminal_tail_dce_diagnosis import (
@@ -295,7 +296,11 @@ def main() -> int:
 
     conn = sqlite3.connect(args.db)
 
-    ref = list(ref_features())
+    spec = spec_for(args.func_ea)
+    if spec is None:
+        print("region_oracle: no spec registered for this function", file=sys.stderr)
+        return 2
+    ref = list(ref_features(spec))
     snap17_inputs = _build_snapshot_inputs(conn, args.snap17)
     snap18_inputs = _build_snapshot_inputs(conn, args.snap18)
     snap17_feats = list(d810_features(snap17_inputs))

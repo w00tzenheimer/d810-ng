@@ -9,12 +9,21 @@ from d810.cfg.ref_region_oracle import (
     diff_features,
     format_diff_table,
     ref_features,
+    spec_for,
 )
+
+_SUB7FFD_EA = "0x0000000180012df0"
+
+
+def _ref_feats() -> tuple:
+    spec = spec_for(_SUB7FFD_EA)
+    assert spec is not None
+    return tuple(ref_features(spec))
 
 
 class TestRefFeatures:
     def test_ref_features_include_all_seven_byte_emits(self) -> None:
-        feats = ref_features()
+        feats = _ref_feats()
         names = {f.feature for f in feats}
         for k in range(7):
             assert f"byte_emit_{k}_present" in names
@@ -23,14 +32,14 @@ class TestRefFeatures:
             assert f"byte_emit_{k}_counter_update_present" in names
 
     def test_ref_marks_terminal_tail_acyclic(self) -> None:
-        feats = ref_features()
+        feats = _ref_feats()
         assert any(
             f.feature == "terminal_tail_acyclic" and f.value is True
             for f in feats
         )
 
     def test_ref_loops_isolated(self) -> None:
-        feats = ref_features()
+        feats = _ref_feats()
         assert any(
             f.feature == "head_2byte_stride_loop_isolated" and f.value is True
             for f in feats
@@ -41,7 +50,7 @@ class TestRefFeatures:
         )
 
     def test_ref_source_is_REF(self) -> None:
-        for f in ref_features():
+        for f in _ref_feats():
             assert f.source is FeatureSource.REF
             assert f.snapshot_id is None
 
@@ -100,7 +109,7 @@ class TestDiffFeatures:
         )
         # Add the byte_emit-source-form features to D810 inputs by mocking
         # only the boolean ones (this simulates a perfect-shape snapshot).
-        diffs = diff_features(ref_features(), d810_features(inputs))
+        diffs = diff_features(_ref_feats(), d810_features(inputs))
         # Source-form features are REF-only in the table, so they show as
         # missing on D810 side; the diff captures that. The numeric/bool
         # features should match.
@@ -126,7 +135,7 @@ class TestDiffFeatures:
             byte_emit_fact_detected={k: (k in (1, 6)) for k in range(7)},
             terminal_tail_acyclic=False,
         )
-        diffs = diff_features(ref_features(), d810_features(inputs))
+        diffs = diff_features(_ref_feats(), d810_features(inputs))
         diff_features_set = {d.feature for d in diffs}
         # Bytes 0,2,3,4,5 should diff (REF=True, D810=False).
         for k in (0, 2, 3, 4, 5):
@@ -144,7 +153,49 @@ class TestDiffFeatures:
             byte_emit_block_serial={k: None for k in range(7)},
             byte_emit_fact_detected={k: False for k in range(7)},
         )
-        diffs = diff_features(ref_features(), d810_features(inputs))
+        diffs = diff_features(_ref_feats(), d810_features(inputs))
         text = format_diff_table(diffs)
         assert "| feature | region | REF | D810 |" in text
         assert "byte_emit_0_present" in text
+
+
+def test_spec_for_known_function_returns_spec():
+    from d810.cfg.ref_region_oracle import spec_for, RefSpec
+    spec = spec_for("0x0000000180012df0")
+    assert spec is not None
+    assert isinstance(spec, RefSpec)
+    assert spec.func_name == "sub_7FFD3338C040"
+
+
+def test_spec_for_unknown_function_returns_none():
+    from d810.cfg.ref_region_oracle import spec_for
+    assert spec_for("0x00000000DEADBEEF") is None
+
+
+def test_spec_for_is_case_insensitive_in_hex_digits():
+    from d810.cfg.ref_region_oracle import spec_for
+    assert spec_for("0X0000000180012DF0") is not None
+    assert spec_for("0x0000000180012DF0") is not None
+
+
+def test_is_registered_matches_spec_for():
+    from d810.cfg.ref_region_oracle import is_registered, spec_for
+    assert is_registered("0x0000000180012df0") is (spec_for("0x0000000180012df0") is not None)
+    assert is_registered("0x00000000DEADBEEF") is (spec_for("0x00000000DEADBEEF") is not None)
+
+
+def test_spec_carries_snap_label_preferences():
+    from d810.cfg.ref_region_oracle import spec_for
+    spec = spec_for("0x0000000180012df0")
+    assert spec is not None
+    assert spec.snap17_label_preferences[0] == "post_bundle_stabilize"
+    assert "GLBOPT1_post_d810" in spec.snap18_label_preferences
+
+
+def test_ref_features_requires_spec_arg():
+    from d810.cfg.ref_region_oracle import ref_features, spec_for
+    spec = spec_for("0x0000000180012df0")
+    assert spec is not None
+    feats = list(ref_features(spec))
+    assert len(feats) >= 40  # full sub_7FFD spec
+    assert all(f.source.value == "REF" for f in feats)
