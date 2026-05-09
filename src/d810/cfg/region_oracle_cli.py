@@ -146,13 +146,25 @@ def _block_at(
 
 
 def _build_snapshot_inputs(
-    conn: sqlite3.Connection, snap_id: int,
+    conn: sqlite3.Connection,
+    snap_id: int,
+    initial_snap_id: int | None = None,
 ) -> D810SnapshotInputs:
-    """Compute D810 region-shape features from one snapshot."""
+    """Compute D810 region-shape features from one snapshot.
+
+    Survival semantics: ``byte_emit_<k>_present`` is True if either
+    (a) a TerminalByteEmitterFact fires at ``snap_id`` directly, OR
+    (b) ``initial_snap_id`` is given AND the byte's witness block from
+    that baseline snapshot survived (an EA-matching block exists at
+    ``snap_id``). ``byte_emit_fact_detected[k]`` is True ONLY when the
+    snapshot's own facts confirm the emitter — independent of survival.
+    """
     facts = _byte_emit_facts_at(conn, snap_id)
     byte_emit_present: dict[int, bool] = {}
     byte_emit_block_serial: dict[int, int | None] = {}
     byte_emit_fact_detected: dict[int, bool] = {}
+
+    # Seed: facts firing at snap_id directly.
     for k in range(7):
         if k in facts:
             byte_emit_present[k] = True
@@ -162,6 +174,32 @@ def _build_snapshot_inputs(
             byte_emit_present[k] = False
             byte_emit_block_serial[k] = None
             byte_emit_fact_detected[k] = False
+
+    # Survival fallback: if no fact fires at snap_id but an initial
+    # snapshot baseline is given, check whether each byte's baseline
+    # witness block survived (EA-matching block present at snap_id).
+    if initial_snap_id is not None and initial_snap_id != snap_id:
+        initial_facts = _byte_emit_facts_at(conn, initial_snap_id)
+        for k, fact in initial_facts.items():
+            if 0 <= k <= 6 and not byte_emit_present.get(k, False):
+                # Resolve baseline witness EA from baseline blocks.
+                try:
+                    row = conn.execute(
+                        "SELECT start_ea_hex FROM blocks "
+                        "WHERE snapshot_id=? AND serial=?",
+                        (initial_snap_id, int(fact.get("block_serial", 0))),
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    row = None
+                if not row or not row[0]:
+                    continue
+                ea_hex = row[0]
+                survived = _block_at(conn, snap_id, ea_hex)
+                if survived is not None:
+                    serial_at_snap, _, _ = survived
+                    byte_emit_present[k] = True
+                    byte_emit_block_serial[k] = serial_at_snap
+                    # fact_detected stays False — the live fact didn't fire.
 
     # SCC analysis on the snapshot's block graph.
     try:
@@ -306,6 +344,7 @@ def _build_snapshot_features(
     spec,
     snap_id: int,
     blocks: dict[int, BlockView] | None = None,
+    initial_snap_id: int | None = None,
 ) -> list[RegionFeature]:
     """Real D810 snapshot feature extraction.
 
@@ -313,7 +352,9 @@ def _build_snapshot_features(
     microblock evidence per ``byte_emit_<k>_present`` feature where a
     witness block exists.
     """
-    inputs = _build_snapshot_inputs(conn, snap_id)
+    inputs = _build_snapshot_inputs(
+        conn, snap_id, initial_snap_id=initial_snap_id,
+    )
     feats = list(d810_features(inputs))
 
     if blocks is None:
@@ -553,8 +594,28 @@ def handle_region_diff(
         return 2
 
     ref = list(ref_features(spec))
-    s17 = _build_snapshot_features(conn, spec, snap17, blocks=blocks17)
-    s18 = _build_snapshot_features(conn, spec, snap18, blocks=blocks18)
+    # Probe for the highest snapshot.id labeled
+    # "maturity_MMAT_GLBOPT1_pre_d810" — the canonical baseline for
+    # byte_emit fact survival checks. Fall back to id=5 if no row matches.
+    initial_snap_id: int | None = 5
+    try:
+        row = conn.execute(
+            "SELECT MAX(id) FROM snapshots "
+            "WHERE label = 'maturity_MMAT_GLBOPT1_pre_d810'"
+        ).fetchone()
+        if row and row[0] is not None:
+            initial_snap_id = int(row[0])
+    except sqlite3.OperationalError:
+        pass
+
+    s17 = _build_snapshot_features(
+        conn, spec, snap17, blocks=blocks17,
+        initial_snap_id=initial_snap_id,
+    )
+    s18 = _build_snapshot_features(
+        conn, spec, snap18, blocks=blocks18,
+        initial_snap_id=initial_snap_id,
+    )
     diff17 = list(diff_features(ref, s17))
     diff18 = list(diff_features(ref, s18))
 
