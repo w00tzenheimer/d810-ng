@@ -35,6 +35,25 @@ from dataclasses import dataclass, field
 from d810.core.typing import Iterable, Protocol
 
 
+def parse_tail_distinct_byte_env(value: str | None) -> int | None:
+    """Parse the D810_TAIL_DISTINCT_BYTE env value.
+
+    Returns the byte index (0..6) when valid; None for any of:
+    - unset / empty string
+    - non-integer value
+    - integer outside [0, 6]
+    """
+    if not value:
+        return None
+    try:
+        idx = int(value.strip())
+    except ValueError:
+        return None
+    if not (0 <= idx <= 6):
+        return None
+    return idx
+
+
 @dataclass(frozen=True, slots=True)
 class FactRow:
     """Pure view of one TerminalByteEmitterFact row.

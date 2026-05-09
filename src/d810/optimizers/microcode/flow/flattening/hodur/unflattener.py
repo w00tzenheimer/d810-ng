@@ -963,6 +963,19 @@ class HodurUnflattener(GenericUnflatteningRule):
         bundle_stabilized = self._stabilize_sub7ffd_post_pipeline_bundle()
         if bundle_stabilized:
             nb_changes += bundle_stabilized
+        # uee-32r3 Track B.2: env-gated D810_TAIL_DISTINCT_BYTE topology-only
+        # experiment, applied just before the post_bundle_stabilize snapshot
+        # so the snapshot reflects the topology change. Default-off.
+        try:
+            from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+                maybe_run_tail_distinct,
+            )
+
+            maybe_run_tail_distinct(self.mba)
+        except Exception:
+            unflat_logger.debug(
+                "tail_distinct hook failed (non-critical)", exc_info=True,
+            )
         self._capture_intermediate_snapshot("post_bundle_stabilize")
 
         probe_blocks, probe_targets = self._collect_post_apply_may_only_probe_blocks(

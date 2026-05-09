@@ -218,3 +218,46 @@ def test_isolate_malformed_ea_returns_no_op():
     )
     assert res.applied is False
     assert res.reason.startswith("malformed_ea:")
+
+
+# ----- parse_tail_distinct_byte_env -----
+
+
+def test_parse_tail_distinct_byte_env_unset_returns_none():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_distinct_byte_env,
+    )
+    assert parse_tail_distinct_byte_env(None) is None
+    assert parse_tail_distinct_byte_env("") is None
+
+
+def test_parse_tail_distinct_byte_env_non_integer_returns_none():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_distinct_byte_env,
+    )
+    assert parse_tail_distinct_byte_env("xyz") is None
+    assert parse_tail_distinct_byte_env("2x") is None
+
+
+def test_parse_tail_distinct_byte_env_out_of_range_returns_none():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_distinct_byte_env,
+    )
+    assert parse_tail_distinct_byte_env("-1") is None
+    assert parse_tail_distinct_byte_env("7") is None
+    assert parse_tail_distinct_byte_env("99") is None
+
+
+def test_parse_tail_distinct_byte_env_valid_returns_int():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_distinct_byte_env,
+    )
+    for k in range(7):
+        assert parse_tail_distinct_byte_env(str(k)) == k
+
+
+def test_parse_tail_distinct_byte_env_strips_whitespace():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_distinct_byte_env,
+    )
+    assert parse_tail_distinct_byte_env("  2  ") == 2
