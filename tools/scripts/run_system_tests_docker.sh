@@ -497,3 +497,31 @@ fi
 
 INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP ${DUMP_ARGS[*]} -v $REDIR"
 run_bash "$INNER"
+
+# --- BEGIN region oracle hook (Track A.8 of uee-32r3) ---
+# Non-fatal: any failure in the oracle is logged but never propagated.
+ORACLE_DB="$(ls -t "${WORK_DIR}/.tmp/logs/d810_logs/"*.diag.sqlite3 2>/dev/null | head -1 || true)"
+if [ -n "$ORACLE_DB" ]; then
+  if [ -n "${DUMP_OUT:-}" ]; then
+    ORACLE_BASE="${WORK_DIR}/.tmp/${DUMP_OUT%.txt}"
+    ORACLE_OUT="${ORACLE_BASE}.oracle.md"
+    ORACLE_ERR="${ORACLE_BASE}.oracle.stderr.log"
+  else
+    ORACLE_TS="$(date +%Y%m%d-%H%M%S)"
+    ORACLE_OUT="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.md"
+    ORACLE_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.stderr.log"
+  fi
+  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.core.diag region-diff \
+      --auto --persist \
+      --db "$ORACLE_DB" \
+      --output "$ORACLE_OUT" \
+      2> "$ORACLE_ERR"
+  then
+    echo "oracle written: $ORACLE_OUT"
+  else
+    echo "WARN: oracle exited non-zero; see $ORACLE_ERR"
+  fi
+else
+  echo "oracle skipped: no diag DB present (run with --enable-debug-logging to capture one)"
+fi
+# --- END region oracle hook ---
