@@ -1102,6 +1102,82 @@ def _resolve_oracle_snap_ids(
     return _resolve_side(snap17_labels), _resolve_side(snap18_labels)
 
 
+def _oracle_persist_features(
+    conn,
+    *,
+    func_ea_hex: str,
+    func_ea_i64: int,
+    features,  # iterable of RegionFeature
+) -> int:
+    """Scoped upsert of region_shape_features.
+
+    Uses INSERT OR REPLACE keyed by the table's primary key
+    (func_ea_hex, source, snapshot_id, feature). Never deletes rows
+    outside the (source, snapshot_id, feature) tuples being written.
+    """
+    n = 0
+    for f in features:
+        conn.execute(
+            "INSERT OR REPLACE INTO region_shape_features "
+            "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
+            " feature, value_text, evidence_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                func_ea_hex,
+                func_ea_i64,
+                f.snapshot_id,
+                f.source.value,
+                f.region.value,
+                f.feature,
+                str(f.value),
+                json.dumps(f.evidence, sort_keys=True),
+            ),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def _oracle_persist_dce_causes(
+    conn,
+    *,
+    func_ea_hex: str,
+    func_ea_i64: int,
+    causes,  # iterable of dict-like rows
+) -> int:
+    """Scoped upsert of terminal_tail_dce_causes.
+
+    Primary key is (func_ea_hex, byte_index); INSERT OR REPLACE
+    naturally upserts per-byte without touching unrelated rows.
+    """
+    n = 0
+    for c in causes:
+        conn.execute(
+            "INSERT OR REPLACE INTO terminal_tail_dce_causes "
+            "(func_ea_hex, func_ea_i64, byte_index, "
+            " last_present_snapshot_id, first_missing_snapshot_id, "
+            " last_block_serial, last_ea_hex, "
+            " cause, recommended_action, rationale, evidence_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                func_ea_hex,
+                func_ea_i64,
+                int(c["byte_index"]),
+                c.get("last_present_snapshot_id"),
+                c.get("first_missing_snapshot_id"),
+                c.get("last_block_serial"),
+                c.get("last_ea_hex"),
+                str(c["cause"]),
+                str(c["recommended_action"]),
+                str(c["rationale"]),
+                str(c["evidence_json"]),
+            ),
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
