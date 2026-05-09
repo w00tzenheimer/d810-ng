@@ -84,12 +84,24 @@ class DiagDbFactView:
                 continue
             if bi != byte_index:
                 continue
+            # The TerminalByteEmitterFact payload uses ``block_ea`` (int).
+            # Older paths stored ``start_ea_hex``; honor either when present.
+            ea_hex = str(payload.get("start_ea_hex") or "")
+            if not ea_hex:
+                raw_ea = payload.get("block_ea")
+                if isinstance(raw_ea, int):
+                    ea_hex = f"0x{raw_ea & ((1 << 64) - 1):016x}"
+                elif isinstance(raw_ea, str) and raw_ea:
+                    try:
+                        ea_hex = f"0x{int(raw_ea, 0) & ((1 << 64) - 1):016x}"
+                    except ValueError:
+                        ea_hex = ""
             rows.append(
                 FactRow(
                     snapshot_id=snap_id,
                     byte_index=bi,
                     block_serial=bs,
-                    start_ea_hex=str(payload.get("start_ea_hex") or ""),
+                    start_ea_hex=ea_hex,
                     corridor_role=str(payload.get("corridor_role") or ""),
                 )
             )
