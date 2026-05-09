@@ -1721,6 +1721,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Emit JSON instead of a table.",
     )
 
+    p_term_dce = sub.add_parser(
+        "terminal-tail-dce",
+        parents=[common],
+        help="List persisted terminal_tail_dce_causes rows.",
+    )
+    p_term_dce.add_argument("--func-ea", required=True)
+    p_term_dce.add_argument("--byte-index", type=int, default=None)
+    p_term_dce.add_argument(
+        "--json", action="store_true", dest="json_output",
+    )
+
     importlib.import_module(
         "d810.cfg.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
@@ -1735,7 +1746,7 @@ def main(argv: list[str] | None = None) -> int:
     # region-shape is function-EA-scoped, not snapshot-scoped; the rows
     # carry snapshot_id directly and may not require any snapshots row
     # to exist (e.g. REF-only persistence ahead of D810 runs).
-    if args.command == "region-shape":
+    if args.command in ("region-shape", "terminal-tail-dce"):
         snap_id = -1
     else:
         snap_id = _resolve_snapshot_id(
@@ -2345,6 +2356,45 @@ def main(argv: list[str] | None = None) -> int:
             for r in rows:
                 print(f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
             print(f"\n# {len(rows)} row(s) shown")
+    elif args.command == "terminal-tail-dce":
+        func_ea = args.func_ea.strip().lower()
+        if not func_ea.startswith("0x"):
+            func_ea = "0x" + func_ea
+        clauses = ["func_ea_hex = ?"]
+        params: list = [func_ea]
+        if args.byte_index is not None:
+            clauses.append("byte_index = ?")
+            params.append(int(args.byte_index))
+        sql = (
+            "SELECT byte_index, last_present_snapshot_id, "
+            "first_missing_snapshot_id, last_block_serial, last_ea_hex, "
+            "cause, recommended_action, rationale, evidence_json "
+            "FROM terminal_tail_dce_causes WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY byte_index"
+        )
+        rows = list(conn.execute(sql, params))
+        if args.json_output:
+            out = [
+                {
+                    "byte_index": r[0],
+                    "last_present_snapshot_id": r[1],
+                    "first_missing_snapshot_id": r[2],
+                    "last_block_serial": r[3],
+                    "last_ea_hex": r[4],
+                    "cause": r[5],
+                    "recommended_action": r[6],
+                    "rationale": r[7],
+                    "evidence": json.loads(r[8]) if r[8] else {},
+                }
+                for r in rows
+            ]
+            print(json.dumps(out, indent=2, sort_keys=True))
+        else:
+            print("byte_index\tcause\trecommended_action\tlast_pres -> first_miss")
+            for r in rows:
+                print(f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
+            print(f"\n# {len(rows)} cause(s) shown")
     elif args.command == "region-diff":
         cfg_cli = importlib.import_module("d810.cfg.region_oracle_cli")
         rc = cfg_cli.handle_region_diff(

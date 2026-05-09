@@ -207,3 +207,74 @@ def test_region_diff_happy_path_writes_artifact(tmp_path):
     body = out.read_text()
     assert "Region Oracle" in body
     assert f"oracle written: {out}" in result.stdout
+
+
+def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
+    """Subprocess: python -m d810.core.diag terminal-tail-dce."""
+    import json, os, sys, subprocess
+    from d810.core.diag.schema import create_tables
+
+    db = tmp_path / "test.diag.sqlite3"
+    conn = sqlite3.connect(str(db))
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO terminal_tail_dce_causes "
+        "(func_ea_hex, func_ea_i64, byte_index, last_present_snapshot_id, "
+        " first_missing_snapshot_id, last_block_serial, last_ea_hex, "
+        " cause, recommended_action, rationale, evidence_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("0x0000000180012df0", 0x180012df0, 3, 17, 18, 161,
+         "0x0000000180012df0", "FOLDED_INTO_SURVIVING_BYTE_EMIT",
+         "STRUCTURER_SHAPING", "tail-equivalent fold",
+         json.dumps({"side": "d810"})),
+    )
+    conn.commit()
+    conn.close()
+
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "d810.core.diag", "terminal-tail-dce",
+         "--db", str(db), "--func-ea", "0x0000000180012df0"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0
+    assert "FOLDED_INTO_SURVIVING_BYTE_EMIT" in result.stdout
+    assert "byte_index" in result.stdout.lower()
+
+
+def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
+    import json, os, sys, subprocess
+    from d810.core.diag.schema import create_tables
+
+    db = tmp_path / "test.diag.sqlite3"
+    conn = sqlite3.connect(str(db))
+    create_tables(conn)
+    for byte_index, cause in (
+        (2, "FOLDED_INTO_SURVIVING_BYTE_EMIT"),
+        (3, "DCE_DEAD_WRITE"),
+    ):
+        conn.execute(
+            "INSERT INTO terminal_tail_dce_causes "
+            "(func_ea_hex, func_ea_i64, byte_index, "
+            " last_present_snapshot_id, first_missing_snapshot_id, "
+            " last_block_serial, last_ea_hex, cause, "
+            " recommended_action, rationale, evidence_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("0x0000000180012df0", 0x180012df0, byte_index, 17, 18,
+             100 + byte_index, "0x0", cause,
+             "STRUCTURER_SHAPING", "...",
+             json.dumps({})),
+        )
+    conn.commit()
+    conn.close()
+
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "d810.core.diag", "terminal-tail-dce",
+         "--db", str(db), "--func-ea", "0x0000000180012df0",
+         "--byte-index", "2"],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0
+    assert "FOLDED_INTO_SURVIVING_BYTE_EMIT" in result.stdout
+    assert "DCE_DEAD_WRITE" not in result.stdout
