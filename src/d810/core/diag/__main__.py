@@ -1075,6 +1075,33 @@ def _format_state_write_rewrites(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _resolve_oracle_snap_ids(
+    conn,
+    *,
+    snap17_labels: tuple[str, ...],
+    snap18_labels: tuple[str, ...],
+) -> tuple[int | None, int | None]:
+    """Resolve snap17 and snap18 IDs by walking label preference lists.
+
+    For each side, returns the highest snapshot.id whose label exactly
+    matches the first label in ``*_labels`` that has any rows, falling
+    through the list. Returns ``(None, None)`` for sides that cannot
+    resolve at all.
+    """
+
+    def _resolve_side(labels: tuple[str, ...]) -> int | None:
+        for label in labels:
+            row = conn.execute(
+                "SELECT MAX(id) FROM snapshots WHERE label = ?",
+                (label,),
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                return int(row[0])
+        return None
+
+    return _resolve_side(snap17_labels), _resolve_side(snap18_labels)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.core.diag``."""
     # Common args shared by all subcommands via parents= mechanism.
