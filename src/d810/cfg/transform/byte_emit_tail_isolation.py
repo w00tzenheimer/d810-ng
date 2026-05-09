@@ -143,6 +143,7 @@ class ShapingReport:
     byte_emit_ea: int | None = None
     byte_emit_serial: int | None = None
     trampoline_serial: int | None = None
+    split_block_serial: int | None = None
     successor_serial_before: int | None = None
     successor_npred_before: int | None = None
     successor_npred_after: int | None = None
@@ -229,6 +230,20 @@ class MicrocodeAdapter(Protocol):
     def successor_npred(self, successor_serial: int) -> int:
         ...
 
+    def split_block_at_tail_jcnd(self, block_serial: int) -> int:
+        """Split a 2-way block immediately before its tail conditional jump.
+
+        The instructions before the jcnd remain in the original block (now
+        BLT_1WAY, fallthrough/goto to the new block). The jcnd and its
+        two-arm successor list move to the new block.
+
+        Returns the new block's serial.
+
+        Raises if the block is not 2-way or its tail is not a conditional
+        jump.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Orchestration
@@ -279,6 +294,38 @@ def isolate_byte_emit_tail(
             byte_emit_ea=target_ea,
         )
 
+    # If the resolved block is 2-way with a conditional tail, split first
+    # so the v1 trampoline path can run on the now-1-way head.
+    split_serial: int | None = None
+    if block.nsucc == 2 and block.tail_kind == "cond_branch":
+        try:
+            split_serial = adapter.split_block_at_tail_jcnd(block.serial)
+        except Exception as e:  # noqa: BLE001 — adapter raises on split failure
+            return ShapingReport(
+                applied=False,
+                byte_index=byte_index,
+                reason=f"split_failed:{type(e).__name__}",
+                byte_emit_ea=target_ea,
+                byte_emit_serial=block.serial,
+            )
+        # Re-resolve the block by EA — should now be 1-way to split_serial.
+        block = adapter.find_block_by_ea(target_ea)
+        if block is None:
+            return ShapingReport(
+                applied=False,
+                byte_index=byte_index,
+                reason="post_split_block_not_resolvable",
+                byte_emit_ea=target_ea,
+            )
+        if block.nsucc != 1:
+            return ShapingReport(
+                applied=False,
+                byte_index=byte_index,
+                reason=f"post_split_not_1way:nsucc={block.nsucc}",
+                byte_emit_ea=target_ea,
+                byte_emit_serial=block.serial,
+            )
+
     pre = _check_preconditions(block)
     if not pre.ok:
         return ShapingReport(
@@ -311,6 +358,7 @@ def isolate_byte_emit_tail(
         byte_emit_ea=target_ea,
         byte_emit_serial=pre_block.serial,
         trampoline_serial=trampoline_serial,
+        split_block_serial=split_serial,
         successor_serial_before=successor_serial,
         successor_npred_before=npred_before,
         successor_npred_after=npred_after,
