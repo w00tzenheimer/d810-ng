@@ -70,6 +70,24 @@ def test_resolver_returns_partial_results():
     assert snap18 is None
 
 
+def test_resolver_picks_snap17_strictly_before_snap18():
+    """Multi-round case: post_bundle_stabilize appears twice, but only
+    the round-1 copy (id=17) is BEFORE the post_d810 capture (id=18).
+    The round-2 replay (id=27) must NOT be selected."""
+    conn = _make_conn_with_snaps([
+        (17, "post_bundle_stabilize"),
+        (18, "GLBOPT1_post_d810"),
+        (27, "post_bundle_stabilize"),  # round-2 replay AFTER snap18
+    ])
+    snap17, snap18 = _resolve_oracle_snap_ids(
+        conn,
+        snap17_labels=("post_bundle_stabilize",),
+        snap18_labels=("GLBOPT1_post_d810",),
+    )
+    assert snap18 == 18
+    assert snap17 == 17  # not 27
+
+
 def test_region_shape_subcommand_lists_persisted_features(tmp_path):
     """Subprocess: python -m d810.core.diag region-shape lists rows."""
     import json
