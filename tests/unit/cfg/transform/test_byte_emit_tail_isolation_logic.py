@@ -133,8 +133,16 @@ class _FakeAdapter:
     insert_calls: list[tuple[int, int]] = field(default_factory=list)
     next_trampoline_serial: int = 999
     npred_after_insert: int = 1  # what successor_npred returns AFTER insertion
+    # split bookkeeping
+    split_calls: list[int] = field(default_factory=list)
+    next_split_serial: int = 888
+    block_after_split: dict[int, BlockView] = field(default_factory=dict)
+    split_should_raise: bool = False
 
     def find_block_by_ea(self, ea):
+        # If a split has been recorded, prefer the post-split mapping.
+        if self.split_calls and ea in self.block_after_split:
+            return self.block_after_split[ea]
         return self.block_at_ea.get(ea)
 
     def insert_trampoline_after(self, *, predecessor_serial, successor_serial):
@@ -143,6 +151,12 @@ class _FakeAdapter:
 
     def successor_npred(self, successor_serial):
         return self.npred_after_insert
+
+    def split_block_at_tail_jcnd(self, block_serial):
+        self.split_calls.append(block_serial)
+        if self.split_should_raise:
+            raise RuntimeError("simulated split failure")
+        return self.next_split_serial
 
 
 def test_isolate_invalid_byte_index_returns_no_op():
