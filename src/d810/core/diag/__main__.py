@@ -1083,25 +1083,38 @@ def _resolve_oracle_snap_ids(
     snap17_labels: tuple[str, ...],
     snap18_labels: tuple[str, ...],
 ) -> tuple[int | None, int | None]:
-    """Resolve snap17 and snap18 IDs by walking label preference lists.
+    """Resolve snap17 and snap18 IDs.
 
-    For each side, returns the highest snapshot.id whose label exactly
-    matches the first label in ``*_labels`` that has any rows, falling
-    through the list. Returns ``(None, None)`` for sides that cannot
-    resolve at all.
+    Snap18 is resolved first via MAX(id) over its preference labels.
+    Snap17 is then resolved as the highest id whose label is in the
+    snap17 preference list AND id < snap18. This handles the common
+    case where a GLBOPT1 pipeline runs more than once and creates
+    multiple `post_bundle_stabilize` rows whose latest copy lives
+    AFTER the actual `GLBOPT1_post_d810` boundary.
     """
 
-    def _resolve_side(labels: tuple[str, ...]) -> int | None:
+    def _max_id_for_labels(
+        labels: tuple[str, ...], upper_bound: int | None,
+    ) -> int | None:
         for label in labels:
-            row = conn.execute(
-                "SELECT MAX(id) FROM snapshots WHERE label = ?",
-                (label,),
-            ).fetchone()
+            if upper_bound is None:
+                row = conn.execute(
+                    "SELECT MAX(id) FROM snapshots WHERE label = ?",
+                    (label,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT MAX(id) FROM snapshots "
+                    "WHERE label = ? AND id < ?",
+                    (label, upper_bound),
+                ).fetchone()
             if row is not None and row[0] is not None:
                 return int(row[0])
         return None
 
-    return _resolve_side(snap17_labels), _resolve_side(snap18_labels)
+    snap18 = _max_id_for_labels(snap18_labels, None)
+    snap17 = _max_id_for_labels(snap17_labels, snap18)
+    return snap17, snap18
 
 
 def _oracle_persist_features(
@@ -1746,7 +1759,10 @@ def main(argv: list[str] | None = None) -> int:
     # region-shape is function-EA-scoped, not snapshot-scoped; the rows
     # carry snapshot_id directly and may not require any snapshots row
     # to exist (e.g. REF-only persistence ahead of D810 runs).
-    if args.command in ("region-shape", "terminal-tail-dce"):
+    if args.command in ("region-shape", "terminal-tail-dce", "region-diff"):
+        # region-diff is function-EA-scoped; it resolves its own snap IDs
+        # via labels and tolerates a sparse / schemaless diag DB by
+        # returning a structured error.
         snap_id = -1
     else:
         snap_id = _resolve_snapshot_id(
