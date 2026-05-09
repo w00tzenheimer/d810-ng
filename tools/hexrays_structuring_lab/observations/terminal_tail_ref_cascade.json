@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "case_id": "terminal_tail_ref_cascade",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 22,
+      "MMAT_PREOPTIMIZED": 22,
+      "MMAT_LOCOPT": 22
+    },
+    "guard_serials": [
+      1,
+      4,
+      7,
+      10,
+      13,
+      16
+    ],
+    "guard_relative_start_eas": [
+      "0x0",
+      "0x4d",
+      "0x87",
+      "0xc1",
+      "0xfb",
+      "0x132"
+    ],
+    "early_return_relative_start_eas": [
+      "0x3e",
+      "0x78",
+      "0xb2",
+      "0xec",
+      "0x126",
+      "0x15d"
+    ],
+    "continue_relative_start_eas": [
+      "0x4b",
+      "0x85",
+      "0xbf",
+      "0xf9",
+      "0x130",
+      "0x167"
+    ],
+    "guard_continue_paths_relative_start_eas": [
+      [
+        "0x4b",
+        "0x4d"
+      ],
+      [
+        "0x85",
+        "0x87"
+      ],
+      [
+        "0xbf",
+        "0xc1"
+      ],
+      [
+        "0xf9",
+        "0xfb"
+      ],
+      [
+        "0x130",
+        "0x132"
+      ],
+      [
+        "0x167",
+        "0x169"
+      ]
+    ],
+    "final_emit_serial": 19,
+    "final_emit_relative_start_ea": "0x169",
+    "return_epilogue_serial": 20,
+    "return_epilogue_relative_start_ea": "0x18a",
+    "return_epilogue_pred_relative_start_eas": [
+      "0x3e",
+      "0x78",
+      "0xb2",
+      "0xec",
+      "0x126",
+      "0x15d",
+      "0x169"
+    ],
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        4,
+        4,
+        4,
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x3e": [
+        4,
+        4,
+        55
+      ],
+      "0x4d": [
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x78": [
+        4,
+        4,
+        55
+      ],
+      "0x87": [
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0xb2": [
+        4,
+        4,
+        55
+      ],
+      "0xc1": [
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0xec": [
+        4,
+        4,
+        55
+      ],
+      "0xfb": [
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x126": [
+        4,
+        4,
+        55
+      ],
+      "0x132": [
+        12,
+        1,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x15d": [
+        4,
+        4,
+        55
+      ],
+      "0x169": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        12,
+        1,
+        9,
+        4,
+        4
+      ],
+      "0x18a": [
+        9
+      ]
+    }
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_terminal_tail_ref_cascade_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_terminal_tail_ref_cascade_GLBOPT1",
+    "from_block_count": 22,
+    "to_block_count": 16,
+    "vanished_count": 6,
+    "disposition_counts": {
+      "absorbed": 4,
+      "synthesized_only": 2
+    },
+    "cross_tab": {
+      "empty": {
+        "synthesized_only": 2
+      },
+      "has_content": {
+        "absorbed": 4
+      }
+    },
+    "outcome_class": "clean_structured_compaction",
+    "classification": "validated REF-like terminal tail compacts from 22 LOCOPT blocks to 16 GLBOPT1 blocks while preserving unchanged nested early-return pseudocode with seven byte emits; this is the current good construction oracle"
+  },
+  "pseudocode": {
+    "before_lines": 54,
+    "after_lines": 54,
+    "changed": false,
+    "shape": "nested early-return byte-emission cascade with no goto scaffolding",
+    "before_metrics": {
+      "returns": 7,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 6
+    },
+    "after_metrics": {
+      "returns": 7,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 6
+    }
+  },
+  "commands": {
+    "validate_cfg": "python3 -m tools.hexrays_structuring_lab validate-cfg terminal_tail_ref_cascade",
+    "dump": "python3 -m tools.hexrays_structuring_lab command terminal_tail_ref_cascade",
+    "summary": "python3 -m tools.hexrays_structuring_lab summarize --db .tmp/logs/d810_logs/000000018000b290_1778348900_33.diag.sqlite3 --from-label dump_raw_hexrays_lab_terminal_tail_ref_cascade_LOCOPT --to-label dump_raw_hexrays_lab_terminal_tail_ref_cascade_GLBOPT1 --cfg-validation .tmp/hexrays_structuring_lab/cfg_validation/terminal_tail_ref_cascade.json --require-cfg-validation"
+  }
+}

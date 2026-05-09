@@ -234,3 +234,343 @@ shell:
     }
     goto boundary;
 }
+
+/*
+ * Intended CFG:
+ *   byte0 -> guard0 -> byte1 -> guard1 -> ... -> byte6 -> done
+ *
+ * This is the REF-like oracle for the terminal-byte tail. Each byte store is
+ * followed by an early-return guard before the next byte is emitted. The lab
+ * uses compiled-CFG validation to prove the stores and guards remain an
+ * acyclic cascade before treating Hex-Rays output as evidence.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_terminal_tail_ref_cascade(volatile uint8_t *base, int token)
+{
+    int cursor = token;
+
+byte0:
+    base[0] = (uint8_t)(cursor + 0x10);
+    cursor += 1;
+    if ((g_hexrays_lab_sink ^ cursor) == 0x7010) {
+        return 0;
+    }
+
+byte1:
+    base[1] = (uint8_t)(cursor + 0x21);
+    cursor += 3;
+    if ((g_hexrays_lab_sink + cursor) == 0x7021) {
+        return 1;
+    }
+
+byte2:
+    base[2] = (uint8_t)(cursor + 0x32);
+    cursor += 5;
+    if ((g_hexrays_lab_sink - cursor) == 0x7032) {
+        return 2;
+    }
+
+byte3:
+    base[3] = (uint8_t)(cursor + 0x43);
+    cursor += 7;
+    if ((g_hexrays_lab_sink ^ cursor) == 0x7043) {
+        return 3;
+    }
+
+byte4:
+    base[4] = (uint8_t)(cursor + 0x54);
+    cursor += 11;
+    if ((g_hexrays_lab_sink + cursor) == 0x7054) {
+        return 4;
+    }
+
+byte5:
+    base[5] = (uint8_t)(cursor + 0x65);
+    cursor += 13;
+    if ((g_hexrays_lab_sink - cursor) == 0x7065) {
+        return 5;
+    }
+
+byte6:
+    base[6] = (uint8_t)(cursor + 0x76);
+    g_hexrays_lab_sink = cursor;
+    return 7;
+}
+
+/*
+ * Intended CFG:
+ *   byte[k] -> shared_guard -> byte[k + 1]
+ *
+ * This is the D810-like bad shape. The byte stores are distinct, but all
+ * intermediate exits route through one convergence block that decides whether
+ * to return early or continue to the next byte.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_terminal_tail_shared_convergence(
+    volatile uint8_t *base,
+    int token
+)
+{
+    int cursor = token;
+    int stage = 0;
+
+    goto byte0;
+
+shared_guard:
+    if ((g_hexrays_lab_sink ^ cursor ^ stage) == 0x7100) {
+        return stage;
+    }
+    if (stage == 0) {
+        goto byte1;
+    }
+    if (stage == 1) {
+        goto byte2;
+    }
+    if (stage == 2) {
+        goto byte3;
+    }
+    if (stage == 3) {
+        goto byte4;
+    }
+    if (stage == 4) {
+        goto byte5;
+    }
+    if (stage == 5) {
+        goto byte6;
+    }
+    g_hexrays_lab_sink = cursor;
+    return 7;
+
+byte0:
+    base[0] = (uint8_t)(cursor + 0x10);
+    cursor += 1;
+    stage = 0;
+    goto shared_guard;
+
+byte1:
+    base[1] = (uint8_t)(cursor + 0x21);
+    cursor += 3;
+    stage = 1;
+    goto shared_guard;
+
+byte2:
+    base[2] = (uint8_t)(cursor + 0x32);
+    cursor += 5;
+    stage = 2;
+    goto shared_guard;
+
+byte3:
+    base[3] = (uint8_t)(cursor + 0x43);
+    cursor += 7;
+    stage = 3;
+    goto shared_guard;
+
+byte4:
+    base[4] = (uint8_t)(cursor + 0x54);
+    cursor += 11;
+    stage = 4;
+    goto shared_guard;
+
+byte5:
+    base[5] = (uint8_t)(cursor + 0x65);
+    cursor += 13;
+    stage = 5;
+    goto shared_guard;
+
+byte6:
+    base[6] = (uint8_t)(cursor + 0x76);
+    stage = 6;
+    goto shared_guard;
+}
+
+/*
+ * Intended CFG:
+ *   emit[k] -> check[k] -> return/emit[k + 1]
+ *
+ * This isolates the Track B v2 hypothesis: split each byte emission from its
+ * guard so Hex-Rays sees explicit emit/check pairs instead of a shared tail.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_terminal_tail_split_guard(volatile uint8_t *base, int token)
+{
+    int cursor = token;
+
+emit0:
+    base[0] = (uint8_t)(cursor + 0x10);
+    cursor += 1;
+    goto check0;
+
+check0:
+    if ((g_hexrays_lab_sink ^ cursor) == 0x7200) {
+        return 0;
+    }
+    goto emit1;
+
+emit1:
+    base[1] = (uint8_t)(cursor + 0x21);
+    cursor += 3;
+    goto check1;
+
+check1:
+    if ((g_hexrays_lab_sink + cursor) == 0x7201) {
+        return 1;
+    }
+    goto emit2;
+
+emit2:
+    base[2] = (uint8_t)(cursor + 0x32);
+    cursor += 5;
+    goto check2;
+
+check2:
+    if ((g_hexrays_lab_sink - cursor) == 0x7202) {
+        return 2;
+    }
+    goto emit3;
+
+emit3:
+    base[3] = (uint8_t)(cursor + 0x43);
+    cursor += 7;
+    goto check3;
+
+check3:
+    if ((g_hexrays_lab_sink ^ cursor) == 0x7203) {
+        return 3;
+    }
+    goto emit4;
+
+emit4:
+    base[4] = (uint8_t)(cursor + 0x54);
+    cursor += 11;
+    goto check4;
+
+check4:
+    if ((g_hexrays_lab_sink + cursor) == 0x7204) {
+        return 4;
+    }
+    goto emit5;
+
+emit5:
+    base[5] = (uint8_t)(cursor + 0x65);
+    cursor += 13;
+    goto check5;
+
+check5:
+    if ((g_hexrays_lab_sink - cursor) == 0x7205) {
+        return 5;
+    }
+    goto emit6;
+
+emit6:
+    base[6] = (uint8_t)(cursor + 0x76);
+    g_hexrays_lab_sink = cursor;
+    return 7;
+}
+
+/*
+ * Intended CFG:
+ *   byte[k] -> continuation[k] -> shared_guard -> byte[k + 1]
+ *
+ * This tests topology-only tail distinction. Each byte emit has its own
+ * trivial continuation before the shared guard, without adding helper calls or
+ * volatile side-effect anchors beyond the byte store itself.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_terminal_tail_unique_continuation(
+    volatile uint8_t *base,
+    int token
+)
+{
+    int cursor = token;
+    int stage = 0;
+    int marker = token;
+
+    goto byte0;
+
+shared_guard:
+    if ((g_hexrays_lab_sink + marker + stage) == 0x7300) {
+        return stage;
+    }
+    if (stage == 0) {
+        goto byte1;
+    }
+    if (stage == 1) {
+        goto byte2;
+    }
+    if (stage == 2) {
+        goto byte3;
+    }
+    if (stage == 3) {
+        goto byte4;
+    }
+    if (stage == 4) {
+        goto byte5;
+    }
+    if (stage == 5) {
+        goto byte6;
+    }
+    g_hexrays_lab_sink = marker;
+    return 7;
+
+byte0:
+    base[0] = (uint8_t)(cursor + 0x10);
+    cursor += 1;
+    stage = 0;
+    goto cont0;
+cont0:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte1:
+    base[1] = (uint8_t)(cursor + 0x21);
+    cursor += 3;
+    stage = 1;
+    goto cont1;
+cont1:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte2:
+    base[2] = (uint8_t)(cursor + 0x32);
+    cursor += 5;
+    stage = 2;
+    goto cont2;
+cont2:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte3:
+    base[3] = (uint8_t)(cursor + 0x43);
+    cursor += 7;
+    stage = 3;
+    goto cont3;
+cont3:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte4:
+    base[4] = (uint8_t)(cursor + 0x54);
+    cursor += 11;
+    stage = 4;
+    goto cont4;
+cont4:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte5:
+    base[5] = (uint8_t)(cursor + 0x65);
+    cursor += 13;
+    stage = 5;
+    goto cont5;
+cont5:
+    marker = cursor + stage;
+    goto shared_guard;
+
+byte6:
+    base[6] = (uint8_t)(cursor + 0x76);
+    stage = 6;
+    goto cont6;
+cont6:
+    marker = cursor + stage;
+    goto shared_guard;
+}

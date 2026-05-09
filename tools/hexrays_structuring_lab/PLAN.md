@@ -321,6 +321,85 @@ Candidate next patterns:
 
 Do not add these until the first two patterns can run and summarize cleanly.
 
+## Terminal-Tail Experiment Set
+
+Goal:
+
+```text
+Find the smallest microblock construction that makes Hex-Rays preserve a
+terminal byte-emission cascade:
+
+byte0 -> guard -> byte1 -> guard -> ... -> byte6 -> return
+
+The lab should identify the construction invariant d810 must emit. It should
+not copy REF blocks into d810.
+```
+
+Planned cases:
+
+- `terminal_tail_ref_cascade`: REF-like oracle with explicit byte emits and
+  early-return guards in an acyclic cascade.
+- `terminal_tail_shared_convergence`: D810-like bad shape where multiple byte
+  emits feed a shared convergence/guard body.
+- `terminal_tail_split_guard`: emit block separated from guard block to test
+  the Track B v2 split-guard hypothesis.
+- `terminal_tail_unique_continuation`: each emit flows through a unique trivial
+  continuation before the shared guard, testing topology-only tail distinction.
+
+Execution loop:
+
+```bash
+python3 -m tools.hexrays_structuring_lab show terminal_tail_ref_cascade
+python3 -m tools.hexrays_structuring_lab validate-cfg terminal_tail_ref_cascade
+```
+
+Run the printed Docker validation command only after rebuilding the sample DLL.
+If compiled-CFG validation fails, the fixture is invalid evidence. Do not run a
+structuring conclusion from source shape alone.
+
+After validation passes:
+
+```bash
+python3 -m tools.hexrays_structuring_lab command terminal_tail_ref_cascade
+DB=$(ls -t .tmp/logs/d810_logs/*.diag.sqlite3 | head -1)
+python3 -m tools.hexrays_structuring_lab summarize \
+  --db "$DB" \
+  --require-cfg-validation
+```
+
+Record each durable observation under:
+
+```text
+tools/hexrays_structuring_lab/observations/<case>.json
+```
+
+Measurements:
+
+- LOCOPT block count.
+- GLBOPT1 block count.
+- Whether `byte_emit[0..6]` remains present after GLBOPT1.
+- Whether `early_return_guard[0..5]` remains present.
+- Whether the terminal region is acyclic.
+- Largest SCC size.
+- Whether pseudocode shows a readable unrolled cascade.
+- Whether Hex-Rays folds the tail into a shared label/body.
+
+Decision rule:
+
+```text
+REF-like fixture survives, shared convergence folds:
+  d810 should lower terminal tails into the surviving cascade shape.
+
+split_guard survives:
+  Track B v2 is directionally right, but must be emitted at the correct point.
+
+unique_continuation survives:
+  topology-only shaping is viable; target the shared convergence corridor.
+
+only live_anchor survives:
+  topology is insufficient; the d810 fix needs a dataflow/liveness anchor.
+```
+
 ## Immediate Next Step
 
 Implement the minimal registry and CLI around two cases:
