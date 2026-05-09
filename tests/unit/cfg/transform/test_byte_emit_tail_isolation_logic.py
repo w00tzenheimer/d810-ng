@@ -275,3 +275,141 @@ def test_parse_tail_distinct_byte_env_strips_whitespace():
         parse_tail_distinct_byte_env,
     )
     assert parse_tail_distinct_byte_env("  2  ") == 2
+
+
+# ----- duplicate_convergence_for_byte_path orchestrator -----
+
+
+from d810.cfg.transform.byte_emit_tail_isolation import (
+    duplicate_convergence_for_byte_path,
+)
+
+
+@dataclass
+class _FakeConvergenceAdapter(_FakeAdapter):
+    has_m_stx: dict[int, bool] = field(default_factory=dict)
+    forward_walk_result: tuple[int | None, str] = (None, "")
+    clone_calls: list[tuple[int, int]] = field(default_factory=list)
+    next_clone_serial: int = 777
+
+    def block_has_m_stx(self, block_serial):
+        return self.has_m_stx.get(block_serial, False)
+
+    def forward_walk_until_convergence(self, start_serial, *, max_depth=8):
+        return self.forward_walk_result
+
+    def clone_convergence_for_byte_path(
+        self, *, predecessor_serial, convergence_serial,
+    ):
+        self.clone_calls.append((predecessor_serial, convergence_serial))
+        return self.next_clone_serial
+
+
+def test_duplicate_convergence_byte6_happy_path_clones_and_reports():
+    fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
+    pre_block = BlockView(
+        serial=217, start_ea=0x18001687C, nsucc=1,
+        succ_serial=218, succ_npred=9, tail_kind="goto",
+    )
+    adapter = _FakeConvergenceAdapter(
+        block_at_ea={0x18001687C: pre_block},
+        has_m_stx={217: True},
+        forward_walk_result=(218, "ok"),
+        next_clone_serial=777,
+    )
+    res = duplicate_convergence_for_byte_path(
+        byte_index=6, fact_view=fv, adapter=adapter,
+    )
+    assert res.applied is True
+    assert res.reason == "ok"
+    assert res.byte_index == 6
+    assert res.byte_emit_serial == 217
+    assert res.convergence_serial == 218
+    assert res.clone_serial == 777
+    assert adapter.clone_calls == [(217, 218)]
+
+
+def test_duplicate_convergence_rejects_non_byte6():
+    fv = _FakeFactView(rows=[_row(2, 5, ea="0x0000000180012DF0")])
+    res = duplicate_convergence_for_byte_path(
+        byte_index=2, fact_view=fv, adapter=_FakeConvergenceAdapter(),
+    )
+    assert res.applied is False
+    assert res.reason == "probe_byte6_only"
+
+
+def test_duplicate_convergence_rejects_no_fact():
+    res = duplicate_convergence_for_byte_path(
+        byte_index=6, fact_view=_FakeFactView(rows=[]),
+        adapter=_FakeConvergenceAdapter(),
+    )
+    assert res.applied is False
+    assert res.reason == "no_fact"
+
+
+def test_duplicate_convergence_rejects_emit_block_lacks_m_stx():
+    fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
+    pre_block = BlockView(
+        serial=217, start_ea=0x18001687C, nsucc=1,
+        succ_serial=218, succ_npred=9, tail_kind="goto",
+    )
+    adapter = _FakeConvergenceAdapter(
+        block_at_ea={0x18001687C: pre_block},
+        has_m_stx={217: False},  # NO m_stx
+        forward_walk_result=(218, "ok"),
+    )
+    res = duplicate_convergence_for_byte_path(
+        byte_index=6, fact_view=fv, adapter=adapter,
+    )
+    assert res.applied is False
+    assert res.reason == "no_m_stx_in_emit"
+    assert adapter.clone_calls == []
+
+
+def test_duplicate_convergence_rejects_no_convergence_in_walk():
+    fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
+    pre_block = BlockView(
+        serial=217, start_ea=0x18001687C, nsucc=1,
+        succ_serial=218, succ_npred=1, tail_kind="goto",
+    )
+    adapter = _FakeConvergenceAdapter(
+        block_at_ea={0x18001687C: pre_block},
+        has_m_stx={217: True},
+        forward_walk_result=(None, "no_npred_gt_1_within_depth"),
+    )
+    res = duplicate_convergence_for_byte_path(
+        byte_index=6, fact_view=fv, adapter=adapter,
+    )
+    assert res.applied is False
+    assert res.reason == "no_npred_gt_1_within_depth"
+    assert adapter.clone_calls == []
+
+
+def test_duplicate_convergence_rejects_no_return_reachable():
+    fv = _FakeFactView(rows=[_row(6, 5, ea="0x000000018001687C")])
+    pre_block = BlockView(
+        serial=217, start_ea=0x18001687C, nsucc=1,
+        succ_serial=218, succ_npred=9, tail_kind="goto",
+    )
+    adapter = _FakeConvergenceAdapter(
+        block_at_ea={0x18001687C: pre_block},
+        has_m_stx={217: True},
+        forward_walk_result=(None, "convergence_does_not_reach_return"),
+    )
+    res = duplicate_convergence_for_byte_path(
+        byte_index=6, fact_view=fv, adapter=adapter,
+    )
+    assert res.applied is False
+    assert res.reason == "convergence_does_not_reach_return"
+
+
+def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
+    from d810.cfg.transform.byte_emit_tail_isolation import (
+        parse_tail_duplicate_convergence_byte_env,
+    )
+    assert parse_tail_duplicate_convergence_byte_env("6") == 6
+    assert parse_tail_duplicate_convergence_byte_env("0") is None
+    assert parse_tail_duplicate_convergence_byte_env("2") is None
+    assert parse_tail_duplicate_convergence_byte_env("") is None
+    assert parse_tail_duplicate_convergence_byte_env(None) is None
+    assert parse_tail_duplicate_convergence_byte_env("xyz") is None
