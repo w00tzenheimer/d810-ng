@@ -1691,6 +1691,35 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_region_shape = sub.add_parser(
+        "region-shape",
+        parents=[common],
+        help="List persisted region_shape_features rows for a function.",
+    )
+    p_region_shape.add_argument(
+        "--func-ea",
+        required=True,
+        help="Function EA in hex (e.g. 0x0000000180012df0).",
+    )
+    p_region_shape.add_argument(
+        "--source",
+        choices=("REF", "D810_SNAPSHOT"),
+        default=None,
+        help="Filter by source (REF or D810_SNAPSHOT).",
+    )
+    p_region_shape.add_argument(
+        "--snapshot-id",
+        type=int,
+        default=None,
+        help="Filter by snapshot_id.",
+    )
+    p_region_shape.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit JSON instead of a table.",
+    )
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -1698,12 +1727,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     conn = sqlite3.connect(args.db)
-    snap_id = _resolve_snapshot_id(
-        conn,
-        args.snapshot,
-        maturity=getattr(args, "maturity", None),
-        phase=getattr(args, "phase", None),
-    )
+    # region-shape is function-EA-scoped, not snapshot-scoped; the rows
+    # carry snapshot_id directly and may not require any snapshots row
+    # to exist (e.g. REF-only persistence ahead of D810 runs).
+    if args.command == "region-shape":
+        snap_id = -1
+    else:
+        snap_id = _resolve_snapshot_id(
+            conn,
+            args.snapshot,
+            maturity=getattr(args, "maturity", None),
+            phase=getattr(args, "phase", None),
+        )
 
     if args.command == "chain":
         print(_snapshot_header(conn, snap_id))
@@ -2267,6 +2302,44 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n# {sel_count} selected / {rej_count} rejected "
                 f"(persisted={args.persist}, max_depth={args.max_depth})"
             )
+    elif args.command == "region-shape":
+        # Layer-safe: only normalizes the func_ea string locally; no cfg import.
+        func_ea = args.func_ea.strip().lower()
+        if not func_ea.startswith("0x"):
+            func_ea = "0x" + func_ea
+        clauses = ["func_ea_hex = ?"]
+        params: list = [func_ea]
+        if args.source:
+            clauses.append("source = ?")
+            params.append(args.source)
+        if args.snapshot_id is not None:
+            clauses.append("snapshot_id = ?")
+            params.append(int(args.snapshot_id))
+        sql = (
+            "SELECT source, snapshot_id, region, feature, value_text, "
+            "evidence_json FROM region_shape_features WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY source, snapshot_id, region, feature"
+        )
+        rows = list(conn.execute(sql, params))
+        if args.json_output:
+            out = [
+                {
+                    "source": r[0],
+                    "snapshot_id": r[1],
+                    "region": r[2],
+                    "feature": r[3],
+                    "value_text": r[4],
+                    "evidence": json.loads(r[5]) if r[5] else {},
+                }
+                for r in rows
+            ]
+            print(json.dumps(out, indent=2, sort_keys=True))
+        else:
+            print("source\tsnapshot_id\tregion\tfeature\tvalue")
+            for r in rows:
+                print(f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
+            print(f"\n# {len(rows)} row(s) shown")
 
     conn.close()
     return 0
