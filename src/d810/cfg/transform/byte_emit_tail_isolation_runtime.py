@@ -102,10 +102,12 @@ class LiveMbaAdapter:
     Imports IDA SDK lazily inside methods so this module can be imported
     at unit-test time before IDA is available.
 
-    The mutator (``insert_trampoline_after``) is NOT yet wired — it
-    raises ``NotImplementedError``.  See Track B.3 for the real IDA
-    SDK call (likely ``mba.insert_block`` + ``copy_block`` rewire,
-    plus a tail ``m_goto`` to the original successor).
+    The mutator (``insert_trampoline_after``) clones the predecessor at
+    the end of the MBA via ``mba.copy_block``, NOPs all inherited
+    instructions, appends a single ``m_goto`` to the successor, and
+    rewires pred/succ sets.  Mid-CFG ``mba.insert_block`` is avoided
+    because it corrupts IDA internal state (see
+    ``abc_block_splitter.py:669``).
     """
 
     def __init__(self, mba) -> None:  # mba: ida_hexrays.mba_t
@@ -182,17 +184,123 @@ class LiveMbaAdapter:
         successor; the trampoline contains exactly one ``m_goto`` to
         ``successor_serial``.
 
-        NOT YET IMPLEMENTED.  See Track B.3 — needs the IDA SDK call
-        family ``mba.insert_block(serial)`` + ``mblock_t.insert_into_block``
-        for an ``m_goto`` tail, plus rewire of the predecessor's existing
-        ``m_goto`` operand (or ``succset``) to point at the new
-        trampoline serial.  Reference pattern lives in
-        ``abc_block_splitter.py:745``.
+        Topology before:
+            predecessor -> successor
+        Topology after:
+            predecessor -> trampoline -> successor
+
+        Implementation notes:
+        - Uses ``mba.copy_block(blk, mba.qty - 1)`` to append the new
+          block at the end of the MBA. ``mba.insert_block(serial)`` in
+          mid-CFG positions causes IDA internal state corruption and
+          subsequent ``mba.verify()`` failures (see
+          ``abc_block_splitter.py:669`` for the historical note).
+        - The cloned block inherits the predecessor's contents; we NOP
+          every instruction so the trampoline carries zero semantics.
+        - We rely on the precondition gate (``_check_preconditions``)
+          to ensure ``nsucc==1`` and ``tail_kind in {goto, fallthrough}``;
+          this method does not re-validate.
+        - Cannot import from ``d810.hexrays`` (layered-architecture
+          contract puts ``d810.cfg`` *below* ``d810.hexrays``), so the
+          mechanics here mirror — but do not call — the helpers in
+          ``hexrays.mutation.cfg_mutations.insert_nop_blk``.
+
+        Raises ``RuntimeError`` if the SDK call family fails part-way
+        through; the caller (``maybe_run_tail_distinct``) catches and
+        logs.  Best-effort atomicity: a failed
+        ``copy_block`` / ``predset`` op aborts before any pred/succ
+        rewiring, so the mba is left untouched on the typical failure.
         """
-        raise NotImplementedError(
-            "LiveMbaAdapter.insert_trampoline_after not yet wired — "
-            "see Track B.3 follow-up (mba.insert_block + m_goto rewire)"
-        )
+        import ida_hexrays  # lazy import — module must load without IDA
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if pred_blk is None or succ_blk is None:
+            raise RuntimeError(
+                "insert_trampoline_after: cannot resolve "
+                f"pred={predecessor_serial} or succ={successor_serial}"
+            )
+
+        # 1. Clone predecessor at the end of the MBA (just before the
+        #    dummy last block). copy_block(ref, dest_serial) inserts the
+        #    new block *before* dest_serial in the block list.
+        end_serial = int(mba.qty) - 1
+        tramp = mba.copy_block(pred_blk, end_serial)
+        if tramp is None:
+            raise RuntimeError(
+                "insert_trampoline_after: mba.copy_block failed for "
+                f"pred={predecessor_serial}"
+            )
+
+        # 2. NOP every instruction the clone inherited so the trampoline
+        #    carries zero semantics.
+        cur = tramp.head
+        while cur is not None:
+            tramp.make_nop(cur)
+            cur = cur.next
+
+        # 3. Mark as a 1-way block and clear stale pred/succ entries
+        #    that copy_block carried over from the source block.
+        tramp.type = ida_hexrays.BLT_1WAY
+        for stale_succ in [int(x) for x in tramp.succset]:
+            tramp.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(tramp.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in tramp.predset]:
+            tramp.predset._del(stale_pred)
+
+        # 4. Append a single m_goto to ``successor_serial`` as the
+        #    trampoline's only live instruction.
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        goto_ins = ida_hexrays.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        tramp.insert_into_block(goto_ins, tramp.tail)
+        # nop-then-mutate avoids INTERR 52123 (see insert_goto_instruction)
+        tramp.make_nop(tramp.tail)
+        goto_ins.opcode = ida_hexrays.m_goto
+        goto_ins.l = ida_hexrays.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = ida_hexrays.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = ida_hexrays.mop_t()
+        goto_ins.d.erase()
+        tramp.flags |= ida_hexrays.MBL_GOTO
+
+        # 5. Wire trampoline -> successor.
+        tramp.succset.push_back(int(successor_serial))
+
+        # 6. Rewire predecessor: its sole successor was successor_serial;
+        #    now it must be tramp.serial.  The precondition gate already
+        #    ensured nsucc == 1 and tail_kind in {goto, fallthrough}.
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(tramp.serial))
+        if (
+            pred_blk.tail is not None
+            and pred_blk.tail.opcode == ida_hexrays.m_goto
+            and pred_blk.tail.l is not None
+            and pred_blk.tail.l.t == ida_hexrays.mop_b
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(tramp.serial))
+        pred_blk.mark_lists_dirty()
+
+        # 7. Update successor's predset: predecessor no longer points at
+        #    it directly; the trampoline does.
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(tramp.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        # 8. Trampoline's own pred set: predecessor.
+        tramp.predset.push_back(int(predecessor_serial))
+        tramp.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(tramp.serial)
 
     def successor_npred(self, successor_serial: int) -> int:
         mba = self._mba
