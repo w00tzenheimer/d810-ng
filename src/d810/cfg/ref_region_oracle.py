@@ -363,23 +363,27 @@ _REF_FEATURE_TABLE: tuple[tuple[FeatureRegion, str, object, str], ...] = (
 )
 
 
-_register_spec(
-    RefSpec(
-        func_ea_hex="0x0000000180012df0",
-        func_name="sub_7FFD3338C040",
-        feature_table=_REF_FEATURE_TABLE,
-        snap17_label_preferences=(
-            "post_bundle_stabilize",
-            "post_pipeline",
-            "handler_chain_composer_post_apply",
-        ),
-        snap18_label_preferences=(
-            "maturity_MMAT_GLBOPT1_post_d810",
-            "GLBOPT1_post_d810",
-            "post_d810",
-        ),
+for _sub_7ffd_ea in (
+    "0x0000000180012df0",   # earlier binary build
+    "0x00000001800134e0",   # current binary build (post 2026-05-09 rebuild)
+):
+    _register_spec(
+        RefSpec(
+            func_ea_hex=_sub_7ffd_ea,
+            func_name="sub_7FFD3338C040",
+            feature_table=_REF_FEATURE_TABLE,
+            snap17_label_preferences=(
+                "post_bundle_stabilize",
+                "post_pipeline",
+                "handler_chain_composer_post_apply",
+            ),
+            snap18_label_preferences=(
+                "maturity_MMAT_GLBOPT1_post_d810",
+                "GLBOPT1_post_d810",
+                "post_d810",
+            ),
+        )
     )
-)
 
 
 def ref_features(spec: RefSpec) -> Iterable[RegionFeature]:
