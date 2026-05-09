@@ -20,9 +20,12 @@ Strictly read-only. No CFG edits, no behavior change.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
 
+from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.core.logging import getLogger
 from d810.core.typing import Iterable, Mapping
 
@@ -505,6 +508,71 @@ def format_diff_table(diffs: tuple[FeatureDiff, ...]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Diag DB adapter: build BlockView map for a snapshot
+# ---------------------------------------------------------------------------
+
+
+def collect_block_views_for_snapshot(
+    conn: sqlite3.Connection, *, snapshot_id: int,
+) -> dict[int, BlockView]:
+    """Build BlockView objects for every block at one snapshot.
+
+    Pure adapter over the diag DB ``blocks`` and ``instructions`` tables.
+    Computes per-block SCC membership and size via ``compute_live_cfg_sccs``.
+    """
+    raw_blocks: dict[int, tuple[int, int, list[int], list[int], str]] = {}
+    for row in conn.execute(
+        "SELECT serial, start_ea_i64, end_ea_i64, preds, succs, type_name "
+        "FROM blocks WHERE snapshot_id=?",
+        (snapshot_id,),
+    ):
+        serial, start_ea, end_ea, preds_json, succs_json, type_name = row
+        preds = json.loads(preds_json or "[]")
+        succs = json.loads(succs_json or "[]")
+        raw_blocks[int(serial)] = (
+            int(start_ea or 0),
+            int(end_ea or 0),
+            list(int(p) for p in preds),
+            list(int(s) for s in succs),
+            str(type_name or ""),
+        )
+
+    block_succs = {s: tuple(b[3]) for s, b in raw_blocks.items()}
+    sccs = compute_live_cfg_sccs(block_succs) if block_succs else ()
+    cyclic = nontrivial_sccs(sccs) if sccs else ()
+    block_to_size: dict[int, int] = {}
+    for s in cyclic:
+        for b in s.blocks:
+            block_to_size[b] = s.size
+
+    instructions_by_block: dict[int, list[InstructionView]] = {}
+    for row in conn.execute(
+        "SELECT block_serial, ord, opcode_name FROM instructions "
+        "WHERE snapshot_id=? ORDER BY block_serial, ord",
+        (snapshot_id,),
+    ):
+        bs, _ord, opcode = row
+        instructions_by_block.setdefault(int(bs), []).append(
+            InstructionView(opcode_name=str(opcode or ""))
+        )
+
+    result: dict[int, BlockView] = {}
+    for serial, (start_ea, end_ea, preds, succs, type_name) in raw_blocks.items():
+        result[serial] = BlockView(
+            serial=serial,
+            start_ea=start_ea,
+            end_ea=end_ea,
+            instructions=tuple(instructions_by_block.get(serial, ())),
+            preds=tuple(preds),
+            succs=tuple(succs),
+            in_scc=serial in block_to_size,
+            scc_size=block_to_size.get(serial),
+            block_type=type_name,
+        )
+    return result
+
+
 __all__ = [
     "BlockView",
     "D810Evidence",
@@ -518,6 +586,7 @@ __all__ = [
     "RegionFeature",
     "build_d810_evidence",
     "build_ref_evidence_from_spec_path",
+    "collect_block_views_for_snapshot",
     "d810_features",
     "diff_features",
     "format_diff_table",

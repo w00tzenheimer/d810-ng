@@ -170,3 +170,76 @@ def test_evidence_required_fields_validated_on_construction():
             block_type="BLT_1WAY",
             region_role="terminal_tail.byte_emit",
         )
+
+
+def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
+    import sqlite3
+    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
+        CREATE TABLE blocks (
+            snapshot_id INTEGER, serial INTEGER, start_ea_i64 INTEGER,
+            end_ea_i64 INTEGER, npred INTEGER, nsucc INTEGER,
+            preds TEXT, succs TEXT, type_name TEXT
+        );
+        CREATE TABLE instructions (
+            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            opcode_name TEXT
+        );
+        INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
+        INSERT INTO blocks (snapshot_id, serial, start_ea_i64, end_ea_i64,
+                            npred, nsucc, preds, succs, type_name)
+        VALUES (17, 161, 6442527728, 6442527760, 2, 1, '[120,142]', '[218]',
+                'BLT_1WAY');
+        INSERT INTO instructions (snapshot_id, block_serial, ord, opcode_name)
+        VALUES (17, 161, 0, 'm_mov'),
+               (17, 161, 1, 'm_stx_byte'),
+               (17, 161, 2, 'm_goto');
+        """
+    )
+    conn.commit()
+
+    blocks = collect_block_views_for_snapshot(conn, snapshot_id=17)
+    assert 161 in blocks
+    block = blocks[161]
+    assert block.serial == 161
+    assert block.preds == (120, 142)
+    assert block.succs == (218,)
+    assert tuple(i.opcode_name for i in block.instructions) == (
+        "m_mov", "m_stx_byte", "m_goto"
+    )
+    assert block.block_type == "BLT_1WAY"
+
+
+def test_collect_block_views_includes_scc_metadata():
+    import sqlite3
+    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
+        CREATE TABLE blocks (
+            snapshot_id INTEGER, serial INTEGER, start_ea_i64 INTEGER,
+            end_ea_i64 INTEGER, npred INTEGER, nsucc INTEGER,
+            preds TEXT, succs TEXT, type_name TEXT
+        );
+        CREATE TABLE instructions (
+            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            opcode_name TEXT
+        );
+        INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
+        INSERT INTO blocks VALUES (17, 9,  100, 110, 1, 2, '[10]', '[10,9]',  'BLT_2WAY');
+        INSERT INTO blocks VALUES (17, 10, 110, 120, 1, 1, '[9]',  '[9]',     'BLT_1WAY');
+        """
+    )
+    conn.commit()
+
+    blocks = collect_block_views_for_snapshot(conn, snapshot_id=17)
+    assert blocks[9].in_scc is True
+    assert blocks[9].scc_size == 2
+    assert blocks[10].in_scc is True
+    assert blocks[10].scc_size == 2
