@@ -166,3 +166,44 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
     payload = json.loads(r.stdout)
     assert isinstance(payload, list)
     assert len(payload) == 3
+
+
+def test_region_diff_happy_path_writes_artifact(tmp_path):
+    """End-to-end: subprocess `python -m d810.core.diag region-diff`."""
+    import os
+    import subprocess
+    import sys
+    from d810.core.diag.schema import create_tables
+
+    db = tmp_path / "live.diag.sqlite3"
+    conn = sqlite3.connect(str(db))
+    create_tables(conn)
+    # snapshots row needs all NOT NULL columns:
+    # id, label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp.
+    for snap_id, label in (
+        (17, "post_bundle_stabilize"),
+        (18, "GLBOPT1_post_d810"),
+    ):
+        conn.execute(
+            "INSERT INTO snapshots (id, label, func_ea_hex, func_ea_i64, "
+            " maturity, phase, block_count, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (snap_id, label, "0x0000000180012df0", 0x180012df0,
+             "MMAT_GLBOPT1", "post_d810", 5, 0.0),
+        )
+    conn.commit()
+    conn.close()
+
+    out = tmp_path / "test.oracle.md"
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "d810.core.diag", "region-diff",
+         "--db", str(db), "--func-ea", "0x0000000180012df0",
+         "--persist", "--output", str(out)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    body = out.read_text()
+    assert "Region Oracle" in body
+    assert f"oracle written: {out}" in result.stdout

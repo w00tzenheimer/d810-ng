@@ -34,6 +34,7 @@ Notes::
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import re
 import sqlite3
@@ -1720,6 +1721,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Emit JSON instead of a table.",
     )
 
+    importlib.import_module(
+        "d810.cfg.region_oracle_cli"
+    ).register_region_diff_parser(sub, common)
+
     args = parser.parse_args(argv)
 
     if not args.command:
@@ -2340,6 +2345,17 @@ def main(argv: list[str] | None = None) -> int:
             for r in rows:
                 print(f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
             print(f"\n# {len(rows)} row(s) shown")
+    elif args.command == "region-diff":
+        cfg_cli = importlib.import_module("d810.cfg.region_oracle_cli")
+        rc = cfg_cli.handle_region_diff(
+            args,
+            conn,
+            _resolve_oracle_snap_ids,
+            _oracle_persist_features,
+            _oracle_persist_dce_causes,
+        )
+        conn.close()
+        return rc
 
     conn.close()
     return 0
