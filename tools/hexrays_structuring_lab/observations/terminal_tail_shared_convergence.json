@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "case_id": "terminal_tail_shared_convergence",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 26,
+      "MMAT_PREOPTIMIZED": 26,
+      "MMAT_LOCOPT": 26
+    },
+    "shared_guard_serial": 2,
+    "shared_guard_relative_start_ea": "0x1e",
+    "shared_guard_pred_relative_start_eas": [
+      "0x94",
+      "0xb9",
+      "0xdf",
+      "0x105",
+      "0x12b",
+      "0x151",
+      "0x177"
+    ],
+    "shared_guard_succ_relative_start_eas": [
+      "0x32",
+      "0x3e"
+    ],
+    "byte_emit_serials": [
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ],
+    "byte_emit_relative_start_eas": [
+      "0x94",
+      "0xb9",
+      "0xdf",
+      "0x105",
+      "0x12b",
+      "0x151",
+      "0x177"
+    ],
+    "stage_assignment_relative_start_eas": [
+      "0x44",
+      "0x4c",
+      "0x57",
+      "0x62",
+      "0x6d",
+      "0x78"
+    ],
+    "early_return_relative_start_ea": "0x32",
+    "stage_dispatch_relative_start_ea": "0x3e",
+    "return_epilogue_relative_start_ea": "0x192",
+    "body_opcode_signatures_by_relative_start": {
+      "0x1e": [
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x94": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0xb9": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0xdf": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0x105": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0x12b": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0x151": [
+        12,
+        1,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        4,
+        55
+      ],
+      "0x177": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        12,
+        4,
+        1,
+        4,
+        55
+      ],
+      "0x192": [
+        9
+      ]
+    }
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_terminal_tail_shared_convergence_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_terminal_tail_shared_convergence_GLBOPT1",
+    "from_block_count": 26,
+    "to_block_count": 19,
+    "vanished_count": 7,
+    "disposition_counts": {
+      "absorbed": 6,
+      "synthesized_only": 1
+    },
+    "cross_tab": {
+      "empty": {
+        "synthesized_only": 1
+      },
+      "has_content": {
+        "absorbed": 6
+      }
+    },
+    "outcome_class": "bad_topology_collapse",
+    "classification": "validated D810-like shared convergence compacts from 26 LOCOPT blocks to 19 GLBOPT1 blocks and renders as a staged loop nest with five whiles and only two returns; this is the negative control for terminal-tail lowering"
+  },
+  "pseudocode": {
+    "before_lines": 57,
+    "after_lines": 57,
+    "changed": false,
+    "shape": "shared-stage loop nest with five whiles, one early return, and a final return",
+    "before_metrics": {
+      "returns": 2,
+      "whiles": 5,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 7
+    },
+    "after_metrics": {
+      "returns": 2,
+      "whiles": 5,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 7
+    }
+  },
+  "commands": {
+    "validate_cfg": "python3 -m tools.hexrays_structuring_lab validate-cfg terminal_tail_shared_convergence",
+    "dump": "python3 -m tools.hexrays_structuring_lab command terminal_tail_shared_convergence",
+    "summary": "python3 -m tools.hexrays_structuring_lab summarize --db .tmp/logs/d810_logs/000000018000b430_1778349161_33.diag.sqlite3 --from-label dump_raw_hexrays_lab_terminal_tail_shared_convergence_LOCOPT --to-label dump_raw_hexrays_lab_terminal_tail_shared_convergence_GLBOPT1 --cfg-validation .tmp/hexrays_structuring_lab/cfg_validation/terminal_tail_shared_convergence.json --require-cfg-validation"
+  }
+}

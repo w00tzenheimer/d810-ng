@@ -25,6 +25,10 @@ def test_registry_loads_initial_cases() -> None:
         "side_effect_boundary_anchor",
         "conditional_shell_boundary",
         "clean_conditional_fork",
+        "terminal_tail_ref_cascade",
+        "terminal_tail_shared_convergence",
+        "terminal_tail_split_guard",
+        "terminal_tail_unique_continuation",
     }
 
 
@@ -61,6 +65,10 @@ def test_list_command_prints_cases(capsys) -> None:
     assert "side_effect_boundary_anchor" in out
     assert "conditional_shell_boundary" in out
     assert "clean_conditional_fork" in out
+    assert "terminal_tail_ref_cascade" in out
+    assert "terminal_tail_shared_convergence" in out
+    assert "terminal_tail_split_guard" in out
+    assert "terminal_tail_unique_continuation" in out
     assert "c_with_compiled_cfg_validation" in out
 
 

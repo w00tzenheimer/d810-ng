@@ -494,6 +494,350 @@
         "outcome_class": "clean_structured_compaction",
         "classification": "validated clean conditional fork compacts from 9 LOCOPT blocks to 6 GLBOPT1 blocks while preserving a simple if/else pseudocode shape; this is the friendly baseline for exact conditional-region emission"
       }
+    },
+    {
+      "id": "terminal_tail_ref_cascade",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_ref_cascade",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "early-return",
+        "ref-cascade",
+        "acyclic"
+      ],
+      "question": "Does a REF-like byte emit and early-return cascade survive Hex-Rays as readable terminal-tail pseudocode?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_ref_cascade.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 22",
+          "byte_emit_count": "== 7",
+          "early_return_guard_count": "== 6",
+          "terminal_region": "acyclic",
+          "largest_scc_size": "== 1",
+          "guard_relative_start_eas": [
+            "0x0",
+            "0x4d",
+            "0x87",
+            "0xc1",
+            "0xfb",
+            "0x132"
+          ],
+          "early_return_relative_start_eas": [
+            "0x3e",
+            "0x78",
+            "0xb2",
+            "0xec",
+            "0x126",
+            "0x15d"
+          ],
+          "continue_relative_start_eas": [
+            "0x4b",
+            "0x85",
+            "0xbf",
+            "0xf9",
+            "0x130",
+            "0x167"
+          ],
+          "final_emit_relative_start_ea": "0x169",
+          "return_epilogue_relative_start_ea": "0x18a",
+          "edge_predicates": [
+            "byte emit blocks appear in index order base+0 through base+6",
+            "each byte emit base+0 through base+5 reaches its own early-return guard before the next byte emit",
+            "guard0 through guard5 each have one return arm and one continue arm",
+            "the continue arm from guard[k] reaches byte[k + 1] through a distinct empty handoff",
+            "byte6 reaches the shared return epilogue",
+            "the shared return epilogue has exactly seven incoming returns and contains only the return-value xdu"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_ref_cascade.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "early_return_guard[0..5] presence after GLBOPT1",
+        "terminal-region SCC summary",
+        "pseudocode cascade readability verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 22,
+        "to_block_count": 16,
+        "vanished_count": 6,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated REF-like terminal tail compacts from 22 LOCOPT blocks to 16 GLBOPT1 blocks while preserving unchanged nested early-return pseudocode with seven byte emits; this is the current good construction oracle"
+      }
+    },
+    {
+      "id": "terminal_tail_shared_convergence",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_shared_convergence",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "shared-convergence",
+        "d810-like",
+        "bad-shape-candidate"
+      ],
+      "question": "Does a D810-like shared convergence block cause Hex-Rays to fold byte emits into a shared terminal body?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_shared_convergence.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 26",
+          "byte_emit_count": "== 7",
+          "shared_convergence_blocks": "== 1",
+          "shared_convergence_predicate": "npred >= 6",
+          "shared_guard_relative_start_ea": "0x1e",
+          "byte_emit_relative_start_eas": [
+            "0x94",
+            "0xb9",
+            "0xdf",
+            "0x105",
+            "0x12b",
+            "0x151",
+            "0x177"
+          ],
+          "return_epilogue_relative_start_ea": "0x192",
+          "edge_predicates": [
+            "byte emit blocks appear for base+0 through base+6",
+            "byte emit blocks base+0 through base+6 all flow to the same shared guard/convergence block",
+            "the shared convergence block contains the early-return test and stage dispatch",
+            "the shared convergence block can continue to the next byte stage",
+            "the terminal return is reached through the same shared convergence corridor"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_shared_convergence.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "shared convergence survival or fold disposition",
+        "terminal-region SCC summary",
+        "pseudocode shared-label/body verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 26,
+        "to_block_count": 19,
+        "vanished_count": 7,
+        "outcome_class": "bad_topology_collapse",
+        "classification": "validated D810-like shared convergence compacts from 26 LOCOPT blocks to 19 GLBOPT1 blocks and renders as a staged loop nest with five whiles and only two returns; this is the negative control for terminal-tail lowering"
+      }
+    },
+    {
+      "id": "terminal_tail_split_guard",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_split_guard",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "split-guard",
+        "track-b-v2",
+        "acyclic"
+      ],
+      "question": "Does splitting each byte emit from its guard preserve a readable acyclic terminal tail better than a shared convergence body?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_split_guard.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 22",
+          "byte_emit_count": "== 7",
+          "split_guard_count": "== 6",
+          "terminal_region": "acyclic",
+          "largest_scc_size": "== 1",
+          "guard_relative_start_eas": [
+            "0x0",
+            "0x4e",
+            "0x88",
+            "0xc2",
+            "0xfc",
+            "0x133"
+          ],
+          "early_return_relative_start_eas": [
+            "0x3f",
+            "0x79",
+            "0xb3",
+            "0xed",
+            "0x127",
+            "0x15e"
+          ],
+          "continue_relative_start_eas": [
+            "0x4c",
+            "0x86",
+            "0xc0",
+            "0xfa",
+            "0x131",
+            "0x168"
+          ],
+          "final_emit_relative_start_ea": "0x16a",
+          "return_epilogue_relative_start_ea": "0x18b",
+          "edge_predicates": [
+            "source-level emit/check split is fused by LOCOPT into six BLT_2WAY emit+guard blocks",
+            "each fused emit+guard block has a return arm and a continue arm",
+            "each continue arm from check[k] reaches byte[k + 1]",
+            "no guard block is shared by multiple byte emit blocks",
+            "byte6 reaches the terminal return path"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_split_guard.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "split check block presence after GLBOPT1",
+        "terminal-region SCC summary",
+        "pseudocode cascade readability verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 22,
+        "to_block_count": 16,
+        "vanished_count": 6,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated split emit/guard source compiles to the same LOCOPT cascade class as the REF oracle and preserves unchanged nested early-return pseudocode; source-level split alone does not create a distinct microblock construction"
+      }
+    },
+    {
+      "id": "terminal_tail_unique_continuation",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_unique_continuation",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "unique-continuation",
+        "topology-only",
+        "shared-convergence"
+      ],
+      "question": "Can topology-only unique continuations before a shared guard preserve terminal-tail intent without adding side-effect anchors?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_unique_continuation.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 26",
+          "byte_emit_count": "== 7",
+          "unique_continuation_count": "== 7",
+          "shared_convergence_blocks": "== 1",
+          "shared_guard_relative_start_ea": "0x2a",
+          "byte_emit_relative_start_eas": [
+            "0xab",
+            "0xdd",
+            "0x110",
+            "0x143",
+            "0x176",
+            "0x1a9",
+            "0x1dc"
+          ],
+          "return_epilogue_relative_start_ea": "0x204",
+          "edge_predicates": [
+            "byte emit blocks appear for base+0 through base+6",
+            "source-level unique continuations are folded into byte emit bodies by LOCOPT",
+            "each byte emit/continuation body reaches the same shared guard/convergence block",
+            "the shared guard performs early-return testing and stage dispatch"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_unique_continuation.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "unique continuation survival or fold disposition",
+        "terminal-region SCC summary",
+        "pseudocode shared-label/body verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 26,
+        "to_block_count": 19,
+        "vanished_count": 7,
+        "outcome_class": "bad_topology_collapse",
+        "classification": "validated unique-continuation source still compiles into a shared-guard topology and renders as a staged loop nest with five whiles and only two returns; topology-only continuations do not preserve the terminal-tail cascade"
+      }
     }
   ]
 }

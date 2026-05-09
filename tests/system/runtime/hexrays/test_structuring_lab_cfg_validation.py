@@ -176,6 +176,346 @@ CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES = {
     "0x84": [55],
     "0x86": [55],
 }
+TERMINAL_TAIL_REF_EXPECTED_BLOCK_COUNT = 22
+TERMINAL_TAIL_REF_GUARD_RELATIVE_STARTS = [
+    "0x0",
+    "0x4d",
+    "0x87",
+    "0xc1",
+    "0xfb",
+    "0x132",
+]
+TERMINAL_TAIL_REF_RETURN_RELATIVE_STARTS = [
+    "0x3e",
+    "0x78",
+    "0xb2",
+    "0xec",
+    "0x126",
+    "0x15d",
+]
+TERMINAL_TAIL_REF_CONTINUE_RELATIVE_STARTS = [
+    "0x4b",
+    "0x85",
+    "0xbf",
+    "0xf9",
+    "0x130",
+    "0x167",
+]
+TERMINAL_TAIL_REF_FINAL_EMIT_RELATIVE_START = "0x169"
+TERMINAL_TAIL_REF_RETURN_EPILOGUE_RELATIVE_START = "0x18a"
+TERMINAL_TAIL_REF_FIRST_GUARD_OPCODE_SIGNATURE = [
+    4,
+    4,
+    4,
+    12,
+    1,
+    12,
+    9,
+    35,
+    30,
+    33,
+    31,
+    29,
+    43,
+]
+TERMINAL_TAIL_REF_GUARD_OPCODE_SIGNATURE = [
+    12,
+    1,
+    12,
+    9,
+    35,
+    30,
+    33,
+    31,
+    29,
+    43,
+]
+TERMINAL_TAIL_REF_RETURN_OPCODE_SIGNATURE = [4, 4, 55]
+TERMINAL_TAIL_REF_FINAL_EMIT_OPCODE_SIGNATURE = [
+    25,
+    26,
+    33,
+    31,
+    29,
+    12,
+    1,
+    9,
+    4,
+    4,
+]
+TERMINAL_TAIL_REF_RETURN_EPILOGUE_OPCODE_SIGNATURE = [9]
+TERMINAL_TAIL_SHARED_EXPECTED_BLOCK_COUNT = 26
+TERMINAL_TAIL_SHARED_GUARD_RELATIVE_START = "0x1e"
+TERMINAL_TAIL_SHARED_EARLY_RETURN_RELATIVE_START = "0x32"
+TERMINAL_TAIL_SHARED_STAGE_DISPATCH_START = "0x3e"
+TERMINAL_TAIL_SHARED_RETURN_EPILOGUE_RELATIVE_START = "0x192"
+TERMINAL_TAIL_SHARED_BYTE_EMIT_RELATIVE_STARTS = [
+    "0x94",
+    "0xb9",
+    "0xdf",
+    "0x105",
+    "0x12b",
+    "0x151",
+    "0x177",
+]
+TERMINAL_TAIL_SHARED_STAGE_ASSIGN_RELATIVE_STARTS = [
+    "0x44",
+    "0x4c",
+    "0x57",
+    "0x62",
+    "0x6d",
+    "0x78",
+]
+TERMINAL_TAIL_SHARED_GUARD_OPCODE_SIGNATURE = [9, 35, 30, 33, 31, 29, 43]
+TERMINAL_TAIL_SHARED_BYTE_EMIT_OPCODE_SIGNATURE = [
+    12,
+    1,
+    25,
+    26,
+    33,
+    31,
+    29,
+    9,
+    12,
+    4,
+    55,
+]
+TERMINAL_TAIL_SHARED_FINAL_EMIT_OPCODE_SIGNATURE = [
+    25,
+    26,
+    33,
+    31,
+    29,
+    12,
+    4,
+    1,
+    4,
+    55,
+]
+TERMINAL_TAIL_SPLIT_EXPECTED_BLOCK_COUNT = 22
+TERMINAL_TAIL_SPLIT_GUARD_RELATIVE_STARTS = [
+    "0x0",
+    "0x4e",
+    "0x88",
+    "0xc2",
+    "0xfc",
+    "0x133",
+]
+TERMINAL_TAIL_SPLIT_RETURN_RELATIVE_STARTS = [
+    "0x3f",
+    "0x79",
+    "0xb3",
+    "0xed",
+    "0x127",
+    "0x15e",
+]
+TERMINAL_TAIL_SPLIT_CONTINUE_RELATIVE_STARTS = [
+    "0x4c",
+    "0x86",
+    "0xc0",
+    "0xfa",
+    "0x131",
+    "0x168",
+]
+TERMINAL_TAIL_SPLIT_FINAL_EMIT_RELATIVE_START = "0x16a"
+TERMINAL_TAIL_SPLIT_RETURN_EPILOGUE_RELATIVE_START = "0x18b"
+TERMINAL_TAIL_UNIQUE_EXPECTED_BLOCK_COUNT = 26
+TERMINAL_TAIL_UNIQUE_GUARD_RELATIVE_START = "0x2a"
+TERMINAL_TAIL_UNIQUE_EARLY_RETURN_RELATIVE_START = "0x3f"
+TERMINAL_TAIL_UNIQUE_STAGE_DISPATCH_START = "0x4c"
+TERMINAL_TAIL_UNIQUE_RETURN_EPILOGUE_RELATIVE_START = "0x204"
+TERMINAL_TAIL_UNIQUE_BYTE_EMIT_RELATIVE_STARTS = [
+    "0xab",
+    "0xdd",
+    "0x110",
+    "0x143",
+    "0x176",
+    "0x1a9",
+    "0x1dc",
+]
+TERMINAL_TAIL_UNIQUE_STAGE_ASSIGN_RELATIVE_STARTS = [
+    "0x53",
+    "0x5f",
+    "0x6b",
+    "0x77",
+    "0x83",
+    "0x8f",
+]
+TERMINAL_TAIL_UNIQUE_FIRST_BYTE_EMIT_OPCODE_SIGNATURE = [
+    12,
+    1,
+    12,
+    4,
+    4,
+    4,
+    33,
+    31,
+    29,
+    9,
+    4,
+    55,
+]
+TERMINAL_TAIL_UNIQUE_BYTE_EMIT_OPCODE_SIGNATURE = [
+    12,
+    1,
+    12,
+    4,
+    25,
+    26,
+    33,
+    31,
+    29,
+    9,
+    12,
+    55,
+]
+TERMINAL_TAIL_UNIQUE_FINAL_EMIT_OPCODE_SIGNATURE = [
+    12,
+    1,
+    4,
+    25,
+    26,
+    33,
+    31,
+    29,
+    9,
+    12,
+    55,
+]
+TERMINAL_TAIL_CASES = {
+    "terminal_tail_ref_cascade": {
+        "function": "hexrays_lab_terminal_tail_ref_cascade",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "terminal_tail_ref_cascade.json"
+        ),
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {TERMINAL_TAIL_REF_EXPECTED_BLOCK_COUNT}",
+            "byte_emit_count": "== 7",
+            "early_return_guard_count": "== 6",
+            "terminal_region": "acyclic",
+            "largest_scc_size": "== 1",
+            "guard_relative_start_eas": TERMINAL_TAIL_REF_GUARD_RELATIVE_STARTS,
+            "early_return_relative_start_eas": (
+                TERMINAL_TAIL_REF_RETURN_RELATIVE_STARTS
+            ),
+            "continue_relative_start_eas": (
+                TERMINAL_TAIL_REF_CONTINUE_RELATIVE_STARTS
+            ),
+            "final_emit_relative_start_ea": (
+                TERMINAL_TAIL_REF_FINAL_EMIT_RELATIVE_START
+            ),
+            "return_epilogue_relative_start_ea": (
+                TERMINAL_TAIL_REF_RETURN_EPILOGUE_RELATIVE_START
+            ),
+            "edge_predicates": [
+                "byte emit blocks appear in index order base+0 through base+6",
+                "each byte emit base+0 through base+5 reaches its own early-return guard before the next byte emit",
+                "guard0 through guard5 each have one return arm and one continue arm",
+                "the continue arm from guard[k] reaches byte[k + 1] through a distinct empty handoff",
+                "byte6 reaches the shared return epilogue",
+                "the shared return epilogue has exactly seven incoming returns and contains only the return-value xdu",
+            ],
+        },
+    },
+    "terminal_tail_shared_convergence": {
+        "function": "hexrays_lab_terminal_tail_shared_convergence",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "terminal_tail_shared_convergence.json"
+        ),
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {TERMINAL_TAIL_SHARED_EXPECTED_BLOCK_COUNT}",
+            "byte_emit_count": "== 7",
+            "shared_convergence_blocks": "== 1",
+            "shared_convergence_predicate": "npred >= 6",
+            "shared_guard_relative_start_ea": (
+                TERMINAL_TAIL_SHARED_GUARD_RELATIVE_START
+            ),
+            "byte_emit_relative_start_eas": (
+                TERMINAL_TAIL_SHARED_BYTE_EMIT_RELATIVE_STARTS
+            ),
+            "return_epilogue_relative_start_ea": (
+                TERMINAL_TAIL_SHARED_RETURN_EPILOGUE_RELATIVE_START
+            ),
+            "edge_predicates": [
+                "byte emit blocks appear for base+0 through base+6",
+                "byte emit blocks base+0 through base+6 all flow to the same shared guard/convergence block",
+                "the shared convergence block contains the early-return test and stage dispatch",
+                "the shared convergence block can continue to the next byte stage",
+                "the terminal return is reached through the same shared convergence corridor",
+            ],
+        },
+    },
+    "terminal_tail_split_guard": {
+        "function": "hexrays_lab_terminal_tail_split_guard",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "terminal_tail_split_guard.json"
+        ),
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {TERMINAL_TAIL_SPLIT_EXPECTED_BLOCK_COUNT}",
+            "byte_emit_count": "== 7",
+            "split_guard_count": "== 6",
+            "terminal_region": "acyclic",
+            "largest_scc_size": "== 1",
+            "guard_relative_start_eas": (
+                TERMINAL_TAIL_SPLIT_GUARD_RELATIVE_STARTS
+            ),
+            "early_return_relative_start_eas": (
+                TERMINAL_TAIL_SPLIT_RETURN_RELATIVE_STARTS
+            ),
+            "continue_relative_start_eas": (
+                TERMINAL_TAIL_SPLIT_CONTINUE_RELATIVE_STARTS
+            ),
+            "final_emit_relative_start_ea": (
+                TERMINAL_TAIL_SPLIT_FINAL_EMIT_RELATIVE_START
+            ),
+            "return_epilogue_relative_start_ea": (
+                TERMINAL_TAIL_SPLIT_RETURN_EPILOGUE_RELATIVE_START
+            ),
+            "edge_predicates": [
+                "source-level emit/check split is fused by LOCOPT into six BLT_2WAY emit+guard blocks",
+                "each fused emit+guard block has a return arm and a continue arm",
+                "each continue arm from check[k] reaches byte[k + 1]",
+                "no guard block is shared by multiple byte emit blocks",
+                "byte6 reaches the terminal return path",
+            ],
+        },
+    },
+    "terminal_tail_unique_continuation": {
+        "function": "hexrays_lab_terminal_tail_unique_continuation",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "terminal_tail_unique_continuation.json"
+        ),
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "block_count": f"== {TERMINAL_TAIL_UNIQUE_EXPECTED_BLOCK_COUNT}",
+            "byte_emit_count": "== 7",
+            "unique_continuation_count": "== 7",
+            "shared_convergence_blocks": "== 1",
+            "shared_guard_relative_start_ea": (
+                TERMINAL_TAIL_UNIQUE_GUARD_RELATIVE_START
+            ),
+            "byte_emit_relative_start_eas": (
+                TERMINAL_TAIL_UNIQUE_BYTE_EMIT_RELATIVE_STARTS
+            ),
+            "return_epilogue_relative_start_ea": (
+                TERMINAL_TAIL_UNIQUE_RETURN_EPILOGUE_RELATIVE_START
+            ),
+            "edge_predicates": [
+                "byte emit blocks appear for base+0 through base+6",
+                "source-level unique continuations are folded into byte emit bodies by LOCOPT",
+                "each byte emit/continuation body reaches the same shared guard/convergence block",
+                "the shared guard performs early-return testing and stage dispatch",
+            ],
+        },
+    },
+}
 
 CASE_DEFAULTS = {
     "single_pred_chain_merge": {
@@ -199,6 +539,13 @@ CASE_DEFAULTS = {
         "output_json": CONDITIONAL_SHELL_OUTPUT_JSON,
     },
 }
+CASE_DEFAULTS.update({
+    case_id: {
+        "function": case["function"],
+        "output_json": case["output_json"],
+    }
+    for case_id, case in TERMINAL_TAIL_CASES.items()
+})
 
 
 def _sha256(path: Path) -> str | None:
@@ -683,6 +1030,517 @@ def _conditional_shell_signature(
     return signature
 
 
+def _terminal_tail_candidate_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object]:
+    """Collect raw terminal-tail block evidence before exact validators exist."""
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    return {
+        "relative_start_eas": [
+            _relative_ea(block["start_ea"], func_ea)
+            for block in body_blocks
+        ],
+        "block_count": len(blocks),
+        "body_block_count": len(body_blocks),
+        "body_opcode_signatures_by_relative_start": {
+            str(_relative_ea(block["start_ea"], func_ea)): block[
+                "instruction_opcodes"
+            ]
+            for block in body_blocks
+        },
+        "body_opcode_names_by_relative_start": {
+            str(_relative_ea(block["start_ea"], func_ea)): block[
+                "instruction_opcode_names"
+            ]
+            for block in body_blocks
+        },
+        "blocks": blocks,
+        "validator_status": "planned_exact_matcher_not_implemented",
+    }
+
+
+def _terminal_tail_ref_cascade_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _terminal_tail_linear_cascade_signature(
+        blocks,
+        func_ea=func_ea,
+        guard_relative_starts=TERMINAL_TAIL_REF_GUARD_RELATIVE_STARTS,
+        return_relative_starts=TERMINAL_TAIL_REF_RETURN_RELATIVE_STARTS,
+        continue_relative_starts=TERMINAL_TAIL_REF_CONTINUE_RELATIVE_STARTS,
+        final_emit_relative_start=TERMINAL_TAIL_REF_FINAL_EMIT_RELATIVE_START,
+        return_epilogue_relative_start=(
+            TERMINAL_TAIL_REF_RETURN_EPILOGUE_RELATIVE_START
+        ),
+    )
+
+
+def _terminal_tail_split_guard_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _terminal_tail_linear_cascade_signature(
+        blocks,
+        func_ea=func_ea,
+        guard_relative_starts=TERMINAL_TAIL_SPLIT_GUARD_RELATIVE_STARTS,
+        return_relative_starts=TERMINAL_TAIL_SPLIT_RETURN_RELATIVE_STARTS,
+        continue_relative_starts=TERMINAL_TAIL_SPLIT_CONTINUE_RELATIVE_STARTS,
+        final_emit_relative_start=TERMINAL_TAIL_SPLIT_FINAL_EMIT_RELATIVE_START,
+        return_epilogue_relative_start=(
+            TERMINAL_TAIL_SPLIT_RETURN_EPILOGUE_RELATIVE_START
+        ),
+    )
+
+
+def _terminal_tail_linear_cascade_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+    guard_relative_starts: list[str],
+    return_relative_starts: list[str],
+    continue_relative_starts: list[str],
+    final_emit_relative_start: str,
+    return_epilogue_relative_start: str,
+) -> dict[str, object] | None:
+    signature = _terminal_tail_candidate_signature(blocks, func_ea=func_ea)
+    blocks_by_serial = {
+        int(block["serial"]): block for block in blocks
+    }
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    body_by_relative_start = {
+        _relative_ea(block["start_ea"], func_ea): block
+        for block in body_blocks
+    }
+    guard_blocks = [
+        body_by_relative_start.get(relative_start)
+        for relative_start in guard_relative_starts
+    ]
+    return_blocks = [
+        body_by_relative_start.get(relative_start)
+        for relative_start in return_relative_starts
+    ]
+    continue_blocks = [
+        block
+        for block in blocks
+        if _relative_ea(block["start_ea"], func_ea)
+        in continue_relative_starts
+    ]
+    final_emit = body_by_relative_start.get(final_emit_relative_start)
+    return_epilogue = body_by_relative_start.get(return_epilogue_relative_start)
+    if (
+        any(block is None for block in guard_blocks)
+        or any(block is None for block in return_blocks)
+        or len(continue_blocks) != len(TERMINAL_TAIL_REF_CONTINUE_RELATIVE_STARTS)
+        or final_emit is None
+        or return_epilogue is None
+    ):
+        return None
+
+    guard_paths = []
+    for index, guard in enumerate(guard_blocks):
+        assert isinstance(guard, dict)
+        return_block = return_blocks[index]
+        assert isinstance(return_block, dict)
+        return_serial = int(return_block["serial"])
+        continue_serials = [
+            int(serial)
+            for serial in guard["succs"]
+            if int(serial) != return_serial
+        ]
+        continue_path = []
+        if len(continue_serials) == 1:
+            continue_block = blocks_by_serial.get(continue_serials[0])
+            if continue_block is not None:
+                continue_path.append(
+                    _relative_ea(continue_block["start_ea"], func_ea)
+                )
+                if continue_block["nsucc"] == 1:
+                    next_block = blocks_by_serial.get(
+                        int(continue_block["succs"][0])
+                    )
+                    if next_block is not None:
+                        continue_path.append(
+                            _relative_ea(next_block["start_ea"], func_ea)
+                        )
+        guard_paths.append({
+            "guard_relative_start_ea": _relative_ea(
+                guard["start_ea"],
+                func_ea,
+            ),
+            "return_relative_start_ea": _relative_ea(
+                return_block["start_ea"],
+                func_ea,
+            ),
+            "continue_path_relative_start_eas": continue_path,
+        })
+
+    signature.update({
+        "validator_status": "exact_matcher_available",
+        "guards": guard_blocks,
+        "early_returns": return_blocks,
+        "continue_handoffs": continue_blocks,
+        "final_emit": final_emit,
+        "return_epilogue": return_epilogue,
+        "guard_paths": guard_paths,
+        "return_epilogue_pred_relative_start_eas": [
+            _relative_ea(blocks_by_serial[int(serial)]["start_ea"], func_ea)
+            for serial in return_epilogue["preds"]
+            if int(serial) in blocks_by_serial
+        ],
+    })
+    return signature
+
+
+def _matches_terminal_tail_ref_cascade_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    return _matches_terminal_tail_linear_cascade_fixture(
+        signature,
+        block_count=block_count,
+        maturity_name=maturity_name,
+        expected_block_count=TERMINAL_TAIL_REF_EXPECTED_BLOCK_COUNT,
+        continue_relative_starts=TERMINAL_TAIL_REF_CONTINUE_RELATIVE_STARTS,
+        guard_relative_starts=TERMINAL_TAIL_REF_GUARD_RELATIVE_STARTS,
+        return_relative_starts=TERMINAL_TAIL_REF_RETURN_RELATIVE_STARTS,
+        final_emit_relative_start=TERMINAL_TAIL_REF_FINAL_EMIT_RELATIVE_START,
+    )
+
+
+def _matches_terminal_tail_split_guard_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    return _matches_terminal_tail_linear_cascade_fixture(
+        signature,
+        block_count=block_count,
+        maturity_name=maturity_name,
+        expected_block_count=TERMINAL_TAIL_SPLIT_EXPECTED_BLOCK_COUNT,
+        continue_relative_starts=TERMINAL_TAIL_SPLIT_CONTINUE_RELATIVE_STARTS,
+        guard_relative_starts=TERMINAL_TAIL_SPLIT_GUARD_RELATIVE_STARTS,
+        return_relative_starts=TERMINAL_TAIL_SPLIT_RETURN_RELATIVE_STARTS,
+        final_emit_relative_start=TERMINAL_TAIL_SPLIT_FINAL_EMIT_RELATIVE_START,
+    )
+
+
+def _matches_terminal_tail_linear_cascade_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+    expected_block_count: int,
+    continue_relative_starts: list[str],
+    guard_relative_starts: list[str],
+    return_relative_starts: list[str],
+    final_emit_relative_start: str,
+) -> bool:
+    if signature is None:
+        return False
+    guards = signature["guards"]
+    early_returns = signature["early_returns"]
+    continue_handoffs = signature["continue_handoffs"]
+    final_emit = signature["final_emit"]
+    return_epilogue = signature["return_epilogue"]
+    guard_paths = signature["guard_paths"]
+    assert isinstance(guards, list)
+    assert isinstance(early_returns, list)
+    assert isinstance(continue_handoffs, list)
+    assert isinstance(final_emit, dict)
+    assert isinstance(return_epilogue, dict)
+    assert isinstance(guard_paths, list)
+
+    expected_continue_paths = [
+        [handoff, next_guard]
+        for handoff, next_guard in zip(
+            continue_relative_starts,
+            guard_relative_starts[1:] + [final_emit_relative_start],
+            strict=True,
+        )
+    ]
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == expected_block_count
+        and len(guards) == 6
+        and len(early_returns) == 6
+        and len(continue_handoffs) == 6
+        and [guard["type"] for guard in guards] == ["BLT_2WAY"] * 6
+        and [guard["npred"] for guard in guards] == [1] * 6
+        and [guard["nsucc"] for guard in guards] == [2] * 6
+        and guards[0]["instruction_opcodes"]
+        == TERMINAL_TAIL_REF_FIRST_GUARD_OPCODE_SIGNATURE
+        and [
+            guard["instruction_opcodes"]
+            for guard in guards[1:]
+        ] == [TERMINAL_TAIL_REF_GUARD_OPCODE_SIGNATURE] * 5
+        and [
+            block["instruction_opcodes"]
+            for block in early_returns
+        ] == [TERMINAL_TAIL_REF_RETURN_OPCODE_SIGNATURE] * 6
+        and [
+            block["instruction_count"]
+            for block in continue_handoffs
+        ] == [0] * 6
+        and final_emit["type"] == "BLT_1WAY"
+        and final_emit["instruction_opcodes"]
+        == TERMINAL_TAIL_REF_FINAL_EMIT_OPCODE_SIGNATURE
+        and return_epilogue["type"] == "BLT_1WAY"
+        and return_epilogue["npred"] == 7
+        and return_epilogue["instruction_opcodes"]
+        == TERMINAL_TAIL_REF_RETURN_EPILOGUE_OPCODE_SIGNATURE
+        and [
+            path["continue_path_relative_start_eas"]
+            for path in guard_paths
+        ] == expected_continue_paths
+        and sorted(signature["return_epilogue_pred_relative_start_eas"])
+        == sorted(
+            return_relative_starts
+            + [final_emit_relative_start]
+        )
+    )
+
+
+def _terminal_tail_shared_convergence_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _terminal_tail_shared_guard_signature(
+        blocks,
+        func_ea=func_ea,
+        shared_guard_relative_start=TERMINAL_TAIL_SHARED_GUARD_RELATIVE_START,
+        byte_emit_relative_starts=(
+            TERMINAL_TAIL_SHARED_BYTE_EMIT_RELATIVE_STARTS
+        ),
+        stage_assign_relative_starts=(
+            TERMINAL_TAIL_SHARED_STAGE_ASSIGN_RELATIVE_STARTS
+        ),
+        early_return_relative_start=(
+            TERMINAL_TAIL_SHARED_EARLY_RETURN_RELATIVE_START
+        ),
+        stage_dispatch_relative_start=TERMINAL_TAIL_SHARED_STAGE_DISPATCH_START,
+        return_epilogue_relative_start=(
+            TERMINAL_TAIL_SHARED_RETURN_EPILOGUE_RELATIVE_START
+        ),
+    )
+
+
+def _terminal_tail_unique_continuation_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    return _terminal_tail_shared_guard_signature(
+        blocks,
+        func_ea=func_ea,
+        shared_guard_relative_start=TERMINAL_TAIL_UNIQUE_GUARD_RELATIVE_START,
+        byte_emit_relative_starts=(
+            TERMINAL_TAIL_UNIQUE_BYTE_EMIT_RELATIVE_STARTS
+        ),
+        stage_assign_relative_starts=(
+            TERMINAL_TAIL_UNIQUE_STAGE_ASSIGN_RELATIVE_STARTS
+        ),
+        early_return_relative_start=(
+            TERMINAL_TAIL_UNIQUE_EARLY_RETURN_RELATIVE_START
+        ),
+        stage_dispatch_relative_start=TERMINAL_TAIL_UNIQUE_STAGE_DISPATCH_START,
+        return_epilogue_relative_start=(
+            TERMINAL_TAIL_UNIQUE_RETURN_EPILOGUE_RELATIVE_START
+        ),
+    )
+
+
+def _terminal_tail_shared_guard_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+    shared_guard_relative_start: str,
+    byte_emit_relative_starts: list[str],
+    stage_assign_relative_starts: list[str],
+    early_return_relative_start: str,
+    stage_dispatch_relative_start: str,
+    return_epilogue_relative_start: str,
+) -> dict[str, object] | None:
+    signature = _terminal_tail_candidate_signature(blocks, func_ea=func_ea)
+    blocks_by_serial = {
+        int(block["serial"]): block for block in blocks
+    }
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    body_by_relative_start = {
+        _relative_ea(block["start_ea"], func_ea): block
+        for block in body_blocks
+    }
+    shared_guard = body_by_relative_start.get(
+        shared_guard_relative_start
+    )
+    byte_emit_blocks = [
+        body_by_relative_start.get(relative_start)
+        for relative_start in byte_emit_relative_starts
+    ]
+    stage_assign_blocks = [
+        body_by_relative_start.get(relative_start)
+        for relative_start in stage_assign_relative_starts
+    ]
+    early_return = body_by_relative_start.get(
+        early_return_relative_start
+    )
+    stage_dispatch = body_by_relative_start.get(
+        stage_dispatch_relative_start
+    )
+    return_epilogue = body_by_relative_start.get(
+        return_epilogue_relative_start
+    )
+    if (
+        shared_guard is None
+        or any(block is None for block in byte_emit_blocks)
+        or any(block is None for block in stage_assign_blocks)
+        or early_return is None
+        or stage_dispatch is None
+        or return_epilogue is None
+    ):
+        return None
+
+    shared_pred_blocks = [
+        blocks_by_serial[int(serial)]
+        for serial in shared_guard["preds"]
+        if int(serial) in blocks_by_serial
+    ]
+    shared_succ_blocks = [
+        blocks_by_serial[int(serial)]
+        for serial in shared_guard["succs"]
+        if int(serial) in blocks_by_serial
+    ]
+    signature.update({
+        "validator_status": "exact_matcher_available",
+        "shared_guard": shared_guard,
+        "byte_emits": byte_emit_blocks,
+        "stage_assignments": stage_assign_blocks,
+        "early_return": early_return,
+        "stage_dispatch": stage_dispatch,
+        "return_epilogue": return_epilogue,
+        "shared_guard_pred_relative_start_eas": [
+            _relative_ea(block["start_ea"], func_ea)
+            for block in shared_pred_blocks
+        ],
+        "shared_guard_succ_relative_start_eas": [
+            _relative_ea(block["start_ea"], func_ea)
+            for block in shared_succ_blocks
+        ],
+    })
+    return signature
+
+
+def _matches_terminal_tail_shared_convergence_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    return _matches_terminal_tail_shared_guard_fixture(
+        signature,
+        block_count=block_count,
+        maturity_name=maturity_name,
+        expected_block_count=TERMINAL_TAIL_SHARED_EXPECTED_BLOCK_COUNT,
+        byte_emit_relative_starts=TERMINAL_TAIL_SHARED_BYTE_EMIT_RELATIVE_STARTS,
+        first_emit_opcode_signature=TERMINAL_TAIL_SHARED_BYTE_EMIT_OPCODE_SIGNATURE,
+        middle_emit_opcode_signature=TERMINAL_TAIL_SHARED_BYTE_EMIT_OPCODE_SIGNATURE,
+        final_emit_opcode_signature=TERMINAL_TAIL_SHARED_FINAL_EMIT_OPCODE_SIGNATURE,
+    )
+
+
+def _matches_terminal_tail_unique_continuation_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    return _matches_terminal_tail_shared_guard_fixture(
+        signature,
+        block_count=block_count,
+        maturity_name=maturity_name,
+        expected_block_count=TERMINAL_TAIL_UNIQUE_EXPECTED_BLOCK_COUNT,
+        byte_emit_relative_starts=TERMINAL_TAIL_UNIQUE_BYTE_EMIT_RELATIVE_STARTS,
+        first_emit_opcode_signature=(
+            TERMINAL_TAIL_UNIQUE_FIRST_BYTE_EMIT_OPCODE_SIGNATURE
+        ),
+        middle_emit_opcode_signature=(
+            TERMINAL_TAIL_UNIQUE_BYTE_EMIT_OPCODE_SIGNATURE
+        ),
+        final_emit_opcode_signature=(
+            TERMINAL_TAIL_UNIQUE_FINAL_EMIT_OPCODE_SIGNATURE
+        ),
+    )
+
+
+def _matches_terminal_tail_shared_guard_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+    expected_block_count: int,
+    byte_emit_relative_starts: list[str],
+    first_emit_opcode_signature: list[int],
+    middle_emit_opcode_signature: list[int],
+    final_emit_opcode_signature: list[int],
+) -> bool:
+    if signature is None:
+        return False
+    shared_guard = signature["shared_guard"]
+    byte_emits = signature["byte_emits"]
+    stage_assignments = signature["stage_assignments"]
+    early_return = signature["early_return"]
+    stage_dispatch = signature["stage_dispatch"]
+    return_epilogue = signature["return_epilogue"]
+    assert isinstance(shared_guard, dict)
+    assert isinstance(byte_emits, list)
+    assert isinstance(stage_assignments, list)
+    assert isinstance(early_return, dict)
+    assert isinstance(stage_dispatch, dict)
+    assert isinstance(return_epilogue, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == expected_block_count
+        and shared_guard["type"] == "BLT_2WAY"
+        and shared_guard["npred"] == 7
+        and shared_guard["nsucc"] == 2
+        and shared_guard["instruction_opcodes"]
+        == TERMINAL_TAIL_SHARED_GUARD_OPCODE_SIGNATURE
+        and sorted(signature["shared_guard_pred_relative_start_eas"])
+        == sorted(byte_emit_relative_starts)
+        and len(byte_emits) == 7
+        and byte_emits[0]["instruction_opcodes"] == first_emit_opcode_signature
+        and [block["instruction_opcodes"] for block in byte_emits[1:-1]]
+        == [middle_emit_opcode_signature] * 5
+        and byte_emits[-1]["instruction_opcodes"]
+        == final_emit_opcode_signature
+        and [
+            block["succs"][0]
+            for block in byte_emits
+        ] == [shared_guard["serial"]] * 7
+        and len(stage_assignments) == 6
+        and [block["type"] for block in stage_assignments] == ["BLT_1WAY"] * 6
+        and early_return["succs"] == [return_epilogue["serial"]]
+        and return_epilogue["npred"] == 2
+    )
+
+
 def _matches_multi_pred_boundary_fixture(
     signature: dict[str, object] | None,
     *,
@@ -835,6 +1693,12 @@ def _matches_conditional_shell_fixture(
 
 
 def _case_expected(case_id: str) -> dict[str, object]:
+    terminal_tail_case = TERMINAL_TAIL_CASES.get(case_id)
+    if terminal_tail_case is not None:
+        expected = terminal_tail_case["expected"]
+        assert isinstance(expected, dict)
+        return expected
+
     if case_id == "single_pred_chain_merge":
         return {
             "accepted_maturity": EXPECTED_MATURITY,
@@ -1099,6 +1963,66 @@ def _case_match(
             return signature, candidates
         return None, candidates
 
+    if case_id == "terminal_tail_ref_cascade":
+        signature = _terminal_tail_ref_cascade_signature(
+            blocks,
+            func_ea=func_ea,
+        )
+        candidates = [signature] if signature is not None else []
+        if _matches_terminal_tail_ref_cascade_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "terminal_tail_shared_convergence":
+        signature = _terminal_tail_shared_convergence_signature(
+            blocks,
+            func_ea=func_ea,
+        )
+        candidates = [signature] if signature is not None else []
+        if _matches_terminal_tail_shared_convergence_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "terminal_tail_split_guard":
+        signature = _terminal_tail_split_guard_signature(
+            blocks,
+            func_ea=func_ea,
+        )
+        candidates = [signature] if signature is not None else []
+        if _matches_terminal_tail_split_guard_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id == "terminal_tail_unique_continuation":
+        signature = _terminal_tail_unique_continuation_signature(
+            blocks,
+            func_ea=func_ea,
+        )
+        candidates = [signature] if signature is not None else []
+        if _matches_terminal_tail_unique_continuation_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id in TERMINAL_TAIL_CASES:
+        signature = _terminal_tail_candidate_signature(blocks, func_ea=func_ea)
+        return None, [signature]
+
     raise AssertionError(f"unknown lab case: {case_id}")
 
 
@@ -1317,3 +2241,41 @@ class TestHexraysStructuringLabCfgValidation:
                 assert signature["shell_arm_paths_relative_start_eas"] == (
                     CONDITIONAL_SHELL_ARM_PATHS_RELATIVE_STARTS
                 )
+            if case_id == "terminal_tail_ref_cascade":
+                guards = signature["guards"]
+                return_epilogue = signature["return_epilogue"]
+                assert isinstance(guards, list)
+                assert isinstance(return_epilogue, dict)
+                assert len(guards) == 6
+                assert [guard["type"] for guard in guards] == ["BLT_2WAY"] * 6
+                assert return_epilogue["npred"] == 7
+            if case_id == "terminal_tail_shared_convergence":
+                shared_guard = signature["shared_guard"]
+                byte_emits = signature["byte_emits"]
+                assert isinstance(shared_guard, dict)
+                assert isinstance(byte_emits, list)
+                assert shared_guard["npred"] == 7
+                assert len(byte_emits) == 7
+                assert [
+                    block["succs"][0]
+                    for block in byte_emits
+                ] == [shared_guard["serial"]] * 7
+            if case_id == "terminal_tail_unique_continuation":
+                shared_guard = signature["shared_guard"]
+                byte_emits = signature["byte_emits"]
+                assert isinstance(shared_guard, dict)
+                assert isinstance(byte_emits, list)
+                assert shared_guard["npred"] == 7
+                assert len(byte_emits) == 7
+                assert [
+                    block["succs"][0]
+                    for block in byte_emits
+                ] == [shared_guard["serial"]] * 7
+            if case_id == "terminal_tail_split_guard":
+                guards = signature["guards"]
+                return_epilogue = signature["return_epilogue"]
+                assert isinstance(guards, list)
+                assert isinstance(return_epilogue, dict)
+                assert len(guards) == 6
+                assert [guard["type"] for guard in guards] == ["BLT_2WAY"] * 6
+                assert return_epilogue["npred"] == 7
