@@ -70,6 +70,44 @@ class FeatureDiff:
         return self.ref_value == self.d810_value
 
 
+@dataclass(frozen=True, slots=True)
+class RefSpec:
+    """Function-keyed REF spec.
+
+    Holds the hardcoded REF features for a given function and the label
+    preference order used to resolve snap17/snap18 IDs from the diag DB.
+    """
+
+    func_ea_hex: str  # lowercase, 0x-prefixed
+    func_name: str
+    feature_table: tuple[tuple[FeatureRegion, str, object, str], ...]
+    snap17_label_preferences: tuple[str, ...]
+    snap18_label_preferences: tuple[str, ...]
+
+
+def _normalize_func_ea_hex(func_ea_hex: str) -> str:
+    """Lowercase 0x-prefixed canonical form."""
+    s = func_ea_hex.strip().lower()
+    if not s.startswith("0x"):
+        s = "0x" + s
+    return s
+
+
+_REF_SPEC_BY_FUNC: dict[str, RefSpec] = {}
+
+
+def _register_spec(spec: RefSpec) -> None:
+    _REF_SPEC_BY_FUNC[_normalize_func_ea_hex(spec.func_ea_hex)] = spec
+
+
+def spec_for(func_ea_hex: str) -> RefSpec | None:
+    return _REF_SPEC_BY_FUNC.get(_normalize_func_ea_hex(func_ea_hex))
+
+
+def is_registered(func_ea_hex: str) -> bool:
+    return spec_for(func_ea_hex) is not None
+
+
 # ---------------------------------------------------------------------------
 # REF feature spec
 # ---------------------------------------------------------------------------
@@ -151,21 +189,35 @@ _REF_FEATURE_TABLE: tuple[tuple[FeatureRegion, str, object, str], ...] = (
 )
 
 
-def ref_features() -> tuple[RegionFeature, ...]:
-    """Return REF normalized features for sub_7FFD3338C040."""
-    out: list[RegionFeature] = []
-    for region, feature, value, evidence in _REF_FEATURE_TABLE:
-        out.append(
-            RegionFeature(
-                source=FeatureSource.REF,
-                region=region,
-                feature=feature,
-                value=value,
-                evidence={"path": evidence},
-                snapshot_id=None,
-            )
+_register_spec(
+    RefSpec(
+        func_ea_hex="0x0000000180012df0",
+        func_name="sub_7FFD3338C040",
+        feature_table=_REF_FEATURE_TABLE,
+        snap17_label_preferences=(
+            "post_bundle_stabilize",
+            "post_pipeline",
+            "handler_chain_composer_post_apply",
+        ),
+        snap18_label_preferences=(
+            "maturity_MMAT_GLBOPT1_post_d810",
+            "GLBOPT1_post_d810",
+            "post_d810",
+        ),
+    )
+)
+
+
+def ref_features(spec: RefSpec) -> Iterable[RegionFeature]:
+    """Yield REF features from a registered spec."""
+    for region, name, value, evidence_path in spec.feature_table:
+        yield RegionFeature(
+            source=FeatureSource.REF,
+            region=region,
+            feature=name,
+            value=value,
+            evidence={"path": evidence_path},
         )
-    return tuple(out)
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +339,12 @@ __all__ = [
     "FeatureDiff",
     "FeatureRegion",
     "FeatureSource",
+    "RefSpec",
     "RegionFeature",
     "d810_features",
     "diff_features",
     "format_diff_table",
+    "is_registered",
     "ref_features",
+    "spec_for",
 ]
