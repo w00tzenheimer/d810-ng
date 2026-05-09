@@ -243,3 +243,69 @@ def test_collect_block_views_includes_scc_metadata():
     assert blocks[9].scc_size == 2
     assert blocks[10].in_scc is True
     assert blocks[10].scc_size == 2
+
+
+def test_collect_block_views_returns_empty_for_missing_snapshot():
+    import sqlite3
+    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
+        CREATE TABLE blocks (
+            snapshot_id INTEGER, serial INTEGER, start_ea_i64 INTEGER,
+            end_ea_i64 INTEGER, npred INTEGER, nsucc INTEGER,
+            preds TEXT, succs TEXT, type_name TEXT
+        );
+        CREATE TABLE instructions (
+            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            opcode_name TEXT
+        );
+        INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
+        """
+    )
+    conn.commit()
+    result = collect_block_views_for_snapshot(conn, snapshot_id=999)
+    assert result == {}
+
+
+def test_collect_block_views_preserves_instruction_order_per_block():
+    import sqlite3
+    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
+        CREATE TABLE blocks (
+            snapshot_id INTEGER, serial INTEGER, start_ea_i64 INTEGER,
+            end_ea_i64 INTEGER, npred INTEGER, nsucc INTEGER,
+            preds TEXT, succs TEXT, type_name TEXT
+        );
+        CREATE TABLE instructions (
+            snapshot_id INTEGER, block_serial INTEGER, ord INTEGER,
+            opcode_name TEXT
+        );
+        INSERT INTO snapshots (id, label) VALUES (17, 'post_bundle_stabilize');
+        INSERT INTO blocks (snapshot_id, serial, start_ea_i64, end_ea_i64,
+                            npred, nsucc, preds, succs, type_name)
+        VALUES (17, 1, 100, 110, 0, 0, '[]', '[]', 'BLT_0WAY'),
+               (17, 2, 110, 120, 0, 0, '[]', '[]', 'BLT_0WAY');
+        -- Insert instructions out of natural row order to exercise the sort.
+        INSERT INTO instructions (snapshot_id, block_serial, ord, opcode_name)
+        VALUES (17, 2, 0, 'm_mov'),
+               (17, 1, 2, 'm_goto'),
+               (17, 2, 1, 'm_goto'),
+               (17, 1, 0, 'm_mov'),
+               (17, 1, 1, 'm_stx_byte');
+        """
+    )
+    conn.commit()
+    result = collect_block_views_for_snapshot(conn, snapshot_id=17)
+    assert tuple(i.opcode_name for i in result[1].instructions) == (
+        "m_mov", "m_stx_byte", "m_goto"
+    )
+    assert tuple(i.opcode_name for i in result[2].instructions) == (
+        "m_mov", "m_goto"
+    )
