@@ -54,6 +54,19 @@ def parse_tail_distinct_byte_env(value: str | None) -> int | None:
     return idx
 
 
+def parse_tail_duplicate_convergence_byte_env(value: str | None) -> int | None:
+    """Parse D810_TAIL_DUPLICATE_CONVERGENCE_BYTE.
+
+    Returns 6 if value is exactly '6'; None for any other value
+    (unset, non-int, out of range, or any byte != 6 — this probe is
+    byte6-only by design).
+    """
+    parsed = parse_tail_distinct_byte_env(value)
+    if parsed != 6:
+        return None
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class FactRow:
     """Pure view of one TerminalByteEmitterFact row.
@@ -149,6 +162,26 @@ class ShapingReport:
     successor_npred_after: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ConvergenceDuplicationReport:
+    """Result of one duplicate_convergence_for_byte_path call.
+
+    Topology-only: clones the shared convergence block reachable from
+    a given byte's emit block and rewires the byte-side predecessor's
+    edge to the clone. Original convergence remains for sibling paths.
+    """
+
+    applied: bool
+    byte_index: int
+    reason: str
+    byte_emit_ea: int | None = None
+    byte_emit_serial: int | None = None
+    convergence_serial: int | None = None
+    clone_serial: int | None = None
+    convergence_npred_before: int | None = None
+    convergence_succ_serials: tuple[int, ...] = ()
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (testable in tests/unit/)
 # ---------------------------------------------------------------------------
@@ -241,6 +274,55 @@ class MicrocodeAdapter(Protocol):
 
         Raises if the block is not 2-way or its tail is not a conditional
         jump.
+        """
+        ...
+
+
+class ConvergenceAdapter(Protocol):
+    """Abstract over the IDA mutation operations for convergence cloning.
+
+    Production: a real adapter wrapping mba operations.
+    Tests: a fake adapter recording every call.
+    """
+
+    def find_block_by_ea(self, ea: int) -> BlockView | None:
+        ...
+
+    def block_has_m_stx(self, block_serial: int) -> bool:
+        """True if the block contains at least one m_stx instruction.
+
+        Per microcode-expert: do NOT call dstr() or print to read this —
+        walk head→tail and check opcode integer only. The maybe_use/
+        maybe_def fields are side-effecting on inspection.
+        """
+        ...
+
+    def forward_walk_until_convergence(
+        self,
+        start_serial: int,
+        *,
+        max_depth: int = 8,
+    ) -> tuple[int | None, str]:
+        """Forward walk from start_serial via succs.
+
+        Returns (convergence_serial, reason). convergence_serial is the
+        first block with npred > 1 reachable within max_depth that also
+        has BLT_STOP reachable from it within another small walk.
+        Reason is 'ok', 'no_npred_gt_1_within_depth', or
+        'convergence_does_not_reach_return'.
+        """
+        ...
+
+    def clone_convergence_for_byte_path(
+        self,
+        *,
+        predecessor_serial: int,
+        convergence_serial: int,
+    ) -> int:
+        """Clone the convergence block; rewire predecessor's edge to it.
+
+        See module docstring of duplicate_convergence_for_byte_path for
+        the full topology contract. Returns the clone's serial.
         """
         ...
 
@@ -362,4 +444,103 @@ def isolate_byte_emit_tail(
         successor_serial_before=successor_serial,
         successor_npred_before=npred_before,
         successor_npred_after=npred_after,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ConvergenceTailDuplication probe (byte6-only)
+# ---------------------------------------------------------------------------
+
+
+def duplicate_convergence_for_byte_path(
+    *,
+    byte_index: int,
+    fact_view: FactView,
+    adapter: ConvergenceAdapter,
+) -> ConvergenceDuplicationReport:
+    """Topology-only convergence cloning for one byte's path.
+
+    Walks forward from byte_index's emit block. Finds the first block
+    on the path that satisfies:
+      - npred > 1   (i.e. genuinely shared with sibling paths)
+      - reach BLT_STOP within a bounded walk depth (e.g. <= 8 hops)
+    Clones that convergence block. Rewires the predecessor edge from
+    byte's emit-path -> clone. Original convergence still points to
+    its other predecessors.
+
+    No-op for byte_index != 6, no_fact, block_not_resolvable, no
+    convergence in bounded walk, byte emit lacks m_stx, etc.
+
+    This is a falsification probe — by design only byte 6 is supported.
+    """
+    if byte_index != 6:
+        return ConvergenceDuplicationReport(
+            applied=False,
+            byte_index=byte_index,
+            reason="probe_byte6_only",
+        )
+
+    target_ea_hex = _resolve_target_ea(
+        fact_view.terminal_byte_emit_facts(byte_index),
+        byte_index,
+    )
+    if target_ea_hex is None:
+        return ConvergenceDuplicationReport(
+            applied=False, byte_index=byte_index, reason="no_fact",
+        )
+
+    try:
+        target_ea = int(target_ea_hex, 16)
+    except ValueError:
+        return ConvergenceDuplicationReport(
+            applied=False,
+            byte_index=byte_index,
+            reason=f"malformed_ea:{target_ea_hex!r}",
+        )
+
+    block = adapter.find_block_by_ea(target_ea)
+    if block is None:
+        return ConvergenceDuplicationReport(
+            applied=False,
+            byte_index=byte_index,
+            reason="block_not_resolvable_at_runtime",
+            byte_emit_ea=target_ea,
+        )
+
+    # The byte's emit block must actually contain m_stx; otherwise
+    # there's no store to protect — abort early.
+    if not adapter.block_has_m_stx(block.serial):
+        return ConvergenceDuplicationReport(
+            applied=False,
+            byte_index=byte_index,
+            reason="no_m_stx_in_emit",
+            byte_emit_ea=target_ea,
+            byte_emit_serial=block.serial,
+        )
+
+    conv_serial, walk_reason = adapter.forward_walk_until_convergence(
+        block.serial,
+    )
+    if conv_serial is None:
+        return ConvergenceDuplicationReport(
+            applied=False,
+            byte_index=byte_index,
+            reason=walk_reason or "no_convergence_found",
+            byte_emit_ea=target_ea,
+            byte_emit_serial=block.serial,
+        )
+
+    clone_serial = adapter.clone_convergence_for_byte_path(
+        predecessor_serial=block.serial,
+        convergence_serial=conv_serial,
+    )
+
+    return ConvergenceDuplicationReport(
+        applied=True,
+        byte_index=byte_index,
+        reason="ok",
+        byte_emit_ea=target_ea,
+        byte_emit_serial=block.serial,
+        convergence_serial=conv_serial,
+        clone_serial=clone_serial,
     )
