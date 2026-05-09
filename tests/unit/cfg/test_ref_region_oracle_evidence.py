@@ -115,7 +115,7 @@ def test_build_ref_evidence_from_spec_path_uses_path_string():
     ev = build_ref_evidence_from_spec_path(
         ref_block="byte_emit[3]",
         path_string="ref.c:527",
-        opcode_signature="m_mov; m_stx_byte; m_jcnd; m_goto",
+        opcode_signature_str="m_mov; m_stx_byte; m_jcnd; m_goto",
         region_role="terminal_tail.byte_emit",
         preds=("dispatcher_root",),
         succs=("shared_terminal_tail",),
@@ -133,7 +133,7 @@ def test_build_ref_evidence_round_trips_json():
     ev = build_ref_evidence_from_spec_path(
         ref_block="byte_emit[3]",
         path_string="ref.c:527",
-        opcode_signature="m_mov",
+        opcode_signature_str="m_mov",
         region_role="terminal_tail.byte_emit",
     )
     payload = json.dumps(ev.to_json_dict(), sort_keys=True)
