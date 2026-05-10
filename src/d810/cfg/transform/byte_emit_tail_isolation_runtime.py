@@ -14,6 +14,10 @@ import sqlite3
 from d810.core import logging
 from d810.core.typing import Any, Iterable
 
+from d810.cfg.transform.byte_emit_live_use_anchor import (
+    execute_split_xor_anchor,
+    parse_byte_anchor_env,
+)
 from d810.cfg.transform.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
@@ -1664,3 +1668,50 @@ def maybe_run_tail_state_cascade(mba: Any) -> None:
         return
 
     logger.info("tail_state_cascade: %s", report)
+
+
+def maybe_run_byte_anchor(mba: Any) -> None:
+    """Env-gated hook: ``D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR`` probe.
+
+    Default-off. When set to exactly ``"1"`` and NO prior tail-shape
+    probe gate is set, inserts two split-XOR anchor blocks around
+    byte 6's emit block to keep its source-byte read alive through
+    IDA's ``optimize_global()`` at the snap17 -> snap18 transition.
+
+    Mutually exclusive with ``D810_TAIL_DISTINCT_BYTE``,
+    ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE``, and
+    ``D810_TERMINAL_TAIL_STATE_CASCADE_PAIR`` (refuses to run if any
+    of them is also set).
+
+    Any failure is logged and swallowed -- the manager pipeline never
+    breaks because of this probe.
+    """
+    raw = os.environ.get("D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR")
+    mechanism = parse_byte_anchor_env(raw)
+    if mechanism is None:
+        return  # default-off: no log, no mutation
+
+    conflicting = [
+        n for n in (
+            "D810_TAIL_DISTINCT_BYTE",
+            "D810_TAIL_DUPLICATE_CONVERGENCE_BYTE",
+            "D810_TERMINAL_TAIL_STATE_CASCADE_PAIR",
+        )
+        if os.environ.get(n)
+    ]
+    if conflicting:
+        logger.warning(
+            "byte_anchor: refusing to run; conflicting tail-shape probes "
+            "set: %s",
+            ", ".join(conflicting),
+        )
+        return
+
+    adapter = LiveMbaAdapter(mba)
+    try:
+        report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
+    except Exception:
+        logger.exception("byte_anchor: unexpected failure; continuing")
+        return
+
+    logger.info("byte_anchor: %s", report)
