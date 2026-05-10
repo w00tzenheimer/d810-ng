@@ -1002,14 +1002,23 @@ class LiveMbaAdapter:
         safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
         kreg_id = int(mba.alloc_kreg(8))
 
-        # 5. m_ldx kreg(1) <- [ds.2 : source_addr_operand]
+        # 5. m_ldx kreg(1) <- [seg : source_addr_operand]
+        # Clone segment operand from any existing m_stx/m_ldx in the mba
+        # since the IDA segment-register constant (mr_ds) is not always
+        # exposed in the Python bindings on every IDA version.
+        seg_template = _find_segment_operand_template(mba, _ih)
+        if seg_template is None:
+            raise RuntimeError(
+                "insert_anchor_block_xor_pair: no m_stx/m_ldx in mba to "
+                "clone segment operand from"
+            )
         ldx_ins = _ih.minsn_t(safe_ea)
         ldx_ins.ea = safe_ea
         anchor.insert_into_block(ldx_ins, anchor.tail)
         anchor.make_nop(anchor.tail)
         ldx_ins.opcode = _ih.m_ldx
         ldx_ins.l = _ih.mop_t()
-        ldx_ins.l.make_reg(_ih.mr_ds, 2)
+        ldx_ins.l.assign(seg_template)
         ldx_ins.r = _ih.mop_t()
         ldx_ins.r.assign(source_addr_operand)
         ldx_ins.d = _ih.mop_t()
@@ -1129,6 +1138,36 @@ def _find_v190_ldx_in_insn(
         )
         if found is not None:
             return found
+    return None
+
+
+def _find_segment_operand_template(mba, _ih):
+    """Return a clone of the segment operand from any existing
+    m_stx or m_ldx in the mba.
+
+    The segment register constant ``mr_ds`` is not always exposed as a
+    Python attribute on ``ida_hexrays`` (depends on IDA version /
+    architecture), but every binary that touches the data segment has
+    at least one m_stx/m_ldx in its microcode whose segment operand is
+    a well-formed register reference we can clone.
+
+    Returns None if no candidate insn is found.
+    """
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        blk = mba.get_mblock(serial)
+        if blk is None:
+            continue
+        insn = blk.head
+        while insn is not None:
+            opc = int(getattr(insn, "opcode", -1))
+            if opc == int(_ih.m_stx) or opc == int(_ih.m_ldx):
+                seg = getattr(insn, "l", None)
+                if seg is not None:
+                    clone = _ih.mop_t()
+                    clone.assign(seg)
+                    return clone
+            insn = insn.next
     return None
 
 
