@@ -22,7 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.core.typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Sentinel stack offset of %var_8.8 — the rax-bound return slot. Confirmed
 # via prior provenance trace (stkoff=2072 decimal).
@@ -119,6 +122,10 @@ def execute_split_xor_anchor(
             accumulator_stkoff=accumulator_stkoff,
         )
     except Exception:  # noqa: BLE001
+        logger.exception(
+            "byte_anchor: anchor_a insert failed for block %d",
+            block.serial,
+        )
         return ByteEmitAnchorReport(
             applied=False,
             byte_index=byte_index,
@@ -135,6 +142,10 @@ def execute_split_xor_anchor(
             accumulator_stkoff=accumulator_stkoff,
         )
     except Exception:  # noqa: BLE001
+        logger.exception(
+            "byte_anchor: anchor_b insert failed for pre_return %d",
+            pre_return_serial,
+        )
         return ByteEmitAnchorReport(
             applied=False,
             byte_index=byte_index,
