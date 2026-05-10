@@ -802,16 +802,18 @@ class LiveMbaAdapter:
     # ------------------------------------------------------------------
 
     def find_byte_emit_block_by_v190_offset(self, byte_index: int):
-        """Walk every block; return BlockView for the first block whose
-        m_stx contains a reference to v190+#byte_index anywhere in its
-        l/r/d operand trees, or (fallback) anywhere in its dstr text.
+        """Walk every block; for each block walk every top-level minsn
+        and its full operand-tree recursively, seeking an m_ldx whose
+        r operand resolves to v190+#byte_index. Return that block.
+
+        Fallback: textual dstr match.
         """
         import ida_hexrays as _ih
 
         mba = self._mba
         qty = int(getattr(mba, "qty", 0) or 0)
-        stx_seen = 0
-        v190_seen_byte_indices: list[int] = []
+        insn_count = 0
+        v190_byte_indices_seen: set[int] = set()
         dstr_match_serial: int | None = None
         for serial in range(qty):
             blk = mba.get_mblock(serial)
@@ -819,54 +821,50 @@ class LiveMbaAdapter:
                 continue
             insn = blk.head
             while insn is not None:
-                if int(insn.opcode) == int(_ih.m_stx):
-                    stx_seen += 1
-                    for op in (insn.l, insn.r, insn.d):
-                        found = _walk_mop_for_v190_ldx(op, byte_index)
-                        if found is not None:
-                            return self.find_block_by_ea(
-                                int(getattr(blk, "start", 0) or 0),
-                            )
-                    try:
-                        dstr = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
-                    except Exception:
-                        dstr = ""
-                    # Record which byte indices we saw in any v190-touching
-                    # m_stx, so we can diagnose mismatches.
-                    if "%var_190" in dstr:
-                        for k in range(7):
-                            if f"%var_190.8+#{k}.8" in dstr:
-                                v190_seen_byte_indices.append(k)
-                    needle = f"%var_190.8+#{byte_index}.8"
-                    if needle in dstr and dstr_match_serial is None:
-                        dstr_match_serial = serial
+                insn_count += 1
+                found = _find_v190_ldx_in_insn(insn, byte_index, v190_byte_indices_seen)
+                if found is not None:
+                    return self.find_block_by_ea(
+                        int(getattr(blk, "start", 0) or 0),
+                    )
+                try:
+                    dstr = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                except Exception:
+                    dstr = ""
+                needle = f"%var_190.8+#{byte_index}.8"
+                if needle in dstr and dstr_match_serial is None:
+                    dstr_match_serial = serial
                 insn = insn.next
         if dstr_match_serial is not None:
             logger.warning(
                 "byte_anchor: structural walker missed byte %d but dstr "
-                "matches in block %d (m_stx count walked: %d). Falling "
-                "back to dstr-matched block.",
-                byte_index, dstr_match_serial, stx_seen,
+                "matches in block %d (insns walked: %d, byte indices the "
+                "structural walker DID find: %s). Falling back.",
+                byte_index, dstr_match_serial, insn_count,
+                sorted(v190_byte_indices_seen),
             )
             blk = mba.get_mblock(dstr_match_serial)
             return self.find_block_by_ea(
                 int(getattr(blk, "start", 0) or 0),
             )
         logger.info(
-            "byte_anchor: no m_stx found referencing v190+#%d (walked %d "
-            "m_stx, observed v190+#k indices in dstr: %s).",
-            byte_index, stx_seen, sorted(set(v190_seen_byte_indices)),
+            "byte_anchor: no insn found with m_ldx of v190+#%d "
+            "(walked %d insns, structural byte indices found: %s).",
+            byte_index, insn_count, sorted(v190_byte_indices_seen),
         )
         return None
 
     def extract_v190_indexed_operand(
         self, byte_emit_serial: int, byte_index: int,
     ):
-        """Find the inner m_ldx of v190+#k inside the byte_emit's m_stx
-        operand trees, then return a *clone* of its r operand (the
-        address). Searches all three operand trees (l, r, d).
+        """Find the inner m_ldx of v190+#k anywhere in the byte_emit
+        block's instruction operand trees and return a clone of its r
+        operand. If the structural walker can't find it (e.g. because
+        the operand only exists as a sub-instruction nested deep inside
+        an m_stx value tree IDA materialized via temp kregs), synthesize
+        a fresh ``mop_d(m_add(stkvar@0x190, #byte_index.8))`` from scratch.
 
-        Raises RuntimeError if the inner m_ldx is not found.
+        Raises RuntimeError only if the synthesis itself fails.
         """
         import ida_hexrays as _ih
 
@@ -876,17 +874,23 @@ class LiveMbaAdapter:
                 f"byte_emit block {byte_emit_serial} not resolvable"
             )
         insn = blk.head
+        observed: set[int] = set()
         while insn is not None:
-            if int(insn.opcode) == int(_ih.m_stx):
-                for op in (insn.l, insn.r, insn.d):
-                    found = _walk_mop_for_v190_ldx(op, byte_index)
-                    if found is not None:
-                        clone = _ih.mop_t()
-                        clone.assign(found)
-                        return clone
+            found = _find_v190_ldx_in_insn(insn, byte_index, observed)
+            if found is not None:
+                clone = _ih.mop_t()
+                clone.assign(found)
+                return clone
             insn = insn.next
-        raise RuntimeError(
-            f"no m_ldx with v190+#{byte_index} in block {byte_emit_serial}"
+        # Synthetic fallback: build the operand from scratch.
+        logger.warning(
+            "byte_anchor: extract_v190_indexed_operand: no structural "
+            "match for byte %d in block %d (structural matches found: "
+            "%s); synthesizing fresh operand.",
+            byte_index, byte_emit_serial, sorted(observed),
+        )
+        return _synthesize_v190_plus_k_operand(
+            self._mba, byte_index, _ih,
         )
 
     def find_pre_return_block(self) -> int:
@@ -1081,6 +1085,76 @@ class LiveMbaAdapter:
         mba.mark_chains_dirty()
 
         return int(anchor.serial)
+
+
+def _find_v190_ldx_in_insn(
+    insn,
+    byte_index: int,
+    observed_byte_indices: set[int] | None = None,
+    depth: int = 15,
+):
+    """Recursively walk an minsn_t and every nested mop_d/sub-instruction
+    seeking an m_ldx whose r operand is v190+#byte_index.
+
+    ``observed_byte_indices`` (optional) is populated with any byte index
+    k for which a v190+#k m_ldx was seen during the walk -- a diagnostic
+    aid so the caller can log "we saw bytes 0,1,2 but not 6".
+    """
+    import ida_hexrays as _ih
+
+    if depth <= 0 or insn is None:
+        return None
+    if int(getattr(insn, "opcode", -1)) == int(_ih.m_ldx):
+        r = getattr(insn, "r", None)
+        if r is not None and _is_v190_plus_k(r, byte_index):
+            return r
+        if observed_byte_indices is not None and r is not None:
+            for k in range(7):
+                if _is_v190_plus_k(r, k):
+                    observed_byte_indices.add(k)
+    for op in (
+        getattr(insn, "l", None),
+        getattr(insn, "r", None),
+        getattr(insn, "d", None),
+    ):
+        if op is None:
+            continue
+        if int(getattr(op, "t", -1)) != int(_ih.mop_d):
+            continue
+        sub = getattr(op, "d", None)
+        if sub is None:
+            continue
+        found = _find_v190_ldx_in_insn(
+            sub, byte_index, observed_byte_indices, depth - 1,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _synthesize_v190_plus_k_operand(mba, byte_index: int, _ih):
+    """Build a fresh ``mop_d(m_add(stkvar@0x190, #byte_index.8))`` mop_t.
+
+    Used as a fallback when the structural walker can't find an existing
+    m_ldx of v190+#k to clone (which happens when IDA materializes the
+    intermediate through a temp kreg, dropping the inline form).
+
+    The synthetic operand is semantically equivalent to the original
+    byte_emit's address operand for IDA's alias analysis purposes.
+    """
+    add_insn = _ih.minsn_t(int(getattr(mba, "entry_ea", 0) or 0))
+    add_insn.opcode = _ih.m_add
+    add_insn.l = _ih.mop_t()
+    add_insn.l.make_stkvar(mba, 0x190)
+    add_insn.l.size = 8
+    add_insn.r = _ih.mop_t()
+    add_insn.r.make_number(int(byte_index), 8)
+    add_insn.d = _ih.mop_t()
+    add_insn.d.erase()
+
+    result = _ih.mop_t()
+    result.create_from_insn(add_insn)
+    return result
 
 
 def _walk_mop_for_v190_ldx(addr_op, byte_index: int, depth: int = 8):
