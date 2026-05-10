@@ -17,7 +17,9 @@ from d810.cfg.transform.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
     duplicate_convergence_for_byte_path,
+    execute_state_cascade,
     isolate_byte_emit_tail,
+    parse_state_cascade_pair_env,
     parse_tail_distinct_byte_env,
     parse_tail_duplicate_convergence_byte_env,
 )
@@ -923,3 +925,276 @@ def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
         return
 
     logger.info("tail_duplicate_convergence: %s", report)
+
+
+# ---------------------------------------------------------------------------
+# TerminalTailStateCascade env-gated hook (byte5 -> byte6)
+# ---------------------------------------------------------------------------
+
+
+_STATE_CASCADE_FACT_LABELS = (
+    "maturity_MMAT_GLBOPT1_pre_d810",
+    "MMAT_GLBOPT1_pre_d810",
+    "pre_d810",
+)
+
+
+def _json_int_tuple(value) -> tuple[int, ...]:
+    if not value:
+        return ()
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    out: list[int] = []
+    for item in parsed:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
+
+
+def _load_planner_blocks(
+    conn,  # sqlite3.Connection
+    snapshot_id: int,
+):
+    """Read block + instruction rows from a CFG snapshot into the
+    pure planner's ``TerminalTailBlock`` shape.
+
+    The diag DB is per-IDB per-run, so ``snapshot_id`` already
+    uniquely identifies the function under analysis — neither
+    ``blocks`` nor ``instructions`` have a ``func_ea_hex`` column.
+    """
+    from d810.cfg.terminal_tail_cascade_egress_planner import TerminalTailBlock
+
+    rows = conn.execute(
+        "SELECT serial, type_name, start_ea_hex, succs, preds "
+        "FROM blocks WHERE snapshot_id=? "
+        "ORDER BY serial",
+        (snapshot_id,),
+    ).fetchall()
+    op_rows = conn.execute(
+        "SELECT block_serial, opcode_name, COALESCE(dstr, '') "
+        "FROM instructions WHERE snapshot_id=? "
+        "ORDER BY block_serial, insn_index",
+        (snapshot_id,),
+    ).fetchall()
+    opcodes_by_block: dict[int, list[str]] = {}
+    text_by_block: dict[int, list[str]] = {}
+    for block_serial, opcode, dstr in op_rows:
+        bs = int(block_serial)
+        opcodes_by_block.setdefault(bs, []).append(str(opcode or ""))
+        text_by_block.setdefault(bs, []).append(str(dstr or ""))
+
+    blocks = {}
+    for serial, type_name, start_ea_hex, succs, preds in rows:
+        bs = int(serial)
+        blocks[bs] = TerminalTailBlock(
+            serial=bs,
+            succs=_json_int_tuple(succs),
+            preds=_json_int_tuple(preds),
+            type_name=str(type_name or ""),
+            start_ea_hex=start_ea_hex,
+            insn_opcodes=tuple(opcodes_by_block.get(bs, ())),
+            insn_text=tuple(text_by_block.get(bs, ())),
+        )
+    return blocks
+
+
+def _load_planner_sites(
+    conn,  # sqlite3.Connection
+    snapshot_id: int,
+    func_ea_hex: str,
+):
+    """Yield ``TerminalByteEmitSite`` rows from a fact snapshot."""
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        terminal_byte_emit_site_from_payload,
+    )
+
+    rows = conn.execute(
+        "SELECT fact_id, payload, source_ea_hex, confidence "
+        "FROM fact_observations "
+        "WHERE snapshot_id=? AND kind='TerminalByteEmitterFact' "
+        "  AND func_ea_hex=? "
+        "ORDER BY fact_id",
+        (snapshot_id, func_ea_hex),
+    ).fetchall()
+    sites: list = []
+    for fact_id, payload_json, source_ea_hex, confidence in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        site = terminal_byte_emit_site_from_payload(
+            str(fact_id),
+            payload,
+            source_ea_hex=source_ea_hex,
+            confidence=float(confidence or 0.0),
+        )
+        if site is not None:
+            sites.append(site)
+    return sites
+
+
+def _resolve_planner_snapshots(
+    conn, func_ea_hex: str,
+) -> tuple[int | None, int | None]:
+    """Resolve (fact_snapshot_id, target_snapshot_id) for a func_ea.
+
+    fact_snapshot is the highest-id snapshot whose label matches a
+    GLBOPT1 pre_d810 capture and which has a
+    ``TerminalByteEmitterFact`` row for this function.
+    target_snapshot is the highest-id snapshot whose label is
+    ``post_bundle_stabilize`` and which has block rows for this
+    function.
+    """
+    fact_snap: int | None = None
+    for label in _STATE_CASCADE_FACT_LABELS:
+        row = conn.execute(
+            "SELECT MAX(s.id) FROM snapshots s "
+            "JOIN fact_observations f ON f.snapshot_id = s.id "
+            "WHERE s.label = ? "
+            "  AND f.kind = 'TerminalByteEmitterFact' "
+            "  AND f.func_ea_hex = ?",
+            (label, func_ea_hex),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            fact_snap = int(row[0])
+            break
+
+    target_snap: int | None = None
+    row = conn.execute(
+        "SELECT MAX(s.id) FROM snapshots s "
+        "WHERE s.label = 'post_bundle_stabilize' "
+        "  AND EXISTS (SELECT 1 FROM blocks b "
+        "              WHERE b.snapshot_id = s.id)",
+    ).fetchone()
+    if row is not None and row[0] is not None:
+        target_snap = int(row[0])
+
+    return (fact_snap, target_snap)
+
+
+def maybe_run_tail_state_cascade(mba: Any) -> None:
+    """Env-gated hook: ``D810_TERMINAL_TAIL_STATE_CASCADE_PAIR`` probe.
+
+    Default-off. When set to exactly ``"5:6"`` and neither
+    ``D810_TAIL_DISTINCT_BYTE`` nor ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE``
+    is set, this:
+
+    1. Resolves the latest GLBOPT1 fact snapshot and the latest
+       ``post_bundle_stabilize`` block snapshot from the diag DB.
+    2. Builds planner inputs (TerminalTailBlock map + TerminalByteEmitSite
+       list) and runs ``TerminalTailCascadeEgressPlanner.build_plan()``.
+    3. Selects the byte-5 row.
+    4. Hands off to the pure ``execute_state_cascade`` orchestrator,
+       which gates on the planner's ``SAFE_TARGET_POST_GUARD`` verdict
+       and rewires byte5's advance edge through ``LiveMbaAdapter``.
+
+    Any failure (env not set, no diag DB, no fact snapshot, planner
+    returns no byte-5 row, verdict not safe, …) is logged and swallowed
+    so the manager pipeline never breaks.
+    """
+    raw = os.environ.get("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR")
+    pair = parse_state_cascade_pair_env(raw)
+    if pair is None:
+        return  # default-off: no log, no mutation
+
+    if (
+        os.environ.get("D810_TAIL_DISTINCT_BYTE")
+        or os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+    ):
+        logger.warning(
+            "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR is "
+            "set together with another tail-shaping probe; refusing to "
+            "run any."
+        )
+        return
+
+    try:
+        from d810.core.diag import get_diag_db
+
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        diag_conn = get_diag_db(func_ea)
+    except Exception:
+        logger.exception(
+            "tail_state_cascade: cannot acquire diag DB; skipping"
+        )
+        return
+
+    if diag_conn is None:
+        logger.warning(
+            "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR=%r "
+            "set but diag DB unavailable; skipping",
+            raw,
+        )
+        return
+
+    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
+    fact_snap, target_snap = _resolve_planner_snapshots(diag_conn, func_ea_hex)
+    if fact_snap is None or target_snap is None:
+        logger.warning(
+            "tail_state_cascade: missing planner snapshots "
+            "fact_snap=%s target_snap=%s; skipping",
+            fact_snap, target_snap,
+        )
+        return
+
+    try:
+        from d810.cfg.terminal_tail_cascade_egress_planner import (
+            TerminalTailCascadeEgressPlanner,
+        )
+
+        blocks = _load_planner_blocks(diag_conn, target_snap)
+        sites = _load_planner_sites(diag_conn, fact_snap, func_ea_hex)
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+    except Exception:
+        logger.exception(
+            "tail_state_cascade: planner failed; skipping"
+        )
+        return
+
+    byte5_row = next(
+        (row for row in plan.rows if row.byte_index == 5), None,
+    )
+    if byte5_row is None:
+        logger.warning(
+            "tail_state_cascade: planner produced no byte-5 row; skipping"
+        )
+        return
+
+    logger.info(
+        "tail_state_cascade: planner row byte_index=5 "
+        "verdict=%s source_block=%s intended_target=%s "
+        "current_continuation=%s state_variable=%s "
+        "state_required_value=%s state_write_block=%s "
+        "state_write_bypassed=%s",
+        byte5_row.state_update_verdict,
+        byte5_row.source_block,
+        byte5_row.intended_target,
+        byte5_row.current_continuation_target,
+        byte5_row.state_variable,
+        byte5_row.state_required_value,
+        byte5_row.state_write_block,
+        byte5_row.state_write_bypassed,
+    )
+
+    adapter = LiveMbaAdapter(mba)
+    try:
+        report = execute_state_cascade(
+            pair=pair,
+            plan_row=byte5_row,
+            adapter=adapter,
+        )
+    except Exception:
+        logger.exception(
+            "tail_state_cascade: unexpected failure; continuing"
+        )
+        return
+
+    logger.info("tail_state_cascade: %s", report)
