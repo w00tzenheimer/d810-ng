@@ -413,3 +413,184 @@ def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
     assert parse_tail_duplicate_convergence_byte_env("") is None
     assert parse_tail_duplicate_convergence_byte_env(None) is None
     assert parse_tail_duplicate_convergence_byte_env("xyz") is None
+
+
+# ----- parse_state_cascade_pair_env -----
+
+
+from d810.cfg.transform.byte_emit_tail_isolation import (
+    StateCascadeReport,
+    execute_state_cascade,
+    parse_state_cascade_pair_env,
+)
+
+
+def test_parse_state_cascade_pair_env_only_accepts_5_6():
+    assert parse_state_cascade_pair_env("5:6") == (5, 6)
+    assert parse_state_cascade_pair_env("  5:6  ") == (5, 6)
+    assert parse_state_cascade_pair_env(None) is None
+    assert parse_state_cascade_pair_env("") is None
+    assert parse_state_cascade_pair_env("0:1") is None
+    assert parse_state_cascade_pair_env("5") is None
+    assert parse_state_cascade_pair_env("5:7") is None
+    assert parse_state_cascade_pair_env("6:5") is None
+    assert parse_state_cascade_pair_env("xyz") is None
+
+
+# ----- execute_state_cascade -----
+
+
+@dataclass
+class _FakePlanRow:
+    """Minimal duck-type for TerminalTailCascadeEgressRow."""
+
+    byte_index: int = 5
+    source_block: int | None = 161
+    current_continuation_target: int | None = 200
+    intended_target: int | None = 217
+    early_return_target: int | None = 42
+    current_convergence_target: int | None = 200
+    state_variable: str | None = "%var_198"
+    state_required_value: int | None = 5
+    state_write_block: int | None = None
+    state_write_path: tuple[int, ...] = ()
+    state_write_bypassed: bool = False
+    state_update_verdict: str = "SAFE_TARGET_POST_GUARD"
+    confidence: float = 0.9
+    reason: str = "complete_cascade_egress_candidate"
+
+
+@dataclass
+class _FakeStateCascadeAdapter:
+    clone_calls: list[tuple[int, int]] = field(default_factory=list)
+    redirect_calls: list[tuple[int, int, int]] = field(default_factory=list)
+    next_clone_serial: int = 555
+
+    def clone_state_write_block(self, *, template_serial, tail_goto_target):
+        self.clone_calls.append((template_serial, tail_goto_target))
+        return self.next_clone_serial
+
+    def redirect_advance_edge(
+        self, *, source_serial, old_target_serial, new_target_serial,
+    ):
+        self.redirect_calls.append(
+            (source_serial, old_target_serial, new_target_serial)
+        )
+
+
+def test_execute_state_cascade_rejects_non_5_6_pair():
+    res = execute_state_cascade(
+        pair=(0, 1),
+        plan_row=_FakePlanRow(),
+        adapter=_FakeStateCascadeAdapter(),
+    )
+    assert res.applied is False
+    assert res.reason == "probe_5_6_only"
+    assert res.pair == ""
+
+
+def test_execute_state_cascade_rejects_when_verdict_not_safe():
+    row = _FakePlanRow(state_update_verdict="AMBIGUOUS_STATE_UPDATE")
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is False
+    assert res.reason == "planner_verdict_not_safe:AMBIGUOUS_STATE_UPDATE"
+    assert adapter.redirect_calls == []
+    assert adapter.clone_calls == []
+
+
+def test_execute_state_cascade_rejects_when_source_block_none():
+    row = _FakePlanRow(source_block=None)
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is False
+    assert res.reason == "planner_row_missing_source_block"
+    assert adapter.redirect_calls == []
+
+
+def test_execute_state_cascade_rejects_when_intended_target_none():
+    row = _FakePlanRow(intended_target=None)
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is False
+    assert res.reason == "planner_row_missing_intended_target"
+    assert adapter.redirect_calls == []
+
+
+def test_execute_state_cascade_rejects_when_continuation_none():
+    row = _FakePlanRow(current_continuation_target=None)
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is False
+    assert res.reason == "planner_row_missing_current_continuation"
+    assert adapter.redirect_calls == []
+
+
+def test_execute_state_cascade_rejects_when_byte_index_not_5():
+    row = _FakePlanRow(byte_index=4)
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is False
+    assert res.reason == "planner_row_not_byte5"
+
+
+def test_execute_state_cascade_happy_path_no_clone_when_not_bypassed():
+    row = _FakePlanRow(
+        source_block=161,
+        current_continuation_target=200,
+        intended_target=217,
+        early_return_target=42,
+        state_write_bypassed=False,
+        state_write_block=180,  # present but not bypassed -> no clone
+    )
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is True
+    assert res.reason == "ok"
+    assert res.pair == "5:6"
+    assert res.proof == "SAFE_TARGET_POST_GUARD"
+    assert res.source_byte_block == 161
+    assert res.old_advance_target == 200
+    assert res.post_guard_target == 217
+    assert res.state_write_block_cloned is None
+    assert res.preserved_early_return_target == 42
+    assert adapter.clone_calls == []
+    assert adapter.redirect_calls == [(161, 200, 217)]
+
+
+def test_execute_state_cascade_happy_path_clones_when_bypassed():
+    row = _FakePlanRow(
+        source_block=161,
+        current_continuation_target=200,
+        intended_target=217,
+        early_return_target=42,
+        state_write_block=180,
+        state_write_bypassed=True,
+        state_write_path=(200, 201, 217),
+    )
+    adapter = _FakeStateCascadeAdapter(next_clone_serial=555)
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is True
+    assert res.reason == "ok"
+    assert res.state_write_block_cloned == 555
+    assert res.skipped_guard_blocks == (200, 201, 217)
+    # Clone receives template=180, tail_goto_target=intended_target (217).
+    assert adapter.clone_calls == [(180, 217)]
+    # Advance edge points at the clone, NOT directly at intended_target.
+    assert adapter.redirect_calls == [(161, 200, 555)]
+
+
+def test_execute_state_cascade_no_clone_when_bypassed_but_no_state_write_block():
+    row = _FakePlanRow(
+        source_block=161,
+        current_continuation_target=200,
+        intended_target=217,
+        state_write_bypassed=True,
+        state_write_block=None,  # no template available -> no clone, fall through
+    )
+    adapter = _FakeStateCascadeAdapter()
+    res = execute_state_cascade(pair=(5, 6), plan_row=row, adapter=adapter)
+    assert res.applied is True
+    assert res.state_write_block_cloned is None
+    assert adapter.clone_calls == []
+    assert adapter.redirect_calls == [(161, 200, 217)]

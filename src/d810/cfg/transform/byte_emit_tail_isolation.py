@@ -67,6 +67,20 @@ def parse_tail_duplicate_convergence_byte_env(value: str | None) -> int | None:
     return parsed
 
 
+def parse_state_cascade_pair_env(value: str | None) -> tuple[int, int] | None:
+    """Parse D810_TERMINAL_TAIL_STATE_CASCADE_PAIR.
+
+    Only accepts the literal '5:6'. Returns (5, 6) on match; None otherwise.
+    This probe is byte5->byte6-only by design.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if text != "5:6":
+        return None
+    return (5, 6)
+
+
 @dataclass(frozen=True, slots=True)
 class FactRow:
     """Pure view of one TerminalByteEmitterFact row.
@@ -160,6 +174,31 @@ class ShapingReport:
     successor_serial_before: int | None = None
     successor_npred_before: int | None = None
     successor_npred_after: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StateCascadeReport:
+    """Result of one execute_state_cascade call.
+
+    A falsification probe gated on the read-only
+    ``TerminalTailCascadeEgressPlanner``'s ``SAFE_TARGET_POST_GUARD``
+    verdict. ``applied=True`` means the byte5 advance edge was rewired
+    to the planner-supplied post-guard target, optionally going through
+    a clone of the planner-supplied state-write block.
+    """
+
+    applied: bool
+    pair: str  # "5:6" or "" on no-op
+    reason: str
+    source_byte_block: int | None = None
+    old_advance_target: int | None = None
+    post_guard_target: int | None = None
+    state_write_block_cloned: int | None = None
+    skipped_guard_blocks: tuple[int, ...] = ()
+    preserved_early_return_target: int | None = None
+    proof: str = ""  # "SAFE_TARGET_POST_GUARD" on apply
+    planner_state_variable: str | None = None
+    planner_state_required_value: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +313,41 @@ class MicrocodeAdapter(Protocol):
 
         Raises if the block is not 2-way or its tail is not a conditional
         jump.
+        """
+        ...
+
+    def clone_state_write_block(
+        self,
+        *,
+        template_serial: int,
+        tail_goto_target: int,
+    ) -> int:
+        """Clone the existing state-write block (no instructions added or
+        removed); set its tail to ``m_goto @tail_goto_target``; append at
+        the end of the mba.
+
+        The clone holds the SAME instructions as the template. Caller is
+        responsible for wiring predecessor edges; the clone is returned
+        with empty predset and a single-successor succset pointing at
+        ``tail_goto_target``.
+
+        Returns the clone's serial.
+        """
+        ...
+
+    def redirect_advance_edge(
+        self,
+        *,
+        source_serial: int,
+        old_target_serial: int,
+        new_target_serial: int,
+    ) -> None:
+        """Rewire ``source_serial``'s advance edge from ``old_target`` to
+        ``new_target``.
+
+        For ``BLT_2WAY`` blocks, only the ADVANCE arm (the goto/jnz arm
+        currently pointing at ``old_target_serial``) is redirected. The
+        early-return arm must remain untouched.
         """
         ...
 
@@ -543,4 +617,160 @@ def duplicate_convergence_for_byte_path(
         byte_emit_serial=block.serial,
         convergence_serial=conv_serial,
         clone_serial=clone_serial,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TerminalTailStateCascade probe (byte5 -> byte6 only)
+# ---------------------------------------------------------------------------
+
+
+_PROOF_SAFE_TARGET_POST_GUARD = "SAFE_TARGET_POST_GUARD"
+
+
+def execute_state_cascade(
+    *,
+    pair: tuple[int, int],
+    plan_row,
+    adapter,
+) -> StateCascadeReport:
+    """One-shot byte5 -> byte6 cascade egress.
+
+    A falsification probe gated on the read-only
+    ``TerminalTailCascadeEgressPlanner``'s ``SAFE_TARGET_POST_GUARD``
+    verdict. Inputs:
+
+    - ``pair``: must equal ``(5, 6)``.
+    - ``plan_row``: a ``TerminalTailCascadeEgressRow`` with
+      ``byte_index == 5`` produced by the read-only planner.
+    - ``adapter``: extends ``MicrocodeAdapter`` with
+      ``clone_state_write_block`` and ``redirect_advance_edge``.
+
+    Mutation steps when all preconditions hold:
+
+    1. If ``plan_row.state_write_bypassed`` AND
+       ``plan_row.state_write_block`` is not ``None``:
+         - clone state-write block via
+           ``adapter.clone_state_write_block(template_serial=...,
+           tail_goto_target=plan_row.intended_target)``.
+         - rewire byte5's advance edge to the clone.
+       Else:
+         - rewire byte5's advance edge directly to
+           ``plan_row.intended_target``.
+
+    Preserves byte5's early-return target (only the advance arm is
+    touched).
+    """
+    # 1. Pair gate.
+    if pair != (5, 6):
+        return StateCascadeReport(
+            applied=False,
+            pair="",
+            reason="probe_5_6_only",
+        )
+
+    # 2. plan_row must be the byte-5 row.
+    if getattr(plan_row, "byte_index", None) != 5:
+        return StateCascadeReport(
+            applied=False,
+            pair="5:6",
+            reason="planner_row_not_byte5",
+        )
+
+    verdict = getattr(plan_row, "state_update_verdict", "")
+    if verdict != _PROOF_SAFE_TARGET_POST_GUARD:
+        return StateCascadeReport(
+            applied=False,
+            pair="5:6",
+            reason=f"planner_verdict_not_safe:{verdict}",
+            planner_state_variable=getattr(plan_row, "state_variable", None),
+            planner_state_required_value=getattr(
+                plan_row, "state_required_value", None,
+            ),
+        )
+
+    source_block = getattr(plan_row, "source_block", None)
+    if source_block is None:
+        return StateCascadeReport(
+            applied=False,
+            pair="5:6",
+            reason="planner_row_missing_source_block",
+            planner_state_variable=getattr(plan_row, "state_variable", None),
+            planner_state_required_value=getattr(
+                plan_row, "state_required_value", None,
+            ),
+        )
+
+    intended_target = getattr(plan_row, "intended_target", None)
+    if intended_target is None:
+        return StateCascadeReport(
+            applied=False,
+            pair="5:6",
+            reason="planner_row_missing_intended_target",
+            source_byte_block=int(source_block),
+            planner_state_variable=getattr(plan_row, "state_variable", None),
+            planner_state_required_value=getattr(
+                plan_row, "state_required_value", None,
+            ),
+        )
+
+    old_advance = getattr(plan_row, "current_continuation_target", None)
+    if old_advance is None:
+        return StateCascadeReport(
+            applied=False,
+            pair="5:6",
+            reason="planner_row_missing_current_continuation",
+            source_byte_block=int(source_block),
+            post_guard_target=int(intended_target),
+            planner_state_variable=getattr(plan_row, "state_variable", None),
+            planner_state_required_value=getattr(
+                plan_row, "state_required_value", None,
+            ),
+        )
+
+    # 3. Optionally clone the planner-supplied state-write block so the
+    #    redirect path goes through a state write instead of bypassing it.
+    cloned_serial: int | None = None
+    if (
+        getattr(plan_row, "state_write_bypassed", False)
+        and getattr(plan_row, "state_write_block", None) is not None
+    ):
+        cloned_serial = int(
+            adapter.clone_state_write_block(
+                template_serial=int(plan_row.state_write_block),
+                tail_goto_target=int(intended_target),
+            )
+        )
+        new_target = cloned_serial
+    else:
+        new_target = int(intended_target)
+
+    # 4. Rewire byte5's advance edge.
+    adapter.redirect_advance_edge(
+        source_serial=int(source_block),
+        old_target_serial=int(old_advance),
+        new_target_serial=int(new_target),
+    )
+
+    return StateCascadeReport(
+        applied=True,
+        pair="5:6",
+        reason="ok",
+        source_byte_block=int(source_block),
+        old_advance_target=int(old_advance),
+        post_guard_target=int(intended_target),
+        state_write_block_cloned=cloned_serial,
+        skipped_guard_blocks=tuple(
+            int(s) for s in getattr(plan_row, "state_write_path", ()) or ()
+        ),
+        preserved_early_return_target=(
+            int(plan_row.early_return_target)
+            if getattr(plan_row, "early_return_target", None) is not None
+            else None
+        ),
+        proof=_PROOF_SAFE_TARGET_POST_GUARD,
+        planner_state_variable=getattr(plan_row, "state_variable", None),
+        planner_state_required_value=getattr(
+            plan_row, "state_required_value", None,
+        ),
     )
