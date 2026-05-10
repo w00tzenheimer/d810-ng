@@ -32,7 +32,7 @@ The caller resolves that for us via FactView.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from d810.core.typing import Iterable, Protocol
+from d810.core.typing import Any, Iterable, Protocol
 
 
 def parse_tail_distinct_byte_env(value: str | None) -> int | None:
@@ -397,6 +397,72 @@ class ConvergenceAdapter(Protocol):
 
         See module docstring of duplicate_convergence_for_byte_path for
         the full topology contract. Returns the clone's serial.
+        """
+        ...
+
+
+class LiveUseAnchorAdapter(Protocol):
+    """Abstract over the IDA mutation operations for live-use anchoring.
+
+    Production: a real adapter wrapping mba operations.
+    Tests: a fake adapter recording every call.
+
+    See ``byte_emit_live_use_anchor.execute_split_xor_anchor`` for the
+    call order contract.
+    """
+
+    def find_byte_emit_block_by_v190_offset(self, byte_index: int) -> BlockView | None:
+        """Return the live byte_emit[k] block by matching its
+        ``[ds.2 : %var_190.8 + #k.8]`` indexed store.
+
+        Returns None if no block in the live mba carries that store.
+        """
+        ...
+
+    def extract_v190_indexed_operand(
+        self, byte_emit_serial: int, byte_index: int,
+    ) -> Any:
+        """Return the exact source-address ``mop_t`` operand-tree from
+        the byte_emit block's existing ``xdu([ds.2 : v190 + #k.8].1)``
+        sub-expression. The returned operand is later passed unchanged
+        as the source of two new ``m_ldx`` instructions, guaranteeing
+        both reads target the same memory as byte_emit's own load.
+
+        Raises if the indexed-load sub-expression is not present.
+        """
+        ...
+
+    def find_pre_return_block(self) -> int:
+        """Return the unique BLT_STOP predecessor's serial.
+
+        Raises if there are zero or multiple BLT_STOP predecessors.
+        """
+        ...
+
+    def insert_anchor_block_xor_pair(
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
+        source_addr_operand: Any,
+        accumulator_stkoff: int,
+    ) -> int:
+        """Insert one new block carrying three instructions:
+
+            m_ldx  kreg,    ds.2, source_addr_operand   # load byte
+            m_xdu  kreg_x,  kreg                        # zero-extend to 8B
+            m_xor  var,     var,  kreg_x                # var ^= byte
+
+        where ``var`` is the stack slot at ``accumulator_stkoff``. The
+        new block's predecessor is rewired from
+        ``predecessor_serial`` -> ``successor_serial`` to
+        ``predecessor_serial`` -> new_block -> ``successor_serial``.
+
+        ``successor_serial == -1`` is a sentinel meaning: insert before
+        ``predecessor_serial``'s existing single successor (no rewire
+        target lookup needed by the caller).
+
+        Returns the new block's serial.
         """
         ...
 
