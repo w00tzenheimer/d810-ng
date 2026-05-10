@@ -793,6 +793,328 @@ class LiveMbaAdapter:
             new_blk.mark_lists_dirty()
         mba.mark_chains_dirty()
 
+    # ------------------------------------------------------------------
+    # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
+    # ------------------------------------------------------------------
+
+    def find_byte_emit_block_by_v190_offset(self, byte_index: int):
+        """Walk every block; return BlockView for the first block whose
+        m_stx value-tree contains an inner m_ldx of v190+#byte_index.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        qty = int(getattr(mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                if int(insn.opcode) == int(_ih.m_stx):
+                    if _walk_mop_for_v190_ldx(insn.d, byte_index) is not None:
+                        return self.find_block_by_ea(
+                            int(getattr(blk, "start", 0) or 0),
+                        )
+                insn = insn.next
+        return None
+
+    def extract_v190_indexed_operand(
+        self, byte_emit_serial: int, byte_index: int,
+    ):
+        """Find the inner m_ldx of v190+#k inside the byte_emit's m_stx
+        value tree, then return a *clone* of its r operand (the address).
+
+        Raises RuntimeError if the inner m_ldx is not found.
+        """
+        import ida_hexrays as _ih
+
+        blk = self._mba.get_mblock(int(byte_emit_serial))
+        if blk is None:
+            raise RuntimeError(
+                f"byte_emit block {byte_emit_serial} not resolvable"
+            )
+        insn = blk.head
+        while insn is not None:
+            if int(insn.opcode) == int(_ih.m_stx):
+                found = _walk_mop_for_v190_ldx(insn.d, byte_index)
+                if found is not None:
+                    clone = _ih.mop_t()
+                    clone.assign(found)
+                    return clone
+            insn = insn.next
+        raise RuntimeError(
+            f"no m_ldx with v190+#{byte_index} in block {byte_emit_serial}"
+        )
+
+    def find_pre_return_block(self) -> int:
+        """Return the unique BLT_STOP predecessor's serial.
+
+        Raises RuntimeError if zero or more than one BLT_STOP exists,
+        or if BLT_STOP has anything other than exactly one predecessor.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        qty = int(getattr(mba, "qty", 0) or 0)
+        stop_serials = [
+            s for s in range(qty)
+            if mba.get_mblock(s) is not None
+            and int(mba.get_mblock(s).type) == int(_ih.BLT_STOP)
+        ]
+        if len(stop_serials) != 1:
+            raise RuntimeError(
+                f"expected exactly one BLT_STOP block; got {len(stop_serials)}"
+            )
+        stop_blk = mba.get_mblock(stop_serials[0])
+        preds = [int(p) for p in stop_blk.predset]
+        if len(preds) != 1:
+            raise RuntimeError(
+                f"expected exactly one BLT_STOP predecessor; got {len(preds)}"
+            )
+        return preds[0]
+
+    def insert_anchor_block_xor_pair(
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
+        source_addr_operand,
+        accumulator_stkoff: int,
+    ) -> int:
+        """Insert an anchor block carrying:
+
+            m_ldx  kreg(1),  ds.2, source_addr_operand
+            m_xdu  kreg(8),  kreg(1)
+            m_xor  var(8),   var(8), kreg(8)
+            m_goto @successor
+
+        between predecessor and successor.
+
+        Mirrors ``insert_trampoline_after``'s clone-and-NOP-then-decorate
+        pattern (mba.copy_block + make_nop + insert_into_block +
+        nop-then-mutate) to avoid INTERR 52123.
+
+        ``successor_serial == -1`` is a sentinel meaning: use
+        ``predecessor_serial``'s current sole successor.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        if pred_blk is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: pred {predecessor_serial} "
+                "not resolvable"
+            )
+
+        # Resolve sentinel.
+        if int(successor_serial) == -1:
+            pred_succs = [int(s) for s in pred_blk.succset]
+            if len(pred_succs) != 1:
+                raise RuntimeError(
+                    "sentinel successor=-1 requires 1-way pred; "
+                    f"block {predecessor_serial} has {len(pred_succs)} succs"
+                )
+            successor_serial = pred_succs[0]
+
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if succ_blk is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: succ {successor_serial} "
+                "not resolvable"
+            )
+
+        # 1. Clone predecessor at end of mba.
+        end_serial = int(mba.qty) - 1
+        anchor = mba.copy_block(pred_blk, end_serial)
+        if anchor is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: copy_block failed for "
+                f"pred={predecessor_serial}"
+            )
+
+        # 2. NOP every inherited instruction.
+        cur = anchor.head
+        while cur is not None:
+            anchor.make_nop(cur)
+            cur = cur.next
+
+        # 3. Mark as 1-way; clear stale pred/succ entries copy_block carried over.
+        anchor.type = _ih.BLT_1WAY
+        for stale_succ in [int(x) for x in anchor.succset]:
+            anchor.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(anchor.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in anchor.predset]:
+            anchor.predset._del(stale_pred)
+
+        # 4. Allocate a fresh kreg pair for the byte load + zero-extend.
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        kreg_id = int(mba.alloc_kreg(8))
+
+        # 5. m_ldx kreg(1) <- [ds.2 : source_addr_operand]
+        ldx_ins = _ih.minsn_t(safe_ea)
+        ldx_ins.ea = safe_ea
+        anchor.insert_into_block(ldx_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        ldx_ins.opcode = _ih.m_ldx
+        ldx_ins.l = _ih.mop_t()
+        ldx_ins.l.make_reg(_ih.mr_ds, 2)
+        ldx_ins.r = _ih.mop_t()
+        ldx_ins.r.assign(source_addr_operand)
+        ldx_ins.d = _ih.mop_t()
+        ldx_ins.d.make_reg(kreg_id, 1)
+
+        # 6. m_xdu kreg(8) <- kreg(1)
+        xdu_ins = _ih.minsn_t(safe_ea)
+        xdu_ins.ea = safe_ea
+        anchor.insert_into_block(xdu_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        xdu_ins.opcode = _ih.m_xdu
+        xdu_ins.l = _ih.mop_t()
+        xdu_ins.l.make_reg(kreg_id, 1)
+        xdu_ins.r = _ih.mop_t()
+        xdu_ins.r.erase()
+        xdu_ins.d = _ih.mop_t()
+        xdu_ins.d.make_reg(kreg_id, 8)
+
+        # 7. m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
+        xor_ins = _ih.minsn_t(safe_ea)
+        xor_ins.ea = safe_ea
+        anchor.insert_into_block(xor_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        xor_ins.opcode = _ih.m_xor
+        xor_ins.l = _ih.mop_t()
+        xor_ins.l.make_stkvar(mba, int(accumulator_stkoff))
+        xor_ins.l.size = 8
+        xor_ins.r = _ih.mop_t()
+        xor_ins.r.make_reg(kreg_id, 8)
+        xor_ins.d = _ih.mop_t()
+        xor_ins.d.make_stkvar(mba, int(accumulator_stkoff))
+        xor_ins.d.size = 8
+
+        # 8. m_goto @successor
+        goto_ins = _ih.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        anchor.insert_into_block(goto_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        goto_ins.opcode = _ih.m_goto
+        goto_ins.l = _ih.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = _ih.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = _ih.mop_t()
+        goto_ins.d.erase()
+        anchor.flags |= _ih.MBL_GOTO
+
+        # 9. Wire anchor -> successor.
+        anchor.succset.push_back(int(successor_serial))
+
+        # 10. Rewire predecessor: pred->succ becomes pred->anchor->succ.
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(anchor.serial))
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
+            and pred_blk.tail.l is not None
+            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(anchor.serial))
+        pred_blk.mark_lists_dirty()
+
+        # 11. Update successor's predset.
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(anchor.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        # 12. Anchor's own pred set.
+        anchor.predset.push_back(int(predecessor_serial))
+        anchor.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(anchor.serial)
+
+
+def _walk_mop_for_v190_ldx(addr_op, byte_index: int, depth: int = 8):
+    """Recursively search ``addr_op`` for an m_ldx whose r operand
+    matches v190 + #byte_index. Returns that r operand (the address)
+    or None.
+    """
+    import ida_hexrays as _ih
+
+    if depth <= 0 or addr_op is None:
+        return None
+    if int(getattr(addr_op, "t", -1)) != int(_ih.mop_d):
+        return None
+    sub = getattr(addr_op, "d", None)
+    if sub is None:
+        return None
+    if int(getattr(sub, "opcode", -1)) == int(_ih.m_ldx):
+        r = getattr(sub, "r", None)
+        if r is not None and _is_v190_plus_k(r, byte_index):
+            return r
+    for child in (getattr(sub, "l", None), getattr(sub, "r", None), getattr(sub, "d", None)):
+        found = _walk_mop_for_v190_ldx(child, byte_index, depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_v190_plus_k(op, byte_index: int) -> bool:
+    """True if ``op`` algebraically equals ``v190 + #byte_index``.
+
+    Accepts two folded forms produced by IDA microcode:
+      1. mop_S with stkoff == 0x190 + byte_index  (constant-folded)
+      2. mop_d/m_add(mop_S@0x190, mop_n=byte_index)  (unfolded)
+    """
+    import ida_hexrays as _ih
+
+    if op is None:
+        return False
+    t = int(getattr(op, "t", -1))
+    if t == int(_ih.mop_S):
+        stkvar = getattr(op, "s", None)
+        if stkvar is None:
+            return False
+        if int(getattr(stkvar, "off", 0)) == 0x190 + int(byte_index):
+            return True
+        return False
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is None:
+            return False
+        if int(getattr(sub, "opcode", -1)) != int(_ih.m_add):
+            return False
+        l = getattr(sub, "l", None)
+        r = getattr(sub, "r", None)
+        if l is None or r is None:
+            return False
+        if (
+            int(getattr(l, "t", -1)) == int(_ih.mop_S)
+            and getattr(l, "s", None) is not None
+            and int(l.s.off) == 0x190
+            and int(getattr(r, "t", -1)) == int(_ih.mop_n)
+            and getattr(r, "nnn", None) is not None
+            and int(r.nnn.value) == int(byte_index)
+        ):
+            return True
+        if (
+            int(getattr(r, "t", -1)) == int(_ih.mop_S)
+            and getattr(r, "s", None) is not None
+            and int(r.s.off) == 0x190
+            and int(getattr(l, "t", -1)) == int(_ih.mop_n)
+            and getattr(l, "nnn", None) is not None
+            and int(l.nnn.value) == int(byte_index)
+        ):
+            return True
+    return False
+
 
 def maybe_run_tail_distinct(mba: Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
