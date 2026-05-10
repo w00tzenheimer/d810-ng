@@ -857,40 +857,44 @@ class LiveMbaAdapter:
     def extract_v190_indexed_operand(
         self, byte_emit_serial: int, byte_index: int,
     ):
-        """Find the inner m_ldx of v190+#k anywhere in the byte_emit
-        block's instruction operand trees and return a clone of its r
-        operand. If the structural walker can't find it (e.g. because
-        the operand only exists as a sub-instruction nested deep inside
-        an m_stx value tree IDA materialized via temp kregs), synthesize
-        a fresh ``mop_d(m_add(stkvar@0x190, #byte_index.8))`` from scratch.
+        """Find an operand whose dstr equals ``(%var_190.8+#k.8)``
+        anywhere in any insn's operand tree (in the byte_emit block
+        first, then any other block as fallback). Return a clone.
 
-        Raises RuntimeError only if the synthesis itself fails.
+        We dstr-match rather than structural-match because the operand
+        is stored in a wide variety of nested mop_t/minsn_t shapes the
+        structural recognizer doesn't fully cover, but ``mop_t.dstr()``
+        always renders to a stable textual form.
         """
         import ida_hexrays as _ih
 
+        target = f"(%var_190.8+#{byte_index}.8)"
+        # First pass: search the named byte_emit block.
         blk = self._mba.get_mblock(int(byte_emit_serial))
-        if blk is None:
-            raise RuntimeError(
-                f"byte_emit block {byte_emit_serial} not resolvable"
-            )
-        insn = blk.head
-        observed: set[int] = set()
-        while insn is not None:
-            found = _find_v190_ldx_in_insn(insn, byte_index, observed)
+        if blk is not None:
+            found = _find_mop_by_dstr_in_block(blk, target, _ih)
             if found is not None:
                 clone = _ih.mop_t()
                 clone.assign(found)
                 return clone
-            insn = insn.next
-        # Synthetic fallback: build the operand from scratch.
-        logger.warning(
-            "byte_anchor: extract_v190_indexed_operand: no structural "
-            "match for byte %d in block %d (structural matches found: "
-            "%s); synthesizing fresh operand.",
-            byte_index, byte_emit_serial, sorted(observed),
-        )
-        return _synthesize_v190_plus_k_operand(
-            self._mba, byte_index, _ih,
+        # Second pass: search any block in the mba.
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            found = _find_mop_by_dstr_in_block(blk, target, _ih)
+            if found is not None:
+                logger.warning(
+                    "byte_anchor: extract_v190_indexed_operand: target "
+                    "%s found in block %d (not the byte_emit block %d).",
+                    target, serial, byte_emit_serial,
+                )
+                clone = _ih.mop_t()
+                clone.assign(found)
+                return clone
+        raise RuntimeError(
+            f"no operand matching {target!r} found anywhere in mba"
         )
 
     def find_pre_return_block(self) -> int:
@@ -979,6 +983,15 @@ class LiveMbaAdapter:
                 f"insert_anchor_block_xor_pair: copy_block failed for "
                 f"pred={predecessor_serial}"
             )
+
+        # CRITICAL: mba.copy_block can shift the serials of blocks at
+        # and beyond end_serial (the dummy BLT_STOP block in particular
+        # always shifts by +1). The integer `successor_serial` captured
+        # before copy_block may now point at a DIFFERENT block. Block
+        # references (succ_blk, pred_blk) auto-track shifts; refresh the
+        # integer from succ_blk.serial.
+        successor_serial = int(succ_blk.serial)
+        predecessor_serial = int(pred_blk.serial)
 
         # 2. NOP every inherited instruction.
         cur = anchor.head
@@ -1094,6 +1107,77 @@ class LiveMbaAdapter:
         mba.mark_chains_dirty()
 
         return int(anchor.serial)
+
+
+def _mop_dstr(mop) -> str:
+    """Best-effort textual rendering of a mop_t (returns '' on failure)."""
+    try:
+        ds = mop.dstr() if callable(getattr(mop, "dstr", None)) else ""
+        return ds if isinstance(ds, str) else ""
+    except Exception:
+        return ""
+
+
+def _find_mop_by_dstr_in_block(blk, target: str, _ih):
+    """Walk every minsn in the block and every nested mop_t operand
+    tree; return the first mop_t whose dstr() equals or contains
+    ``target``. Returns None if no match.
+    """
+    insn = blk.head
+    while insn is not None:
+        for op in (
+            getattr(insn, "l", None),
+            getattr(insn, "r", None),
+            getattr(insn, "d", None),
+        ):
+            found = _find_mop_by_dstr(op, target, _ih)
+            if found is not None:
+                return found
+        insn = insn.next
+    return None
+
+
+def _find_mop_by_dstr(mop, target: str, _ih, depth: int = 15):
+    """Walk a mop_t recursively (descending into mop_d sub-instructions
+    and their operand trees) seeking a mop whose dstr matches target.
+    """
+    if depth <= 0 or mop is None:
+        return None
+    ds = _mop_dstr(mop)
+    if target in ds:
+        # Prefer the most specific match: the operand whose own dstr
+        # equals target exactly. If we found a parent containing target
+        # as a substring, descend to find a tighter match.
+        if ds == target:
+            return mop
+        # Descend.
+        if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
+            sub = getattr(mop, "d", None)
+            if sub is not None:
+                for child in (
+                    getattr(sub, "l", None),
+                    getattr(sub, "r", None),
+                    getattr(sub, "d", None),
+                ):
+                    inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
+                    if inner is not None:
+                        return inner
+        # No tighter match -> return the substring-matching parent.
+        return mop
+    # Target not in this mop's dstr; still descend into sub-insns in
+    # case the operand tree's dstr collapsed the inner form.
+    if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
+        sub = getattr(mop, "d", None)
+        if sub is not None:
+            for child in (
+                getattr(sub, "l", None),
+                getattr(sub, "r", None),
+                getattr(sub, "d", None),
+            ):
+                inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
+                if inner is not None:
+                    return inner
+    return None
 
 
 def _find_v190_ldx_in_insn(
