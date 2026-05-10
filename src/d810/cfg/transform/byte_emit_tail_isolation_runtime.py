@@ -804,14 +804,14 @@ class LiveMbaAdapter:
     def find_byte_emit_block_by_v190_offset(self, byte_index: int):
         """Walk every block; return BlockView for the first block whose
         m_stx contains a reference to v190+#byte_index anywhere in its
-        l/r/d operand trees (the address pattern can live in either
-        the value side or the address side depending on optimization).
+        l/r/d operand trees, or (fallback) anywhere in its dstr text.
         """
         import ida_hexrays as _ih
 
         mba = self._mba
         qty = int(getattr(mba, "qty", 0) or 0)
-        stx_blocks_seen = 0
+        stx_seen = 0
+        v190_seen_byte_indices: list[int] = []
         dstr_match_serial: int | None = None
         for serial in range(qty):
             blk = mba.get_mblock(serial)
@@ -820,20 +820,23 @@ class LiveMbaAdapter:
             insn = blk.head
             while insn is not None:
                 if int(insn.opcode) == int(_ih.m_stx):
-                    stx_blocks_seen += 1
-                    # Search all three operand trees, not just .d.
+                    stx_seen += 1
                     for op in (insn.l, insn.r, insn.d):
                         found = _walk_mop_for_v190_ldx(op, byte_index)
                         if found is not None:
                             return self.find_block_by_ea(
                                 int(getattr(blk, "start", 0) or 0),
                             )
-                    # Fallback: check dstr for the textual pattern. This
-                    # catches operand shapes the structural walker misses.
                     try:
-                        dstr = insn._print() if hasattr(insn, "_print") else ""
+                        dstr = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
                     except Exception:
                         dstr = ""
+                    # Record which byte indices we saw in any v190-touching
+                    # m_stx, so we can diagnose mismatches.
+                    if "%var_190" in dstr:
+                        for k in range(7):
+                            if f"%var_190.8+#{k}.8" in dstr:
+                                v190_seen_byte_indices.append(k)
                     needle = f"%var_190.8+#{byte_index}.8"
                     if needle in dstr and dstr_match_serial is None:
                         dstr_match_serial = serial
@@ -843,7 +846,7 @@ class LiveMbaAdapter:
                 "byte_anchor: structural walker missed byte %d but dstr "
                 "matches in block %d (m_stx count walked: %d). Falling "
                 "back to dstr-matched block.",
-                byte_index, dstr_match_serial, stx_blocks_seen,
+                byte_index, dstr_match_serial, stx_seen,
             )
             blk = mba.get_mblock(dstr_match_serial)
             return self.find_block_by_ea(
@@ -851,8 +854,8 @@ class LiveMbaAdapter:
             )
         logger.info(
             "byte_anchor: no m_stx found referencing v190+#%d (walked %d "
-            "m_stx instructions total).",
-            byte_index, stx_blocks_seen,
+            "m_stx, observed v190+#k indices in dstr: %s).",
+            byte_index, stx_seen, sorted(set(v190_seen_byte_indices)),
         )
         return None
 
