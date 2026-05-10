@@ -1866,3 +1866,47 @@ def maybe_run_byte_anchor(mba: Any) -> None:
         return
 
     logger.info("byte_anchor: %s", report)
+
+    # Post-mutation dump: when applied, log the contents of the new anchor
+    # blocks AND the affected neighbors so we can see exactly what we built
+    # even if IDA's decompile() later rejects the result.
+    if report.applied and report.anchor_a_serial is not None and report.anchor_b_serial is not None:
+        diag_serials = [
+            report.byte_emit_serial,
+            report.anchor_a_serial,
+            report.anchor_b_serial,
+        ]
+        # Also include each anchor's successor and predecessor for wiring check.
+        for s in (report.anchor_a_serial, report.anchor_b_serial):
+            blk = mba.get_mblock(int(s))
+            if blk is not None:
+                diag_serials.extend(int(x) for x in blk.predset)
+                diag_serials.extend(int(x) for x in blk.succset)
+        seen: set[int] = set()
+        for s in diag_serials:
+            if s is None or s in seen:
+                continue
+            seen.add(int(s))
+            blk = mba.get_mblock(int(s))
+            if blk is None:
+                continue
+            try:
+                preds = list(int(p) for p in blk.predset)
+                succs = list(int(p) for p in blk.succset)
+                btype = int(getattr(blk, "type", -1))
+                logger.info(
+                    "byte_anchor: block %d type=%d preds=%s succs=%s",
+                    s, btype, preds, succs,
+                )
+                insn = blk.head
+                idx = 0
+                while insn is not None and idx < 12:
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else "<no-dstr>"
+                    except Exception:
+                        ds = "<dstr-raised>"
+                    logger.info("byte_anchor:   blk[%d] insn[%d]: %s", s, idx, ds)
+                    insn = insn.next
+                    idx += 1
+            except Exception:
+                logger.exception("byte_anchor: block %d dump failed", s)
