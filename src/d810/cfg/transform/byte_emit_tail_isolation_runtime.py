@@ -803,12 +803,16 @@ class LiveMbaAdapter:
 
     def find_byte_emit_block_by_v190_offset(self, byte_index: int):
         """Walk every block; return BlockView for the first block whose
-        m_stx value-tree contains an inner m_ldx of v190+#byte_index.
+        m_stx contains a reference to v190+#byte_index anywhere in its
+        l/r/d operand trees (the address pattern can live in either
+        the value side or the address side depending on optimization).
         """
         import ida_hexrays as _ih
 
         mba = self._mba
         qty = int(getattr(mba, "qty", 0) or 0)
+        stx_blocks_seen = 0
+        dstr_match_serial: int | None = None
         for serial in range(qty):
             blk = mba.get_mblock(serial)
             if blk is None:
@@ -816,18 +820,48 @@ class LiveMbaAdapter:
             insn = blk.head
             while insn is not None:
                 if int(insn.opcode) == int(_ih.m_stx):
-                    if _walk_mop_for_v190_ldx(insn.d, byte_index) is not None:
-                        return self.find_block_by_ea(
-                            int(getattr(blk, "start", 0) or 0),
-                        )
+                    stx_blocks_seen += 1
+                    # Search all three operand trees, not just .d.
+                    for op in (insn.l, insn.r, insn.d):
+                        found = _walk_mop_for_v190_ldx(op, byte_index)
+                        if found is not None:
+                            return self.find_block_by_ea(
+                                int(getattr(blk, "start", 0) or 0),
+                            )
+                    # Fallback: check dstr for the textual pattern. This
+                    # catches operand shapes the structural walker misses.
+                    try:
+                        dstr = insn._print() if hasattr(insn, "_print") else ""
+                    except Exception:
+                        dstr = ""
+                    needle = f"%var_190.8+#{byte_index}.8"
+                    if needle in dstr and dstr_match_serial is None:
+                        dstr_match_serial = serial
                 insn = insn.next
+        if dstr_match_serial is not None:
+            logger.warning(
+                "byte_anchor: structural walker missed byte %d but dstr "
+                "matches in block %d (m_stx count walked: %d). Falling "
+                "back to dstr-matched block.",
+                byte_index, dstr_match_serial, stx_blocks_seen,
+            )
+            blk = mba.get_mblock(dstr_match_serial)
+            return self.find_block_by_ea(
+                int(getattr(blk, "start", 0) or 0),
+            )
+        logger.info(
+            "byte_anchor: no m_stx found referencing v190+#%d (walked %d "
+            "m_stx instructions total).",
+            byte_index, stx_blocks_seen,
+        )
         return None
 
     def extract_v190_indexed_operand(
         self, byte_emit_serial: int, byte_index: int,
     ):
         """Find the inner m_ldx of v190+#k inside the byte_emit's m_stx
-        value tree, then return a *clone* of its r operand (the address).
+        operand trees, then return a *clone* of its r operand (the
+        address). Searches all three operand trees (l, r, d).
 
         Raises RuntimeError if the inner m_ldx is not found.
         """
@@ -841,11 +875,12 @@ class LiveMbaAdapter:
         insn = blk.head
         while insn is not None:
             if int(insn.opcode) == int(_ih.m_stx):
-                found = _walk_mop_for_v190_ldx(insn.d, byte_index)
-                if found is not None:
-                    clone = _ih.mop_t()
-                    clone.assign(found)
-                    return clone
+                for op in (insn.l, insn.r, insn.d):
+                    found = _walk_mop_for_v190_ldx(op, byte_index)
+                    if found is not None:
+                        clone = _ih.mop_t()
+                        clone.assign(found)
+                        return clone
             insn = insn.next
         raise RuntimeError(
             f"no m_ldx with v190+#{byte_index} in block {byte_emit_serial}"
