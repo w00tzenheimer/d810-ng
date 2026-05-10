@@ -963,9 +963,15 @@ class HodurUnflattener(GenericUnflatteningRule):
         bundle_stabilized = self._stabilize_sub7ffd_post_pipeline_bundle()
         if bundle_stabilized:
             nb_changes += bundle_stabilized
+        self._capture_intermediate_snapshot("post_bundle_stabilize")
         # uee-32r3 Track B.2: env-gated D810_TAIL_DISTINCT_BYTE topology-only
-        # experiment, applied just before the post_bundle_stabilize snapshot
-        # so the snapshot reflects the topology change. Default-off.
+        # experiment. Run AFTER post_bundle_stabilize snapshot so that:
+        #   (a) snap17 was just captured FROM the live MBA (identical state),
+        #   (b) live MBA has not been transformed since (planner serials map
+        #       directly), and
+        #   (c) IDA's optimize_global has not yet run for the next maturity,
+        #       so byte_emit handlers are still present and reachable.
+        # Default-off; only fires when the corresponding env gate is set.
         try:
             from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
                 maybe_run_tail_distinct,
@@ -973,6 +979,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 maybe_run_tail_state_cascade,
             )
 
+            unflat_logger.info(
+                "TAIL_SHAPING_HOOK phase=after_post_bundle_stabilize"
+            )
             maybe_run_tail_distinct(self.mba)
             maybe_run_tail_duplicate_convergence(self.mba)
             maybe_run_tail_state_cascade(self.mba)
@@ -980,7 +989,6 @@ class HodurUnflattener(GenericUnflatteningRule):
             unflat_logger.debug(
                 "tail_distinct hook failed (non-critical)", exc_info=True,
             )
-        self._capture_intermediate_snapshot("post_bundle_stabilize")
 
         probe_blocks, probe_targets = self._collect_post_apply_may_only_probe_blocks(
             pipeline, results
