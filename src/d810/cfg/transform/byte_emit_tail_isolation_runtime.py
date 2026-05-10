@@ -1278,10 +1278,61 @@ def maybe_run_tail_state_cascade(mba: Any) -> None:
     )
 
     adapter = LiveMbaAdapter(mba)
+
+    # Bridge: planner serials are in snap17 space (post_bundle_stabilize).
+    # The live MBA at hook-fire time uses a different serial space, so we
+    # translate via start_ea_i64 -> find_block_by_ea before handing off
+    # to the orchestrator. Without this, redirect_advance_edge would
+    # call mba.get_mblock(<snap17_serial>) and trigger INTERR 52719.
+    snap17_row = diag_conn.execute(
+        "SELECT MAX(id) FROM snapshots WHERE label = 'post_bundle_stabilize'"
+    ).fetchone()
+    snap17_id = (
+        int(snap17_row[0]) if snap17_row and snap17_row[0] is not None else None
+    )
+    if snap17_id is None:
+        logger.info(
+            "tail_state_cascade: no_snap17_snapshot_in_db; emitting no-op report"
+        )
+        from d810.cfg.transform.byte_emit_tail_isolation import StateCascadeReport
+        report = StateCascadeReport(
+            applied=False, pair="5:6", reason="no_snap17_snapshot_in_db",
+        )
+        logger.info("tail_state_cascade: %s", report)
+        return
+
+    mapped_row, bridge_reason = _bridge_plan_row_to_live_mba(
+        byte5_row,
+        diag_conn=diag_conn,
+        snap17_id=snap17_id,
+        adapter=adapter,
+        logger_=logger,
+    )
+    if mapped_row is None:
+        logger.info(
+            "tail_state_cascade: EA-bridge rejected: %s", bridge_reason,
+        )
+        from d810.cfg.transform.byte_emit_tail_isolation import StateCascadeReport
+        report = StateCascadeReport(
+            applied=False, pair="5:6", reason=bridge_reason,
+        )
+        logger.info("tail_state_cascade: %s", report)
+        return
+
+    logger.info(
+        "tail_state_cascade: EA-bridge mapped row "
+        "source_block=%s->%s continuation=%s->%s intended=%s->%s "
+        "state_write=%s->%s",
+        byte5_row.source_block, mapped_row.source_block,
+        byte5_row.current_continuation_target, mapped_row.current_continuation_target,
+        byte5_row.intended_target, mapped_row.intended_target,
+        byte5_row.state_write_block, mapped_row.state_write_block,
+    )
+
     try:
         report = execute_state_cascade(
             pair=pair,
-            plan_row=byte5_row,
+            plan_row=mapped_row,
             adapter=adapter,
         )
     except Exception:
