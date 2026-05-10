@@ -605,6 +605,192 @@ class LiveMbaAdapter:
         return clone_serial
 
 
+    # ------------------------------------------------------------------
+    # State-cascade adapter Protocol implementation (byte5->byte6 probe)
+    # ------------------------------------------------------------------
+
+    def clone_state_write_block(
+        self,
+        *,
+        template_serial: int,
+        tail_goto_target: int,
+    ) -> int:
+        """Clone the planner-supplied state-write block; set the clone's
+        tail to ``m_goto @tail_goto_target``; append at end of mba.
+
+        The clone holds the SAME instructions as the template (no
+        synthesis). Mirrors the ``mba.copy_block`` idiom used by
+        ``insert_trampoline_after`` and ``clone_convergence_for_byte_path``.
+
+        Returned clone has empty predset (caller wires the predecessor)
+        and a single-successor succset pointing at ``tail_goto_target``.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        template = mba.get_mblock(int(template_serial))
+        tail_target_blk = mba.get_mblock(int(tail_goto_target))
+        if template is None or tail_target_blk is None:
+            raise RuntimeError(
+                "clone_state_write_block: cannot resolve template="
+                f"{template_serial} or tail_target={tail_goto_target}"
+            )
+
+        # 1. Append clone at the end of the MBA.
+        end_serial = int(mba.qty) - 1
+        clone = mba.copy_block(template, end_serial)
+        if clone is None:
+            raise RuntimeError(
+                "clone_state_write_block: mba.copy_block failed for "
+                f"template={template_serial}"
+            )
+        clone_serial = int(getattr(clone, "serial", end_serial))
+
+        # 2. Reset clone's predset (caller wires the predecessor).
+        for stale_pred in [int(x) for x in clone.predset]:
+            clone.predset._del(stale_pred)
+
+        # 3. Drop any inherited successor edges so we can replace them
+        #    with a single m_goto edge to ``tail_goto_target``. Each old
+        #    successor loses ``clone_serial`` from its predset.
+        for stale_succ in [int(x) for x in clone.succset]:
+            clone.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(clone_serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+
+        # 4. Mark BLT_1WAY and rewrite/append the tail to a single m_goto.
+        clone.type = ida_hexrays.BLT_1WAY
+
+        # If the cloned tail is already a goto, rewrite the operand;
+        # otherwise append a fresh m_goto. We do not delete the cloned
+        # state-write instructions — the whole point is to keep them.
+        if (
+            clone.tail is not None
+            and int(clone.tail.opcode) == int(ida_hexrays.m_goto)
+        ):
+            clone.tail.l = ida_hexrays.mop_t()
+            clone.tail.l.make_blkref(int(tail_goto_target))
+            clone.tail.r = ida_hexrays.mop_t()
+            clone.tail.r.erase()
+            clone.tail.d = ida_hexrays.mop_t()
+            clone.tail.d.erase()
+        else:
+            safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            goto_ins = ida_hexrays.minsn_t(safe_ea)
+            goto_ins.ea = safe_ea
+            clone.insert_into_block(goto_ins, clone.tail)
+            # nop-then-mutate avoids INTERR 52123 (see insert_trampoline_after)
+            clone.make_nop(clone.tail)
+            goto_ins.opcode = ida_hexrays.m_goto
+            goto_ins.l = ida_hexrays.mop_t()
+            goto_ins.l.make_blkref(int(tail_goto_target))
+            goto_ins.r = ida_hexrays.mop_t()
+            goto_ins.r.erase()
+            goto_ins.d = ida_hexrays.mop_t()
+            goto_ins.d.erase()
+        clone.flags |= ida_hexrays.MBL_GOTO
+
+        # 5. Wire clone -> tail_goto_target.
+        clone.succset.push_back(int(tail_goto_target))
+        tail_target_blk.predset.push_back(clone_serial)
+        if tail_target_blk.serial != mba.qty - 1:
+            tail_target_blk.mark_lists_dirty()
+        clone.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return clone_serial
+
+    def redirect_advance_edge(
+        self,
+        *,
+        source_serial: int,
+        old_target_serial: int,
+        new_target_serial: int,
+    ) -> None:
+        """Rewire ``source_serial``'s advance edge from ``old_target`` to
+        ``new_target``.
+
+        For a 1-way block whose tail is ``m_goto @old_target``, this
+        rewrites the goto operand. For a 2-way block whose conditional
+        tail names ``old_target`` in its branch operand, only that arm is
+        redirected; the early-return arm remains untouched. Falls back to
+        a succset-only rewrite when the tail is a plain fallthrough.
+
+        Updates predset/succset symmetrically and marks affected blocks
+        dirty. ``mba.mark_chains_dirty`` is invoked at the end.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        src = mba.get_mblock(int(source_serial))
+        old_blk = mba.get_mblock(int(old_target_serial))
+        new_blk = mba.get_mblock(int(new_target_serial))
+        if src is None or old_blk is None or new_blk is None:
+            raise RuntimeError(
+                "redirect_advance_edge: cannot resolve "
+                f"src={source_serial} old={old_target_serial} "
+                f"new={new_target_serial}"
+            )
+
+        # Rewrite tail operand (best-effort; falls through to succset
+        # rewrite for fallthrough tails).
+        tail = src.tail
+        if tail is not None:
+            try:
+                opc = int(tail.opcode)
+            except AttributeError:
+                opc = -1
+            cond_opcodes = {
+                int(ida_hexrays.m_jnz),
+                int(ida_hexrays.m_jz),
+                int(ida_hexrays.m_jl),
+                int(ida_hexrays.m_jle),
+                int(ida_hexrays.m_jg),
+                int(ida_hexrays.m_jge),
+                int(ida_hexrays.m_jb),
+                int(ida_hexrays.m_jbe),
+                int(ida_hexrays.m_ja),
+                int(ida_hexrays.m_jae),
+                int(ida_hexrays.m_jcnd),
+            }
+            if opc == int(ida_hexrays.m_goto):
+                # m_goto: branch target is in tail.l (mop_b).
+                if (
+                    tail.l is not None
+                    and tail.l.t == ida_hexrays.mop_b
+                    and int(tail.l.b) == int(old_target_serial)
+                ):
+                    tail.l.make_blkref(int(new_target_serial))
+            elif opc in cond_opcodes:
+                # Conditional jump: branch target is in tail.d (mop_b).
+                # The other arm (early return / fallthrough) goes to
+                # serial+1; do NOT touch it.
+                if (
+                    tail.d is not None
+                    and tail.d.t == ida_hexrays.mop_b
+                    and int(tail.d.b) == int(old_target_serial)
+                ):
+                    tail.d.make_blkref(int(new_target_serial))
+            # Fallthrough tails (no branch operand) are handled by the
+            # succset rewrite below alone.
+
+        # Symmetrically update succset/predset.
+        src.succset._del(int(old_target_serial))
+        src.succset.push_back(int(new_target_serial))
+        old_blk.predset._del(int(source_serial))
+        new_blk.predset.push_back(int(source_serial))
+
+        src.mark_lists_dirty()
+        if old_blk.serial != mba.qty - 1:
+            old_blk.mark_lists_dirty()
+        if new_blk.serial != mba.qty - 1:
+            new_blk.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+
 def maybe_run_tail_distinct(mba: Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
