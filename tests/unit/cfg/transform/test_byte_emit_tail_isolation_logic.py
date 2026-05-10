@@ -594,3 +594,256 @@ def test_execute_state_cascade_no_clone_when_bypassed_but_no_state_write_block()
     assert res.state_write_block_cloned is None
     assert adapter.clone_calls == []
     assert adapter.redirect_calls == [(161, 200, 217)]
+
+
+# ----- _bridge_plan_row_to_live_mba -----
+
+
+@dataclass
+class _FakeBlockView:
+    serial: int
+
+
+@dataclass
+class _FakeBridgeAdapter:
+    """Maps snap17 EA -> live serial via a dict."""
+
+    ea_to_live: dict[int, int] = field(default_factory=dict)
+
+    def find_block_by_ea(self, ea):
+        live = self.ea_to_live.get(int(ea))
+        if live is None:
+            return None
+        return _FakeBlockView(serial=int(live))
+
+
+@dataclass
+class _FakeDiagConn:
+    """Canned cursor for the (snapshot_id, serial) -> start_ea_i64 query."""
+
+    rows_by_serial: dict[int, int | None] = field(default_factory=dict)
+
+    def execute(self, sql, params):
+        # The bridge always queries ``WHERE snapshot_id=? AND serial=?``,
+        # so params == (snap_id, serial).
+        snap_id, serial = params  # noqa: F841 -- snap_id intentionally unused
+        rows = self.rows_by_serial
+        return _FakeCursor(rows.get(int(serial)))
+
+
+class _FakeCursor:
+    def __init__(self, ea_value):
+        self._ea = ea_value
+
+    def fetchone(self):
+        if self._ea is None:
+            return None
+        return (int(self._ea),)
+
+
+class _SilentLogger:
+    def info(self, *args, **kwargs):  # noqa: D401 -- swallow
+        pass
+
+
+def test_bridge_plan_row_happy_path_maps_all_fields():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(
+        source_block=101,
+        current_continuation_target=102,
+        intended_target=217,
+        state_write_block=180,
+        state_write_bypassed=True,
+    )
+    conn = _FakeDiagConn(rows_by_serial={
+        101: 0x1800_1000,
+        102: 0x1800_2000,
+        217: 0x1800_3000,
+        180: 0x1800_4000,
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_1000: 11,
+        0x1800_2000: 22,
+        0x1800_3000: 33,
+        0x1800_4000: 44,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert reason == "ok"
+    assert mapped is not None
+    assert mapped.source_block == 11
+    assert mapped.current_continuation_target == 22
+    assert mapped.intended_target == 33
+    assert mapped.state_write_block == 44
+    # Non-serial fields preserved.
+    assert mapped.byte_index == 5
+    assert mapped.early_return_target == 42
+    assert mapped.state_update_verdict == "SAFE_TARGET_POST_GUARD"
+    assert mapped.state_write_bypassed is True
+
+
+def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(source_block=101, current_continuation_target=102,
+                       intended_target=217)
+    conn = _FakeDiagConn(rows_by_serial={
+        # 101 deliberately missing
+        102: 0x1800_2000,
+        217: 0x1800_3000,
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_2000: 22,
+        0x1800_3000: 33,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert mapped is None
+    assert reason == "live_block_not_resolvable:source_block:101:no_snap17_row"
+
+
+def test_bridge_plan_row_rejects_when_continuation_ea_not_in_live_mba():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(source_block=101, current_continuation_target=102,
+                       intended_target=217)
+    conn = _FakeDiagConn(rows_by_serial={
+        101: 0x1800_1000,
+        102: 0x1800_2000,
+        217: 0x1800_3000,
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_1000: 11,
+        # 0x1800_2000 deliberately missing
+        0x1800_3000: 33,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert mapped is None
+    assert reason == (
+        "live_block_not_resolvable:current_continuation_target:102:"
+        "ea_0x18002000_not_in_live_mba"
+    )
+
+
+def test_bridge_plan_row_rejects_when_intended_target_ea_missing():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(source_block=101, current_continuation_target=102,
+                       intended_target=217)
+    conn = _FakeDiagConn(rows_by_serial={
+        101: 0x1800_1000,
+        102: 0x1800_2000,
+        # 217 missing
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_1000: 11,
+        0x1800_2000: 22,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert mapped is None
+    assert reason == "live_block_not_resolvable:intended_target:217:no_snap17_row"
+
+
+def test_bridge_plan_row_skips_state_write_when_not_bypassed():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(
+        source_block=101,
+        current_continuation_target=102,
+        intended_target=217,
+        state_write_bypassed=False,
+        state_write_block=180,  # would fail to resolve, but should be skipped
+    )
+    conn = _FakeDiagConn(rows_by_serial={
+        101: 0x1800_1000,
+        102: 0x1800_2000,
+        217: 0x1800_3000,
+        # 180 deliberately missing - must NOT be queried
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_1000: 11,
+        0x1800_2000: 22,
+        0x1800_3000: 33,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert reason == "ok"
+    assert mapped is not None
+    assert mapped.source_block == 11
+    assert mapped.current_continuation_target == 22
+    assert mapped.intended_target == 33
+    # state_write_block passes through unchanged when not bypassed.
+    assert mapped.state_write_block == 180
+
+
+def test_bridge_plan_row_requires_state_write_when_bypassed():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(
+        source_block=101,
+        current_continuation_target=102,
+        intended_target=217,
+        state_write_bypassed=True,
+        state_write_block=None,
+    )
+    conn = _FakeDiagConn(rows_by_serial={
+        101: 0x1800_1000,
+        102: 0x1800_2000,
+        217: 0x1800_3000,
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_1000: 11,
+        0x1800_2000: 22,
+        0x1800_3000: 33,
+    })
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=conn,
+        snap17_id=17,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+    assert mapped is None
+    assert reason == (
+        "live_block_not_resolvable:state_write_block:None:required_when_bypassed"
+    )

@@ -6,6 +6,7 @@ imports IDA SDK; the pure algorithm in
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sqlite3
@@ -1078,6 +1079,98 @@ def _resolve_planner_snapshots(
         target_snap = int(row[0])
 
     return (fact_snap, target_snap)
+
+
+def _bridge_plan_row_to_live_mba(
+    plan_row,
+    *,
+    diag_conn,
+    snap17_id: int,
+    adapter,
+    logger_,
+) -> tuple[object, str]:
+    """Translate snap17 serials in plan_row to live MBA serials.
+
+    The planner reads ``post_bundle_stabilize`` (snap17) blocks and
+    produces a row whose ``source_block``,
+    ``current_continuation_target``, ``intended_target``, and
+    ``state_write_block`` are snap17 serials. Bundle-stabilize between
+    live-mba and snap17 remaps serials, so we cannot pass snap17 serials
+    straight to a live ``mba.get_mblock(serial)`` call. This helper
+    bridges via the start-EA: snap17 serial -> snap17 ``start_ea_i64``
+    -> live MBA serial via ``adapter.find_block_by_ea``.
+
+    Returns ``(mapped_row, "ok")`` on success, or ``(None, reason)`` if
+    any required field cannot map. The mapped row preserves all
+    non-serial fields unchanged.
+
+    ``state_write_block`` is only required when
+    ``state_write_bypassed`` is True; otherwise its value passes
+    through unchanged (typically None).
+    """
+    fields_to_map: list[str] = [
+        "source_block",
+        "current_continuation_target",
+        "intended_target",
+    ]
+    state_write_required = bool(getattr(plan_row, "state_write_bypassed", False))
+    state_write_serial = getattr(plan_row, "state_write_block", None)
+    if state_write_required and state_write_serial is None:
+        return (
+            None,
+            "live_block_not_resolvable:state_write_block:None:required_when_bypassed",
+        )
+    if state_write_required:
+        fields_to_map.append("state_write_block")
+
+    mapped_serials: dict[str, int | None] = {}
+    for field_name in fields_to_map:
+        snap_serial = getattr(plan_row, field_name, None)
+        if snap_serial is None:
+            return (
+                None,
+                f"live_block_not_resolvable:{field_name}:None:planner_serial_none",
+            )
+        snap_serial_i = int(snap_serial)
+        row = diag_conn.execute(
+            "SELECT start_ea_i64 FROM blocks "
+            "WHERE snapshot_id=? AND serial=?",
+            (int(snap17_id), snap_serial_i),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return (
+                None,
+                f"live_block_not_resolvable:{field_name}:{snap_serial_i}:no_snap17_row",
+            )
+        ea_signed = int(row[0])
+        ea = ea_signed & ((1 << 64) - 1)
+        view = adapter.find_block_by_ea(ea)
+        if view is None:
+            return (
+                None,
+                f"live_block_not_resolvable:{field_name}:{snap_serial_i}:"
+                f"ea_{ea:#x}_not_in_live_mba",
+            )
+        live_serial = int(getattr(view, "serial", -1))
+        if logger_ is not None:
+            logger_.info(
+                "tail_state_cascade EA-bridge: field=%s snap17=%s ea=%#x live=%s",
+                field_name, snap_serial_i, ea, live_serial,
+            )
+        mapped_serials[field_name] = live_serial
+
+    # state_write_block passthrough when not required.
+    if not state_write_required:
+        mapped_serials["state_write_block"] = state_write_serial
+
+    mapped_row = dataclasses.replace(
+        plan_row,
+        source_block=mapped_serials["source_block"],
+        current_continuation_target=mapped_serials["current_continuation_target"],
+        intended_target=mapped_serials["intended_target"],
+        state_write_block=mapped_serials["state_write_block"],
+    )
+    return (mapped_row, "ok")
 
 
 def maybe_run_tail_state_cascade(mba: Any) -> None:
