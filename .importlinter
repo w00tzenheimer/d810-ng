@@ -110,11 +110,6 @@ forbidden_modules =
 #  - d810.recon.observability, d810.cfg.observability,
 #    d810.hexrays.observability re-export from d810.core.diag.* by
 #    design; they ARE the boundary.
-#  - d810.hexrays.mba_serializer imports the neutral BlockSnapshot /
-#    InstructionSnapshot dataclasses from d810.core.diag.snapshot to
-#    construct the rows that snapshot_mba consumes. They are shared
-#    data containers, not live IDA adaptation, and intentionally live
-#    on the sink side of the boundary.
 #  - d810.cfg.provenance registers its drain callback with the
 #    core.diag IoC hook (`register_provenance_drainer`) at import time
 #    so `snapshot_mba` can pull buffered entries without core.diag
@@ -142,5 +137,4 @@ ignore_imports =
     d810.cfg.observability -> d810.core.diag.snapshot
     d810.hexrays.observability -> d810.core.diag
     d810.hexrays.observability -> d810.core.diag.snapshot
-    d810.hexrays.mba_serializer -> d810.core.diag.snapshot
     d810.cfg.provenance -> d810.core.diag
