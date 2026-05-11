@@ -1365,10 +1365,12 @@ def snapshot_linearized_program(
 ) -> int | None:
     """Persist a built linearized-program IR into the diag DB."""
     try:
-        from d810.core.diag import get_diag_db
-        from d810.core.diag.mba_serializer import mba_to_block_snapshots
-        from d810.core.diag.snapshot import snapshot_rendered_program
-        from d810.core.diag.snapshot import snapshot_mba
+        from d810.recon.observability import (
+            get_diag_db,
+            mba_to_block_snapshots,
+            record_mba_snapshot,
+            record_rendered_program,
+        )
 
         diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
         snapshot_row = (
@@ -1383,7 +1385,7 @@ def snapshot_linearized_program(
         )
         if diag_db is not None and snapshot_id is None:
             maturity_name = MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN")
-            snapshot_id = snapshot_mba(
+            snapshot_id = record_mba_snapshot(
                 diag_db,
                 mba_to_block_snapshots(mba),
                 label="render_dump",
@@ -1392,7 +1394,7 @@ def snapshot_linearized_program(
                 phase="post_d810",
             )
         if diag_db is not None and snapshot_id is not None:
-            snapshot_rendered_program(diag_db, snapshot_id, program)
+            record_rendered_program(diag_db, snapshot_id, program)
             return snapshot_id
     except Exception:
         logger.debug("rendered program diag snapshot failed", exc_info=True)

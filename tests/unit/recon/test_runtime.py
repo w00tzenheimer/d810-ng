@@ -339,7 +339,7 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
     )
 
     configure_settings(diag_snapshots=True)
-    with patch("d810.core.diag.get_diag_db", return_value=conn):
+    with patch("d810.recon.observability.get_diag_db", return_value=conn):
         persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
 
     assert persisted == 1
@@ -356,7 +356,7 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
     )
     assert json.loads(row[5]) == {"active": 0}
 
-    with patch("d810.core.diag.get_diag_db", return_value=conn):
+    with patch("d810.recon.observability.get_diag_db", return_value=conn):
         persisted_again = rt.record_fact_consumers(_FUNC_EA, (record,))
 
     assert persisted_again == 0

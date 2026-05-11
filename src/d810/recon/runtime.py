@@ -346,8 +346,10 @@ class ReconAnalysisRuntime:
         if not consumers:
             return 0
         try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.snapshot import snapshot_fact_consumers
+            from d810.recon.observability import (
+                get_diag_db,
+                record_fact_consumer,
+            )
 
             diag_conn = get_diag_db(func_ea)
             if diag_conn is None:
@@ -389,7 +391,7 @@ class ReconAnalysisRuntime:
                     pending.append(consumer)
             if not pending:
                 return 0
-            snapshot_fact_consumers(diag_conn, int(row[0]), func_ea, tuple(pending))
+            record_fact_consumer(diag_conn, int(row[0]), func_ea, tuple(pending))
             return len(pending)
         except Exception:
             logger.exception(
@@ -409,18 +411,18 @@ class ReconAnalysisRuntime:
         conflicts: tuple[FactConflict, ...] = (),
     ) -> None:
         """Persist collected maturity facts into the active diag DB snapshot."""
-        from d810.core.diag.snapshot import (
-            snapshot_fact_conflicts,
-            snapshot_fact_mappings,
-            snapshot_fact_observations,
+        from d810.recon.observability import (
+            record_fact_conflict,
+            record_fact_mapping,
+            record_fact_observation,
         )
 
         if observations:
-            snapshot_fact_observations(diag_conn, snapshot_id, func_ea, observations)
+            record_fact_observation(diag_conn, snapshot_id, func_ea, observations)
         if mappings:
-            snapshot_fact_mappings(diag_conn, snapshot_id, func_ea, mappings)
+            record_fact_mapping(diag_conn, snapshot_id, func_ea, mappings)
         if conflicts:
-            snapshot_fact_conflicts(diag_conn, snapshot_id, func_ea, conflicts)
+            record_fact_conflict(diag_conn, snapshot_id, func_ea, conflicts)
 
     def analyze_and_persist(self, func_ea: int) -> DeobfuscationHints | None:
         """Run analysis on current store contents and persist hints.
