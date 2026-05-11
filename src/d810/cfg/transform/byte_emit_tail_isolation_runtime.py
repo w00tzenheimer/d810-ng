@@ -811,6 +811,42 @@ class LiveMbaAdapter:
     # buffer write replication for bytes 2-6).
     # ------------------------------------------------------------------
 
+    def _find_byte_emit_template_block(self, byte_index: int):
+        """Search the entire mba for the BLOCK containing an m_stx
+        instance whose dstr references v190 at the given byte_index.
+        Returns the mblock_t (so the ENTIRE block can be cloned via
+        copy_block), or None.
+
+        This is the right granularity for byte_store: the entire
+        byte_emit block has a self-contained def chain (m_sar
+        precomputes counter>>3, m_shl precomputes the shifted byte,
+        m_stx writes to buffer). Cloning the whole block preserves
+        all the local SSA/use-def relationships IDA's verifier
+        requires.
+        """
+        import ida_hexrays as _ih
+
+        if byte_index == 0:
+            needles = ("[ds.2:%var_190.8].1",)
+        else:
+            needles = (f"%var_190.8+#{byte_index}.8",)
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                if int(insn.opcode) == int(_ih.m_stx):
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                    except Exception:
+                        ds = ""
+                    if any(n in ds for n in needles):
+                        return blk
+                insn = insn.next
+        return None
+
     def _find_byte_emit_stx_template(self, byte_index: int):
         """Search the entire mba for an m_stx instance whose dstr
         references v190 at the given byte_index. Returns the minsn_t
@@ -891,53 +927,50 @@ class LiveMbaAdapter:
                 f"insert_byte_emit_replica_anchor: succ {successor_serial} not resolvable"
             )
 
-        # Find the template m_stx anywhere in the mba. This may live in
-        # a different block than the host (typically a soon-to-be-DCE'd
-        # byte_emit block); we clone the m_stx at hook time before that
-        # DCE happens.
-        template_stx = self._find_byte_emit_stx_template(template_byte_index)
-        if template_stx is None:
+        # Find the template BLOCK (the entire byte_emit block) for the
+        # template byte. We'll clone this whole block so the def chain
+        # (m_sar precomputes counter>>3, m_shl precomputes shifted byte,
+        # m_stx writes to buffer) is self-contained.
+        template_block = self._find_byte_emit_template_block(template_byte_index)
+        if template_block is None:
             raise RuntimeError(
-                f"insert_byte_emit_replica_anchor: no template m_stx "
-                f"with v190+#{template_byte_index}.8 found in mba"
+                f"insert_byte_emit_replica_anchor: no template block "
+                f"containing m_stx for v190+#{template_byte_index}.8"
             )
 
         end_serial = int(mba.qty) - 1
-        anchor = mba.copy_block(pred_blk, end_serial)
+        anchor = mba.copy_block(template_block, end_serial)
         if anchor is None:
             raise RuntimeError(
-                f"copy_block failed for pred={predecessor_serial}"
+                f"copy_block failed for template={template_block.serial}"
             )
 
         # Refresh serials post-copy_block (BLT_STOP shifts).
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
 
-        # NOP every inherited instruction.
+        # Walk the clone: KEEP byte_emit instructions (m_sar, m_shl,
+        # m_xdu, m_ldx, m_stx), NOP everything else (state-write m_mov
+        # with literal constants, original m_goto, etc.). Then patch
+        # the byte index in any kept instruction.
+        byte_emit_opcodes = {
+            int(_ih.m_sar), int(_ih.m_shl), int(_ih.m_xdu),
+            int(_ih.m_ldx), int(_ih.m_stx),
+            # Also keep arithmetic helpers that may appear:
+            int(_ih.m_add), int(_ih.m_and), int(_ih.m_mul),
+        }
         cur = anchor.head
         while cur is not None:
-            anchor.make_nop(cur)
+            if int(cur.opcode) in byte_emit_opcodes:
+                # Patch byte_index in operand trees.
+                for op in (cur.l, cur.r, cur.d):
+                    if op is not None:
+                        _patch_v190_byte_const(
+                            op, template_byte_index, target_byte_index, _ih,
+                        )
+            else:
+                anchor.make_nop(cur)
             cur = cur.next
-
-        # Insert a fresh m_stx clone with the template's operands deep-copied.
-        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        new_stx = _ih.minsn_t(safe_ea)
-        new_stx.ea = safe_ea
-        anchor.insert_into_block(new_stx, anchor.tail)
-        anchor.make_nop(anchor.tail)
-        new_stx.opcode = _ih.m_stx
-        new_stx.l = _ih.mop_t()
-        new_stx.l.assign(template_stx.l)
-        new_stx.r = _ih.mop_t()
-        new_stx.r.assign(template_stx.r)
-        new_stx.d = _ih.mop_t()
-        new_stx.d.assign(template_stx.d)
-
-        # Patch the byte index in any operand tree.
-        for op in (new_stx.l, new_stx.r, new_stx.d):
-            _patch_v190_byte_const(
-                op, template_byte_index, target_byte_index, _ih,
-            )
 
         # Now wire BLT_1WAY topology and append goto.
         anchor.type = _ih.BLT_1WAY
