@@ -19,8 +19,8 @@ layered stack; `d810.core.diag` stays at the bottom. The post-hoc package
 may import freely from any runtime layer; runtime layers may NOT import the
 post-hoc package.
 
-Invocation: `python -m d810.diagnostics ...` (the `python -m d810.core.diag`
-entry point was removed in commit `9165c1b3`).
+Invocation: `python -m d810.diagnostics ...` (the legacy
+`python -m d810.core.diag` entry point was removed in commit `9165c1b3`).
 
 ## Command map
 

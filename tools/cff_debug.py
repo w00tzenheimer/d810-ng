@@ -506,14 +506,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_worktree(sp)
     sp.add_argument("args", nargs=argparse.REMAINDER,
-                    help="all args after `--` are forwarded to d810.core.diag")
+                    help="all args after `--` are forwarded to d810.diagnostics")
     sp.set_defaults(func=cmd_db)
 
     sp = sub.add_parser(
         "trace",
         help=(
             "run dump with D810_HCC_BYTE_CASCADE_TRACE=1, then render the"
-            " HCC byte-cascade trace via `d810.core.diag hcc-byte-cascade-trace`"
+            " HCC byte-cascade trace via `d810.diagnostics hcc-byte-cascade-trace`"
         ),
     )
     _add_worktree(sp)

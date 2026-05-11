@@ -8,7 +8,7 @@ pass.  It also records the empirical results from the
 design.
 
 The stack is **observability-first**: every layer persists evidence to
-the diag DB and is queryable via the ``d810.core.diag`` CLI.  The one
+the diag DB and is queryable via the ``d810.diagnostics`` CLI.  The one
 behavior consumer (``selected_alternate_edge_override``) is gated on
 two env vars and remains a no-op when either is unset.
 
