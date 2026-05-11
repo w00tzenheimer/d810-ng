@@ -35,6 +35,7 @@ _MECHANISM_SPLIT_XOR = "split_xor"
 _MECHANISM_SINGLE_XOR = "single_xor"
 _MECHANISM_LIVE_HOST = "live_host"
 _MECHANISM_MULTI_BYTE = "multi_byte_live_host"
+_MECHANISM_BYTE_STORE = "byte_store_replica"
 
 
 def parse_byte_anchor_env(value: str | None) -> str | None:
@@ -66,6 +67,16 @@ def parse_single_xor_env(value: str | None) -> str | None:
     if text != "1":
         return None
     return _MECHANISM_SINGLE_XOR
+
+
+def parse_byte_store_env(value: str | None) -> tuple[int, ...] | None:
+    """Parse D810_TAIL_ANCHOR_STORE_BYTES=2,3,4,5,6.
+
+    Returns a sorted tuple of unique byte indices, or None if invalid.
+    Same format as parse_multi_byte_env but selects the byte_store
+    replica mechanism instead of XOR.
+    """
+    return parse_multi_byte_env(value)
 
 
 def parse_multi_byte_env(value: str | None) -> tuple[int, ...] | None:
@@ -481,6 +492,90 @@ def execute_multi_byte_live_host_anchor(
         applied=any_applied,
         host_byte_index=host_byte_index,
         read_byte_indices=read_byte_indices,
+        reason="ok" if any_applied else "no_sub_anchor_applied",
+        sub_reports=tuple(sub_reports),
+    )
+
+
+def execute_byte_store_replica_anchor(
+    *,
+    host_byte_index: int,
+    target_byte_indices: tuple[int, ...],
+    adapter: Any,
+) -> MultiByteAnchorReport:
+    """Insert one m_stx-replica anchor per target byte index, all
+    hosted as successors of byte_HOST's emit block. Each anchor's
+    body is a clone of host's byte-emit m_stx with the byte index
+    operand patched from host_byte_index to target_byte_index.
+
+    This makes the target byte's m_stx (and its source-byte load)
+    appear in IDA's AFTER pseudocode as a byte_emit-style buffer
+    write, structurally matching the reference output.
+
+    Caveat: buffer offset is NOT adjusted -- all anchored writes
+    target the same slot as the host. The semantic goal is byte
+    LOAD preservation; visual goal is reference-like structure.
+    """
+    if host_byte_index not in (0, 1):
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason="host_byte_must_be_0_or_1",
+        )
+    if not target_byte_indices:
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason="empty_target_byte_list",
+        )
+
+    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    if host_block is None:
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason=f"host_byte_{host_byte_index}_not_resolvable",
+        )
+
+    sub_reports: list[ByteEmitAnchorReport] = []
+    any_applied = False
+    for target_byte in target_byte_indices:
+        try:
+            anchor_serial = adapter.insert_byte_emit_replica_anchor(
+                predecessor_serial=host_block.serial,
+                successor_serial=host_block.succ_serial,
+                template_byte_index=host_byte_index,
+                target_byte_index=target_byte,
+            )
+            sub_reports.append(ByteEmitAnchorReport(
+                applied=True,
+                byte_index=target_byte,
+                mechanism=_MECHANISM_BYTE_STORE,
+                reason="ok",
+                byte_emit_serial=host_block.serial,
+                anchor_a_serial=anchor_serial,
+            ))
+            any_applied = True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "byte_anchor[byte_store]: replica insert failed for byte %d",
+                target_byte,
+            )
+            sub_reports.append(ByteEmitAnchorReport(
+                applied=False,
+                byte_index=target_byte,
+                mechanism=_MECHANISM_BYTE_STORE,
+                reason=f"replica_insert_failed:{type(exc).__name__}",
+                byte_emit_serial=host_block.serial,
+            ))
+
+    return MultiByteAnchorReport(
+        applied=any_applied,
+        host_byte_index=host_byte_index,
+        read_byte_indices=target_byte_indices,
         reason="ok" if any_applied else "no_sub_anchor_applied",
         sub_reports=tuple(sub_reports),
     )
