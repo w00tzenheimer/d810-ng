@@ -187,7 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_dag_local_edges_state
 -- StateTransitionAnchorFact transit chains, and TerminalByteEmitterFact
 -- destinations.  Observability-only: NO behavior of recon edge target
 -- selection depends on these rows.  See
--- ``d810.core.diag.edge_diagnostics`` for classification rules.
+-- ``d810.recon.flow.edge_diagnostics`` for classification rules.
 CREATE TABLE IF NOT EXISTS dag_edge_diagnostics (
     snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
     edge_id                INTEGER NOT NULL,
