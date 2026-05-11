@@ -21,6 +21,13 @@ from d810.recon.facts.model import (
 
 logger = getLogger("D810.recon.facts.runtime")
 
+_GENERIC_LIFECYCLE_FACT_KINDS = frozenset({
+    "ByteEmitCorridorFact",
+    "CallAnchorFact",
+    "ReturnFrontierFact",
+    "ZeroBlobFact",
+})
+
 FactPersistenceCallback = Callable[
     [
         Any,
@@ -761,6 +768,130 @@ class FactLifecycleRuntime:
         return tuple(mappings)
 
     @staticmethod
+    def _generic_continuity_key(
+        observation: FactObservation,
+    ) -> tuple[str, str, int, str] | None:
+        if observation.kind not in _GENERIC_LIFECYCLE_FACT_KINDS:
+            return None
+        if observation.source_ea is None or not observation.mop_signature:
+            return None
+        return (
+            observation.kind,
+            observation.semantic_key,
+            int(observation.source_ea),
+            str(observation.mop_signature),
+        )
+
+    def _derive_generic_lifecycle(
+        self,
+        func_ea: int,
+        *,
+        maturity: int,
+        current_observations: tuple[FactObservation, ...],
+        current_mappings: tuple[FactMapping, ...],
+        ran_fact_kinds: frozenset[str],
+    ) -> tuple[FactMapping, ...]:
+        active_kinds = _GENERIC_LIFECYCLE_FACT_KINDS & ran_fact_kinds
+        if not active_kinds:
+            return ()
+
+        current_facts = tuple(
+            observation
+            for observation in current_observations
+            if observation.kind in active_kinds
+        )
+        current_fact_ids = {observation.fact_id for observation in current_facts}
+        current_by_continuity: dict[tuple[str, str, int, str], list[FactObservation]] = {}
+        for observation in current_facts:
+            key = self._generic_continuity_key(observation)
+            if key is not None:
+                current_by_continuity.setdefault(key, []).append(observation)
+
+        maturity_text = self._maturity_text(maturity)
+        maturity_rank = self._maturity_rank(maturity_text)
+        existing_mapping_keys = {
+            (
+                mapping.source_fact_id,
+                self._maturity_rank(mapping.target_maturity),
+            )
+            for mapping in (*self._mappings_by_func.get(func_ea, ()), *current_mappings)
+        }
+
+        mappings: list[FactMapping] = []
+        for observation in self._observations_by_func.get(func_ea, ()):
+            if observation.kind not in active_kinds:
+                continue
+            if self._maturity_rank(observation.maturity) >= maturity_rank:
+                continue
+            if observation.fact_id in current_fact_ids:
+                continue
+            mapping_key = (observation.fact_id, maturity_rank)
+            if mapping_key in existing_mapping_keys:
+                continue
+
+            remap_target: FactObservation | None = None
+            continuity_key = self._generic_continuity_key(observation)
+            if continuity_key is not None:
+                candidates = current_by_continuity.get(continuity_key, ())
+                if len(candidates) == 1:
+                    remap_target = candidates[0]
+
+            if remap_target is not None:
+                mappings.append(
+                    FactMapping(
+                        source_fact_id=observation.fact_id,
+                        source_maturity=observation.maturity,
+                        target_maturity=maturity_text,
+                        status=FactStatus.REMAPPED,
+                        confidence=min(0.8, observation.confidence, remap_target.confidence),
+                        target_fact_id=remap_target.fact_id,
+                        target_block=remap_target.source_block,
+                        target_ea=remap_target.source_ea,
+                        target_mop_signature=remap_target.mop_signature,
+                        reason=(
+                            f"{observation.kind} remapped by stable "
+                            "semantic/source-EA/mop continuity"
+                        ),
+                        payload={
+                            "kind": observation.kind,
+                            "semantic_key": observation.semantic_key,
+                            "source_fact_id": observation.fact_id,
+                            "source_block": observation.source_block,
+                            "source_ea": observation.source_ea,
+                            "source_mop_signature": observation.mop_signature,
+                            "target_fact_id": remap_target.fact_id,
+                            "target_block": remap_target.source_block,
+                            "target_ea": remap_target.source_ea,
+                            "target_mop_signature": remap_target.mop_signature,
+                        },
+                    )
+                )
+                continue
+
+            mappings.append(
+                FactMapping(
+                    source_fact_id=observation.fact_id,
+                    source_maturity=observation.maturity,
+                    target_maturity=maturity_text,
+                    status=FactStatus.IDENTITY_LOST,
+                    confidence=0.68,
+                    reason=(
+                        f"{observation.kind} observation observed at an earlier "
+                        "maturity but absent from this maturity's collection"
+                    ),
+                    payload={
+                        "kind": observation.kind,
+                        "semantic_key": observation.semantic_key,
+                        "source_fact_id": observation.fact_id,
+                        "source_block": observation.source_block,
+                        "source_ea": observation.source_ea,
+                        "source_mop_signature": observation.mop_signature,
+                    },
+                )
+            )
+        return tuple(mappings)
+
+    @staticmethod
     def _state_write_anchor_continuity_key(
         observation: FactObservation,
     ) -> tuple[int, int, int] | None:
@@ -1219,6 +1350,18 @@ class FactLifecycleRuntime:
                     *return_carrier_mappings,
                 ),
             )
+        generic_mappings = self._derive_generic_lifecycle(
+            func_ea,
+            maturity=maturity,
+            current_observations=tuple(observations),
+            current_mappings=(
+                *tuple(mappings),
+                *derived_mappings,
+                *return_carrier_mappings,
+                *terminal_byte_mappings,
+            ),
+            ran_fact_kinds=frozenset(ran_fact_kinds),
+        )
         state_write_mappings: tuple[FactMapping, ...] = ()
         if "StateWriteAnchorFact" in ran_fact_kinds:
             state_write_mappings = self._derive_state_write_anchor_lifecycle(
@@ -1230,11 +1373,13 @@ class FactLifecycleRuntime:
                     *derived_mappings,
                     *return_carrier_mappings,
                     *terminal_byte_mappings,
+                    *generic_mappings,
                 ),
             )
         mappings.extend(derived_mappings)
         mappings.extend(return_carrier_mappings)
         mappings.extend(terminal_byte_mappings)
+        mappings.extend(generic_mappings)
         mappings.extend(state_write_mappings)
         conflicts.extend(derived_conflicts)
 
