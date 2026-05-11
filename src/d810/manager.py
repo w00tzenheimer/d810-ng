@@ -696,9 +696,9 @@ class D810Manager:
         if snapshot_id is None:
             return
         try:
-            from d810.recon.observability import get_diag_db
+            from d810.core.observability import get_active_diag_conn
 
-            diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
+            diag_db = get_active_diag_conn(int(getattr(mba, "entry_ea", 0) or 0))
             if diag_db is None:
                 return
             violations = detect_post_d810_handoff_violations(
