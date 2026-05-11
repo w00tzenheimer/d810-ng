@@ -423,7 +423,7 @@ __all__ = [
 
 
 try:
-    from d810.core.diag import register_lineage_drainer
+    from d810.cfg.observability import register_lineage_drainer
 
     register_lineage_drainer(_drain_into_snapshot)
 except Exception:

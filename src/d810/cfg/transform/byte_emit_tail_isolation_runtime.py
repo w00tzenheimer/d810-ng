@@ -1916,7 +1916,7 @@ def maybe_run_tail_distinct(mba: Any) -> None:
         return  # default-off: no log, no mutation
 
     try:
-        from d810.core.diag import get_diag_db
+        from d810.cfg.observability import get_diag_db
 
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         diag_conn = get_diag_db(func_ea)
@@ -1985,7 +1985,7 @@ def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
         return
 
     try:
-        from d810.core.diag import get_diag_db
+        from d810.cfg.observability import get_diag_db
 
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         diag_conn = get_diag_db(func_ea)
@@ -2308,7 +2308,7 @@ def maybe_run_tail_state_cascade(mba: Any) -> None:
         return
 
     try:
-        from d810.core.diag import get_diag_db
+        from d810.cfg.observability import get_diag_db
 
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         diag_conn = get_diag_db(func_ea)
