@@ -13,7 +13,7 @@ The substrate is built up by these observability-only modules:
   (``COLLAPSED_TO_REWRITTEN_TARGET`` is the load-bearing class here).
 * ``d810.recon.flow.alternate_correlation`` -- pairs each collapsed edge
   with already-persisted RANGE_BACKED sibling-traversal edges.
-* ``d810.core.diag.alternate_selection`` -- picks the alternate that
+* ``d810.recon.flow.alternate_selection`` -- picks the alternate that
   preserves terminal-tail byte progression.
 
 This module is the single fact-backed *behavior* consumer.  It takes
@@ -85,7 +85,7 @@ def _run_cascade(diag_db: sqlite3.Connection, snap_id: int) -> None:
         correlate_collapsed_edges,
         persist_alternate_correlations,
     )
-    from d810.core.diag.alternate_selection import (
+    from d810.recon.flow.alternate_selection import (
         persist_alternate_selections,
         select_alternate_edges,
     )
