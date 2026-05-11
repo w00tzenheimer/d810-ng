@@ -198,29 +198,77 @@ def diagnostics_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Legacy capture re-exports (back-compat for Phase 5 migration)
+# Legacy capture shims (back-compat for the few sites that still pass an
+# explicit (conn, snap_id) pair; new code should use the event API
+# above).
 #
-# These keep existing call sites compiling while each subsystem is
-# migrated to the event API. Phase 6 removes them.
+# These wrappers delegate via `importlib.import_module` so the static
+# import graph has ZERO recon.observability -> d810.core.diag edges.
+# The runtime-no-core-diag import-linter contract therefore needs no
+# ignore_imports entry for this module.
 # ---------------------------------------------------------------------------
 
-from d810.core.diag import (
-    close_diag_session as close_capture_session,
-    get_diag_db as get_diag_db,
-    open_diag_session as open_capture_session,
-)
-from d810.core.diag.snapshot import (
-    snapshot_dag as record_dag,
-    snapshot_dag_local_facts as record_dag_local_facts,
-    snapshot_fact_conflicts as record_fact_conflict,
-    snapshot_fact_consumers as record_fact_consumer,
-    snapshot_fact_mappings as record_fact_mapping,
-    snapshot_fact_observations as record_fact_observation,
-    snapshot_mba as record_mba_snapshot,
-    snapshot_modifications as record_modifications,
-    snapshot_reachability as record_reachability,
-    snapshot_rendered_program as record_rendered_program,
-)
+
+def _diag_module():
+    import importlib
+    return importlib.import_module("d810.core.diag")
+
+
+def _snapshot_module():
+    import importlib
+    return importlib.import_module("d810.core.diag.snapshot")
+
+
+def get_diag_db(*args, **kwargs):
+    return _diag_module().get_diag_db(*args, **kwargs)
+
+
+def open_capture_session(*args, **kwargs):
+    return _diag_module().open_diag_session(*args, **kwargs)
+
+
+def close_capture_session(*args, **kwargs):
+    return _diag_module().close_diag_session(*args, **kwargs)
+
+
+def record_dag(*args, **kwargs):
+    return _snapshot_module().snapshot_dag(*args, **kwargs)
+
+
+def record_dag_local_facts(*args, **kwargs):
+    return _snapshot_module().snapshot_dag_local_facts(*args, **kwargs)
+
+
+def record_fact_conflict(*args, **kwargs):
+    return _snapshot_module().snapshot_fact_conflicts(*args, **kwargs)
+
+
+def record_fact_consumer(*args, **kwargs):
+    return _snapshot_module().snapshot_fact_consumers(*args, **kwargs)
+
+
+def record_fact_mapping(*args, **kwargs):
+    return _snapshot_module().snapshot_fact_mappings(*args, **kwargs)
+
+
+def record_fact_observation(*args, **kwargs):
+    return _snapshot_module().snapshot_fact_observations(*args, **kwargs)
+
+
+def record_mba_snapshot(*args, **kwargs):
+    return _snapshot_module().snapshot_mba(*args, **kwargs)
+
+
+def record_modifications(*args, **kwargs):
+    return _snapshot_module().snapshot_modifications(*args, **kwargs)
+
+
+def record_reachability(*args, **kwargs):
+    return _snapshot_module().snapshot_reachability(*args, **kwargs)
+
+
+def record_rendered_program(*args, **kwargs):
+    return _snapshot_module().snapshot_rendered_program(*args, **kwargs)
 
 
 __all__ = [

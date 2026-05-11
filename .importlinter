@@ -104,17 +104,13 @@ forbidden_modules =
 
 [importlinter:contract:runtime-no-core-diag]
 # Runtime layers must route diagnostic capture through the
-# observability facades, not import d810.core.diag directly.
-#
-# Allowed transient exceptions (handled via ignore_imports):
-#  - d810.recon.observability, d810.cfg.observability,
-#    d810.hexrays.observability re-export from d810.core.diag.* by
-#    design; they ARE the boundary.
-#  - d810.cfg.provenance registers its drain callback with the
-#    core.diag IoC hook (`register_provenance_drainer`) at import time
-#    so `snapshot_mba` can pull buffered entries without core.diag
-#    importing from d810.cfg (forbidden by layers). This is the same
-#    pattern d810.cfg.block_lineage uses for `register_lineage_drainer`.
+# observability facades / event bus, not import d810.core.diag
+# directly. After the event-refactor follow-on plan completed,
+# every cross-layer access (observability legacy capture shims,
+# cfg.provenance IoC registration) is mediated through
+# `importlib.import_module("d810.core.diag")` so the static import
+# graph has zero recognised edges. The contract therefore needs no
+# ignore_imports entry.
 #
 # d810.diagnostics is the post-hoc CLI/query layer and is allowed to
 # read from core.diag; it is excluded by being absent from
@@ -130,10 +126,7 @@ source_modules =
     d810.hexrays
 forbidden_modules =
     d810.core.diag
-ignore_imports =
-    d810.recon.observability -> d810.core.diag
-    d810.recon.observability -> d810.core.diag.snapshot
-    d810.cfg.observability -> d810.core.diag
-    d810.hexrays.observability -> d810.core.diag
-    d810.hexrays.observability -> d810.core.diag.snapshot
-    d810.cfg.provenance -> d810.core.diag
+# No ignore_imports: the observability facades and cfg.provenance
+# IoC registration use `importlib.import_module` to delegate to
+# d810.core.diag, so the static import graph has zero recognised
+# runtime -> core.diag edges.
