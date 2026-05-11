@@ -147,11 +147,147 @@ def emit(event: Any) -> None:
             )
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic backend registration (dependency inversion)
+#
+# Runtime layers (manager, recon, cfg, hexrays, optimizers) MUST NOT
+# import ``d810.core.diag`` directly -- not even via importlib. They
+# operate against the abstract interface declared here:
+#
+#   - ``open_observability_session(func_ea)`` / ``close_observability_session()``
+#   - ``get_active_diag_conn(func_ea=0)``
+#
+# The diag SQLite backend lives in ``d810.core.diag`` and registers
+# itself at module load via :func:`register_diag_session_handlers` and
+# :func:`register_diag_conn_provider`. ``core.observability`` lives in
+# the same package layer as ``core.diag`` so the (one-time, lazy)
+# importlib bootstrap below does not cross any layer boundary or
+# violate the runtime-no-core-diag contract.
+# ---------------------------------------------------------------------------
+
+_session_lock = threading.Lock()
+_session_open_handler: Callable[[int], None] | None = None
+_session_close_handler: Callable[[], None] | None = None
+_diag_conn_provider: Callable[..., Any] | None = None
+
+
+def register_diag_session_handlers(
+    open_fn: Callable[[int], None],
+    close_fn: Callable[[], None],
+) -> None:
+    """Register the open/close handlers for the diag backend.
+
+    Called by ``d810.core.diag.__init__`` at module load. Idempotent;
+    a second call replaces the previous handlers.
+    """
+    global _session_open_handler, _session_close_handler
+    with _session_lock:
+        _session_open_handler = open_fn
+        _session_close_handler = close_fn
+
+
+def register_diag_conn_provider(fn: Callable[..., Any]) -> None:
+    """Register the active-connection provider for the diag backend.
+
+    The callable receives ``(func_ea: int = 0)`` and returns the active
+    SQLite connection or ``None``. Called by ``d810.core.diag.__init__``
+    at module load.
+    """
+    global _diag_conn_provider
+    with _session_lock:
+        _diag_conn_provider = fn
+
+
+def _ensure_backend_loaded() -> None:
+    """Lazy-import the diag backend so it has a chance to register.
+
+    Runtime layers only call into ``core.observability``; nothing else
+    imports ``core.diag`` statically. This bootstrap triggers
+    registration on first use of the backend.
+
+    ``importlib`` stays in ``core.observability`` (same package layer as
+    ``core.diag``) and never reaches into a runtime module's import
+    graph.
+    """
+    if _diag_conn_provider is not None and _session_open_handler is not None:
+        return
+    import importlib
+    try:
+        importlib.import_module("d810.core.diag")
+    except Exception:
+        pass
+
+
+def open_observability_session(func_ea: int) -> None:
+    """Open the diag session bound to ``func_ea``.
+
+    Triggers backend bootstrap on first call. No-op when no backend
+    has registered handlers (e.g. ``diag_snapshots`` setting disabled).
+    """
+    _ensure_backend_loaded()
+    handler = _session_open_handler
+    if handler is None:
+        return
+    try:
+        handler(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "diag session open handler raised; swallowed (func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+
+
+def close_observability_session() -> None:
+    """Close the active diag session, if any.
+
+    Backend-agnostic; the registered close handler tears down the
+    SQLite connection and unsubscribes the event handlers.
+    """
+    handler = _session_close_handler
+    if handler is None:
+        return
+    try:
+        handler()
+    except Exception:
+        _logger.warning(
+            "diag session close handler raised; swallowed", exc_info=True,
+        )
+
+
+def get_active_diag_conn(func_ea: int = 0) -> Any:
+    """Return the active diag SQLite connection or ``None``.
+
+    Lazy-loads the backend on first call. This is the canonical
+    interface for read-side behavior bridges (e.g.
+    ``byte_emit_tail_isolation_runtime``) that legitimately need to
+    query persisted diag rows to drive runtime decisions.
+    """
+    _ensure_backend_loaded()
+    provider = _diag_conn_provider
+    if provider is None:
+        return None
+    try:
+        return provider(int(func_ea))
+    except Exception:
+        _logger.warning(
+            "diag conn provider raised; treating as no conn (func_ea=0x%x)",
+            int(func_ea),
+            exc_info=True,
+        )
+        return None
+
+
 __all__ = [
     "SnapshotRef",
+    "close_observability_session",
     "emit",
+    "get_active_diag_conn",
     "has_subscribers",
     "new_snapshot_key",
+    "open_observability_session",
+    "register_diag_conn_provider",
+    "register_diag_session_handlers",
     "reset_diagnostic_bus",
     "subscribe",
     "unsubscribe",

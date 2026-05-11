@@ -219,3 +219,19 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
     conn.execute("PRAGMA journal_mode=WAL")
     create_tables(conn)
     return conn
+
+
+# Register this backend with the abstract observability interface.
+# Runtime layers reach the diag DB exclusively via
+# ``d810.core.observability.{open_observability_session,
+# close_observability_session, get_active_diag_conn}`` -- the
+# registrations below wire those abstract entry points to this
+# concrete backend.  ``core.observability`` lives in the same package
+# layer as ``core.diag``, so this back-edge is allowed.
+from d810.core.observability import (
+    register_diag_conn_provider as _register_diag_conn_provider,
+    register_diag_session_handlers as _register_diag_session_handlers,
+)
+
+_register_diag_session_handlers(open_diag_session, close_diag_session)
+_register_diag_conn_provider(get_diag_db)
