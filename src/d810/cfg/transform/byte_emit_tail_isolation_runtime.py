@@ -973,8 +973,12 @@ class LiveMbaAdapter:
         # observed by downstream code). To prevent IDA from dedup'ing
         # consecutive writes-to-same-slot, each anchor's byte goes to a
         # DIFFERENT bit-position within the slot via a shift delta.
-        offset_delta = 0  # buffer slot offset (same slot)
-        shift_delta = (target_byte_index - template_byte_index) * 8  # bit position
+        # All anchors write to the SAME slot AND the same bit position as
+        # the host. Different bytes OR'd into the same bit positions
+        # accumulate (IDA can't prove redundancy across distinct loads),
+        # making each byte's read observable via the slot's downstream use.
+        offset_delta = 0
+        shift_delta = 0
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
                 # Patch byte_index in operand trees.
@@ -1481,28 +1485,36 @@ def _wrap_all_nested_shifts(insn, delta: int, _ih, ea: int = 0) -> None:
 
 
 def _deepclone_mop(mop, _ih) -> None:
-    """Force a mop_t to have independent content (no shared state).
+    """Force a mop_t's wrapped sub-instruction to be a fresh, independent
+    copy (no shared state with the original).
 
-    Uses an intermediate mop_t to perform a round-trip copy:
-    tmp.assign(mop) deep-copies mop into tmp;
-    mop.assign(tmp) deep-copies tmp back into mop.
-    Net effect: mop's internal state is freshly allocated.
+    For mop_d operands, SWIG returns the wrapped ``minsn_t*`` directly --
+    so two mop_t's that wrap the same minsn_t share its operand tree.
+    To break this sharing we must allocate a fresh minsn_t and use
+    ``minsn_t.copy()`` (which does a deep copy via HEXDSP) to populate
+    it, then replace the original pointer.
+
+    Recurses into the freshly cloned sub-instruction's operands.
     """
     if mop is None:
         return
+    if int(getattr(mop, "t", -1)) != int(_ih.mop_d):
+        return  # only mop_d wraps a sub-instruction
+    shared_inner = getattr(mop, "d", None)
+    if shared_inner is None:
+        return
     try:
-        tmp = _ih.mop_t()
-        tmp.assign(mop)
-        mop.assign(tmp)
+        ea = int(getattr(shared_inner, "ea", 0) or 0)
+        fresh_inner = _ih.minsn_t(ea)
+        fresh_inner.copy(shared_inner)  # HEXDSP deep-copy of contents
+        mop.d = fresh_inner
     except Exception:
         return
-    # Recurse into nested sub-instruction's operands.
-    if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
-        sub = getattr(mop, "d", None)
-        if sub is not None:
-            _deepclone_mop(getattr(sub, "l", None), _ih)
-            _deepclone_mop(getattr(sub, "r", None), _ih)
-            _deepclone_mop(getattr(sub, "d", None), _ih)
+    # Recurse into the FRESH inner's operands -- any nested mop_d may
+    # still wrap a shared minsn_t until we recurse.
+    _deepclone_mop(getattr(fresh_inner, "l", None), _ih)
+    _deepclone_mop(getattr(fresh_inner, "r", None), _ih)
+    _deepclone_mop(getattr(fresh_inner, "d", None), _ih)
 
 
 def _deepclone_minsn_operands(insn, _ih) -> None:
