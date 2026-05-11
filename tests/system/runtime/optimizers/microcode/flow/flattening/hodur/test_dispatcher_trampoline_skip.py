@@ -20,6 +20,9 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    CumulativePlannerView,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
     DispatcherTrampolineSkipStrategy,
 )
@@ -189,6 +192,7 @@ def _build_snapshot(
     *,
     fact_view: object | None,
     extra_var_writes: tuple[str, ...] = (),
+    cumulative_planner_view: CumulativePlannerView | None = None,
 ) -> tuple[AnalysisSnapshot, _FakeMba]:
     state_var_stkoff = _build_state_var_stkoff()
     state_value = 0x1234
@@ -243,6 +247,7 @@ def _build_snapshot(
         maturity=mba.maturity,
         flow_graph=flow_graph,
         diagnostic_fact_view=fact_view,
+        cumulative_planner_view=cumulative_planner_view,
     )
     return snapshot, mba
 
@@ -366,5 +371,60 @@ def test_permits_when_no_facts_for_target_block(captured_strategy_log):
     assert len(fragment.modifications) == 1
     assert not any(
         "RECON_REDIRECT_REJECTED_RETURN_CARRIER_CONST_FEED" in record.getMessage()
+        for record in captured_strategy_log
+    )
+
+
+def test_rejects_when_prior_planner_directly_vetoed_source(
+    captured_strategy_log,
+):
+    """Cleanup must not re-emit redirects directly vetoed upstream."""
+    view = CumulativePlannerView.empty()
+    view = CumulativePlannerView(
+        linearization_decisions=view.linearization_decisions,
+        neutralized_state_writes=view.neutralized_state_writes,
+        claimed_sources=frozenset({132}),
+        direct_use_def_veto_sources=frozenset({132}),
+        dag_authority=view.dag_authority,
+    )
+    snapshot, _ = _build_snapshot(
+        fact_view=None,
+        cumulative_planner_view=view,
+    )
+
+    strategy = DispatcherTrampolineSkipStrategy()
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is None
+    assert any(
+        "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO" in record.getMessage()
+        for record in captured_strategy_log
+    )
+
+
+def test_permits_when_source_claimed_without_direct_use_def_veto(
+    captured_strategy_log,
+):
+    """Generic planner claims do not block this cleanup path."""
+    view = CumulativePlannerView.empty()
+    view = CumulativePlannerView(
+        linearization_decisions=view.linearization_decisions,
+        neutralized_state_writes=view.neutralized_state_writes,
+        claimed_sources=frozenset({132}),
+        direct_use_def_veto_sources=frozenset(),
+        dag_authority=view.dag_authority,
+    )
+    snapshot, _ = _build_snapshot(
+        fact_view=None,
+        cumulative_planner_view=view,
+    )
+
+    strategy = DispatcherTrampolineSkipStrategy()
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is not None
+    assert len(fragment.modifications) == 1
+    assert not any(
+        "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO" in record.getMessage()
         for record in captured_strategy_log
     )

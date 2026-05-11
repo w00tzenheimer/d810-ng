@@ -113,6 +113,10 @@ from d810.hexrays.mutation.ir_translator import capture_insn_snapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     validate_insn_snapshots,
 )
+from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    PLANNER_CTX_METADATA_KEY,
+    PlannerContextContribution,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
@@ -2857,6 +2861,35 @@ class HandlerChainComposerStrategy:
                     snapshot, "cumulative_planner_view", None
                 ),
             )
+            direct_use_def_veto_sources = frozenset(
+                int(src)
+                for src in swr_result.get(
+                    "direct_use_def_veto_sources", frozenset()
+                )
+            )
+            if direct_use_def_veto_sources:
+                contribution = fragment.metadata.get(
+                    PLANNER_CTX_METADATA_KEY
+                )
+                if isinstance(contribution, PlannerContextContribution):
+                    fragment.metadata[PLANNER_CTX_METADATA_KEY] = replace(
+                        contribution,
+                        direct_use_def_veto_sources=frozenset(
+                            contribution.direct_use_def_veto_sources
+                        )
+                        | direct_use_def_veto_sources,
+                    )
+                else:
+                    fragment.metadata[PLANNER_CTX_METADATA_KEY] = (
+                        PlannerContextContribution(
+                            direct_use_def_veto_sources=direct_use_def_veto_sources
+                        )
+                    )
+                logger.info(
+                    "RECON DAG: planner-context recorded direct use-def "
+                    "veto sources=%s",
+                    sorted(direct_use_def_veto_sources),
+                )
             # Annotate metadata with HCC-specific counts for diagnostics.
             fragment.metadata["handler_chain_composer_emitted"] = emitted
             fragment.metadata["handler_chain_composer_region_anchors"] = tuple(
@@ -3735,6 +3768,9 @@ class HandlerChainComposerStrategy:
             "residual_dispatcher_preds": residual_dispatcher_preds,
             "structured_region_fidelity": structured_region_fidelity,
             "dag": dag,
+            "direct_use_def_veto_sources": frozenset(
+                direct_use_def_veto_sources
+            ),
             "fixpoint_feeder_sources": frozenset(
                 int(entry.source_block)
                 for entry in (
