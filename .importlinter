@@ -115,6 +115,10 @@ forbidden_modules =
 #    so `snapshot_mba` can pull buffered entries without core.diag
 #    importing from d810.cfg (forbidden by layers). This is the same
 #    pattern d810.cfg.block_lineage uses for `register_lineage_drainer`.
+#  - d810.hexrays.hooks.hexrays_hooks bootstraps the diag event-handler
+#    subscribers when a diag session opens and unsubscribes them when
+#    it closes. The bootstrap is a one-call orchestration concern; the
+#    runtime hot path never touches core.diag.
 #
 # d810.diagnostics is the post-hoc CLI/query layer and is allowed to
 # read from core.diag; it is excluded by being absent from
@@ -138,3 +142,4 @@ ignore_imports =
     d810.hexrays.observability -> d810.core.diag
     d810.hexrays.observability -> d810.core.diag.snapshot
     d810.cfg.provenance -> d810.core.diag
+    d810.hexrays.hooks.hexrays_hooks -> d810.core.diag.event_handlers
