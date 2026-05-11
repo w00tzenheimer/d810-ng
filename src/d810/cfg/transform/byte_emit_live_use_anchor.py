@@ -587,10 +587,18 @@ def execute_reconnect_byte_emits(
     any_applied = False
     for target_byte in target_byte_indices:
         try:
+            # Re-fetch host_block each iteration so we get its CURRENT
+            # successor (the previous anchor in the chain, if any). The
+            # BlockView captured at find-time goes stale once we mutate.
+            host_block_fresh = adapter.find_byte_emit_block_by_v190_offset(
+                host_byte_index,
+            )
+            if host_block_fresh is None:
+                raise RuntimeError("host_block no longer resolvable mid-iteration")
             # template_byte_index == target_byte_index: patcher becomes a no-op
             anchor_serial = adapter.insert_byte_emit_replica_anchor(
-                predecessor_serial=host_block.serial,
-                successor_serial=host_block.succ_serial,
+                predecessor_serial=host_block_fresh.serial,
+                successor_serial=host_block_fresh.succ_serial,
                 template_byte_index=target_byte,
                 target_byte_index=target_byte,
             )
