@@ -431,7 +431,7 @@ def snapshot_mba(
     # next ``snapshot_mba`` call drains that buffer and persists it to
     # ``cfg_provenance``. Best-effort: failure here must NOT break snapshots.
     try:
-        from d810.core.diag.cfg_provenance import drain_pending_provenance
+        from d810.core.diag import drain_pending_provenance
         prov_entries = drain_pending_provenance()
         if prov_entries:
             prov_rows = [

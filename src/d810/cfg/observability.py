@@ -3,7 +3,7 @@
 Runtime CFG mutation code (``d810.hexrays.mutation.cfg_mutations``,
 ``d810.hexrays.mutation.deferred_modifier``, the flattening executor,
 hodur unflattener, byte-emit tail isolation runtime, etc.) calls into
-this module instead of importing ``d810.core.diag.cfg_provenance`` or
+this module instead of importing ``d810.cfg.provenance`` or
 ``d810.core.diag.snapshot.snapshot_watch_transition`` directly.
 
 This is the *capture-side* boundary for CFG-domain observations:
@@ -34,13 +34,19 @@ from d810.core.diag import (
     get_diag_db as get_diag_db,
     register_lineage_drainer as register_lineage_drainer,
 )
-from d810.core.diag.cfg_provenance import (
+from d810.core.diag.snapshot import (
+    snapshot_watch_transition as record_watch_block_transition,
+)
+
+# Producer-facing CFG provenance API (Phase 6 split). The producer
+# lives in d810.cfg.provenance; the SQLite sink stays in
+# d810.core.diag.snapshot and consumes the buffered entries through the
+# core.diag IoC drainer hook that d810.cfg.provenance registers at
+# import time.
+from d810.cfg.provenance import (
     drain_pending_provenance as drain_pending_provenance,
     log_cfg_provenance as record_cfg_provenance,
     reset_pending_provenance as reset_pending_provenance,
-)
-from d810.core.diag.snapshot import (
-    snapshot_watch_transition as record_watch_block_transition,
 )
 
 __all__ = [
