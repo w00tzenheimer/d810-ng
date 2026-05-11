@@ -364,6 +364,36 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_egress_plan(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics cascade-egress-plan`.
+
+    Defaults --db to the latest diag SQLite for the worktree. Snapshot
+    selection is delegated to the diag command (it picks the most recent
+    GLBOPT1/pre_d810 fact snapshot + post_bundle_stabilize CFG snapshot).
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable, "-m", "d810.diagnostics", "cascade-egress-plan",
+        "--db", str(db),
+    ]
+    if args.fact_snapshot_id is not None:
+        diag_argv += ["--fact-snapshot-id", str(args.fact_snapshot_id)]
+    if args.target_snapshot_id is not None:
+        diag_argv += ["--target-snapshot-id", str(args.target_snapshot_id)]
+    print(f"DB={db}", file=sys.stderr)
+    print(
+        f"cff-debug: egress-plan: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_returns(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics return-ledger`.
 
@@ -823,6 +853,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_returns)
+
+    sp = sub.add_parser(
+        "egress-plan",
+        help=(
+            "Read-only terminal-tail cascade egress plan from the latest"
+            " diag DB. Wraps `python -m d810.diagnostics cascade-egress-plan`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--fact-snapshot-id", type=int, default=None,
+        help=(
+            "snapshot containing TerminalByteEmitterFact rows"
+            " (default: auto-pick GLBOPT1/pre_d810)"
+        ),
+    )
+    sp.add_argument(
+        "--target-snapshot-id", type=int, default=None,
+        help=(
+            "CFG snapshot to evaluate (default: auto-pick"
+            " post_bundle_stabilize)"
+        ),
+    )
+    sp.set_defaults(func=cmd_egress_plan)
 
     return p
 

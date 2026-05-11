@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Build a read-only terminal-tail cascade egress plan from a diag DB.
 
+.. deprecated:: 2026-05-11
+    Prefer ``python -m d810.diagnostics cascade-egress-plan`` or
+    ``./tools/cff_debug.py egress-plan``. This script is kept as a
+    compatibility wrapper; the orchestration + SQL logic now lives at
+    ``src/d810/diagnostics/cascade_egress_plan.py`` with unit tests under
+    ``tests/unit/diagnostics/test_cascade_egress_plan.py``. The cfg-layer
+    planner in ``d810.cfg.terminal_tail_cascade_egress_planner`` is
+    unchanged.
+
 The planner resolves ``TerminalByteEmitterFact`` rows from an earlier
 fact snapshot into a target CFG snapshot, usually ``post_bundle_stabilize``
 (snap17 in the sub7FFD traces), and reports whether each byte tail can
