@@ -29,20 +29,20 @@ def snapshot_reconstruction_dag(
     strategy_name: str,
 ) -> SnapshotReconstructionResult:
     try:
-        from d810.core.diag import get_diag_db
+        from d810.recon.observability import (
+            DagEdge,
+            DagNode,
+            dag_node_diagnostic_state,
+            get_diag_db,
+            record_dag,
+            record_dag_local_facts,
+            record_mba_snapshot,
+        )
         diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
         if diag_db is not None:
-            from d810.core.diag.snapshot import (
-                DagEdge,
-                DagNode,
-                dag_node_diagnostic_state,
-                snapshot_dag,
-                snapshot_dag_local_facts,
-                snapshot_mba,
-            )
             import json as _json
 
-            snap_id = snapshot_mba(
+            snap_id = record_mba_snapshot(
                 diag_db,
                 [],
                 label=f"{strategy_name}_state_write_reconstruction_dag",
@@ -75,8 +75,8 @@ def snapshot_reconstruction_dag(
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
-            snapshot_dag_local_facts(diag_db, snap_id, dag)
+            record_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            record_dag_local_facts(diag_db, snap_id, dag)
             return SnapshotReconstructionResult(
                 diag_db=diag_db,
                 snap_id=int(snap_id),
@@ -103,22 +103,22 @@ def snapshot_reconstruction_post_apply(
     strategy_name: str,
 ) -> None:
     try:
-        from d810.core.diag import get_diag_db
+        from d810.recon.observability import (
+            DagEdge,
+            DagNode,
+            Modification,
+            dag_node_diagnostic_state,
+            get_diag_db,
+            record_dag,
+            record_dag_local_facts,
+            record_mba_snapshot,
+            record_modifications,
+        )
         diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
         if diag_db is not None:
-            from d810.core.diag.snapshot import (
-                DagEdge,
-                DagNode,
-                Modification,
-                dag_node_diagnostic_state,
-                snapshot_dag,
-                snapshot_dag_local_facts,
-                snapshot_mba,
-                snapshot_modifications,
-            )
             import json as _json
 
-            snap_id = snapshot_mba(
+            snap_id = record_mba_snapshot(
                 diag_db,
                 [],
                 label=f"{strategy_name}_state_write_reconstruction_post_apply",
@@ -151,8 +151,8 @@ def snapshot_reconstruction_post_apply(
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
-            snapshot_dag_local_facts(diag_db, snap_id, dag)
+            record_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            record_dag_local_facts(diag_db, snap_id, dag)
 
             mod_snapshots = []
             for midx, mod in enumerate(modifications):
@@ -222,7 +222,7 @@ def snapshot_reconstruction_post_apply(
                     status="emitted",
                 ))
 
-            snapshot_modifications(diag_db, snap_id, mod_snapshots)
+            record_modifications(diag_db, snap_id, mod_snapshots)
     except Exception:
         logger.warning(
             "Diagnostic DAG/modifications snapshot failed (non-critical)",

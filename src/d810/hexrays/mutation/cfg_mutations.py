@@ -188,8 +188,8 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     previous_blk_successor_serial = blk.succset[0]
     previous_blk_successor = mba.get_mblock(previous_blk_successor_serial)
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
             block_serial=int(blk.serial),
@@ -319,8 +319,8 @@ def change_2way_block_conditional_successor(
             blk.serial, old_target, previous_blk_conditional_successor_serial,
         )
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
             block_serial=int(blk.serial),
@@ -398,8 +398,8 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
     mba = blk.mba
     previous_blk_successor_serials = [x for x in blk.succset]
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
             block_serial=int(blk.serial),
@@ -523,8 +523,8 @@ def create_standalone_block(
     # 1. Copy ref_blk to get a fresh block at the end of the MBA
     new_blk = mba.copy_block(ref_blk, mba.qty - 1)
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
             block_serial=int(new_blk.serial),
@@ -1004,8 +1004,8 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # block) to avoid serial shifts for generic rewrites.
         nop_block = mba.copy_block(blk, mba.qty - 1)
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
             block_serial=int(nop_block.serial),
@@ -1362,8 +1362,8 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                     father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
                 )
                 try:
-                    from d810.core.diag.cfg_provenance import log_cfg_provenance
-                    log_cfg_provenance(
+                    from d810.cfg.observability import record_cfg_provenance
+                    record_cfg_provenance(
                         pass_name="remove_simple_goto",
                         action="REDIRECT_EDGE",
                         block_serial=int(father_serial),
@@ -1409,8 +1409,8 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
     # qty delta, plus emit per-serial DELETE rows for any pre-serials that
     # are now out-of-range (qty shrunk).
     try:
-        from d810.core.diag.cfg_provenance import log_cfg_provenance
-        log_cfg_provenance(
+        from d810.cfg.observability import record_cfg_provenance
+        record_cfg_provenance(
             pass_name="mba_deep_cleaning",
             action="BULK_DEEP_CLEAN",
             block_serial=-1,
@@ -1429,7 +1429,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
             # Per-serial DELETE rows for any serial out-of-range now.
             for s in sorted(pre_serials):
                 if s >= post_qty:
-                    log_cfg_provenance(
+                    record_cfg_provenance(
                         pass_name="mba_deep_cleaning",
                         action=action_kind,
                         block_serial=s,

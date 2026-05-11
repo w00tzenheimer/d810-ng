@@ -884,9 +884,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             _post_snap_id = None
             if self.current_maturity is not None:
                 try:
-                    from d810.core.diag import get_diag_db
-                    from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                    from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                    from d810.hexrays.observability import (
+                        capture_mba_snapshot as _snap_mba,
+                        get_diag_db,
+                        mba_to_block_snapshots,
+                    )
 
                     _prev_mat_name = maturity_to_string(self.current_maturity)
                     _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
@@ -932,9 +934,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             _pre_snap_id = None
             _pre_diag_conn = None
             try:
-                from d810.core.diag import get_diag_db
-                from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                from d810.hexrays.observability import (
+                    capture_mba_snapshot as _snap_mba,
+                    get_diag_db,
+                    mba_to_block_snapshots,
+                )
 
                 _new_mat_name = maturity_to_string(self.current_maturity)
                 _pre_diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
@@ -1440,8 +1444,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
         try:
-            from d810.core.diag import open_diag_session
-            open_diag_session(int(mba.entry_ea))
+            from d810.hexrays.observability import open_capture_session
+            open_capture_session(int(mba.entry_ea))
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.STARTED)
@@ -1592,8 +1596,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
         try:
-            from d810.core.diag import close_diag_session
-            close_diag_session()
+            from d810.hexrays.observability import close_capture_session
+            close_capture_session()
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.FINISHED)

@@ -805,9 +805,12 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             # --- Diagnostic snapshot: MBA + reachability after Gut-and-Wire ---
             try:
-                from d810.core.diag import get_diag_db
-                from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                from d810.core.diag.snapshot import snapshot_mba, snapshot_reachability
+                from d810.hexrays.observability import (
+                    capture_mba_snapshot,
+                    get_diag_db,
+                    mba_to_block_snapshots,
+                )
+                from d810.recon.observability import record_reachability
 
                 diag_db = get_diag_db(self.mba.entry_ea)
                 if diag_db is not None:
@@ -836,7 +839,7 @@ class HodurUnflattener(GenericUnflatteningRule):
 
                     # Full MBA snapshot at post_gut_wire phase
                     _gw_blocks = mba_to_block_snapshots(self.mba)
-                    snap_id = snapshot_mba(
+                    snap_id = capture_mba_snapshot(
                         diag_db,
                         _gw_blocks,
                         label="post_gut_and_wire",
@@ -844,7 +847,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                         maturity="MMAT_GLBOPT1",
                         phase="post_gut_wire",
                     )
-                    snapshot_reachability(
+                    record_reachability(
                         diag_db,
                         snap_id,
                         all_serials=all_serials,
@@ -1270,9 +1273,11 @@ class HodurUnflattener(GenericUnflatteningRule):
     def _capture_post_pipeline_diagnostic_snapshot(self) -> None:
         """Persist a post-pipeline MBA snapshot for recon-only/manual inspection."""
         try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.mba_serializer import mba_to_block_snapshots
-            from d810.core.diag.snapshot import snapshot_mba as _snap_mba_pl
+            from d810.hexrays.observability import (
+                capture_mba_snapshot as _snap_mba_pl,
+                get_diag_db,
+                mba_to_block_snapshots,
+            )
 
             _pl_conn = get_diag_db(self.mba.entry_ea)
             if _pl_conn is not None:
@@ -1301,9 +1306,11 @@ class HodurUnflattener(GenericUnflatteningRule):
         which pass kills which block.
         """
         try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.mba_serializer import mba_to_block_snapshots
-            from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+            from d810.hexrays.observability import (
+                capture_mba_snapshot as _snap_mba,
+                get_diag_db,
+                mba_to_block_snapshots,
+            )
 
             conn = get_diag_db(self.mba.entry_ea)
             if conn is None:
@@ -1893,7 +1900,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 blk.serial,
             )
             try:
-                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="bst_cleanup",
                     action="SEVER_EDGE",
@@ -1928,7 +1935,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 make_2way_block_goto(blk, keep_serial, verify=False)
                 severed_2way += 1
                 try:
-                    from d810.core.diag.cfg_provenance import log_cfg_provenance
+                    from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
                     log_cfg_provenance(
                         pass_name="bst_cleanup",
                         action="REDIRECT_EDGE",
@@ -2001,7 +2008,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     succ_blk.predset._del(dispatcher_serial)
                     succ_blk.mark_lists_dirty()
                 try:
-                    from d810.core.diag.cfg_provenance import log_cfg_provenance
+                    from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
                     log_cfg_provenance(
                         pass_name="bst_cleanup",
                         action="SEVER_EDGE",
@@ -2269,7 +2276,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk.mark_lists_dirty()
             gutted += 1
             try:
-                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="gut_and_wire",
                     action="SOFT_KILL",
@@ -2343,7 +2350,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk.mark_lists_dirty()
             redirected += 1
             try:
-                from d810.core.diag.cfg_provenance import log_cfg_provenance
+                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="gut_and_wire",
                     action="REDIRECT_EDGE",

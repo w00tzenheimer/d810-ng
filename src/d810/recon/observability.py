@@ -32,8 +32,15 @@ from d810.core.diag import (
 )
 
 # Recon-domain observation writers. Names align with the plan's
-# record_* terminology.
+# record_* terminology. The neutral dataclasses (DagNode, DagEdge,
+# Modification) and the helper `dag_node_diagnostic_state` are exposed
+# under their original names because callers construct them by value
+# before persistence; renaming them would obscure the schema mapping.
 from d810.core.diag.snapshot import (
+    DagEdge as DagEdge,
+    DagNode as DagNode,
+    Modification as Modification,
+    dag_node_diagnostic_state as dag_node_diagnostic_state,
     snapshot_dag as record_dag,
     snapshot_dag_local_facts as record_dag_local_facts,
     snapshot_fact_conflicts as record_fact_conflict,
@@ -59,8 +66,13 @@ from d810.core.diag.snapshot import (
 )
 
 __all__ = [
+    "DagEdge",
+    "DagNode",
+    "Modification",
     "close_capture_session",
+    "dag_node_diagnostic_state",
     "get_diag_db",
+    "mba_to_block_snapshots",
     "open_capture_session",
     "record_dag",
     "record_dag_local_facts",
@@ -72,5 +84,4 @@ __all__ = [
     "record_modifications",
     "record_reachability",
     "record_rendered_program",
-    "mba_to_block_snapshots",
 ]
