@@ -1,34 +1,173 @@
-"""CFG-domain diagnostic capture facade.
+"""CFG-domain diagnostic capture facade and event API.
 
-Runtime CFG mutation code (``d810.hexrays.mutation.cfg_mutations``,
-``d810.hexrays.mutation.deferred_modifier``, the flattening executor,
-hodur unflattener, byte-emit tail isolation runtime, etc.) calls into
-this module instead of importing ``d810.cfg.provenance`` or
-``d810.core.diag.snapshot.snapshot_watch_transition`` directly.
+This module hosts two layered surfaces:
 
-This is the *capture-side* boundary for CFG-domain observations:
+1. **Event-based observability API** (the long-term boundary).
+   Runtime CFG mutation code constructs ``*Observed`` events and
+   publishes them on the :mod:`d810.core.observability` bus. The
+   diag sink subscribes in :mod:`d810.core.diag.event_handlers`; CFG
+   producer code never touches :mod:`d810.core.diag`.
 
-- ``record_cfg_provenance`` buffers a pass / action / block triple that
-  is later drained into the snapshot's ``cfg_provenance`` table by
-  ``record_mba_snapshot``.
-- ``drain_pending_provenance`` returns the buffered entries (consumed
-  by ``core.diag.snapshot`` during flush).
-- ``record_watch_block_transition`` persists a single before/after
-  block-shape transition for diagnostics.
-- ``register_lineage_drainer`` registers a callback that drains pending
-  ``block_lineage`` rows into the active snapshot. Used by
-  :mod:`d810.cfg.block_lineage` as an inversion-of-control hook.
-
-Phase 1 (this module): thin re-exports of the underlying
-``d810.core.diag`` functions. Phase 6 splits the CFG provenance API
-into ``d810.cfg.provenance`` (producer) and a DB-sink adapter; the
-facade names remain stable on the CFG side.
+2. **Legacy capture re-exports** (back-compat). The pre-event facade
+   re-exported ``log_cfg_provenance`` / ``snapshot_watch_transition``
+   etc. so existing call sites compile during the Phase 5
+   per-subsystem migration. Phase 6 removes them.
 
 See:
-    docs/plans/2026-05-11-diag-observability-boundary.md
     docs/diag-observability-boundary.md
 """
 from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from d810.core.observability import (
+    SnapshotRef,
+    emit as _emit,
+    has_subscribers as _has_subscribers,
+)
+from d810.core.typing import Any
+
+# ---------------------------------------------------------------------------
+# Event dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CfgProvenanceObserved:
+    """CFG mutation observed a single attribution-tagged event.
+
+    Mirrors the legacy ``log_cfg_provenance`` signature: callers emit
+    one of these per CREATE / DELETE / SOFT_KILL / SEVER_EDGE /
+    REDIRECT_EDGE / RENUMBER / MERGE / NOP_INSNS / BULK_DEEP_CLEAN
+    action site. The diag subscriber persists rows into the
+    ``cfg_provenance`` table under the next captured snapshot.
+    """
+
+    pass_name: str
+    action: str
+    block_serial: int
+    target_serial: int | None = None
+    reason: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+    block_label: str | None = None
+    target_label: str | None = None
+    maturity_label: str | None = None
+
+
+@dataclass(frozen=True)
+class WatchBlockTransitionObserved:
+    """DeferredGraphModifier.apply observed a watch-block shape transition."""
+
+    func_ea: int
+    apply_session_id: str
+    mod_index: int | None
+    mod_type: str
+    phase: str
+    block_serial: int
+    prev_type_name: str | None
+    prev_succs: tuple[int, ...] | None
+    prev_preds: tuple[int, ...] | None
+    now_type_name: str | None
+    now_succs: tuple[int, ...] | None
+    now_preds: tuple[int, ...] | None
+
+
+@dataclass(frozen=True)
+class BlockLineageDrainRequested:
+    """Snapshot pass is about to flush pending block-lineage rows.
+
+    The subscriber owns the actual ``cfg.block_lineage`` drain so the
+    runtime producer of lineage doesn't depend on the diag schema. The
+    event-driven design lets the subscriber decide when (or whether)
+    to drain.
+    """
+
+    snapshot: SnapshotRef
+
+
+# ---------------------------------------------------------------------------
+# Emit helpers
+# ---------------------------------------------------------------------------
+
+
+def observe_cfg_provenance(
+    *,
+    pass_name: str,
+    action: str,
+    block_serial: int,
+    target_serial: int | None = None,
+    reason: str = "",
+    extra: dict[str, Any] | None = None,
+    block_label: str | None = None,
+    target_label: str | None = None,
+    maturity_label: str | None = None,
+) -> None:
+    """Publish a :class:`CfgProvenanceObserved` event."""
+    _emit(CfgProvenanceObserved(
+        pass_name=str(pass_name),
+        action=str(action),
+        block_serial=int(block_serial),
+        target_serial=(
+            int(target_serial) if target_serial is not None else None
+        ),
+        reason=str(reason),
+        extra=dict(extra or {}),
+        block_label=block_label,
+        target_label=target_label,
+        maturity_label=maturity_label,
+    ))
+
+
+def observe_watch_block_transition(
+    *,
+    func_ea: int,
+    apply_session_id: str,
+    mod_index: int | None,
+    mod_type: str,
+    phase: str,
+    block_serial: int,
+    prev_type_name: str | None,
+    prev_succs: tuple[int, ...] | None,
+    prev_preds: tuple[int, ...] | None,
+    now_type_name: str | None,
+    now_succs: tuple[int, ...] | None,
+    now_preds: tuple[int, ...] | None,
+) -> None:
+    """Publish a :class:`WatchBlockTransitionObserved` event."""
+    _emit(WatchBlockTransitionObserved(
+        func_ea=int(func_ea),
+        apply_session_id=str(apply_session_id),
+        mod_index=mod_index,
+        mod_type=str(mod_type),
+        phase=str(phase),
+        block_serial=int(block_serial),
+        prev_type_name=prev_type_name,
+        prev_succs=prev_succs,
+        prev_preds=prev_preds,
+        now_type_name=now_type_name,
+        now_succs=now_succs,
+        now_preds=now_preds,
+    ))
+
+
+def diagnostics_enabled() -> bool:
+    """Cheap predicate: is any CFG-event subscriber installed?"""
+    return any(
+        _has_subscribers(t)
+        for t in (
+            CfgProvenanceObserved,
+            WatchBlockTransitionObserved,
+            BlockLineageDrainRequested,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy capture re-exports (back-compat for Phase 5 migration)
+#
+# These keep existing call sites compiling while each subsystem is
+# migrated to the event API. Phase 6 removes them.
+# ---------------------------------------------------------------------------
 
 from d810.core.diag import (
     get_diag_db as get_diag_db,
@@ -37,19 +176,23 @@ from d810.core.diag import (
 from d810.core.diag.snapshot import (
     snapshot_watch_transition as record_watch_block_transition,
 )
-
-# Producer-facing CFG provenance API (Phase 6 split). The producer
-# lives in d810.cfg.provenance; the SQLite sink stays in
-# d810.core.diag.snapshot and consumes the buffered entries through the
-# core.diag IoC drainer hook that d810.cfg.provenance registers at
-# import time.
 from d810.cfg.provenance import (
     drain_pending_provenance as drain_pending_provenance,
     log_cfg_provenance as record_cfg_provenance,
     reset_pending_provenance as reset_pending_provenance,
 )
 
+
 __all__ = [
+    # Event dataclasses
+    "BlockLineageDrainRequested",
+    "CfgProvenanceObserved",
+    "WatchBlockTransitionObserved",
+    # Emit helpers
+    "diagnostics_enabled",
+    "observe_cfg_provenance",
+    "observe_watch_block_transition",
+    # Legacy re-exports (deprecated; removed in Phase 6)
     "drain_pending_provenance",
     "get_diag_db",
     "record_cfg_provenance",
