@@ -49,6 +49,7 @@ from d810.core.diag.snapshot import (
 from d810.core.observability import (
     SnapshotRef,
     emit as _emit,
+    register_snapshot_id_resolver,
     subscribe,
     unsubscribe,
 )
@@ -59,6 +60,7 @@ from d810.core.observability_events import (
     DagLocalFactsObserved,
     DagObserved,
     FactConflictsObserved,
+    FactConsumersForLatestSnapshot,
     FactConsumersObserved,
     FactMappingsObserved,
     FactObservationsObserved,
@@ -192,6 +194,52 @@ def _handle_fact_consumer(ev: FactConsumersObserved) -> None:
     if conn is None or snap_id is None:
         return
     snapshot_fact_consumers(conn, snap_id, ev.func_ea, ev.consumers)
+
+
+def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
+    """Late-binding fact-consumer writer.
+
+    Used by recon-time post-hoc auditing where no specific
+    just-emitted capture exists. The handler finds the latest
+    ``snapshots`` row for ``func_ea`` and writes consumer rows there
+    after deduplicating against existing rows.
+    """
+    try:
+        conn = get_diag_db(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None or not ev.consumers:
+        return
+    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+    row = conn.execute(
+        "SELECT id FROM snapshots WHERE func_ea_hex=? "
+        "ORDER BY id DESC LIMIT 1",
+        (func_hex,),
+    ).fetchone()
+    if row is None:
+        return
+    snap_id = int(row[0])
+    pending = []
+    for consumer in ev.consumers:
+        exists = conn.execute(
+            "SELECT 1 FROM fact_consumers "
+            "WHERE func_ea_hex=? AND consumer=? AND strategy=? "
+            "AND fact_id=? AND maturity=? AND decision=? LIMIT 1",
+            (
+                func_hex,
+                getattr(consumer, "consumer", None),
+                getattr(consumer, "strategy", None),
+                getattr(consumer, "fact_id", None),
+                getattr(consumer, "maturity", None),
+                getattr(consumer, "decision", None),
+            ),
+        ).fetchone()
+        if exists is None:
+            pending.append(consumer)
+    if pending:
+        snapshot_fact_consumers(
+            conn, snap_id, int(ev.func_ea), tuple(pending),
+        )
 
 
 def _handle_fact_conflict(ev: FactConflictsObserved) -> None:
@@ -335,6 +383,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (FactObservationsObserved, _handle_fact_observation),
     (FactMappingsObserved, _handle_fact_mapping),
     (FactConsumersObserved, _handle_fact_consumer),
+    (FactConsumersForLatestSnapshot, _handle_fact_consumers_latest),
     (FactConflictsObserved, _handle_fact_conflict),
     (ModificationsObserved, _handle_modifications),
     (RenderedProgramObserved, _handle_rendered_program),

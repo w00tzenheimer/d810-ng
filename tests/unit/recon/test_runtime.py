@@ -255,14 +255,33 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
         "'pre_d810', 1, 0.0)"
     )
 
-    summary = rt.capture_maturity_facts(
-        object(),
-        func_ea=_FUNC_EA,
-        maturity=_MATURITY,
-        phase="pre_d810",
-        snapshot_id=1,
-        diag_conn=conn,
+    # Wire the abstract observability backend to the test conn and bind
+    # a SnapshotRef whose key resolves to snap_id=1 in this fixture.
+    from d810.core.diag.event_handlers import (
+        _bind_snapshot_id, install_diag_event_handlers,
+        uninstall_diag_event_handlers,
     )
+    from d810.core.observability import SnapshotRef
+    install_diag_event_handlers()
+    snap_ref = SnapshotRef(
+        key="test-key", func_ea=_FUNC_EA, label="test",
+        maturity="MMAT_GLBOPT1", phase="pre_d810",
+    )
+    _bind_snapshot_id(snap_ref, 1)
+    try:
+        with patch(
+            "d810.core.diag.event_handlers.get_diag_db",
+            return_value=conn,
+        ):
+            summary = rt.capture_maturity_facts(
+                object(),
+                func_ea=_FUNC_EA,
+                maturity=_MATURITY,
+                phase="pre_d810",
+                snapshot=snap_ref,
+            )
+    finally:
+        uninstall_diag_event_handlers()
 
     assert summary.observation_count == 1
     row = conn.execute(
@@ -339,28 +358,43 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
     )
 
     configure_settings(diag_snapshots=True)
-    with patch("d810.recon.observability.get_diag_db", return_value=conn):
-        persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
-
-    assert persisted == 1
-    row = conn.execute(
-        "SELECT snapshot_id, consumer, strategy, fact_id, decision, payload "
-        "FROM fact_consumers"
-    ).fetchone()
-    assert row[0] == 7
-    assert row[1:5] == (
-        "hodur.unflattener",
-        "HodurUnflattener",
-        "induction:runtime",
-        "stale",
+    # The new flow emits FactConsumersForLatestSnapshot; the diag
+    # subscriber finds the latest snapshot row and writes deduplicated
+    # fact_consumers rows. We install the subscriber and patch the
+    # diag conn provider to return our test conn.
+    from d810.core.diag.event_handlers import (
+        install_diag_event_handlers, uninstall_diag_event_handlers,
     )
-    assert json.loads(row[5]) == {"active": 0}
+    install_diag_event_handlers()
+    try:
+        with patch(
+            "d810.core.diag.event_handlers.get_diag_db", return_value=conn,
+        ):
+            persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
 
-    with patch("d810.recon.observability.get_diag_db", return_value=conn):
-        persisted_again = rt.record_fact_consumers(_FUNC_EA, (record,))
+        assert persisted == 1
+        row = conn.execute(
+            "SELECT snapshot_id, consumer, strategy, fact_id, decision, payload "
+            "FROM fact_consumers"
+        ).fetchone()
+        assert row[0] == 7
+        assert row[1:5] == (
+            "hodur.unflattener",
+            "HodurUnflattener",
+            "induction:runtime",
+            "stale",
+        )
+        assert json.loads(row[5]) == {"active": 0}
 
-    assert persisted_again == 0
-    assert conn.execute("SELECT COUNT(*) FROM fact_consumers").fetchone()[0] == 1
+        with patch(
+            "d810.core.diag.event_handlers.get_diag_db", return_value=conn,
+        ):
+            # New emit; subscriber sees the row already exists and dedups.
+            rt.record_fact_consumers(_FUNC_EA, (record,))
+
+        assert conn.execute("SELECT COUNT(*) FROM fact_consumers").fetchone()[0] == 1
+    finally:
+        uninstall_diag_event_handlers()
 
 
 def test_load_or_analyze_cache_hit() -> None:

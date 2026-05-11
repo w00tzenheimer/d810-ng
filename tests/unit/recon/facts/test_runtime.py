@@ -1,6 +1,7 @@
 """Tests for the maturity fact runtime."""
 from __future__ import annotations
 
+from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
 from d810.recon.facts import (
     FactCollectionResult,
@@ -14,6 +15,14 @@ from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 _MATURITY_LOCOPT = _MATURITY_VALUES["MMAT_LOCOPT"]
 _MATURITY_CALLS = _MATURITY_VALUES["MMAT_CALLS"]
 _MATURITY_GLBOPT1 = _MATURITY_VALUES["MMAT_GLBOPT1"]
+
+_TEST_REF = SnapshotRef(
+    key="fact-runtime-test",
+    func_ea=0x401000,
+    label="test",
+    maturity="MMAT_GLBOPT1",
+    phase="pre_d810",
+)
 
 
 class _Collector:
@@ -62,32 +71,29 @@ def test_capture_persists_collector_observations_when_snapshot_is_available() ->
     calls = []
 
     def _persist(
-        diag_conn, snapshot_id, func_ea, observations, mappings, conflicts
+        snapshot, func_ea, observations, mappings, conflicts
     ) -> None:
-        calls.append((diag_conn, snapshot_id, func_ea, observations, mappings, conflicts))
+        calls.append((snapshot, func_ea, observations, mappings, conflicts))
 
     runtime = FactLifecycleRuntime(persistence_callback=_persist)
     runtime.register(_Collector())
-    diag_conn = object()
 
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
         maturity=1,
         phase="pre_d810",
-        snapshot_id=7,
-        diag_conn=diag_conn,
+        snapshot=_TEST_REF,
     )
 
     assert summary.invoked is True
     assert summary.observation_count == 1
     assert len(calls) == 1
-    assert calls[0][0] is diag_conn
-    assert calls[0][1] == 7
-    assert calls[0][2] == 0x401000
-    assert calls[0][3][0].fact_id == "induction:blk10"
+    assert calls[0][0] is _TEST_REF
+    assert calls[0][1] == 0x401000
+    assert calls[0][2][0].fact_id == "induction:blk10"
+    assert calls[0][3] == ()
     assert calls[0][4] == ()
-    assert calls[0][5] == ()
 
 
 def test_capture_persists_collector_mappings() -> None:
@@ -102,12 +108,12 @@ def test_capture_persists_collector_mappings() -> None:
         object(),
         func_ea=0x401000,
         maturity=4,
-        snapshot_id=9,
-        diag_conn=object(),
+        snapshot=_TEST_REF,
     )
 
     assert summary.mapping_count == 1
-    assert calls[0][4][0].source_fact_id == "induction:blk10"
+    # signature: (snapshot, func_ea, observations, mappings, conflicts)
+    assert calls[0][3][0].source_fact_id == "induction:blk10"
 
 
 def test_validated_view_accumulates_observations_and_filters_stale_mappings() -> None:
@@ -467,8 +473,7 @@ def test_induction_source_ea_semantic_mismatch_is_contradicted() -> None:
         func_ea=0x401000,
         maturity=2,
         phase="pre_d810",
-        snapshot_id=8,
-        diag_conn=object(),
+        snapshot=_TEST_REF,
     )
     view = runtime.validated_view(0x401000, "MMAT_2")
 
@@ -478,7 +483,7 @@ def test_induction_source_ea_semantic_mismatch_is_contradicted() -> None:
     assert mapping.status is FactStatus.CONTRADICTED
     assert mapping.source_fact_id == "induction:old"
     assert mapping.target_fact_id is None
-    conflicts = calls[0][5]
+    conflicts = calls[0][4]
     assert len(conflicts) == 1
     assert conflicts[0].conflict_kind == "INCOMPATIBLE_INDUCTION_IDENTITY"
     assert conflicts[0].fact_id == "induction:new"
@@ -527,12 +532,11 @@ def test_induction_conflict_records_incompatible_same_block_mop_identity() -> No
         func_ea=0x401000,
         maturity=1,
         phase="pre_d810",
-        snapshot_id=8,
-        diag_conn=object(),
+        snapshot=_TEST_REF,
     )
 
     assert summary.conflict_count == 1
-    conflicts = calls[0][5]
+    conflicts = calls[0][4]
     assert len(conflicts) == 1
     assert conflicts[0].conflict_kind == "INCOMPATIBLE_INDUCTION_IDENTITY"
     assert conflicts[0].fact_id == "induction:a"
@@ -590,8 +594,7 @@ def test_induction_prior_current_semantic_mismatch_is_contradicted() -> None:
         func_ea=0x401000,
         maturity=2,
         phase="pre_d810",
-        snapshot_id=8,
-        diag_conn=object(),
+        snapshot=_TEST_REF,
     )
     view = runtime.validated_view(0x401000, "MMAT_2")
 
@@ -601,7 +604,7 @@ def test_induction_prior_current_semantic_mismatch_is_contradicted() -> None:
     assert view.mappings[0].source_fact_id == "induction:old"
     assert view.mappings[0].target_fact_id is None
     assert {obs.fact_id for obs in view.active_observations} == {"induction:new"}
-    conflicts = calls[0][5]
+    conflicts = calls[0][4]
     assert len(conflicts) == 1
     assert conflicts[0].conflict_kind == "INCOMPATIBLE_INDUCTION_IDENTITY"
     assert conflicts[0].fact_id == "induction:new"
@@ -1626,8 +1629,7 @@ def test_capture_does_not_dedupe_before_snapshot_backed_capture() -> None:
         func_ea=0x401000,
         maturity=1,
         phase="pre_d810",
-        snapshot_id=8,
-        diag_conn=object(),
+        snapshot=_TEST_REF,
     )
 
     assert no_snapshot.invoked is True

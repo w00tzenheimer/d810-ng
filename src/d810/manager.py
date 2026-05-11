@@ -497,7 +497,7 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
         """Write post-maturity MBA snapshot when configured via environment."""
         from d810.core.settings import get_settings
@@ -524,7 +524,7 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
         """Capture maturity facts on the post-D810 snapshot.
 
@@ -533,21 +533,21 @@ class D810Manager:
         leaves behind after reconstruction, so they need the matching
         post-D810 view as well.  The lifecycle runtime deduplicates by
         ``(func_ea, maturity, phase)``, making this a no-op on repeated events.
+
+        ``snapshot`` is the SnapshotRef emitted by the hexrays hook's
+        post-D810 capture; the persistence callback emits
+        ``observe_fact_*`` events against it.
         """
         if self._recon_runtime is None:
             return
         try:
-            from d810.recon.observability import get_diag_db
-
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-            diag_db = get_diag_db(func_ea)
             self._recon_runtime.capture_maturity_facts(
                 mba,
                 func_ea=func_ea,
                 maturity=int(maturity),
                 phase="post_d810",
-                snapshot_id=snapshot_id,
-                diag_conn=diag_db,
+                snapshot=snapshot,
             )
         except Exception:
             logger.exception("FactLifecycleRuntime post-D810 capture failed")
@@ -611,9 +611,14 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
-        """Attach a rendered linearized program to a post-D810 snapshot."""
+        """Attach a rendered linearized program to a post-D810 snapshot.
+
+        ``snapshot`` is the SnapshotRef emitted by the hexrays hook's
+        post-D810 capture. When ``None``, the diag pipeline is
+        disabled / no capture happened, and there is nothing to attach.
+        """
         from d810.core.settings import get_settings
 
         _s = get_settings()
@@ -624,12 +629,10 @@ class D810Manager:
             return
         if int(getattr(mba, "qty", 0) or 0) <= 0:
             return
+        if snapshot is None:
+            return
 
         try:
-            from d810.recon.observability import (
-                get_diag_db,
-                record_rendered_program,
-            )
             from d810.recon.flow.linearized_state_dag import (
                 BoundaryInlineMode,
                 ProgramCommentMode,
@@ -640,20 +643,7 @@ class D810Manager:
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
-
-            diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-            if diag_db is None:
-                return
-
-            snap_id = snapshot_id
-            if snap_id is None:
-                snap_row = diag_db.execute(
-                    "SELECT MAX(id) FROM snapshots WHERE func_ea=? AND maturity=? AND phase='post_d810'",
-                    (int(getattr(mba, "entry_ea", 0) or 0), _maturity_name(int(maturity))),
-                ).fetchone()
-                if snap_row is None or snap_row[0] is None:
-                    return
-                snap_id = int(snap_row[0])
+            from d810.recon.observability import observe_rendered_program
 
             dispatcher_serial, state_var_stkoff = self._resolve_post_d810_linearization_context(
                 mba,
@@ -682,7 +672,7 @@ class D810Manager:
                 boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                 comment_mode=ProgramCommentMode.MINIMAL,
             )
-            record_rendered_program(diag_db, snap_id, program)
+            observe_rendered_program(snapshot, program)
         except Exception:
             logger.debug("post_d810 rendered program attach failed", exc_info=True)
 
@@ -690,16 +680,20 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
         """Log diagnostic violations when post-D810 compaction orphans live uses."""
-        if snapshot_id is None:
+        if snapshot is None:
             return
         try:
-            from d810.core.observability import get_active_diag_conn
+            from d810.core.observability import (
+                get_active_diag_conn,
+                resolve_snapshot_id_for,
+            )
 
             diag_db = get_active_diag_conn(int(getattr(mba, "entry_ea", 0) or 0))
-            if diag_db is None:
+            snapshot_id = resolve_snapshot_id_for(snapshot)
+            if diag_db is None or snapshot_id is None:
                 return
             violations = detect_post_d810_handoff_violations(
                 diag_db,
