@@ -822,7 +822,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "state",
-        help="wrap inspect_linearized_state_node.py with auto DB + dump",
+        help=(
+            "Inspect one semantic state node in the latest diag DB and"
+            " cross-reference the latest AFTER pseudocode. Wraps `python -m"
+            " d810.diagnostics inspect-state-node`."
+        ),
     )
     _add_worktree(sp)
     sp.add_argument("state", help="state constant, e.g. 0x4C77464F")
