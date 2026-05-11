@@ -9,7 +9,7 @@ The substrate is built up by these observability-only modules:
   CFG transit chain.
 * ``d810.recon.facts.collectors.terminal_byte_emitter`` -- which
   ``byte_index`` each corridor block emits.
-* ``d810.core.diag.edge_diagnostics`` -- classifies recon edges
+* ``d810.recon.flow.edge_diagnostics`` -- classifies recon edges
   (``COLLAPSED_TO_REWRITTEN_TARGET`` is the load-bearing class here).
 * ``d810.core.diag.alternate_correlation`` -- pairs each collapsed edge
   with already-persisted RANGE_BACKED sibling-traversal edges.
@@ -89,7 +89,7 @@ def _run_cascade(diag_db: sqlite3.Connection, snap_id: int) -> None:
         persist_alternate_selections,
         select_alternate_edges,
     )
-    from d810.core.diag.edge_diagnostics import (
+    from d810.recon.flow.edge_diagnostics import (
         classify_dag_edges,
         persist_edge_diagnostics,
     )

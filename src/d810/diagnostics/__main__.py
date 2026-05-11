@@ -60,7 +60,7 @@ from d810.core.diag.bst_resolution import (
     persist_bst_resolutions,
     resolve_state_transition_facts,
 )
-from d810.core.diag.edge_diagnostics import (
+from d810.recon.flow.edge_diagnostics import (
     EdgeDiagnostic,
     classify_dag_edges,
     persist_edge_diagnostics,
