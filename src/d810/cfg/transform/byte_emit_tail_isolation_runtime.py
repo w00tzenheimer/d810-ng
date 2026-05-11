@@ -18,6 +18,7 @@ from d810.cfg.transform.byte_emit_live_use_anchor import (
     execute_byte_store_replica_anchor,
     execute_live_host_anchor,
     execute_multi_byte_live_host_anchor,
+    execute_reconnect_byte_emits,
     execute_single_xor_anchor,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
@@ -26,6 +27,7 @@ from d810.cfg.transform.byte_emit_live_use_anchor import (
     parse_live_host_env,
     parse_multi_byte_env,
     parse_multi_host_env,
+    parse_reconnect_env,
     parse_single_xor_env,
 )
 from d810.cfg.transform.byte_emit_tail_isolation import (
@@ -2471,6 +2473,9 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     store_bytes = parse_byte_store_env(
         os.environ.get("D810_TAIL_ANCHOR_STORE_BYTES")
     )
+    reconnect_bytes = parse_reconnect_env(
+        os.environ.get("D810_TAIL_ANCHOR_RECONNECT_BYTES")
+    )
     multi_host_explicit = parse_multi_host_env(
         os.environ.get("D810_TAIL_ANCHOR_LIVE_HOST")
     )
@@ -2487,7 +2492,10 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     )
     if not hybrid_byte_store_xor:
         active = sum(
-            1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes, store_bytes)
+            1 for m in (
+                split_mechanism, single_mechanism, live_host_byte,
+                multi_bytes, store_bytes, reconnect_bytes,
+            )
             if m is not None
         )
         if active > 1:
@@ -2556,6 +2564,12 @@ def maybe_run_byte_anchor(mba: Any) -> None:
                 target_byte_indices=store_bytes,
                 adapter=adapter,
                 host_overrides=host_overrides,
+            )
+        elif reconnect_bytes is not None:
+            report = execute_reconnect_byte_emits(
+                target_byte_indices=reconnect_bytes,
+                host_byte_index=multi_host,
+                adapter=adapter,
             )
         else:
             report = execute_live_host_anchor(

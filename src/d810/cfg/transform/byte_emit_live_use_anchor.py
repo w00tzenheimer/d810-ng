@@ -69,6 +69,19 @@ def parse_single_xor_env(value: str | None) -> str | None:
     return _MECHANISM_SINGLE_XOR
 
 
+def parse_reconnect_env(value: str | None) -> tuple[int, ...] | None:
+    """Parse D810_TAIL_ANCHOR_RECONNECT_BYTES=3,4,5,6.
+
+    Each byte k in the list triggers: find byte k's own snap17 emit
+    block, clone it as a successor of byte 1's emit host. Each clone
+    has byte k's NATIVE m_stx (correct byte_index, correct slot
+    address from k's natural counter). No patching needed.
+
+    Returns a sorted tuple of unique byte indices, or None if invalid.
+    """
+    return parse_multi_byte_env(value)
+
+
 def parse_byte_host_overrides_env(
     value: str | None,
 ) -> dict[int, int] | None:
@@ -524,6 +537,89 @@ def execute_multi_byte_live_host_anchor(
         applied=any_applied,
         host_byte_index=host_byte_index,
         read_byte_indices=read_byte_indices,
+        reason="ok" if any_applied else "no_sub_anchor_applied",
+        sub_reports=tuple(sub_reports),
+    )
+
+
+def execute_reconnect_byte_emits(
+    *,
+    target_byte_indices: tuple[int, ...],
+    host_byte_index: int,
+    adapter: Any,
+) -> MultiByteAnchorReport:
+    """For each byte k in target_byte_indices, clone byte k's OWN
+    snap17 emit block (the one whose m_stx already writes byte k to
+    byte k's natural slot) as a successor of byte HOST's emit block.
+
+    No patching: the clone has byte k's native byte_index, address
+    operand, and shift -- straight from the dying snap17 block.
+
+    This is the 'reconnect' approach: instead of inserting synthetic
+    anchors, splice the existing-but-unreachable byte_emit blocks
+    back into the live control flow.
+    """
+    if host_byte_index not in (0, 1):
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason="host_byte_must_be_0_or_1",
+        )
+    if not target_byte_indices:
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason="empty_byte_list",
+        )
+
+    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    if host_block is None:
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=target_byte_indices,
+            reason=f"host_byte_{host_byte_index}_not_resolvable",
+        )
+
+    sub_reports: list[ByteEmitAnchorReport] = []
+    any_applied = False
+    for target_byte in target_byte_indices:
+        try:
+            # template_byte_index == target_byte_index: patcher becomes a no-op
+            anchor_serial = adapter.insert_byte_emit_replica_anchor(
+                predecessor_serial=host_block.serial,
+                successor_serial=host_block.succ_serial,
+                template_byte_index=target_byte,
+                target_byte_index=target_byte,
+            )
+            sub_reports.append(ByteEmitAnchorReport(
+                applied=True,
+                byte_index=target_byte,
+                mechanism="reconnect_byte_emit",
+                reason="ok",
+                byte_emit_serial=host_block.serial,
+                anchor_a_serial=anchor_serial,
+            ))
+            any_applied = True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "byte_anchor[reconnect]: failed for byte %d",
+                target_byte,
+            )
+            sub_reports.append(ByteEmitAnchorReport(
+                applied=False,
+                byte_index=target_byte,
+                mechanism="reconnect_byte_emit",
+                reason=f"reconnect_failed:{type(exc).__name__}",
+                byte_emit_serial=host_block.serial,
+            ))
+
+    return MultiByteAnchorReport(
+        applied=any_applied,
+        host_byte_index=host_byte_index,
+        read_byte_indices=target_byte_indices,
         reason="ok" if any_applied else "no_sub_anchor_applied",
         sub_reports=tuple(sub_reports),
     )
