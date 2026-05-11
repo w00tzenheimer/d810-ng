@@ -118,6 +118,10 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PlannerContextContribution,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
+    ByteCascadeCoverageTracer,
+    ByteCascadeStage,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
@@ -2417,6 +2421,8 @@ class HandlerChainComposerStrategy:
         # body.  Stashed alongside ``_last_raw_region_table``.
         self._last_state_var_stkoff_for_call_barrier: int | None = None
         self._last_local_facts_for_call_barrier: DagLocalFacts | None = None
+        # Read-only diagnostic tracer; (re)constructed at the top of plan().
+        self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
 
     @property
     def name(self) -> str:
@@ -2454,8 +2460,18 @@ class HandlerChainComposerStrategy:
         self._last_state_var_stkoff_for_call_barrier = None
         self._last_local_facts_for_call_barrier = None
 
+        # Read-only diagnostic tracer for terminal byte-cascade coverage.
+        # Env-gated default-off; pure observation, no behaviour change.
+        self._byte_cascade_tracer = ByteCascadeCoverageTracer.from_snapshot(
+            snapshot, logger=logger,
+        )
+
         # Phase 1: detect region-collapse candidates (stub-snapshot safe).
         candidates = self.detect_chains(snapshot)
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.seed_raw_region_table(
+                self._last_raw_region_table
+            )
 
         # uee-b7ze Step 2: call-barrier segmentation (Phase B).  Runs
         # AFTER detect_chains has built and stashed raw_region_table.
@@ -2576,6 +2592,11 @@ class HandlerChainComposerStrategy:
                     region_pred_serials=region_pred_serials,
                 )
             )
+            _swr_modifications_pre_region_filter = (
+                list(swr_result["modifications"])
+                if swr_result is not None
+                else []
+            )
             swr_result = self._filter_swr_against_regions(
                 swr_result,
                 region_anchor_blocks=region_anchor_blocks,
@@ -2590,6 +2611,14 @@ class HandlerChainComposerStrategy:
                     frozenset(),
                 ),
             )
+            if (
+                self._byte_cascade_tracer is not None
+                and swr_result is not None
+            ):
+                self._byte_cascade_tracer.record_stage_modifications(
+                    ByteCascadeStage.REGION_FILTER,
+                    list(swr_result["modifications"]),
+                )
 
         # Build region-collapse modifications.
         # Dedup by (pred_serial, old_target) — the same edge may surface
@@ -2728,6 +2757,14 @@ class HandlerChainComposerStrategy:
                     )
                 swr_mods = filtered_swr_mods
 
+            if self._byte_cascade_tracer is not None:
+                self._byte_cascade_tracer.record_stage_modifications(
+                    ByteCascadeStage.CALL_BARRIER_COLLISION,
+                    list(swr_mods)
+                    + list(region_modifications)
+                    + list(call_barrier_modifications),
+                )
+
             # Append region-collapse mods into the SWR modifications list
             # before finalize so the DAG-arbiter / dup-conflict filters
             # can also reason about them as a single batch.  The filters
@@ -2743,6 +2780,11 @@ class HandlerChainComposerStrategy:
                 bst_node_blocks=filter_bst_node_blocks,
                 state_var_stkoff=filter_state_var_stkoff,
             )
+            if self._byte_cascade_tracer is not None:
+                self._byte_cascade_tracer.record_stage_modifications(
+                    ByteCascadeStage.PAYLOAD_INTERMEDIATE_FILTER,
+                    combined_modifications,
+                )
             # Corridor-shred guard for the SWR + region-collapse path.
             # Prefer the DAG's pre-computed side_effect_corridors (which
             # combines CFG-level + state-DAG-level detection); fall back
@@ -2907,6 +2949,15 @@ class HandlerChainComposerStrategy:
                 mba=snapshot.mba,
                 strategy_name=self.name,
             )
+            if self._byte_cascade_tracer is not None:
+                self._byte_cascade_tracer.record_stage_modifications(
+                    ByteCascadeStage.FINALIZE_ARBITER,
+                    list(fragment.modifications),
+                )
+                self._byte_cascade_tracer.record_finalize(
+                    list(fragment.modifications)
+                )
+                self._byte_cascade_tracer.emit_log()
             return fragment
 
         # Region-collapse-only path (SWR orchestration was a no-op).
@@ -3032,6 +3083,15 @@ class HandlerChainComposerStrategy:
             blocks_freed=0,
             conflict_density=0.0,
         )
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.FINALIZE_ARBITER,
+                list(filtered_modifications),
+            )
+            self._byte_cascade_tracer.record_finalize(
+                list(filtered_modifications)
+            )
+            self._byte_cascade_tracer.emit_log()
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
@@ -3105,6 +3165,9 @@ class HandlerChainComposerStrategy:
         )
         corrected_dag = _corrected_dag_out[0] if _corrected_dag_out else dag
         log_chain_coverage(corrected_dag, context_label="HCC corrected_dag")
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.seed_dag(dag)
+            self._byte_cascade_tracer.seed_corrected_dag(corrected_dag)
 
         constant_result = run_snapshot_constant_fixpoint(
             flow_graph,
@@ -3197,6 +3260,10 @@ class HandlerChainComposerStrategy:
                             )
             elif rejection is not None:
                 rejected_metadata.append(rejection)
+            if self._byte_cascade_tracer is not None:
+                self._byte_cascade_tracer.record_candidate_build(
+                    edge, candidate, rejection
+                )
         for edge in corrected_dag.edges:
             pair = state_edge_pair(edge)
             if pair is not None:
@@ -3441,6 +3508,10 @@ class HandlerChainComposerStrategy:
         primary_probe_rejected_candidates = _collect_rejected_reconstruction_candidates(
             run
         )
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.PRIMARY_EXECUTION, modifications
+            )
         log_reconstruction_candidate_probe(
             phase="post_primary_execution",
             raw_candidates=tuple(raw_candidates),
@@ -3576,6 +3647,10 @@ class HandlerChainComposerStrategy:
                         state_edge_pair_fn=state_edge_pair,
                     )
 
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.FALLBACK_EXECUTION, modifications
+            )
         frontier_override_plans = discover_frontier_overrides(
             dag=dag,
             flow_graph=flow_graph,
@@ -3600,6 +3675,10 @@ class HandlerChainComposerStrategy:
             claimed_sources=_frontier_claimed_sources,
             claimed_targets=_frontier_claimed_targets,
         )
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.FRONTIER_OVERRIDES, modifications
+            )
         log_reconstruction_phase_probe(
             phase="pre_postprocess",
             flow_graph=flow_graph,
@@ -3650,6 +3729,10 @@ class HandlerChainComposerStrategy:
             dag=dag,
             mba=mba,
         )
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.POSTPROCESS, modifications
+            )
         structured_region_fidelity = {}
         projected_flow_graph = postprocess.projected_flow_graph  # noqa: F841
         residual_dispatcher_preds = postprocess.residual_dispatcher_preds
@@ -3731,6 +3814,10 @@ class HandlerChainComposerStrategy:
             compute_reachable_blocks=compute_reachable_blocks,
             shared_group_results=tuple(final_shared_group_results),
         )
+        if self._byte_cascade_tracer is not None:
+            self._byte_cascade_tracer.record_stage_modifications(
+                ByteCascadeStage.LATE_SHARED_FALLBACK, modifications
+            )
 
         for result in final_shared_group_results:
             if result.rejected_candidates:
