@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -307,6 +309,105 @@ def cmd_db(args: argparse.Namespace) -> int:
     return subprocess.call(argv, env=env)
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """Dump + HCC byte-cascade trace in one shot."""
+    os.environ["D810_HCC_BYTE_CASCADE_TRACE"] = "1"
+    rc = cmd_dump(args)
+    if rc != 0:
+        print(
+            f"cff-debug: trace: dump returned {rc}; skipping diag report",
+            file=sys.stderr,
+        )
+        return rc
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    log_file = worktree_log_dir(wt) / "d810.log"
+    if not log_file.exists():
+        _die(f"trace: log not found: {log_file}")
+    try:
+        db = latest_db(wt)
+    except SystemExit:
+        db = None
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.core.diag",
+        "hcc-byte-cascade-trace",
+        "--log",
+        str(log_file),
+        "--func-label",
+        args.function,
+    ]
+    if db is not None:
+        diag_argv += ["--db", str(db)]
+    if args.json_output:
+        diag_argv.append("--json")
+    print(
+        f"cff-debug: trace: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
+_INSPECT_PROBES: tuple[tuple[str, str], ...] = (
+    ("Gate Failures", r"Gate accounting: \d+ passed, [1-9]\d* failed, \d+ bypassed"),
+    ("Provenance", r"Provenance:"),
+    ("PruneUnreachable", r"PruneUnreachable:"),
+    ("Metrics", r"(BEFORE|AFTER|DELTA):.*lines="),
+    ("INTERR", r"INTERR"),
+    ("Serial Remap", r"serial remap"),
+    ("Transient Denylist", r"transient (corridor entries|denylist)"),
+    ("DSVE Guard", r"DSVE guard (KEPT|OVERRIDDEN)"),
+    ("PTS Gate", r"PTS gate"),
+    ("Rejected Stages", r"rejected stage"),
+    ("Applied Modifications", r"Applied \d+/\d+ modifications"),
+    ("Failed Modifications", r"RESULT: FAILED"),
+    ("RECON DAG", r"RECON DAG: accepted"),
+    ("Exceptions", r"EXCEPTION|exception \d+|RuntimeError|RESULT: EXCEPTION"),
+    ("Decompile Status", r"Failed to decompile|PASSED|FAILED.*test_dump"),
+    ("Valrange Probe", r"VALRANGE_PROBE"),
+    ("POST-APPLY", r"POST-APPLY"),
+    ("verify_failed", r"(?i)verify_failed"),
+    ("Return Frontier", r"RETURN_FRONTIER"),
+)
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Grep-style convenience report for a Hodur dump file.
+
+    Ports ``tools/scripts/inspect_hodur_dump.sh`` into cff_debug; runs the
+    same probes via ``rg`` so output matches byte-for-byte (when rg is on
+    the path) and falls back to plain Python regex otherwise.
+    """
+    dump = resolve_dump(args.worktree, args.dump)
+    text: str | None = None
+    rg_available = shutil.which("rg") is not None
+    if not rg_available:
+        text = dump.read_text(errors="replace")
+    for banner, pattern in _INSPECT_PROBES:
+        print(f"=== {banner} ===")
+        if rg_available:
+            rc = subprocess.call(["rg", pattern, str(dump)])
+            if rc != 0:
+                print("(none)")
+        else:
+            assert text is not None
+            matched = False
+            regex = re.compile(pattern, re.MULTILINE)
+            for line in text.splitlines():
+                if regex.search(line):
+                    print(line)
+                    matched = True
+            if not matched:
+                print("(none)")
+        print()
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -396,6 +497,42 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("args", nargs=argparse.REMAINDER,
                     help="all args after `--` are forwarded to d810.core.diag")
     sp.set_defaults(func=cmd_db)
+
+    sp = sub.add_parser(
+        "trace",
+        help=(
+            "run dump with D810_HCC_BYTE_CASCADE_TRACE=1, then render the"
+            " HCC byte-cascade trace via `d810.core.diag hcc-byte-cascade-trace`"
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("-f", "--function", default=DEFAULT_FUNCTION)
+    sp.add_argument("-p", "--project", default=DEFAULT_PROJECT)
+    sp.add_argument("--prefix", default="trace",
+                    help="dump filename prefix (default: trace)")
+    sp.add_argument("--label", default="hcc",
+                    help="label embedded in the output filename (default: hcc)")
+    sp.add_argument("--capture-post-maturity", default=DEFAULT_CAPTURE_POST_MATURITY,
+                    help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)")
+    sp.add_argument("--no-debug-logging", action="store_true",
+                    help="do not pass -l / --enable-debug-logging to the docker runner")
+    sp.add_argument("--extra", action="append",
+                    help="extra pytest arg (repeatable); if any provided, replaces defaults")
+    sp.add_argument("--json", action="store_true", dest="json_output",
+                    help="emit the trace report as JSON instead of markdown")
+    sp.set_defaults(func=cmd_trace)
+
+    sp = sub.add_parser(
+        "inspect",
+        help=(
+            "grep-style probes for common dump diagnostics (gate failures,"
+            " INTERR, applied/failed mods, RECON DAG, ...) -- ports"
+            " tools/scripts/inspect_hodur_dump.sh"
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
+    sp.set_defaults(func=cmd_inspect)
 
     return p
 
