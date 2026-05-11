@@ -779,11 +779,19 @@ class D810Manager:
             cfg_rule.log_dir = self.log_dir
             self.block_optimizer.add_rule(cfg_rule)
 
-        # Build PassPipeline when feature flag is enabled (default OFF).
-        # Zero overhead when disabled - no imports of pass modules occur.
+        # Build PassPipeline when feature flag is enabled (default OFF), or when
+        # the explicit loop-carrier experiment is requested. Zero overhead when
+        # both are disabled - no imports of pass modules occur.
         _pass_pipeline = None
-        if self.config.get("enable_pass_pipeline", False):
-            _pass_pipeline = self._build_pass_pipeline()
+        _enable_pass_pipeline = bool(self.config.get("enable_pass_pipeline", False))
+        _enable_loop_carrier_refresh = (
+            os.environ.get("D810_LOOP_CARRIER_BACKEDGE_REFRESH", "").strip() == "1"
+        )
+        if _enable_pass_pipeline or _enable_loop_carrier_refresh:
+            _pass_pipeline = self._build_pass_pipeline(
+                include_default_cleanup=_enable_pass_pipeline,
+                enable_loop_carrier_backedge_refresh=_enable_loop_carrier_refresh,
+            )
 
         # Build ReconPhase when feature flag is enabled (default ON).
         # Passive collection with minimal overhead; disable with
@@ -1172,7 +1180,12 @@ class D810Manager:
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
 
-    def _build_pass_pipeline(self):
+    def _build_pass_pipeline(
+        self,
+        *,
+        include_default_cleanup: bool = True,
+        enable_loop_carrier_backedge_refresh: bool = False,
+    ):
         """Construct a PassPipeline with the 2 safe cleanup FlowGraphTransformes for MMAT_GLBOPT2.
 
         Only called when config["enable_pass_pipeline"] is True. Imports are
@@ -1209,10 +1222,29 @@ class D810Manager:
         )
 
         backend = IDAIRTranslator()
-        passes = [
-            SimplifyIdenticalBranchPass(),
-            GotoChainRemovalPass(),
-        ]
+        passes = []
+        if include_default_cleanup:
+            passes.extend(
+                [
+                    SimplifyIdenticalBranchPass(),
+                    GotoChainRemovalPass(),
+                ]
+            )
+        if enable_loop_carrier_backedge_refresh:
+            from d810.cfg.transform.loop_carrier_backedge_refresh import (
+                LoopCarrierBackedgeRefreshPass,
+            )
+
+            def _fact_view_provider(func_ea: int, maturity: int | str):
+                if self._recon_runtime is None:
+                    return None
+                return self._recon_runtime.validated_fact_view(func_ea, maturity)
+
+            passes.append(
+                LoopCarrierBackedgeRefreshPass(
+                    fact_view_provider=_fact_view_provider,
+                )
+            )
         pipeline = FlowGraphTransformPipeline(backend, passes)
         logger.info(
             "PassPipeline enabled: %s",
