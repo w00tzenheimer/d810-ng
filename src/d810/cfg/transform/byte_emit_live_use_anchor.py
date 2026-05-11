@@ -34,6 +34,7 @@ _ACCUMULATOR_STKOFF = 0x818
 _MECHANISM_SPLIT_XOR = "split_xor"
 _MECHANISM_SINGLE_XOR = "single_xor"
 _MECHANISM_LIVE_HOST = "live_host"
+_MECHANISM_MULTI_BYTE = "multi_byte_live_host"
 
 
 def parse_byte_anchor_env(value: str | None) -> str | None:
@@ -67,6 +68,42 @@ def parse_single_xor_env(value: str | None) -> str | None:
     return _MECHANISM_SINGLE_XOR
 
 
+def parse_multi_byte_env(value: str | None) -> tuple[int, ...] | None:
+    """Parse D810_TAIL_ANCHOR_READ_BYTES=2,3,4,5,6.
+
+    Returns a sorted tuple of unique byte indices in [0, 6], or None
+    if the value is unset, empty, or contains any invalid entry.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if not parts:
+        return None
+    try:
+        bytes_set = {int(p) for p in parts}
+    except ValueError:
+        return None
+    if not all(0 <= b <= 6 for b in bytes_set):
+        return None
+    return tuple(sorted(bytes_set))
+
+
+def parse_multi_host_env(value: str | None) -> int | None:
+    """Parse D810_TAIL_ANCHOR_LIVE_HOST=N (host byte for multi-byte
+    mechanism). Defaults are handled by caller (typically host=1).
+    Returns N if value parses to 0 or 1, else None.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if text not in ("0", "1"):
+        return None
+    return int(text)
+
+
 def parse_live_host_env(value: str | None) -> int | None:
     """Parse D810_TAIL_ANCHOR_BYTE6_LIVE_HOST=N.
 
@@ -85,6 +122,21 @@ def parse_live_host_env(value: str | None) -> int | None:
     if text not in ("0", "1"):
         return None
     return int(text)
+
+
+@dataclass(frozen=True, slots=True)
+class MultiByteAnchorReport:
+    """Result of one execute_multi_byte_live_host_anchor call.
+
+    Aggregates one ByteEmitAnchorReport per byte index requested.
+    `applied` is True iff at least one sub-anchor applied.
+    """
+
+    applied: bool
+    host_byte_index: int
+    read_byte_indices: tuple[int, ...]
+    reason: str
+    sub_reports: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +418,150 @@ def execute_live_host_anchor(
         mechanism=_MECHANISM_LIVE_HOST,
         reason="ok",
         byte_emit_serial=host_block.serial,  # the HOST block, not the byte's block
+        anchor_a_serial=anchor_a,
+        anchor_b_serial=None,
+        accumulator_stkoff=accumulator_stkoff,
+    )
+
+
+def execute_multi_byte_live_host_anchor(
+    *,
+    host_byte_index: int,
+    read_byte_indices: tuple[int, ...],
+    adapter: Any,
+    accumulator_stkoff: int = _ACCUMULATOR_STKOFF,
+) -> MultiByteAnchorReport:
+    """Insert one ANCHOR per read_byte_index, all hosted as successors of
+    byte_HOST's emit block. Each anchor reads its byte from
+    (v190+#k.8) and XORs into the shared accumulator slot.
+
+    Because each anchor is inserted with predecessor=host_block, IDA's
+    block-insertion semantics chain them: subsequent insertions wedge
+    in BEFORE the previously inserted anchor. The end-of-chain
+    successor remains host_block's original successor.
+
+    Returns MultiByteAnchorReport with one ByteEmitAnchorReport per
+    byte requested. `applied` is True if at least one sub-anchor
+    applied; the caller can inspect sub_reports for per-byte details.
+    """
+    if host_byte_index not in (0, 1):
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=read_byte_indices,
+            reason="host_byte_must_be_0_or_1",
+        )
+    if not read_byte_indices:
+        return MultiByteAnchorReport(
+            applied=False,
+            host_byte_index=host_byte_index,
+            read_byte_indices=read_byte_indices,
+            reason="empty_read_byte_list",
+        )
+
+    sub_reports: list[ByteEmitAnchorReport] = []
+    any_applied = False
+    for read_byte in read_byte_indices:
+        sub = execute_live_host_anchor(
+            host_byte_index=host_byte_index,
+            read_byte_index=read_byte,
+            adapter=adapter,
+            accumulator_stkoff=accumulator_stkoff,
+        ) if read_byte == 6 else _execute_live_host_anchor_relaxed(
+            host_byte_index=host_byte_index,
+            read_byte_index=read_byte,
+            adapter=adapter,
+            accumulator_stkoff=accumulator_stkoff,
+        )
+        sub_reports.append(sub)
+        if sub.applied:
+            any_applied = True
+
+    return MultiByteAnchorReport(
+        applied=any_applied,
+        host_byte_index=host_byte_index,
+        read_byte_indices=read_byte_indices,
+        reason="ok" if any_applied else "no_sub_anchor_applied",
+        sub_reports=tuple(sub_reports),
+    )
+
+
+def _execute_live_host_anchor_relaxed(
+    *,
+    host_byte_index: int,
+    read_byte_index: int,
+    adapter: Any,
+    accumulator_stkoff: int,
+) -> ByteEmitAnchorReport:
+    """Like execute_live_host_anchor but without the byte_index==6 guard.
+
+    Used by the multi-byte orchestrator to insert anchors for any of
+    bytes 0..6 (not just byte 6) hosted on byte_HOST's emit block.
+    """
+    if host_byte_index not in (0, 1):
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_MULTI_BYTE,
+            reason="host_byte_must_be_0_or_1",
+        )
+    if not (0 <= read_byte_index <= 6):
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_MULTI_BYTE,
+            reason="read_byte_out_of_range",
+        )
+
+    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    if host_block is None:
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_MULTI_BYTE,
+            reason=f"host_byte_{host_byte_index}_not_resolvable",
+        )
+
+    try:
+        source_operand = adapter.extract_v190_indexed_operand(
+            host_block.serial, read_byte_index,
+        )
+    except Exception:  # noqa: BLE001
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_MULTI_BYTE,
+            reason="source_operand_unavailable",
+            byte_emit_serial=host_block.serial,
+        )
+
+    assert host_block.succ_serial is not None
+    try:
+        anchor_a = adapter.insert_anchor_block_xor_pair(
+            predecessor_serial=host_block.serial,
+            successor_serial=host_block.succ_serial,
+            source_addr_operand=source_operand,
+            accumulator_stkoff=accumulator_stkoff,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "byte_anchor[multi]: anchor insert failed for byte %d on host %d",
+            read_byte_index, host_block.serial,
+        )
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_MULTI_BYTE,
+            reason="anchor_insert_failed:a",
+            byte_emit_serial=host_block.serial,
+        )
+
+    return ByteEmitAnchorReport(
+        applied=True,
+        byte_index=read_byte_index,
+        mechanism=_MECHANISM_MULTI_BYTE,
+        reason="ok",
+        byte_emit_serial=host_block.serial,
         anchor_a_serial=anchor_a,
         anchor_b_serial=None,
         accumulator_stkoff=accumulator_stkoff,

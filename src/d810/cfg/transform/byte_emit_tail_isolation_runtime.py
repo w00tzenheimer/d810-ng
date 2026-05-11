@@ -16,10 +16,13 @@ from d810.core.typing import Any, Iterable
 
 from d810.cfg.transform.byte_emit_live_use_anchor import (
     execute_live_host_anchor,
+    execute_multi_byte_live_host_anchor,
     execute_single_xor_anchor,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
     parse_live_host_env,
+    parse_multi_byte_env,
+    parse_multi_host_env,
     parse_single_xor_env,
 )
 from d810.cfg.transform.byte_emit_tail_isolation import (
@@ -1934,8 +1937,15 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     live_host_byte = parse_live_host_env(
         os.environ.get("D810_TAIL_ANCHOR_BYTE6_LIVE_HOST")
     )
+    multi_bytes = parse_multi_byte_env(
+        os.environ.get("D810_TAIL_ANCHOR_READ_BYTES")
+    )
+    multi_host_explicit = parse_multi_host_env(
+        os.environ.get("D810_TAIL_ANCHOR_LIVE_HOST")
+    )
+    multi_host = multi_host_explicit if multi_host_explicit is not None else 1
     active = sum(
-        1 for m in (split_mechanism, single_mechanism, live_host_byte)
+        1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes)
         if m is not None
     )
     if active > 1:
@@ -1968,6 +1978,12 @@ def maybe_run_byte_anchor(mba: Any) -> None:
             report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
         elif single_mechanism is not None:
             report = execute_single_xor_anchor(byte_index=6, adapter=adapter)
+        elif multi_bytes is not None:
+            report = execute_multi_byte_live_host_anchor(
+                host_byte_index=multi_host,
+                read_byte_indices=multi_bytes,
+                adapter=adapter,
+            )
         else:
             report = execute_live_host_anchor(
                 host_byte_index=int(live_host_byte),
