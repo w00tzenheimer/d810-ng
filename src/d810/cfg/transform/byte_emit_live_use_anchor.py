@@ -69,6 +69,38 @@ def parse_single_xor_env(value: str | None) -> str | None:
     return _MECHANISM_SINGLE_XOR
 
 
+def parse_byte_host_overrides_env(
+    value: str | None,
+) -> dict[int, int] | None:
+    """Parse D810_TAIL_ANCHOR_HOST_OVERRIDES=2:1,4:0.
+
+    Returns a dict mapping target_byte_index -> host_byte_index, or None
+    if the value is unset/empty/malformed. Allows hosting each target
+    byte's anchor on a DIFFERENT surviving block, so per-anchor writes
+    don't dedup against each other on the same chain.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    overrides: dict[int, int] = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            return None
+        target_s, host_s = pair.split(":", 1)
+        try:
+            target = int(target_s.strip())
+            host = int(host_s.strip())
+        except ValueError:
+            return None
+        if not (0 <= target <= 6) or host not in (0, 1):
+            return None
+        overrides[target] = host
+    return overrides if overrides else None
+
+
 def parse_byte_store_env(value: str | None) -> tuple[int, ...] | None:
     """Parse D810_TAIL_ANCHOR_STORE_BYTES=2,3,4,5,6.
 
@@ -502,19 +534,21 @@ def execute_byte_store_replica_anchor(
     host_byte_index: int,
     target_byte_indices: tuple[int, ...],
     adapter: Any,
+    host_overrides: dict[int, int] | None = None,
 ) -> MultiByteAnchorReport:
-    """Insert one m_stx-replica anchor per target byte index, all
-    hosted as successors of byte_HOST's emit block. Each anchor's
-    body is a clone of host's byte-emit m_stx with the byte index
-    operand patched from host_byte_index to target_byte_index.
+    """Insert one m_stx-replica anchor per target byte index. Each
+    anchor is hosted on a SURVIVING block (typically byte 1's or
+    byte 0's emit block).
 
-    This makes the target byte's m_stx (and its source-byte load)
-    appear in IDA's AFTER pseudocode as a byte_emit-style buffer
-    write, structurally matching the reference output.
+    By default every anchor uses ``host_byte_index`` as its host. The
+    optional ``host_overrides`` map (target_byte -> host_byte) lets
+    specific bytes use a DIFFERENT host. This avoids IDA's optimizer
+    dedup'ing same-host anchors that all write to the same slot.
 
-    Caveat: buffer offset is NOT adjusted -- all anchored writes
-    target the same slot as the host. The semantic goal is byte
-    LOAD preservation; visual goal is reference-like structure.
+    Example: ``host_byte_index=1`` with
+    ``host_overrides={4: 0}`` produces:
+      - byte 2 anchor hosted on byte 1's block
+      - byte 4 anchor hosted on byte 0's block (separate chain)
     """
     if host_byte_index not in (0, 1):
         return MultiByteAnchorReport(
@@ -531,23 +565,32 @@ def execute_byte_store_replica_anchor(
             reason="empty_target_byte_list",
         )
 
-    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
-    if host_block is None:
-        return MultiByteAnchorReport(
-            applied=False,
-            host_byte_index=host_byte_index,
-            read_byte_indices=target_byte_indices,
-            reason=f"host_byte_{host_byte_index}_not_resolvable",
-        )
+    overrides = host_overrides or {}
+
+    # Cache host blocks by host_byte to avoid repeated lookups.
+    host_cache: dict[int, Any] = {}
 
     sub_reports: list[ByteEmitAnchorReport] = []
     any_applied = False
     for target_byte in target_byte_indices:
+        this_host = int(overrides.get(target_byte, host_byte_index))
+        host_block = host_cache.get(this_host)
+        if host_block is None:
+            host_block = adapter.find_byte_emit_block_by_v190_offset(this_host)
+            host_cache[this_host] = host_block
+        if host_block is None:
+            sub_reports.append(ByteEmitAnchorReport(
+                applied=False,
+                byte_index=target_byte,
+                mechanism=_MECHANISM_BYTE_STORE,
+                reason=f"host_byte_{this_host}_not_resolvable",
+            ))
+            continue
         try:
             anchor_serial = adapter.insert_byte_emit_replica_anchor(
                 predecessor_serial=host_block.serial,
                 successor_serial=host_block.succ_serial,
-                template_byte_index=host_byte_index,
+                template_byte_index=this_host,
                 target_byte_index=target_byte,
             )
             sub_reports.append(ByteEmitAnchorReport(
@@ -561,8 +604,8 @@ def execute_byte_store_replica_anchor(
             any_applied = True
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "byte_anchor[byte_store]: replica insert failed for byte %d",
-                target_byte,
+                "byte_anchor[byte_store]: replica insert failed for byte %d (host %d)",
+                target_byte, this_host,
             )
             sub_reports.append(ByteEmitAnchorReport(
                 applied=False,
