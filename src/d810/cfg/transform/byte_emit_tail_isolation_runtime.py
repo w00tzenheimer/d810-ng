@@ -961,6 +961,7 @@ class LiveMbaAdapter:
         }
         cur = anchor.head
         patch_count = 0
+        offset_delta = (target_byte_index - template_byte_index) * 8
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
                 # Patch byte_index in operand trees.
@@ -970,6 +971,12 @@ class LiveMbaAdapter:
                             op, template_byte_index, target_byte_index, _ih,
                         ):
                             patch_count += 1
+                # NOTE: per-anchor buffer-offset wrapping was attempted to
+                # spread anchors across distinct slots but triggers
+                # INTERR 50827. Without this, all anchors write to the
+                # same slot and IDA dedups to one. Accept partial result:
+                # one byte (the last in chain) survives as a buffer write,
+                # rest visible only via the XOR mechanism (multi_byte env).
             else:
                 anchor.make_nop(cur)
             cur = cur.next
@@ -977,7 +984,7 @@ class LiveMbaAdapter:
             "byte_anchor[byte_store]: clone of block %d for byte %d->%d: %d patches applied",
             template_block.serial, template_byte_index, target_byte_index, patch_count,
         )
-        # Dump ALL kept instructions so we can see actual operand shape.
+        # Dump ALL kept instructions + walk every operand tree level.
         cur = anchor.head
         idx = 0
         while cur is not None:
@@ -988,8 +995,13 @@ class LiveMbaAdapter:
                     ds = "<err>"
                 logger.info(
                     "byte_anchor[byte_store]:   anchor[%d] kept insn[%d]: %s",
-                    anchor.serial, idx, ds[:400],
+                    anchor.serial, idx, ds[:300],
                 )
+                # Walk and log every operand in the tree.
+                if idx == 1:  # the m_shl (smaller; has the v190 reference)
+                    _dump_mop_tree(cur.l, "l", 0, _ih)
+                    _dump_mop_tree(cur.r, "r", 0, _ih)
+                    _dump_mop_tree(cur.d, "d", 0, _ih)
                 idx += 1
             cur = cur.next
 
@@ -1355,94 +1367,159 @@ class LiveMbaAdapter:
         return int(anchor.serial)
 
 
+def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
+    """Recursively log every operand in a tree with type + dstr + key fields."""
+    if op is None or depth > max_depth:
+        return
+    t = int(getattr(op, "t", -1))
+    type_names = {
+        0: "mop_z", 1: "mop_r", 2: "mop_n", 3: "mop_str",
+        4: "mop_d", 5: "mop_S", 6: "mop_v", 7: "mop_b",
+        8: "mop_f", 9: "mop_l", 10: "mop_a", 11: "mop_h",
+        12: "mop_c", 13: "mop_fn", 14: "mop_p", 15: "mop_sc",
+    }
+    type_name = type_names.get(t, f"mop_t={t}")
+    try:
+        ds = op.dstr() if callable(getattr(op, "dstr", None)) else ""
+    except Exception:
+        ds = "<err>"
+    extras = []
+    if t == int(_ih.mop_S):
+        s = getattr(op, "s", None)
+        if s is not None:
+            extras.append(f"s.off=0x{int(getattr(s, 'off', 0)):x}")
+    if t == int(_ih.mop_a):
+        a = getattr(op, "a", None)
+        if a is not None:
+            extras.append(f"a.t={int(getattr(a, 't', -1))}")
+            try:
+                inner = a.dstr() if callable(getattr(a, "dstr", None)) else ""
+                extras.append(f"a.dstr={inner[:30]}")
+            except Exception:
+                pass
+            inner_s = getattr(a, "s", None)
+            if inner_s is not None:
+                extras.append(f"a.s.off=0x{int(getattr(inner_s, 'off', 0)):x}")
+    if t == int(_ih.mop_n):
+        nnn = getattr(op, "nnn", None)
+        if nnn is not None:
+            extras.append(f"nnn={int(getattr(nnn, 'value', 0))}")
+    indent = "  " * depth
+    logger.info("MOPTRACE %s%s.%s [%s] size=%s dstr=%s",
+                indent, label, type_name, ",".join(extras),
+                int(getattr(op, "size", 0) or 0), ds[:60])
+    # Recurse if this is mop_d (wraps a sub-instruction).
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            try:
+                op_name = type_names.get(int(getattr(sub, "opcode", -1)), "?")
+            except Exception:
+                op_name = "?"
+            logger.info("MOPTRACE %s  %s.sub opcode=%s", indent, label,
+                        int(getattr(sub, "opcode", -1)))
+            _dump_mop_tree(getattr(sub, "l", None), f"{label}.sub.l", depth + 1, _ih, max_depth)
+            _dump_mop_tree(getattr(sub, "r", None), f"{label}.sub.r", depth + 1, _ih, max_depth)
+            _dump_mop_tree(getattr(sub, "d", None), f"{label}.sub.d", depth + 1, _ih, max_depth)
+    # Recurse into mop_a (address-of) target.
+    if t == int(_ih.mop_a):
+        inner = getattr(op, "a", None)
+        if inner is not None:
+            _dump_mop_tree(inner, f"{label}.a", depth + 1, _ih, max_depth)
+
+
+def _wrap_address_with_offset(op, delta: int, _ih) -> bool:
+    """Wrap ``op`` (an m_stx address operand) as
+    ``m_add(original_op_contents, mop_n=delta)`` -- adds a constant
+    offset to the address so this m_stx writes to a different buffer
+    slot than the template.
+
+    Used to spread multiple cloned byte_emit anchors across distinct
+    slots so IDA's optimizer doesn't dedup them as redundant writes
+    to the same address.
+    """
+    if op is None or int(delta) == 0:
+        return False
+    try:
+        # Snapshot the current operand contents.
+        original = _ih.mop_t()
+        original.assign(op)
+        # Build new m_add(original, #delta).
+        add_insn = _ih.minsn_t(0)
+        add_insn.opcode = _ih.m_add
+        add_insn.l = original
+        add_insn.r = _ih.mop_t()
+        add_insn.r.make_number(int(delta), 8)
+        add_insn.d = _ih.mop_t()
+        add_insn.d.erase()
+        # Replace op with mop_d wrapping the new m_add.
+        op.create_from_insn(add_insn)
+        return True
+    except Exception:
+        logger.exception("_wrap_address_with_offset failed for delta=%d", delta)
+        return False
+
+
+def _is_v190_mop_S(op, _ih) -> bool:
+    """Return True if op is the mop_S rendering as '%var_190.8'.
+
+    The internal stkoff for var_190 is function-specific (e.g. 0x668
+    in sub_7FFD3338C040 -- the s.off field uses a different offset
+    convention than the displayed name). dstr-based matching is the
+    only reliable way to identify the byte-source-pointer stkvar.
+    """
+    if op is None:
+        return False
+    if int(getattr(op, "t", -1)) != int(_ih.mop_S):
+        return False
+    try:
+        ds = op.dstr() if callable(getattr(op, "dstr", None)) else ""
+    except Exception:
+        return False
+    return ds == "%var_190.8"
+
+
 def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
     """Walk a mop_t tree; find any reference to (v190+#old_index.8) and
-    rewrite it to (v190+#new_index.8). Handles BOTH operand shapes:
+    rewrite it to (v190+#new_index.8).
 
-    - mop_S@0x190 alone (when old_index==0; IDA folded +0 away)
-    - mop_d wrapping m_add(stkvar@0x190, mop_n=old_index)
+    The operand shape we look for is mop_d wrapping m_add(v190, #k),
+    where v190 is identified by mop_t.dstr()=='%var_190.8' (not by
+    stkoff -- the internal stkoff doesn't match the displayed-name
+    offset).
 
-    For the byte-0 -> byte-k transition, transforms the mop_S leaf into
-    a mop_d/m_add. For byte-N -> byte-k (N>0), just rewrites the
-    constant. Returns True if any patch was applied.
+    Returns True if any patch was applied.
     """
     if op is None:
         return False
     t = int(getattr(op, "t", -1))
     patched = False
 
-    # Case 1a: folded mop_S at offset 0x190 + old_index (any byte 0..6).
-    # IDA's microcode folds (v190 + #k) into a single mop_S with
-    # stkoff=0x190+k and renders it textually as "%var_190.8+#k.8"
-    # (using the named stkvar at 0x190 as the base label).
-    if t == int(_ih.mop_S):
-        s = getattr(op, "s", None)
-        off_val = int(getattr(s, "off", -1)) if s is not None else -1
-        # Log every mop_S we see while looking for byte_index patch.
-        if 0x180 <= off_val <= 0x200:
-            try:
-                ds_text = op.dstr() if callable(getattr(op, "dstr", None)) else ""
-            except Exception:
-                ds_text = ""
-            logger.info(
-                "PATCHER trace: visited mop_S off=0x%x size=%d dstr=%s",
-                off_val, int(getattr(op, "size", 0) or 0), ds_text[:50],
-            )
-        if s is not None and off_val == 0x190 + int(old_index):
-            try:
-                op.s.off = 0x190 + int(new_index)
-                logger.info("PATCHER trace: PATCHED mop_S off 0x%x -> 0x%x",
-                            0x190 + int(old_index), 0x190 + int(new_index))
-                return True
-            except Exception as exc:
-                logger.info("PATCHER trace: assign failed: %s", exc)
-
-    # Case 1b: bare mop_S@0x190 (legacy byte 0 form, kept for completeness).
-    if old_index == 0 and t == int(_ih.mop_S):
-        s = getattr(op, "s", None)
-        if s is not None and int(getattr(s, "off", -1)) == 0x190:
-            # Build a fresh m_add(stkvar@0x190, mop_n=new_index) and
-            # wrap it as a mop_d in `op`.
-            add_insn = _ih.minsn_t(0)
-            add_insn.opcode = _ih.m_add
-            add_insn.l = _ih.mop_t()
-            add_insn.l.make_stkvar(_ih.get_curobj() if hasattr(_ih, "get_curobj") else None, 0x190) if False else None  # noqa
-            # Actually: re-use the original mop_S we're replacing for `l`.
-            new_l = _ih.mop_t()
-            new_l.assign(op)  # original mop_S@0x190 leaf
-            add_insn.l = new_l
-            add_insn.r = _ih.mop_t()
-            add_insn.r.make_number(int(new_index), 8)
-            add_insn.d = _ih.mop_t()
-            add_insn.d.erase()
-            # Now turn `op` into mop_d wrapping add_insn.
-            op.create_from_insn(add_insn)
-            return True
-
-    # Case 2: mop_d wrapping a sub-instruction.
+    # Match: mop_d wrapping m_add(v190, mop_n=old_index). The v190 leaf
+    # is identified by dstr=='%var_190.8' (the displayed-name offset
+    # convention differs from the internal mop_S.s.off; only dstr is
+    # a reliable identifier).
     if t == int(_ih.mop_d):
         sub = getattr(op, "d", None)
         if sub is not None:
             if int(getattr(sub, "opcode", -1)) == int(_ih.m_add):
                 l = getattr(sub, "l", None)
                 r = getattr(sub, "r", None)
-                # left=stkvar@0x190, right=mop_n
+                # Standard order: l=v190, r=mop_n
                 if (
-                    l is not None and int(getattr(l, "t", -1)) == int(_ih.mop_S)
-                    and getattr(l, "s", None) is not None
-                    and int(l.s.off) == 0x190
-                    and r is not None and int(getattr(r, "t", -1)) == int(_ih.mop_n)
+                    _is_v190_mop_S(l, _ih)
+                    and r is not None
+                    and int(getattr(r, "t", -1)) == int(_ih.mop_n)
                     and getattr(r, "nnn", None) is not None
                     and int(r.nnn.value) == int(old_index)
                 ):
                     r.make_number(int(new_index), int(r.size or 8))
                     patched = True
-                # Try reversed (commutative)
+                # Reversed order (commutative)
                 if (
-                    r is not None and int(getattr(r, "t", -1)) == int(_ih.mop_S)
-                    and getattr(r, "s", None) is not None
-                    and int(r.s.off) == 0x190
-                    and l is not None and int(getattr(l, "t", -1)) == int(_ih.mop_n)
+                    _is_v190_mop_S(r, _ih)
+                    and l is not None
+                    and int(getattr(l, "t", -1)) == int(_ih.mop_n)
                     and getattr(l, "nnn", None) is not None
                     and int(l.nnn.value) == int(old_index)
                 ):
