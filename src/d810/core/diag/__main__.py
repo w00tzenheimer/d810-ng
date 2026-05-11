@@ -39,6 +39,8 @@ import json
 import re
 import sqlite3
 import sys
+from pathlib import Path
+
 from d810.core.typing import Any, Iterable, Mapping
 
 from d810.core.diag.alternate_correlation import (
@@ -1745,6 +1747,29 @@ def main(argv: list[str] | None = None) -> int:
         "--json", action="store_true", dest="json_output",
     )
 
+    p_hcc_trace = sub.add_parser(
+        "hcc-byte-cascade-trace",
+        parents=[common],
+        help=(
+            "Parse HCC_BYTE_CASCADE_TRACE_ROW lines from a d810 log; optionally"
+            " cross-reference %%var_190.8+#k.8 references per snapshot from"
+            " the diag DB."
+        ),
+    )
+    p_hcc_trace.add_argument(
+        "--log",
+        required=True,
+        help="Path to d810.log containing HCC_BYTE_CASCADE_TRACE_ROW lines",
+    )
+    p_hcc_trace.add_argument(
+        "--func-label",
+        default=None,
+        help="Optional function label rendered in the report title",
+    )
+    p_hcc_trace.add_argument(
+        "--json", action="store_true", dest="json_output",
+    )
+
     importlib.import_module(
         "d810.cfg.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
@@ -1759,7 +1784,12 @@ def main(argv: list[str] | None = None) -> int:
     # region-shape is function-EA-scoped, not snapshot-scoped; the rows
     # carry snapshot_id directly and may not require any snapshots row
     # to exist (e.g. REF-only persistence ahead of D810 runs).
-    if args.command in ("region-shape", "terminal-tail-dce", "region-diff"):
+    if args.command in (
+        "region-shape",
+        "terminal-tail-dce",
+        "region-diff",
+        "hcc-byte-cascade-trace",
+    ):
         # region-diff is function-EA-scoped; it resolves its own snap IDs
         # via labels and tolerates a sparse / schemaless diag DB by
         # returning a structured error.
@@ -2422,6 +2452,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         conn.close()
         return rc
+
+    elif args.command == "hcc-byte-cascade-trace":
+        from d810.core.diag.hcc_byte_cascade_trace import (
+            enrich_rows_with_db,
+            format_report,
+            format_report_json,
+            parse_trace_log,
+        )
+
+        log_path = Path(args.log)
+        if not log_path.exists():
+            print(f"error: log not found: {log_path}", file=sys.stderr)
+            conn.close()
+            return 2
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        rows = parse_trace_log(log_text)
+        db_path = Path(args.db)
+        if db_path.exists():
+            rows = enrich_rows_with_db(rows, db_path)
+        if getattr(args, "json_output", False):
+            print(format_report_json(rows))
+        else:
+            print(format_report(rows, func_label=args.func_label))
+        conn.close()
+        return 0
 
     conn.close()
     return 0
