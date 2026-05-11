@@ -328,8 +328,30 @@ def format_report(
     return "\n".join(lines) + "\n"
 
 
+_STATUS_TO_NARRATIVE: dict[str, str] = {
+    "region_detection_gap": (
+        "in DAG but never picked up as part of any HCC raw region or"
+        " InsertBlock body"
+    ),
+    "unmaterialized_original_block": (
+        "in HCC raw region, but no InsertBlock body or redirect materialised"
+        " the evidence; original block remains in the CFG but HCC made no"
+        " positive claim on it"
+    ),
+    "redirected_away": (
+        "block was rewired away by a redirect with no replacement"
+    ),
+    "no_dag_evidence": (
+        "byte's state node was never seen in HCC's dag / corrected_dag"
+        " (likely a recon collector gap)"
+    ),
+    "unknown": "no final-stage observation recorded",
+}
+
+
 def _summarize_drops(rows: Iterable[ByteCascadeRow]) -> list[str]:
-    """Bullet list of bytes that failed to survive and the first dropped stage."""
+    """Bullet list of bytes that failed to survive, with narrative for the
+    new final-status taxonomy."""
     out: list[str] = []
     for r in rows:
         if r.final_status.startswith("preserved"):
@@ -338,9 +360,14 @@ def _summarize_drops(rows: Iterable[ByteCascadeRow]) -> list[str]:
             r.first_dropped_stage if r.first_dropped_stage and r.first_dropped_stage != "-"
             else "no_stage_recorded"
         )
+        narrative = _STATUS_TO_NARRATIVE.get(r.final_status, r.final_status)
+        bullet = (
+            f"- byte {r.byte}: `{r.final_status}` -- {narrative}; first"
+            f" dropped at `{loc}`"
+        )
         if r.candidate_rejection and r.candidate_rejection not in ("-", ""):
-            loc = f"{loc} (candidate rejection: {r.candidate_rejection})"
-        out.append(f"- byte {r.byte}: {r.final_status}; first dropped at `{loc}`")
+            bullet += f" (candidate rejection: {r.candidate_rejection})"
+        out.append(bullet)
     return out
 
 

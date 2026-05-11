@@ -204,7 +204,8 @@ def test_format_report_renders_table_and_summary() -> None:
     assert "## HCC byte-cascade trace for sub_7FFD3338C040" in out
     assert "| byte | block_ea |" in out
     assert "| 2 |" in out and "| 3 |" in out
-    assert "byte 3: lost; first dropped at `postprocess`" in out
+    assert "byte 3: `lost`" in out
+    assert "first dropped at `postprocess`" in out
     # The preserved row should not appear in the summary section.
     assert "byte 2:" not in out.split("### Summary")[1]
 
@@ -315,5 +316,6 @@ def test_end_to_end_minimal_log(tmp_path: Path) -> None:
     rows = parse_trace_log(log.read_text())
     rows = enrich_rows_with_db(rows, db)
     out = format_report(rows, func_label="sub_7FFD3338C040")
-    assert "byte 3: lost; first dropped at `postprocess`" in out
+    assert "byte 3: `lost`" in out
+    assert "first dropped at `postprocess`" in out
     assert "pre_d810" in out and "post_bundle_stabilize" in out

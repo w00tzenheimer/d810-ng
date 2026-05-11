@@ -173,8 +173,31 @@ def test_seeds_one_record_per_byte_index(monkeypatch: pytest.MonkeyPatch) -> Non
     tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
     assert tracer is not None
     assert sorted(tracer.records) == [2, 3, 6]
-    assert tracer.records[2].byte.block_ea_hex == "0x0000000180014C00"
-    assert tracer.records[2].byte.source_ea_hex == "0x0000000180014C10"
+    rec = tracer.records[2]
+    assert rec.block_ea_hex == "0x0000000180014C00"
+    assert rec.primary_evidence is not None
+    assert rec.primary_evidence.source_ea_hex == "0x0000000180014C10"
+    assert len(rec.evidence) == 1
+
+
+def test_seeds_multiple_evidence_records_for_same_byte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_gate(monkeypatch)
+    # Same byte_index=3, two different m_stx facts (counter store + byte store).
+    snap = _snapshot(
+        _byte_fact(3, 163, block_ea=0x180014D00, source_ea=0x180014D10,
+                   destination="%var_178.8"),  # counter, no var_190
+        _byte_fact(3, 163, block_ea=0x180014D00, source_ea=0x180014D20),  # real byte_emit
+    )
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+    rec = tracer.records[3]
+    assert len(rec.evidence) == 2
+    # The byte-cascade fact (with %var_190 in source_expression) sorts first.
+    assert rec.primary_evidence is not None
+    assert "%var_190" in rec.primary_evidence.source_expression
+    assert rec.source_ea_hex_set == {"0x0000000180014D10", "0x0000000180014D20"}
 
 
 def test_infers_byte_index_from_source_expression_when_payload_missing_it() -> None:
@@ -199,7 +222,9 @@ def test_infers_byte_index_from_source_expression_when_payload_missing_it() -> N
     )
     records = _seed_records_from_fact_view(fv)
     assert list(records) == [4]
-    assert records[4].byte.byte_index == 4
+    assert records[4].byte_index == 4
+    assert records[4].primary_evidence is not None
+    assert records[4].primary_evidence.byte_index == 4
 
 
 def test_skips_non_terminal_tail_corridor_role() -> None:
@@ -239,8 +264,8 @@ def test_seed_dag_marks_in_dag_when_block_is_entry_anchor(
     tracer.seed_dag(dag)
     rec = tracer.records[3]
     assert rec.in_dag is True
-    assert rec.entry_anchor == 163
-    assert rec.dag_node_key == "STATE_72AFE1BC"
+    assert 163 in rec.entry_anchors
+    assert "STATE_72AFE1BC" in rec.dag_node_keys
 
 
 def test_seed_dag_marks_in_dag_when_block_is_in_owned_blocks(
@@ -255,7 +280,7 @@ def test_seed_dag_marks_in_dag_when_block_is_in_owned_blocks(
     )
     tracer.seed_dag(dag)
     assert tracer.records[4].in_dag is True
-    assert tracer.records[4].entry_anchor == 70
+    assert 70 in tracer.records[4].entry_anchors
 
 
 def test_seed_corrected_dag_uses_separate_attribute(
@@ -329,16 +354,22 @@ def test_record_candidate_stores_rejection_reason(
 # ---------------------------------------------------------------------------
 
 
-def _byte(byte_index: int, serial: int, source_ea: int) -> ByteEvidence:
-    return ByteEvidence(
+def _record(byte_index: int, serial: int, source_ea: int) -> ByteRecord:
+    """Build a single-evidence ByteRecord for direct preservation tests."""
+    return ByteRecord(
         byte_index=byte_index,
-        block_serial=serial,
-        block_ea_hex=f"0x{serial:016X}",
-        source_ea_hex=f"0x{source_ea:016X}",
-        destination="",
-        source_expression="",
-        fact_id="",
-        confidence=0.0,
+        evidence=[
+            ByteEvidence(
+                byte_index=byte_index,
+                block_serial=serial,
+                block_ea_hex=f"0x{serial:016X}",
+                source_ea_hex=f"0x{source_ea:016X}",
+                destination="",
+                source_expression="",
+                fact_id="",
+                confidence=0.0,
+            )
+        ],
     )
 
 
@@ -347,37 +378,40 @@ def _insn(opcode: int, ea: int) -> InsnSnapshot:
 
 
 def test_preservation_insertblock_evidence_matches_by_ea() -> None:
-    byte = _byte(3, 163, 0x18001ABCD)
+    rec = _record(3, 163, 0x18001ABCD)
     mod = InsertBlock(
         pred_serial=10,
         succ_serial=20,
         instructions=(_insn(0x11, 0x18001ABCD), _insn(0x12, 0x18001ABCE)),
     )
-    preserved, mechanism = _classify_preservation(byte, [mod])
+    preserved, mechanism = _classify_preservation(rec, [mod])
     assert preserved is True
     assert mechanism == "insertblock_evidence"
 
 
 def test_preservation_redirect_target_when_block_is_new_target() -> None:
-    byte = _byte(4, 72, 0x18001BEEF)
+    rec = _record(4, 72, 0x18001BEEF)
     mod = RedirectGoto(from_serial=5, old_target=99, new_target=72)
-    preserved, mechanism = _classify_preservation(byte, [mod])
+    preserved, mechanism = _classify_preservation(rec, [mod])
     assert preserved is True
     assert mechanism == "redirect_target"
 
 
-def test_preservation_passive_when_no_mod_touches_block() -> None:
-    byte = _byte(5, 101, 0x18001CAFE)
+def test_preservation_unmaterialized_when_no_mod_touches_block() -> None:
+    rec = _record(5, 101, 0x18001CAFE)
     mod = RedirectGoto(from_serial=200, old_target=300, new_target=400)
-    preserved, mechanism = _classify_preservation(byte, [mod])
+    preserved, mechanism = _classify_preservation(rec, [mod])
+    # Block isn't touched by any mod, so it remains in the CFG. But that is
+    # NOT semantic preservation -- HCC just didn't claim it, and IDA's later
+    # optimize_global may still DCE it.
     assert preserved is True
-    assert mechanism == "passive"
+    assert mechanism == "unmaterialized_original_block"
 
 
 def test_preservation_redirected_away() -> None:
-    byte = _byte(2, 56, 0x18001DEAD)
+    rec = _record(2, 56, 0x18001DEAD)
     mod = RedirectGoto(from_serial=56, old_target=80, new_target=200)
-    preserved, mechanism = _classify_preservation(byte, [mod])
+    preserved, mechanism = _classify_preservation(rec, [mod])
     assert preserved is False
     assert mechanism == "redirected_away"
 
@@ -385,7 +419,7 @@ def test_preservation_redirected_away() -> None:
 def test_preservation_insertblock_evidence_outranks_redirect_away() -> None:
     """If evidence got composed into an InsertBlock body, the byte is preserved
     even if the original block is being redirected away."""
-    byte = _byte(3, 163, 0x18001ABCD)
+    rec = _record(3, 163, 0x18001ABCD)
     mods = [
         RedirectGoto(from_serial=163, old_target=200, new_target=300),
         InsertBlock(
@@ -394,7 +428,39 @@ def test_preservation_insertblock_evidence_outranks_redirect_away() -> None:
             instructions=(_insn(0x11, 0x18001ABCD),),
         ),
     ]
-    preserved, mechanism = _classify_preservation(byte, mods)
+    preserved, mechanism = _classify_preservation(rec, mods)
+    assert preserved is True
+    assert mechanism == "insertblock_evidence"
+
+
+def test_preservation_matches_any_evidence_anchor() -> None:
+    """Multi-evidence: byte is preserved if ANY anchor's EA appears in an
+    InsertBlock body."""
+    rec = ByteRecord(
+        byte_index=3,
+        evidence=[
+            ByteEvidence(
+                byte_index=3, block_serial=163, block_ea_hex="0x163",
+                source_ea_hex="0x000000018001AAAA",
+                destination="counter", source_expression="",
+                fact_id="counter", confidence=0.5,
+            ),
+            ByteEvidence(
+                byte_index=3, block_serial=163, block_ea_hex="0x163",
+                source_ea_hex="0x000000018001BBBB",
+                destination="buffer",
+                source_expression="xdu(%var_190.8+#3.8)",
+                fact_id="byte", confidence=0.8,
+            ),
+        ],
+    )
+    # InsertBlock contains only the second anchor's EA.
+    mod = InsertBlock(
+        pred_serial=10,
+        succ_serial=20,
+        instructions=(_insn(0x11, 0x18001BBBB),),
+    )
+    preserved, mechanism = _classify_preservation(rec, [mod])
     assert preserved is True
     assert mechanism == "insertblock_evidence"
 
@@ -454,25 +520,29 @@ def test_canonical_mod_sig_duplicate_block() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_stage_modifications_marks_lost_on_first_drop(
+def test_record_stage_modifications_marks_redirected_away_on_first_drop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _enable_gate(monkeypatch)
     snap = _snapshot(_byte_fact(2, 56, block_ea=0x180014C00, source_ea=0x180014C10))
     tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
     assert tracer is not None
+    # Seed DAG presence so the byte isn't "no_dag_evidence".
+    tracer.seed_dag(_FakeDag(nodes=(_FakeStateDagNode(entry_anchor=56, key="A"),)))
 
-    preserved_mods = []  # passive
+    unmaterialized_mods: list = []
     dropped_mods = [RedirectGoto(from_serial=56, old_target=80, new_target=200)]
 
-    tracer.record_stage_modifications(ByteCascadeStage.PRIMARY_EXECUTION, preserved_mods)
+    tracer.record_stage_modifications(
+        ByteCascadeStage.PRIMARY_EXECUTION, unmaterialized_mods,
+    )
     tracer.record_stage_modifications(ByteCascadeStage.POSTPROCESS, dropped_mods)
     tracer.record_stage_modifications(ByteCascadeStage.FINAL, dropped_mods)
     tracer.record_finalize(dropped_mods)
 
     rec = tracer.records[2]
     assert rec.first_dropped_stage == ByteCascadeStage.POSTPROCESS.value
-    assert rec.final_status == "lost"
+    assert rec.final_status == "redirected_away"
 
 
 def test_record_stage_modifications_marks_accepted_via_insertblock(
@@ -502,6 +572,91 @@ def test_record_stage_modifications_marks_accepted_via_insertblock(
     assert rec.final_status == "preserved_insertblock"
 
 
+def test_final_status_region_detection_gap_when_in_dag_but_not_in_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The signature outcome for sub_7FFD bytes 2-6: HCC saw the state in its
+    DAG but never picked the block up as part of any raw region or InsertBlock
+    body."""
+    _enable_gate(monkeypatch)
+    snap = _snapshot(_byte_fact(4, 72, block_ea=0x180014F00, source_ea=0x180014F10))
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+    # Byte IS in the DAG.
+    tracer.seed_dag(_FakeDag(nodes=(_FakeStateDagNode(entry_anchor=72, key="S"),)))
+    tracer.seed_corrected_dag(
+        _FakeDag(nodes=(_FakeStateDagNode(entry_anchor=72, key="S"),))
+    )
+    # But the raw region table has NO entry for the byte's block.
+    tracer.seed_raw_region_table(())
+    # And no mod touches the block.
+    tracer.record_stage_modifications(ByteCascadeStage.PRIMARY_EXECUTION, [])
+    tracer.record_finalize([])
+
+    rec = tracer.records[4]
+    assert rec.in_dag is True
+    assert rec.in_region_table is False
+    assert rec.preserved_in_insertblock is False
+    assert rec.final_status == "region_detection_gap"
+
+
+def test_final_status_unmaterialized_when_in_region_but_no_mod_lands_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_gate(monkeypatch)
+    snap = _snapshot(_byte_fact(5, 101, block_ea=0x180014E00, source_ea=0x180014E10))
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+    tracer.seed_dag(_FakeDag(nodes=(_FakeStateDagNode(entry_anchor=101, key="S"),)))
+
+    @dataclass(frozen=True)
+    class _Row:
+        handler_serials: tuple[int, ...]
+
+    # Block IS in a raw region.
+    tracer.seed_raw_region_table((_Row(handler_serials=(101,)),))
+    # But nothing materialised it.
+    tracer.record_stage_modifications(ByteCascadeStage.PRIMARY_EXECUTION, [])
+    tracer.record_finalize([])
+
+    rec = tracer.records[5]
+    assert rec.in_region_table is True
+    assert rec.final_status == "unmaterialized_original_block"
+
+
+def test_final_status_no_dag_evidence_when_byte_absent_from_dag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_gate(monkeypatch)
+    snap = _snapshot(_byte_fact(6, 217, block_ea=0x180014F00, source_ea=0x180014F10))
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+    # NO seed_dag / seed_corrected_dag calls.
+    tracer.record_stage_modifications(ByteCascadeStage.FINAL, [])
+    tracer.record_finalize([])
+
+    rec = tracer.records[6]
+    assert rec.in_dag is False
+    assert rec.final_status == "no_dag_evidence"
+
+
+def test_final_status_preserved_redirect_when_block_is_redirect_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_gate(monkeypatch)
+    snap = _snapshot(_byte_fact(1, 50, block_ea=0x180014B00, source_ea=0x180014B10))
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+    tracer.seed_dag(_FakeDag(nodes=(_FakeStateDagNode(entry_anchor=50, key="S"),)))
+    mods = [RedirectGoto(from_serial=99, old_target=98, new_target=50)]
+    tracer.record_stage_modifications(ByteCascadeStage.PRIMARY_EXECUTION, mods)
+    tracer.record_finalize(mods)
+
+    rec = tracer.records[1]
+    assert rec.final_status == "preserved_redirect"
+    assert rec.emitted_mod_kind == "RedirectGoto"
+
+
 def test_record_finalize_emits_grep_rows_and_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -528,10 +683,13 @@ def test_record_finalize_emits_grep_rows_and_table(
     assert len(grep_rows) == 2
     assert any("byte=2" in line for line in grep_rows)
     assert any("byte=3" in line for line in grep_rows)
+    # n_evidence field appears in the row log per the new schema.
+    assert any("n_evidence=1" in line for line in grep_rows)
     table_lines = [line for line in logger.lines if TABLE_LOG_PREFIX in line]
     assert table_lines
     rendered = tracer.render_markdown_table()
     assert "| byte | block_ea |" in rendered
+    assert "n_evidence" in rendered
     assert "final_status" in rendered
 
 

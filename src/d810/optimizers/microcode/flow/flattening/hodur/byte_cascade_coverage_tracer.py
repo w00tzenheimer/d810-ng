@@ -106,13 +106,29 @@ class StageObservation:
     note: str = ""
 
 
+FINAL_STATUS_PRESERVED_INSERTBLOCK = "preserved_insertblock"
+FINAL_STATUS_PRESERVED_REDIRECT = "preserved_redirect"
+FINAL_STATUS_REGION_DETECTION_GAP = "region_detection_gap"
+FINAL_STATUS_UNMATERIALIZED = "unmaterialized_original_block"
+FINAL_STATUS_REDIRECTED_AWAY = "redirected_away"
+FINAL_STATUS_NO_DAG_EVIDENCE = "no_dag_evidence"
+FINAL_STATUS_UNKNOWN = "unknown"
+
+
 @dataclass
 class ByteRecord:
-    """Accumulated trajectory for one byte across all stages."""
+    """Accumulated trajectory for one byte across all stages.
 
-    byte: ByteEvidence
-    entry_anchor: int | None = None
-    dag_node_key: str | None = None
+    Holds **all** ``TerminalByteEmitterFact`` evidence rows for the byte
+    index, not just the highest-scoring one. The preservation predicate runs
+    against every evidence anchor: the byte is reported preserved if *any*
+    anchor is preserved.
+    """
+
+    byte_index: int
+    evidence: list[ByteEvidence] = field(default_factory=list)
+    entry_anchors: set[int] = field(default_factory=set)
+    dag_node_keys: set[str] = field(default_factory=set)
     in_dag: bool = False
     in_corrected_dag: bool = False
     in_region_table: bool = False
@@ -123,19 +139,42 @@ class ByteRecord:
     preserved_in_insertblock: bool = False
     stages: dict[str, StageObservation] = field(default_factory=dict)
     first_dropped_stage: str | None = None
-    final_status: str = "unknown"
+    final_status: str = FINAL_STATUS_UNKNOWN
+
+    @property
+    def primary_evidence(self) -> ByteEvidence | None:
+        return self.evidence[0] if self.evidence else None
 
     @property
     def block_ea_hex(self) -> str:
-        return self.byte.block_ea_hex or ""
+        primary = self.primary_evidence
+        return primary.block_ea_hex if primary and primary.block_ea_hex else ""
+
+    @property
+    def block_serial(self) -> int | None:
+        primary = self.primary_evidence
+        return primary.block_serial if primary else None
+
+    @property
+    def block_serials(self) -> set[int]:
+        return {
+            e.block_serial for e in self.evidence if e.block_serial is not None
+        }
+
+    @property
+    def source_ea_hex_set(self) -> set[str]:
+        return {e.source_ea_hex for e in self.evidence if e.source_ea_hex}
 
     def render_row_log(self) -> str:
+        primary_anchor = self.entry_anchors and min(self.entry_anchors)
+        primary_dag_node = next(iter(sorted(self.dag_node_keys)), "?")
         parts = [
-            f"byte={self.byte.byte_index}",
-            f"block_ea={self.byte.block_ea_hex or '?'}",
-            f"block_serial={self.byte.block_serial if self.byte.block_serial is not None else '?'}",
-            f"entry_anchor={self.entry_anchor if self.entry_anchor is not None else '?'}",
-            f"dag_node={self.dag_node_key or '?'}",
+            f"byte={self.byte_index}",
+            f"block_ea={self.block_ea_hex or '?'}",
+            f"block_serial={self.block_serial if self.block_serial is not None else '?'}",
+            f"entry_anchor={primary_anchor if primary_anchor else '?'}",
+            f"dag_node={primary_dag_node}",
+            f"n_evidence={len(self.evidence)}",
             f"in_dag={1 if self.in_dag else 0}",
             f"in_corrected_dag={1 if self.in_corrected_dag else 0}",
             f"in_region_table={1 if self.in_region_table else 0}",
@@ -306,37 +345,77 @@ def _byte_block_redirect_target(mod: object, block_serial: int | None) -> bool:
 
 
 def _classify_preservation(
-    byte: ByteEvidence,
+    record: "ByteRecord",
     mods: Sequence[object],
 ) -> tuple[bool, str]:
-    """Apply the preservation predicate against a set of modifications.
+    """Apply the preservation predicate across **all** evidence anchors.
 
     Returns ``(preserved, mechanism)`` where ``mechanism`` is one of:
 
-    - ``insertblock_evidence`` -- byte's source EAs appear in an InsertBlock body
-    - ``redirect_target`` -- byte's block is the explicit new target of a redirect
-    - ``passive`` -- nothing rewired away from the byte's block (default-preserved)
+    - ``insertblock_evidence`` -- *any* evidence EA appears in an InsertBlock body
+    - ``redirect_target`` -- *any* evidence block is the explicit new target of a redirect
+    - ``unmaterialized_original_block`` -- nothing rewired the block(s), no
+      InsertBlock claimed the evidence; the original block remains in the CFG
+      but HCC made no positive claim on it. This is NOT semantic preservation;
+      IDA's later optimize_global may still DCE the original block.
     - ``redirected_away`` -- the byte's block was rewired away with no replacement
     """
-    if byte.source_ea_hex is not None:
-        evidence_set = frozenset({byte.source_ea_hex})
-    else:
-        evidence_set = frozenset()
+    evidence_ea_set = frozenset(record.source_ea_hex_set)
+    evidence_serials = record.block_serials
 
-    if evidence_set:
+    if evidence_ea_set:
         for mod in mods:
-            if _insertblock_contains_evidence(mod, evidence_set):
+            if _insertblock_contains_evidence(mod, evidence_ea_set):
                 return True, "insertblock_evidence"
 
-    for mod in mods:
-        if _byte_block_redirect_target(mod, byte.block_serial):
-            return True, "redirect_target"
+    if evidence_serials:
+        for mod in mods:
+            for serial in evidence_serials:
+                if _byte_block_redirect_target(mod, serial):
+                    return True, "redirect_target"
 
-    for mod in mods:
-        if _byte_block_redirected_away(mod, byte.block_serial):
-            return False, "redirected_away"
+    if evidence_serials:
+        for mod in mods:
+            for serial in evidence_serials:
+                if _byte_block_redirected_away(mod, serial):
+                    return False, "redirected_away"
 
-    return True, "passive"
+    return True, "unmaterialized_original_block"
+
+
+def _classify_final_status(record: "ByteRecord") -> str:
+    """Map a record's accumulated state to a final-status taxonomy bucket.
+
+    Hierarchy (first match wins):
+
+    - ``preserved_insertblock`` -- evidence was composed into an InsertBlock body
+    - ``preserved_redirect`` -- block is the explicit target of a redirect
+    - ``redirected_away`` -- final-stage mods rewired the block away with no
+      InsertBlock claim
+    - ``no_dag_evidence`` -- HCC's recon never saw the byte's state node
+    - ``region_detection_gap`` -- byte is in dag/corrected_dag but no raw region
+      contains its block AND no InsertBlock body holds its evidence; HCC did
+      not pick this up as a region candidate
+    - ``unmaterialized_original_block`` -- byte is in dag AND in some raw region,
+      but no final HCC-owned mod materialised the evidence; the original block
+      remains in the CFG, but HCC made no positive claim on it
+    - ``unknown`` -- record_finalize was never called (no FINAL observation)
+    """
+    if record.preserved_in_insertblock:
+        return FINAL_STATUS_PRESERVED_INSERTBLOCK
+    final = record.stages.get(ByteCascadeStage.FINAL.value)
+    if final is None:
+        return FINAL_STATUS_UNKNOWN
+    if final.mechanism == "redirect_target":
+        return FINAL_STATUS_PRESERVED_REDIRECT
+    if final.mechanism == "redirected_away":
+        return FINAL_STATUS_REDIRECTED_AWAY
+    in_any_dag = record.in_dag or record.in_corrected_dag
+    if not in_any_dag:
+        return FINAL_STATUS_NO_DAG_EVIDENCE
+    if not record.in_region_table and not record.preserved_in_insertblock:
+        return FINAL_STATUS_REGION_DETECTION_GAP
+    return FINAL_STATUS_UNMATERIALIZED
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +486,7 @@ class ByteCascadeCoverageTracer:
             return
         region_block_serials = _collect_region_block_serials(raw_region_table)
         for record in self.records.values():
-            if record.byte.block_serial in region_block_serials:
+            if record.block_serials & region_block_serials:
                 record.in_region_table = True
         self._record_stage_event(
             ByteCascadeStage.RAW_REGION_TABLE,
@@ -426,7 +505,7 @@ class ByteCascadeCoverageTracer:
         if serial is None:
             return
         for record in self.records.values():
-            if record.byte.block_serial != serial:
+            if serial not in record.block_serials:
                 continue
             if candidate is not None:
                 record.raw_candidate = True
@@ -441,27 +520,33 @@ class ByteCascadeCoverageTracer:
         """Snapshot the predicate at a given stage.
 
         For each byte, records preserved-or-not + the mechanism, and assigns
-        accepted_stage / first_dropped_stage on the first transition.
+        accepted_stage / first_dropped_stage on the first transition. The
+        predicate runs across all evidence anchors for the byte.
         """
         if not self.records:
             return
         for record in self.records.values():
-            preserved, mechanism = _classify_preservation(record.byte, modifications)
+            preserved, mechanism = _classify_preservation(record, modifications)
             record.stages[stage.value] = StageObservation(
                 preserved=preserved,
                 mechanism=mechanism,
             )
             if preserved:
-                if record.accepted_stage is None and mechanism != "passive":
+                if (
+                    record.accepted_stage is None
+                    and mechanism != "unmaterialized_original_block"
+                ):
                     record.accepted_stage = stage.value
                 if mechanism == "insertblock_evidence":
                     record.preserved_in_insertblock = True
                     if record.emitted_mod_kind is None:
                         record.emitted_mod_kind = "InsertBlock"
                 elif mechanism == "redirect_target" and record.emitted_mod_kind is None:
-                    record.emitted_mod_kind = _redirect_kind_for_target(
-                        record.byte.block_serial, modifications
-                    )
+                    for serial in sorted(record.block_serials):
+                        kind = _redirect_kind_for_target(serial, modifications)
+                        if kind:
+                            record.emitted_mod_kind = kind
+                            break
             else:
                 if record.first_dropped_stage is None:
                     record.first_dropped_stage = stage.value
@@ -471,20 +556,7 @@ class ByteCascadeCoverageTracer:
             return
         self.record_stage_modifications(ByteCascadeStage.FINAL, final_modifications)
         for record in self.records.values():
-            stage = record.stages.get(ByteCascadeStage.FINAL.value)
-            if stage is None:
-                record.final_status = "no_final_observation"
-                continue
-            if stage.preserved:
-                record.final_status = (
-                    "preserved_insertblock"
-                    if stage.mechanism == "insertblock_evidence"
-                    else "preserved_passive"
-                    if stage.mechanism == "passive"
-                    else "preserved_redirect"
-                )
-            else:
-                record.final_status = "lost"
+            record.final_status = _classify_final_status(record)
 
     def emit_log(self) -> None:
         if not self.records or self.logger is None:
@@ -499,23 +571,27 @@ class ByteCascadeCoverageTracer:
 
     def render_markdown_table(self) -> str:
         header = (
-            "| byte | block_ea | block_serial | entry_anchor | in_dag |"
-            " in_corrected_dag | in_region | raw_candidate | rejection |"
+            "| byte | block_ea | block_serial | entry_anchor | n_evidence |"
+            " in_dag | in_corrected_dag | in_region | raw_candidate | rejection |"
             " accepted_stage | emitted_mod | preserved_in_insertblock |"
             " first_dropped_stage | final_status |"
         )
-        sep = "|-|-|-|-|-|-|-|-|-|-|-|-|-|-|"
+        sep = "|-|-|-|-|-|-|-|-|-|-|-|-|-|-|-|"
         rows: list[str] = []
         for byte_index in sorted(self.records.keys()):
             r = self.records[byte_index]
+            entry_anchor = (
+                min(r.entry_anchors) if r.entry_anchors else None
+            )
             rows.append(
                 "| "
                 + " | ".join(
                     [
-                        str(r.byte.byte_index),
-                        r.byte.block_ea_hex or "?",
-                        (str(r.byte.block_serial) if r.byte.block_serial is not None else "?"),
-                        (str(r.entry_anchor) if r.entry_anchor is not None else "?"),
+                        str(r.byte_index),
+                        r.block_ea_hex or "?",
+                        (str(r.block_serial) if r.block_serial is not None else "?"),
+                        (str(entry_anchor) if entry_anchor is not None else "?"),
+                        str(len(r.evidence)),
                         "1" if r.in_dag else "0",
                         "1" if r.in_corrected_dag else "0",
                         "1" if r.in_region_table else "0",
@@ -547,23 +623,22 @@ class ByteCascadeCoverageTracer:
             anchor = _int_or_none(getattr(node, "entry_anchor", None))
             if anchor is None:
                 continue
+            owned = getattr(node, "owned_blocks", ()) or ()
+            owned_ints = {
+                _int_or_none(b) for b in owned if _int_or_none(b) is not None
+            }
+            key_obj = getattr(node, "key", None)
+            key_str = str(key_obj) if key_obj is not None else None
             for record in self.records.values():
-                if record.byte.block_serial is None:
+                if not record.block_serials:
                     continue
-                owned = getattr(node, "owned_blocks", ()) or ()
-                owned_ints = {_int_or_none(b) for b in owned if _int_or_none(b) is not None}
-                if (
-                    anchor == record.byte.block_serial
-                    or record.byte.block_serial in owned_ints
-                ):
-                    setattr(record, attr, True)
-                    if record.entry_anchor is None:
-                        record.entry_anchor = anchor
-                    if record.dag_node_key is None:
-                        key_obj = getattr(node, "key", None)
-                        record.dag_node_key = (
-                            str(key_obj) if key_obj is not None else None
-                        )
+                hits = record.block_serials & ({anchor} | owned_ints)
+                if not hits:
+                    continue
+                setattr(record, attr, True)
+                record.entry_anchors.add(anchor)
+                if key_str:
+                    record.dag_node_keys.add(key_str)
 
     def _record_stage_event(
         self,
@@ -609,7 +684,6 @@ def _seed_records_from_fact_view(fact_view: object) -> dict[int, ByteRecord]:
         if byte_index is None:
             continue
         confidence = float(getattr(obs, "confidence", 0.0) or 0.0)
-        existing = records.get(byte_index)
         candidate = ByteEvidence(
             byte_index=byte_index,
             block_serial=_int_or_none(
@@ -624,26 +698,29 @@ def _seed_records_from_fact_view(fact_view: object) -> dict[int, ByteRecord]:
             fact_id=str(getattr(obs, "fact_id", "") or ""),
             confidence=confidence,
         )
-        if existing is None or _evidence_better(candidate, existing.byte):
-            records[byte_index] = ByteRecord(byte=candidate)
+        record = records.get(byte_index)
+        if record is None:
+            record = ByteRecord(byte_index=byte_index)
+            records[byte_index] = record
+        record.evidence.append(candidate)
+    # Sort each byte's evidence so the highest-anchored fact is first (it is
+    # used for the row's "primary" fields).
+    for record in records.values():
+        record.evidence.sort(key=_evidence_sort_key, reverse=True)
     return records
 
 
-def _evidence_better(new: ByteEvidence, old: ByteEvidence) -> bool:
-    """Prefer evidence with stronger anchoring (EAs available, real store)."""
-    score_new = (
-        (1 if new.source_ea_hex else 0)
-        + (1 if new.block_ea_hex else 0)
-        + (2 if "%var_190" in new.source_expression else 0)
-        + new.confidence
+def _evidence_sort_key(ev: ByteEvidence) -> tuple[int, float, int, int]:
+    """Sort key: prefer real-store + EA + var_190 evidence + higher confidence."""
+    has_source_ea = 1 if ev.source_ea_hex else 0
+    has_block_ea = 1 if ev.block_ea_hex else 0
+    var_190 = 1 if "%var_190" in ev.source_expression else 0
+    return (
+        has_source_ea + has_block_ea + 2 * var_190,
+        ev.confidence,
+        has_block_ea,
+        ev.block_serial if ev.block_serial is not None else -1,
     )
-    score_old = (
-        (1 if old.source_ea_hex else 0)
-        + (1 if old.block_ea_hex else 0)
-        + (2 if "%var_190" in old.source_expression else 0)
-        + old.confidence
-    )
-    return score_new > score_old
 
 
 def _collect_region_block_serials(raw_region_table: object) -> set[int]:
