@@ -15,11 +15,13 @@ from d810.core import logging
 from d810.core.typing import Any, Iterable
 
 from d810.cfg.transform.byte_emit_live_use_anchor import (
+    execute_byte_store_replica_anchor,
     execute_live_host_anchor,
     execute_multi_byte_live_host_anchor,
     execute_single_xor_anchor,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
+    parse_byte_store_env,
     parse_live_host_env,
     parse_multi_byte_env,
     parse_multi_host_env,
@@ -805,6 +807,155 @@ class LiveMbaAdapter:
         mba.mark_chains_dirty()
 
     # ------------------------------------------------------------------
+    # Byte-store anchor (Track D byte_store mechanism — reference-style
+    # buffer write replication for bytes 2-6).
+    # ------------------------------------------------------------------
+
+    def insert_byte_emit_replica_anchor(
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
+        template_byte_index: int,
+        target_byte_index: int,
+    ) -> int:
+        """Insert an anchor block whose body is a CLONE of the
+        predecessor's byte-emit m_stx, with the byte-index operand
+        patched from ``template_byte_index`` to ``target_byte_index``.
+
+        Use case: predecessor is byte 1's emit block (which survives
+        IDA DCE). We want bytes 2-6 to appear as buffer writes in AFTER
+        pseudocode. Cloning byte 1's m_stx and patching the byte index
+        gives us a structurally identical buffer write but referencing
+        the target byte's source-byte read.
+
+        The buffer offset is NOT adjusted (same slot as template) -- the
+        goal is making the m_stx (and hence the source-byte load)
+        survive optimize_global, not preserving exact reference
+        semantics.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        if pred_blk is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: pred {predecessor_serial} not resolvable"
+            )
+
+        if int(successor_serial) == -1:
+            pred_succs = [int(s) for s in pred_blk.succset]
+            if len(pred_succs) != 1:
+                raise RuntimeError(
+                    "sentinel successor=-1 requires 1-way pred; "
+                    f"block {predecessor_serial} has {len(pred_succs)} succs"
+                )
+            successor_serial = pred_succs[0]
+
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if succ_blk is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: succ {successor_serial} not resolvable"
+            )
+
+        end_serial = int(mba.qty) - 1
+        anchor = mba.copy_block(pred_blk, end_serial)
+        if anchor is None:
+            raise RuntimeError(
+                f"copy_block failed for pred={predecessor_serial}"
+            )
+
+        # Refresh serials post-copy_block (BLT_STOP shifts).
+        successor_serial = int(succ_blk.serial)
+        predecessor_serial = int(pred_blk.serial)
+
+        # Walk the clone's instructions: NOP everything that is NOT
+        # the m_stx referencing v190+#template.8. Then patch that m_stx
+        # to reference v190+#target.8 instead.
+        template_dstr = f"%var_190.8+#{template_byte_index}.8"
+        target_dstr = f"%var_190.8+#{target_byte_index}.8"
+        stx_kept = False
+        cur = anchor.head
+        while cur is not None:
+            keep = False
+            if int(cur.opcode) == int(_ih.m_stx) and not stx_kept:
+                # Check operand tree for v190+#template reference.
+                for op in (cur.l, cur.r, cur.d):
+                    if op is not None:
+                        try:
+                            if template_dstr in op.dstr():
+                                keep = True
+                                break
+                        except Exception:
+                            pass
+            if keep:
+                stx_kept = True
+                # Patch the constant inside the operand tree.
+                for op in (cur.l, cur.r, cur.d):
+                    if op is None:
+                        continue
+                    _patch_v190_byte_const(op, template_byte_index, target_byte_index, _ih)
+            else:
+                anchor.make_nop(cur)
+            cur = cur.next
+
+        if not stx_kept:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: no m_stx with v190+#{template_byte_index}.8 "
+                f"found in cloned block {predecessor_serial}"
+            )
+
+        # Now wire BLT_1WAY topology and append goto.
+        anchor.type = _ih.BLT_1WAY
+        for stale_succ in [int(x) for x in anchor.succset]:
+            anchor.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(anchor.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in anchor.predset]:
+            anchor.predset._del(stale_pred)
+
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        goto_ins = _ih.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        anchor.insert_into_block(goto_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        goto_ins.opcode = _ih.m_goto
+        goto_ins.l = _ih.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = _ih.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = _ih.mop_t()
+        goto_ins.d.erase()
+        anchor.flags |= _ih.MBL_GOTO
+
+        anchor.succset.push_back(int(successor_serial))
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(anchor.serial))
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
+            and pred_blk.tail.l is not None
+            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(anchor.serial))
+        pred_blk.mark_lists_dirty()
+
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(anchor.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        anchor.predset.push_back(int(predecessor_serial))
+        anchor.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(anchor.serial)
+
+    # ------------------------------------------------------------------
     # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
     # ------------------------------------------------------------------
 
@@ -1114,6 +1265,51 @@ class LiveMbaAdapter:
         mba.mark_chains_dirty()
 
         return int(anchor.serial)
+
+
+def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
+    """Walk a mop_t tree; find any m_add(stkvar@0x190, mop_n=old_index)
+    and replace the constant with new_index. Returns True if any patch
+    was applied. Used by insert_byte_emit_replica_anchor to retarget a
+    cloned m_stx's byte-index operand.
+    """
+    if op is None:
+        return False
+    t = int(getattr(op, "t", -1))
+    patched = False
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            if int(getattr(sub, "opcode", -1)) == int(_ih.m_add):
+                l = getattr(sub, "l", None)
+                r = getattr(sub, "r", None)
+                # left=stkvar@0x190, right=mop_n
+                if (
+                    l is not None and int(getattr(l, "t", -1)) == int(_ih.mop_S)
+                    and getattr(l, "s", None) is not None
+                    and int(l.s.off) == 0x190
+                    and r is not None and int(getattr(r, "t", -1)) == int(_ih.mop_n)
+                    and getattr(r, "nnn", None) is not None
+                    and int(r.nnn.value) == int(old_index)
+                ):
+                    r.make_number(int(new_index), int(r.size or 8))
+                    patched = True
+                # Try reversed (commutative)
+                if (
+                    r is not None and int(getattr(r, "t", -1)) == int(_ih.mop_S)
+                    and getattr(r, "s", None) is not None
+                    and int(r.s.off) == 0x190
+                    and l is not None and int(getattr(l, "t", -1)) == int(_ih.mop_n)
+                    and getattr(l, "nnn", None) is not None
+                    and int(l.nnn.value) == int(old_index)
+                ):
+                    l.make_number(int(new_index), int(l.size or 8))
+                    patched = True
+            # Recurse into sub-instruction's operands.
+            for child in (sub.l, sub.r, sub.d):
+                if _patch_v190_byte_const(child, old_index, new_index, _ih):
+                    patched = True
+    return patched
 
 
 def _mop_dstr(mop) -> str:
@@ -1940,12 +2136,15 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     multi_bytes = parse_multi_byte_env(
         os.environ.get("D810_TAIL_ANCHOR_READ_BYTES")
     )
+    store_bytes = parse_byte_store_env(
+        os.environ.get("D810_TAIL_ANCHOR_STORE_BYTES")
+    )
     multi_host_explicit = parse_multi_host_env(
         os.environ.get("D810_TAIL_ANCHOR_LIVE_HOST")
     )
     multi_host = multi_host_explicit if multi_host_explicit is not None else 1
     active = sum(
-        1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes)
+        1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes, store_bytes)
         if m is not None
     )
     if active > 1:
@@ -1982,6 +2181,12 @@ def maybe_run_byte_anchor(mba: Any) -> None:
             report = execute_multi_byte_live_host_anchor(
                 host_byte_index=multi_host,
                 read_byte_indices=multi_bytes,
+                adapter=adapter,
+            )
+        elif store_bytes is not None:
+            report = execute_byte_store_replica_anchor(
+                host_byte_index=multi_host,
+                target_byte_indices=store_bytes,
                 adapter=adapter,
             )
         else:
