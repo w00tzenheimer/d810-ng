@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Extract return-family ledger from a Hodur diagnostic DB.
 
+.. deprecated:: 2026-05-11
+    Prefer ``python -m d810.diagnostics return-ledger`` or
+    ``./tools/cff_debug.py returns``. This script is kept as a
+    compatibility wrapper; the SQL + path-trace + report logic now lives
+    at ``src/d810/diagnostics/return_ledger.py`` with unit tests under
+    ``tests/unit/diagnostics/test_return_ledger.py``.
+
 Traces all paths to BLT_STOP, extracts return-slot writers,
 VALRANGES, predecessor chains, BFS reachability, and correlates
 with AFTER pseudocode.
