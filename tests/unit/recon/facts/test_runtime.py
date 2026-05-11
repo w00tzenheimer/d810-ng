@@ -907,6 +907,146 @@ def test_terminal_byte_emitter_fact_remaps_on_stable_source_ea_mop() -> None:
     }
 
 
+def test_generic_structural_fact_gets_identity_lost_mapping_when_collector_ran() -> None:
+    class _InitialCollector:
+        name = "call-anchor-initial"
+        fact_kinds = frozenset({"CallAnchorFact"})
+        maturities = frozenset({1})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="call_anchor:old",
+                    kind="CallAnchorFact",
+                    semantic_key="call_anchor:kind=direct_call:target=$0x180000000",
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=0.86,
+                    source_block=130,
+                    source_ea=0x180014848,
+                    mop_signature="call:direct_call:$0x180000000",
+                ),
+            )
+
+    class _EmptyCurrentCollector:
+        name = "call-anchor-current"
+        fact_kinds = frozenset({"CallAnchorFact"})
+        maturities = frozenset({2})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return ()
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_InitialCollector())
+    runtime.register(_EmptyCurrentCollector())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_2")
+
+    assert len(view.mappings) == 1
+    mapping = view.mappings[0]
+    assert mapping.status is FactStatus.IDENTITY_LOST
+    assert mapping.source_fact_id == "call_anchor:old"
+    assert mapping.payload["kind"] == "CallAnchorFact"
+    assert view.active_observations == ()
+
+
+def test_generic_structural_fact_remaps_on_stable_source_ea_mop() -> None:
+    class _InitialCollector:
+        name = "zero-blob-initial"
+        fact_kinds = frozenset({"ZeroBlobFact"})
+        maturities = frozenset({1})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="zero_blob:old",
+                    kind="ZeroBlobFact",
+                    semantic_key="zero_blob_init:kind=zero_store:dest=%var_dst.8:size=8",
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=0.78,
+                    source_block=40,
+                    source_ea=0x180013000,
+                    mop_signature="zero_blob:zero_store:dest=%var_dst.8:size=8",
+                ),
+            )
+
+    class _CurrentCollector:
+        name = "zero-blob-current"
+        fact_kinds = frozenset({"ZeroBlobFact"})
+        maturities = frozenset({2})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="zero_blob:new",
+                    kind="ZeroBlobFact",
+                    semantic_key="zero_blob_init:kind=zero_store:dest=%var_dst.8:size=8",
+                    maturity="MMAT_2",
+                    phase=phase,
+                    confidence=0.76,
+                    source_block=88,
+                    source_ea=0x180013000,
+                    mop_signature="zero_blob:zero_store:dest=%var_dst.8:size=8",
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_InitialCollector())
+    runtime.register(_CurrentCollector())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_2")
+
+    assert len(view.mappings) == 1
+    mapping = view.mappings[0]
+    assert mapping.status is FactStatus.REMAPPED
+    assert mapping.source_fact_id == "zero_blob:old"
+    assert mapping.target_fact_id == "zero_blob:new"
+    assert mapping.target_block == 88
+    assert {obs.fact_id for obs in view.active_observations} == {"zero_blob:new"}
+
+
+def test_generic_structural_fact_does_not_emit_loss_when_collector_did_not_run() -> None:
+    class _InitialCollector:
+        name = "return-frontier-initial"
+        fact_kinds = frozenset({"ReturnFrontierFact"})
+        maturities = frozenset({1})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            return (
+                FactObservation(
+                    fact_id="return_frontier:old",
+                    kind="ReturnFrontierFact",
+                    semantic_key="return_frontier:return_block=57",
+                    maturity="MMAT_1",
+                    phase=phase,
+                    confidence=0.72,
+                    source_block=57,
+                    source_ea=0x180012000,
+                    mop_signature="return_frontier:mop",
+                ),
+            )
+
+    configure_settings(fact_lifecycle=True)
+    runtime = FactLifecycleRuntime()
+    runtime.register(_InitialCollector())
+
+    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    view = runtime.validated_view(0x401000, "MMAT_2")
+
+    assert view.mappings == ()
+    assert {obs.fact_id for obs in view.active_observations} == {
+        "return_frontier:old"
+    }
+
+
 def _state_write_obs(
     *,
     fact_id: str,
