@@ -26,16 +26,32 @@ Invocation: `python -m d810.diagnostics ...` (the legacy
 
 | old script / tool | new diag command | new cff_debug wrapper | status |
 |-|-|-|-|
-| `tools/scripts/extract_after_pseudocode.py` | (kept; small) | `cff_debug.py after` | wrapped |
+| `tools/scripts/extract_after_pseudocode.py` | `python -m d810.diagnostics dump-after` | `cff_debug.py after` | stubbed; forwards via `execvpe` |
 | `tools/scripts/inspect_hodur_dump.sh` | (none -- bash) | `cff_debug.py inspect` | stubbed; bash forwards to `cff_debug.py inspect --dump $1` |
-| `tools/scripts/inspect_linearized_state_node.py` | (kept; small) | `cff_debug.py state` | wrapped |
+| `tools/scripts/inspect_linearized_state_node.py` | `python -m d810.diagnostics inspect-state-node` | `cff_debug.py state` | stubbed; forwards via `execvpe` |
 | HCC byte-cascade tracer log | `python -m d810.diagnostics hcc-byte-cascade-trace` | `cff_debug.py trace` | done (commit `9165c1b3`) |
 | `tools/scripts/terminal_tail_audit.py` | `python -m d810.diagnostics terminal-tail-audit` | `cff_debug.py byte-audit` | stubbed; forwards via `execvpe` |
 | `tools/scripts/gate_audit.py` | `python -m d810.diagnostics gate-audit` | `cff_debug.py gates` | stubbed; forwards via `execvpe` |
 | `tools/scripts/reconcile_dispatcher_redirects.py` | `python -m d810.diagnostics redirect-reconcile` | `cff_debug.py reconcile` | stubbed; forwards via `execvpe` |
 | `tools/scripts/return_family_ledger.py` | `python -m d810.diagnostics return-ledger` | `cff_debug.py returns` | stubbed (failing); legacy CLI does not map cleanly |
-| `tools/scripts/region_oracle.py` | `python -m d810.diagnostics region-shape/region-diff` (already exists) | `cff_debug.py oracle` | partly done; needs wrapper |
+| `tools/scripts/region_oracle.py` | `python -m d810.diagnostics region-diff` (also `region-shape`, `terminal-tail-dce`) | `cff_debug.py oracle` | stubbed; forwards via `execvpe` |
 | `tools/scripts/terminal_tail_cascade_egress_plan.py` | `python -m d810.diagnostics cascade-egress-plan` | `cff_debug.py egress-plan` | stubbed; forwards via `execvpe` |
+| `tools/residual_dispatcher_worksheet.py` | `python -m d810.diagnostics residual-worksheet` | `cff_debug.py residual-worksheet` | stubbed; forwards via `execvpe` |
+
+## Intentionally unmigrated tools
+
+These tools live under `tools/` but are NOT post-hoc diagnostics. They
+run experiments, compare scenarios, or invoke external solvers, and do
+not fit the `d810.diagnostics` (DB / log / parser / report) shape.
+
+| tool | classification | why it stays out of d810.diagnostics |
+|-|-|-|
+| `tools/reconstruction_contribution.py` | experiment runner | Drives multiple Docker decompile runs with different env gates and compares outputs. Not a query over persisted artifacts. |
+| `tools/sub7ffd_tail_corridor_prover.py` | proof / lab tool | Z3-based tail-corridor invariant prover (and optional Triton). Specialized lab tool, not a generic diagnostic. |
+
+If a `cff_debug.py` orchestration wrapper is ever added for either tool,
+it must remain orchestration-only -- no parsing or report logic in
+`d810.diagnostics`.
 
 ## Migration recipe (per command)
 
