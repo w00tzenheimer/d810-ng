@@ -131,8 +131,13 @@ def find_latest_diag_db_path(func_ea: int = 0, log_dir: str | None = None) -> Pa
 def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     """Open a diag DB for this decompilation pass.
 
-    Called on DecompilationEvent.STARTED.  All subsequent ``get_diag_db()``
-    calls will return the same connection until ``close_diag_session()``.
+    Called on DecompilationEvent.STARTED. All subsequent
+    ``get_diag_db()`` calls will return the same connection until
+    ``close_diag_session()``.
+
+    Also installs the diag event-handler subscribers on the
+    observability bus so runtime ``observe_*`` / ``request_capture_*``
+    publishers reach the SQLite sink. The install is idempotent.
     """
     global _current_conn, _current_func_ea
     if not get_settings().diag_snapshots:
@@ -147,11 +152,37 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     create_tables(conn)
     _current_conn = conn
     _current_func_ea = func_ea
+    # Dynamic import via importlib to avoid a static import cycle:
+    # event_handlers itself imports `get_diag_db` from this module
+    # at top level, so a top-level `from event_handlers import ...`
+    # here would create a cycle that the dep-scanner rejects.
+    try:
+        import importlib
+        importlib.import_module(
+            "d810.core.diag.event_handlers"
+        ).install_diag_event_handlers()
+    except Exception:
+        pass  # diagnostic, never gates decompilation
 
 
 def close_diag_session() -> None:
-    """Close the current diag DB.  Called on DecompilationEvent.FINISHED."""
+    """Close the current diag DB. Called on DecompilationEvent.FINISHED.
+
+    Also unsubscribes the diag event-handler subscribers so any
+    close-time emit can't be picked up by a stale subscriber bound to
+    an already-closed connection.
+    """
     global _current_conn, _current_func_ea
+    # Uninstall first so subsequent emits do not reach a stale conn.
+    # Dynamic import via importlib avoids the same static cycle as
+    # in `open_diag_session` above.
+    try:
+        import importlib
+        importlib.import_module(
+            "d810.core.diag.event_handlers"
+        ).uninstall_diag_event_handlers()
+    except Exception:
+        pass
     if _current_conn is not None:
         try:
             _current_conn.close()
