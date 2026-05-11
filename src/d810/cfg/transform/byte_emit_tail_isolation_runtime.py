@@ -945,6 +945,14 @@ class LiveMbaAdapter:
                 f"copy_block failed for template={template_block.serial}"
             )
 
+        # CRITICAL: mba.copy_block may shallow-share nested mop_t objects
+        # between the template and the clone. Break that sharing by
+        # deep-cloning every operand tree in the new anchor.
+        cur_dc = anchor.head
+        while cur_dc is not None:
+            _deepclone_minsn_operands(cur_dc, _ih)
+            cur_dc = cur_dc.next
+
         # Refresh serials post-copy_block (BLT_STOP shifts).
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
@@ -987,15 +995,15 @@ class LiveMbaAdapter:
                             cur.d, offset_delta, _ih,
                             ea=int(getattr(cur, "ea", 0) or 0),
                         )
-                # For the m_shl, add shift_delta to the shift count (cur.r)
-                # so each byte ORs into a unique bit position within the
+                # For ANY m_shl (top-level OR nested inside m_stx's value
+                # tree), add shift_delta to its shift count (m_shl.r) so
+                # each byte ORs into a unique bit position within the
                 # buffer slot.
-                if int(cur.opcode) == int(_ih.m_shl) and shift_delta != 0:
-                    if cur.r is not None:
-                        _wrap_address_with_offset(
-                            cur.r, shift_delta, _ih,
-                            ea=int(getattr(cur, "ea", 0) or 0),
-                        )
+                if shift_delta != 0:
+                    _wrap_all_nested_shifts(
+                        cur, shift_delta, _ih,
+                        ea=int(getattr(cur, "ea", 0) or 0),
+                    )
             else:
                 anchor.make_nop(cur)
             cur = cur.next
@@ -1445,6 +1453,65 @@ def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
         inner = getattr(op, "a", None)
         if inner is not None:
             _dump_mop_tree(inner, f"{label}.a", depth + 1, _ih, max_depth)
+
+
+def _wrap_all_nested_shifts(insn, delta: int, _ih, ea: int = 0) -> None:
+    """Walk an instruction's operand tree recursively; wrap m_shl.r
+    (shift count) with m_add(orig, #delta) for every m_shl encountered.
+
+    Used by byte_store anchors: each cloned anchor has both a top-level
+    m_shl AND a nested m_shl inside the m_stx's value tree. Both need
+    the shift-count offset to make the byte OR into a distinct bit
+    position within the buffer slot.
+    """
+    if insn is None:
+        return
+    if int(getattr(insn, "opcode", -1)) == int(_ih.m_shl):
+        if insn.r is not None:
+            _wrap_address_with_offset(insn.r, delta, _ih, ea=ea)
+    for op_name in ("l", "r", "d"):
+        op = getattr(insn, op_name, None)
+        if op is None:
+            continue
+        if int(getattr(op, "t", -1)) != int(_ih.mop_d):
+            continue
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            _wrap_all_nested_shifts(sub, delta, _ih, ea=ea)
+
+
+def _deepclone_mop(mop, _ih) -> None:
+    """Force a mop_t to have independent content (no shared state).
+
+    Uses an intermediate mop_t to perform a round-trip copy:
+    tmp.assign(mop) deep-copies mop into tmp;
+    mop.assign(tmp) deep-copies tmp back into mop.
+    Net effect: mop's internal state is freshly allocated.
+    """
+    if mop is None:
+        return
+    try:
+        tmp = _ih.mop_t()
+        tmp.assign(mop)
+        mop.assign(tmp)
+    except Exception:
+        return
+    # Recurse into nested sub-instruction's operands.
+    if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
+        sub = getattr(mop, "d", None)
+        if sub is not None:
+            _deepclone_mop(getattr(sub, "l", None), _ih)
+            _deepclone_mop(getattr(sub, "r", None), _ih)
+            _deepclone_mop(getattr(sub, "d", None), _ih)
+
+
+def _deepclone_minsn_operands(insn, _ih) -> None:
+    """Deep-clone all three operands of an instruction (post-copy_block)."""
+    if insn is None:
+        return
+    _deepclone_mop(getattr(insn, "l", None), _ih)
+    _deepclone_mop(getattr(insn, "r", None), _ih)
+    _deepclone_mop(getattr(insn, "d", None), _ih)
 
 
 def _wrap_address_with_offset(op, delta: int, _ih, ea: int = 0) -> bool:
