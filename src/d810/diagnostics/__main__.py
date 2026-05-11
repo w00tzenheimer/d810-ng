@@ -1792,6 +1792,37 @@ def main(argv: list[str] | None = None) -> int:
         help="Snapshot id of the initial pre-D810 state (default: 5)",
     )
 
+    p_reconcile = sub.add_parser(
+        "redirect-reconcile",
+        parents=[common],
+        help=(
+            "Reconcile resolver predictions against live"
+            " dispatcher_trampoline_skip emissions. Reads a diag SQLite +"
+            " d810.log and prints the AGREE_FULL / HCC_DUP / HCC_REGION_* /"
+            " DISAGREE_TARGET / STRATEGY_ONLY_STATE_NOT_IN_BST / BOTH_NONE"
+            " bucket breakdown (uee-32r3 Piece 5.5)."
+        ),
+    )
+    p_reconcile.add_argument(
+        "--log", required=True, help="Path to d810.log",
+    )
+    p_reconcile.add_argument(
+        "--snap-id", type=int, required=True,
+        help="Snapshot ID to reconcile (e.g. MMAT_GLBOPT1 pre_d810)",
+    )
+    p_reconcile.add_argument(
+        "--state-var-stkoff", default="0x3C",
+        help="State variable stack offset (hex). Default 0x3C for sub_7FFD.",
+    )
+    p_reconcile.add_argument(
+        "--min-dispatcher-preds", type=int, default=5,
+        help="Minimum in-degree to count a block as dispatcher region.",
+    )
+    p_reconcile.add_argument(
+        "--show-edges", action="store_true",
+        help="Print every edge with bucket and evidence.",
+    )
+
     p_gate_audit = sub.add_parser(
         "gate-audit",
         help=(
@@ -1854,6 +1885,7 @@ def main(argv: list[str] | None = None) -> int:
         "region-diff",
         "hcc-byte-cascade-trace",
         "terminal-tail-audit",
+        "redirect-reconcile",
     ):
         # region-diff is function-EA-scoped; it resolves its own snap IDs
         # via labels and tolerates a sparse / schemaless diag DB by
@@ -2560,6 +2592,33 @@ def main(argv: list[str] | None = None) -> int:
         print(text, end="")
         conn.close()
         return 0
+
+    elif args.command == "redirect-reconcile":
+        from d810.diagnostics.redirect_reconcile import run_reconcile
+
+        db_path = Path(args.db)
+        log_path = Path(args.log)
+        try:
+            stkoff = int(args.state_var_stkoff, 16)
+        except (TypeError, ValueError):
+            print(
+                f"error: --state-var-stkoff must be a hex literal,"
+                f" got: {args.state_var_stkoff!r}",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 2
+        text = run_reconcile(
+            db_path,
+            log_path,
+            snap_id=args.snap_id,
+            state_var_stkoff=stkoff,
+            min_dispatcher_preds=args.min_dispatcher_preds,
+            show_edges=args.show_edges,
+        )
+        sys.stdout.write(text)
+        conn.close()
+        return 0 if not text.startswith("Error:") else 2
 
     conn.close()
     return 0

@@ -364,6 +364,49 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics redirect-reconcile`.
+
+    Defaults --db to the latest diag SQLite for the worktree and --log to
+    the worktree's d810.log so a fresh `cff-debug dump` followed by
+    `cff-debug reconcile` Just Works.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    log_path = (
+        Path(args.log).expanduser().resolve()
+        if args.log
+        else worktree_log_dir(wt) / "d810.log"
+    )
+    if not log_path.exists():
+        _die(f"reconcile: log not found: {log_path}")
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "redirect-reconcile",
+        "--db", str(db),
+        "--log", str(log_path),
+        "--snap-id", str(args.snap_id),
+        "--state-var-stkoff", args.state_var_stkoff,
+        "--min-dispatcher-preds", str(args.min_dispatcher_preds),
+    ]
+    if args.show_edges:
+        diag_argv.append("--show-edges")
+    print(f"DB={db}", file=sys.stderr)
+    print(f"LOG={log_path}", file=sys.stderr)
+    print(
+        f"cff-debug: reconcile: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_gates(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics gate-audit`.
 
@@ -673,6 +716,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_gates)
+
+    sp = sub.add_parser(
+        "reconcile",
+        help=(
+            "Reconcile resolver predictions against live"
+            " dispatcher_trampoline_skip emissions for the latest diag DB +"
+            " d810.log of the worktree. Wraps `python -m d810.diagnostics"
+            " redirect-reconcile`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument("--log", help="explicit d810.log (default: worktree's d810.log)")
+    sp.add_argument(
+        "--snap-id", type=int, default=5,
+        help="snapshot id to reconcile (default: 5 = MMAT_GLBOPT1 pre_d810)",
+    )
+    sp.add_argument(
+        "--state-var-stkoff", default="0x3C",
+        help="state variable stack offset (hex). Default 0x3C for sub_7FFD.",
+    )
+    sp.add_argument(
+        "--min-dispatcher-preds", type=int, default=5,
+        help="minimum in-degree to count a block as dispatcher region",
+    )
+    sp.add_argument(
+        "--show-edges", action="store_true",
+        help="print every edge with bucket and evidence",
+    )
+    sp.set_defaults(func=cmd_reconcile)
 
     return p
 
