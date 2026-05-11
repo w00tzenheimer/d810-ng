@@ -168,6 +168,7 @@ def _row(
     in_region_table: bool = False,
     raw_candidate: bool = False,
     db_var190_refs: dict[str, int] | None = None,
+    source_eas: tuple[str, ...] = (),
 ) -> ByteCascadeRow:
     return ByteCascadeRow(
         byte=byte,
@@ -185,6 +186,7 @@ def _row(
         preserved_in_insertblock=preserved_in_insertblock,
         first_dropped_stage=first_dropped_stage,
         final_status=final_status,
+        source_eas=source_eas,
         db_var190_refs=db_var190_refs or {},
     )
 
@@ -319,3 +321,174 @@ def test_end_to_end_minimal_log(tmp_path: Path) -> None:
     assert "byte 3: `lost`" in out
     assert "first dropped at `postprocess`" in out
     assert "pre_d810" in out and "post_bundle_stabilize" in out
+
+
+# ---------------------------------------------------------------------------
+# preserved_redirect refinement (snap17 -> snap18 EA cross-check)
+# ---------------------------------------------------------------------------
+
+
+def test_final_status_refined_passthrough_for_non_preserved_redirect() -> None:
+    """The refinement is a no-op for every status other than
+    `preserved_redirect`."""
+    for status in (
+        "preserved_insertblock",
+        "redirected_away",
+        "region_detection_gap",
+        "unmaterialized_original_block",
+        "no_dag_evidence",
+        "lost",
+        "unknown",
+    ):
+        row = _row(byte=2, final_status=status)
+        assert row.final_status_refined == status
+
+
+def test_final_status_refined_leaves_preserved_redirect_when_db_absent() -> None:
+    """If there's no diag-DB enrichment, we can't decide and must keep the
+    original status."""
+    row = _row(byte=3, final_status="preserved_redirect")
+    assert row.final_status_refined == "preserved_redirect"
+
+
+def test_final_status_refined_with_evidence_when_post_d810_has_refs() -> None:
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        db_var190_refs={
+            "pre_d810": 1,
+            "maturity_MMAT_GLBOPT1_post_d810": 1,
+        },
+    )
+    assert row.final_status_refined == "preserved_redirect_with_evidence"
+
+
+def test_final_status_refined_finalization_loss_when_post_d810_is_zero() -> None:
+    row = _row(
+        byte=6, final_status="preserved_redirect",
+        db_var190_refs={
+            "pre_d810": 1,
+            "post_bundle_stabilize": 2,
+            "maturity_MMAT_GLBOPT1_post_d810": 0,
+        },
+    )
+    assert row.final_status_refined == "redirect_only_finalization_loss"
+
+
+def test_final_status_refined_treats_mmat_lvars_as_post_d810() -> None:
+    """``MMAT_LVARS`` snapshots are downstream of optimize_global and count
+    the same way as ``post_d810`` for the refinement decision."""
+    row = _row(
+        byte=4, final_status="preserved_redirect",
+        db_var190_refs={"pre_d810": 1, "MMAT_LVARS_pre_d810": 0},
+    )
+    assert row.final_status_refined == "redirect_only_finalization_loss"
+
+
+def test_final_status_refined_keeps_status_when_no_post_d810_snapshot() -> None:
+    """When the DB doesn't have any snapshot tagged post_d810 / MMAT_LVARS
+    (e.g. a sparse fixture), we can't make the call -- keep the original
+    preserved_redirect verdict instead of falsely promoting/demoting it."""
+    row = _row(
+        byte=5, final_status="preserved_redirect",
+        db_var190_refs={"pre_d810": 1, "post_bundle_stabilize": 1},
+    )
+    assert row.final_status_refined == "preserved_redirect"
+
+
+def test_report_table_shows_refined_status_column() -> None:
+    rows = [
+        _row(
+            byte=3, final_status="preserved_redirect",
+            db_var190_refs={"pre_d810": 1, "post_d810": 0},
+        ),
+        _row(
+            byte=6, final_status="preserved_redirect",
+            db_var190_refs={"pre_d810": 1, "post_d810": 1},
+        ),
+    ]
+    out = format_report(rows)
+    assert "final_refined" in out
+    # byte 3: refined -> redirect_only_finalization_loss (post_d810=0).
+    assert "redirect_only_finalization_loss" in out
+    # byte 6: refined -> preserved_redirect_with_evidence (post_d810>0).
+    assert "preserved_redirect_with_evidence" in out
+
+
+def test_summary_uses_refined_status_for_byte3_loss() -> None:
+    """A `preserved_redirect` row that the refinement reclassifies into
+    `redirect_only_finalization_loss` must appear in the loss summary
+    (it was a false success before)."""
+    rows = [
+        _row(
+            byte=3, final_status="preserved_redirect",
+            first_dropped_stage="-",
+            db_var190_refs={"pre_d810": 1, "post_d810": 0},
+        ),
+    ]
+    out = format_report(rows)
+    assert "byte 3: `redirect_only_finalization_loss`" in out
+    assert "optimize_global DCE" in out
+
+
+def test_summary_skips_refined_preserved_with_evidence() -> None:
+    """A preserved_redirect row that the refinement promotes to
+    `preserved_redirect_with_evidence` must NOT appear in the loss summary."""
+    rows = [
+        _row(
+            byte=6, final_status="preserved_redirect",
+            db_var190_refs={"pre_d810": 1, "post_d810": 1},
+        ),
+    ]
+    out = format_report(rows)
+    # No "### Summary" block since the only row is preserved.
+    assert "byte 6:" not in out.split("### Summary")[-1] or "### Summary" not in out
+
+
+def test_to_dict_emits_refined_status_and_source_eas() -> None:
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        db_var190_refs={"pre_d810": 1, "post_d810": 0},
+        source_eas=("0x180014D10", "0x180014D20"),
+    )
+    payload = row.to_dict()
+    assert payload["final_status_refined"] == "redirect_only_finalization_loss"
+    assert payload["source_eas"] == ["0x180014D10", "0x180014D20"]
+
+
+# ---------------------------------------------------------------------------
+# Parser: source_eas tokenisation
+# ---------------------------------------------------------------------------
+
+
+def test_parse_trace_line_pulls_source_eas() -> None:
+    body = _line(
+        byte=3, block_ea="0x180014D00", block_serial=163, entry_anchor=163,
+        dag_node="STATE_X", in_dag=1, in_corrected_dag=1, in_region_table=0,
+        raw_candidate=1, candidate_rejection="-",
+        accepted_stage="-", emitted_mod="-", preserved_in_insertblock=0,
+        first_dropped_stage="-", final_status="preserved_redirect",
+    )
+    # Tracer emits source_eas after n_evidence and before in_dag; inject it.
+    body = body.replace(
+        "block_ea=0x180014D00",
+        "block_ea=0x180014D00 source_eas=0x180014D10,0x180014D20",
+    )
+    row = parse_trace_line(body)
+    assert row is not None
+    assert row.source_eas == ("0x180014D10", "0x180014D20")
+
+
+def test_parse_trace_line_treats_dash_source_eas_as_empty_tuple() -> None:
+    body = _line(
+        byte=2, block_ea="0x0", block_serial=0, entry_anchor=0,
+        dag_node="?", in_dag=1, in_corrected_dag=1, in_region_table=0,
+        raw_candidate=0, candidate_rejection="-",
+        accepted_stage="-", emitted_mod="-", preserved_in_insertblock=0,
+        first_dropped_stage="-", final_status="region_detection_gap",
+    )
+    body = body.replace(
+        "block_ea=0x0", "block_ea=0x0 source_eas=-",
+    )
+    row = parse_trace_line(body)
+    assert row is not None
+    assert row.source_eas == ()

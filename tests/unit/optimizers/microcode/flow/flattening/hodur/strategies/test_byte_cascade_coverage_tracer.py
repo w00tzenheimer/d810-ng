@@ -685,6 +685,9 @@ def test_record_finalize_emits_grep_rows_and_table(
     assert any("byte=3" in line for line in grep_rows)
     # n_evidence field appears in the row log per the new schema.
     assert any("n_evidence=1" in line for line in grep_rows)
+    # source_eas field exposes the byte's m_stx EAs so the d810.diagnostics
+    # layer can cross-reference snap17 -> snap18 survival per EA.
+    assert any("source_eas=0x0000000180014C10" in line for line in grep_rows)
     table_lines = [line for line in logger.lines if TABLE_LOG_PREFIX in line]
     assert table_lines
     rendered = tracer.render_markdown_table()

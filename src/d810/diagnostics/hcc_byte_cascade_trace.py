@@ -62,8 +62,41 @@ class ByteCascadeRow:
     preserved_in_insertblock: bool
     first_dropped_stage: str
     final_status: str
+    source_eas: tuple[str, ...] = ()
     raw_fields: dict[str, str] = field(default_factory=dict)
     db_var190_refs: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def final_status_refined(self) -> str:
+        """Refine ``preserved_redirect`` using the snap18 var_190 cross-ref.
+
+        Returns the original :attr:`final_status` unchanged for all other
+        statuses, and for ``preserved_redirect`` when no DB enrichment is
+        available (we cannot decide). Otherwise:
+
+        - ``preserved_redirect_with_evidence`` when at least one snapshot
+          whose label contains ``post_d810`` or ``MMAT_LVARS`` has a
+          positive var_190 reference count -- the byte's m_stx read
+          survived IDA's ``optimize_global`` DCE.
+        - ``redirect_only_finalization_loss`` when *every* such snapshot
+          shows zero references -- the redirect routes flow to/through the
+          byte's block but doesn't materialise the byte-write evidence,
+          and IDA finalisation drops it.
+        """
+        if self.final_status != "preserved_redirect":
+            return self.final_status
+        if not self.db_var190_refs:
+            return self.final_status
+        post_d810_counts = [
+            count
+            for label, count in self.db_var190_refs.items()
+            if "post_d810" in label or "MMAT_LVARS" in label
+        ]
+        if not post_d810_counts:
+            return self.final_status
+        if any(count > 0 for count in post_d810_counts):
+            return "preserved_redirect_with_evidence"
+        return "redirect_only_finalization_loss"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +115,8 @@ class ByteCascadeRow:
             "preserved_in_insertblock": self.preserved_in_insertblock,
             "first_dropped_stage": self.first_dropped_stage,
             "final_status": self.final_status,
+            "final_status_refined": self.final_status_refined,
+            "source_eas": list(self.source_eas),
             "db_var190_refs": dict(self.db_var190_refs),
         }
 
@@ -105,6 +140,14 @@ def _coerce_int(value: str) -> int | None:
 def _coerce_bool(value: str) -> bool:
     text = _strip_quotes(value).strip()
     return text in ("1", "true", "True", "yes")
+
+
+def _coerce_ea_list(value: str) -> tuple[str, ...]:
+    """Parse a ``0xA,0xB,0xC`` (or single ``-``) comma-separated EA list."""
+    text = _strip_quotes(value).strip()
+    if text in ("", "-"):
+        return ()
+    return tuple(item.strip() for item in text.split(",") if item.strip())
 
 
 def parse_trace_line(line: str) -> ByteCascadeRow | None:
@@ -146,6 +189,7 @@ def parse_trace_line(line: str) -> ByteCascadeRow | None:
             raw_fields.get("first_dropped_stage", "-")
         ),
         final_status=_strip_quotes(raw_fields.get("final_status", "unknown")),
+        source_eas=_coerce_ea_list(raw_fields.get("source_eas", "-")),
         raw_fields=dict(raw_fields),
     )
 
@@ -224,30 +268,12 @@ def enrich_rows_with_db(
         return list(rows)
     conn = sqlite3.connect(str(db_path))
     try:
+        from dataclasses import replace as _dc_replace
+
         out: list[ByteCascadeRow] = []
         for row in rows:
             refs = _count_var190_refs_per_snapshot(conn, row.byte)
-            out.append(
-                ByteCascadeRow(
-                    byte=row.byte,
-                    block_ea=row.block_ea,
-                    block_serial=row.block_serial,
-                    entry_anchor=row.entry_anchor,
-                    dag_node=row.dag_node,
-                    in_dag=row.in_dag,
-                    in_corrected_dag=row.in_corrected_dag,
-                    in_region_table=row.in_region_table,
-                    raw_candidate=row.raw_candidate,
-                    candidate_rejection=row.candidate_rejection,
-                    accepted_stage=row.accepted_stage,
-                    emitted_mod=row.emitted_mod,
-                    preserved_in_insertblock=row.preserved_in_insertblock,
-                    first_dropped_stage=row.first_dropped_stage,
-                    final_status=row.final_status,
-                    raw_fields=row.raw_fields,
-                    db_var190_refs=refs,
-                )
-            )
+            out.append(_dc_replace(row, db_var190_refs=refs))
         return out
     finally:
         conn.close()
@@ -277,10 +303,13 @@ def format_report(
     header = (
         "| byte | block_ea | in_dag | in_corr | in_region | candidate |"
         " rejection | accepted | emitted | preserved | dropped | final |"
+        " final_refined |"
     )
-    sep = "|-|-|-|-|-|-|-|-|-|-|-|-|"
+    sep = "|-|-|-|-|-|-|-|-|-|-|-|-|-|"
     lines: list[str] = [title, "", header, sep]
     for r in rows:
+        refined = r.final_status_refined
+        refined_cell = "(same)" if refined == r.final_status else refined
         lines.append(
             "| "
             + " | ".join(
@@ -297,6 +326,7 @@ def format_report(
                     "1" if r.preserved_in_insertblock else "0",
                     r.first_dropped_stage or "-",
                     r.final_status,
+                    refined_cell,
                 ]
             )
             + " |"
@@ -341,6 +371,11 @@ _STATUS_TO_NARRATIVE: dict[str, str] = {
     "redirected_away": (
         "block was rewired away by a redirect with no replacement"
     ),
+    "redirect_only_finalization_loss": (
+        "HCC redirected to/through the byte's block, but the redirect"
+        " carries no byte-write evidence; IDA's snap17 -> snap18"
+        " optimize_global DCE'd the read"
+    ),
     "no_dag_evidence": (
         "byte's state node was never seen in HCC's dag / corrected_dag"
         " (likely a recon collector gap)"
@@ -351,18 +386,25 @@ _STATUS_TO_NARRATIVE: dict[str, str] = {
 
 def _summarize_drops(rows: Iterable[ByteCascadeRow]) -> list[str]:
     """Bullet list of bytes that failed to survive, with narrative for the
-    new final-status taxonomy."""
+    refined final-status taxonomy.
+
+    Uses :attr:`ByteCascadeRow.final_status_refined`, so a
+    ``preserved_redirect`` row that the snap17 -> snap18 cross-check
+    reclassifies into ``redirect_only_finalization_loss`` appears in the
+    summary as a real loss rather than a false success.
+    """
     out: list[str] = []
     for r in rows:
-        if r.final_status.startswith("preserved"):
+        status = r.final_status_refined
+        if status.startswith("preserved"):
             continue
         loc = (
             r.first_dropped_stage if r.first_dropped_stage and r.first_dropped_stage != "-"
             else "no_stage_recorded"
         )
-        narrative = _STATUS_TO_NARRATIVE.get(r.final_status, r.final_status)
+        narrative = _STATUS_TO_NARRATIVE.get(status, status)
         bullet = (
-            f"- byte {r.byte}: `{r.final_status}` -- {narrative}; first"
+            f"- byte {r.byte}: `{status}` -- {narrative}; first"
             f" dropped at `{loc}`"
         )
         if r.candidate_rejection and r.candidate_rejection not in ("-", ""):
