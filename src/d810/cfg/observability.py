@@ -47,11 +47,37 @@ def observe_cfg_provenance(
     target_serial: int | None = None,
     reason: str = "",
     extra: dict[str, Any] | None = None,
+    mba: Any | None = None,
     block_label: str | None = None,
     target_label: str | None = None,
     maturity_label: str | None = None,
 ) -> None:
-    """Publish a :class:`CfgProvenanceObserved` event."""
+    """Publish a :class:`CfgProvenanceObserved` event.
+
+    Drop-in replacement for the legacy ``log_cfg_provenance``: accepts
+    the same keyword arguments. When ``mba`` is supplied the helper
+    pre-computes live block / maturity labels (so the event payload
+    stays neutral and the subscriber doesn't need to know about
+    Hex-Rays). Explicit ``block_label`` / ``target_label`` /
+    ``maturity_label`` overrides win over the mba-derived values.
+    """
+    # Live-label resolution (cheap, happens in the producer process).
+    if mba is not None:
+        from d810.cfg.provenance import (
+            _live_block_label,
+            _live_maturity_label,
+            _safe_serial,
+        )
+        block_int = _safe_serial(block_serial)
+        target_int = (
+            _safe_serial(target_serial) if target_serial is not None else None
+        )
+        if block_label is None:
+            block_label = _live_block_label(mba, block_int)
+        if target_label is None and target_int is not None:
+            target_label = _live_block_label(mba, target_int)
+        if maturity_label is None:
+            maturity_label = _live_maturity_label(mba)
     _emit(CfgProvenanceObserved(
         pass_name=str(pass_name),
         action=str(action),

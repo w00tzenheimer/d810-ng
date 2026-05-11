@@ -1900,7 +1900,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 blk.serial,
             )
             try:
-                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="bst_cleanup",
                     action="SEVER_EDGE",
@@ -1935,7 +1935,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                 make_2way_block_goto(blk, keep_serial, verify=False)
                 severed_2way += 1
                 try:
-                    from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+                    from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
                     log_cfg_provenance(
                         pass_name="bst_cleanup",
                         action="REDIRECT_EDGE",
@@ -2008,7 +2008,7 @@ class HodurUnflattener(GenericUnflatteningRule):
                     succ_blk.predset._del(dispatcher_serial)
                     succ_blk.mark_lists_dirty()
                 try:
-                    from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+                    from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
                     log_cfg_provenance(
                         pass_name="bst_cleanup",
                         action="SEVER_EDGE",
@@ -2276,7 +2276,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk.mark_lists_dirty()
             gutted += 1
             try:
-                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="gut_and_wire",
                     action="SOFT_KILL",
@@ -2350,7 +2350,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             blk.mark_lists_dirty()
             redirected += 1
             try:
-                from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
                 log_cfg_provenance(
                     pass_name="gut_and_wire",
                     action="REDIRECT_EDGE",

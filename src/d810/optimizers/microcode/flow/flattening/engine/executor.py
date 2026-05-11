@@ -730,7 +730,7 @@ class TransactionalExecutor:
                 exc_info=True,
             )
         try:
-            from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
+            from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
         except Exception:
             log_cfg_provenance = None
 
