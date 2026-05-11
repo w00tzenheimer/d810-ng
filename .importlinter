@@ -138,7 +138,6 @@ ignore_imports =
     d810.recon.observability -> d810.core.diag
     d810.recon.observability -> d810.core.diag.snapshot
     d810.cfg.observability -> d810.core.diag
-    d810.cfg.observability -> d810.core.diag.snapshot
     d810.hexrays.observability -> d810.core.diag
     d810.hexrays.observability -> d810.core.diag.snapshot
     d810.cfg.provenance -> d810.core.diag
