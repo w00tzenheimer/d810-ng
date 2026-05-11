@@ -1902,11 +1902,21 @@ def main(argv: list[str] | None = None) -> int:
         "d810.cfg.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
 
+    from d810.diagnostics.dump_after import register_parser as _register_dump_after
+
+    _register_dump_after(sub)
+
     args = parser.parse_args(argv)
 
     if not args.command:
         parser.print_help()
         return 1
+
+    # dump-after is a pure text parser; no diag DB connection needed.
+    if args.command == "dump-after":
+        from d810.diagnostics.dump_after import run as _run_dump_after
+
+        return _run_dump_after(args)
 
     # gate-audit reads d810.log only; no diag DB connection needed.
     if args.command == "gate-audit":

@@ -52,8 +52,6 @@ DEFAULT_EXTRAS = [
     "GLBOPT1",
 ]
 
-EXTRACT_AFTER = TOOLS_SCRIPTS_DIR / "extract_after_pseudocode.py"
-INSPECT_STATE = TOOLS_SCRIPTS_DIR / "inspect_linearized_state_node.py"
 DOCKER_RUNNER = TOOLS_SCRIPTS_DIR / "run_system_tests_docker.sh"
 
 
@@ -225,11 +223,29 @@ def cmd_dump(args: argparse.Namespace) -> int:
 
 
 def cmd_after(args: argparse.Namespace) -> int:
-    dump = resolve_dump(args.worktree, args.dump)
-    argv = [sys.executable, str(EXTRACT_AFTER), str(dump)]
+    """Workflow wrapper for `python -m d810.diagnostics dump-after`.
+
+    Resolves the latest dump for the worktree (or honours --dump) and
+    forwards the file path + ``-n`` flag. Parsing lives in
+    ``d810.diagnostics.dump_after``.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    dump = resolve_dump(wt, args.dump)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "dump-after",
+        str(dump),
+    ]
     if args.line_numbers:
-        argv.append("-n")
-    return subprocess.call(argv)
+        diag_argv.append("-n")
+    return subprocess.call(diag_argv, env=env)
 
 
 def cmd_stats(args: argparse.Namespace) -> int:

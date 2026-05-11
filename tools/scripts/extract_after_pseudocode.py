@@ -1,90 +1,37 @@
 #!/usr/bin/env python3
-"""Extract the manual-review pseudocode body from a Hodur dump file.
+"""Compatibility deprecation stub.
 
-This prints the lines between the ``--- AFTER ---`` marker and the following
-``=== STATS:`` block. Pass the dump file path as the positional argument so the
-review target is explicit and never hardcoded.
+Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
+This file forwards to ``python -m d810.diagnostics dump-after`` with the
+same argument shape (positional dump file, ``-n/--line-numbers`` flag).
+To use the new command directly:
+
+    ./tools/cff_debug.py after [--dump DUMP] [-n]
+    PYTHONPATH=src python -m d810.diagnostics dump-after DUMP [-n]
+
+The pure marker parser now lives in ``src/d810/diagnostics/dump_after.py``
+with unit tests under ``tests/unit/diagnostics/test_dump_after.py``.
 """
-
 from __future__ import annotations
 
-import argparse
+import os
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_src = str(REPO_ROOT / "src")
+_env = os.environ.copy()
+_existing = _env.get("PYTHONPATH", "")
+_env["PYTHONPATH"] = f"{_src}:{_existing}" if _existing else _src
 
-START_MARKER = "--- AFTER ---"
-END_MARKER_PREFIX = "=== STATS:"
-
-
-def extract_after_pseudocode(lines: list[str]) -> tuple[int, int]:
-    """Return the [start, end) slice for the AFTER pseudocode body."""
-    start = None
-    end = None
-
-    for index, raw in enumerate(lines):
-        if raw.strip() == START_MARKER:
-            start = index + 1
-            continue
-        if start is not None and raw.startswith(END_MARKER_PREFIX):
-            end = index
-            break
-
-    if start is None:
-        raise ValueError(f"missing start marker: {START_MARKER!r}")
-    if end is None:
-        end = len(lines)
-    return start, end
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Print the AFTER pseudocode body from a Hodur dump file for manual "
-            "review. Reads the region between '--- AFTER ---' and the next "
-            "'=== STATS:' block."
-        ),
-    )
-    parser.add_argument(
-        "dump_file",
-        type=Path,
-        help=(
-            "Path to the Hodur dump file to inspect; the script extracts the "
-            "pseudocode between '--- AFTER ---' and '=== STATS:' from this file"
-        ),
-    )
-    parser.add_argument(
-        "-n",
-        "--line-numbers",
-        action="store_true",
-        help=(
-            "Prefix emitted lines with 1-based dump-file line numbers so manual "
-            "review findings can be traced back into the full artifact"
-        ),
-    )
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    try:
-        lines = args.dump_file.read_text().splitlines()
-        start, end = extract_after_pseudocode(lines)
-    except FileNotFoundError:
-        print(f"error: dump file not found: {args.dump_file}", file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    for line_no in range(start, end):
-        line = lines[line_no]
-        if args.line_numbers:
-            print(f"{line_no + 1}: {line}")
-        else:
-            print(line)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+print(
+    "[deprecated] tools/scripts/extract_after_pseudocode.py migrated to"
+    " d810.diagnostics; forwarding to:"
+    " python -m d810.diagnostics dump-after",
+    file=sys.stderr,
+)
+os.execvpe(
+    sys.executable,
+    [sys.executable, "-m", "d810.diagnostics", "dump-after", *sys.argv[1:]],
+    _env,
+)
