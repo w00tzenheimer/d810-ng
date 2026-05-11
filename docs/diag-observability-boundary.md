@@ -164,3 +164,129 @@ tests/**                          schema / synthetic fixtures
 - No schema / output-shape changes unless strictly required and tested.
 - No deletion of `d810.core.diag`.
 - No mass test relocation.
+
+---
+
+# Event-Refactor Audit (Phase 0, 2026-05-11 follow-on)
+
+The facade re-export pattern from Phases 1-6 keeps runtime call sites
+on stable names but does not actually decouple the dependency graph:
+every facade module ends up importing `d810.core.diag.*` for its
+re-exports, so the `runtime-no-core-diag` import-linter contract has
+to ignore the facade modules to pass. The exception list outnumbers
+the enforcement.
+
+This follow-on plan replaces the facade pattern with a real event /
+observation architecture:
+
+- Runtime publishes domain observation events; no `d810.core.diag`
+  imports anywhere in `d810.{manager,optimizers,recon,cfg,hexrays}`.
+- `d810.core.diag.event_handlers` installs SQLite subscribers that
+  consume the events and write rows.
+- Snapshot ids are mapped from a runtime `SnapshotRef` value by the
+  subscriber, so runtime never holds a SQLite `snapshot_id`.
+
+## Current Direct Imports (2026-05-11 follow-on)
+
+```
+$ rg "from d810\.core\.diag|import d810\.core\.diag" src/d810
+src/d810/cfg/observability.py:from d810.core.diag import (...)
+src/d810/cfg/observability.py:from d810.core.diag.snapshot import (...)
+src/d810/cfg/provenance.py:    from d810.core.diag import register_provenance_drainer
+src/d810/core/diag/__init__.py:from d810.core.diag.schema import create_tables
+src/d810/core/diag/snapshot.py:    from d810.core.diag import drain_lineage_into_snapshot
+src/d810/core/diag/snapshot.py:    from d810.core.diag import drain_pending_provenance
+src/d810/core/diag/snapshot.py:from d810.core.diag.formatting import format_block_id
+src/d810/diagnostics/__main__.py:from d810.core.diag.formatting import format_block_id
+src/d810/hexrays/mba_serializer.py:from d810.core.diag.snapshot import (...)
+src/d810/hexrays/observability.py:from d810.core.diag import (...)
+src/d810/hexrays/observability.py:from d810.core.diag.snapshot import (...)
+src/d810/recon/observability.py:from d810.core.diag import (...)
+src/d810/recon/observability.py:from d810.core.diag.snapshot import (...)
+```
+
+## Event-Refactor Migration Table
+
+| file | current import | new event/API target | status |
+|-|-|-|-|
+| `src/d810/cfg/observability.py` | re-exports from `core.diag` + `core.diag.snapshot` + `core.diag.cfg_provenance` (now `cfg.provenance`) | becomes a thin event-emit shim defined wholly in cfg domain; events go to bus | Phase 2 |
+| `src/d810/cfg/provenance.py` | `register_provenance_drainer` at module load | emits `CfgProvenanceObserved` events on the bus instead of buffering for drain | Phase 5D |
+| `src/d810/core/diag/__init__.py` | self-import (`schema.create_tables`) | unchanged | internal |
+| `src/d810/core/diag/snapshot.py` | self-imports (`formatting`, IoC drains) | unchanged | internal |
+| `src/d810/diagnostics/__main__.py` | `core.diag.formatting.format_block_id` | unchanged (post-hoc CLI) | allowed |
+| `src/d810/hexrays/mba_serializer.py` | `BlockSnapshot`, `InstructionSnapshot` from `core.diag.snapshot` | dataclasses move to `d810.core.observability_models`; serializer imports from there | Phase 7 |
+| `src/d810/hexrays/observability.py` | re-exports `capture_mba_snapshot`, `mba_to_block_snapshots`, session helpers | becomes event-emit module; `capture_mba_snapshot` returns `SnapshotRef`; event payloads carry neutral models | Phase 2 |
+| `src/d810/recon/observability.py` | re-exports `record_*` from `core.diag.snapshot` plus dataclasses | becomes event-emit module; event payloads carry neutral models | Phase 2 |
+
+## Target Architecture
+
+```text
+d810.core.observability         (NEW)
+    SnapshotRef dataclass
+    DiagnosticEventBus (subscribe / emit / reset)
+    no d810.core.diag imports
+
+d810.core.observability_models  (NEW, Phase 7)
+    BlockSnapshot, InstructionSnapshot, DagNode, DagEdge,
+    Modification, ProvenanceEntry, ...
+    no d810.core.diag imports
+
+d810.recon.observability        (REWRITTEN)
+    DagObserved, FactObservationsObserved, RenderedProgramObserved, ...
+    emit helpers
+    no d810.core.diag imports
+
+d810.cfg.observability          (REWRITTEN)
+    CfgProvenanceObserved, WatchBlockTransitionObserved,
+    BlockLineageObserved, ...
+    emit helpers
+    no d810.core.diag imports
+
+d810.hexrays.observability      (REWRITTEN)
+    capture_mba_snapshot(...) -> SnapshotRef | None
+    no d810.core.diag imports
+    delegates serialization to d810.hexrays.mba_serializer (own layer)
+
+d810.core.diag.event_handlers   (NEW)
+    install_diag_event_handlers() / uninstall_diag_event_handlers()
+    SnapshotRef.key -> snapshots.id mapping
+    handlers persist events through existing snapshot_* functions
+    allowed to import core.diag + domain event types
+    handler exceptions caught/logged, never propagated
+
+manager / hexrays.hooks         (UPDATED in Phase 4)
+    install_diag_event_handlers() on diag session open
+    uninstall on close (idempotent)
+
+d810.diagnostics                (UNCHANGED)
+    post-hoc CLI / query / report
+```
+
+## Phase Plan (follow-on)
+
+```text
+Phase 0   Audit + this doc update
+Phase 1   d810.core.observability (event bus + SnapshotRef)
+Phase 2   recon/cfg/hexrays observability rewritten as event emitters
+Phase 3   d810.core.diag.event_handlers (SQLite subscribers)
+Phase 4   manager / hexrays hooks bootstrap subscribers
+Phase 5   migrate call sites from facade re-exports to event APIs
+            5A manager
+            5B recon
+            5C hexrays
+            5D cfg / provenance
+            5E optimizers / HCC
+Phase 6   tighten import-linter: drop facade ignore_imports
+Phase 7   move neutral dataclasses to d810.core.observability_models
+```
+
+## Hard Constraints (follow-on)
+
+- No HCC behavior changes.
+- No byte-cascade behavior changes.
+- No diagnostic schema change unless unavoidable and tested.
+- No parser/report logic in runtime packages.
+- Runtime packages must not import `d810.core.diag`.
+- Observability modules must not import `d810.core.diag`.
+- Diagnostic subscriber failures must be logged/swallowed and must
+  never change optimizer behavior.
