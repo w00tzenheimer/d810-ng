@@ -31,7 +31,7 @@ Invocation: `python -m d810.diagnostics ...` (the legacy
 | `tools/scripts/inspect_linearized_state_node.py` | (kept; small) | `cff_debug.py state` | wrapped |
 | HCC byte-cascade tracer log | `python -m d810.diagnostics hcc-byte-cascade-trace` | `cff_debug.py trace` | done (commit `9165c1b3`) |
 | `tools/scripts/terminal_tail_audit.py` | `python -m d810.diagnostics terminal-tail-audit` | `cff_debug.py byte-audit` | done; old script marked deprecated |
-| `tools/scripts/gate_audit.py` | `python -m d810.diagnostics gate-audit` | `cff_debug.py gates` | TODO |
+| `tools/scripts/gate_audit.py` | `python -m d810.diagnostics gate-audit` | `cff_debug.py gates` | done; old script marked deprecated |
 | `tools/scripts/reconcile_dispatcher_redirects.py` | `python -m d810.diagnostics redirect-reconcile` | `cff_debug.py reconcile` | TODO |
 | `tools/scripts/return_family_ledger.py` | `python -m d810.diagnostics return-ledger` | `cff_debug.py returns` | TODO |
 | `tools/scripts/region_oracle.py` | `python -m d810.diagnostics region-shape/region-diff` (already exists) | `cff_debug.py oracle` | partly done; needs wrapper |
