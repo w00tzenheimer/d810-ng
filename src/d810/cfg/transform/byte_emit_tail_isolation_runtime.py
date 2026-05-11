@@ -961,7 +961,12 @@ class LiveMbaAdapter:
         }
         cur = anchor.head
         patch_count = 0
-        offset_delta = (target_byte_index - template_byte_index) * 8
+        # All anchors write to the same slot as the host (host's slot is
+        # observed by downstream code). To prevent IDA from dedup'ing
+        # consecutive writes-to-same-slot, each anchor's byte goes to a
+        # DIFFERENT bit-position within the slot via a shift delta.
+        offset_delta = 0  # buffer slot offset (same slot)
+        shift_delta = (target_byte_index - template_byte_index) * 8  # bit position
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
                 # Patch byte_index in operand trees.
@@ -980,6 +985,15 @@ class LiveMbaAdapter:
                     if cur.d is not None:
                         _wrap_address_with_offset(
                             cur.d, offset_delta, _ih,
+                            ea=int(getattr(cur, "ea", 0) or 0),
+                        )
+                # For the m_shl, add shift_delta to the shift count (cur.r)
+                # so each byte ORs into a unique bit position within the
+                # buffer slot.
+                if int(cur.opcode) == int(_ih.m_shl) and shift_delta != 0:
+                    if cur.r is not None:
+                        _wrap_address_with_offset(
+                            cur.r, shift_delta, _ih,
                             ea=int(getattr(cur, "ea", 0) or 0),
                         )
             else:
