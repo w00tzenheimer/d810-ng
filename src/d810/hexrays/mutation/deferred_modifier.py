@@ -2742,23 +2742,14 @@ class DeferredGraphModifier:
             if not watch_blocks:
                 return
             try:
-                from d810.cfg.observability import (
-                    get_diag_db,
-                    record_watch_block_transition,
-                )
-                diag_db = get_diag_db(
-                    self.mba.entry_ea if self.mba is not None else 0
-                )
-                if diag_db is None:
-                    return
+                from d810.cfg.observability import observe_watch_block_transition
                 prev_type = prev[0] if prev is not None else None
                 prev_succs = prev[1] if prev is not None else None
                 prev_preds = prev[2] if prev is not None else None
                 now_type = now[0] if now is not None else None
                 now_succs = now[1] if now is not None else None
                 now_preds = now[2] if now is not None else None
-                record_watch_block_transition(
-                    diag_db,
+                observe_watch_block_transition(
                     func_ea=(
                         self.mba.entry_ea if self.mba is not None else 0
                     ),

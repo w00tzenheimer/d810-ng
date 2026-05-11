@@ -290,3 +290,84 @@ Phase 7   move neutral dataclasses to d810.core.observability_models
 - Observability modules must not import `d810.core.diag`.
 - Diagnostic subscriber failures must be logged/swallowed and must
   never change optimizer behavior.
+
+## Phase 5 Migration Status (2026-05-11)
+
+### Migrated (fire-and-forget events, no SnapshotRef threading)
+
+- `src/d810/hexrays/mutation/cfg_mutations.py` (7 sites):
+  `record_cfg_provenance(...)` -> `observe_cfg_provenance(...)`
+- `src/d810/optimizers/microcode/flow/flattening/hodur/unflattener.py`
+  (5 sites): `record_cfg_provenance as log_cfg_provenance` import
+  retargeted to `observe_cfg_provenance as log_cfg_provenance`.
+- `src/d810/optimizers/microcode/flow/flattening/engine/executor.py`
+  (1 site): same import retarget.
+- `src/d810/hexrays/mutation/deferred_modifier.py` (1 site):
+  `record_watch_block_transition(diag_db, ...)` ->
+  `observe_watch_block_transition(...)`. The `diag_db` positional was
+  dropped; subscriber acquires the connection itself.
+
+### Pending (SnapshotRef-threading sites)
+
+The following call sites currently use the legacy
+`record_*(conn, snap_id, ...)` pattern. Migrating them to events
+requires a deeper redesign because the call site needs to thread a
+:class:`SnapshotRef` from the originating
+:func:`request_capture_mba_snapshot` through several intermediaries:
+
+- `src/d810/manager.py` (3 sites):
+  - `_post_d810_capture_handler` forwards a raw diag conn to
+    `recon_runtime.capture_maturity_facts`. Migration requires
+    `capture_maturity_facts` to drop the `diag_conn` parameter and
+    emit `FactObservationsObserved` / `FactMappingsObserved` /
+    `FactConflictsObserved` against a `SnapshotRef` -- which means
+    the manager (or hexrays_hooks) must publish the ref on a path
+    that recon can pick up.
+  - `attach_post_d810_rendered_program` looks up an EXISTING
+    snapshot_id via `SELECT MAX(id) FROM snapshots WHERE ...`. The
+    event API has no equivalent "find me a prior SnapshotRef by
+    func_ea+maturity+phase" lookup; we'd need a "snapshot remember"
+    side-channel.
+  - `validate_post_d810_handoff` is a pure read (calls
+    `detect_post_d810_handoff_violations(diag_db, ...)`) -- a
+    behavior-bridge classification, NOT a capture write.
+- `src/d810/recon/runtime.py` (3 sites in `record_fact_consumers` and
+  `_persist_maturity_facts`): same pattern as manager site 1.
+- `src/d810/recon/microcode_dump.py`
+  (`snapshot_linearized_program`): creates a new snap by calling
+  `record_mba_snapshot` directly, then attaches a rendered program.
+  Pure event flow would use
+  `request_capture_mba_snapshot` + `observe_rendered_program`.
+- `src/d810/hexrays/hooks/hexrays_hooks.py` (pre/post-D810 maturity
+  snapshots): captures via `capture_mba_snapshot` (legacy). Migration
+  to `request_capture_mba_snapshot` requires the manager-side
+  consumers (`attach_post_d810_rendered_program`,
+  `_post_d810_capture_handler`) to switch first, otherwise the
+  returned `SnapshotRef` is lost.
+- `src/d810/hexrays/mutation/deferred_modifier.py`
+  (deferred-apply phase snapshot): captures via
+  `capture_mba_snapshot`; no follow-on observe -- could migrate.
+- `src/d810/optimizers/microcode/flow/flattening/engine/executor.py`
+  (post-fragment snapshot): same as deferred_modifier.
+- `src/d810/optimizers/microcode/flow/flattening/hodur/unflattener.py`
+  (post-gut-and-wire, post-pipeline, intermediate snapshots): same
+  pattern; some are followed by `observe_reachability`-style writes
+  that DO need the `SnapshotRef`.
+- `src/d810/optimizers/microcode/flow/flattening/hodur/_reconstruction_reporting.py`
+  (DAG/modifications/local-facts persistence): full
+  capture+observe flow.
+
+### Behavior bridge
+
+- `src/d810/recon/flow/selected_alternate_edge_override.py` reads
+  alternate-edge diagnostics from the diag DB to drive
+  override decisions. NOT a capture write; will not migrate.
+
+### CFG runtime reads
+
+- `src/d810/cfg/transform/byte_emit_tail_isolation_runtime.py`
+  (`tail_distinct`, `tail_duplicate_convergence`,
+  `tail_state_cascade`): env-gated dev/debug CFG transforms that
+  READ persisted fact data from the diag DB to drive mutations.
+  Behavior-bridge classification; not part of the capture event
+  flow.
