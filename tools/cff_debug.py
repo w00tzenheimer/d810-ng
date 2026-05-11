@@ -364,6 +364,53 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_returns(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics return-ledger`.
+
+    Defaults --db to the latest diag SQLite and --dump to the latest
+    AFTER-pseudocode dump for the worktree, so the wrapper just works
+    after `cff-debug dump`.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    dump_arg: list[str] = []
+    if not args.no_dump:
+        try:
+            dump = (
+                Path(args.dump).expanduser().resolve()
+                if args.dump
+                else latest_dump(wt)
+            )
+        except SystemExit:
+            dump = None
+        if dump is not None:
+            dump_arg = ["--dump", str(dump)]
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable, "-m", "d810.diagnostics", "return-ledger",
+        "--db", str(db),
+        *dump_arg,
+    ]
+    if args.snapshot_id is not None:
+        diag_argv += ["--snapshot-id", str(args.snapshot_id)]
+    if args.list_snapshots:
+        diag_argv.append("--list-snapshots")
+    if args.json_output:
+        diag_argv.append("--json")
+    print(f"DB={db}", file=sys.stderr)
+    if dump_arg:
+        print(f"DUMP={dump_arg[1]}", file=sys.stderr)
+    print(
+        f"cff-debug: returns: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_reconcile(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics redirect-reconcile`.
 
@@ -746,6 +793,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="print every edge with bucket and evidence",
     )
     sp.set_defaults(func=cmd_reconcile)
+
+    sp = sub.add_parser(
+        "returns",
+        help=(
+            "Return-family ledger for the latest diag DB + AFTER pseudocode."
+            " Wraps `python -m d810.diagnostics return-ledger`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--dump", help="explicit Hodur dump file (default: latest in worktree)",
+    )
+    sp.add_argument(
+        "--no-dump", action="store_true",
+        help="don't correlate against AFTER pseudocode (skip dump file lookup)",
+    )
+    sp.add_argument(
+        "--snapshot-id", type=int, default=None,
+        help="explicit snapshot id (default: last pre-gut_and_wire post_apply > 200 blocks)",
+    )
+    sp.add_argument(
+        "--list-snapshots", action="store_true",
+        help="list every snapshot in the DB and exit",
+    )
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable text table",
+    )
+    sp.set_defaults(func=cmd_returns)
 
     return p
 

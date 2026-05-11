@@ -1823,6 +1823,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Print every edge with bucket and evidence.",
     )
 
+    p_return_ledger = sub.add_parser(
+        "return-ledger",
+        parents=[common],
+        help=(
+            "Trace return paths to BLT_STOP: pull return-slot writers,"
+            " v660 family map, VALRANGES, BFS reachability, and correlate"
+            " with AFTER pseudocode returns."
+        ),
+    )
+    p_return_ledger.add_argument(
+        "--dump", type=Path, default=None,
+        help="Optional Hodur dump file (OUTPUT.txt) for AFTER-return correlation.",
+    )
+    p_return_ledger.add_argument(
+        "--snapshot-id", type=int, default=None,
+        help=(
+            "Snapshot id to use; default = last pre-gut_and_wire post_apply"
+            " with > 200 blocks."
+        ),
+    )
+    p_return_ledger.add_argument(
+        "--list-snapshots", action="store_true",
+        help="List every snapshot in the DB and exit.",
+    )
+    p_return_ledger.add_argument(
+        "--json", action="store_true", dest="json_output",
+    )
+
     p_gate_audit = sub.add_parser(
         "gate-audit",
         help=(
@@ -1886,6 +1914,7 @@ def main(argv: list[str] | None = None) -> int:
         "hcc-byte-cascade-trace",
         "terminal-tail-audit",
         "redirect-reconcile",
+        "return-ledger",
     ):
         # region-diff is function-EA-scoped; it resolves its own snap IDs
         # via labels and tolerates a sparse / schemaless diag DB by
@@ -2592,6 +2621,21 @@ def main(argv: list[str] | None = None) -> int:
         print(text, end="")
         conn.close()
         return 0
+
+    elif args.command == "return-ledger":
+        from d810.diagnostics.return_ledger import run_ledger
+
+        db_path = Path(args.db)
+        text = run_ledger(
+            db_path,
+            dump_path=args.dump,
+            snapshot_id=args.snapshot_id,
+            as_json=getattr(args, "json_output", False),
+            list_snapshots_only=args.list_snapshots,
+        )
+        sys.stdout.write(text)
+        conn.close()
+        return 0 if not text.startswith("Error:") else 2
 
     elif args.command == "redirect-reconcile":
         from d810.diagnostics.redirect_reconcile import run_reconcile
