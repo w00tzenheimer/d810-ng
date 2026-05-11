@@ -1823,6 +1823,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Print every edge with bucket and evidence.",
     )
 
+    p_egress = sub.add_parser(
+        "cascade-egress-plan",
+        parents=[common],
+        help=(
+            "Read-only terminal-tail cascade egress plan: resolves"
+            " TerminalByteEmitterFact rows from an earlier fact snapshot"
+            " into a target CFG snapshot (usually post_bundle_stabilize)"
+            " and reports per-byte rewire feasibility."
+        ),
+    )
+    p_egress.add_argument(
+        "--fact-snapshot-id", type=int, default=None,
+        help="Snapshot containing TerminalByteEmitterFact rows (default: auto)",
+    )
+    p_egress.add_argument(
+        "--target-snapshot-id", type=int, default=None,
+        help="CFG snapshot to evaluate, usually post_bundle_stabilize (default: auto)",
+    )
+
     p_return_ledger = sub.add_parser(
         "return-ledger",
         parents=[common],
@@ -1915,6 +1934,7 @@ def main(argv: list[str] | None = None) -> int:
         "terminal-tail-audit",
         "redirect-reconcile",
         "return-ledger",
+        "cascade-egress-plan",
     ):
         # region-diff is function-EA-scoped; it resolves its own snap IDs
         # via labels and tolerates a sparse / schemaless diag DB by
@@ -2621,6 +2641,19 @@ def main(argv: list[str] | None = None) -> int:
         print(text, end="")
         conn.close()
         return 0
+
+    elif args.command == "cascade-egress-plan":
+        from d810.diagnostics.cascade_egress_plan import run_plan
+
+        db_path = Path(args.db)
+        text = run_plan(
+            db_path,
+            fact_snapshot_id=args.fact_snapshot_id,
+            target_snapshot_id=args.target_snapshot_id,
+        )
+        sys.stdout.write(text)
+        conn.close()
+        return 0 if not text.startswith("Error:") else 2
 
     elif args.command == "return-ledger":
         from d810.diagnostics.return_ledger import run_ledger
