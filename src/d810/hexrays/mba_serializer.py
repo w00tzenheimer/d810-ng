@@ -2,11 +2,17 @@
 
 This module contains IDA-dependent helpers that convert a live ``mba_t``
 into a list of :class:`BlockSnapshot` dataclasses suitable for
-:func:`snapshot_mba`.  It is importable from **any** module that has IDA
-available at runtime (hexrays hooks, executor, unflattener, etc.).
+``d810.core.diag.snapshot.snapshot_mba``.  It is importable from any
+hexrays-aware module (hexrays hooks, executor, unflattener, etc.).
 
-IDA imports are guarded so the rest of the ``d810.core.diag`` package
-stays unit-testable without IDA.
+Lives under ``d810.hexrays`` so the live Hex-Rays adaptation stays
+inside the Hex-Rays domain; ``d810.core.diag`` keeps the neutral
+dataclasses (``BlockSnapshot``, ``InstructionSnapshot``) and the
+SQLite sink that consumes them. Runtime callers should normally reach
+this module through ``d810.hexrays.observability.mba_to_block_snapshots``.
+
+IDA imports are guarded so the rest of ``d810.core.diag`` stays
+unit-testable without IDA.
 """
 from __future__ import annotations
 

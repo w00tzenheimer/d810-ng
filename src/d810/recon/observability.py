@@ -52,15 +52,12 @@ from d810.core.diag.snapshot import (
     snapshot_rendered_program as record_rendered_program,
 )
 
-# Live MBA snapshot wrappers are shared with d810.hexrays.observability;
-# recon-side capture sometimes wants the canonical
-# ``snapshot_mba`` + ``mba_to_block_snapshots`` pair to record a recon-
-# triggered snapshot (e.g. inside microcode_dump). The facade exposes
-# them under their recon-friendly names so the recon call sites do not
-# have to reach into the hexrays facade for a recon-domain capture.
-from d810.core.diag.mba_serializer import (
-    mba_to_block_snapshots as mba_to_block_snapshots,
-)
+# Recon-domain code that needs the canonical ``snapshot_mba`` writer
+# imports it through this facade. Live-MBA serialization
+# (``mba_to_block_snapshots``) intentionally lives only in
+# ``d810.hexrays.observability`` -- exposing it here would drag hexrays
+# into every test that imports the recon facade and break the
+# "unit-tests-no-hexrays" import-linter contract.
 from d810.core.diag.snapshot import (
     snapshot_mba as record_mba_snapshot,
 )
@@ -72,7 +69,6 @@ __all__ = [
     "close_capture_session",
     "dag_node_diagnostic_state",
     "get_diag_db",
-    "mba_to_block_snapshots",
     "open_capture_session",
     "record_dag",
     "record_dag_local_facts",

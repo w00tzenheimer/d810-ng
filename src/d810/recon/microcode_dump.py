@@ -1365,9 +1365,9 @@ def snapshot_linearized_program(
 ) -> int | None:
     """Persist a built linearized-program IR into the diag DB."""
     try:
+        from d810.hexrays.observability import mba_to_block_snapshots
         from d810.recon.observability import (
             get_diag_db,
-            mba_to_block_snapshots,
             record_mba_snapshot,
             record_rendered_program,
         )
