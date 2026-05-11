@@ -249,11 +249,16 @@ def _return_edge(block: _BlockView, guard: _GuardView | None) -> int | None:
         return None
     target = _jump_target(guard.insn)
     if target is not None and target in block.succs:
+        if guard.byte_index == 0 and _jump_opcode(guard.insn) == "jnz":
+            for succ in block.succs:
+                if succ != target:
+                    return succ
         return target
     return None
 
 
 _JUMP_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
+_JUMP_OPCODE_RE = re.compile(r"^\s*(?P<opcode>jz|jnz|jcnd)\b", re.IGNORECASE)
 
 
 def _jump_target(insn: _InstructionView) -> int | None:
@@ -264,6 +269,13 @@ def _jump_target(insn: _InstructionView) -> int | None:
         return int(match.group("target"), 10)
     except ValueError:
         return None
+
+
+def _jump_opcode(insn: _InstructionView) -> str | None:
+    match = _JUMP_OPCODE_RE.search(_normal_text(insn.dstr))
+    if match is None:
+        return None
+    return match.group("opcode").lower()
 
 
 def _continuation_edge_for_return(block: _BlockView, return_edge: int | None) -> int | None:

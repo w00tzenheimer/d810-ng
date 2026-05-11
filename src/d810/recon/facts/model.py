@@ -395,6 +395,8 @@ class ValidatedFactView:
             payload = obs.payload or {}
             if payload.get("corridor_role") != "terminal_tail":
                 continue
+            if payload.get("emitter_role") == "guard_only":
+                continue
             destination = payload.get("destination_block")
             block_payload = payload.get("block_serial")
             matched = False
@@ -408,6 +410,50 @@ class ValidatedFactView:
                 except (TypeError, ValueError):
                     continue
             if not matched:
+                continue
+            matches.append(obs)
+        return tuple(matches)
+
+    def terminal_zero_guard_return_sites_for_block(
+        self,
+        block_serial: int,
+    ) -> tuple[FactObservation, ...]:
+        """Return active guard-only terminal-byte facts whose zero-residual
+        return edge is ``block_serial``.
+
+        ``TerminalByteEmitterFact`` uses ``emitter_role == "guard_only"``
+        for the residual-zero guard that should return before any terminal
+        byte emit.  This helper is intentionally separate from
+        :meth:`terminal_byte_emit_sites_for_block`, because the latter
+        protects concrete byte-emitter destinations while this protects the
+        no-byte early-return edge.
+        """
+        try:
+            target = int(block_serial)
+        except (TypeError, ValueError):
+            return ()
+        matches: list[FactObservation] = []
+        for obs in self.active_observations:
+            if obs.kind != "TerminalByteEmitterFact":
+                continue
+            payload = obs.payload or {}
+            if payload.get("corridor_role") != "terminal_tail":
+                continue
+            if payload.get("emitter_role") != "guard_only":
+                continue
+            try:
+                byte_index = int(payload.get("byte_index"))
+            except (TypeError, ValueError):
+                continue
+            if byte_index != 0:
+                continue
+            raw_return_edge = payload.get("return_edge")
+            if raw_return_edge is None:
+                continue
+            try:
+                if int(raw_return_edge) != target:
+                    continue
+            except (TypeError, ValueError):
                 continue
             matches.append(obs)
         return tuple(matches)

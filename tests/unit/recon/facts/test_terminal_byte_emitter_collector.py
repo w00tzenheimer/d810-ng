@@ -264,6 +264,68 @@ def test_collects_guard_only_zero_edge_fact() -> None:
     assert zero_facts[0].payload["family_id"] == "terminal_tail"
 
 
+def test_guard_only_zero_jnz_marks_fallthrough_as_return_edge() -> None:
+    collector = TerminalByteEmitterFactCollector()
+
+    facts = collector.collect(
+        SimpleNamespace(
+            blocks={
+                206: BlockSnapshot(
+                    serial=206,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea=0x180016448,
+                    nsucc=2,
+                    npred=1,
+                    succs=[207, 208],
+                    preds=[204],
+                    instructions=[
+                        _insn(
+                            index=0,
+                            opcode_name="m_jcnd",
+                            dstr="jnz %var_198.8, #0.8, @208",
+                        ),
+                    ],
+                ),
+                208: BlockSnapshot(
+                    serial=208,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea=0x180016465,
+                    nsucc=1,
+                    npred=1,
+                    succs=[132],
+                    preds=[206],
+                    instructions=[
+                        _insn(
+                            index=0,
+                            opcode_name="m_jcnd",
+                            dstr="jnz %var_198.8, #6.8, @132",
+                        ),
+                        _insn(
+                            index=1,
+                            opcode_name="m_stx",
+                            dstr="stx v52[6], ds.1, %var_dst.8",
+                        ),
+                    ],
+                ),
+            }
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    zero_facts = [
+        fact
+        for fact in facts
+        if fact.payload["emitter_role"] == "guard_only"
+    ]
+    assert len(zero_facts) == 1
+    assert zero_facts[0].payload["return_edge"] == 207
+    assert zero_facts[0].payload["continuation_edge"] == 208
+
+
 def test_terminal_family_is_separate_from_non_terminal_byte_emitters() -> None:
     collector = TerminalByteEmitterFactCollector()
 
