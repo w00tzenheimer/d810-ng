@@ -2475,17 +2475,28 @@ def maybe_run_byte_anchor(mba: Any) -> None:
         os.environ.get("D810_TAIL_ANCHOR_LIVE_HOST")
     )
     multi_host = multi_host_explicit if multi_host_explicit is not None else 1
-    active = sum(
-        1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes, store_bytes)
-        if m is not None
+    # byte_store_replica + multi_byte XOR can coexist: byte_store handles
+    # bytes preservable as buffer writes via byte-1 host; multi_byte XOR
+    # captures any remaining bytes (e.g. byte 4) as XOR-chain entries
+    # into the rax slot. Other mechanisms remain mutually exclusive.
+    hybrid_byte_store_xor = (
+        store_bytes is not None and multi_bytes is not None
+        and split_mechanism is None
+        and single_mechanism is None
+        and live_host_byte is None
     )
-    if active > 1:
-        logger.warning(
-            "byte_anchor: multiple anchor-mechanism envs set; refusing."
+    if not hybrid_byte_store_xor:
+        active = sum(
+            1 for m in (split_mechanism, single_mechanism, live_host_byte, multi_bytes, store_bytes)
+            if m is not None
         )
-        return
-    if active == 0:
-        return  # default-off
+        if active > 1:
+            logger.warning(
+                "byte_anchor: multiple anchor-mechanism envs set; refusing."
+            )
+            return
+        if active == 0:
+            return  # default-off
 
     conflicting = [
         n for n in (
@@ -2505,6 +2516,27 @@ def maybe_run_byte_anchor(mba: Any) -> None:
 
     adapter = LiveMbaAdapter(mba)
     try:
+        if hybrid_byte_store_xor:
+            # Run byte_store first so its anchor's m_stx is in place,
+            # then multi_byte XOR appends XOR anchors for the remaining
+            # bytes onto a separate chain (different host successor).
+            host_overrides = parse_byte_host_overrides_env(
+                os.environ.get("D810_TAIL_ANCHOR_HOST_OVERRIDES")
+            )
+            store_report = execute_byte_store_replica_anchor(
+                host_byte_index=multi_host,
+                target_byte_indices=store_bytes,
+                adapter=adapter,
+                host_overrides=host_overrides,
+            )
+            logger.info("byte_anchor[hybrid/store]: %s", store_report)
+            xor_report = execute_multi_byte_live_host_anchor(
+                host_byte_index=multi_host,
+                read_byte_indices=multi_bytes,
+                adapter=adapter,
+            )
+            logger.info("byte_anchor[hybrid/xor]: %s", xor_report)
+            return
         if split_mechanism is not None:
             report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
         elif single_mechanism is not None:
