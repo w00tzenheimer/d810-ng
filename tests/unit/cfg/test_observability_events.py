@@ -112,13 +112,16 @@ def test_observe_with_no_subscriber_is_noop():
 def test_block_lineage_drain_requested_event_is_dispatchable():
     """Just verify the event type can be subscribed and emitted.
 
-    The emit happens from the diag subscriber when it processes a
-    capture event; the producer side just declares the event type.
+    The emit happens from ``snapshot_mba`` after the snapshots row is
+    created; the cfg.block_lineage subscriber drains its buffered rows
+    using the conn + snap_id payload.
     """
     from d810.core.observability import emit as _emit
 
     seen: list[BlockLineageDrainRequested] = []
     subscribe(BlockLineageDrainRequested, seen.append)
-    snap = SnapshotRef(key="k", func_ea=0, label="L", maturity="M", phase="p")
-    _emit(BlockLineageDrainRequested(snapshot=snap))
-    assert seen[0].snapshot is snap
+    fake_conn = object()
+    _emit(BlockLineageDrainRequested(conn=fake_conn, snapshot_id=42))
+    assert seen[0].conn is fake_conn
+    assert seen[0].snapshot_id == 42
+    assert seen[0].snapshot is None

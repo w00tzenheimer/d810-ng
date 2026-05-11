@@ -181,20 +181,13 @@ def reset_pending_provenance() -> None:
         _pending.clear()
 
 
-# Inversion-of-control: register this module's drainer with the
-# core.diag sink at import time so any subsequent ``snapshot_mba`` call
-# can pull buffered entries without core.diag knowing about d810.cfg.
-# `importlib.import_module` keeps the static import graph clean so the
-# runtime-no-core-diag contract has zero ignore_imports.
-try:
-    import importlib as _importlib
-
-    _importlib.import_module(
-        "d810.core.diag"
-    ).register_provenance_drainer(drain_pending_provenance)
-except Exception:
-    pass
-
+# Note: there is no IoC-drainer registration with core.diag any more.
+# All call sites use ``observe_cfg_provenance`` (in
+# ``d810.cfg.observability``); the diag subscriber buffers
+# ``CfgProvenanceObserved`` events and flushes them under the next
+# ``snapshot_mba`` snapshots row. ``log_cfg_provenance`` is still the
+# concrete producer; ``observe_cfg_provenance`` constructs the event
+# payload + emits.
 
 __all__ = [
     "ProvenanceEntry",

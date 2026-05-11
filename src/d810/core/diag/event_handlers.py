@@ -32,7 +32,7 @@ import sqlite3
 import threading
 
 from d810.core import logging as _d810_logging
-from d810.core.diag import drain_lineage_into_snapshot, get_diag_db
+from d810.core.diag import get_diag_db
 from d810.core.diag.snapshot import (
     snapshot_dag,
     snapshot_dag_local_facts,
@@ -135,21 +135,13 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
         phase=snap.phase,
     )
     _bind_snapshot_id(snap, snap_id)
-    # Snapshot_mba already drains any pending cfg.provenance buffer
-    # registered through the legacy IoC hook. Any provenance events that
-    # arrived through our new event bus are flushed here too -- they
-    # share the same "next snapshot" semantics.
+    # Flush any CfgProvenanceObserved events that arrived between the
+    # last snapshot and this one. They share the "next snapshot"
+    # attribution semantics with the legacy IoC drain.
     _flush_pending_provenance(conn, snap_id)
-    # Block lineage drain piggybacks on the snapshot capture so the
-    # planner-owned lineage rows land under the right snapshot_id.
-    try:
-        drain_lineage_into_snapshot(conn, snap_id)
-    except Exception:
-        _logger.exception(
-            "drain_lineage_into_snapshot failed for snap_id=%d", snap_id,
-        )
-    # Notify any observers (e.g. tests) that lineage drain happened.
-    _emit(BlockLineageDrainRequested(snapshot=snap))
+    # Block-lineage drain is fired by snapshot_mba via
+    # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
+    # subscriber writes the rows. No explicit invocation here.
 
 
 def _handle_dag(ev: DagObserved) -> None:

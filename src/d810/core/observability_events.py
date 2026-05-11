@@ -204,15 +204,20 @@ class WatchBlockTransitionObserved:
 
 @dataclass(frozen=True)
 class BlockLineageDrainRequested:
-    """The diag sink finished a capture and ran the lineage drain.
+    """The diag sink is about to flush block-lineage rows.
 
-    Mostly useful for test observability; the producer side does not
-    emit this. The :func:`d810.core.diag.event_handlers._handle_capture_mba`
-    handler emits it after lineage rows are flushed under the new
-    ``snapshot_id``.
+    Emitted by :func:`d810.core.diag.snapshot.snapshot_mba` immediately
+    after the snapshots row is created. ``conn`` and ``snapshot_id``
+    are the live SQLite handle and row id; subscribers (currently
+    :mod:`d810.cfg.block_lineage`) drain their pending buffer and
+    write rows directly. ``snapshot`` is the optional SnapshotRef
+    (``None`` when called from a direct ``snapshot_mba`` invocation
+    outside the event API).
     """
 
-    snapshot: SnapshotRef
+    conn: Any
+    snapshot_id: int
+    snapshot: SnapshotRef | None = None
 
 
 __all__ = [
