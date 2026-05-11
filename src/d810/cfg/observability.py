@@ -5,13 +5,13 @@ This module hosts two layered surfaces:
 1. **Event-based observability API** (the long-term boundary).
    Runtime CFG mutation code constructs ``*Observed`` events and
    publishes them on the :mod:`d810.core.observability` bus. The
-   diag sink subscribes in :mod:`d810.core.diag.event_handlers`; CFG
-   producer code never touches :mod:`d810.core.diag`.
+   diag SQLite backend subscribes via the abstract observability
+   interface; CFG producer code never touches the diag backend.
 
-2. **Legacy capture re-exports** (back-compat). The pre-event facade
-   re-exported ``log_cfg_provenance`` / ``snapshot_watch_transition``
-   etc. so existing call sites compile during the Phase 5
-   per-subsystem migration. Phase 6 removes them.
+2. **Same-layer re-exports**. The producer-side provenance buffer
+   (``drain_pending_provenance`` / ``reset_pending_provenance``)
+   lives in :mod:`d810.cfg.provenance` and is re-exported here so
+   tests and producers can reach it via the facade.
 
 See:
     docs/diag-observability-boundary.md
@@ -137,36 +137,10 @@ def diagnostics_enabled() -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Legacy capture shims (back-compat for runtime sites that need the diag
-# connection directly: byte_emit_tail_isolation_runtime read paths,
-# cfg.block_lineage IoC registration). These wrappers delegate via
-# `importlib.import_module` so the static import graph has ZERO
-# cfg.observability -> d810.core.diag edges. The runtime-no-core-diag
-# import-linter contract therefore needs no ignore_imports entry for
-# this module.
-#
-# The fire-and-forget wrappers (`record_cfg_provenance` /
-# `record_watch_block_transition`) were removed in an earlier commit
-# once every caller migrated to the observe_* event helpers.
-# ---------------------------------------------------------------------------
-
-
-def _diag_module():
-    import importlib
-    return importlib.import_module("d810.core.diag")
-
-
-def get_diag_db(*args, **kwargs):
-    return _diag_module().get_diag_db(*args, **kwargs)
-
-
-def register_lineage_drainer(*args, **kwargs):
-    return _diag_module().register_lineage_drainer(*args, **kwargs)
-
-
 # Producer-facing CFG provenance API stays on d810.cfg.provenance
-# (same layer; no cross-layer import).
+# (same layer; no cross-layer import). Re-exported here so tests and
+# producers that already import from cfg.observability don't have to
+# reach into the producer module directly.
 from d810.cfg.provenance import (
     drain_pending_provenance as drain_pending_provenance,
     reset_pending_provenance as reset_pending_provenance,
@@ -182,9 +156,7 @@ __all__ = [
     "diagnostics_enabled",
     "observe_cfg_provenance",
     "observe_watch_block_transition",
-    # Legacy re-exports retained for non-migrated call sites
+    # Producer-side helpers (re-exports from d810.cfg.provenance)
     "drain_pending_provenance",
-    "get_diag_db",
-    "register_lineage_drainer",
     "reset_pending_provenance",
 ]

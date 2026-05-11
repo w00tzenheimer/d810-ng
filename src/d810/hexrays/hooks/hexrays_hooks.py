@@ -1432,11 +1432,12 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
         try:
-            from d810.hexrays.observability import open_capture_session
-            # open_capture_session opens the diag DB and installs the
-            # event-handler subscribers (idempotent re-installation on
-            # re-decompilation).
-            open_capture_session(int(mba.entry_ea))
+            from d810.core.observability import open_observability_session
+            # open_observability_session opens the diag session
+            # (idempotent re-installation on re-decompilation) by
+            # delegating to the registered backend; nothing here
+            # imports d810.core.diag.
+            open_observability_session(int(mba.entry_ea))
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.STARTED)
@@ -1587,10 +1588,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
         try:
-            from d810.hexrays.observability import close_capture_session
-            # close_capture_session unsubscribes event-handler subscribers
-            # and closes the diag DB.
-            close_capture_session()
+            from d810.core.observability import close_observability_session
+            # close_observability_session unsubscribes event-handler
+            # subscribers and closes the diag DB via the registered
+            # backend; nothing here imports d810.core.diag.
+            close_observability_session()
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.FINISHED)

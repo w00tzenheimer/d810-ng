@@ -25,13 +25,14 @@ Actions (canonical):
 Architecture
 ------------
 
-After Phase 6 of the diag observability boundary plan, the producer side
-(this module) lives in ``d810.cfg`` and the SQLite sink lives in
-``d810.core.diag.snapshot``. The two halves communicate via an
-inversion-of-control hook registered with ``d810.core.diag``
-(``register_provenance_drainer``); core never imports from cfg
-directly. Runtime callers normally reach this API through
-``d810.cfg.observability.record_cfg_provenance``.
+The producer side (this module) lives in ``d810.cfg``. Runtime
+callers reach the API through ``d810.cfg.observability``
+(``observe_cfg_provenance``), which constructs a
+``CfgProvenanceObserved`` event and publishes it on the
+:mod:`d810.core.observability` event bus. A diag backend subscribes
+to that event via the abstract observability interface and persists
+rows under the next captured snapshot; this module never imports the
+diag backend.
 """
 from __future__ import annotations
 
@@ -62,9 +63,9 @@ class ProvenanceEntry:
     extra_json: str | None
 
 
-# Process-level buffer of provenance entries pending flush.
-# ``snapshot_mba`` (via the core.diag IoC drain hook) consumes them and
-# writes one ``cfg_provenance`` row per entry under the new snapshot_id.
+# Process-level buffer of provenance entries pending flush. Retained
+# for direct producer use; production flows route entries through the
+# event bus (``CfgProvenanceObserved``) instead.
 _pending_lock = threading.Lock()
 _pending: list[ProvenanceEntry] = []
 
@@ -166,8 +167,9 @@ def _live_block_label(mba: Any | None, serial: int | None) -> str:
 def drain_pending_provenance() -> list[ProvenanceEntry]:
     """Atomically drain and return the pending provenance buffer.
 
-    Called via the core.diag IoC drain hook (`register_provenance_drainer`)
-    when ``snapshot_mba`` flushes entries under a new snapshot id.
+    Retained for tests that drive the producer directly; production
+    flows publish ``CfgProvenanceObserved`` events through the bus
+    instead, and the diag subscriber owns the flush.
     """
     with _pending_lock:
         out = list(_pending)
@@ -181,13 +183,11 @@ def reset_pending_provenance() -> None:
         _pending.clear()
 
 
-# Note: there is no IoC-drainer registration with core.diag any more.
-# All call sites use ``observe_cfg_provenance`` (in
-# ``d810.cfg.observability``); the diag subscriber buffers
+# All call sites use ``observe_cfg_provenance`` from
+# ``d810.cfg.observability``; the diag subscriber buffers
 # ``CfgProvenanceObserved`` events and flushes them under the next
-# ``snapshot_mba`` snapshots row. ``log_cfg_provenance`` is still the
-# concrete producer; ``observe_cfg_provenance`` constructs the event
-# payload + emits.
+# captured snapshot. ``log_cfg_provenance`` is the concrete producer;
+# ``observe_cfg_provenance`` constructs the event payload and emits.
 
 __all__ = [
     "ProvenanceEntry",
