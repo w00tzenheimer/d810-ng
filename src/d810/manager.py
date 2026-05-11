@@ -537,7 +537,7 @@ class D810Manager:
         if self._recon_runtime is None:
             return
         try:
-            from d810.core.diag import get_diag_db
+            from d810.recon.observability import get_diag_db
 
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
             diag_db = get_diag_db(func_ea)
@@ -626,8 +626,10 @@ class D810Manager:
             return
 
         try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.snapshot import snapshot_rendered_program
+            from d810.recon.observability import (
+                get_diag_db,
+                record_rendered_program,
+            )
             from d810.recon.flow.linearized_state_dag import (
                 BoundaryInlineMode,
                 ProgramCommentMode,
@@ -680,7 +682,7 @@ class D810Manager:
                 boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                 comment_mode=ProgramCommentMode.MINIMAL,
             )
-            snapshot_rendered_program(diag_db, snap_id, program)
+            record_rendered_program(diag_db, snap_id, program)
         except Exception:
             logger.debug("post_d810 rendered program attach failed", exc_info=True)
 
@@ -694,7 +696,7 @@ class D810Manager:
         if snapshot_id is None:
             return
         try:
-            from d810.core.diag import get_diag_db
+            from d810.recon.observability import get_diag_db
 
             diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
             if diag_db is None:
