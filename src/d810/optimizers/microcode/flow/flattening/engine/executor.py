@@ -89,9 +89,11 @@ from d810.recon.microcode_dump import mba_to_human_readable  # compatibility sea
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
 # ---------- MBA-to-BlockSnapshot helper (shared, IDA-dependent) ----------
-# Moved to d810.core.diag.mba_serializer for reuse from hexrays hooks and
-# unflattener.  Local alias kept for backward-compat within this module.
-from d810.core.diag.mba_serializer import mba_to_block_snapshots as _mba_to_block_snapshots
+# Phase 5 of the observability-boundary plan will move the serializer
+# into `d810.hexrays.mba_serializer`. The facade (`mba_to_block_snapshots`
+# from `d810.hexrays.observability`) keeps the call sites stable across
+# that move.
+from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_snapshots
 
 
 def _preflight_priority(mod: GraphModification) -> int:
@@ -585,12 +587,14 @@ class TransactionalExecutor:
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
-            from d810.core.diag import get_diag_db
+            from d810.hexrays.observability import (
+                capture_mba_snapshot,
+                get_diag_db,
+            )
             diag_db = get_diag_db(self.mba.entry_ea)
             if diag_db is not None:
-                from d810.core.diag.snapshot import snapshot_mba
                 snap_blocks = _mba_to_block_snapshots(self.mba)
-                snapshot_mba(
+                capture_mba_snapshot(
                     diag_db,
                     snap_blocks,
                     label=f"{fragment.strategy_name}_post_apply",
@@ -726,7 +730,7 @@ class TransactionalExecutor:
                 exc_info=True,
             )
         try:
-            from d810.core.diag.cfg_provenance import log_cfg_provenance
+            from d810.cfg.observability import record_cfg_provenance as log_cfg_provenance
         except Exception:
             log_cfg_provenance = None
 

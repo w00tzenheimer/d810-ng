@@ -2674,15 +2674,17 @@ class DeferredGraphModifier:
             if not _diag_phases_enabled:
                 return
             try:
-                from d810.core.diag import get_diag_db
-                from d810.core.diag.snapshot import snapshot_mba
-                from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                from d810.hexrays.observability import (
+                    capture_mba_snapshot,
+                    get_diag_db,
+                    mba_to_block_snapshots,
+                )
                 diag_db = get_diag_db(
                     self.mba.entry_ea if self.mba is not None else 0
                 )
                 if diag_db is None:
                     return
-                snapshot_mba(
+                capture_mba_snapshot(
                     diag_db,
                     mba_to_block_snapshots(self.mba),
                     label=f"deferred_apply_{phase_label}",
@@ -2740,8 +2742,10 @@ class DeferredGraphModifier:
             if not watch_blocks:
                 return
             try:
-                from d810.core.diag import get_diag_db
-                from d810.core.diag.snapshot import snapshot_watch_transition
+                from d810.cfg.observability import (
+                    get_diag_db,
+                    record_watch_block_transition,
+                )
                 diag_db = get_diag_db(
                     self.mba.entry_ea if self.mba is not None else 0
                 )
@@ -2753,7 +2757,7 @@ class DeferredGraphModifier:
                 now_type = now[0] if now is not None else None
                 now_succs = now[1] if now is not None else None
                 now_preds = now[2] if now is not None else None
-                snapshot_watch_transition(
+                record_watch_block_transition(
                     diag_db,
                     func_ea=(
                         self.mba.entry_ea if self.mba is not None else 0
