@@ -587,21 +587,14 @@ class TransactionalExecutor:
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
-            from d810.hexrays.observability import (
-                capture_mba_snapshot,
-                get_diag_db,
+            from d810.hexrays.observability import request_capture_mba_snapshot
+            request_capture_mba_snapshot(
+                blocks=_mba_to_block_snapshots(self.mba),
+                label=f"{fragment.strategy_name}_post_apply",
+                func_ea=self.mba.entry_ea,
+                maturity="MMAT_GLBOPT1",
+                phase="post_apply",
             )
-            diag_db = get_diag_db(self.mba.entry_ea)
-            if diag_db is not None:
-                snap_blocks = _mba_to_block_snapshots(self.mba)
-                capture_mba_snapshot(
-                    diag_db,
-                    snap_blocks,
-                    label=f"{fragment.strategy_name}_post_apply",
-                    func_ea=self.mba.entry_ea,
-                    maturity="MMAT_GLBOPT1",
-                    phase="post_apply",
-                )
         except Exception:
             executor_logger.debug(
                 "Diagnostic snapshot failed (non-critical)", exc_info=True,

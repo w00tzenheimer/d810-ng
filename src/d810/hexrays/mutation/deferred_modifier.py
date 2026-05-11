@@ -2674,19 +2674,12 @@ class DeferredGraphModifier:
             if not _diag_phases_enabled:
                 return
             try:
+                from d810.hexrays.mba_serializer import mba_to_block_snapshots
                 from d810.hexrays.observability import (
-                    capture_mba_snapshot,
-                    get_diag_db,
-                    mba_to_block_snapshots,
+                    request_capture_mba_snapshot,
                 )
-                diag_db = get_diag_db(
-                    self.mba.entry_ea if self.mba is not None else 0
-                )
-                if diag_db is None:
-                    return
-                capture_mba_snapshot(
-                    diag_db,
-                    mba_to_block_snapshots(self.mba),
+                request_capture_mba_snapshot(
+                    blocks=mba_to_block_snapshots(self.mba),
                     label=f"deferred_apply_{phase_label}",
                     func_ea=self.mba.entry_ea if self.mba is not None else 0,
                     maturity="MMAT_GLBOPT1",

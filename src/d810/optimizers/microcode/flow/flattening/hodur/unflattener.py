@@ -805,51 +805,45 @@ class HodurUnflattener(GenericUnflatteningRule):
 
             # --- Diagnostic snapshot: MBA + reachability after Gut-and-Wire ---
             try:
+                from d810.hexrays.mba_serializer import mba_to_block_snapshots
                 from d810.hexrays.observability import (
-                    capture_mba_snapshot,
-                    get_diag_db,
-                    mba_to_block_snapshots,
+                    request_capture_mba_snapshot,
                 )
-                from d810.recon.observability import record_reachability
+                from d810.recon.observability import observe_reachability
 
-                diag_db = get_diag_db(self.mba.entry_ea)
-                if diag_db is not None:
-                    # Compute reachable blocks via BFS from block 0
-                    _diag_visited: set[int] = set()
-                    _diag_queue: list[int] = [0]
-                    while _diag_queue:
-                        _ds = _diag_queue.pop(0)
-                        if _ds in _diag_visited or _ds < 0 or _ds >= self.mba.qty:
-                            continue
-                        _diag_visited.add(_ds)
-                        _db = self.mba.get_mblock(_ds)
-                        if _db is not None:
-                            for _di in range(_db.nsucc()):
-                                _diag_queue.append(_db.succ(_di))
+                # Compute reachable blocks via BFS from block 0
+                _diag_visited: set[int] = set()
+                _diag_queue: list[int] = [0]
+                while _diag_queue:
+                    _ds = _diag_queue.pop(0)
+                    if _ds in _diag_visited or _ds < 0 or _ds >= self.mba.qty:
+                        continue
+                    _diag_visited.add(_ds)
+                    _db = self.mba.get_mblock(_ds)
+                    if _db is not None:
+                        for _di in range(_db.nsucc()):
+                            _diag_queue.append(_db.succ(_di))
 
-                    all_serials = set(range(self.mba.qty))
-                    gutted_serials = all_serials - _diag_visited - {self.mba.qty - 1}
+                all_serials = set(range(self.mba.qty))
+                gutted_serials = all_serials - _diag_visited - {self.mba.qty - 1}
 
-                    # Collect claimed_sources from pipeline results metadata
-                    _claimed: set[int] = set()
-                    for _r in results:
-                        _cs = _r.metadata.get("claimed_sources")
-                        if isinstance(_cs, (set, frozenset)):
-                            _claimed |= set(_cs)
+                # Collect claimed_sources from pipeline results metadata
+                _claimed: set[int] = set()
+                for _r in results:
+                    _cs = _r.metadata.get("claimed_sources")
+                    if isinstance(_cs, (set, frozenset)):
+                        _claimed |= set(_cs)
 
-                    # Full MBA snapshot at post_gut_wire phase
-                    _gw_blocks = mba_to_block_snapshots(self.mba)
-                    snap_id = capture_mba_snapshot(
-                        diag_db,
-                        _gw_blocks,
-                        label="post_gut_and_wire",
-                        func_ea=self.mba.entry_ea,
-                        maturity="MMAT_GLBOPT1",
-                        phase="post_gut_wire",
-                    )
-                    record_reachability(
-                        diag_db,
-                        snap_id,
+                snap = request_capture_mba_snapshot(
+                    blocks=mba_to_block_snapshots(self.mba),
+                    label="post_gut_and_wire",
+                    func_ea=self.mba.entry_ea,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_gut_wire",
+                )
+                if snap is not None:
+                    observe_reachability(
+                        snap,
                         all_serials=all_serials,
                         reachable=_diag_visited,
                         bst_serials=bst_serials,
@@ -1273,23 +1267,15 @@ class HodurUnflattener(GenericUnflatteningRule):
     def _capture_post_pipeline_diagnostic_snapshot(self) -> None:
         """Persist a post-pipeline MBA snapshot for recon-only/manual inspection."""
         try:
-            from d810.hexrays.observability import (
-                capture_mba_snapshot as _snap_mba_pl,
-                get_diag_db,
-                mba_to_block_snapshots,
+            from d810.hexrays.mba_serializer import mba_to_block_snapshots
+            from d810.hexrays.observability import request_capture_mba_snapshot
+            request_capture_mba_snapshot(
+                blocks=mba_to_block_snapshots(self.mba),
+                label="post_pipeline",
+                func_ea=self.mba.entry_ea,
+                maturity="MMAT_GLBOPT1",
+                phase="post_pipeline",
             )
-
-            _pl_conn = get_diag_db(self.mba.entry_ea)
-            if _pl_conn is not None:
-                _pl_blocks = mba_to_block_snapshots(self.mba)
-                _snap_mba_pl(
-                    _pl_conn,
-                    _pl_blocks,
-                    label="post_pipeline",
-                    func_ea=self.mba.entry_ea,
-                    maturity="MMAT_GLBOPT1",
-                    phase="post_pipeline",
-                )
         except Exception:
             unflat_logger.debug(
                 "post_pipeline diagnostic snapshot failed (non-critical)",
@@ -1306,19 +1292,10 @@ class HodurUnflattener(GenericUnflatteningRule):
         which pass kills which block.
         """
         try:
-            from d810.hexrays.observability import (
-                capture_mba_snapshot as _snap_mba,
-                get_diag_db,
-                mba_to_block_snapshots,
-            )
-
-            conn = get_diag_db(self.mba.entry_ea)
-            if conn is None:
-                return
-            blocks = mba_to_block_snapshots(self.mba)
-            _snap_mba(
-                conn,
-                blocks,
+            from d810.hexrays.mba_serializer import mba_to_block_snapshots
+            from d810.hexrays.observability import request_capture_mba_snapshot
+            request_capture_mba_snapshot(
+                blocks=mba_to_block_snapshots(self.mba),
                 label=label,
                 func_ea=self.mba.entry_ea,
                 maturity="MMAT_GLBOPT1",
