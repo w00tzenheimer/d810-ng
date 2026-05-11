@@ -45,6 +45,21 @@ static uint64_t hash_buf(const void *p, size_t n) {
     return h;
 }
 
+static uintptr_t g_ref_a3_base, g_ref_a5_base;
+static uintptr_t g_our_a3_base, g_our_a5_base;
+
+#define NORM_A3_TAG 0xA300000000000000ULL
+#define NORM_A5_TAG 0xA500000000000000ULL
+
+static uint64_t norm_ptrish(uint64_t value, int side) {
+    uintptr_t v = (uintptr_t)value;
+    uintptr_t a3 = side == 0 ? g_ref_a3_base : g_our_a3_base;
+    uintptr_t a5 = side == 0 ? g_ref_a5_base : g_our_a5_base;
+    if (v >= a3 && v < a3 + A3_SIZE) return NORM_A3_TAG | (uint64_t)(v - a3);
+    if (v >= a5 && v < a5 + A5_SIZE) return NORM_A5_TAG | (uint64_t)(v - a5);
+    return value;
+}
+
 static int trace_diff(int *first_idx) {
     if (ref_idx != our_idx) {
         *first_idx = (ref_idx < our_idx ? ref_idx : our_idx);
@@ -52,10 +67,10 @@ static int trace_diff(int *first_idx) {
     }
     for (int i = 0; i < ref_idx; i++) {
         if (ref_trace[i].kind != our_trace[i].kind ||
-            ref_trace[i].a    != our_trace[i].a    ||
-            ref_trace[i].b    != our_trace[i].b    ||
-            ref_trace[i].c    != our_trace[i].c    ||
-            ref_trace[i].d    != our_trace[i].d) {
+            norm_ptrish(ref_trace[i].a, 0) != norm_ptrish(our_trace[i].a, 1) ||
+            norm_ptrish(ref_trace[i].b, 0) != norm_ptrish(our_trace[i].b, 1) ||
+            norm_ptrish(ref_trace[i].c, 0) != norm_ptrish(our_trace[i].c, 1) ||
+            norm_ptrish(ref_trace[i].d, 0) != norm_ptrish(our_trace[i].d, 1)) {
             *first_idx = i;
             return 1;
         }
@@ -67,6 +82,16 @@ static void print_event(const char *side, const CallEvent *e) {
     printf("    %s kind=0x%08x a=0x%016lx b=0x%016lx c=0x%016lx d=0x%016lx\n",
            side, e->kind, (unsigned long)e->a, (unsigned long)e->b,
            (unsigned long)e->c, (unsigned long)e->d);
+}
+
+static void dump_trace(const char *side, const CallEvent *trace, int n) {
+    printf("  %s trace (%d events):\n", side, n);
+    for (int i = 0; i < n; i++) {
+        printf("    [%02d] kind=0x%08x a=0x%016lx b=0x%016lx c=0x%016lx d=0x%016lx\n",
+               i, trace[i].kind, (unsigned long)trace[i].a,
+               (unsigned long)trace[i].b, (unsigned long)trace[i].c,
+               (unsigned long)trace[i].d);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -121,6 +146,10 @@ int main(int argc, char **argv) {
         }
         memcpy(a5_ref + 0xD0, &init_v49, 8);
         memcpy(a5_our + 0xD0, &init_v49, 8);
+        g_ref_a3_base = (uintptr_t)a3_buf;
+        g_ref_a5_base = (uintptr_t)a5_ref;
+        g_our_a3_base = (uintptr_t)a3_buf;
+        g_our_a5_base = (uintptr_t)a5_our;
 
         ref_idx = 0; our_idx = 0;
         long long rv_ref = 0, rv_our = 0;
@@ -167,7 +196,7 @@ int main(int argc, char **argv) {
         if (sigsetjmp(g_jmp, 1) == 0) {
             arm_watchdog_ms(50);
             rv_our = sub_7FFD3338C040_OUR(
-                0, 0, a3_buf, 0, (long long)(uintptr_t)a5_our);
+                0, 0, (long long)(uintptr_t)a3_buf, 0, (long long)(uintptr_t)a5_our);
             disarm_watchdog();
         } else {
             disarm_watchdog();
@@ -222,13 +251,17 @@ int main(int argc, char **argv) {
                             print_event("OUR", &our_trace[t_first]);
                     }
                 }
+                if (getenv("EQ_TRACE_FULL") != NULL) {
+                    dump_trace("REF", ref_trace, ref_idx);
+                    dump_trace("OUR", our_trace, our_idx);
+                }
             }
             continue;
         }
 
         int t_first = -1;
         int t_diff = trace_diff(&t_first);
-        int rv_diff = (rv_ref != rv_our);
+        int rv_diff = (norm_ptrish((uint64_t)rv_ref, 0) != norm_ptrish((uint64_t)rv_our, 1));
         int m_diff  = (memcmp(a5_ref, a5_our, A5_SIZE) != 0);
         uint64_t href = hash_buf(a5_ref, A5_SIZE);
         uint64_t hour = hash_buf(a5_our, A5_SIZE);
@@ -257,6 +290,10 @@ int main(int argc, char **argv) {
                     printf("  first divergent event index=%d\n", t_first);
                     if (t_first < ref_idx) print_event("REF", &ref_trace[t_first]);
                     if (t_first < our_idx) print_event("OUR", &our_trace[t_first]);
+                }
+                if (getenv("EQ_TRACE_FULL") != NULL) {
+                    dump_trace("REF", ref_trace, ref_idx);
+                    dump_trace("OUR", our_trace, our_idx);
                 }
             }
         } else {
