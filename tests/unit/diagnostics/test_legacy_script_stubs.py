@@ -44,6 +44,7 @@ def _subprocess_env() -> dict:
         ("reconcile_dispatcher_redirects.py", "redirect-reconcile"),
         ("terminal_tail_cascade_egress_plan.py", "cascade-egress-plan"),
         ("region_oracle.py", "region-diff"),
+        ("extract_after_pseudocode.py", "dump-after"),
     ],
 )
 def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
@@ -74,6 +75,7 @@ def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
         "reconcile_dispatcher_redirects.py",
         "terminal_tail_cascade_egress_plan.py",
         "region_oracle.py",
+        "extract_after_pseudocode.py",
     ],
 )
 def test_wrapper_stub_contains_no_legacy_implementation(script: str) -> None:
