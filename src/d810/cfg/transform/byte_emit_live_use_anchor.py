@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 _ACCUMULATOR_STKOFF = 0x818
 
 _MECHANISM_SPLIT_XOR = "split_xor"
+_MECHANISM_SINGLE_XOR = "single_xor"
 
 
 def parse_byte_anchor_env(value: str | None) -> str | None:
@@ -46,6 +47,23 @@ def parse_byte_anchor_env(value: str | None) -> str | None:
     if text != "1":
         return None
     return _MECHANISM_SPLIT_XOR
+
+
+def parse_single_xor_env(value: str | None) -> str | None:
+    """Parse D810_TAIL_ANCHOR_BYTE6_SINGLE_XOR.
+
+    Returns 'single_xor' iff value (stripped) equals '1'. The single-XOR
+    mechanism inserts only ANCHOR_A (no cancellation pair); the byte 6
+    value remains XOR'd into the rax-bound slot permanently. This is a
+    deliberate Bar A violation that tests whether a non-cancelling XOR
+    survives IDA's optimize_global DCE.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if text != "1":
+        return None
+    return _MECHANISM_SINGLE_XOR
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,5 +181,80 @@ def execute_split_xor_anchor(
         byte_emit_serial=block.serial,
         anchor_a_serial=anchor_a,
         anchor_b_serial=anchor_b,
+        accumulator_stkoff=accumulator_stkoff,
+    )
+
+
+def execute_single_xor_anchor(
+    *,
+    byte_index: int,
+    adapter: Any,
+    accumulator_stkoff: int = _ACCUMULATOR_STKOFF,
+) -> ByteEmitAnchorReport:
+    """Insert ONE anchor block (ANCHOR_A) only -- no cancellation pair.
+
+    The byte 6 value remains XOR'd into the rax-bound slot permanently.
+    Bar A is violated by design; this variant tests whether a
+    non-cancelling XOR survives IDA's optimize_global DCE.
+    """
+    if byte_index != 6:
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=byte_index,
+            mechanism=_MECHANISM_SINGLE_XOR,
+            reason="probe_byte6_only",
+        )
+
+    block = adapter.find_byte_emit_block_by_v190_offset(byte_index)
+    if block is None:
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=byte_index,
+            mechanism=_MECHANISM_SINGLE_XOR,
+            reason="byte_emit_not_resolvable",
+        )
+
+    try:
+        source_operand = adapter.extract_v190_indexed_operand(
+            block.serial, byte_index,
+        )
+    except Exception:  # noqa: BLE001
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=byte_index,
+            mechanism=_MECHANISM_SINGLE_XOR,
+            reason="source_operand_unavailable",
+            byte_emit_serial=block.serial,
+        )
+
+    assert block.succ_serial is not None
+    try:
+        anchor_a = adapter.insert_anchor_block_xor_pair(
+            predecessor_serial=block.serial,
+            successor_serial=block.succ_serial,
+            source_addr_operand=source_operand,
+            accumulator_stkoff=accumulator_stkoff,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "byte_anchor[single]: anchor_a insert failed for block %d",
+            block.serial,
+        )
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=byte_index,
+            mechanism=_MECHANISM_SINGLE_XOR,
+            reason="anchor_insert_failed:a",
+            byte_emit_serial=block.serial,
+        )
+
+    return ByteEmitAnchorReport(
+        applied=True,
+        byte_index=byte_index,
+        mechanism=_MECHANISM_SINGLE_XOR,
+        reason="ok",
+        byte_emit_serial=block.serial,
+        anchor_a_serial=anchor_a,
+        anchor_b_serial=None,
         accumulator_stkoff=accumulator_stkoff,
     )

@@ -15,8 +15,10 @@ from d810.core import logging
 from d810.core.typing import Any, Iterable
 
 from d810.cfg.transform.byte_emit_live_use_anchor import (
+    execute_single_xor_anchor,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
+    parse_single_xor_env,
 )
 from d810.cfg.transform.byte_emit_tail_isolation import (
     BlockView,
@@ -1921,10 +1923,20 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     Any failure is logged and swallowed -- the manager pipeline never
     breaks because of this probe.
     """
-    raw = os.environ.get("D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR")
-    mechanism = parse_byte_anchor_env(raw)
-    if mechanism is None:
-        return  # default-off: no log, no mutation
+    split_mechanism = parse_byte_anchor_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR")
+    )
+    single_mechanism = parse_single_xor_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_SINGLE_XOR")
+    )
+    if split_mechanism is not None and single_mechanism is not None:
+        logger.warning(
+            "byte_anchor: both split_xor and single_xor envs set; "
+            "refusing to run either."
+        )
+        return
+    if split_mechanism is None and single_mechanism is None:
+        return  # default-off
 
     conflicting = [
         n for n in (
@@ -1944,7 +1956,10 @@ def maybe_run_byte_anchor(mba: Any) -> None:
 
     adapter = LiveMbaAdapter(mba)
     try:
-        report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
+        if split_mechanism is not None:
+            report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
+        else:
+            report = execute_single_xor_anchor(byte_index=6, adapter=adapter)
     except Exception:
         logger.exception("byte_anchor: unexpected failure; continuing")
         return
