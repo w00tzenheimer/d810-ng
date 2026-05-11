@@ -126,6 +126,8 @@ class DispatcherTrampolineSkipStrategy:
         owned_blocks: set[int] = set()
         skip_count: int = 0
         skipped_return_carrier_const_feed: int = 0
+        skipped_direct_use_def_veto: int = 0
+        cumulative_view = getattr(snapshot, "cumulative_planner_view", None)
 
         for i in range(mba.qty):
             blk = mba.get_mblock(i)
@@ -133,6 +135,21 @@ class DispatcherTrampolineSkipStrategy:
                 continue
             serial = int(blk.serial)
             if serial in bst_node_blocks:
+                continue
+            if (
+                cumulative_view is not None
+                and callable(
+                    getattr(cumulative_view, "is_direct_use_def_vetoed", None)
+                )
+                and cumulative_view.is_direct_use_def_vetoed(serial)
+            ):
+                logger.info(
+                    "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO "
+                    "source=blk[%d] old_target=blk[%d]",
+                    serial,
+                    bst_root_serial,
+                )
+                skipped_direct_use_def_veto += 1
                 continue
             if blk.nsucc() != 1:
                 continue
@@ -167,6 +184,12 @@ class DispatcherTrampolineSkipStrategy:
             tgt_blk = mba.get_mblock(target_serial)
             if tgt_blk is None:
                 continue
+
+            modification = builder.goto_redirect(
+                source_block=serial,
+                target_block=target_serial,
+                old_target=bst_root_serial,
+            )
 
             # Return-carrier const-feed gate.  Only fact-rooted, never
             # heuristic.  ``bst_root_serial`` is, by construction, the
@@ -215,13 +238,7 @@ class DispatcherTrampolineSkipStrategy:
                 skipped_return_carrier_const_feed += 1
                 continue
 
-            modifications.append(
-                builder.goto_redirect(
-                    source_block=serial,
-                    target_block=target_serial,
-                    old_target=bst_root_serial,
-                )
-            )
+            modifications.append(modification)
             owned_blocks.add(serial)
             skip_count += 1
             logger.info(
@@ -239,6 +256,11 @@ class DispatcherTrampolineSkipStrategy:
             "DispatcherTrampolineSkip: skipped %d redirects rejected by "
             "return-carrier const-feed gate",
             skipped_return_carrier_const_feed,
+        )
+        logger.info(
+            "DispatcherTrampolineSkip: skipped %d redirects rejected by "
+            "prior direct use-def vetoes",
+            skipped_direct_use_def_veto,
         )
 
         if not modifications:
