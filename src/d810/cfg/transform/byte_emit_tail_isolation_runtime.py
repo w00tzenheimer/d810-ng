@@ -15,9 +15,11 @@ from d810.core import logging
 from d810.core.typing import Any, Iterable
 
 from d810.cfg.transform.byte_emit_live_use_anchor import (
+    execute_live_host_anchor,
     execute_single_xor_anchor,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
+    parse_live_host_env,
     parse_single_xor_env,
 )
 from d810.cfg.transform.byte_emit_tail_isolation import (
@@ -1929,13 +1931,19 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     single_mechanism = parse_single_xor_env(
         os.environ.get("D810_TAIL_ANCHOR_BYTE6_SINGLE_XOR")
     )
-    if split_mechanism is not None and single_mechanism is not None:
+    live_host_byte = parse_live_host_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_LIVE_HOST")
+    )
+    active = sum(
+        1 for m in (split_mechanism, single_mechanism, live_host_byte)
+        if m is not None
+    )
+    if active > 1:
         logger.warning(
-            "byte_anchor: both split_xor and single_xor envs set; "
-            "refusing to run either."
+            "byte_anchor: multiple anchor-mechanism envs set; refusing."
         )
         return
-    if split_mechanism is None and single_mechanism is None:
+    if active == 0:
         return  # default-off
 
     conflicting = [
@@ -1958,8 +1966,14 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     try:
         if split_mechanism is not None:
             report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
-        else:
+        elif single_mechanism is not None:
             report = execute_single_xor_anchor(byte_index=6, adapter=adapter)
+        else:
+            report = execute_live_host_anchor(
+                host_byte_index=int(live_host_byte),
+                read_byte_index=6,
+                adapter=adapter,
+            )
     except Exception:
         logger.exception("byte_anchor: unexpected failure; continuing")
         return
