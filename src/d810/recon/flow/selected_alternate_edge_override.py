@@ -248,19 +248,38 @@ def _gated_overrides(
 
 def apply_selected_alternate_edge_overrides_from_diag(
     dag,
-    diag_db: sqlite3.Connection | None,
-    snap_id: int | None,
+    snap_ref,
 ):
     """Substitute collapsed terminal-tail edges with their selected
     alternate's reached state.
 
-    See module docstring for gates.  Returns the same ``dag`` object
+    See module docstring for gates. Returns the same ``dag`` object
     when no override fires; otherwise returns a NEW
     :class:`LinearizedStateDag` (frozen) with the affected edges
     rebuilt via ``dataclasses.replace``.
+
+    ``snap_ref`` is a :class:`d810.core.observability.SnapshotRef` from
+    a prior :func:`request_capture_mba_snapshot`. The bridge resolves
+    it to the live diag connection and the SQLite snapshots row id via
+    the event-handler mapping; both are required to read the
+    just-written ``dag_edges`` rows.
     """
     if not _fact_lifecycle_enabled():
         return dag
+    if snap_ref is None:
+        return dag
+
+    # Resolve (conn, snap_id) via the diag event-handler mapping.
+    # importlib avoids a static cycle: this module lives in d810.recon
+    # and the resolver lives in d810.core.diag.
+    import importlib
+    try:
+        handlers = importlib.import_module("d810.core.diag.event_handlers")
+        diag_db = handlers._conn_for(snap_ref)
+        snap_id = handlers._resolve_snapshot_id(snap_ref)
+    except Exception:
+        diag_db = None
+        snap_id = None
     if diag_db is None or snap_id is None:
         return dag
 

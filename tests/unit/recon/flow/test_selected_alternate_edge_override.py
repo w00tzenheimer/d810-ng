@@ -1,6 +1,7 @@
 """Tests for selected-alternate edge override."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from d810.cfg.state_dag_key import StateDagNodeKey
 from d810.core.diag.schema import create_tables
+from d810.core.observability import SnapshotRef
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
@@ -20,6 +22,27 @@ from d810.recon.flow.linearized_state_dag import (
 from d810.recon.flow.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides_from_diag,
 )
+
+
+_TEST_SNAP = SnapshotRef(
+    key="bridge-test",
+    func_ea=0x180012DF0,
+    label="recon_dag",
+    maturity="MMAT_GLBOPT1",
+    phase="pre_d810",
+)
+
+
+@contextlib.contextmanager
+def _bridge_resolves_to(conn: sqlite3.Connection | None, snap_id: int | None):
+    """Patch the event-handler resolvers so the bridge uses ``conn`` /
+    ``snap_id`` for ``_TEST_SNAP``."""
+    with patch(
+        "d810.core.diag.event_handlers._conn_for", return_value=conn,
+    ), patch(
+        "d810.core.diag.event_handlers._resolve_snapshot_id", return_value=snap_id,
+    ):
+        yield
 
 
 def _make_node(
@@ -252,19 +275,16 @@ def test_no_op_when_env_disabled() -> None:
     create_tables(conn)
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": ""}, clear=False):
-        result = apply_selected_alternate_edge_overrides_from_diag(
-            dag, conn, 1,
-        )
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": ""}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     assert result is dag
 
 
 def test_no_op_when_diag_missing() -> None:
     dag = _make_byte5_dag()
     with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False):
-        assert apply_selected_alternate_edge_overrides_from_diag(
-            dag, None, None,
-        ) is dag
+        assert apply_selected_alternate_edge_overrides_from_diag(dag, None) is dag
 
 
 def test_no_op_when_no_selected_rows() -> None:
@@ -282,10 +302,9 @@ def test_no_op_when_no_selected_rows() -> None:
     )
     conn.commit()
     dag = _make_byte5_dag()
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False):
-        result = apply_selected_alternate_edge_overrides_from_diag(
-            dag, conn, 1,
-        )
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     assert result is dag
 
 
@@ -296,10 +315,9 @@ def test_replaces_byte5_collapsed_edge() -> None:
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
 
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False):
-        new_dag = apply_selected_alternate_edge_overrides_from_diag(
-            dag, conn, 1,
-        )
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        new_dag = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
 
     assert new_dag is not dag, (
         "expected a NEW dag (frozen dataclass replace)"
@@ -338,10 +356,9 @@ def test_abstain_on_value_mapping_miss() -> None:
     )
     dag = _make_dag(nodes, edges)
 
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False):
-        result = apply_selected_alternate_edge_overrides_from_diag(
-            dag, conn, 1,
-        )
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     # Helper falls back to (src_hex, tgt_hex, None) when source_block
     # doesn't match -- in the gated map the key is
     # (src, tgt, source_block=100).  None-fallback also misses ->
@@ -368,8 +385,7 @@ def test_abstain_when_reached_state_has_no_node() -> None:
     )
     dag = _make_dag(nodes, edges)
 
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False):
-        result = apply_selected_alternate_edge_overrides_from_diag(
-            dag, conn, 1,
-        )
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     assert result is dag

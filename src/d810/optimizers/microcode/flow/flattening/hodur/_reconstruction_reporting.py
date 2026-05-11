@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.observability import SnapshotRef
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 
 
@@ -11,13 +12,12 @@ class SnapshotReconstructionResult:
 
     ``persisted`` is ``True`` only when the snapshot landed in the
     diagnostic DB without raising.  Consumers (e.g. the selected-
-    alternate edge override helper) need both ``diag_db`` and
-    ``snap_id`` to read the just-written ``dag_edges`` rows; on any
-    failure both are ``None`` so callers can no-op cleanly.
+    alternate edge override helper) carry the ``snap_ref`` through the
+    bridge to look up the just-written ``dag_edges`` rows; on any
+    failure ``snap_ref`` is ``None`` so callers can no-op cleanly.
     """
 
-    diag_db: object | None
-    snap_id: int | None
+    snap_ref: SnapshotRef | None
     persisted: bool
 
 
@@ -29,27 +29,23 @@ def snapshot_reconstruction_dag(
     strategy_name: str,
 ) -> SnapshotReconstructionResult:
     try:
+        from d810.hexrays.observability import request_capture_mba_snapshot
         from d810.recon.observability import (
             DagEdge,
             DagNode,
             dag_node_diagnostic_state,
-            get_diag_db,
-            record_dag,
-            record_dag_local_facts,
-            record_mba_snapshot,
+            observe_dag,
+            observe_dag_local_facts,
         )
-        diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-        if diag_db is not None:
+        snap_ref = request_capture_mba_snapshot(
+            blocks=[],
+            label=f"{strategy_name}_state_write_reconstruction_dag",
+            func_ea=mba.entry_ea if mba is not None else 0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+        if snap_ref is not None:
             import json as _json
-
-            snap_id = record_mba_snapshot(
-                diag_db,
-                [],
-                label=f"{strategy_name}_state_write_reconstruction_dag",
-                func_ea=mba.entry_ea if mba is not None else 0,
-                maturity="MMAT_GLBOPT1",
-                phase="post_apply",
-            )
 
             dag_nodes = []
             for node in dag.nodes:
@@ -75,11 +71,10 @@ def snapshot_reconstruction_dag(
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            record_dag(diag_db, snap_id, dag_nodes, dag_edges)
-            record_dag_local_facts(diag_db, snap_id, dag)
+            observe_dag(snap_ref, dag_nodes, dag_edges)
+            observe_dag_local_facts(snap_ref, dag)
             return SnapshotReconstructionResult(
-                diag_db=diag_db,
-                snap_id=int(snap_id),
+                snap_ref=snap_ref,
                 persisted=True,
             )
     except Exception:
@@ -88,8 +83,7 @@ def snapshot_reconstruction_dag(
             exc_info=True,
         )
     return SnapshotReconstructionResult(
-        diag_db=None,
-        snap_id=None,
+        snap_ref=None,
         persisted=False,
     )
 
@@ -103,29 +97,25 @@ def snapshot_reconstruction_post_apply(
     strategy_name: str,
 ) -> None:
     try:
+        from d810.hexrays.observability import request_capture_mba_snapshot
         from d810.recon.observability import (
             DagEdge,
             DagNode,
             Modification,
             dag_node_diagnostic_state,
-            get_diag_db,
-            record_dag,
-            record_dag_local_facts,
-            record_mba_snapshot,
-            record_modifications,
+            observe_dag,
+            observe_dag_local_facts,
+            observe_modifications,
         )
-        diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-        if diag_db is not None:
+        snap_ref = request_capture_mba_snapshot(
+            blocks=[],
+            label=f"{strategy_name}_state_write_reconstruction_post_apply",
+            func_ea=mba.entry_ea if mba is not None else 0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+        if snap_ref is not None:
             import json as _json
-
-            snap_id = record_mba_snapshot(
-                diag_db,
-                [],
-                label=f"{strategy_name}_state_write_reconstruction_post_apply",
-                func_ea=mba.entry_ea if mba is not None else 0,
-                maturity="MMAT_GLBOPT1",
-                phase="post_apply",
-            )
 
             dag_nodes = []
             for node in dag.nodes:
@@ -151,8 +141,8 @@ def snapshot_reconstruction_post_apply(
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            record_dag(diag_db, snap_id, dag_nodes, dag_edges)
-            record_dag_local_facts(diag_db, snap_id, dag)
+            observe_dag(snap_ref, dag_nodes, dag_edges)
+            observe_dag_local_facts(snap_ref, dag)
 
             mod_snapshots = []
             for midx, mod in enumerate(modifications):
@@ -222,7 +212,7 @@ def snapshot_reconstruction_post_apply(
                     status="emitted",
                 ))
 
-            record_modifications(diag_db, snap_id, mod_snapshots)
+            observe_modifications(snap_ref, mod_snapshots)
     except Exception:
         logger.warning(
             "Diagnostic DAG/modifications snapshot failed (non-critical)",
