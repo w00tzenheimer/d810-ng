@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from d810.core.diag.bst_resolution import (
+from d810.recon.flow.bst_resolution import (
     BstInterval,
     parse_bst_intervals,
     persist_bst_resolutions,

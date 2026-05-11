@@ -53,7 +53,7 @@ from d810.recon.flow.alternate_selection import (
     persist_alternate_selections,
     select_alternate_edges,
 )
-from d810.core.diag.bst_resolution import (
+from d810.recon.flow.bst_resolution import (
     BstResolution,
     parse_bst_intervals,
     parse_latest_bst_intervals_from_log,
