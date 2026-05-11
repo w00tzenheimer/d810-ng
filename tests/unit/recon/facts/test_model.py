@@ -372,6 +372,21 @@ def test_terminal_byte_emit_sites_for_block_filters_by_role_and_destination() ->
             "block_serial": 143,
         },
     )
+    terminal_tail_guard_only = FactObservation(
+        fact_id="byte_emit:terminal_tail_guard_only",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:terminal_tail_guard_only:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "destination_block": 143,
+            "block_serial": 143,
+        },
+    )
     other_block = FactObservation(
         fact_id="byte_emit:other_block",
         kind="TerminalByteEmitterFact",
@@ -388,7 +403,13 @@ def test_terminal_byte_emit_sites_for_block_filters_by_role_and_destination() ->
     )
     view = ValidatedFactView(
         maturity="MMAT_GLBOPT1",
-        observations=(terminal_match, non_terminal, guard_only, other_block),
+        observations=(
+            terminal_match,
+            non_terminal,
+            guard_only,
+            terminal_tail_guard_only,
+            other_block,
+        ),
     )
 
     sites = view.terminal_byte_emit_sites_for_block(143)
@@ -432,6 +453,65 @@ def test_terminal_byte_emit_sites_for_block_excludes_stale_facts() -> None:
     )
 
     assert view.terminal_byte_emit_sites_for_block(143) == ()
+
+
+def test_terminal_zero_guard_return_sites_for_block_filters_by_return_successor() -> None:
+    matching = FactObservation(
+        fact_id="byte_emit:zero_guard",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:zero_guard:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "destination_block": 206,
+            "block_serial": 206,
+            "return_edge": 207,
+            "continuation_edge": 208,
+        },
+    )
+    concrete_emit = FactObservation(
+        fact_id="byte_emit:byte6",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:byte6:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "byte_index": 6,
+            "destination_block": 217,
+            "block_serial": 217,
+            "return_edge": None,
+        },
+    )
+    wrong_successor = FactObservation(
+        fact_id="byte_emit:wrong_successor",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:wrong_successor:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "return_edge": 300,
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(matching, concrete_emit, wrong_successor),
+    )
+
+    sites = view.terminal_zero_guard_return_sites_for_block(207)
+
+    assert len(sites) == 1
+    assert sites[0].fact_id == "byte_emit:zero_guard"
+    assert view.terminal_zero_guard_return_sites_for_block("bad") == ()  # type: ignore[arg-type]
 
 
 def test_stale_return_carrier_hazards_ignore_unrelated_or_incomplete_fact() -> None:
