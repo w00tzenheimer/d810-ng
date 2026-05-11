@@ -1792,6 +1792,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Snapshot id of the initial pre-D810 state (default: 5)",
     )
 
+    p_gate_audit = sub.add_parser(
+        "gate-audit",
+        help=(
+            "Parse d810 debug logs and produce a gate outcome summary report."
+            " Exit code 0 if zero untracked bypasses, 1 otherwise."
+        ),
+    )
+    p_gate_audit.add_argument(
+        "log_path",
+        nargs="?",
+        default=None,
+        help=(
+            "Path to a log file or directory containing *.log files. Defaults"
+            " to ~/.idapro/logs/d810_logs/"
+        ),
+    )
+    p_gate_audit.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on ANY bypass, not just untracked ones.",
+    )
+    p_gate_audit.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output machine-readable JSON instead of a text table.",
+    )
+
     importlib.import_module(
         "d810.cfg.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
@@ -1801,6 +1829,20 @@ def main(argv: list[str] | None = None) -> int:
     if not args.command:
         parser.print_help()
         return 1
+
+    # gate-audit reads d810.log only; no diag DB connection needed.
+    if args.command == "gate-audit":
+        from d810.diagnostics.gate_audit import run_audit as _gate_run_audit
+
+        default_log_dir = Path.home() / ".idapro" / "logs" / "d810_logs"
+        log_path = Path(args.log_path) if args.log_path else default_log_dir
+        text, rc = _gate_run_audit(
+            log_path,
+            strict=args.strict,
+            as_json=args.json_output,
+        )
+        sys.stdout.write(text)
+        return rc
 
     conn = sqlite3.connect(args.db)
     # region-shape is function-EA-scoped, not snapshot-scoped; the rows

@@ -364,6 +364,42 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_gates(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics gate-audit`.
+
+    Defaults the log path to the worktree's ``d810_logs/`` directory so the
+    wrapper picks up whatever the last dump produced. Performs no parsing
+    of its own.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    if args.log_path:
+        log_path = Path(args.log_path).expanduser().resolve()
+    else:
+        log_path = worktree_log_dir(wt)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "gate-audit",
+        str(log_path),
+    ]
+    if args.strict:
+        diag_argv.append("--strict")
+    if args.json_output:
+        diag_argv.append("--json")
+    print(f"LOG_PATH={log_path}", file=sys.stderr)
+    print(
+        f"cff-debug: gates: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_byte_audit(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics terminal-tail-audit`.
 
@@ -583,9 +619,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "byte-audit",
         help=(
-            "Audit TerminalByteEmitterFact rows in the latest diag DB: byte_emit[k]"
-            " timeline + first-loss report. Wraps"
-            " `python -m d810.diagnostics terminal-tail-audit`."
+            "Audit TerminalByteEmitterFact rows in the latest diag DB:"
+            " intermediate-snapshot loss localization is ON by default --"
+            " this is the report you usually want for snap17 -> snap18 DCE"
+            " analysis. Wraps `python -m d810.diagnostics terminal-tail-audit`."
         ),
     )
     _add_worktree(sp)
@@ -595,14 +632,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="print every observation with snap/maturity/phase/role/src_form",
     )
     sp.add_argument(
-        "--localize", action="store_true",
-        help="run intermediate-snapshot loss localization (GLBOPT1 only)",
+        "--localize", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "run intermediate-snapshot loss localization (default: True;"
+            " pass --no-localize to print only the bare timeline). The bare"
+            " timeline often prints `survives_pipeline` for bytes that are"
+            " actually DCE'd between snap17 and snap18 by IDA's"
+            " optimize_global -- you want --localize for that case."
+        ),
     )
     sp.add_argument(
         "--initial-snap-id", type=int, default=5,
         help="snapshot id of the initial pre-D810 state (default: 5)",
     )
     sp.set_defaults(func=cmd_byte_audit)
+
+    sp = sub.add_parser(
+        "gates",
+        help=(
+            "Audit gate outcomes from the worktree's d810.log (or an explicit"
+            " log path). Wraps `python -m d810.diagnostics gate-audit`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument(
+        "log_path",
+        nargs="?",
+        default=None,
+        help=(
+            "Path to a log file or directory containing *.log files. Default:"
+            " the worktree's d810_logs/ directory."
+        ),
+    )
+    sp.add_argument(
+        "--strict", action="store_true",
+        help="fail on ANY bypass, not just untracked ones",
+    )
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable text table",
+    )
+    sp.set_defaults(func=cmd_gates)
 
     return p
 

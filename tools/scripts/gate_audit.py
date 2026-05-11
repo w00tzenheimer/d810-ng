@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Post-hoc gate audit tool for d810 debug logs.
 
+.. deprecated:: 2026-05-11
+    Prefer ``python -m d810.diagnostics gate-audit`` or
+    ``./tools/cff_debug.py gates``. This script is kept as a
+    compatibility wrapper; the parsing/report logic now lives at
+    ``src/d810/diagnostics/gate_audit.py`` with unit tests under
+    ``tests/unit/diagnostics/test_gate_audit.py``.
+
 Parses d810 log files and produces a gate outcome summary report.
 This is a standalone script that does NOT import d810 at runtime.
 
