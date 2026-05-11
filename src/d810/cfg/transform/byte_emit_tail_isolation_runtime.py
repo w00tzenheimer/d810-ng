@@ -811,6 +811,39 @@ class LiveMbaAdapter:
     # buffer write replication for bytes 2-6).
     # ------------------------------------------------------------------
 
+    def _find_byte_emit_stx_template(self, byte_index: int):
+        """Search the entire mba for an m_stx instance whose dstr
+        references v190 at the given byte_index. Returns the minsn_t
+        directly (so it can be cloned), or None.
+
+        Used by insert_byte_emit_replica_anchor: the host block doesn't
+        necessarily CONTAIN the template m_stx; the template lives in
+        a (possibly soon-to-be-DCE'd) byte_emit block that we can still
+        clone at hook time.
+        """
+        import ida_hexrays as _ih
+
+        if byte_index == 0:
+            needles = ("[ds.2:%var_190.8].1",)
+        else:
+            needles = (f"%var_190.8+#{byte_index}.8",)
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                if int(insn.opcode) == int(_ih.m_stx):
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                    except Exception:
+                        ds = ""
+                    if any(n in ds for n in needles):
+                        return insn
+                insn = insn.next
+        return None
+
     def insert_byte_emit_replica_anchor(
         self,
         *,
@@ -858,6 +891,17 @@ class LiveMbaAdapter:
                 f"insert_byte_emit_replica_anchor: succ {successor_serial} not resolvable"
             )
 
+        # Find the template m_stx anywhere in the mba. This may live in
+        # a different block than the host (typically a soon-to-be-DCE'd
+        # byte_emit block); we clone the m_stx at hook time before that
+        # DCE happens.
+        template_stx = self._find_byte_emit_stx_template(template_byte_index)
+        if template_stx is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: no template m_stx "
+                f"with v190+#{template_byte_index}.8 found in mba"
+            )
+
         end_serial = int(mba.qty) - 1
         anchor = mba.copy_block(pred_blk, end_serial)
         if anchor is None:
@@ -869,40 +913,30 @@ class LiveMbaAdapter:
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
 
-        # Walk the clone's instructions: NOP everything that is NOT
-        # the m_stx referencing v190+#template.8. Then patch that m_stx
-        # to reference v190+#target.8 instead.
-        template_dstr = f"%var_190.8+#{template_byte_index}.8"
-        target_dstr = f"%var_190.8+#{target_byte_index}.8"
-        stx_kept = False
+        # NOP every inherited instruction.
         cur = anchor.head
         while cur is not None:
-            keep = False
-            if int(cur.opcode) == int(_ih.m_stx) and not stx_kept:
-                # Check operand tree for v190+#template reference.
-                for op in (cur.l, cur.r, cur.d):
-                    if op is not None:
-                        try:
-                            if template_dstr in op.dstr():
-                                keep = True
-                                break
-                        except Exception:
-                            pass
-            if keep:
-                stx_kept = True
-                # Patch the constant inside the operand tree.
-                for op in (cur.l, cur.r, cur.d):
-                    if op is None:
-                        continue
-                    _patch_v190_byte_const(op, template_byte_index, target_byte_index, _ih)
-            else:
-                anchor.make_nop(cur)
+            anchor.make_nop(cur)
             cur = cur.next
 
-        if not stx_kept:
-            raise RuntimeError(
-                f"insert_byte_emit_replica_anchor: no m_stx with v190+#{template_byte_index}.8 "
-                f"found in cloned block {predecessor_serial}"
+        # Insert a fresh m_stx clone with the template's operands deep-copied.
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        new_stx = _ih.minsn_t(safe_ea)
+        new_stx.ea = safe_ea
+        anchor.insert_into_block(new_stx, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        new_stx.opcode = _ih.m_stx
+        new_stx.l = _ih.mop_t()
+        new_stx.l.assign(template_stx.l)
+        new_stx.r = _ih.mop_t()
+        new_stx.r.assign(template_stx.r)
+        new_stx.d = _ih.mop_t()
+        new_stx.d.assign(template_stx.d)
+
+        # Patch the byte index in any operand tree.
+        for op in (new_stx.l, new_stx.r, new_stx.d):
+            _patch_v190_byte_const(
+                op, template_byte_index, target_byte_index, _ih,
             )
 
         # Now wire BLT_1WAY topology and append goto.
@@ -1268,15 +1302,44 @@ class LiveMbaAdapter:
 
 
 def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
-    """Walk a mop_t tree; find any m_add(stkvar@0x190, mop_n=old_index)
-    and replace the constant with new_index. Returns True if any patch
-    was applied. Used by insert_byte_emit_replica_anchor to retarget a
-    cloned m_stx's byte-index operand.
+    """Walk a mop_t tree; find any reference to (v190+#old_index.8) and
+    rewrite it to (v190+#new_index.8). Handles BOTH operand shapes:
+
+    - mop_S@0x190 alone (when old_index==0; IDA folded +0 away)
+    - mop_d wrapping m_add(stkvar@0x190, mop_n=old_index)
+
+    For the byte-0 -> byte-k transition, transforms the mop_S leaf into
+    a mop_d/m_add. For byte-N -> byte-k (N>0), just rewrites the
+    constant. Returns True if any patch was applied.
     """
     if op is None:
         return False
     t = int(getattr(op, "t", -1))
     patched = False
+
+    # Case 1: bare mop_S@0x190 (byte 0 form).
+    if old_index == 0 and t == int(_ih.mop_S):
+        s = getattr(op, "s", None)
+        if s is not None and int(getattr(s, "off", -1)) == 0x190:
+            # Build a fresh m_add(stkvar@0x190, mop_n=new_index) and
+            # wrap it as a mop_d in `op`.
+            add_insn = _ih.minsn_t(0)
+            add_insn.opcode = _ih.m_add
+            add_insn.l = _ih.mop_t()
+            add_insn.l.make_stkvar(_ih.get_curobj() if hasattr(_ih, "get_curobj") else None, 0x190) if False else None  # noqa
+            # Actually: re-use the original mop_S we're replacing for `l`.
+            new_l = _ih.mop_t()
+            new_l.assign(op)  # original mop_S@0x190 leaf
+            add_insn.l = new_l
+            add_insn.r = _ih.mop_t()
+            add_insn.r.make_number(int(new_index), 8)
+            add_insn.d = _ih.mop_t()
+            add_insn.d.erase()
+            # Now turn `op` into mop_d wrapping add_insn.
+            op.create_from_insn(add_insn)
+            return True
+
+    # Case 2: mop_d wrapping a sub-instruction.
     if t == int(_ih.mop_d):
         sub = getattr(op, "d", None)
         if sub is not None:
