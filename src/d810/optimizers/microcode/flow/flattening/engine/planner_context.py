@@ -137,11 +137,19 @@ class PlannerContextContribution:
             responsibility for this fragment. Later strategies should treat
             the block as off-limits for edge rewrites unless they have a
             concrete reason to override (which they should log).
+        direct_use_def_veto_sources: Source-block serials where the strategy
+            considered a direct redirect and rejected it because it would
+            sever a non-state stack-var use. Cleanup strategies may use this
+            narrower set to avoid resurrecting a specifically rejected
+            redirect without treating every claimed source as unavailable.
     """
 
     linearizations: tuple[LinearizationDecision, ...] = ()
     neutralizations: tuple[StateWriteNeutralization, ...] = ()
     claimed_sources: frozenset[int] = field(default_factory=frozenset)
+    direct_use_def_veto_sources: frozenset[int] = field(
+        default_factory=frozenset
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +189,9 @@ class CumulativePlannerView:
     linearization_decisions: frozenset[LinearizationDecision]
     neutralized_state_writes: frozenset[StateWriteNeutralization]
     claimed_sources: frozenset[int]
+    direct_use_def_veto_sources: frozenset[int] = field(
+        default_factory=frozenset
+    )
     # ``DagAuthority`` is forward-typed via string-quoted annotation to
     # avoid an upward import (this module is structurally below
     # ``dag_authority``).  Runtime callers pass an instance; tests may
@@ -232,6 +243,10 @@ class CumulativePlannerView:
         """Return True if *src* is in any prior strategy's claimed set."""
         return int(src) in self.claimed_sources
 
+    def is_direct_use_def_vetoed(self, src: int) -> bool:
+        """Return True if a prior strategy directly vetoed *src*."""
+        return int(src) in self.direct_use_def_veto_sources
+
     @classmethod
     def compile(
         cls,
@@ -258,6 +273,7 @@ class CumulativePlannerView:
         linearizations: list[LinearizationDecision] = []
         neutralizations: list[StateWriteNeutralization] = []
         claimed: set[int] = set()
+        direct_use_def_vetoed: set[int] = set()
 
         for fragment in fragments:
             metadata = getattr(fragment, "metadata", None)
@@ -269,11 +285,15 @@ class CumulativePlannerView:
             linearizations.extend(contribution.linearizations)
             neutralizations.extend(contribution.neutralizations)
             claimed.update(int(src) for src in contribution.claimed_sources)
+            direct_use_def_vetoed.update(
+                int(src) for src in contribution.direct_use_def_veto_sources
+            )
 
         return cls(
             linearization_decisions=frozenset(linearizations),
             neutralized_state_writes=frozenset(neutralizations),
             claimed_sources=frozenset(claimed),
+            direct_use_def_veto_sources=frozenset(direct_use_def_vetoed),
             dag_authority=dag_authority,
         )
 
@@ -293,5 +313,6 @@ class CumulativePlannerView:
             linearization_decisions=frozenset(),
             neutralized_state_writes=frozenset(),
             claimed_sources=frozenset(),
+            direct_use_def_veto_sources=frozenset(),
             dag_authority=dag_authority,
         )
