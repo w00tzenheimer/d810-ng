@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Reconcile resolver predictions against live dispatcher_trampoline_skip emissions.
 
+.. deprecated:: 2026-05-11
+    Prefer ``python -m d810.diagnostics redirect-reconcile`` or
+    ``./tools/cff_debug.py reconcile``. This script is kept as a
+    compatibility wrapper; the orchestration + SQL logic now lives at
+    ``src/d810/diagnostics/redirect_reconcile.py`` with unit tests under
+    ``tests/unit/diagnostics/test_redirect_reconcile.py``. The cfg-layer
+    classification logic in ``d810.cfg.redirect_reconciliation`` is
+    unchanged.
+
 Reads a sub_7FFD-style diag DB + d810.log produced by ``run_system_tests_docker.sh dump``
 and prints the bucket breakdown described in Piece 5.5 of ticket uee-32r3.
 
