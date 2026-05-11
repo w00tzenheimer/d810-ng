@@ -138,22 +138,20 @@ def diagnostics_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Legacy capture re-exports (back-compat for Phase 5 migration)
-#
-# These keep existing call sites compiling while each subsystem is
-# migrated to the event API. Phase 6 removes them.
+# Legacy re-exports kept for runtime sites that are not yet on the event
+# API. The Phase 5 audit in docs/diag-observability-boundary.md lists the
+# SnapshotRef-threading call sites still using these; the fire-and-forget
+# wrappers (record_cfg_provenance / record_watch_block_transition) were
+# dropped in Phase 6 because every caller has been migrated to the
+# observe_* helpers above.
 # ---------------------------------------------------------------------------
 
 from d810.core.diag import (
     get_diag_db as get_diag_db,
     register_lineage_drainer as register_lineage_drainer,
 )
-from d810.core.diag.snapshot import (
-    snapshot_watch_transition as record_watch_block_transition,
-)
 from d810.cfg.provenance import (
     drain_pending_provenance as drain_pending_provenance,
-    log_cfg_provenance as record_cfg_provenance,
     reset_pending_provenance as reset_pending_provenance,
 )
 
@@ -167,11 +165,9 @@ __all__ = [
     "diagnostics_enabled",
     "observe_cfg_provenance",
     "observe_watch_block_transition",
-    # Legacy re-exports (deprecated; removed in Phase 6)
+    # Legacy re-exports retained for non-migrated call sites
     "drain_pending_provenance",
     "get_diag_db",
-    "record_cfg_provenance",
-    "record_watch_block_transition",
     "register_lineage_drainer",
     "reset_pending_provenance",
 ]
