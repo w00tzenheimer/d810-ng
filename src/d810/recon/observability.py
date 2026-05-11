@@ -1,22 +1,12 @@
 """Recon-domain diagnostic capture facade and event API.
 
-This module hosts two layered surfaces:
+Runtime recon code constructs ``*Observed`` events (frozen dataclasses)
+and calls ``observe_*`` helpers that publish them on the
+:mod:`d810.core.observability` bus. A backend subscriber listens via
+the abstract observability interface; recon never imports the backend.
 
-1. **Event-based observability API** (the long-term boundary). Runtime
-   recon code constructs ``*Observed`` events (frozen dataclasses) and
-   calls ``observe_*`` helpers that publish them on the
-   :mod:`d810.core.observability` bus. The diag sink subscribes in
-   :mod:`d810.core.diag.event_handlers`; recon never touches
-   :mod:`d810.core.diag`.
-
-   Event names follow the past-tense ``<thing>Observed`` convention.
-   Emit helpers follow the ``observe_<thing>`` convention.
-
-2. **Legacy capture re-exports** (back-compat). The pre-event
-   facade re-exported ``snapshot_*`` writers under ``record_*``
-   names. These are still here so existing call sites compile during
-   the Phase 5 per-subsystem migration; Phase 6 removes them once
-   every call site is on the event API.
+Event names follow the past-tense ``<thing>Observed`` convention.
+Emit helpers follow the ``observe_<thing>`` convention.
 
 Read-side queries that drive runtime behaviour go through the
 explicitly-documented behaviour bridge in
@@ -33,11 +23,11 @@ from d810.core.observability import (
     emit as _emit,
     has_subscribers as _has_subscribers,
 )
-# Event dataclasses live under d810.core.observability_events so the
-# SQLite sink in d810.core.diag.event_handlers can subscribe without
-# an upward import (layered-architecture forbids d810.core importing
-# from d810.recon). The recon facade re-exports the recon-relevant
-# types so call sites don't have to know where they live.
+# Event dataclasses live under d810.core.observability_events so a
+# backend subscriber can listen without an upward import
+# (layered-architecture forbids d810.core importing from d810.recon).
+# The recon facade re-exports the recon-relevant types so call sites
+# don't have to know where they live.
 from d810.core.observability_events import (
     DagLocalFactsObserved as DagLocalFactsObserved,
     DagObserved as DagObserved,
@@ -197,80 +187,6 @@ def diagnostics_enabled() -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Legacy capture shims (back-compat for the few sites that still pass an
-# explicit (conn, snap_id) pair; new code should use the event API
-# above).
-#
-# These wrappers delegate via `importlib.import_module` so the static
-# import graph has ZERO recon.observability -> d810.core.diag edges.
-# The runtime-no-core-diag import-linter contract therefore needs no
-# ignore_imports entry for this module.
-# ---------------------------------------------------------------------------
-
-
-def _diag_module():
-    import importlib
-    return importlib.import_module("d810.core.diag")
-
-
-def _snapshot_module():
-    import importlib
-    return importlib.import_module("d810.core.diag.snapshot")
-
-
-def get_diag_db(*args, **kwargs):
-    return _diag_module().get_diag_db(*args, **kwargs)
-
-
-def open_capture_session(*args, **kwargs):
-    return _diag_module().open_diag_session(*args, **kwargs)
-
-
-def close_capture_session(*args, **kwargs):
-    return _diag_module().close_diag_session(*args, **kwargs)
-
-
-def record_dag(*args, **kwargs):
-    return _snapshot_module().snapshot_dag(*args, **kwargs)
-
-
-def record_dag_local_facts(*args, **kwargs):
-    return _snapshot_module().snapshot_dag_local_facts(*args, **kwargs)
-
-
-def record_fact_conflict(*args, **kwargs):
-    return _snapshot_module().snapshot_fact_conflicts(*args, **kwargs)
-
-
-def record_fact_consumer(*args, **kwargs):
-    return _snapshot_module().snapshot_fact_consumers(*args, **kwargs)
-
-
-def record_fact_mapping(*args, **kwargs):
-    return _snapshot_module().snapshot_fact_mappings(*args, **kwargs)
-
-
-def record_fact_observation(*args, **kwargs):
-    return _snapshot_module().snapshot_fact_observations(*args, **kwargs)
-
-
-def record_mba_snapshot(*args, **kwargs):
-    return _snapshot_module().snapshot_mba(*args, **kwargs)
-
-
-def record_modifications(*args, **kwargs):
-    return _snapshot_module().snapshot_modifications(*args, **kwargs)
-
-
-def record_reachability(*args, **kwargs):
-    return _snapshot_module().snapshot_reachability(*args, **kwargs)
-
-
-def record_rendered_program(*args, **kwargs):
-    return _snapshot_module().snapshot_rendered_program(*args, **kwargs)
-
-
 __all__ = [
     # Event dataclasses
     "DagLocalFactsObserved",
@@ -298,18 +214,4 @@ __all__ = [
     "observe_modifications",
     "observe_reachability",
     "observe_rendered_program",
-    # Legacy re-exports (deprecated; removed in Phase 6)
-    "close_capture_session",
-    "get_diag_db",
-    "open_capture_session",
-    "record_dag",
-    "record_dag_local_facts",
-    "record_fact_conflict",
-    "record_fact_consumer",
-    "record_fact_mapping",
-    "record_fact_observation",
-    "record_mba_snapshot",
-    "record_modifications",
-    "record_reachability",
-    "record_rendered_program",
 ]
