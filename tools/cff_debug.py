@@ -364,6 +364,41 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_byte_audit(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics terminal-tail-audit`.
+
+    Resolves the latest diag SQLite for the worktree (or honours --db) and
+    forwards optional flags. Performs no parsing of its own.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "terminal-tail-audit",
+        "--db",
+        str(db),
+    ]
+    if args.show_edges:
+        diag_argv.append("--show-edges")
+    if args.localize:
+        diag_argv.append("--localize")
+    if args.initial_snap_id is not None:
+        diag_argv += ["--initial-snap-id", str(args.initial_snap_id)]
+    print(f"DB={db}", file=sys.stderr)
+    print(
+        f"cff-debug: byte-audit: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 _INSPECT_PROBES: tuple[tuple[str, str], ...] = (
     ("Gate Failures", r"Gate accounting: \d+ passed, [1-9]\d* failed, \d+ bypassed"),
     ("Provenance", r"Provenance:"),
@@ -544,6 +579,30 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.set_defaults(func=cmd_inspect)
+
+    sp = sub.add_parser(
+        "byte-audit",
+        help=(
+            "Audit TerminalByteEmitterFact rows in the latest diag DB: byte_emit[k]"
+            " timeline + first-loss report. Wraps"
+            " `python -m d810.diagnostics terminal-tail-audit`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--show-edges", action="store_true",
+        help="print every observation with snap/maturity/phase/role/src_form",
+    )
+    sp.add_argument(
+        "--localize", action="store_true",
+        help="run intermediate-snapshot loss localization (GLBOPT1 only)",
+    )
+    sp.add_argument(
+        "--initial-snap-id", type=int, default=5,
+        help="snapshot id of the initial pre-D810 state (default: 5)",
+    )
+    sp.set_defaults(func=cmd_byte_audit)
 
     return p
 
