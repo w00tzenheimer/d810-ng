@@ -30,8 +30,8 @@ _GENERIC_LIFECYCLE_FACT_KINDS = frozenset({
 
 FactPersistenceCallback = Callable[
     [
+        # SnapshotRef | None (forward-typed; see d810.core.observability)
         Any,
-        int,
         int,
         tuple[FactObservation, ...],
         tuple[FactMapping, ...],
@@ -1262,8 +1262,7 @@ class FactLifecycleRuntime:
         func_ea: int,
         maturity: int,
         phase: str = "pre_d810",
-        snapshot_id: int | None = None,
-        diag_conn: Any = None,
+        snapshot: Any = None,
     ) -> FactCaptureSummary:
         settings = get_settings()
         if not settings.fact_lifecycle:
@@ -1389,12 +1388,10 @@ class FactLifecycleRuntime:
             self._update_latest_observations(func_ea, tuple(observations))
             if (
                 self._persistence_callback is not None
-                and snapshot_id is not None
-                and diag_conn is not None
+                and snapshot is not None
             ):
                 self._persistence_callback(
-                    diag_conn,
-                    snapshot_id,
+                    snapshot,
                     func_ea,
                     tuple(observations),
                     tuple(mappings),
@@ -1403,14 +1400,14 @@ class FactLifecycleRuntime:
             else:
                 logger.warning(
                     "FACT_LIFECYCLE_DROPPED func=0x%x maturity=%d phase=%s "
-                    "observations=%d mappings=%d conflicts=%d snapshot_id=%s callback=%s",
+                    "observations=%d mappings=%d conflicts=%d snapshot=%s callback=%s",
                     func_ea,
                     maturity,
                     phase,
                     len(observations),
                     len(mappings),
                     len(conflicts),
-                    snapshot_id,
+                    snapshot,
                     self._persistence_callback is not None,
                 )
 

@@ -47,6 +47,7 @@ from d810.recon.facts.runtime import (
 from d810.recon.store import ReconStore
 
 if TYPE_CHECKING:
+    from d810.core.observability import SnapshotRef
     from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
     from d810.recon.flow_hints import FlowContextHintSummary
 
@@ -309,20 +310,21 @@ class ReconAnalysisRuntime:
         func_ea: int,
         maturity: int,
         phase: str = "pre_d810",
-        snapshot_id: int | None = None,
-        diag_conn: Any = None,
+        snapshot: "SnapshotRef | None" = None,
     ) -> FactCaptureSummary:
         """Invoke maturity fact collection.
 
         With the initial empty registry this is an observability hook only.
+        ``snapshot`` is the SnapshotRef bound to the current capture (e.g.
+        from :func:`request_capture_mba_snapshot`); the persistence
+        callback emits ``observe_fact_*`` events against it.
         """
         return self._fact_lifecycle.capture(
             target,
             func_ea=func_ea,
             maturity=maturity,
             phase=phase,
-            snapshot_id=snapshot_id,
-            diag_conn=diag_conn,
+            snapshot=snapshot,
         )
 
     def register_fact_collector(self, collector: FactCollector) -> None:
@@ -338,61 +340,27 @@ class ReconAnalysisRuntime:
         func_ea: int,
         consumers: tuple[FactConsumerRecord, ...],
     ) -> int:
-        """Persist fact-consumer diagnostic rows into the latest diag snapshot.
+        """Publish fact-consumer records for late-binding persistence.
 
-        This is intentionally observability-only. Missing diag DB state is
-        logged and ignored so consumers cannot affect decompilation behavior.
+        Emits a :class:`FactConsumersForLatestSnapshot` event; the diag
+        subscriber (if installed) finds the latest ``snapshots`` row
+        for ``func_ea`` and writes deduplicated ``fact_consumers``
+        rows. Returns the count of consumers passed in (the subscriber
+        may dedup; this method does not have visibility into how many
+        the subscriber actually persisted).
         """
         if not consumers:
             return 0
         try:
-            from d810.recon.observability import (
-                get_diag_db,
-                record_fact_consumer,
+            from d810.core.observability import emit
+            from d810.core.observability_events import (
+                FactConsumersForLatestSnapshot,
             )
-
-            diag_conn = get_diag_db(func_ea)
-            if diag_conn is None:
-                logger.warning(
-                    "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=no-diag-db",
-                    func_ea,
-                    len(consumers),
-                )
-                return 0
-            func_hex = f"0x{int(func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-            row = diag_conn.execute(
-                "SELECT id FROM snapshots WHERE func_ea_hex=? "
-                "ORDER BY id DESC LIMIT 1",
-                (func_hex,),
-            ).fetchone()
-            if row is None:
-                logger.warning(
-                    "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=no-snapshot",
-                    func_ea,
-                    len(consumers),
-                )
-                return 0
-            pending: list[FactConsumerRecord] = []
-            for consumer in consumers:
-                exists = diag_conn.execute(
-                    "SELECT 1 FROM fact_consumers "
-                    "WHERE func_ea_hex=? AND consumer=? AND strategy=? "
-                    "AND fact_id=? AND maturity=? AND decision=? LIMIT 1",
-                    (
-                        func_hex,
-                        consumer.consumer,
-                        consumer.strategy,
-                        consumer.fact_id,
-                        consumer.maturity,
-                        consumer.decision,
-                    ),
-                ).fetchone()
-                if exists is None:
-                    pending.append(consumer)
-            if not pending:
-                return 0
-            record_fact_consumer(diag_conn, int(row[0]), func_ea, tuple(pending))
-            return len(pending)
+            emit(FactConsumersForLatestSnapshot(
+                func_ea=int(func_ea),
+                consumers=tuple(consumers),
+            ))
+            return len(consumers)
         except Exception:
             logger.exception(
                 "FACT_CONSUMERS_DROPPED func=0x%x consumers=%d reason=exception",
@@ -403,26 +371,35 @@ class ReconAnalysisRuntime:
 
     @staticmethod
     def _persist_maturity_facts(
-        diag_conn: Any,
-        snapshot_id: int,
+        snapshot: "SnapshotRef | None",
         func_ea: int,
         observations: tuple[FactObservation, ...],
         mappings: tuple[FactMapping, ...],
         conflicts: tuple[FactConflict, ...] = (),
     ) -> None:
-        """Persist collected maturity facts into the active diag DB snapshot."""
+        """Persist collected maturity facts via the observability event bus.
+
+        Emits typed observation events bound to ``snapshot``; the diag
+        subscriber (if installed) writes them under the corresponding
+        SQLite ``snapshot_id``. When ``snapshot`` is ``None`` (no
+        capture in flight or diagnostics disabled), the facts go
+        nowhere -- behaviour-identical to the legacy "diag_conn is
+        None" short-circuit.
+        """
+        if snapshot is None:
+            return
         from d810.recon.observability import (
-            record_fact_conflict,
-            record_fact_mapping,
-            record_fact_observation,
+            observe_fact_conflict,
+            observe_fact_mapping,
+            observe_fact_observation,
         )
 
         if observations:
-            record_fact_observation(diag_conn, snapshot_id, func_ea, observations)
+            observe_fact_observation(snapshot, func_ea, observations)
         if mappings:
-            record_fact_mapping(diag_conn, snapshot_id, func_ea, mappings)
+            observe_fact_mapping(snapshot, func_ea, mappings)
         if conflicts:
-            record_fact_conflict(diag_conn, snapshot_id, func_ea, conflicts)
+            observe_fact_conflict(snapshot, func_ea, conflicts)
 
     def analyze_and_persist(self, func_ea: int) -> DeobfuscationHints | None:
         """Run analysis on current store contents and persist hints.

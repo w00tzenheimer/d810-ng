@@ -102,6 +102,21 @@ class FactConsumersObserved:
 
 
 @dataclass(frozen=True)
+class FactConsumersForLatestSnapshot:
+    """Recon observed fact-consumer records to attach to the latest snapshot.
+
+    Late-binding variant for post-hoc fact-consumer logging where the
+    rows do not correspond to a specific just-emitted capture but to
+    after-the-fact audit of strategy decisions. The subscriber finds
+    the latest ``snapshots`` row for ``func_ea`` and writes the rows
+    there, deduplicating against existing ``fact_consumers`` rows.
+    """
+
+    func_ea: int
+    consumers: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class FactConflictsObserved:
     """Recon observed a batch of fact conflicts."""
 
@@ -207,6 +222,7 @@ __all__ = [
     "DagLocalFactsObserved",
     "DagObserved",
     "FactConflictsObserved",
+    "FactConsumersForLatestSnapshot",
     "FactConsumersObserved",
     "FactMappingsObserved",
     "FactObservationsObserved",

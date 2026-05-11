@@ -881,27 +881,22 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # maturity level. Policy decisions (capture/logging/etc.) are handled
             # by subscribers in the manager layer.
             # --- Diagnostic: post_d810 snapshot for the PREVIOUS maturity ---
-            _post_snap_id = None
+            _post_snap_ref = None
             if self.current_maturity is not None:
                 try:
+                    from d810.hexrays.mba_serializer import mba_to_block_snapshots
                     from d810.hexrays.observability import (
-                        capture_mba_snapshot as _snap_mba,
-                        get_diag_db,
-                        mba_to_block_snapshots,
+                        request_capture_mba_snapshot,
                     )
 
                     _prev_mat_name = maturity_to_string(self.current_maturity)
-                    _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-                    if _diag_conn is not None:
-                        _snap_blocks = mba_to_block_snapshots(mba)
-                        _post_snap_id = _snap_mba(
-                            _diag_conn,
-                            _snap_blocks,
-                            label=f"maturity_{_prev_mat_name}_post_d810",
-                            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                            maturity=_prev_mat_name,
-                            phase="post_d810",
-                        )
+                    _post_snap_ref = request_capture_mba_snapshot(
+                        blocks=mba_to_block_snapshots(mba),
+                        label=f"maturity_{_prev_mat_name}_post_d810",
+                        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                        maturity=_prev_mat_name,
+                        phase="post_d810",
+                    )
                 except Exception:
                     pass  # diagnostic, never gates decompilation
 
@@ -910,7 +905,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     DecompilationEvent.POST_D810_CAPTURE,
                     mba,
                     int(self.current_maturity),
-                    _post_snap_id,
+                    _post_snap_ref,
                 )
 
             if (
@@ -931,27 +926,21 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._invalidate_flow_context("maturity changed")
 
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
-            _pre_snap_id = None
-            _pre_diag_conn = None
+            _pre_snap_ref = None
             try:
+                from d810.hexrays.mba_serializer import mba_to_block_snapshots
                 from d810.hexrays.observability import (
-                    capture_mba_snapshot as _snap_mba,
-                    get_diag_db,
-                    mba_to_block_snapshots,
+                    request_capture_mba_snapshot,
                 )
 
                 _new_mat_name = maturity_to_string(self.current_maturity)
-                _pre_diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-                if _pre_diag_conn is not None:
-                    _snap_blocks = mba_to_block_snapshots(mba)
-                    _pre_snap_id = _snap_mba(
-                        _pre_diag_conn,
-                        _snap_blocks,
-                        label=f"maturity_{_new_mat_name}_pre_d810",
-                        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                        maturity=_new_mat_name,
-                        phase="pre_d810",
-                    )
+                _pre_snap_ref = request_capture_mba_snapshot(
+                    blocks=mba_to_block_snapshots(mba),
+                    label=f"maturity_{_new_mat_name}_pre_d810",
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity=_new_mat_name,
+                    phase="pre_d810",
+                )
             except Exception:
                 pass  # diagnostic, never gates decompilation
 
@@ -1106,8 +1095,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             func_ea=mba_ea,
                             maturity=mba.maturity,
                             phase="pre_d810",
-                            snapshot_id=_pre_snap_id,
-                            diag_conn=_pre_diag_conn,
+                            snapshot=_pre_snap_ref,
                         )
                     except Exception:
                         optimizer_logger.exception("FactLifecycleRuntime (block) failed")
