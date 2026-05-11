@@ -974,12 +974,12 @@ class LiveMbaAdapter:
         # observed by downstream code). To prevent IDA from dedup'ing
         # consecutive writes-to-same-slot, each anchor's byte goes to a
         # DIFFERENT bit-position within the slot via a shift delta.
-        # All anchors write to the SAME slot AND the same bit position as
-        # the host. Different bytes OR'd into the same bit positions
-        # accumulate (IDA can't prove redundancy across distinct loads),
-        # making each byte's read observable via the slot's downstream use.
-        offset_delta = 0
-        shift_delta = 0
+        # Each anchor writes byte k to a DIFFERENT 8-byte slot
+        # (buffer_base + (k-1)*8) AND at byte position (k-1)*8 within
+        # that slot. Together, this lays out the cascade across
+        # consecutive buffer slots -- matching REF's byte_emit pattern.
+        offset_delta = (target_byte_index - template_byte_index) * 8
+        shift_delta = (target_byte_index - template_byte_index) * 8
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
                 # Patch byte_index in operand trees.
