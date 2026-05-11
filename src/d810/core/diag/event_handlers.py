@@ -347,6 +347,12 @@ _install_lock = threading.Lock()
 _installed = False
 
 
+# Register this module's resolver with core.observability so behavior
+# bridges can look up the SQLite row id bound to a SnapshotRef without
+# importing core.diag.
+register_snapshot_id_resolver(_resolve_snapshot_id)
+
+
 def install_diag_event_handlers() -> None:
     """Install all SQLite subscribers on the diagnostic event bus.
 

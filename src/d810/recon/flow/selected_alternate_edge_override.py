@@ -269,17 +269,16 @@ def apply_selected_alternate_edge_overrides_from_diag(
     if snap_ref is None:
         return dag
 
-    # Resolve (conn, snap_id) via the diag event-handler mapping.
-    # importlib avoids a static cycle: this module lives in d810.recon
-    # and the resolver lives in d810.core.diag.
-    import importlib
-    try:
-        handlers = importlib.import_module("d810.core.diag.event_handlers")
-        diag_db = handlers._conn_for(snap_ref)
-        snap_id = handlers._resolve_snapshot_id(snap_ref)
-    except Exception:
-        diag_db = None
-        snap_id = None
+    # Behavior bridge resolution: this module is the documented bridge
+    # that reads persisted alternate-edge diagnostics to drive override
+    # decisions. Get the conn + row id via the abstract observability
+    # interface; nothing here imports core.diag.
+    from d810.core.observability import (
+        get_active_diag_conn,
+        resolve_snapshot_id_for,
+    )
+    diag_db = get_active_diag_conn(int(snap_ref.func_ea))
+    snap_id = resolve_snapshot_id_for(snap_ref)
     if diag_db is None or snap_id is None:
         return dag
 

@@ -278,6 +278,44 @@ def get_active_diag_conn(func_ea: int = 0) -> Any:
         return None
 
 
+_snapshot_id_resolver: Callable[["SnapshotRef"], int | None] | None = None
+
+
+def register_snapshot_id_resolver(
+    fn: Callable[["SnapshotRef"], int | None],
+) -> None:
+    """Register the SnapshotRef -> snapshots.id resolver.
+
+    Called by the diag event-handler backend at module load. Behavior
+    bridges that need the SQLite row id bound to a SnapshotRef call
+    :func:`resolve_snapshot_id_for` to look it up.
+    """
+    global _snapshot_id_resolver
+    with _session_lock:
+        _snapshot_id_resolver = fn
+
+
+def resolve_snapshot_id_for(snap: "SnapshotRef") -> int | None:
+    """Return the SQLite ``snapshots.id`` bound to ``snap``, or ``None``.
+
+    Used by behavior bridges (e.g. the selected-alternate-edge override
+    in ``recon.flow``) and read-driven decision logic (e.g.
+    ``manager.validate_post_d810_handoff``) that need the row id to
+    issue a follow-up SQL query.
+    """
+    _ensure_backend_loaded()
+    resolver = _snapshot_id_resolver
+    if resolver is None:
+        return None
+    try:
+        return resolver(snap)
+    except Exception:
+        _logger.warning(
+            "snapshot-id resolver raised; treating as no id", exc_info=True,
+        )
+        return None
+
+
 __all__ = [
     "SnapshotRef",
     "close_observability_session",
@@ -288,7 +326,9 @@ __all__ = [
     "open_observability_session",
     "register_diag_conn_provider",
     "register_diag_session_handlers",
+    "register_snapshot_id_resolver",
     "reset_diagnostic_bus",
+    "resolve_snapshot_id_for",
     "subscribe",
     "unsubscribe",
 ]

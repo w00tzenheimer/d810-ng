@@ -35,12 +35,16 @@ _TEST_SNAP = SnapshotRef(
 
 @contextlib.contextmanager
 def _bridge_resolves_to(conn: sqlite3.Connection | None, snap_id: int | None):
-    """Patch the event-handler resolvers so the bridge uses ``conn`` /
-    ``snap_id`` for ``_TEST_SNAP``."""
+    """Patch the abstract observability resolvers so the bridge uses
+    ``conn`` / ``snap_id`` for ``_TEST_SNAP``. The bridge imports the
+    resolvers inside its function body, so we patch them at the source
+    module's namespace."""
     with patch(
-        "d810.core.diag.event_handlers._conn_for", return_value=conn,
+        "d810.core.observability.get_active_diag_conn",
+        return_value=conn,
     ), patch(
-        "d810.core.diag.event_handlers._resolve_snapshot_id", return_value=snap_id,
+        "d810.core.observability.resolve_snapshot_id_for",
+        return_value=snap_id,
     ):
         yield
 
