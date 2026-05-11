@@ -132,6 +132,10 @@ class ByteCascadeRow:
             "final_status_refined": self.final_status_refined,
             "source_eas": list(self.source_eas),
             "db_var190_refs": dict(self.db_var190_refs),
+            "db_source_ea_survival": {
+                label: dict(per_ea)
+                for label, per_ea in self.db_source_ea_survival.items()
+            },
         }
 
 
@@ -300,11 +304,73 @@ def _count_var190_refs_per_snapshot(
     return result
 
 
+def _count_source_ea_survival_per_snapshot(
+    conn: sqlite3.Connection,
+    source_eas: Sequence[str],
+) -> dict[str, dict[str, int]]:
+    """For each EA in *source_eas*, count ``instructions.ea_hex`` rows per
+    snapshot.
+
+    Returns ``{snapshot_label: {ea_hex_lower: count}}`` with every
+    ``(snapshot_label, ea)`` pair populated -- a missing pair would conflate
+    "this snapshot doesn't exist in the DB" with "the EA is dead at this
+    snapshot", which the refinement decision needs to tell apart.
+
+    The diag writer stores ``ea_hex`` as ``0x{:016x}`` (lowercase, 16-digit
+    zero-padded); the tracer emits ``source_eas`` in the same format via
+    :func:`d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer._format_ea_hex`
+    (uppercase variant), so we normalise both sides to lowercase before
+    matching.
+
+    Returns ``{}`` on any schema mismatch or empty input.
+    """
+    eas_lower = [
+        ea.lower() for ea in source_eas if isinstance(ea, str) and ea.strip()
+    ]
+    if not eas_lower:
+        return {}
+    try:
+        snap_rows = conn.execute(
+            "SELECT id, label FROM snapshots ORDER BY id"
+        ).fetchall()
+        placeholders = ",".join("?" for _ in eas_lower)
+        survival_rows = conn.execute(
+            f"""
+            SELECT i.snapshot_id, LOWER(i.ea_hex), COUNT(*) AS n
+            FROM instructions i
+            WHERE LOWER(i.ea_hex) IN ({placeholders})
+            GROUP BY i.snapshot_id, LOWER(i.ea_hex)
+            """,
+            eas_lower,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    counts_by_snap_ea: dict[int, dict[str, int]] = {}
+    for snap_id, ea_hex, n in survival_rows:
+        counts_by_snap_ea.setdefault(int(snap_id), {})[str(ea_hex or "")] = int(n)
+
+    out: dict[str, dict[str, int]] = {}
+    for snap_id, label in snap_rows:
+        label_text = str(label or f"snapshot_{snap_id}")
+        per_ea = counts_by_snap_ea.get(int(snap_id), {})
+        out[label_text] = {ea: per_ea.get(ea, 0) for ea in eas_lower}
+    return out
+
+
 def enrich_rows_with_db(
     rows: Sequence[ByteCascadeRow],
     db_path: Path,
 ) -> list[ByteCascadeRow]:
-    """Return new rows with ``db_var190_refs`` populated from *db_path*."""
+    """Return new rows with ``db_var190_refs`` + ``db_source_ea_survival``
+    populated from *db_path*.
+
+    ``db_var190_refs`` remains a byte-wide cross-reference suitable for the
+    informational ``%var_190.8+#k.8`` table in the rendered report.
+    ``db_source_ea_survival`` is the per-source-EA survival map that drives
+    the refined-status decision; it is only populated for rows whose
+    :attr:`ByteCascadeRow.source_eas` is non-empty (newer tracer rows).
+    """
     if not db_path.exists():
         return list(rows)
     conn = sqlite3.connect(str(db_path))
@@ -314,7 +380,16 @@ def enrich_rows_with_db(
         out: list[ByteCascadeRow] = []
         for row in rows:
             refs = _count_var190_refs_per_snapshot(conn, row.byte)
-            out.append(_dc_replace(row, db_var190_refs=refs))
+            survival = _count_source_ea_survival_per_snapshot(
+                conn, row.source_eas
+            )
+            out.append(
+                _dc_replace(
+                    row,
+                    db_var190_refs=refs,
+                    db_source_ea_survival=survival,
+                )
+            )
         return out
     finally:
         conn.close()

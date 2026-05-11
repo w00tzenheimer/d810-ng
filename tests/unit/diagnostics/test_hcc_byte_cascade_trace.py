@@ -169,6 +169,7 @@ def _row(
     raw_candidate: bool = False,
     db_var190_refs: dict[str, int] | None = None,
     source_eas: tuple[str, ...] = (),
+    db_source_ea_survival: dict[str, dict[str, int]] | None = None,
 ) -> ByteCascadeRow:
     return ByteCascadeRow(
         byte=byte,
@@ -188,7 +189,14 @@ def _row(
         final_status=final_status,
         source_eas=source_eas,
         db_var190_refs=db_var190_refs or {},
+        db_source_ea_survival=db_source_ea_survival or {},
     )
+
+
+# Convenient default for refinement tests: byte K with one source EA and a
+# per-snapshot survival map keyed by that same EA.
+def _survival(snapshot_to_count: dict[str, int], ea: str) -> dict[str, dict[str, int]]:
+    return {label: {ea: int(count)} for label, count in snapshot_to_count.items()}
 
 
 def test_format_report_empty_input() -> None:
@@ -354,88 +362,154 @@ def test_final_status_refined_leaves_preserved_redirect_when_db_absent() -> None
 
 
 def test_final_status_refined_with_evidence_when_post_d810_has_refs() -> None:
+    """Per-source-EA survival at a finalization snapshot promotes the
+    refined status to ``preserved_redirect_with_evidence``."""
+    ea = "0x180014d10"
     row = _row(
         byte=3, final_status="preserved_redirect",
-        db_var190_refs={
-            "pre_d810": 1,
-            "maturity_MMAT_GLBOPT1_post_d810": 1,
-        },
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {
+                "pre_d810": 1,
+                "maturity_MMAT_GLBOPT1_post_d810": 1,
+            },
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "preserved_redirect_with_evidence"
 
 
 def test_final_status_refined_ignores_early_post_d810_refs() -> None:
-    """LOCOPT/CALLS post_d810 snapshots predate HCC's GLBOPT1 finalization.
-
-    They can still contain byte evidence and must not mask the snap17 ->
-    snap18 loss.
+    """LOCOPT / CALLS post_d810 snapshots predate HCC's GLBOPT1
+    finalization. They can still contain the byte's EA and must NOT mask
+    the snap17 -> snap18 loss.
     """
+    ea = "0x180014d10"
     row = _row(
         byte=3, final_status="preserved_redirect",
-        db_var190_refs={
-            "maturity_MMAT_LOCOPT_post_d810": 1,
-            "maturity_MMAT_CALLS_post_d810": 1,
-            "maturity_MMAT_GLBOPT1_post_d810": 0,
-            "maturity_MMAT_GLBOPT2_pre_d810": 0,
-            "dump_raw_sub_7FFD3338C040_GLBOPT1": 1,
-        },
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {
+                "maturity_MMAT_LOCOPT_post_d810": 1,
+                "maturity_MMAT_CALLS_post_d810": 1,
+                "maturity_MMAT_GLBOPT1_post_d810": 0,
+                "maturity_MMAT_GLBOPT2_pre_d810": 0,
+                "dump_raw_sub_7FFD3338C040_GLBOPT1": 1,
+            },
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "redirect_only_finalization_loss"
 
 
 def test_final_status_refined_counts_dump_d810_lvars_refs() -> None:
+    ea = "0x180014e10"
     row = _row(
         byte=6, final_status="preserved_redirect",
-        db_var190_refs={
-            "maturity_MMAT_GLBOPT1_post_d810": 0,
-            "dump_d810_sub_7FFD3338C040": 1,
-        },
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {
+                "maturity_MMAT_GLBOPT1_post_d810": 0,
+                "dump_d810_sub_7FFD3338C040": 1,
+            },
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "preserved_redirect_with_evidence"
 
 
 def test_final_status_refined_finalization_loss_when_post_d810_is_zero() -> None:
+    ea = "0x180014e10"
     row = _row(
         byte=6, final_status="preserved_redirect",
-        db_var190_refs={
-            "pre_d810": 1,
-            "post_bundle_stabilize": 2,
-            "maturity_MMAT_GLBOPT1_post_d810": 0,
-        },
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {
+                "pre_d810": 1,
+                "post_bundle_stabilize": 2,
+                "maturity_MMAT_GLBOPT1_post_d810": 0,
+            },
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "redirect_only_finalization_loss"
 
 
 def test_final_status_refined_treats_mmat_lvars_as_post_d810() -> None:
-    """``MMAT_LVARS`` snapshots are downstream of optimize_global and count
-    the same way as ``post_d810`` for the refinement decision."""
+    """``MMAT_LVARS`` snapshots are downstream of optimize_global and
+    count the same way as ``post_d810`` for the refinement decision."""
+    ea = "0x180014f10"
     row = _row(
         byte=4, final_status="preserved_redirect",
-        db_var190_refs={"pre_d810": 1, "MMAT_LVARS_pre_d810": 0},
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {"pre_d810": 1, "MMAT_LVARS_pre_d810": 0},
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "redirect_only_finalization_loss"
 
 
 def test_final_status_refined_keeps_status_when_no_post_d810_snapshot() -> None:
-    """When the DB doesn't have any snapshot tagged post_d810 / MMAT_LVARS
-    (e.g. a sparse fixture), we can't make the call -- keep the original
-    preserved_redirect verdict instead of falsely promoting/demoting it."""
+    """When the DB doesn't have any snapshot tagged post_d810 / MMAT_LVARS,
+    we can't make the call -- keep the original preserved_redirect verdict
+    instead of falsely promoting/demoting it."""
+    ea = "0x180014abc"
     row = _row(
         byte=5, final_status="preserved_redirect",
-        db_var190_refs={"pre_d810": 1, "post_bundle_stabilize": 1},
+        source_eas=(ea,),
+        db_source_ea_survival=_survival(
+            {"pre_d810": 1, "post_bundle_stabilize": 1},
+            ea=ea,
+        ),
     )
     assert row.final_status_refined == "preserved_redirect"
 
 
+def test_final_status_refined_requires_source_eas() -> None:
+    """A row with NO ``source_eas`` cannot be refined; broad var_190
+    counts no longer drive the decision."""
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        source_eas=(),
+        db_var190_refs={"maturity_MMAT_GLBOPT1_post_d810": 0},
+    )
+    assert row.final_status_refined == "preserved_redirect"
+
+
+def test_final_status_refined_promotes_if_any_source_ea_survives() -> None:
+    """A byte with multiple source EAs is preserved if ANY of them
+    survives at any finalization snapshot."""
+    ea1, ea2 = "0x180014d10", "0x180014d20"
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        source_eas=(ea1, ea2),
+        db_source_ea_survival={
+            "maturity_MMAT_GLBOPT1_post_d810": {ea1: 0, ea2: 1},
+        },
+    )
+    assert row.final_status_refined == "preserved_redirect_with_evidence"
+
+
 def test_report_table_shows_refined_status_column() -> None:
+    ea_lost = "0x180014d10"
+    ea_keep = "0x180014e10"
     rows = [
         _row(
             byte=3, final_status="preserved_redirect",
-            db_var190_refs={"pre_d810": 1, "post_d810": 0},
+            source_eas=(ea_lost,),
+            db_source_ea_survival=_survival(
+                {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 0},
+                ea=ea_lost,
+            ),
         ),
         _row(
             byte=6, final_status="preserved_redirect",
-            db_var190_refs={"pre_d810": 1, "post_d810": 1},
+            source_eas=(ea_keep,),
+            db_source_ea_survival=_survival(
+                {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 1},
+                ea=ea_keep,
+            ),
         ),
     ]
     out = format_report(rows)
@@ -450,11 +524,16 @@ def test_summary_uses_refined_status_for_byte3_loss() -> None:
     """A `preserved_redirect` row that the refinement reclassifies into
     `redirect_only_finalization_loss` must appear in the loss summary
     (it was a false success before)."""
+    ea = "0x180014d10"
     rows = [
         _row(
             byte=3, final_status="preserved_redirect",
             first_dropped_stage="-",
-            db_var190_refs={"pre_d810": 1, "post_d810": 0},
+            source_eas=(ea,),
+            db_source_ea_survival=_survival(
+                {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 0},
+                ea=ea,
+            ),
         ),
     ]
     out = format_report(rows)
@@ -463,12 +542,18 @@ def test_summary_uses_refined_status_for_byte3_loss() -> None:
 
 
 def test_summary_skips_refined_preserved_with_evidence() -> None:
-    """A preserved_redirect row that the refinement promotes to
-    `preserved_redirect_with_evidence` must NOT appear in the loss summary."""
+    """A preserved_redirect row promoted to
+    `preserved_redirect_with_evidence` must NOT appear in the loss
+    summary."""
+    ea = "0x180014e10"
     rows = [
         _row(
             byte=6, final_status="preserved_redirect",
-            db_var190_refs={"pre_d810": 1, "post_d810": 1},
+            source_eas=(ea,),
+            db_source_ea_survival=_survival(
+                {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 1},
+                ea=ea,
+            ),
         ),
     ]
     out = format_report(rows)
@@ -477,14 +562,20 @@ def test_summary_skips_refined_preserved_with_evidence() -> None:
 
 
 def test_to_dict_emits_refined_status_and_source_eas() -> None:
+    ea = "0x180014d10"
     row = _row(
         byte=3, final_status="preserved_redirect",
-        db_var190_refs={"pre_d810": 1, "post_d810": 0},
-        source_eas=("0x180014D10", "0x180014D20"),
+        source_eas=(ea, "0x180014d20"),
+        db_source_ea_survival=_survival(
+            {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 0},
+            ea=ea,
+        ),
     )
     payload = row.to_dict()
     assert payload["final_status_refined"] == "redirect_only_finalization_loss"
-    assert payload["source_eas"] == ["0x180014D10", "0x180014D20"]
+    assert payload["source_eas"] == [ea, "0x180014d20"]
+    assert "db_source_ea_survival" in payload
+    assert payload["db_source_ea_survival"]["maturity_MMAT_GLBOPT1_post_d810"][ea] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +599,99 @@ def test_parse_trace_line_pulls_source_eas() -> None:
     row = parse_trace_line(body)
     assert row is not None
     assert row.source_eas == ("0x180014D10", "0x180014D20")
+
+
+def test_enrich_populates_db_source_ea_survival(tmp_path: Path) -> None:
+    """``_count_source_ea_survival_per_snapshot`` (driven via
+    ``enrich_rows_with_db``) returns a per-snapshot per-EA survival map
+    keyed by lowercase 16-digit hex, matching the diag DB schema."""
+    db = tmp_path / "src_ea.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        # Realistic two-snapshot fixture: snap5 (pre_d810) has both EAs;
+        # snap18 (post_d810) only has one of the two.
+        conn.executescript(
+            """
+            CREATE TABLE snapshots(
+                id INTEGER PRIMARY KEY, label TEXT
+            );
+            CREATE TABLE instructions(
+                snapshot_id INTEGER, ea_hex TEXT,
+                dstr TEXT, dest_stkoff INTEGER
+            );
+            INSERT INTO snapshots VALUES
+                (5, 'maturity_MMAT_GLBOPT1_pre_d810'),
+                (18, 'maturity_MMAT_GLBOPT1_post_d810');
+            """
+        )
+        conn.executemany(
+            "INSERT INTO instructions(snapshot_id, ea_hex, dstr, dest_stkoff) VALUES (?,?,?,?)",
+            [
+                (5, "0x0000000180014d10", "stx ...", 0),
+                (5, "0x0000000180014d20", "stx ...", 0),
+                (18, "0x0000000180014d20", "stx ...", 0),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # Tracer emits uppercase 16-digit hex; the helper normalises to lower.
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        source_eas=("0x0000000180014D10", "0x0000000180014D20"),
+    )
+    [enriched] = enrich_rows_with_db([row], db)
+    survival = enriched.db_source_ea_survival
+    assert (
+        survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d10"] == 1
+    )
+    assert (
+        survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d20"] == 1
+    )
+    # Byte's first EA is dead post_d810; second survives.
+    assert (
+        survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d10"] == 0
+    )
+    assert (
+        survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d20"] == 1
+    )
+    # Refinement still promotes because at least one source EA survives.
+    assert enriched.final_status_refined == "preserved_redirect_with_evidence"
+
+
+def test_enrich_marks_redirect_only_finalization_loss_when_all_source_eas_dead(
+    tmp_path: Path,
+) -> None:
+    """A byte whose every source EA is gone at post_d810 demotes to
+    `redirect_only_finalization_loss` after enrichment."""
+    db = tmp_path / "all_dead.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT);
+            CREATE TABLE instructions(snapshot_id INTEGER, ea_hex TEXT,
+                dstr TEXT, dest_stkoff INTEGER);
+            INSERT INTO snapshots VALUES
+                (5,  'maturity_MMAT_GLBOPT1_pre_d810'),
+                (18, 'maturity_MMAT_GLBOPT1_post_d810');
+            """
+        )
+        # snap5 has the EA; snap18 has nothing matching.
+        conn.execute(
+            "INSERT INTO instructions(snapshot_id, ea_hex, dstr, dest_stkoff)"
+            " VALUES (?,?,?,?)",
+            (5, "0x0000000180014d10", "stx ...", 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        source_eas=("0x0000000180014D10",),
+    )
+    [enriched] = enrich_rows_with_db([row], db)
+    assert enriched.final_status_refined == "redirect_only_finalization_loss"
 
 
 def test_parse_trace_line_treats_dash_source_eas_as_empty_tuple() -> None:
