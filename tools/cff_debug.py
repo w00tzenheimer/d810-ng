@@ -102,10 +102,13 @@ def latest_db(name: str) -> Path:
     d = worktree_log_dir(name)
     if not d.is_dir():
         _die(f"diag log dir not found: {d}")
-    cand = list(d.glob("*.diag.sqlite3"))
+    cand = [
+        p for p in d.glob("*.diag.sqlite3")
+        if p.is_file() and p.stat().st_size > 0
+    ]
     p = _latest(cand)
     if p is None:
-        _die(f"no diag sqlite3 DBs under {d}")
+        _die(f"no non-empty diag sqlite3 DBs under {d}")
     return p  # type: ignore[return-value]
 
 
