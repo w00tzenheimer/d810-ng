@@ -168,6 +168,11 @@ class ByteRecord:
     def render_row_log(self) -> str:
         primary_anchor = self.entry_anchors and min(self.entry_anchors)
         primary_dag_node = next(iter(sorted(self.dag_node_keys)), "?")
+        # Emit the byte's source EAs so the d810.diagnostics layer can
+        # cross-reference snap18 survival per EA (refines preserved_redirect
+        # into preserved_redirect_with_evidence vs
+        # redirect_only_finalization_loss).
+        source_eas_str = ",".join(sorted(self.source_ea_hex_set)) or "-"
         parts = [
             f"byte={self.byte_index}",
             f"block_ea={self.block_ea_hex or '?'}",
@@ -175,6 +180,7 @@ class ByteRecord:
             f"entry_anchor={primary_anchor if primary_anchor else '?'}",
             f"dag_node={primary_dag_node}",
             f"n_evidence={len(self.evidence)}",
+            f"source_eas={source_eas_str}",
             f"in_dag={1 if self.in_dag else 0}",
             f"in_corrected_dag={1 if self.in_corrected_dag else 0}",
             f"in_region_table={1 if self.in_region_table else 0}",
