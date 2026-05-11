@@ -971,12 +971,17 @@ class LiveMbaAdapter:
                             op, template_byte_index, target_byte_index, _ih,
                         ):
                             patch_count += 1
-                # NOTE: per-anchor buffer-offset wrapping was attempted to
-                # spread anchors across distinct slots but triggers
-                # INTERR 50827. Without this, all anchors write to the
-                # same slot and IDA dedups to one. Accept partial result:
-                # one byte (the last in chain) survives as a buffer write,
-                # rest visible only via the XOR mechanism (multi_byte env).
+                # Add (k-1)*8 to the m_stx ADDRESS operand so each
+                # anchor writes to a distinct slot (otherwise IDA dedups
+                # all 5 to one).
+                # m_stx layout per SDK: l=value, r=segment(2), d=address.
+                # So we wrap cur.d (the address), NOT cur.r (segment).
+                if int(cur.opcode) == int(_ih.m_stx) and offset_delta != 0:
+                    if cur.d is not None:
+                        _wrap_address_with_offset(
+                            cur.d, offset_delta, _ih,
+                            ea=int(getattr(cur, "ea", 0) or 0),
+                        )
             else:
                 anchor.make_nop(cur)
             cur = cur.next
@@ -1428,32 +1433,32 @@ def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
             _dump_mop_tree(inner, f"{label}.a", depth + 1, _ih, max_depth)
 
 
-def _wrap_address_with_offset(op, delta: int, _ih) -> bool:
+def _wrap_address_with_offset(op, delta: int, _ih, ea: int = 0) -> bool:
     """Wrap ``op`` (an m_stx address operand) as
     ``m_add(original_op_contents, mop_n=delta)`` -- adds a constant
     offset to the address so this m_stx writes to a different buffer
     slot than the template.
 
-    Used to spread multiple cloned byte_emit anchors across distinct
-    slots so IDA's optimizer doesn't dedup them as redundant writes
-    to the same address.
+    ``ea`` must be a valid mba address (the verifier checks
+    INTERR 50863 'wrong instruction address' for ea outside mba range).
     """
     if op is None or int(delta) == 0:
         return False
     try:
-        # Snapshot the current operand contents.
+        original_size = int(getattr(op, "size", 0) or 8)
         original = _ih.mop_t()
         original.assign(op)
-        # Build new m_add(original, #delta).
-        add_insn = _ih.minsn_t(0)
+        add_insn = _ih.minsn_t(int(ea))
+        add_insn.ea = int(ea)
         add_insn.opcode = _ih.m_add
         add_insn.l = original
         add_insn.r = _ih.mop_t()
-        add_insn.r.make_number(int(delta), 8)
+        add_insn.r.make_number(int(delta), original_size)
         add_insn.d = _ih.mop_t()
         add_insn.d.erase()
-        # Replace op with mop_d wrapping the new m_add.
+        add_insn.d.size = original_size
         op.create_from_insn(add_insn)
+        op.size = original_size
         return True
     except Exception:
         logger.exception("_wrap_address_with_offset failed for delta=%d", delta)
