@@ -116,8 +116,8 @@ project:
 - Docker system runner: `tools/scripts/run_system_tests_docker.sh`
 - Pseudocode dump harness: `tests/system/e2e/test_dump_function_pseudocode.py`
 - Diagnostic SQLite snapshots: `src/d810/core/diag/snapshot.py`
-- Diagnostic query CLI: `python -m d810.core.diag`
-- Merge-causality query: `python -m d810.core.diag merge-causality`
+- Diagnostic query CLI: `python -m d810.diagnostics`
+- Merge-causality query: `python -m d810.diagnostics merge-causality`
 - Block trace / lineage queries: `block-trace`, `block-lineage`, `ea-trace`
 - CFG provenance logging: `src/d810/core/diag/cfg_provenance.py`
 - Existing C/ASM samples under `samples/src/c` and `samples/src/asm`

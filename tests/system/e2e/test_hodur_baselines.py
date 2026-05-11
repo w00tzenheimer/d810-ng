@@ -196,7 +196,7 @@ class TestSemanticReferenceRegression:
 
         # Find the diag DB created during decompilation
         from d810.core.diag import get_diag_db
-        from d810.core.diag.query import rendered_program_text
+        from d810.diagnostics.query import rendered_program_text
 
         diag_conn = get_diag_db(func_ea)
         if diag_conn is None:

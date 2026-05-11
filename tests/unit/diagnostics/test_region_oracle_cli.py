@@ -1,11 +1,11 @@
-"""Unit tests for python -m d810.core.diag region-* subcommands."""
+"""Unit tests for python -m d810.diagnostics region-* subcommands."""
 from __future__ import annotations
 
 import sqlite3
 
 import pytest
 
-from d810.core.diag.__main__ import _resolve_oracle_snap_ids
+from d810.diagnostics.__main__ import _resolve_oracle_snap_ids
 
 
 def _make_conn_with_snaps(snaps: list[tuple[int, str]]) -> sqlite3.Connection:
@@ -89,7 +89,7 @@ def test_resolver_picks_snap17_strictly_before_snap18():
 
 
 def test_region_shape_subcommand_lists_persisted_features(tmp_path):
-    """Subprocess: python -m d810.core.diag region-shape lists rows."""
+    """Subprocess: python -m d810.diagnostics region-shape lists rows."""
     import json
     import os
     import subprocess
@@ -113,7 +113,7 @@ def test_region_shape_subcommand_lists_persisted_features(tmp_path):
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-shape",
+        [sys.executable, "-m", "d810.diagnostics", "region-shape",
          "--db", str(db_path), "--func-ea", "0x0000000180012df0"],
         capture_output=True, text=True, env=env,
     )
@@ -153,7 +153,7 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
 
     # Filter by source.
     r = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-shape",
+        [sys.executable, "-m", "d810.diagnostics", "region-shape",
          "--db", str(db_path), "--func-ea", "0x0000000180012df0",
          "--source", "REF"],
         capture_output=True, text=True, env=env,
@@ -164,7 +164,7 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
 
     # Filter by snapshot_id.
     r = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-shape",
+        [sys.executable, "-m", "d810.diagnostics", "region-shape",
          "--db", str(db_path), "--func-ea", "0x0000000180012df0",
          "--snapshot-id", "17"],
         capture_output=True, text=True, env=env,
@@ -175,7 +175,7 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
 
     # JSON output.
     r = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-shape",
+        [sys.executable, "-m", "d810.diagnostics", "region-shape",
          "--db", str(db_path), "--func-ea", "0x0000000180012df0",
          "--json"],
         capture_output=True, text=True, env=env,
@@ -187,7 +187,7 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
 
 
 def test_region_diff_happy_path_writes_artifact(tmp_path):
-    """End-to-end: subprocess `python -m d810.core.diag region-diff`."""
+    """End-to-end: subprocess `python -m d810.diagnostics region-diff`."""
     import os
     import subprocess
     import sys
@@ -215,7 +215,7 @@ def test_region_diff_happy_path_writes_artifact(tmp_path):
     out = tmp_path / "test.oracle.md"
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--persist", "--output", str(out)],
         capture_output=True, text=True, env=env,
@@ -228,7 +228,7 @@ def test_region_diff_happy_path_writes_artifact(tmp_path):
 
 
 def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
-    """Subprocess: python -m d810.core.diag terminal-tail-dce."""
+    """Subprocess: python -m d810.diagnostics terminal-tail-dce."""
     import json, os, sys, subprocess
     from d810.core.diag.schema import create_tables
 
@@ -251,7 +251,7 @@ def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "terminal-tail-dce",
+        [sys.executable, "-m", "d810.diagnostics", "terminal-tail-dce",
          "--db", str(db), "--func-ea", "0x0000000180012df0"],
         capture_output=True, text=True, env=env,
     )
@@ -288,7 +288,7 @@ def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "terminal-tail-dce",
+        [sys.executable, "-m", "d810.diagnostics", "terminal-tail-dce",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--byte-index", "2"],
         capture_output=True, text=True, env=env,
@@ -350,7 +350,7 @@ def test_region_diff_emits_real_d810_feature_values(tmp_path):
     out = tmp_path / "real.oracle.md"
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--persist", "--output", str(out), "--json"],
         capture_output=True, text=True, env=env,
@@ -436,7 +436,7 @@ def test_region_diff_microblocks_evidence_includes_block_serial(tmp_path):
     out = tmp_path / "evidence.oracle.md"
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--microblocks", "--output", str(out)],
         capture_output=True, text=True, env=env,
@@ -511,7 +511,7 @@ def test_region_diff_survival_detects_byte_emit_block_at_snap17(tmp_path):
     out = tmp_path / "out.oracle.md"
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--output", str(out), "--json"],
         capture_output=True, text=True, env=env,

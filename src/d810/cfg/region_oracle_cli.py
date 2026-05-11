@@ -1,4 +1,4 @@
-"""CLI handler for `python -m d810.core.diag region-diff`.
+"""CLI handler for `python -m d810.diagnostics region-diff`.
 
 Lives in d810.cfg because the layered-architecture contract forbids
 d810.core.diag from importing d810.cfg. The diag CLI dispatches here

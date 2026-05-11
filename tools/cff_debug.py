@@ -6,7 +6,7 @@ Subcommands wrap the recurring loop of:
     2. locate the latest dump .txt and diag .sqlite3 for a worktree
     3. extract the AFTER pseudocode, STATS, residuals, witness variables
     4. inspect a semantic state node via the diag DB
-    5. passthrough to `python -m d810.core.diag` with PYTHONPATH pre-wired
+    5. passthrough to `python -m d810.diagnostics` with PYTHONPATH pre-wired
 
 All commands operate against a worktree under `<repo>/.worktrees/<name>/`
 (default: `unflattening-engine-extraction`). Absolute paths are derived from
@@ -27,8 +27,19 @@ from pathlib import Path
 SCRIPT_PATH = Path(__file__).resolve()
 TOOLS_DIR = SCRIPT_PATH.parent
 TOOLS_SCRIPTS_DIR = TOOLS_DIR / "scripts"
-REPO_ROOT = SCRIPT_PATH.parents[1]
-DEFAULT_WORKTREE = "unflattening-engine-extraction"
+
+# Detect whether cff_debug is being run from inside an existing worktree
+# checkout (under ``<repo>/.worktrees/<name>/tools/cff_debug.py``) or from a
+# bare repo checkout (``<repo>/tools/cff_debug.py``).  When inside a worktree
+# the "real" repo root is two parents above ``.worktrees/``, and the worktree
+# name is the immediate parent of ``.worktrees/``.
+if len(SCRIPT_PATH.parents) >= 4 and SCRIPT_PATH.parents[2].name == ".worktrees":
+    REPO_ROOT = SCRIPT_PATH.parents[3]
+    _CURRENT_WORKTREE: str | None = SCRIPT_PATH.parents[1].name
+else:
+    REPO_ROOT = SCRIPT_PATH.parents[1]
+    _CURRENT_WORKTREE = None
+DEFAULT_WORKTREE = _CURRENT_WORKTREE or "unflattening-engine-extraction"
 DEFAULT_FUNCTION = "sub_7FFD3338C040"
 DEFAULT_PROJECT = "hodur_flag2.json"
 DEFAULT_CAPTURE_POST_MATURITY = "8"  # MMAT_GLBOPT1
@@ -305,7 +316,7 @@ def cmd_db(args: argparse.Namespace) -> int:
     src_path = str(worktree / "src")
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
-    argv = [sys.executable, "-m", "d810.core.diag", *passthrough]
+    argv = [sys.executable, "-m", "d810.diagnostics", *passthrough]
     return subprocess.call(argv, env=env)
 
 
@@ -335,7 +346,7 @@ def cmd_trace(args: argparse.Namespace) -> int:
     diag_argv = [
         sys.executable,
         "-m",
-        "d810.core.diag",
+        "d810.diagnostics",
         "hcc-byte-cascade-trace",
         "--log",
         str(log_file),
@@ -491,7 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "db",
-        help="passthrough to `python -m d810.core.diag`; args after `--`",
+        help="passthrough to `python -m d810.diagnostics`; args after `--`",
     )
     _add_worktree(sp)
     sp.add_argument("args", nargs=argparse.REMAINDER,

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag.__main__ import main
-from d810.core.diag.query import block_trace_by_ea
+from d810.diagnostics.__main__ import main
+from d810.diagnostics.query import block_trace_by_ea
 from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import _dual
 

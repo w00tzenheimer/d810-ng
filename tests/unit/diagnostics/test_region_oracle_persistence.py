@@ -21,7 +21,7 @@ from d810.cfg.ref_region_oracle import (
     RegionFeature,
     spec_for,
 )
-from d810.core.diag.__main__ import (
+from d810.diagnostics.__main__ import (
     _oracle_persist_dce_causes,
     _oracle_persist_features,
 )

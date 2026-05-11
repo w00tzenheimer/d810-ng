@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag.hcc_byte_cascade_trace import (
+from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
     enrich_rows_with_db,
     format_report,
