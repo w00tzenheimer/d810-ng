@@ -960,16 +960,37 @@ class LiveMbaAdapter:
             int(_ih.m_add), int(_ih.m_and), int(_ih.m_mul),
         }
         cur = anchor.head
+        patch_count = 0
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
                 # Patch byte_index in operand trees.
                 for op in (cur.l, cur.r, cur.d):
                     if op is not None:
-                        _patch_v190_byte_const(
+                        if _patch_v190_byte_const(
                             op, template_byte_index, target_byte_index, _ih,
-                        )
+                        ):
+                            patch_count += 1
             else:
                 anchor.make_nop(cur)
+            cur = cur.next
+        logger.info(
+            "byte_anchor[byte_store]: clone of block %d for byte %d->%d: %d patches applied",
+            template_block.serial, template_byte_index, target_byte_index, patch_count,
+        )
+        # Dump ALL kept instructions so we can see actual operand shape.
+        cur = anchor.head
+        idx = 0
+        while cur is not None:
+            if int(cur.opcode) in byte_emit_opcodes:
+                try:
+                    ds = cur.dstr() if callable(getattr(cur, "dstr", None)) else ""
+                except Exception:
+                    ds = "<err>"
+                logger.info(
+                    "byte_anchor[byte_store]:   anchor[%d] kept insn[%d]: %s",
+                    anchor.serial, idx, ds[:400],
+                )
+                idx += 1
             cur = cur.next
 
         # Now wire BLT_1WAY topology and append goto.
@@ -1350,7 +1371,33 @@ def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
     t = int(getattr(op, "t", -1))
     patched = False
 
-    # Case 1: bare mop_S@0x190 (byte 0 form).
+    # Case 1a: folded mop_S at offset 0x190 + old_index (any byte 0..6).
+    # IDA's microcode folds (v190 + #k) into a single mop_S with
+    # stkoff=0x190+k and renders it textually as "%var_190.8+#k.8"
+    # (using the named stkvar at 0x190 as the base label).
+    if t == int(_ih.mop_S):
+        s = getattr(op, "s", None)
+        off_val = int(getattr(s, "off", -1)) if s is not None else -1
+        # Log every mop_S we see while looking for byte_index patch.
+        if 0x180 <= off_val <= 0x200:
+            try:
+                ds_text = op.dstr() if callable(getattr(op, "dstr", None)) else ""
+            except Exception:
+                ds_text = ""
+            logger.info(
+                "PATCHER trace: visited mop_S off=0x%x size=%d dstr=%s",
+                off_val, int(getattr(op, "size", 0) or 0), ds_text[:50],
+            )
+        if s is not None and off_val == 0x190 + int(old_index):
+            try:
+                op.s.off = 0x190 + int(new_index)
+                logger.info("PATCHER trace: PATCHED mop_S off 0x%x -> 0x%x",
+                            0x190 + int(old_index), 0x190 + int(new_index))
+                return True
+            except Exception as exc:
+                logger.info("PATCHER trace: assign failed: %s", exc)
+
+    # Case 1b: bare mop_S@0x190 (legacy byte 0 form, kept for completeness).
     if old_index == 0 and t == int(_ih.mop_S):
         s = getattr(op, "s", None)
         if s is not None and int(getattr(s, "off", -1)) == 0x190:
