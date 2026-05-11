@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Terminal-tail region matcher CLI (read-only).
 
+.. deprecated:: 2026-05-11
+    Prefer ``python -m d810.diagnostics terminal-tail-audit`` or
+    ``./tools/cff_debug.py byte-audit``. This script is kept as a
+    compatibility wrapper; the parsing/query logic now lives at
+    ``src/d810/diagnostics/terminal_tail_audit.py`` with unit tests
+    under ``tests/unit/diagnostics/test_terminal_tail_audit.py``.
+
 Reads ``TerminalByteEmitterFact`` rows from a diag DB and produces the
 byte_emit[k] timeline + first-loss report described in the
 ``terminal_tail_region_matcher`` module docstring.

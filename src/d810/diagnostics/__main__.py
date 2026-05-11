@@ -1770,6 +1770,28 @@ def main(argv: list[str] | None = None) -> int:
         "--json", action="store_true", dest="json_output",
     )
 
+    p_tt_audit = sub.add_parser(
+        "terminal-tail-audit",
+        parents=[common],
+        help=(
+            "Audit TerminalByteEmitterFact rows in the diag DB: byte_emit[k]"
+            " timeline + first-loss report, optionally with intermediate-"
+            "snapshot loss localization."
+        ),
+    )
+    p_tt_audit.add_argument(
+        "--show-edges", action="store_true",
+        help="Print every observation with snap / maturity / phase / role / src_form",
+    )
+    p_tt_audit.add_argument(
+        "--localize", action="store_true",
+        help="Run intermediate-snapshot loss localization (GLBOPT1 only)",
+    )
+    p_tt_audit.add_argument(
+        "--initial-snap-id", type=int, default=5,
+        help="Snapshot id of the initial pre-D810 state (default: 5)",
+    )
+
     importlib.import_module(
         "d810.cfg.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
@@ -1789,6 +1811,7 @@ def main(argv: list[str] | None = None) -> int:
         "terminal-tail-dce",
         "region-diff",
         "hcc-byte-cascade-trace",
+        "terminal-tail-audit",
     ):
         # region-diff is function-EA-scoped; it resolves its own snap IDs
         # via labels and tolerates a sparse / schemaless diag DB by
@@ -2475,6 +2498,24 @@ def main(argv: list[str] | None = None) -> int:
             print(format_report_json(rows))
         else:
             print(format_report(rows, func_label=args.func_label))
+        conn.close()
+        return 0
+
+    elif args.command == "terminal-tail-audit":
+        from d810.diagnostics.terminal_tail_audit import run_audit
+
+        db_path = Path(args.db)
+        if not db_path.exists():
+            print(f"error: db not found: {db_path}", file=sys.stderr)
+            conn.close()
+            return 2
+        text = run_audit(
+            db_path,
+            show_edges=args.show_edges,
+            localize=args.localize,
+            initial_snap_id=args.initial_snap_id,
+        )
+        print(text, end="")
         conn.close()
         return 0
 
