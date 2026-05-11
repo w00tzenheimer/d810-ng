@@ -62,6 +62,7 @@ docs/
 docs/*
 !docs/recon/
 !docs/recon/linearized_state_dag.md
+!docs/debug-tooling-migration.md
 .tmp/
 
 pyrefly.toml
