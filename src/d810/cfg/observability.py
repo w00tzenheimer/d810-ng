@@ -30,7 +30,10 @@ See:
 """
 from __future__ import annotations
 
-from d810.core.diag import register_lineage_drainer as register_lineage_drainer
+from d810.core.diag import (
+    get_diag_db as get_diag_db,
+    register_lineage_drainer as register_lineage_drainer,
+)
 from d810.core.diag.cfg_provenance import (
     drain_pending_provenance as drain_pending_provenance,
     log_cfg_provenance as record_cfg_provenance,
@@ -42,6 +45,7 @@ from d810.core.diag.snapshot import (
 
 __all__ = [
     "drain_pending_provenance",
+    "get_diag_db",
     "record_cfg_provenance",
     "record_watch_block_transition",
     "register_lineage_drainer",
