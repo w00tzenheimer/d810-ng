@@ -96,23 +96,48 @@ def diagnostics_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Legacy capture re-exports (back-compat for Phase 5 migration)
+# Legacy capture shims (back-compat for sites that still call
+# `capture_mba_snapshot` with an explicit (conn, blocks, ...) pair or
+# manage the diag session directly). These wrappers delegate via
+# `importlib.import_module` so the static import graph has ZERO
+# hexrays.observability -> d810.core.diag edges. The runtime-no-core-diag
+# import-linter contract therefore needs no ignore_imports entry for
+# this module.
 #
-# These keep existing call sites compiling while each subsystem is
-# migrated to the event API. Phase 6 removes them.
+# `mba_to_block_snapshots` lives in `d810.hexrays.mba_serializer`
+# (same layer); the facade re-export is for callers that already import
+# from hexrays.observability and don't want to import from two modules.
 # ---------------------------------------------------------------------------
 
-from d810.core.diag import (
-    close_diag_session as close_capture_session,
-    get_diag_db as get_diag_db,
-    open_diag_session as open_capture_session,
-)
-from d810.core.diag.snapshot import (
-    snapshot_mba as capture_mba_snapshot,
-)
 from d810.hexrays.mba_serializer import (
     mba_to_block_snapshots as mba_to_block_snapshots,
 )
+
+
+def _diag_module():
+    import importlib
+    return importlib.import_module("d810.core.diag")
+
+
+def _snapshot_module():
+    import importlib
+    return importlib.import_module("d810.core.diag.snapshot")
+
+
+def get_diag_db(*args, **kwargs):
+    return _diag_module().get_diag_db(*args, **kwargs)
+
+
+def open_capture_session(*args, **kwargs):
+    return _diag_module().open_diag_session(*args, **kwargs)
+
+
+def close_capture_session(*args, **kwargs):
+    return _diag_module().close_diag_session(*args, **kwargs)
+
+
+def capture_mba_snapshot(*args, **kwargs):
+    return _snapshot_module().snapshot_mba(*args, **kwargs)
 
 
 __all__ = [

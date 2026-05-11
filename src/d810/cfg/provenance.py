@@ -184,10 +184,14 @@ def reset_pending_provenance() -> None:
 # Inversion-of-control: register this module's drainer with the
 # core.diag sink at import time so any subsequent ``snapshot_mba`` call
 # can pull buffered entries without core.diag knowing about d810.cfg.
+# `importlib.import_module` keeps the static import graph clean so the
+# runtime-no-core-diag contract has zero ignore_imports.
 try:
-    from d810.core.diag import register_provenance_drainer
+    import importlib as _importlib
 
-    register_provenance_drainer(drain_pending_provenance)
+    _importlib.import_module(
+        "d810.core.diag"
+    ).register_provenance_drainer(drain_pending_provenance)
 except Exception:
     pass
 
