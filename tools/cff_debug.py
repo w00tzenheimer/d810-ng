@@ -397,6 +397,65 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_residual_worksheet(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics residual-worksheet`.
+
+    Resolves the latest diag DB + worktree d810.log (or honours --diag-db
+    / --log) and forwards the snapshot/format/output flags untouched.
+    All correlation logic lives in
+    ``d810.diagnostics.residual_worksheet``.
+
+    Distinct from `cff_debug.py residuals`, which is a text grep over
+    AFTER pseudocode for `<var> = 0x...` patterns.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    diag_db = (
+        Path(args.diag_db).expanduser().resolve()
+        if args.diag_db
+        else resolve_db(wt, None)
+    )
+    log_path: Path | None
+    if args.log:
+        log_path = Path(args.log).expanduser().resolve()
+    else:
+        candidate = worktree_log_dir(wt) / "d810.log"
+        log_path = candidate if candidate.exists() else None
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "residual-worksheet",
+        "--diag-db", str(diag_db),
+    ]
+    if args.recon_db:
+        diag_argv += ["--recon-db", args.recon_db]
+    if log_path is not None:
+        diag_argv += ["--log", str(log_path)]
+    if args.func_ea is not None:
+        diag_argv += ["--func-ea", args.func_ea]
+    if args.snapshot_id is not None:
+        diag_argv += ["--snapshot-id", str(args.snapshot_id)]
+    if args.format:
+        diag_argv += ["--format", args.format]
+    if args.output:
+        diag_argv += ["--output", args.output]
+    if args.list_snapshots:
+        diag_argv.append("--list-snapshots")
+    print(f"DIAG_DB={diag_db}", file=sys.stderr)
+    if log_path is not None:
+        print(f"LOG={log_path}", file=sys.stderr)
+    print(
+        f"cff-debug: residual-worksheet: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_oracle(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics region-diff`.
 
@@ -934,6 +993,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_returns)
+
+    sp = sub.add_parser(
+        "residual-worksheet",
+        help=(
+            "Build a residual dispatcher worksheet from the latest diag"
+            " DB + worktree d810.log. Wraps `python -m d810.diagnostics"
+            " residual-worksheet`. Distinct from `cff_debug.py residuals`,"
+            " which is a text grep over AFTER pseudocode."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument(
+        "--diag-db", default=None,
+        help="explicit diag SQLite DB (default: latest in worktree)",
+    )
+    sp.add_argument(
+        "--recon-db", default=None,
+        help="explicit recon SQLite DB (default: auto-detect)",
+    )
+    sp.add_argument(
+        "--log", default=None,
+        help="explicit text log/dump (default: worktree's d810.log)",
+    )
+    sp.add_argument(
+        "--func-ea", default=None,
+        help="function EA in hex (default: derived from snapshot metadata)",
+    )
+    sp.add_argument(
+        "--snapshot-id", type=int, default=None,
+        help="primary worksheet snapshot ID (default: resolved by maturity/phase)",
+    )
+    sp.add_argument(
+        "--format", choices=("markdown", "tsv", "json"), default=None,
+        help="output format (default: markdown)",
+    )
+    sp.add_argument(
+        "--output", default=None,
+        help="write output to this path instead of stdout",
+    )
+    sp.add_argument(
+        "--list-snapshots", action="store_true",
+        help="list snapshots in the diag DB and exit",
+    )
+    sp.set_defaults(func=cmd_residual_worksheet)
 
     sp = sub.add_parser(
         "oracle",
