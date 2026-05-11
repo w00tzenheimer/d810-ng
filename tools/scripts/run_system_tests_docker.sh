@@ -389,7 +389,7 @@ if [ -n "$ORACLE_DB" ]; then
     ORACLE_OUT="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.md"
     ORACLE_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.stderr.log"
   fi
-  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.core.diag region-diff \
+  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.diagnostics region-diff \
       --auto --persist \
       --db "$ORACLE_DB" \
       --output "$ORACLE_OUT" \

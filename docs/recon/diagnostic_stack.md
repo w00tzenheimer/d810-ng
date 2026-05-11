@@ -147,7 +147,7 @@ evidence_json          TEXT
 
 ## CLI subcommands
 
-All run via `PYTHONPATH=src python -m d810.core.diag <cmd> --db <path>`.
+All run via `PYTHONPATH=src python -m d810.diagnostics <cmd> --db <path>`.
 Most accept `--persist` to write back into the diag DB and `--json`
 for machine-readable output.
 
@@ -165,15 +165,15 @@ Typical workflow on a captured snap:
 ```bash
 DB=$(ls -t .tmp/logs/d810_logs/*.diag.sqlite3 | head -1)
 
-PYTHONPATH=src python -m d810.core.diag dag-edge-diagnostics \
+PYTHONPATH=src python -m d810.diagnostics dag-edge-diagnostics \
     --db $DB --snap-id 6 --kind terminal_tail --persist
-PYTHONPATH=src python -m d810.core.diag dag-edge-alternate-correlations \
+PYTHONPATH=src python -m d810.diagnostics dag-edge-alternate-correlations \
     --db $DB --snap-id 6 --persist
-PYTHONPATH=src python -m d810.core.diag dag-edge-alternate-selections \
+PYTHONPATH=src python -m d810.diagnostics dag-edge-alternate-selections \
     --db $DB --snap-id 6 --max-depth 4 --persist
 
 # Inspect the byte5 case
-PYTHONPATH=src python -m d810.core.diag dag-edge-alternate-selections \
+PYTHONPATH=src python -m d810.diagnostics dag-edge-alternate-selections \
     --db $DB --snap-id 6 --collapsed-edge 144
 ```
 

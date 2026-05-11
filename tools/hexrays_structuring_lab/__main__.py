@@ -383,7 +383,7 @@ def build_summary(
         raise LabError(f"diagnostic DB not found: {db_path}")
     if SRC_DIR.is_dir() and str(SRC_DIR) not in sys.path:
         sys.path.insert(0, str(SRC_DIR))
-    from d810.core.diag.query import merge_causality
+    from d810.diagnostics.query import merge_causality
 
     conn = sqlite3.connect(str(db_path))
     try:

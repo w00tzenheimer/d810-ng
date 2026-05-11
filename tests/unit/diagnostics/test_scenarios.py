@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from d810.core.diag.query import block_detail, chain, return_paths, var_writes
+from d810.diagnostics.query import block_detail, chain, return_paths, var_writes
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 

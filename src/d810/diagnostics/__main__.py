@@ -2,25 +2,25 @@
 
 Usage::
 
-    python -m d810.core.diag chain --db path.sqlite3 131 174 176 200 23 32 62 206 207 218
-    python -m d810.core.diag var-writes --db path.sqlite3 0x7F0
-    python -m d810.core.diag block --db path.sqlite3 206 --insns
-    python -m d810.core.diag return-paths --db path.sqlite3 --snapshot -1
-    python -m d810.core.diag program --db path.sqlite3 --snapshot -1
-    python -m d810.core.diag program --db path.sqlite3 --snapshot -1 --nodes
-    python -m d810.core.diag program --db path.sqlite3 --snapshot 12 --variant semantic_reference_like
-    python -m d810.core.diag program --db path.sqlite3 --maturity GLBOPT1 --phase post_d810
-    python -m d810.core.diag state-local --db path.sqlite3 --snapshot 6 0x298372CC
-    python -m d810.core.diag block-trace --db path.sqlite3 --ea 0x1800134A5
-    python -m d810.core.diag block-trace --db path.sqlite3 --snapshot 12 --serial 206
-    python -m d810.core.diag block-lineage --db path.sqlite3 --snapshot 12 --serial 206
-    PYTHONPATH=src python3 -m d810.core.diag program \\
+    python -m d810.diagnostics chain --db path.sqlite3 131 174 176 200 23 32 62 206 207 218
+    python -m d810.diagnostics var-writes --db path.sqlite3 0x7F0
+    python -m d810.diagnostics block --db path.sqlite3 206 --insns
+    python -m d810.diagnostics return-paths --db path.sqlite3 --snapshot -1
+    python -m d810.diagnostics program --db path.sqlite3 --snapshot -1
+    python -m d810.diagnostics program --db path.sqlite3 --snapshot -1 --nodes
+    python -m d810.diagnostics program --db path.sqlite3 --snapshot 12 --variant semantic_reference_like
+    python -m d810.diagnostics program --db path.sqlite3 --maturity GLBOPT1 --phase post_d810
+    python -m d810.diagnostics state-local --db path.sqlite3 --snapshot 6 0x298372CC
+    python -m d810.diagnostics block-trace --db path.sqlite3 --ea 0x1800134A5
+    python -m d810.diagnostics block-trace --db path.sqlite3 --snapshot 12 --serial 206
+    python -m d810.diagnostics block-lineage --db path.sqlite3 --snapshot 12 --serial 206
+    PYTHONPATH=src python3 -m d810.diagnostics program \\
       --db /Users/mahmoud/src/idapro/d810/.worktrees/state-label-linearization/.tmp/logs/d810_logs/0000000180012b60_1774805543_33.diag.sqlite3 \\
       --maturity GLBOPT1 \\
       --phase post_d810 \\
       --variant semantic_reference_like
-    python -m d810.core.diag program-variants --db path.sqlite3 --snapshot -1
-    python -m d810.core.diag ea-trace --db path.sqlite3 0x1800134A5
+    python -m d810.diagnostics program-variants --db path.sqlite3 --snapshot -1
+    python -m d810.diagnostics ea-trace --db path.sqlite3 0x1800134A5
 
 Notes::
 
@@ -66,7 +66,7 @@ from d810.core.diag.edge_diagnostics import (
     persist_edge_diagnostics,
 )
 from d810.core.diag.formatting import format_block_id
-from d810.core.diag.query import (
+from d810.diagnostics.query import (
     block_detail,
     block_lineage,
     block_trace_by_ea,
@@ -1201,7 +1201,7 @@ def _oracle_persist_dce_causes(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for ``python -m d810.core.diag``."""
+    """Entry point for ``python -m d810.diagnostics``."""
     # Common args shared by all subcommands via parents= mechanism.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -1222,7 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser = argparse.ArgumentParser(
-        prog="d810.core.diag",
+        prog="d810.diagnostics",
         description="Query MBA diagnostic snapshots.",
     )
     sub = parser.add_subparsers(dest="command")
@@ -2454,7 +2454,7 @@ def main(argv: list[str] | None = None) -> int:
         return rc
 
     elif args.command == "hcc-byte-cascade-trace":
-        from d810.core.diag.hcc_byte_cascade_trace import (
+        from d810.diagnostics.hcc_byte_cascade_trace import (
             enrich_rows_with_db,
             format_report,
             format_report_json,

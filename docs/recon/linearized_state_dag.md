@@ -154,7 +154,7 @@ Node-local fact tables:
 Human rendering should be done on demand from these tables:
 
 ```bash
-PYTHONPATH=src python -m d810.core.diag state-local --db "$DB" --snapshot 6 0x298372CC
+PYTHONPATH=src python -m d810.diagnostics state-local --db "$DB" --snapshot 6 0x298372CC
 ```
 
 The DB renderer is diagnostic only. It exists so investigations can answer

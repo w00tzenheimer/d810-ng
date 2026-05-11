@@ -34,6 +34,7 @@ name = Layered architecture prevents upward imports
 type = layers
 layers =
     d810.ui
+    d810.diagnostics
     d810.optimizers
     d810.recon
     d810.backends

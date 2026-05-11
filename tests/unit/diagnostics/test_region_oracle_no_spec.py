@@ -1,7 +1,7 @@
 """No-spec stub and structured-error tests for `region-diff`.
 
 The production handler lives in d810.cfg.region_oracle_cli. These tests
-shell out to `python -m d810.core.diag region-diff` to exercise the
+shell out to `python -m d810.diagnostics region-diff` to exercise the
 full importlib-dispatched path.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ def test_region_diff_unregistered_func_returns_no_ref_spec_stub_to_stdout(tmp_pa
     conn.close()
 
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x00000000DEADBEEF"],
         capture_output=True, text=True, env=_env(),
     )
@@ -57,7 +57,7 @@ def test_region_diff_unregistered_func_writes_stub_to_output_path(tmp_path):
 
     out = tmp_path / "stub.oracle.md"
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x00000000DEADBEEF",
          "--output", str(out)],
         capture_output=True, text=True, env=_env(),
@@ -77,7 +77,7 @@ def test_region_diff_schema_missing_snapshots_exits_2(tmp_path):
     conn.close()
 
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0"],
         capture_output=True, text=True, env=_env(),
     )
@@ -95,7 +95,7 @@ def test_region_diff_unresolvable_snap_labels_exits_2(tmp_path):
     conn.close()
 
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0"],
         capture_output=True, text=True, env=_env(),
     )
@@ -113,7 +113,7 @@ def test_region_diff_snap17_ge_snap18_exits_2(tmp_path):
     conn.close()
 
     result = subprocess.run(
-        [sys.executable, "-m", "d810.core.diag", "region-diff",
+        [sys.executable, "-m", "d810.diagnostics", "region-diff",
          "--db", str(db), "--func-ea", "0x0000000180012df0",
          "--snap17", "5", "--snap18", "3"],
         capture_output=True, text=True, env=_env(),
