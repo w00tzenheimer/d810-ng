@@ -65,36 +65,50 @@ class ByteCascadeRow:
     source_eas: tuple[str, ...] = ()
     raw_fields: dict[str, str] = field(default_factory=dict)
     db_var190_refs: dict[str, int] = field(default_factory=dict)
+    db_source_ea_survival: dict[str, dict[str, int]] = field(default_factory=dict)
 
     @property
     def final_status_refined(self) -> str:
-        """Refine ``preserved_redirect`` using the snap18 var_190 cross-ref.
+        """Refine ``preserved_redirect`` using **source-EA-level** snap-18 survival.
 
-        Returns the original :attr:`final_status` unchanged for all other
-        statuses, and for ``preserved_redirect`` when no DB enrichment is
-        available (we cannot decide). Otherwise:
+        The byte-wide ``%var_190.8+#k.8`` LIKE count is too coarse to drive
+        the decision -- it can promote a row to ``with_evidence`` because
+        SOME ``var_190+#k`` ref survives in a live block, even when the
+        specific m_stx EA that the byte's HCC redirect points at is gone.
+        So the refinement requires evidence on :attr:`source_eas`:
 
-        - ``preserved_redirect_with_evidence`` when at least one snapshot
-          whose label contains ``post_d810`` or ``MMAT_LVARS`` has a
-          positive var_190 reference count -- the byte's m_stx read
-          survived IDA's ``optimize_global`` DCE.
-        - ``redirect_only_finalization_loss`` when *every* such snapshot
-          shows zero references -- the redirect routes flow to/through the
-          byte's block but doesn't materialise the byte-write evidence,
-          and IDA finalisation drops it.
+        - For each finalization snapshot (see
+          :func:`_is_finalization_evidence_label`), look up the per-EA
+          count in :attr:`db_source_ea_survival`.
+        - ``preserved_redirect_with_evidence`` when *any* of the byte's
+          source EAs survives in *any* finalization snapshot.
+        - ``redirect_only_finalization_loss`` when *every* source EA is
+          dead in *every* finalization snapshot.
+        - Stay ``preserved_redirect`` when the row has no source EAs, no
+          source-EA DB enrichment, or no finalization snapshots in the DB.
+          We must not promote on insufficient evidence.
+
+        Non-``preserved_redirect`` statuses pass through unchanged.
+        ``db_var190_refs`` is retained for informational cross-reference
+        rendering only; it no longer drives the refinement.
         """
         if self.final_status != "preserved_redirect":
             return self.final_status
-        if not self.db_var190_refs:
+        if not self.source_eas or not self.db_source_ea_survival:
             return self.final_status
-        post_d810_counts = [
-            count
-            for label, count in self.db_var190_refs.items()
-            if "post_d810" in label or "MMAT_LVARS" in label
+        finalization_per_ea = [
+            per_ea
+            for label, per_ea in self.db_source_ea_survival.items()
+            if _is_finalization_evidence_label(label)
         ]
-        if not post_d810_counts:
+        if not finalization_per_ea:
             return self.final_status
-        if any(count > 0 for count in post_d810_counts):
+        any_survives = any(
+            count > 0
+            for per_ea in finalization_per_ea
+            for count in per_ea.values()
+        )
+        if any_survives:
             return "preserved_redirect_with_evidence"
         return "redirect_only_finalization_loss"
 
@@ -148,6 +162,32 @@ def _coerce_ea_list(value: str) -> tuple[str, ...]:
     if text in ("", "-"):
         return ()
     return tuple(item.strip() for item in text.split(",") if item.strip())
+
+
+def _is_finalization_evidence_label(label: str) -> bool:
+    """Return True if *label* is downstream of GLBOPT1 finalization.
+
+    The diag DB also contains early ``LOCOPT_post_d810`` and
+    ``CALLS_post_d810`` captures. Those are before HCC and before the
+    snap17 -> snap18 ``optimize_global`` loss we are classifying, so they
+    must not promote a redirect-only row to "with evidence".
+    """
+    text = str(label or "")
+    if text == "post_d810":
+        return True
+    if text.startswith("dump_raw_"):
+        return False
+    if text.startswith("dump_d810_"):
+        return True
+    if "MMAT_LVARS" in text:
+        return True
+    if "MMAT_GLBOPT1" in text:
+        return "post_d810" in text
+    if "MMAT_GLBOPT2" in text or "MMAT_GLBOPT3" in text:
+        return True
+    if "GLBOPT" in text and "post_d810" in text:
+        return True
+    return False
 
 
 def parse_trace_line(line: str) -> ByteCascadeRow | None:
@@ -241,10 +281,11 @@ def _count_var190_refs_per_snapshot(
     try:
         cursor = conn.execute(
             """
-            SELECT s.id, s.label, COUNT(*) AS n
-            FROM instructions i
-            JOIN snapshots s ON s.id = i.snapshot_id
-            WHERE i.dstr LIKE ?
+            SELECT s.id, s.label, COUNT(i.dstr) AS n
+            FROM snapshots s
+            LEFT JOIN instructions i
+              ON i.snapshot_id = s.id
+             AND i.dstr LIKE ?
             GROUP BY s.id, s.label
             ORDER BY s.id
             """,

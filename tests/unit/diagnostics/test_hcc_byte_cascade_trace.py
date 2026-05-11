@@ -280,8 +280,10 @@ def test_enrich_counts_var190_refs_per_snapshot(tmp_path: Path) -> None:
     refs_byte6 = enriched[1].db_var190_refs
     assert refs_byte3.get("pre_d810") == 1
     assert refs_byte3.get("post_bundle_stabilize") == 2
-    assert "post_d810" not in refs_byte3
+    assert refs_byte3.get("post_d810") == 0
     assert refs_byte6.get("pre_d810") == 1
+    assert refs_byte6.get("post_bundle_stabilize") == 0
+    assert refs_byte6.get("post_d810") == 0
 
 
 def test_enrich_skips_byte_zero() -> None:
@@ -357,6 +359,36 @@ def test_final_status_refined_with_evidence_when_post_d810_has_refs() -> None:
         db_var190_refs={
             "pre_d810": 1,
             "maturity_MMAT_GLBOPT1_post_d810": 1,
+        },
+    )
+    assert row.final_status_refined == "preserved_redirect_with_evidence"
+
+
+def test_final_status_refined_ignores_early_post_d810_refs() -> None:
+    """LOCOPT/CALLS post_d810 snapshots predate HCC's GLBOPT1 finalization.
+
+    They can still contain byte evidence and must not mask the snap17 ->
+    snap18 loss.
+    """
+    row = _row(
+        byte=3, final_status="preserved_redirect",
+        db_var190_refs={
+            "maturity_MMAT_LOCOPT_post_d810": 1,
+            "maturity_MMAT_CALLS_post_d810": 1,
+            "maturity_MMAT_GLBOPT1_post_d810": 0,
+            "maturity_MMAT_GLBOPT2_pre_d810": 0,
+            "dump_raw_sub_7FFD3338C040_GLBOPT1": 1,
+        },
+    )
+    assert row.final_status_refined == "redirect_only_finalization_loss"
+
+
+def test_final_status_refined_counts_dump_d810_lvars_refs() -> None:
+    row = _row(
+        byte=6, final_status="preserved_redirect",
+        db_var190_refs={
+            "maturity_MMAT_GLBOPT1_post_d810": 0,
+            "dump_d810_sub_7FFD3338C040": 1,
         },
     )
     assert row.final_status_refined == "preserved_redirect_with_evidence"
