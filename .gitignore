@@ -63,6 +63,7 @@ docs/*
 !docs/recon/
 !docs/recon/linearized_state_dag.md
 !docs/debug-tooling-migration.md
+!docs/diag-observability-boundary.md
 .tmp/
 
 pyrefly.toml
