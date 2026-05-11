@@ -60,6 +60,44 @@ def drain_lineage_into_snapshot(
         return 0
 
 
+# Inversion-of-control hook for cfg-layer CFG-provenance drain (Phase 6
+# of the diag observability boundary plan). The producer-facing
+# ``log_cfg_provenance`` API lives in ``d810.cfg.provenance``; this hook
+# lets ``snapshot_mba`` ask the cfg producer for its buffered entries
+# without core.diag importing from d810.cfg (forbidden by layers).
+_provenance_drainer: Callable[[], list] | None = None
+
+
+def register_provenance_drainer(
+    drainer: Callable[[], list],
+) -> None:
+    """Register a callable that returns the pending CFG-provenance entries.
+
+    The callable takes no arguments and returns a list of entry objects
+    that expose ``pass_name``, ``action``, ``block_serial``,
+    ``target_serial``, ``reason``, and ``extra_json`` attributes (duck
+    typed). ``snapshot_mba`` consumes the list and writes one
+    ``cfg_provenance`` row per entry.
+    """
+    global _provenance_drainer
+    _provenance_drainer = drainer
+
+
+def drain_pending_provenance() -> list:
+    """Return pending CFG-provenance entries from the registered drainer.
+
+    Returns an empty list when no drainer is registered (i.e. nothing in
+    the runtime has imported ``d810.cfg.provenance`` yet).
+    """
+    drainer = _provenance_drainer
+    if drainer is None:
+        return []
+    try:
+        return drainer()
+    except Exception:
+        return []
+
+
 def _resolve_log_dir(log_dir: str | None = None) -> Path:
     return Path(log_dir or os.path.expanduser("~/.idapro/logs/d810_logs"))
 

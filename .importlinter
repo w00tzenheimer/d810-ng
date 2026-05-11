@@ -115,6 +115,11 @@ forbidden_modules =
 #    construct the rows that snapshot_mba consumes. They are shared
 #    data containers, not live IDA adaptation, and intentionally live
 #    on the sink side of the boundary.
+#  - d810.cfg.provenance registers its drain callback with the
+#    core.diag IoC hook (`register_provenance_drainer`) at import time
+#    so `snapshot_mba` can pull buffered entries without core.diag
+#    importing from d810.cfg (forbidden by layers). This is the same
+#    pattern d810.cfg.block_lineage uses for `register_lineage_drainer`.
 #
 # d810.diagnostics is the post-hoc CLI/query layer and is allowed to
 # read from core.diag; it is excluded by being absent from
@@ -134,8 +139,8 @@ ignore_imports =
     d810.recon.observability -> d810.core.diag
     d810.recon.observability -> d810.core.diag.snapshot
     d810.cfg.observability -> d810.core.diag
-    d810.cfg.observability -> d810.core.diag.cfg_provenance
     d810.cfg.observability -> d810.core.diag.snapshot
     d810.hexrays.observability -> d810.core.diag
     d810.hexrays.observability -> d810.core.diag.snapshot
     d810.hexrays.mba_serializer -> d810.core.diag.snapshot
+    d810.cfg.provenance -> d810.core.diag

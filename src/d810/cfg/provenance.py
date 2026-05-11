@@ -1,45 +1,58 @@
-"""Structured provenance logging for CFG mutations.
+"""Producer-facing CFG mutation provenance API.
 
 Every CFG-mutating site emits a single ``CFG_PROVENANCE`` log line with
-attribution.  Used to answer "who killed/created/redirected this block/edge?"
-in any future debugging session.
+attribution via :func:`log_cfg_provenance`, then buffers the same record
+for later flush into the ``cfg_provenance`` SQLite table under a
+snapshot id.
 
 Format:
     CFG_PROVENANCE pass=<pass_name> action=<action> block=blk[N] target=blk[M]|-
                    reason=<reason> extra=<json|->
 
 Actions (canonical):
-    CREATE        -- new block added (typically an InsertBlock or duplicated block)
-    DELETE        -- block removed from mba (qty decremented)
-    SOFT_KILL     -- block converted to BLT_1WAY goto-shell (GutAndWire)
-    SEVER_EDGE    -- succ/pred edge removed (block stays alive)
-    REDIRECT_EDGE -- succ replaced (e.g., succ X -> succ Y)
-    RENUMBER      -- block kept but serial changed (recovery / cleanup)
-    MERGE         -- block merged into another (qty decremented)
-    NOP_INSNS     -- payload instructions NOP'd (block kept, body emptied)
-    BULK_DEEP_CLEAN -- mba.merge_blocks() / remove_empty_and_unreachable_blocks()
-                       called; specific killed serials are not reported by IDA
-                       so this records the call site
+    CREATE          new block added (typically InsertBlock or duplicated block)
+    DELETE          block removed from mba (qty decremented)
+    SOFT_KILL       block converted to BLT_1WAY goto-shell (GutAndWire)
+    SEVER_EDGE      succ/pred edge removed (block stays alive)
+    REDIRECT_EDGE   succ replaced (e.g. succ X -> succ Y)
+    RENUMBER        block kept but serial changed (recovery / cleanup)
+    MERGE           block merged into another (qty decremented)
+    NOP_INSNS       payload instructions NOP'd (block kept, body emptied)
+    BULK_DEEP_CLEAN mba.merge_blocks() / remove_empty_and_unreachable_blocks()
+                    called; specific killed serials are not reported by IDA
+                    so this records the call site
 
-The helper also accumulates entries into a per-process buffer so the diag DB
-snapshot writer can flush them under a snapshot_id when a new snapshot is
-captured.
+Architecture
+------------
+
+After Phase 6 of the diag observability boundary plan, the producer side
+(this module) lives in ``d810.cfg`` and the SQLite sink lives in
+``d810.core.diag.snapshot``. The two halves communicate via an
+inversion-of-control hook registered with ``d810.core.diag``
+(``register_provenance_drainer``); core never imports from cfg
+directly. Runtime callers normally reach this API through
+``d810.cfg.observability.record_cfg_provenance``.
 """
 from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass, field
-from d810.core.typing import Any
+from dataclasses import dataclass
 
 from d810.core import logging as _d810_logging
+from d810.core.typing import Any
 
 _logger = _d810_logging.getLogger("D810.cfg.provenance")
 
 
 @dataclass
-class _ProvenanceEntry:
-    """In-memory record of a single provenance event."""
+class ProvenanceEntry:
+    """In-memory record of a single provenance event.
+
+    The diag sink reads ``pass_name``, ``action``, ``block_serial``,
+    ``target_serial``, ``reason``, and ``extra_json`` by duck typing;
+    keep these attribute names stable.
+    """
 
     pass_name: str
     action: str
@@ -49,10 +62,11 @@ class _ProvenanceEntry:
     extra_json: str | None
 
 
-# Process-level buffer of provenance entries pending flush. ``snapshot_mba``
-# moves them into ``cfg_provenance`` rows under the new snapshot_id.
+# Process-level buffer of provenance entries pending flush.
+# ``snapshot_mba`` (via the core.diag IoC drain hook) consumes them and
+# writes one ``cfg_provenance`` row per entry under the new snapshot_id.
 _pending_lock = threading.Lock()
-_pending: list[_ProvenanceEntry] = []
+_pending: list[ProvenanceEntry] = []
 
 
 def log_cfg_provenance(
@@ -65,7 +79,7 @@ def log_cfg_provenance(
     extra: dict[str, Any] | None = None,
     mba: Any | None = None,
 ) -> None:
-    """Emit a single canonical provenance line and buffer for DB flush."""
+    """Emit a canonical provenance line and buffer it for DB flush."""
     block_int = _safe_serial(block_serial)
     target_int = _safe_serial(target_serial) if target_serial is not None else None
     block_str = _live_block_label(mba, block_int)
@@ -96,7 +110,7 @@ def log_cfg_provenance(
         reason,
         extra_str,
     )
-    entry = _ProvenanceEntry(
+    entry = ProvenanceEntry(
         pass_name=str(pass_name),
         action=str(action),
         block_serial=block_int,
@@ -149,10 +163,11 @@ def _live_block_label(mba: Any | None, serial: int | None) -> str:
         return f"blk[{serial_int}]@?"
 
 
-def drain_pending_provenance() -> list[_ProvenanceEntry]:
+def drain_pending_provenance() -> list[ProvenanceEntry]:
     """Atomically drain and return the pending provenance buffer.
 
-    Called by ``snapshot_mba`` to flush entries under the new snapshot_id.
+    Called via the core.diag IoC drain hook (`register_provenance_drainer`)
+    when ``snapshot_mba`` flushes entries under a new snapshot id.
     """
     with _pending_lock:
         out = list(_pending)
@@ -161,13 +176,25 @@ def drain_pending_provenance() -> list[_ProvenanceEntry]:
 
 
 def reset_pending_provenance() -> None:
-    """Clear the pending buffer without flushing.  Test harness use."""
+    """Clear the pending buffer without flushing. Test harness use."""
     with _pending_lock:
         _pending.clear()
 
 
+# Inversion-of-control: register this module's drainer with the
+# core.diag sink at import time so any subsequent ``snapshot_mba`` call
+# can pull buffered entries without core.diag knowing about d810.cfg.
+try:
+    from d810.core.diag import register_provenance_drainer
+
+    register_provenance_drainer(drain_pending_provenance)
+except Exception:
+    pass
+
+
 __all__ = [
-    "log_cfg_provenance",
+    "ProvenanceEntry",
     "drain_pending_provenance",
+    "log_cfg_provenance",
     "reset_pending_provenance",
 ]
