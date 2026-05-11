@@ -22,37 +22,22 @@ See:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from d810.core.observability import (
     SnapshotRef,
     emit as _emit,
     has_subscribers as _has_subscribers,
     new_snapshot_key,
 )
+# Event dataclass lives under d810.core.observability_events so the
+# SQLite sink can subscribe without an upward import. The hexrays
+# facade re-exports it so call sites don't have to know where it lives.
+from d810.core.observability_events import (
+    CaptureMbaSnapshotRequested as CaptureMbaSnapshotRequested,
+)
 from d810.core.observability_models import (
     BlockSnapshot as BlockSnapshot,
     InstructionSnapshot as InstructionSnapshot,
 )
-
-
-# ---------------------------------------------------------------------------
-# Event dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CaptureMbaSnapshotRequested:
-    """Hexrays requested a full MBA capture under ``snapshot``.
-
-    The diag subscriber inserts a row in ``snapshots`` and binds
-    ``snapshot.key`` to the assigned SQLite id; subsequent
-    ``*Observed`` events that carry the same ``snapshot`` then resolve
-    to that id and write child rows.
-    """
-
-    snapshot: SnapshotRef
-    blocks: tuple[BlockSnapshot, ...]
 
 
 # ---------------------------------------------------------------------------
