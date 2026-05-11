@@ -1362,40 +1362,30 @@ def build_live_linearized_program(
 def snapshot_linearized_program(
     mba: "idaapi.mbl_array_t",
     program: RenderedProgramSnapshot,
-) -> int | None:
-    """Persist a built linearized-program IR into the diag DB."""
-    try:
-        from d810.hexrays.observability import mba_to_block_snapshots
-        from d810.recon.observability import (
-            get_diag_db,
-            record_mba_snapshot,
-            record_rendered_program,
-        )
+) -> "SnapshotRef | None":
+    """Persist a built linearized-program IR into the diag DB.
 
-        diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-        snapshot_row = (
-            diag_db.execute("SELECT MAX(id) FROM snapshots").fetchone()
-            if diag_db is not None
-            else None
+    Requests a fresh capture (so the rendered program lands under a
+    well-formed snapshots row) and emits a RenderedProgramObserved
+    event against the returned SnapshotRef. Returns the SnapshotRef
+    so callers can correlate downstream observations; returns
+    ``None`` when no diag subscriber is installed.
+    """
+    try:
+        from d810.hexrays.mba_serializer import mba_to_block_snapshots
+        from d810.hexrays.observability import request_capture_mba_snapshot
+        from d810.recon.observability import observe_rendered_program
+
+        snap = request_capture_mba_snapshot(
+            blocks=mba_to_block_snapshots(mba),
+            label="render_dump",
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+            maturity=MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN"),
+            phase="post_d810",
         )
-        snapshot_id = (
-            int(snapshot_row[0])
-            if snapshot_row is not None and snapshot_row[0] is not None
-            else None
-        )
-        if diag_db is not None and snapshot_id is None:
-            maturity_name = MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN")
-            snapshot_id = record_mba_snapshot(
-                diag_db,
-                mba_to_block_snapshots(mba),
-                label="render_dump",
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=maturity_name,
-                phase="post_d810",
-            )
-        if diag_db is not None and snapshot_id is not None:
-            record_rendered_program(diag_db, snapshot_id, program)
-            return snapshot_id
+        if snap is not None:
+            observe_rendered_program(snap, program)
+            return snap
     except Exception:
         logger.debug("rendered program diag snapshot failed", exc_info=True)
     return None
