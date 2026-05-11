@@ -31,7 +31,7 @@ from d810.core.diag import (
     get_diag_db as get_diag_db,
     open_diag_session as open_capture_session,
 )
-from d810.core.diag.mba_serializer import (
+from d810.hexrays.mba_serializer import (
     mba_to_block_snapshots as mba_to_block_snapshots,
 )
 from d810.core.diag.snapshot import (

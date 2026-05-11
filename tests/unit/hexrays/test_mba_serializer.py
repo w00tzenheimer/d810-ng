@@ -24,8 +24,8 @@ class TestMbaSerializerImportGuard:
         try:
             sys.modules["ida_hexrays"] = None  # type: ignore[assignment]
             # Remove cached module if it was already imported
-            sys.modules.pop("d810.core.diag.mba_serializer", None)
-            mod = importlib.import_module("d810.core.diag.mba_serializer")
+            sys.modules.pop("d810.hexrays.mba_serializer", None)
+            mod = importlib.import_module("d810.hexrays.mba_serializer")
             assert mod._ihr is None
         finally:
             if saved is not None:
@@ -33,15 +33,15 @@ class TestMbaSerializerImportGuard:
             else:
                 sys.modules.pop("ida_hexrays", None)
             # Restore cached module
-            sys.modules.pop("d810.core.diag.mba_serializer", None)
+            sys.modules.pop("d810.hexrays.mba_serializer", None)
 
     def test_mba_to_block_snapshots_raises_without_ida(self) -> None:
         """Calling mba_to_block_snapshots without IDA raises RuntimeError."""
         saved = sys.modules.get("ida_hexrays")
         try:
             sys.modules["ida_hexrays"] = None  # type: ignore[assignment]
-            sys.modules.pop("d810.core.diag.mba_serializer", None)
-            mod = importlib.import_module("d810.core.diag.mba_serializer")
+            sys.modules.pop("d810.hexrays.mba_serializer", None)
+            mod = importlib.import_module("d810.hexrays.mba_serializer")
             with pytest.raises(RuntimeError, match="requires ida_hexrays"):
                 mod.mba_to_block_snapshots(mock.MagicMock())
         finally:
@@ -49,20 +49,20 @@ class TestMbaSerializerImportGuard:
                 sys.modules["ida_hexrays"] = saved
             else:
                 sys.modules.pop("ida_hexrays", None)
-            sys.modules.pop("d810.core.diag.mba_serializer", None)
+            sys.modules.pop("d810.hexrays.mba_serializer", None)
 
 
 class TestMbaSerializerExports:
     """Verify public API surface of the module."""
 
     def test_public_function_exists(self) -> None:
-        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+        from d810.hexrays.mba_serializer import mba_to_block_snapshots
 
         assert callable(mba_to_block_snapshots)
 
     def test_snapshot_types_reexported(self) -> None:
         """BlockSnapshot and InstructionSnapshot should be accessible."""
-        from d810.core.diag.mba_serializer import BlockSnapshot, InstructionSnapshot
+        from d810.hexrays.mba_serializer import BlockSnapshot, InstructionSnapshot
 
         assert BlockSnapshot is not None
         assert InstructionSnapshot is not None
