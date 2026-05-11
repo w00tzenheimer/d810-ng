@@ -48,7 +48,7 @@ from d810.recon.flow.alternate_correlation import (
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )
-from d810.core.diag.alternate_selection import (
+from d810.recon.flow.alternate_selection import (
     AlternateSelection,
     persist_alternate_selections,
     select_alternate_edges,
