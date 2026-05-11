@@ -48,8 +48,21 @@ __int64 *sub_7FFD333B4500(int a, __int64 b, __int64 c, __int64 *d) {
 }
 
 __int64 sub_1800164E0(__int64 dst, __int64 src, __int64 n) {
-    record(KIND_MEMCPY, (uint64_t)dst, (uint64_t)src, (uint64_t)n, 0);
-    /* Don't actually copy — keeps state simple, matches "stub" decision. */
+    /* Equivalent to STORE_OWORD_N when src is a known zero-blob and n=16:
+     * canonical recording shape is (dst, n, 0, 0). Otherwise records as
+     * KIND_MEMCPY with the unnormalized src. */
+    uint64_t nsrc = _normalize_zero_src((const void *)(uintptr_t)src);
+    int kind = (nsrc == 0 && (uint64_t)n == 16) ? KIND_STORE16 : KIND_MEMCPY;
+    record(kind, (uint64_t)dst, (uint64_t)n, nsrc, 0);
+    return 0;
+}
+
+__int64 sub_180016770(__int64 dst, __int64 src, __int64 n) {
+    /* Same canonical recording as sub_1800164E0 / STORE_OWORD_N. */
+    uint64_t nsrc = _normalize_zero_src((const void *)(uintptr_t)src);
+    int kind = (nsrc == 0 && (uint64_t)n == 16) ? KIND_STORE16 : KIND_MEMCPY;
+    record(kind, (uint64_t)dst, (uint64_t)n, nsrc, 0);
+    if ((uint64_t)n == 16) memset((void *)(uintptr_t)dst, 0, 16);
     return 0;
 }
 
