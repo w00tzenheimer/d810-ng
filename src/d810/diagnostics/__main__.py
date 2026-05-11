@@ -1906,9 +1906,13 @@ def main(argv: list[str] | None = None) -> int:
     from d810.diagnostics.inspect_state_node import (
         register_parser as _register_inspect_state_node,
     )
+    from d810.diagnostics.residual_worksheet import (
+        register_parser as _register_residual_worksheet,
+    )
 
     _register_dump_after(sub)
     _register_inspect_state_node(sub)
+    _register_residual_worksheet(sub)
 
     args = parser.parse_args(argv)
 
@@ -1929,6 +1933,13 @@ def main(argv: list[str] | None = None) -> int:
         from d810.diagnostics.inspect_state_node import run as _run_inspect_state_node
 
         return _run_inspect_state_node(args)
+
+    # residual-worksheet uses --diag-db / --recon-db, opens its own
+    # connections and may auto-discover paths; bypass the common block.
+    if args.command == "residual-worksheet":
+        from d810.diagnostics.residual_worksheet import run as _run_residual_worksheet
+
+        return _run_residual_worksheet(args)
 
     # gate-audit reads d810.log only; no diag DB connection needed.
     if args.command == "gate-audit":

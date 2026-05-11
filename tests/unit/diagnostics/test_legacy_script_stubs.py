@@ -18,6 +18,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = REPO_ROOT / "tools" / "scripts"
+TOOLS = REPO_ROOT / "tools"
 
 
 def _subprocess_env() -> dict:
@@ -125,6 +126,34 @@ def test_return_family_ledger_stub_contains_no_legacy_implementation() -> None:
 # ---------------------------------------------------------------------------
 # inspect_hodur_dump.sh (bash wrapper with positional -> flag translation)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# residual_dispatcher_worksheet (lives directly under tools/, not tools/scripts/)
+# ---------------------------------------------------------------------------
+
+
+def test_residual_dispatcher_worksheet_stub_emits_deprecation_notice_and_forwards_help() -> None:
+    result = subprocess.run(
+        [sys.executable, str(TOOLS / "residual_dispatcher_worksheet.py"), "--help"],
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(),
+        cwd=str(REPO_ROOT),
+    )
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert "[deprecated]" in result.stderr
+    assert "d810.diagnostics residual-worksheet" in result.stderr
+    assert "d810.diagnostics residual-worksheet" in result.stdout
+
+
+def test_residual_dispatcher_worksheet_stub_contains_no_legacy_implementation() -> None:
+    text = (TOOLS / "residual_dispatcher_worksheet.py").read_text()
+    assert "[deprecated]" in text
+    assert "SELECT" not in text
+    assert "Counter(" not in text
+    assert "def main(" not in text
+    assert "build_residual_dispatcher_worksheet" not in text
 
 
 def test_inspect_hodur_dump_sh_forwards_to_cff_debug_inspect(
