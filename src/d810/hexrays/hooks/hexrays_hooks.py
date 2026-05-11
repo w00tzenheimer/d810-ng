@@ -671,6 +671,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
+        self._post_d810_pipeline_last_maturity: int = -1
         # When the PassPipeline fires and applies changes, we must skip all
         # remaining block optimizer rule calls for the rest of this maturity.
         # IDA will re-enter at the next maturity with fresh block pointers.
@@ -705,7 +706,57 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         each new function decompilation.
         """
         self._pipeline_last_maturity = -1
+        self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
+
+    def _is_loop_carrier_only_pipeline(self) -> bool:
+        pipeline = self._pass_pipeline
+        if pipeline is None:
+            return False
+        passes = tuple(getattr(pipeline, "passes", ()) or ())
+        if not passes:
+            return False
+        return all(
+            getattr(pass_, "name", None) == "loop_carrier_backedge_refresh"
+            for pass_ in passes
+        )
+
+    def _run_pass_pipeline_once(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+        *,
+        phase_label: str,
+    ) -> None:
+        if self._pass_pipeline is None:
+            return
+        try:
+            func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
+            optimizer_logger.info(
+                "PassPipeline: running %d pass(es) on function %s at %s",
+                len(self._pass_pipeline.passes),
+                func_ea_hex,
+                phase_label,
+            )
+            total = self._pass_pipeline.run(mba)
+            if total > 0:
+                optimizer_logger.info(
+                    "PassPipeline: applied %d total modification(s) on function %s at %s",
+                    total,
+                    func_ea_hex,
+                    phase_label,
+                )
+                self._pipeline_just_fired = True
+            else:
+                optimizer_logger.debug(
+                    "PassPipeline: no modifications applied on function %s at %s",
+                    func_ea_hex,
+                    phase_label,
+                )
+        except Exception:
+            optimizer_logger.exception(
+                "PassPipeline: error during %s processing",
+                phase_label,
+            )
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -858,6 +909,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     mba,
                     int(self.current_maturity),
                     _post_snap_id,
+                )
+
+            if (
+                self._pass_pipeline is not None
+                and int(self.current_maturity) == int(ida_hexrays.MMAT_GLBOPT1)
+                and self._post_d810_pipeline_last_maturity != int(self.current_maturity)
+                and self._is_loop_carrier_only_pipeline()
+            ):
+                self._post_d810_pipeline_last_maturity = int(self.current_maturity)
+                self._run_pass_pipeline_once(
+                    mba,
+                    phase_label="MMAT_GLBOPT1_post_d810",
                 )
 
             self.current_maturity = mba.maturity
@@ -1070,37 +1133,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # level per decompilation.  No-op when _pass_pipeline is None.
             if (
                 self._pass_pipeline is not None
-                and self.current_maturity == ida_hexrays.MMAT_GLBOPT2
-                and self._pipeline_last_maturity != self.current_maturity
+                and int(self.current_maturity) == int(ida_hexrays.MMAT_GLBOPT2)
+                and self._pipeline_last_maturity != int(self.current_maturity)
             ):
-                self._pipeline_last_maturity = self.current_maturity
-                try:
-                    func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
-                    optimizer_logger.info(
-                        "PassPipeline: running %d pass(es) on function %s at MMAT_GLBOPT2",
-                        len(self._pass_pipeline.passes),
-                        func_ea_hex,
-                    )
-                    total = self._pass_pipeline.run(mba)
-                    if total > 0:
-                        optimizer_logger.info(
-                            "PassPipeline: applied %d total modification(s) on function %s",
-                            total,
-                            func_ea_hex,
-                        )
-                        # Mark that pipeline mutations happened. Block optimizer
-                        # rules must NOT run for the rest of this maturity -
-                        # their mop_t pointers are now stale and would segfault.
-                        self._pipeline_just_fired = True
-                    else:
-                        optimizer_logger.debug(
-                            "PassPipeline: no modifications applied on function %s",
-                            func_ea_hex,
-                        )
-                except Exception:
-                    optimizer_logger.exception(
-                        "PassPipeline: error during MMAT_GLBOPT2 processing"
-                    )
+                self._pipeline_last_maturity = int(self.current_maturity)
+                # Marking _pipeline_just_fired when this applies remains
+                # important: block optimizer rules must not touch stale mop_t
+                # pointers after the pipeline mutates CFG.
+                self._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
 
     # statistics are managed centrally via the stats object
 
