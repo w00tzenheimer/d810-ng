@@ -140,5 +140,4 @@ ignore_imports =
     d810.hexrays.observability -> d810.core.diag
     d810.hexrays.observability -> d810.core.diag.snapshot
     d810.hexrays.observability -> d810.core.diag.mba_serializer
-    d810.recon.flow.selected_alternate_edge_override -> d810.core.diag.alternate_correlation
     d810.recon.flow.selected_alternate_edge_override -> d810.core.diag.alternate_selection

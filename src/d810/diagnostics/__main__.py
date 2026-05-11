@@ -43,7 +43,7 @@ from pathlib import Path
 
 from d810.core.typing import Any, Iterable, Mapping
 
-from d810.core.diag.alternate_correlation import (
+from d810.recon.flow.alternate_correlation import (
     AlternateCorrelation,
     correlate_collapsed_edges,
     persist_alternate_correlations,
