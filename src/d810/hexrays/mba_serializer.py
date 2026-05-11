@@ -6,10 +6,12 @@ into a list of :class:`BlockSnapshot` dataclasses suitable for
 hexrays-aware module (hexrays hooks, executor, unflattener, etc.).
 
 Lives under ``d810.hexrays`` so the live Hex-Rays adaptation stays
-inside the Hex-Rays domain; ``d810.core.diag`` keeps the neutral
-dataclasses (``BlockSnapshot``, ``InstructionSnapshot``) and the
-SQLite sink that consumes them. Runtime callers should normally reach
-this module through ``d810.hexrays.observability.mba_to_block_snapshots``.
+inside the Hex-Rays domain. The neutral data containers
+(:class:`BlockSnapshot`, :class:`InstructionSnapshot`) live in
+:mod:`d810.core.observability_models`; the SQLite sink in
+``d810.core.diag.snapshot`` consumes them. Runtime callers should
+normally reach this module through
+``d810.hexrays.observability.mba_to_block_snapshots``.
 
 IDA imports are guarded so the rest of ``d810.core.diag`` stays
 unit-testable without IDA.
@@ -21,7 +23,7 @@ try:
 except ImportError:
     _ihr = None
 
-from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.core.observability_models import BlockSnapshot, InstructionSnapshot
 
 # ---------- opcode / mop helpers ----------
 
