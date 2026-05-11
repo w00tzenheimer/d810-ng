@@ -33,6 +33,7 @@ _ACCUMULATOR_STKOFF = 0x818
 
 _MECHANISM_SPLIT_XOR = "split_xor"
 _MECHANISM_SINGLE_XOR = "single_xor"
+_MECHANISM_LIVE_HOST = "live_host"
 
 
 def parse_byte_anchor_env(value: str | None) -> str | None:
@@ -64,6 +65,26 @@ def parse_single_xor_env(value: str | None) -> str | None:
     if text != "1":
         return None
     return _MECHANISM_SINGLE_XOR
+
+
+def parse_live_host_env(value: str | None) -> int | None:
+    """Parse D810_TAIL_ANCHOR_BYTE6_LIVE_HOST=N.
+
+    Returns the host byte index (0 or 1) if value parses to a known
+    surviving byte. Any other input returns None. The live-host
+    mechanism inserts ANCHOR_A as a successor of the BYTE_N emit
+    block (not byte 6's) so that the anchor survives IDA's
+    snap17 -> snap18 DCE pass which destroys byte 6's host block.
+
+    Empirical: only bytes 0 and 1's emit blocks survive snap18 in
+    sub_7FFD3338C040 baseline.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if text not in ("0", "1"):
+        return None
+    return int(text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +275,97 @@ def execute_single_xor_anchor(
         mechanism=_MECHANISM_SINGLE_XOR,
         reason="ok",
         byte_emit_serial=block.serial,
+        anchor_a_serial=anchor_a,
+        anchor_b_serial=None,
+        accumulator_stkoff=accumulator_stkoff,
+    )
+
+
+def execute_live_host_anchor(
+    *,
+    host_byte_index: int,
+    read_byte_index: int,
+    adapter: Any,
+    accumulator_stkoff: int = _ACCUMULATOR_STKOFF,
+) -> ByteEmitAnchorReport:
+    """Insert ANCHOR_A as a successor of byte_HOST's emit block,
+    reading byte_READ from `(v190+#read_byte_index.8)`.
+
+    Rationale: in sub_7FFD3338C040, hodur's linearization makes byte 6's
+    emit block unreachable, so IDA's optimize_global DCEs it (and any
+    anchor attached to it). Byte 0 and byte 1's emit blocks survive
+    because they're on the linearized live path. Hosting the anchor on
+    a surviving block keeps the read of byte 6 alive.
+
+    Returns ByteEmitAnchorReport with `byte_index=read_byte_index`
+    (the byte whose load we're trying to preserve).
+    """
+    if host_byte_index not in (0, 1):
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_LIVE_HOST,
+            reason="host_byte_must_be_0_or_1",
+        )
+    if read_byte_index != 6:
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_LIVE_HOST,
+            reason="read_byte_must_be_6",
+        )
+
+    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    if host_block is None:
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_LIVE_HOST,
+            reason=f"host_byte_{host_byte_index}_not_resolvable",
+        )
+
+    try:
+        # Searches host_block first, then any block in mba; falls back
+        # to the cross-block byte_6 reference (likely block 217).
+        source_operand = adapter.extract_v190_indexed_operand(
+            host_block.serial, read_byte_index,
+        )
+    except Exception:  # noqa: BLE001
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_LIVE_HOST,
+            reason="source_operand_unavailable",
+            byte_emit_serial=host_block.serial,
+        )
+
+    assert host_block.succ_serial is not None
+    try:
+        anchor_a = adapter.insert_anchor_block_xor_pair(
+            predecessor_serial=host_block.serial,
+            successor_serial=host_block.succ_serial,
+            source_addr_operand=source_operand,
+            accumulator_stkoff=accumulator_stkoff,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "byte_anchor[live_host]: anchor_a insert failed for host block %d",
+            host_block.serial,
+        )
+        return ByteEmitAnchorReport(
+            applied=False,
+            byte_index=read_byte_index,
+            mechanism=_MECHANISM_LIVE_HOST,
+            reason="anchor_insert_failed:a",
+            byte_emit_serial=host_block.serial,
+        )
+
+    return ByteEmitAnchorReport(
+        applied=True,
+        byte_index=read_byte_index,
+        mechanism=_MECHANISM_LIVE_HOST,
+        reason="ok",
+        byte_emit_serial=host_block.serial,  # the HOST block, not the byte's block
         anchor_a_serial=anchor_a,
         anchor_b_serial=None,
         accumulator_stkoff=accumulator_stkoff,
