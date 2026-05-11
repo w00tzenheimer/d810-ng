@@ -18,71 +18,20 @@ See:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from d810.core.observability import (
-    SnapshotRef,
     emit as _emit,
     has_subscribers as _has_subscribers,
 )
+# Event dataclasses live under d810.core.observability_events so the
+# SQLite sink can subscribe without an upward import. The cfg facade
+# re-exports the cfg-relevant types so call sites don't have to know
+# where they live.
+from d810.core.observability_events import (
+    BlockLineageDrainRequested as BlockLineageDrainRequested,
+    CfgProvenanceObserved as CfgProvenanceObserved,
+    WatchBlockTransitionObserved as WatchBlockTransitionObserved,
+)
 from d810.core.typing import Any
-
-# ---------------------------------------------------------------------------
-# Event dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CfgProvenanceObserved:
-    """CFG mutation observed a single attribution-tagged event.
-
-    Mirrors the legacy ``log_cfg_provenance`` signature: callers emit
-    one of these per CREATE / DELETE / SOFT_KILL / SEVER_EDGE /
-    REDIRECT_EDGE / RENUMBER / MERGE / NOP_INSNS / BULK_DEEP_CLEAN
-    action site. The diag subscriber persists rows into the
-    ``cfg_provenance`` table under the next captured snapshot.
-    """
-
-    pass_name: str
-    action: str
-    block_serial: int
-    target_serial: int | None = None
-    reason: str = ""
-    extra: dict[str, Any] = field(default_factory=dict)
-    block_label: str | None = None
-    target_label: str | None = None
-    maturity_label: str | None = None
-
-
-@dataclass(frozen=True)
-class WatchBlockTransitionObserved:
-    """DeferredGraphModifier.apply observed a watch-block shape transition."""
-
-    func_ea: int
-    apply_session_id: str
-    mod_index: int | None
-    mod_type: str
-    phase: str
-    block_serial: int
-    prev_type_name: str | None
-    prev_succs: tuple[int, ...] | None
-    prev_preds: tuple[int, ...] | None
-    now_type_name: str | None
-    now_succs: tuple[int, ...] | None
-    now_preds: tuple[int, ...] | None
-
-
-@dataclass(frozen=True)
-class BlockLineageDrainRequested:
-    """Snapshot pass is about to flush pending block-lineage rows.
-
-    The subscriber owns the actual ``cfg.block_lineage`` drain so the
-    runtime producer of lineage doesn't depend on the diag schema. The
-    event-driven design lets the subscriber decide when (or whether)
-    to drain.
-    """
-
-    snapshot: SnapshotRef
 
 
 # ---------------------------------------------------------------------------

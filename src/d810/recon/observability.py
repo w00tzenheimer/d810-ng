@@ -28,115 +28,34 @@ See:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from d810.core.observability import (
     SnapshotRef,
     emit as _emit,
     has_subscribers as _has_subscribers,
 )
-from d810.core.typing import Any
+# Event dataclasses live under d810.core.observability_events so the
+# SQLite sink in d810.core.diag.event_handlers can subscribe without
+# an upward import (layered-architecture forbids d810.core importing
+# from d810.recon). The recon facade re-exports the recon-relevant
+# types so call sites don't have to know where they live.
+from d810.core.observability_events import (
+    DagLocalFactsObserved as DagLocalFactsObserved,
+    DagObserved as DagObserved,
+    FactConflictsObserved as FactConflictsObserved,
+    FactConsumersObserved as FactConsumersObserved,
+    FactMappingsObserved as FactMappingsObserved,
+    FactObservationsObserved as FactObservationsObserved,
+    ModificationsObserved as ModificationsObserved,
+    ReachabilityObserved as ReachabilityObserved,
+    RenderedProgramObserved as RenderedProgramObserved,
+)
 from d810.core.observability_models import (
     DagEdge as DagEdge,
     DagNode as DagNode,
     Modification as Modification,
     dag_node_diagnostic_state as dag_node_diagnostic_state,
 )
-
-# ---------------------------------------------------------------------------
-# Event dataclasses
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class DagObserved:
-    """Recon observed a DAG (state-graph) snapshot."""
-
-    snapshot: SnapshotRef
-    nodes: tuple[DagNode, ...]
-    edges: tuple[DagEdge, ...]
-
-
-@dataclass(frozen=True)
-class DagLocalFactsObserved:
-    """Recon observed node-local DAG facts for a LinearizedStateDag.
-
-    ``dag`` is duck-typed: it must expose the attributes consumed by
-    :func:`d810.core.diag.snapshot.snapshot_dag_local_facts` (``nodes``,
-    each with ``owned_blocks``/``exclusive_blocks``/
-    ``shared_suffix_blocks`` etc.).
-    """
-
-    snapshot: SnapshotRef
-    dag: Any
-
-
-@dataclass(frozen=True)
-class FactObservationsObserved:
-    """Recon observed a batch of fact observations for a function/snapshot."""
-
-    snapshot: SnapshotRef
-    func_ea: int
-    observations: tuple[Any, ...]
-
-
-@dataclass(frozen=True)
-class FactMappingsObserved:
-    """Recon observed a batch of fact mappings."""
-
-    snapshot: SnapshotRef
-    func_ea: int
-    mappings: tuple[Any, ...]
-
-
-@dataclass(frozen=True)
-class FactConsumersObserved:
-    """Recon observed a batch of fact-consumer records."""
-
-    snapshot: SnapshotRef
-    func_ea: int
-    consumers: tuple[Any, ...]
-
-
-@dataclass(frozen=True)
-class FactConflictsObserved:
-    """Recon observed a batch of fact conflicts."""
-
-    snapshot: SnapshotRef
-    func_ea: int
-    conflicts: tuple[Any, ...]
-
-
-@dataclass(frozen=True)
-class ModificationsObserved:
-    """Recon observed a batch of reconstruction modifications."""
-
-    snapshot: SnapshotRef
-    modifications: tuple[Modification, ...]
-
-
-@dataclass(frozen=True)
-class RenderedProgramObserved:
-    """Recon observed a rendered linearized program.
-
-    ``program`` is duck-typed: it must expose the attributes consumed
-    by :func:`d810.core.diag.snapshot.snapshot_rendered_program`.
-    """
-
-    snapshot: SnapshotRef
-    program: Any
-
-
-@dataclass(frozen=True)
-class ReachabilityObserved:
-    """Recon observed block reachability/classification for a snapshot."""
-
-    snapshot: SnapshotRef
-    all_serials: frozenset[int]
-    reachable: frozenset[int] = field(default_factory=frozenset)
-    bst_serials: frozenset[int] = field(default_factory=frozenset)
-    gutted: frozenset[int] = field(default_factory=frozenset)
-    claimed_sources: frozenset[int] = field(default_factory=frozenset)
+from d810.core.typing import Any
 
 
 # ---------------------------------------------------------------------------
