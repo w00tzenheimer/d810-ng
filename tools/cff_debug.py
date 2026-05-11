@@ -311,17 +311,31 @@ def cmd_witness(args: argparse.Namespace) -> int:
 
 
 def cmd_state(args: argparse.Namespace) -> int:
-    dump = resolve_dump(args.worktree, args.dump)
-    db = resolve_db(args.worktree, args.db)
-    argv = [
+    """Workflow wrapper for `python -m d810.diagnostics inspect-state-node`.
+
+    Resolves the latest dump + diag DB for the worktree (or honours
+    --dump / --db). All SQL + dump parsing lives in
+    ``d810.diagnostics.inspect_state_node``.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    dump = resolve_dump(wt, args.dump)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
         sys.executable,
-        str(INSPECT_STATE),
+        "-m",
+        "d810.diagnostics",
+        "inspect-state-node",
         "--db", str(db),
         "--state", args.state,
         "--dump", str(dump),
         "--context", str(args.context),
     ]
-    return subprocess.call(argv)
+    return subprocess.call(diag_argv, env=env)
 
 
 def cmd_db(args: argparse.Namespace) -> int:

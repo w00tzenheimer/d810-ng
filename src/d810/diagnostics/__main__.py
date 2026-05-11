@@ -1903,8 +1903,12 @@ def main(argv: list[str] | None = None) -> int:
     ).register_region_diff_parser(sub, common)
 
     from d810.diagnostics.dump_after import register_parser as _register_dump_after
+    from d810.diagnostics.inspect_state_node import (
+        register_parser as _register_inspect_state_node,
+    )
 
     _register_dump_after(sub)
+    _register_inspect_state_node(sub)
 
     args = parser.parse_args(argv)
 
@@ -1917,6 +1921,14 @@ def main(argv: list[str] | None = None) -> int:
         from d810.diagnostics.dump_after import run as _run_dump_after
 
         return _run_dump_after(args)
+
+    # inspect-state-node opens its own DB on a path that may differ from
+    # the heuristic default, so it does not flow through the common
+    # connection block.
+    if args.command == "inspect-state-node":
+        from d810.diagnostics.inspect_state_node import run as _run_inspect_state_node
+
+        return _run_inspect_state_node(args)
 
     # gate-audit reads d810.log only; no diag DB connection needed.
     if args.command == "gate-audit":
