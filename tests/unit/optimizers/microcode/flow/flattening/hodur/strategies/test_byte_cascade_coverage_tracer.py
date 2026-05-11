@@ -41,6 +41,9 @@ class _FakeObs:
     payload: dict[str, Any]
     fact_id: str = "fact"
     confidence: float = 0.8
+    source_ea_hex: str | None = None
+    source_ea_i64: int | None = None
+    source_ea: int | None = None
 
 
 @dataclass
@@ -108,13 +111,14 @@ def _byte_fact(
     role: str = "memory_store",
     destination: str = "[ds.2:((%var_190+#{idx}.8)+%var_188.8)]",
 ) -> _FakeObs:
+    payload_source_ea = source_ea
     return _FakeObs(
         kind="TerminalByteEmitterFact",
         payload={
             "byte_index": byte_index,
             "destination_block": block_serial,
             "block_ea": block_ea,
-            "source_ea": source_ea,
+            "source_ea": payload_source_ea,
             "opcode": "m_stx",
             "emitter_role": role,
             "corridor_role": "terminal_tail",
@@ -126,6 +130,7 @@ def _byte_fact(
         },
         fact_id=f"fact_byte_{byte_index}",
         confidence=0.82,
+        source_ea=source_ea,
     )
 
 
@@ -180,6 +185,31 @@ def test_seeds_one_record_per_byte_index(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(rec.evidence) == 1
 
 
+def test_seeds_source_ea_from_observation_attribute_when_payload_lacks_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_gate(monkeypatch)
+    obs = _byte_fact(2, 56, block_ea=0x180014C00, source_ea=0x180014C10)
+    payload_without_source_ea = dict(obs.payload)
+    payload_without_source_ea.pop("source_ea")
+    snap = _snapshot(
+        _FakeObs(
+            kind=obs.kind,
+            payload=payload_without_source_ea,
+            fact_id=obs.fact_id,
+            confidence=obs.confidence,
+            source_ea=obs.source_ea,
+        )
+    )
+
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+
+    assert tracer is not None
+    rec = tracer.records[2]
+    assert rec.source_ea_hex_set == {"0x0000000180014C10"}
+    assert "source_eas=0x0000000180014C10" in rec.render_row_log()
+
+
 def test_seeds_multiple_evidence_records_for_same_byte(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,6 +255,46 @@ def test_infers_byte_index_from_source_expression_when_payload_missing_it() -> N
     assert records[4].byte_index == 4
     assert records[4].primary_evidence is not None
     assert records[4].primary_evidence.byte_index == 4
+
+
+def test_seeds_source_ea_from_observation_fields_when_payload_missing_it() -> None:
+    fv = _FakeFactView(
+        active_observations=(
+            _FakeObs(
+                kind="TerminalByteEmitterFact",
+                payload={
+                    "byte_index": 3,
+                    "destination_block": 163,
+                    "block_ea": 0x180014D00,
+                    "opcode": "m_stx",
+                    "emitter_role": "memory_store",
+                    "corridor_role": "terminal_tail",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                },
+                source_ea_hex="0x0000000180014d10",
+            ),
+            _FakeObs(
+                kind="TerminalByteEmitterFact",
+                payload={
+                    "byte_index": 4,
+                    "destination_block": 164,
+                    "block_ea": 0x180014E00,
+                    "opcode": "m_stx",
+                    "emitter_role": "memory_store",
+                    "corridor_role": "terminal_tail",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#4.8].1)",
+                },
+                source_ea_i64=0x180014E10,
+            ),
+        )
+    )
+
+    records = _seed_records_from_fact_view(fv)
+
+    assert records[3].source_ea_hex_set == {"0x0000000180014D10"}
+    assert records[4].source_ea_hex_set == {"0x0000000180014E10"}
 
 
 def test_skips_non_terminal_tail_corridor_role() -> None:

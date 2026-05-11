@@ -698,7 +698,13 @@ def _seed_records_from_fact_view(fact_view: object) -> dict[int, ByteRecord]:
                 or payload.get("source_block")
             ),
             block_ea_hex=_format_ea_hex(payload.get("block_ea")),
-            source_ea_hex=_format_ea_hex(payload.get("source_ea")),
+            source_ea_hex=_format_ea_hex(
+                payload.get("source_ea")
+                or payload.get("source_ea_hex")
+                or getattr(obs, "source_ea", None)
+                or getattr(obs, "source_ea_hex", None)
+                or getattr(obs, "source_ea_i64", None)
+            ),
             destination=str(payload.get("destination_buffer_expression") or ""),
             source_expression=str(payload.get("source_byte_expression") or ""),
             fact_id=str(getattr(obs, "fact_id", "") or ""),
