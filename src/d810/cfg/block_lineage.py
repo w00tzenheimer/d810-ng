@@ -130,6 +130,9 @@ def buffer_block_lineage(entries: list[BlockLineageEntry]) -> None:
         return
     with _pending_lock:
         _pending.extend(entries)
+    # Re-subscribe in case the test fixture reset the bus between
+    # cases. A no-op if the subscriber is already registered.
+    _ensure_subscribed()
 
 
 def buffer_patch_plan_block_lineage(
@@ -422,9 +425,38 @@ __all__ = [
 ]
 
 
-try:
-    from d810.cfg.observability import register_lineage_drainer
+# Subscribe to BlockLineageDrainRequested so the planner-owned
+# lineage buffer flushes under the just-captured snapshot_id when
+# ``snapshot_mba`` lands. The event carries the live conn + snap_id
+# so the subscriber writes rows immediately without round-tripping
+# through the global session lookup. The producer side never imports
+# ``d810.core.diag``.
+def _ensure_subscribed() -> None:
+    """Re-subscribe to BlockLineageDrainRequested if absent.
 
-    register_lineage_drainer(_drain_into_snapshot)
-except Exception:
-    pass
+    Tests call ``reset_diagnostic_bus()`` between cases (autouse
+    fixtures), which clears module-load subscriptions.
+    ``buffer_block_lineage`` calls this so the subscriber is always
+    present when there are lineage rows to drain.
+    """
+    try:
+        from d810.core.observability import has_subscribers, subscribe
+        from d810.core.observability_events import BlockLineageDrainRequested
+
+        if has_subscribers(BlockLineageDrainRequested):
+            return
+
+        def _on_block_lineage_drain_requested(ev) -> None:
+            try:
+                _drain_into_snapshot(ev.conn, int(ev.snapshot_id))
+            except Exception:
+                pass
+
+        subscribe(BlockLineageDrainRequested, _on_block_lineage_drain_requested)
+    except Exception:
+        pass
+
+
+# Subscribe at module load so the subscriber is in place for normal
+# decompilation flows (no test-side bus reset).
+_ensure_subscribed()

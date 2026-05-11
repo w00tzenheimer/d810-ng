@@ -267,14 +267,20 @@ def snapshot_mba(
         pass
 
     # Flush any pending created-block lineage entries under this snapshot_id.
-    # The executor buffers these after PatchPlan apply and before taking the
-    # post-apply snapshot so clone/insert origins are attached to the concrete
-    # assigned serials visible in this snapshot.  cfg.block_lineage owns the
-    # buffer and registers itself as a drainer through the inversion-of-control
-    # hook in core.diag — see register_lineage_drainer().
+    # The executor buffers these after PatchPlan apply and before
+    # taking the post-apply snapshot so clone/insert origins are
+    # attached to the concrete assigned serials visible in this
+    # snapshot. ``cfg.block_lineage`` owns the buffer and subscribes
+    # to ``BlockLineageDrainRequested`` to drain it; the event carries
+    # the live conn + snap_id so the subscriber can write rows
+    # immediately without round-tripping through the global session
+    # lookup.
     try:
-        from d810.core.diag import drain_lineage_into_snapshot
-        drain_lineage_into_snapshot(conn, snap_id)
+        from d810.core.observability import emit
+        from d810.core.observability_events import (
+            BlockLineageDrainRequested,
+        )
+        emit(BlockLineageDrainRequested(conn=conn, snapshot_id=snap_id))
     except Exception:
         pass
 
