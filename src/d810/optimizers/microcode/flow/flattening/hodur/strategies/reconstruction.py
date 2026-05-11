@@ -590,13 +590,11 @@ class StateWriteReconstructionStrategy:
         )
         dag = apply_selected_alternate_edge_overrides_from_diag(
             dag,
-            _snapshot_result.diag_db,
-            _snapshot_result.snap_id,
+            _snapshot_result.snap_ref,
         )
         corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
             corrected_dag,
-            _snapshot_result.diag_db,
-            _snapshot_result.snap_id,
+            _snapshot_result.snap_ref,
         )
 
         indexes = build_reconstruction_discovery_indexes(
