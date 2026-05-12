@@ -674,7 +674,12 @@ class D810Manager:
             )
             observe_rendered_program(snapshot, program)
         except Exception:
-            logger.debug("post_d810 rendered program attach failed", exc_info=True)
+            logger.warning(
+                "post_d810 rendered program attach failed for func=0x%x maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                _maturity_name(int(maturity)),
+                exc_info=True,
+            )
 
     def validate_post_d810_handoff(
         self,
