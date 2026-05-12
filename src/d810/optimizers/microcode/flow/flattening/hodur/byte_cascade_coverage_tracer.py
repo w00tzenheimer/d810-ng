@@ -736,7 +736,16 @@ def _evidence_sort_key(ev: ByteEvidence) -> tuple[int, float, int, int]:
 
 
 def _collect_region_block_serials(raw_region_table: object) -> set[int]:
-    """Best-effort extraction of block serials from HCC's raw_region_table."""
+    """Best-effort extraction of block serials from HCC's raw_region_table.
+
+    HCC's canonical region-membership field is
+    ``_RawRegionInfo.region_anchors`` (a ``frozenset[int]`` of block
+    serials). We also probe other historical attribute names so the
+    tracer keeps working if a region object exposes membership under a
+    different field, but ``region_anchors`` is the authoritative source
+    today; missing it here used to cause the tracer to falsely report
+    ``in_region_table=0`` for bytes that DID land in a raw region.
+    """
     out: set[int] = set()
     if raw_region_table is None:
         return out
@@ -749,7 +758,13 @@ def _collect_region_block_serials(raw_region_table: object) -> set[int]:
         except TypeError:
             return out
     for entry in iterable:
-        for attr in ("handler_serials", "block_serials", "owned_blocks", "members"):
+        for attr in (
+            "region_anchors",
+            "handler_serials",
+            "block_serials",
+            "owned_blocks",
+            "members",
+        ):
             value = getattr(entry, attr, None)
             if value is None:
                 continue
