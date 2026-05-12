@@ -1770,6 +1770,40 @@ def main(argv: list[str] | None = None) -> int:
         "--json", action="store_true", dest="json_output",
     )
 
+    p_uek = sub.add_parser(
+        "unsupported-edge-kind-explain",
+        parents=[common],
+        help=(
+            "For every byte the trace marks with"
+            " candidate_rejection=unsupported_edge_kind, list the exact"
+            " outgoing DAG edges that triggered the rejection, the actual"
+            " edge kind, the kinds the check accepts, and whether the"
+            " rejection appears safe to relax based on TerminalByteEmitterFact"
+            " evidence on the target state."
+        ),
+    )
+    p_uek.add_argument(
+        "--log",
+        required=True,
+        help="Path to d810.log containing HCC_BYTE_CASCADE_TRACE_ROW lines",
+    )
+    p_uek.add_argument(
+        "--bytes",
+        default=None,
+        help=(
+            "Comma-separated byte indices to explain (e.g. '0,2,3')."
+            " Default: every row whose candidate_rejection =="
+            " unsupported_edge_kind."
+        ),
+    )
+    p_uek.add_argument(
+        "--func-label", default=None,
+        help="Optional function label rendered in the report title",
+    )
+    p_uek.add_argument(
+        "--json", action="store_true", dest="json_output",
+    )
+
     p_admission = sub.add_parser(
         "admission-explain",
         parents=[common],
@@ -1997,6 +2031,7 @@ def main(argv: list[str] | None = None) -> int:
         "region-diff",
         "hcc-byte-cascade-trace",
         "admission-explain",
+        "unsupported-edge-kind-explain",
         "terminal-tail-audit",
         "redirect-reconcile",
         "return-ledger",
@@ -2689,6 +2724,34 @@ def main(argv: list[str] | None = None) -> int:
             print(format_report(rows, func_label=args.func_label))
         conn.close()
         return 0
+
+    elif args.command == "unsupported-edge-kind-explain":
+        from d810.diagnostics.hcc_unsupported_edge_kind_explainer import (
+            run as run_uek,
+        )
+
+        bytes_filter: list[int] | None = None
+        if args.bytes:
+            try:
+                bytes_filter = [
+                    int(b.strip(), 0)
+                    for b in args.bytes.split(",")
+                    if b.strip()
+                ]
+            except ValueError as exc:
+                print(f"error: bad --bytes value: {exc}", file=sys.stderr)
+                conn.close()
+                return 2
+        text = run_uek(
+            Path(args.log),
+            Path(args.db),
+            bytes_filter=bytes_filter,
+            func_label=args.func_label,
+            as_json=getattr(args, "json_output", False),
+        )
+        sys.stdout.write(text)
+        conn.close()
+        return 0 if not text.startswith("Error:") else 2
 
     elif args.command == "admission-explain":
         from d810.diagnostics.hcc_region_admission_explainer import run as run_explain
