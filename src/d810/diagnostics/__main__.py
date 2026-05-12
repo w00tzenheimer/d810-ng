@@ -1770,6 +1770,43 @@ def main(argv: list[str] | None = None) -> int:
         "--json", action="store_true", dest="json_output",
     )
 
+    p_compose = sub.add_parser(
+        "compose-evidence-explain",
+        parents=[common],
+        help=(
+            "For every byte the trace marks"
+            " final_refined=unmaterialized_original_block, attribute the"
+            " materialization gap to a single named composition-failure"
+            " bucket (no_mod_touches_block /"
+            " redirect_target_only_no_evidence /"
+            " insertblock_succ_no_byte_evidence / redirected_away_only /"
+            " insertblock_with_evidence_inconsistency / unclassified)"
+            " plus the responsible composition step. Reads d810.log +"
+            " diag SQLite, no IDA required."
+        ),
+    )
+    p_compose.add_argument(
+        "--log",
+        required=True,
+        help="Path to d810.log containing HCC_BYTE_CASCADE_TRACE_ROW lines",
+    )
+    p_compose.add_argument(
+        "--bytes",
+        default=None,
+        help=(
+            "Comma-separated byte indices to explain (e.g. '2,4,5')."
+            " Default: every row whose final_refined =="
+            " unmaterialized_original_block."
+        ),
+    )
+    p_compose.add_argument(
+        "--func-label", default=None,
+        help="Optional function label rendered in the report title",
+    )
+    p_compose.add_argument(
+        "--json", action="store_true", dest="json_output",
+    )
+
     p_uek = sub.add_parser(
         "unsupported-edge-kind-explain",
         parents=[common],
@@ -2031,6 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
         "region-diff",
         "hcc-byte-cascade-trace",
         "admission-explain",
+        "compose-evidence-explain",
         "unsupported-edge-kind-explain",
         "terminal-tail-audit",
         "redirect-reconcile",
@@ -2724,6 +2762,34 @@ def main(argv: list[str] | None = None) -> int:
             print(format_report(rows, func_label=args.func_label))
         conn.close()
         return 0
+
+    elif args.command == "compose-evidence-explain":
+        from d810.diagnostics.hcc_compose_evidence_explainer import (
+            run as run_compose,
+        )
+
+        bytes_filter: list[int] | None = None
+        if args.bytes:
+            try:
+                bytes_filter = [
+                    int(b.strip(), 0)
+                    for b in args.bytes.split(",")
+                    if b.strip()
+                ]
+            except ValueError as exc:
+                print(f"error: bad --bytes value: {exc}", file=sys.stderr)
+                conn.close()
+                return 2
+        text = run_compose(
+            Path(args.log),
+            Path(args.db),
+            bytes_filter=bytes_filter,
+            func_label=args.func_label,
+            as_json=getattr(args, "json_output", False),
+        )
+        sys.stdout.write(text)
+        conn.close()
+        return 0 if not text.startswith("Error:") else 2
 
     elif args.command == "unsupported-edge-kind-explain":
         from d810.diagnostics.hcc_unsupported_edge_kind_explainer import (

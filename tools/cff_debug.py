@@ -695,6 +695,54 @@ def cmd_byte_audit(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_compose_evidence_explain(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics compose-evidence-explain`.
+
+    For every byte the byte-cascade trace marks
+    ``final_refined=unmaterialized_original_block``, attribute the
+    materialization gap to a single named composition-failure bucket plus
+    the responsible composition step. Reads the worktree's ``d810.log``
+    and the latest diag SQLite by default.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    log_file = (
+        Path(args.log).expanduser().resolve()
+        if args.log
+        else worktree_log_dir(wt) / "d810.log"
+    )
+    if not log_file.exists():
+        _die(f"compose-evidence-explain: log not found: {log_file}")
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "compose-evidence-explain",
+        "--log",
+        str(log_file),
+        "--db",
+        str(db),
+    ]
+    if args.bytes:
+        diag_argv += ["--bytes", args.bytes]
+    if args.func_label:
+        diag_argv += ["--func-label", args.func_label]
+    if args.json_output:
+        diag_argv.append("--json")
+    print(f"DB={db}", file=sys.stderr)
+    print(f"LOG={log_file}", file=sys.stderr)
+    print(
+        f"cff-debug: compose-evidence-explain: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_unsupported_edge_kind_explain(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics unsupported-edge-kind-explain`.
 
@@ -1046,6 +1094,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_admission_explain)
+
+    sp = sub.add_parser(
+        "compose-evidence-explain",
+        help=(
+            "For every byte the trace marks"
+            " final_refined=unmaterialized_original_block, attribute the"
+            " materialization gap to a single named composition-failure"
+            " bucket (no_mod_touches_block /"
+            " redirect_target_only_no_evidence /"
+            " insertblock_succ_no_byte_evidence / redirected_away_only /"
+            " insertblock_with_evidence_inconsistency / unclassified)"
+            " plus the responsible composition step. Wraps `python -m"
+            " d810.diagnostics compose-evidence-explain`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--log",
+        help=(
+            "explicit d810.log path (default: <worktree>/.tmp/logs/"
+            "d810_logs/d810.log)"
+        ),
+    )
+    sp.add_argument(
+        "--bytes", default=None,
+        help=(
+            "comma-separated byte indices to explain (e.g. '2,4,5')."
+            " Default: every row whose final_refined =="
+            " unmaterialized_original_block."
+        ),
+    )
+    sp.add_argument(
+        "--func-label", default=None,
+        help="optional function label rendered in the report title",
+    )
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable text table",
+    )
+    sp.set_defaults(func=cmd_compose_evidence_explain)
 
     sp = sub.add_parser(
         "unsupported-edge-kind-explain",
