@@ -15,11 +15,10 @@ anything reachable) and IDA's dataflow optimizer collapses it.
 Family: ``FAMILY_CLEANUP`` -- runs after HCC and other reconstruction passes.
 Default behavior
 ----------------
-Trampoline skip is the default live Hodur cleanup path.  Disable it only for
-archaeology or regression isolation with
-``D810_HODUR_DISABLE_TRAMPOLINE_SKIP=1`` or
-``D810_HODUR_ENABLE_TRAMPOLINE_SKIP=0``.  ``=1`` is still accepted for old
-reproducer commands, but the strategy is already default-on.
+Trampoline skip is opt-in.  Enable it with
+``D810_HODUR_ENABLE_TRAMPOLINE_SKIP=1`` for targeted archaeology or regression
+isolation.  ``D810_HODUR_DISABLE_TRAMPOLINE_SKIP=1`` remains accepted as an
+explicit off switch.
 
 Risk: LOW -- only emits ``RedirectGoto`` for 1-way trampoline blocks whose
 new_target was deterministically resolved by walking the BST.
@@ -88,12 +87,9 @@ class DispatcherTrampolineSkipStrategy:
         return FAMILY_CLEANUP
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        # Default-on. Opt-out via D810_HODUR_DISABLE_TRAMPOLINE_SKIP=1 or
-        # D810_HODUR_ENABLE_TRAMPOLINE_SKIP=0 for archaeology/regression
-        # isolation.
         if os.environ.get(_GATE_ENV_DISABLE, "").strip() == "1":
             return False
-        if os.environ.get(_GATE_ENV_ENABLE, "").strip() == "0":
+        if os.environ.get(_GATE_ENV_ENABLE, "").strip() != "1":
             return False
         if snapshot.mba is None:
             return False

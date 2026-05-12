@@ -135,10 +135,10 @@ class HodurUnflattener(GenericUnflatteningRule):
     """
 
     DESCRIPTION = "Remove Hodur-style while-loop control flow flattening"
-    DEFAULT_UNFLATTENING_MATURITIES = [
-        ida_hexrays.MMAT_GLBOPT1,
-        ida_hexrays.MMAT_GLBOPT2,
-    ]
+    # Hodur rewrites are a GLBOPT1-owned structural pass. Re-entering the
+    # strategy pipeline at GLBOPT2 after GLBOPT1 has already rebuilt the CFG can
+    # leave Hex-Rays with an undecompilable MBA on sub_7FFD3338C040.
+    DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
     RECON_ONLY_MODE = False
     RETURN_FRONTIER_AUDIT_ENABLED: bool = True  # Default on for debugging
     # MBL_KEEP marking experiment (uee-jfta follow-up): mark every block
