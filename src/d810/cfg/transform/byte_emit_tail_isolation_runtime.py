@@ -2586,14 +2586,21 @@ def maybe_run_byte_anchor(mba: Any) -> None:
     # Post-mutation dump: when applied, log the contents of the new anchor
     # blocks AND the affected neighbors so we can see exactly what we built
     # even if IDA's decompile() later rejects the result.
-    if report.applied and report.anchor_a_serial is not None and report.anchor_b_serial is not None:
+    #
+    # MultiByteAnchorReport carries sub_reports instead of single
+    # anchor_a/anchor_b fields, so guard with getattr(...) and fall
+    # back to walking sub_reports for the multi-byte case.
+    anchor_a = getattr(report, "anchor_a_serial", None)
+    anchor_b = getattr(report, "anchor_b_serial", None)
+    byte_emit_serial = getattr(report, "byte_emit_serial", None)
+    if getattr(report, "applied", False) and (anchor_a is not None and anchor_b is not None):
         diag_serials = [
-            report.byte_emit_serial,
-            report.anchor_a_serial,
-            report.anchor_b_serial,
+            byte_emit_serial,
+            anchor_a,
+            anchor_b,
         ]
         # Also include each anchor's successor and predecessor for wiring check.
-        for s in (report.anchor_a_serial, report.anchor_b_serial):
+        for s in (anchor_a, anchor_b):
             blk = mba.get_mblock(int(s))
             if blk is not None:
                 diag_serials.extend(int(x) for x in blk.predset)
@@ -2626,3 +2633,23 @@ def maybe_run_byte_anchor(mba: Any) -> None:
                     idx += 1
             except Exception:
                 logger.exception("byte_anchor: block %d dump failed", s)
+
+    # Multi-byte path: report.sub_reports is a tuple of ByteEmitAnchorReport.
+    # Each sub_report has its own anchor_a_serial.  Aggregate the inserted
+    # anchor serials for a single diagnostic log line per byte.
+    sub_reports = getattr(report, "sub_reports", None)
+    if getattr(report, "applied", False) and sub_reports:
+        per_byte: list[tuple[int, int | None]] = []
+        for sub in sub_reports:
+            try:
+                per_byte.append(
+                    (int(sub.byte_index), getattr(sub, "anchor_a_serial", None))
+                )
+            except Exception:
+                continue
+        logger.info(
+            "byte_anchor[multi]: applied=%d/%d entries; per-byte anchor_a serials: %s",
+            sum(1 for _, a in per_byte if a is not None),
+            len(per_byte),
+            per_byte,
+        )
