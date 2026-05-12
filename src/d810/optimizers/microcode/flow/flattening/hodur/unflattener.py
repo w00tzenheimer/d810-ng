@@ -961,6 +961,53 @@ class HodurUnflattener(GenericUnflatteningRule):
         if bundle_stabilized:
             nb_changes += bundle_stabilized
         self._capture_intermediate_snapshot("post_bundle_stabilize")
+        # Canonicalise inline ``mop_d(add(X, K))`` operands onto the matching
+        # stkvar alias.  Required so IDA's ``optimize_global`` sees write and
+        # read sides addressing the same memory expression; otherwise its
+        # intraprocedural aliasing analysis DCEs the writes (sub_7FFD byte-emit
+        # corridor regression).  Runs AFTER snap17 capture so the diff between
+        # snap17 (pre-canon) and snap18 (post-canon, post-optimize_global) is
+        # legible.
+        try:
+            from d810.hexrays.mutation.insn_snapshot_materializer import (
+                canonicalize_inline_add_in_mba,
+            )
+
+            canonicalize_inline_add_in_mba(self.mba)
+        except Exception:
+            unflat_logger.debug(
+                "inline_add_to_stkvar canonicalisation failed (non-critical)",
+                exc_info=True,
+            )
+        # DIAGNOSTIC / fix: ensure every block in the live mba carries MBL_KEEP
+        # (0x10000) so IDA's ``mba_remove_empty_and_unreachable_blocks`` sweep
+        # treats them all as preserved roots.  D810 may clear or fail to set
+        # the flag on original IDA blocks whose CFG it has restructured;
+        # blanket-tagging at the end of GLBOPT1 work is a structural-survival
+        # safety net.  See memory ``ida_optimize_global_cfg_kill``.
+        import os
+        if os.environ.get("D810_TAG_ALL_MBL_KEEP", "1") == "1":
+            try:
+                qty = int(getattr(self.mba, "qty", 0) or 0)
+                _MBL_KEEP = 0x10000
+                tagged = 0
+                for serial in range(qty):
+                    blk = self.mba.get_mblock(serial)
+                    if blk is None:
+                        continue
+                    try:
+                        blk.flags |= _MBL_KEEP
+                        tagged += 1
+                    except Exception:
+                        continue
+                unflat_logger.info(
+                    "MBL_KEEP_TAG_ALL applied tagged=%d/qty=%d", tagged, qty
+                )
+                self._capture_intermediate_snapshot("post_mbl_keep_tag_all")
+            except Exception:
+                unflat_logger.debug(
+                    "MBL_KEEP blanket tag failed (non-critical)", exc_info=True,
+                )
         # uee-32r3 Track B.2: env-gated D810_TAIL_DISTINCT_BYTE topology-only
         # experiment. Run AFTER post_bundle_stabilize snapshot so that:
         #   (a) snap17 was just captured FROM the live MBA (identical state),

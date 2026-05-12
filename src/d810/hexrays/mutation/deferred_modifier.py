@@ -205,6 +205,8 @@ from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
 from d810.hexrays.mutation.cfg_mutations import (
+    copy_block_keep)
+from d810.hexrays.mutation.cfg_mutations import (
     change_0way_block_successor)
 from d810.hexrays.mutation.cfg_mutations import (
     change_1way_block_successor)
@@ -3906,7 +3908,7 @@ class DeferredGraphModifier:
             )
             return None
         try:
-            new_blk = mba.copy_block(target_blk, mba.qty - 1)
+            new_blk = copy_block_keep(mba, target_blk, mba.qty - 1)
         except Exception as exc:
             logger.warning(
                 "staged_atomic stage: copy_block failed for blk[%d]: %s",
@@ -5606,7 +5608,7 @@ class DeferredGraphModifier:
                         effective_conditional_target,
                     )
                     return False
-                duplicated_blk = self.mba.copy_block(source_blk, self.mba.qty - 1)
+                duplicated_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
                 prev_pred_serials = [x for x in duplicated_blk.predset]
                 for prev_serial in prev_pred_serials:
                     duplicated_blk.predset._del(prev_serial)
@@ -6711,7 +6713,7 @@ class DeferredGraphModifier:
             if old_blk is None:
                 continue
             # Append before BLT_STOP — only shifts BLT_STOP, safe
-            new_blk = mba.copy_block(old_blk, mba.qty - 1)
+            new_blk = copy_block_keep(mba, old_blk, mba.qty - 1)
             actual_serial = new_blk.serial
             # Diagnostic: compare against pre-computed serial from PatchPlan.
             # Mismatches are expected when LFG changes block types between plan
@@ -6746,7 +6748,7 @@ class DeferredGraphModifier:
                 continue
 
             # 1. Copy the 2WAY block (appends before BLT_STOP)
-            new_blk = mba.copy_block(old_blk, mba.qty - 1)
+            new_blk = copy_block_keep(mba, old_blk, mba.qty - 1)
             copy_serial = new_blk.serial
             new_blk.predset.clear()
             new_blk.build_lists(False)
@@ -6778,7 +6780,7 @@ class DeferredGraphModifier:
                 )
                 continue
 
-            tramp_blk = mba.copy_block(ref_blk, mba.qty - 1)
+            tramp_blk = copy_block_keep(mba, ref_blk, mba.qty - 1)
             tramp_serial = tramp_blk.serial  # should be copy_serial + 1
 
             if expected_old_to_trampoline is not None and old_serial in expected_old_to_trampoline:

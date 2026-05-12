@@ -44,6 +44,24 @@ from d810.cfg.transform.byte_emit_tail_isolation import (
 
 logger = logging.getLogger(__name__)
 
+# Local mirror of cfg_mutations.MBL_KEEP / copy_block_keep so this runtime
+# module doesn't cross the cfg.transform -> hexrays.mutation layer boundary.
+# See memory ``ida_optimize_global_cfg_kill``: ``mba.copy_block`` does not
+# inherit MBL_KEEP, and ``optimize_global``'s structural sweep culls clones
+# without it.
+_MBL_KEEP = 0x10000
+
+
+def _copy_block_keep(mba, ref_blk, dest_serial):
+    """``mba.copy_block`` + ``MBL_KEEP`` so the clone survives optimize_global."""
+    new_blk = _copy_block_keep(mba, ref_blk, dest_serial)
+    if new_blk is not None:
+        try:
+            new_blk.flags |= _MBL_KEEP
+        except Exception:
+            pass
+    return new_blk
+
 
 class DiagDbFactView:
     """FactView backed by a diag-DB ``fact_observations`` table.
@@ -259,7 +277,7 @@ class LiveMbaAdapter:
         #    dummy last block). copy_block(ref, dest_serial) inserts the
         #    new block *before* dest_serial in the block list.
         end_serial = int(mba.qty) - 1
-        tramp = mba.copy_block(pred_blk, end_serial)
+        tramp = _copy_block_keep(mba, pred_blk, end_serial)
         if tramp is None:
             raise RuntimeError(
                 "insert_trampoline_after: mba.copy_block failed for "
@@ -568,7 +586,7 @@ class LiveMbaAdapter:
 
         # 1. Append clone at end of MBA via copy_block(ref, dest_serial).
         end_serial = int(mba.qty) - 1
-        clone = mba.copy_block(conv_blk, end_serial)
+        clone = _copy_block_keep(mba, conv_blk, end_serial)
         if clone is None:
             raise RuntimeError(
                 "clone_convergence_for_byte_path: mba.copy_block failed "
@@ -657,7 +675,7 @@ class LiveMbaAdapter:
 
         # 1. Append clone at the end of the MBA.
         end_serial = int(mba.qty) - 1
-        clone = mba.copy_block(template, end_serial)
+        clone = _copy_block_keep(mba, template, end_serial)
         if clone is None:
             raise RuntimeError(
                 "clone_state_write_block: mba.copy_block failed for "
@@ -942,7 +960,7 @@ class LiveMbaAdapter:
             )
 
         end_serial = int(mba.qty) - 1
-        anchor = mba.copy_block(template_block, end_serial)
+        anchor = _copy_block_keep(mba, template_block, end_serial)
         if anchor is None:
             raise RuntimeError(
                 f"copy_block failed for template={template_block.serial}"
@@ -1275,7 +1293,7 @@ class LiveMbaAdapter:
 
         # 1. Clone predecessor at end of mba.
         end_serial = int(mba.qty) - 1
-        anchor = mba.copy_block(pred_blk, end_serial)
+        anchor = _copy_block_keep(mba, pred_blk, end_serial)
         if anchor is None:
             raise RuntimeError(
                 f"insert_anchor_block_xor_pair: copy_block failed for "
