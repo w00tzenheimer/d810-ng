@@ -15,7 +15,8 @@ This strategy detects the pattern at MMAT_GLBOPT1 and queues
 into its own instruction with a fresh kreg destination, restoring an
 explicit def-use chain that survives DCE.
 
-Family: ``FAMILY_CLEANUP`` -- runs after HCC and trampoline-skip.
+Family: ``FAMILY_CLEANUP`` -- runs after HCC, and after optional
+trampoline-skip when that experiment is enabled.
 
 Default behavior
 ----------------
@@ -152,10 +153,7 @@ class CounterHoistStrategy:
             family=self.family,
             modifications=modifications,
             ownership=ownership,
-            prerequisites=[
-                "handler_chain_composer",
-                "dispatcher_trampoline_skip",
-            ],
+            prerequisites=["handler_chain_composer"],
             expected_benefit=benefit,
             risk_score=0.10,
             metadata={

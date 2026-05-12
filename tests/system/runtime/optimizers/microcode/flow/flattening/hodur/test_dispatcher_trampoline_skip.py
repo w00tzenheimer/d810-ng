@@ -280,6 +280,13 @@ def _make_fact_view(
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def enable_trampoline_skip_for_strategy_tests(monkeypatch):
+    """Exercise plan() with the opt-in strategy gate enabled."""
+    monkeypatch.setenv("D810_HODUR_ENABLE_TRAMPOLINE_SKIP", "1")
+    monkeypatch.delenv("D810_HODUR_DISABLE_TRAMPOLINE_SKIP", raising=False)
+
+
 @pytest.fixture
 def captured_strategy_log():
     """Attach a memory handler to the strategy logger and yield captured records."""
@@ -298,6 +305,21 @@ def captured_strategy_log():
         yield records
     finally:
         target_logger.removeHandler(handler)
+
+
+def test_disabled_by_default(monkeypatch):
+    """Trampoline skip is no longer a default live cleanup pass."""
+    monkeypatch.delenv("D810_HODUR_ENABLE_TRAMPOLINE_SKIP", raising=False)
+    monkeypatch.delenv("D810_HODUR_DISABLE_TRAMPOLINE_SKIP", raising=False)
+    snapshot, _ = _build_snapshot(
+        fact_view=None,
+        extra_var_writes=("228",),
+    )
+
+    strategy = DispatcherTrampolineSkipStrategy()
+
+    assert not strategy.is_applicable(snapshot)
+    assert strategy.plan(snapshot) is None
 
 
 def test_rejects_when_fact_overlap_with_const_writes(captured_strategy_log):
