@@ -136,6 +136,7 @@ from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.chains import (
     find_reaching_defs_for_stkvar,
 )
+from d810.evaluator.hexrays_microcode.sccp import run_sccp
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -2269,6 +2270,177 @@ def _collect_byte_evidence_eas(snapshot: object) -> frozenset[int]:
     return frozenset(out)
 
 
+def _find_live_def_insn(
+    mba: object,
+    region_anchor: int,
+    stkoff: int,
+    size: int,
+) -> object | None:
+    """Return the live ``minsn_t`` that defines ``(stkoff, size)`` reaching
+    ``region_anchor``, or None if no reaching def is recorded.
+
+    Walks IDA's UD chain for ``region_anchor`` and looks up the first
+    def site's instruction in the live MBA.  Read-only.
+    """
+    try:
+        defs = find_reaching_defs_for_stkvar(
+            mba, int(region_anchor), int(stkoff), int(size),
+        )
+    except Exception:
+        return None
+    if not defs:
+        return None
+    for def_site in defs:
+        try:
+            def_blk_serial = int(def_site.block_serial)
+            def_ea = int(def_site.ins_ea)
+        except Exception:
+            continue
+        try:
+            def_blk = mba.get_mblock(def_blk_serial)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if def_blk is None:
+            continue
+        cur = getattr(def_blk, "head", None)
+        while cur is not None:
+            try:
+                cur_ea = int(getattr(cur, "ea", 0) or 0)
+            except Exception:
+                cur_ea = 0
+            if cur_ea == def_ea:
+                return cur
+            cur = getattr(cur, "next", None)
+    return None
+
+
+def _capture_transitive_def_chain(
+    mba: object,
+    region_anchor: int,
+    initial_reads: set[tuple[int, int]],
+    *,
+    max_depth: int = 8,
+    max_total: int = 64,
+) -> list["InsnSnapshot"] | None:
+    """Capture a topologically-ordered transitive def chain.
+
+    For each ``(stkoff, size)`` in ``initial_reads``, find a def reaching
+    ``region_anchor`` and recursively materialise the closure: every
+    stkvar read by a captured def is itself captured first.  The
+    returned list is ordered so a stkvar's def appears before any
+    captured instruction that reads it.
+
+    Returns ``None`` when any read cannot be resolved (no reaching def
+    in the live MBA, or recursion exceeds ``max_depth``/``max_total``).
+    Cycle-safe via a ``(stkoff, size)`` visited set; bottoms out
+    naturally when a def reads only constants, registers, or args.
+
+    Designed for prepending to a region's ``composed_instructions``: the
+    new InsertBlock then defines every stkvar it reads locally, so the
+    pred's strand can't cause IDA's def-use analysis to fold the body.
+    """
+    captured: dict[int, "InsnSnapshot"] = {}
+    capture_order: list[int] = []
+    visited: set[tuple[int, int]] = set()
+    in_progress: set[tuple[int, int]] = set()
+
+    def _resolve(stkoff: int, size: int, depth: int) -> bool:
+        key = (int(stkoff), int(size))
+        if key in visited:
+            return True
+        if key in in_progress:
+            # cycle: treat as resolved here; the outer def will be captured
+            return True
+        if depth > max_depth:
+            logger.info(
+                "HCC_DEF_PROBE depth-exceeded anchor=%d stkoff=0x%x size=%d depth=%d",
+                int(region_anchor), int(stkoff), int(size), depth,
+            )
+            return False
+        if len(capture_order) > max_total:
+            logger.info(
+                "HCC_DEF_PROBE max-total-exceeded anchor=%d stkoff=0x%x size=%d captured=%d",
+                int(region_anchor), int(stkoff), int(size), len(capture_order),
+            )
+            return False
+        in_progress.add(key)
+        # diagnostic: report what find_reaching_defs_for_stkvar returns.
+        try:
+            probe_defs = find_reaching_defs_for_stkvar(
+                mba, int(region_anchor), int(stkoff), int(size),
+            )
+        except Exception as exc:
+            probe_defs = None
+            logger.info(
+                "HCC_DEF_PROBE chain-raised anchor=%d stkoff=0x%x size=%d exc=%s",
+                int(region_anchor), int(stkoff), int(size), exc,
+            )
+        if not probe_defs:
+            # No internal def reaches the anchor for this stkvar.  Most
+            # often this means the slot is an argument / register-init
+            # value live throughout the function -- not an error.
+            # Mark visited and succeed without capture: any pred of the
+            # InsertBlock will see the same external slot.
+            logger.info(
+                "HCC_DEF_PROBE no-defs-external anchor=%d stkoff=0x%x size=%d"
+                " (treated as external input, no capture needed)",
+                int(region_anchor), int(stkoff), int(size),
+            )
+            visited.add(key)
+            in_progress.discard(key)
+            return True
+        logger.info(
+            "HCC_DEF_PROBE found anchor=%d stkoff=0x%x size=%d n_defs=%d sites=%s",
+            int(region_anchor), int(stkoff), int(size), len(probe_defs),
+            [(int(d.block_serial), hex(int(d.ins_ea))) for d in probe_defs[:5]],
+        )
+        insn = _find_live_def_insn(mba, region_anchor, stkoff, size)
+        if insn is None:
+            in_progress.discard(key)
+            return False
+        try:
+            def_ea = int(getattr(insn, "ea", 0) or 0)
+            opcode = int(insn.opcode)
+        except Exception:
+            in_progress.discard(key)
+            return False
+        # Walk this def's own stkvar reads (l, r, plus d for stores).
+        sub_reads: set[tuple[int, int]] = set()
+        _collect_stkvar_reads_from_mop(getattr(insn, "l", None), sub_reads)
+        _collect_stkvar_reads_from_mop(getattr(insn, "r", None), sub_reads)
+        d_op = getattr(insn, "d", None)
+        if d_op is not None:
+            try:
+                d_type = int(d_op.t)
+            except Exception:
+                d_type = -1
+            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
+                _collect_stkvar_reads_from_mop(d_op, sub_reads)
+        # Drop this def's own destination (it defines, doesn't read).
+        sub_reads.discard(key)
+        for sub_off, sub_sz in sorted(sub_reads):
+            if not _resolve(sub_off, sub_sz, depth + 1):
+                in_progress.discard(key)
+                return False
+        # All transitive deps resolved -- capture this def.
+        if def_ea not in captured:
+            try:
+                snap = capture_insn_snapshot(insn)
+            except Exception:
+                in_progress.discard(key)
+                return False
+            captured[def_ea] = snap
+            capture_order.append(def_ea)
+        visited.add(key)
+        in_progress.discard(key)
+        return True
+
+    for stkoff, size in sorted(initial_reads):
+        if not _resolve(int(stkoff), int(size), 0):
+            return None
+    return [captured[ea] for ea in capture_order]
+
+
 def _collect_stkvar_reads_from_mop(
     mop: object,
     reads: set[tuple[int, int]],
@@ -2305,7 +2477,11 @@ def _collect_stkvar_reads_from_mop(
         _collect_stkvar_reads_from_mop(getattr(sub, "d", None), reads)
 
 
-def _collect_stkvar_reads_in_block(blk: object) -> set[tuple[int, int]]:
+def _collect_stkvar_reads_in_block(
+    blk: object,
+    *,
+    skip_jcond_tail: bool = True,
+) -> set[tuple[int, int]]:
     """Return the ``(stkoff, size)`` set for every stkvar read in ``blk``.
 
     Walks the live ``minsn_t`` stream.  Reads come from ``l`` and ``r``
@@ -2313,6 +2489,11 @@ def _collect_stkvar_reads_in_block(blk: object) -> set[tuple[int, int]]:
     a memory store (``m_stx``, ``m_stm``) or when ``d`` itself is a
     sub-instruction (``mop_d``).  This rule prevents
     treating ``mov %src, %var_x.N`` destinations as fake reads.
+
+    With ``skip_jcond_tail`` (default True), a ``jcond`` instruction
+    halts collection -- mirroring the body capture's jcond-at-tail drop
+    so the precondition does not strand on operands whose only read
+    lives in a jcond the InsertBlock will not actually carry.
     """
     reads: set[tuple[int, int]] = set()
     cur = getattr(blk, "head", None)
@@ -2321,6 +2502,12 @@ def _collect_stkvar_reads_in_block(blk: object) -> set[tuple[int, int]]:
             opcode = int(cur.opcode)
         except Exception:
             opcode = -1
+        if skip_jcond_tail:
+            try:
+                if ida_hexrays.is_mcode_jcond(opcode):
+                    break
+            except Exception:
+                pass
         _collect_stkvar_reads_from_mop(getattr(cur, "l", None), reads)
         _collect_stkvar_reads_from_mop(getattr(cur, "r", None), reads)
         d = getattr(cur, "d", None)
@@ -2581,6 +2768,10 @@ class HandlerChainComposerStrategy:
         self._last_dag_for_call_barrier = None
         self._last_state_var_stkoff_for_call_barrier = None
         self._last_local_facts_for_call_barrier = None
+        # uee-tmc1 Phase 2 probe: per-invocation SCCP overlay memo,
+        # populated lazily in _compose_region on the abort branch.
+        self._sccp_overlay_cache: dict | None = None
+        self._sccp_overlay_attempted: bool = False
 
         # Read-only diagnostic tracer for terminal byte-cascade coverage.
         # Env-gated default-off; pure observation, no behaviour change.
@@ -8175,6 +8366,87 @@ class HandlerChainComposerStrategy:
                         stranded = []
 
                 if not covered:
+                    # uee-tmc1 Phase 2: transitive def-site capture rescue.
+                    # For each stranded operand, capture its def chain
+                    # (def instruction + recursive captures of every
+                    # stkvar that def reads).  When the closure resolves,
+                    # prepending the captured snapshots makes the
+                    # InsertBlock body self-contained: every stkvar it
+                    # reads is locally redefined before the body's first
+                    # use, so the new pred's strand cannot cause IDA's
+                    # def-use analysis to fold the body.
+                    #
+                    # UD chain entries are per-block; query at the
+                    # region's tail (last node) so multi-block fused
+                    # regions see chain entries for reads that live in
+                    # later handler blocks, not just the first.
+                    tail_anchor = int(region_nodes[-1].entry_anchor)
+                    rescue_defs = _capture_transitive_def_chain(
+                        mba, tail_anchor, set(stranded),
+                    )
+                    if rescue_defs is not None:
+                        logger.info(
+                            "HandlerChainComposer: byte-evidence region"
+                            " first=%d pred=%d -- def-site chain captured"
+                            " %d snapshot(s) for %d stranded operand(s);"
+                            " InsertBlock body now self-contained:"
+                            " stranded=%s captured_eas=%s",
+                            first_anchor,
+                            int(pred_serial),
+                            len(rescue_defs),
+                            len(stranded),
+                            [(hex(off), sz) for off, sz in stranded],
+                            [hex(s.ea) for s in rescue_defs],
+                        )
+                        composed = list(rescue_defs) + composed
+                        covered = True
+                        stranded = []
+                    else:
+                        logger.info(
+                            "HCC_DEF_CAPTURE_GAP first=%d pred=%d --"
+                            " transitive def-chain capture failed for"
+                            " byte-evidence region (no reaching def or"
+                            " max-depth exceeded); falling through to"
+                            " abort",
+                            first_anchor,
+                            int(pred_serial),
+                        )
+
+                if not covered:
+                    # uee-tmc1 Phase 2 probe: query SCCP for the stranded
+                    # operands to learn which of them have constant values
+                    # the synthesis path can rescue with a copy-in mov.
+                    sccp_findings: list[tuple[str, int, object]] = []
+                    if not self._sccp_overlay_attempted:
+                        self._sccp_overlay_attempted = True
+                        try:
+                            self._sccp_overlay_cache = run_sccp(mba)
+                        except Exception as exc:  # pragma: no cover - diagnostic only
+                            logger.warning(
+                                "HandlerChainComposer: SCCP overlay raised: %s",
+                                exc,
+                            )
+                            self._sccp_overlay_cache = None
+                    overlay = self._sccp_overlay_cache
+                    if overlay:
+                        for stkoff, size in stranded:
+                            key = (
+                                ida_hexrays.mop_S,
+                                int(size),
+                                int(stkoff),
+                            )
+                            sccp_val = overlay.get(key)
+                            sccp_findings.append(
+                                (hex(stkoff), int(size), sccp_val)
+                            )
+                    if sccp_findings:
+                        logger.info(
+                            "HCC_SCCP_PROBE first=%d pred=%d -- per-stranded"
+                            " SCCP values: %s",
+                            first_anchor,
+                            int(pred_serial),
+                            sccp_findings,
+                        )
                     logger.info(
                         "HandlerChainComposer: aborting byte-evidence region"
                         " first=%d pred=%d -- %d stkvar read(s) have no"
