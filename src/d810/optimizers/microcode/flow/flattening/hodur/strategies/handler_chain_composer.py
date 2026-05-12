@@ -133,6 +133,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_bui
 from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
     check_redirect_severs_use_def,
 )
+from d810.evaluator.hexrays_microcode.chains import (
+    find_reaching_defs_for_stkvar,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -2264,6 +2267,76 @@ def _collect_byte_evidence_eas(snapshot: object) -> frozenset[int]:
                 except (ValueError, TypeError):
                     continue
     return frozenset(out)
+
+
+def _collect_stkvar_reads_from_mop(
+    mop: object,
+    reads: set[tuple[int, int]],
+) -> None:
+    """Recursively collect ``(stkoff, size)`` for every stkvar read in a mop_t.
+
+    Walks ``mop_S`` (direct stack read) and ``mop_d`` (sub-instruction)
+    operands.  Other mop kinds (``mop_n``, ``mop_r``, ``mop_b``, etc.)
+    do not contribute stkvar reads and are ignored.
+
+    Read-only; never mutates the mop_t or its sub-objects.
+    """
+    if mop is None:
+        return
+    try:
+        t = int(mop.t)
+    except Exception:
+        return
+    if t == ida_hexrays.mop_S:
+        s = getattr(mop, "s", None)
+        if s is None:
+            return
+        try:
+            reads.add((int(s.off), int(mop.size)))
+        except Exception:
+            return
+        return
+    if t == ida_hexrays.mop_d:
+        sub = getattr(mop, "d", None)
+        if sub is None:
+            return
+        _collect_stkvar_reads_from_mop(getattr(sub, "l", None), reads)
+        _collect_stkvar_reads_from_mop(getattr(sub, "r", None), reads)
+        _collect_stkvar_reads_from_mop(getattr(sub, "d", None), reads)
+
+
+def _collect_stkvar_reads_in_block(blk: object) -> set[tuple[int, int]]:
+    """Return the ``(stkoff, size)`` set for every stkvar read in ``blk``.
+
+    Walks the live ``minsn_t`` stream.  Reads come from ``l`` and ``r``
+    operands universally; ``d`` contributes a read only when the opcode is
+    a memory store (``m_stx``, ``m_stm``) or when ``d`` itself is a
+    sub-instruction (``mop_d``).  This rule prevents
+    treating ``mov %src, %var_x.N`` destinations as fake reads.
+    """
+    reads: set[tuple[int, int]] = set()
+    cur = getattr(blk, "head", None)
+    while cur is not None:
+        try:
+            opcode = int(cur.opcode)
+        except Exception:
+            opcode = -1
+        _collect_stkvar_reads_from_mop(getattr(cur, "l", None), reads)
+        _collect_stkvar_reads_from_mop(getattr(cur, "r", None), reads)
+        d = getattr(cur, "d", None)
+        if d is not None:
+            try:
+                d_type = int(d.t)
+            except Exception:
+                d_type = -1
+            # m_stx is the only widely-available memory-store opcode whose
+            # 'd' operand is the source value (a read).  Other store opcodes
+            # (m_st1/m_stm in some SDKs) are covered transparently when their
+            # 'd' is a sub-instruction (mop_d case below).
+            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
+                _collect_stkvar_reads_from_mop(d, reads)
+        cur = getattr(cur, "next", None)
+    return reads
 
 
 def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
@@ -4548,6 +4621,15 @@ class HandlerChainComposerStrategy:
         # leaving the m_stx for IDA's finalisation DCE.
         byte_evidence_eas = _collect_byte_evidence_eas(snapshot)
 
+        # BST analysis result -- the dispatcher tree built by recon.
+        # ``_compose_region`` consults it when the natural splice pred
+        # strands the captured operands: BST exposes the state writers
+        # (handler_state_map / find_reaching_defs_for_stkvar on the
+        # state var) whose dominance precedes the dispatcher and so
+        # typically covers the operand defs the original handler
+        # depended on before D810 collapsed the dispatcher.
+        bst_result = getattr(snapshot, "bst_result", None)
+
         # Resolve the typed DAG-local facts bundle once.  Prefer the
         # snapshot's pre-built ``ReconRoundDiscoveryContext.local_facts``
         # (Phase 3 typed contract); fall back to building it on demand
@@ -4564,6 +4646,7 @@ class HandlerChainComposerStrategy:
             state_var_stkoff=state_var_stkoff,
             local_facts=local_facts,
             byte_evidence_eas=byte_evidence_eas,
+            bst_result=bst_result,
         )
         # uee-b7ze Step 2: stash for plan() to consume during call-barrier
         # segmentation.  Lifetime is one detect_chains() invocation.
@@ -4684,6 +4767,7 @@ class HandlerChainComposerStrategy:
                 region_nodes=region_nodes,
                 state_var_stkoff=state_var_stkoff,
                 byte_evidence_eas=byte_evidence_eas,
+                bst_result=bst_result,
             )
             if candidate is not None:
                 candidates.append(candidate)
@@ -7567,6 +7651,7 @@ class HandlerChainComposerStrategy:
         state_var_stkoff: int | None = None,
         local_facts: DagLocalFacts | None = None,
         byte_evidence_eas: frozenset[int] = frozenset(),
+        bst_result: object | None = None,
     ) -> tuple[_RawRegionInfo, ...]:
         """Build per-region observation records for the pre-compose log pass.
 
@@ -7659,6 +7744,7 @@ class HandlerChainComposerStrategy:
                     region_nodes=region_nodes,
                     state_var_stkoff=state_var_stkoff,
                     byte_evidence_eas=byte_evidence_eas,
+                    bst_result=bst_result,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic
                 logger.warning(
@@ -7909,6 +7995,7 @@ class HandlerChainComposerStrategy:
         region_nodes: tuple[StateDagNode, ...],
         state_var_stkoff: int | None,
         byte_evidence_eas: frozenset[int] = frozenset(),
+        bst_result: object | None = None,
     ) -> HandlerChainCandidate | None:
         if not region_nodes:
             return None
@@ -7976,6 +8063,130 @@ class HandlerChainComposerStrategy:
             composed.extend(insns)
             handler_serials.append(anchor)
             state_values.append(0)
+
+        # uee-lh22 follow-up: stkvar-dominance precondition for
+        # byte-evidence regions.  HCC's CFG reroutes (e.g. blk[104]->blk[118]
+        # dispatcher-bypass + blk[116]'s cond arm -> InsertBlock) can move
+        # the byte-emitter block onto paths whose new predecessors do not
+        # carry the captured operand versions.  IDA's optimize_global at the
+        # MMAT_GLBOPT1 -> MMAT_GLBOPT2 transition then sees the m_stx address
+        # operands as undefined and DCEs the entire block.  When the region
+        # carries byte evidence, refuse to emit an InsertBlock whose body
+        # references stkvars with no reaching def at the new pred -- the
+        # byte payload remains in the original block(s) which IDA may still
+        # preserve via their existing dominance.
+        if byte_evidence_eas:
+            region_has_byte_evidence = False
+            for node in region_nodes:
+                probe_blk = self._safe_get_mblock(
+                    mba, int(node.entry_anchor),
+                )
+                if probe_blk is None:
+                    continue
+                probe = getattr(probe_blk, "head", None)
+                while probe is not None:
+                    try:
+                        probe_ea = int(getattr(probe, "ea", 0) or 0)
+                    except Exception:
+                        probe_ea = 0
+                    if probe_ea and probe_ea in byte_evidence_eas:
+                        region_has_byte_evidence = True
+                        break
+                    probe = getattr(probe, "next", None)
+                if region_has_byte_evidence:
+                    break
+            if region_has_byte_evidence:
+                all_reads: set[tuple[int, int]] = set()
+                for node in region_nodes:
+                    body_blk = self._safe_get_mblock(
+                        mba, int(node.entry_anchor),
+                    )
+                    if body_blk is None:
+                        continue
+                    all_reads.update(_collect_stkvar_reads_in_block(body_blk))
+
+                def _pred_covers_reads(pred: int) -> tuple[bool, list[tuple[int, int]]]:
+                    missing: list[tuple[int, int]] = []
+                    for stkoff, size in sorted(all_reads):
+                        if size <= 0:
+                            continue
+                        try:
+                            defs = find_reaching_defs_for_stkvar(
+                                mba, int(pred), int(stkoff), int(size),
+                            )
+                        except Exception:
+                            defs = []
+                        if not defs:
+                            missing.append((stkoff, size))
+                    return (not missing), missing
+
+                covered, stranded = _pred_covers_reads(int(pred_serial))
+
+                # uee-lh22 Phase 1: BST-lineage splice-pred rescue.
+                # When the natural physical predecessor strands operands
+                # (the captured InsnSnapshot body would read stkvars whose
+                # defs do not reach that pred), consult the BST's state
+                # writers -- the blocks that wrote the dispatch state for
+                # this handler -- and prefer a writer that dominates every
+                # captured operand read.  State writers sit upstream of
+                # the dispatcher chain, so their out-state typically
+                # covers the operand defs that the original handler relied
+                # on before D810 collapsed the dispatcher.
+                if not covered and bst_result is not None and state_var_stkoff is not None:
+                    state_var_size = 4
+                    try:
+                        state_writers = find_reaching_defs_for_stkvar(
+                            mba,
+                            int(first_anchor),
+                            int(state_var_stkoff),
+                            state_var_size,
+                        )
+                    except Exception:
+                        state_writers = []
+                    rescued_pred: int | None = None
+                    seen_writer_serials: set[int] = set()
+                    for def_site in state_writers:
+                        try:
+                            writer_serial = int(def_site.block_serial)
+                        except Exception:
+                            continue
+                        if writer_serial in seen_writer_serials:
+                            continue
+                        seen_writer_serials.add(writer_serial)
+                        if writer_serial == int(pred_serial):
+                            continue
+                        writer_covered, _ = _pred_covers_reads(writer_serial)
+                        if writer_covered:
+                            rescued_pred = writer_serial
+                            break
+                    if rescued_pred is not None:
+                        logger.info(
+                            "HandlerChainComposer: byte-evidence region"
+                            " first=%d -- BST lineage promotes splice pred"
+                            " %d -> %d (orig pred stranded: %s); writer"
+                            " dominates every captured operand read",
+                            first_anchor,
+                            int(pred_serial),
+                            rescued_pred,
+                            [(hex(off), sz) for off, sz in stranded],
+                        )
+                        pred_serial = rescued_pred
+                        covered = True
+                        stranded = []
+
+                if not covered:
+                    logger.info(
+                        "HandlerChainComposer: aborting byte-evidence region"
+                        " first=%d pred=%d -- %d stkvar read(s) have no"
+                        " reaching def at the new pred and no BST-derived"
+                        " writer dominates them (would be DCE'd by IDA"
+                        " optimize_global): %s",
+                        first_anchor,
+                        int(pred_serial),
+                        len(stranded),
+                        [(hex(off), sz) for off, sz in stranded],
+                    )
+                    return None
 
         return HandlerChainCandidate(
             handler_serials=tuple(handler_serials),
