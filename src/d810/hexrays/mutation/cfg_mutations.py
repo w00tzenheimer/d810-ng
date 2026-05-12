@@ -17,6 +17,35 @@ from d810.hexrays.ir.cfg_queries import _serial_in_predset
 
 helper_logger = getLogger(__name__)
 
+# MBL_KEEP -- IDA SDK ``hexrays.hpp``: "do not remove even if unreachable".
+# Set on every block IDA creates via ``mba_get_or_create_block``; NOT inherited
+# by ``mba.copy_block``.  ``mba.optimize_global`` calls
+# ``mba_remove_empty_and_unreachable_blocks`` which collects MBL_KEEP blocks
+# as preserved roots and sweeps unreachable non-KEEP blocks, so any block
+# D810 clones via ``copy_block`` must explicitly carry MBL_KEEP or risk
+# being culled regardless of the new CFG wiring.
+MBL_KEEP = 0x10000
+
+
+def copy_block_keep(
+    mba: "ida_hexrays.mba_t",
+    ref_blk: "ida_hexrays.mblock_t",
+    dest_serial: int,
+) -> "ida_hexrays.mblock_t":
+    """Wrapper around ``mba.copy_block`` that sets ``MBL_KEEP`` on the clone.
+
+    Use everywhere D810 clones a block.  Without ``MBL_KEEP`` the clone is
+    a candidate for removal by ``mba.optimize_global``'s structural sweep
+    (see memory ``ida_optimize_global_cfg_kill``).
+    """
+    new_blk = mba.copy_block(ref_blk, dest_serial)
+    if new_blk is not None:
+        try:
+            new_blk.flags |= MBL_KEEP
+        except Exception:
+            pass
+    return new_blk
+
 
 def _rebuild_block_lists_if_available(blk: "ida_hexrays.mblock_t") -> None:
     """Recompute copied block use/def lists when the Hex-Rays API exposes it."""
@@ -520,8 +549,10 @@ def create_standalone_block(
     """
     mba = ref_blk.mba
 
-    # 1. Copy ref_blk to get a fresh block at the end of the MBA
-    new_blk = mba.copy_block(ref_blk, mba.qty - 1)
+    # 1. Copy ref_blk to get a fresh block at the end of the MBA.
+    # ``copy_block_keep`` ensures the clone carries MBL_KEEP so
+    # ``optimize_global``'s structural sweep doesn't cull it.
+    new_blk = copy_block_keep(mba, ref_blk, mba.qty - 1)
     try:
         from d810.cfg.observability import observe_cfg_provenance
         observe_cfg_provenance(
@@ -994,7 +1025,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # For BLT_2WAY fallthrough, verifier semantics require succset[0] to
         # equal blk.nextb, so the synthesized fallthrough helper must be placed
         # physically after blk, not before it.
-        nop_block = mba.copy_block(blk, blk.serial + 1)
+        nop_block = copy_block_keep(mba, blk, blk.serial + 1)
         # Mid-CFG insertion can shift serials; refresh from the original block
         # object to keep bookkeeping tied to the same logical successor.
         if original_successor_blk is not None:
@@ -1002,7 +1033,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     else:
         # Append the new block at the end of the MBA (before the dummy last
         # block) to avoid serial shifts for generic rewrites.
-        nop_block = mba.copy_block(blk, mba.qty - 1)
+        nop_block = copy_block_keep(mba, blk, mba.qty - 1)
     try:
         from d810.cfg.observability import observe_cfg_provenance
         observe_cfg_provenance(
@@ -1180,7 +1211,7 @@ def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t, verify: bool = True)
 
 def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
     mba = block_to_duplicate.mba
-    duplicated_blk = mba.copy_block(block_to_duplicate, mba.qty - 1)
+    duplicated_blk = copy_block_keep(mba, block_to_duplicate, mba.qty - 1)
 
     # Clean inherited predecessor set -- copy_block clones predecessors
     # from block_to_duplicate, but those predecessors point to the
