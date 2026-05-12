@@ -695,6 +695,55 @@ def cmd_byte_audit(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_unsupported_edge_kind_explain(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics unsupported-edge-kind-explain`.
+
+    For every byte the byte-cascade trace marks with
+    ``candidate_rejection=unsupported_edge_kind``, list the rejected
+    outgoing DAG edges, the actual edge kind, the kinds the rejection
+    check accepts, and whether the rejection appears safe to relax based
+    on existing TerminalByteEmitterFact evidence on the target state.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    log_file = (
+        Path(args.log).expanduser().resolve()
+        if args.log
+        else worktree_log_dir(wt) / "d810.log"
+    )
+    if not log_file.exists():
+        _die(f"unsupported-edge-kind-explain: log not found: {log_file}")
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "unsupported-edge-kind-explain",
+        "--log",
+        str(log_file),
+        "--db",
+        str(db),
+    ]
+    if args.bytes:
+        diag_argv += ["--bytes", args.bytes]
+    if args.func_label:
+        diag_argv += ["--func-label", args.func_label]
+    if args.json_output:
+        diag_argv.append("--json")
+    print(f"DB={db}", file=sys.stderr)
+    print(f"LOG={log_file}", file=sys.stderr)
+    print(
+        "cff-debug: unsupported-edge-kind-explain: diag argv:"
+        f" {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_admission_explain(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics admission-explain`.
 
@@ -997,6 +1046,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_admission_explain)
+
+    sp = sub.add_parser(
+        "unsupported-edge-kind-explain",
+        help=(
+            "For every byte the byte-cascade trace marks with"
+            " candidate_rejection=unsupported_edge_kind, list the rejected"
+            " outgoing DAG edges, the actual edge kind, the kinds the check"
+            " accepts, and whether the rejection appears safe to relax"
+            " (based on TerminalByteEmitterFact evidence on the target"
+            " state). Wraps `python -m d810.diagnostics"
+            " unsupported-edge-kind-explain`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--log",
+        help=(
+            "explicit d810.log path (default: <worktree>/.tmp/logs/"
+            "d810_logs/d810.log)"
+        ),
+    )
+    sp.add_argument(
+        "--bytes", default=None,
+        help=(
+            "comma-separated byte indices to explain (e.g. '0,2,3')."
+            " Default: every row whose candidate_rejection =="
+            " unsupported_edge_kind."
+        ),
+    )
+    sp.add_argument(
+        "--func-label", default=None,
+        help="optional function label rendered in the report title",
+    )
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable text table",
+    )
+    sp.set_defaults(func=cmd_unsupported_edge_kind_explain)
 
     sp = sub.add_parser(
         "gates",
