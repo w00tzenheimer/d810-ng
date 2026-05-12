@@ -2217,6 +2217,55 @@ def _resolve_state_var_stkoff_loose(snapshot: "AnalysisSnapshot") -> int | None:
     return None
 
 
+def _collect_byte_evidence_eas(snapshot: object) -> frozenset[int]:
+    """Source EAs of every ``TerminalByteEmitterFact`` terminal-tail observation.
+
+    Mirrors the extraction used by ``ByteCascadeCoverageTracer`` so both
+    consumers see the same byte-emitter EA universe.  Returns an empty
+    frozenset when no fact view is attached (the production stub path).
+
+    Used by ``_compose_region`` to relax the composition's jcond-at-tail
+    refusal when the block carries a byte m_stx the materialised
+    InsertBlock body must preserve.
+    """
+    fact_view = (
+        getattr(snapshot, "diagnostic_fact_view", None)
+        or getattr(snapshot, "validated_fact_view", None)
+    )
+    if fact_view is None:
+        return frozenset()
+    out: set[int] = set()
+    for obs in getattr(fact_view, "active_observations", ()) or ():
+        if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("corridor_role") != "terminal_tail":
+            continue
+        for candidate in (
+            payload.get("source_ea"),
+            payload.get("source_ea_hex"),
+            getattr(obs, "source_ea", None),
+            getattr(obs, "source_ea_hex", None),
+            getattr(obs, "source_ea_i64", None),
+        ):
+            if candidate is None:
+                continue
+            if isinstance(candidate, bool):
+                continue
+            if isinstance(candidate, int):
+                out.add(int(candidate))
+                continue
+            if isinstance(candidate, str):
+                text = candidate.strip()
+                if not text:
+                    continue
+                try:
+                    out.add(int(text, 16) if text.lower().startswith("0x") else int(text))
+                except (ValueError, TypeError):
+                    continue
+    return frozenset(out)
+
+
 def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
     """Return True if ``insn`` writes a state constant to the state var."""
     if state_var_stkoff is None:
@@ -4492,6 +4541,13 @@ class HandlerChainComposerStrategy:
         if not regions:
             return []
 
+        # Byte-emitter source EAs: relax jcond-at-tail in
+        # ``_capture_block_composable_instructions`` so byte-emitter
+        # handler bodies (m_add + m_stx + jcond) materialise into the
+        # emitted InsertBlock instead of being blanket-rejected and
+        # leaving the m_stx for IDA's finalisation DCE.
+        byte_evidence_eas = _collect_byte_evidence_eas(snapshot)
+
         # Resolve the typed DAG-local facts bundle once.  Prefer the
         # snapshot's pre-built ``ReconRoundDiscoveryContext.local_facts``
         # (Phase 3 typed contract); fall back to building it on demand
@@ -4507,6 +4563,7 @@ class HandlerChainComposerStrategy:
             mba=mba, dag=dag, regions=regions,
             state_var_stkoff=state_var_stkoff,
             local_facts=local_facts,
+            byte_evidence_eas=byte_evidence_eas,
         )
         # uee-b7ze Step 2: stash for plan() to consume during call-barrier
         # segmentation.  Lifetime is one detect_chains() invocation.
@@ -4626,6 +4683,7 @@ class HandlerChainComposerStrategy:
                 dag=dag,
                 region_nodes=region_nodes,
                 state_var_stkoff=state_var_stkoff,
+                byte_evidence_eas=byte_evidence_eas,
             )
             if candidate is not None:
                 candidates.append(candidate)
@@ -7508,6 +7566,7 @@ class HandlerChainComposerStrategy:
         regions: list[tuple[StateDagNode, ...]],
         state_var_stkoff: int | None = None,
         local_facts: DagLocalFacts | None = None,
+        byte_evidence_eas: frozenset[int] = frozenset(),
     ) -> tuple[_RawRegionInfo, ...]:
         """Build per-region observation records for the pre-compose log pass.
 
@@ -7599,6 +7658,7 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     region_nodes=region_nodes,
                     state_var_stkoff=state_var_stkoff,
+                    byte_evidence_eas=byte_evidence_eas,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic
                 logger.warning(
@@ -7848,6 +7908,7 @@ class HandlerChainComposerStrategy:
         dag: LinearizedStateDag,
         region_nodes: tuple[StateDagNode, ...],
         state_var_stkoff: int | None,
+        byte_evidence_eas: frozenset[int] = frozenset(),
     ) -> HandlerChainCandidate | None:
         if not region_nodes:
             return None
@@ -7901,7 +7962,9 @@ class HandlerChainComposerStrategy:
                 )
                 return None
             insns = self._capture_block_composable_instructions(
-                blk, state_var_stkoff=state_var_stkoff,
+                blk,
+                state_var_stkoff=state_var_stkoff,
+                byte_evidence_eas=byte_evidence_eas,
             )
             if insns is None:
                 logger.info(
@@ -8023,6 +8086,7 @@ class HandlerChainComposerStrategy:
         blk: object,
         *,
         state_var_stkoff: int | None = None,
+        byte_evidence_eas: frozenset[int] = frozenset(),
     ) -> list[InsnSnapshot] | None:
         """Walk ``blk.head`` and capture composable instructions, or None.
 
@@ -8031,10 +8095,15 @@ class HandlerChainComposerStrategy:
         composition refusal.  Phase A's call-barrier candidate
         classification uses :py:meth:`_capture_block_composable_instructions_v2`
         directly to distinguish closing-forbidden vs call-forbidden cases.
+
+        ``byte_evidence_eas`` is forwarded verbatim; see the v2 docstring
+        for the jcond-at-tail relaxation it enables.
         """
         result = (
             HandlerChainComposerStrategy._capture_block_composable_instructions_v2(
-                blk, state_var_stkoff=state_var_stkoff,
+                blk,
+                state_var_stkoff=state_var_stkoff,
+                byte_evidence_eas=byte_evidence_eas,
             )
         )
         if result.kind == "composable":
@@ -8048,6 +8117,7 @@ class HandlerChainComposerStrategy:
         blk: object,
         *,
         state_var_stkoff: int | None = None,
+        byte_evidence_eas: frozenset[int] = frozenset(),
     ) -> _CaptureResult:
         """Walk ``blk.head`` and classify the block (uee-b7ze Step 2).
 
@@ -8067,7 +8137,31 @@ class HandlerChainComposerStrategy:
         the first call.  It walks the entire block so that we can count
         pre- and post-call composable instructions, and so multi-call
         anchors degrade gracefully to ``closing_abort``.
+
+        Payload-preserving jcond-tail relaxation: when
+        ``byte_evidence_eas`` is non-empty AND the block contains an
+        instruction whose ``ea`` is in that set, a jcond at the block's
+        tail no longer aborts capture; it is dropped from the composable
+        body. The InsertBlock's ``pred -> succ`` wiring carries the
+        DAG-aligned next-state edge the jcond would have produced. This
+        is the materialisation path for byte-emitter handler blocks
+        (m_add + m_stx + jcond), whose m_stx would otherwise be lost.
         """
+        block_has_byte_evidence = False
+        if byte_evidence_eas:
+            try:
+                probe = blk.head  # type: ignore[attr-defined]
+            except Exception:
+                probe = None
+            while probe is not None:
+                try:
+                    probe_ea = int(getattr(probe, "ea", 0) or 0)
+                except Exception:
+                    probe_ea = 0
+                if probe_ea and probe_ea in byte_evidence_eas:
+                    block_has_byte_evidence = True
+                    break
+                probe = getattr(probe, "next", None)
         try:
             insn = blk.head  # type: ignore[attr-defined]
         except Exception:
@@ -8099,6 +8193,15 @@ class HandlerChainComposerStrategy:
                 )
             try:
                 if ida_hexrays.is_mcode_jcond(opcode):
+                    if (
+                        block_has_byte_evidence
+                        and getattr(insn, "next", None) is None
+                    ):
+                        # Byte-emitter handler block with jcond at tail:
+                        # drop the jcond from the composable body; the
+                        # InsertBlock's pred->succ wiring carries the
+                        # DAG-aligned next-state edge.
+                        break
                     return _CaptureResult(
                         kind="closing_abort",
                         abort_reason=f"jcond_opcode={opcode}",
