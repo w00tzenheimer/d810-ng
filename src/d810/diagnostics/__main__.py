@@ -1616,9 +1616,19 @@ def main(argv: list[str] | None = None) -> int:
     p_bst_resolve.add_argument(
         "--persist",
         action="store_true",
+        default=True,
         help=(
             "Persist resolutions into "
-            "state_transition_bst_resolutions table (idempotent)"
+            "state_transition_bst_resolutions table (default; idempotent)"
+        ),
+    )
+    p_bst_resolve.add_argument(
+        "--no-persist",
+        action="store_false",
+        dest="persist",
+        help=(
+            "Compute and print resolutions without writing "
+            "state_transition_bst_resolutions"
         ),
     )
     p_bst_resolve.add_argument(

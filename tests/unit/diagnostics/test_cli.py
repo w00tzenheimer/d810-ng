@@ -1,6 +1,7 @@
 """Tests for the ``python -m d810.diagnostics`` CLI entry point."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from d810.diagnostics.__main__ import main
+from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import (
     _dual,
     snapshot_fact_conflicts,
@@ -313,6 +315,145 @@ class TestStateLocalCommand:
         assert "blk[205] -fallthrough-> blk[206]" in out
         assert "blk[206] -shared_suffix-> blk[217]" in out
         assert "blk[217] -terminal-> blk[218]" in out
+
+
+class TestStateTransitionBstResolutionsCommand:
+    def _make_bst_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
+        db_path = tmp_path / "bst.sqlite3"
+        log_path = tmp_path / "d810.log"
+        conn = sqlite3.connect(str(db_path))
+        create_tables(conn)
+        conn.execute(
+            """
+            INSERT INTO snapshots
+                (id, label, func_ea_hex, func_ea_i64,
+                 maturity, phase, block_count, timestamp)
+            VALUES (1, 'maturity_MMAT_LOCOPT_pre_d810', '0x180012df0',
+                    0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
+            """,
+        )
+        transition_payload = {
+            "source_block_serial": 100,
+            "source_state_const": 0x150,
+            "source_state_const_hex": "0x00000150",
+            "successor_kind": "branch",
+            "state_var_stkoff_hex": "0x3c",
+        }
+        conn.execute(
+            """
+            INSERT INTO fact_observations
+                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
+                 semantic_key, maturity, phase, confidence,
+                 source_block, source_ea_hex, source_ea_i64,
+                 block_fingerprint, mop_signature, payload, evidence)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                1,
+                "0x180012df0",
+                0x180012df0,
+                "state_transition_anchor:test",
+                "StateTransitionAnchorFact",
+                "state_transition_anchor:test",
+                "MMAT_LOCOPT",
+                "pre_d810",
+                0.9,
+                100,
+                None,
+                None,
+                None,
+                None,
+                json.dumps(transition_payload),
+                "[]",
+            ),
+        )
+        write_payload = {
+            "block_serial": 7,
+            "state_const": 0x222,
+            "state_const_u64": 0x222,
+            "state_const_hex": "0x0000000000000222",
+            "state_var_stkoff_hex": "0x3c",
+        }
+        conn.execute(
+            """
+            INSERT INTO fact_observations
+                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
+                 semantic_key, maturity, phase, confidence,
+                 source_block, source_ea_hex, source_ea_i64,
+                 block_fingerprint, mop_signature, payload, evidence)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                1,
+                "0x180012df0",
+                0x180012df0,
+                "state_write_anchor:test",
+                "StateWriteAnchorFact",
+                "state_write_anchor:test",
+                "MMAT_LOCOPT",
+                "pre_d810",
+                0.9,
+                7,
+                None,
+                None,
+                None,
+                None,
+                json.dumps(write_payload),
+                "[]",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        log_path.write_text(
+            'INTERVAL_DISPATCHER_ROWS: [{"lo":"0x100","hi":"0x200","target":7}]\n',
+            encoding="utf-8",
+        )
+        return db_path, log_path
+
+    def test_persists_by_default(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        db_path, log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        rc = main([
+            "state-transition-bst-resolutions",
+            "--db",
+            str(db_path),
+            "--bst-log",
+            str(log_path),
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "persisted=True" in out
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT COUNT(*) FROM state_transition_bst_resolutions"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 1
+
+    def test_no_persist_opt_out(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        db_path, log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        rc = main([
+            "state-transition-bst-resolutions",
+            "--db",
+            str(db_path),
+            "--bst-log",
+            str(log_path),
+            "--no-persist",
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "persisted=False" in out
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT COUNT(*) FROM state_transition_bst_resolutions"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 0
 
 
 class TestFactCommands:
