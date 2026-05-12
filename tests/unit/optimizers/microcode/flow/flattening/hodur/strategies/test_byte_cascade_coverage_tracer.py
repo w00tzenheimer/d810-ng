@@ -384,6 +384,37 @@ def test_seed_raw_region_table_records_membership(
     assert tracer.records[5].in_region_table is True
 
 
+def test_seed_raw_region_table_recognises_region_anchors_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_RawRegionInfo`` exposes membership via ``region_anchors`` (a
+    ``frozenset[int]``). The collector must read that field, otherwise the
+    tracer falsely reports ``in_region_table=0`` for bytes that DID land
+    in a raw region (regression: missing ``region_anchors`` key in the
+    attribute probe list caused the admission-explainer partition for
+    sub_7FFD to report all 7 bytes as raw-region admission failures).
+    """
+    _enable_gate(monkeypatch)
+    snap = _snapshot(
+        _byte_fact(2, 118, block_ea=0x180014F00, source_ea=0x180014F10),
+        _byte_fact(5, 101, block_ea=0x180014C00, source_ea=0x180014C10),
+    )
+    tracer = ByteCascadeCoverageTracer.from_snapshot(snap)
+    assert tracer is not None
+
+    @dataclass(frozen=True)
+    class _RegionWithAnchorsOnly:
+        # Mirrors `_RawRegionInfo`'s real shape: only `region_anchors`
+        # carries the membership set.
+        region_anchors: frozenset[int]
+
+    region = _RegionWithAnchorsOnly(region_anchors=frozenset({118, 101}))
+    tracer.seed_raw_region_table((region,))
+
+    assert tracer.records[2].in_region_table is True
+    assert tracer.records[5].in_region_table is True
+
+
 # ---------------------------------------------------------------------------
 # Candidate recording
 # ---------------------------------------------------------------------------
