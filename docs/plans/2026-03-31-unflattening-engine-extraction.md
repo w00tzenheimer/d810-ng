@@ -205,7 +205,7 @@ Already present on this branch:
 - The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
   regression gate for this line of work. Engine extraction must not regress its
   dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
-- The first five post-merge de-specialization slices landed:
+- The first six post-merge de-specialization slices landed:
   - `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`
     now owns the pure semantic-DAG region walk (`d322b957`).
   - `d810.cfg.semantic_region_entry` now owns semantic region entry
@@ -216,6 +216,8 @@ Already present on this branch:
     instruction-capture/materialization decisions (`37678021`).
   - `d810.recon.flow.terminal_byte_evidence` now owns read-only terminal
     byte source-EA evidence extraction (`132b2146`).
+  - `d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration`
+    now owns shared DAG-authoritative fragment arbitration (`54f46a14`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
@@ -226,8 +228,8 @@ What remains:
   remaining "architecture looks Hodur-centered" cleanup.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
   `engine` based on behavior, not on import churn. The next large
-  algorithmic candidate is DAG-authoritative fragment arbitration from
-  `hodur/reconstruction_fragment_builder.py`.
+  algorithmic candidates are exact semantic/conditional lowering and
+  residual dispatcher target resolution.
 - Convert the remaining legacy unflattening families to the engine/family
   model where doing so preserves behavior.
 - Document the extension contract for new unflattening families after the
@@ -307,36 +309,66 @@ Completed:
   to `d810.cfg.semantic_region_materialization` (`37678021`).
 - Terminal-tail byte source-EA evidence extraction moved to
   `d810.recon.flow.terminal_byte_evidence` (`132b2146`).
+- DAG-authoritative fragment arbitration moved to
+  `d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration`
+  (`54f46a14`).
 
 Next candidates, in order:
 
-1. DAG-authoritative fragment arbitration:
-   - current source: `hodur/reconstruction_fragment_builder.py`;
-   - target: `flattening/engine/dag_authority.py` and/or small `cfg`
-     helpers for graph-claim conflict checks;
-   - move backend-neutral filtering/finalization policy, not Hodur metadata
-     formatting.
-2. Exact semantic node and conditional lowering analysis:
+1. Exact semantic node and conditional lowering analysis:
    - current sources: `semantic_exact_node.py`, `exact_conditional_node.py`,
      `exact_conditional_fork.py`, `exact_conditional_alias.py`;
    - target: `d810.cfg.semantic_exact_lowering` or
      `d810.cfg.semantic_conditional_lowering`;
    - keep strategy wrappers, thresholds, and fallback order in Hodur.
-3. Residual dispatcher target resolution and trampoline skipping:
+2. Residual dispatcher target resolution and trampoline skipping:
    - current sources: `dispatcher_trampoline_skip.py` and pieces of
      `semantic_exact_node.py`;
    - target: `d810.cfg.residual_target_resolution` and/or
      `d810.recon.flow.bst_resolution`;
    - keep Hodur execution gates and strategy order local.
-4. State-variable cleanup planning:
+3. State-variable cleanup planning:
    - current sources: `dead_state_variable_elimination.py` and
      `state_constant_return_fixup.py`;
    - target: `d810.cfg.state_var_cleanup` or `d810.cfg.transform`;
    - move the plan/classification, not Hex-Rays NOP/rewrite mechanics.
-5. Return-frontier site derivation:
+4. Return-frontier site derivation:
    - current source: `hodur/return_sites.py`;
    - target: `d810.recon.flow.return_sites` or a `cfg` return-frontier helper;
    - keep Hodur snapshot/report adapters local.
+
+Recommended next implementer slices:
+
+1. **E1 import paydown slice.**
+   - Replace production imports of generic engine objects through
+     `flattening.hodur.strategy`, `snapshot`, `planner`, `executor`,
+     `provenance`, and `metrics` with canonical
+     `flattening.engine.*` imports.
+   - Keep Hodur-local imports when the imported object is genuinely
+     family-specific.
+   - Do not delete compatibility modules yet.
+   - Validation: focused engine/Hodur import tests, import contracts, and
+     no production import of generic engine types through Hodur shims except
+     where explicitly justified.
+2. **E2 exact semantic/conditional lowering extraction.**
+   - Start with a read-only extraction of backend-neutral candidate/site
+     analysis from `semantic_exact_node.py`, `exact_conditional_node.py`,
+     `exact_conditional_fork.py`, and `exact_conditional_alias.py`.
+   - Target `d810.cfg.semantic_exact_lowering` or
+     `d810.cfg.semantic_conditional_lowering`.
+   - Keep live `mblock_t`/`minsn_t` mutation, strategy ordering, and Hodur
+     fallback policy in Hodur.
+   - Validation: pure `cfg` unit tests plus existing exact-node/fork Hodur
+     tests. Run the sub7FFD dump/oracle gate if any planner or CFG-lowering
+     behavior changes.
+3. **E2 residual dispatcher target resolution extraction.**
+   - Move backend-neutral target-resolution predicates from
+     `dispatcher_trampoline_skip.py` and the relevant exact-node helpers into
+     `d810.cfg.residual_target_resolution` and/or
+     `d810.recon.flow.bst_resolution`.
+   - Keep Hodur's execution gates, logging, and ordering local.
+   - Validation: focused residual/dispatcher tests, import contracts, and the
+     sub7FFD gate for any behavior-affecting slice.
 
 Do not extract:
 
