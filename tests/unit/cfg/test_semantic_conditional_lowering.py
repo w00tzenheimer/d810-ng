@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.semantic_conditional_lowering import (
     analyze_exact_conditional_sites,
@@ -37,13 +39,17 @@ class _FakeEdge:
         target_state: int,
         target_entry_anchor: int,
         ordered_path: tuple[int, ...],
+        source_branch_arm: int | None = None,
         kind_name: str = "CONDITIONAL_TRANSITION",
     ) -> None:
         self.kind = SimpleNamespace(name=kind_name)
         self.source_key = SimpleNamespace(state_const=source_state)
         self.target_state = target_state
         self.target_entry_anchor = target_entry_anchor
-        self.source_anchor = SimpleNamespace(block_serial=source_block)
+        self.source_anchor = SimpleNamespace(
+            block_serial=source_block,
+            branch_arm=source_branch_arm,
+        )
         self.ordered_path = ordered_path
 
 
@@ -154,6 +160,118 @@ def test_analyze_exact_conditional_sites_reports_multi_transition_source() -> No
 
     assert sites == ()
     assert inventory.multi_transition_blocks == ((10, 2, 1),)
+
+
+@pytest.mark.parametrize("source_block", [28, 98, 136, 181])
+def test_analyze_exact_conditional_sites_accepts_alias_duplicated_multi_transition_sites(
+    source_block: int,
+) -> None:
+    taken_successor = source_block + 1
+    fallback_successor = source_block + 10
+    taken_tail_a = source_block + 20
+    taken_tail_b = source_block + 21
+
+    source_state = 0x10000000 + source_block
+    transition_a = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x20000000 + source_block,
+        target_entry_anchor=source_block + 100,
+        source_branch_arm=0,
+        ordered_path=(source_block, taken_successor, taken_tail_a),
+    )
+    transition_b = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x30000000 + source_block,
+        target_entry_anchor=source_block + 200,
+        source_branch_arm=1,
+        ordered_path=(source_block, taken_successor, taken_tail_b),
+    )
+    return_edge = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x40000000 + source_block,
+        target_entry_anchor=source_block + 300,
+        source_branch_arm=1,
+        ordered_path=(source_block, fallback_successor, fallback_successor + 1),
+        kind_name="CONDITIONAL_RETURN",
+    )
+    flow_graph = _graph(
+        {
+            source_block: ((taken_successor, fallback_successor), ()),
+            taken_successor: ((taken_tail_a, taken_tail_b), (source_block,)),
+            taken_tail_a: ((2,), (taken_successor,)),
+            taken_tail_b: ((2,), (taken_successor,)),
+            fallback_successor: ((fallback_successor + 1,), (source_block,)),
+            fallback_successor + 1: ((), (fallback_successor,)),
+            2: ((), (taken_tail_a, taken_tail_b)),
+        },
+        entry=source_block,
+    )
+
+    sites, inventory = analyze_exact_conditional_sites(
+        _round_summary([transition_a, transition_b, return_edge]),
+        flow_graph,
+    )
+
+    assert inventory.selected_count >= 1
+    assert any(item[0] == source_block for item in inventory.multi_transition_blocks)
+    assert source_block not in inventory.shape_rejected_blocks
+    assert any(site.source_block == source_block for site in sites)
+
+
+def test_analyze_exact_conditional_sites_accepts_mixed_shape_multi_transition_site() -> None:
+    source_block = 163
+    taken_successor = 164
+    fallback_successor = 170
+    source_state = 0x50000000
+
+    valid_transition = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x6CAA9521,
+        target_entry_anchor=98,
+        source_branch_arm=0,
+        ordered_path=(source_block, taken_successor, 69),
+    )
+    mixed_transition = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x6E958F9A,
+        target_entry_anchor=160,
+        source_branch_arm=1,
+        ordered_path=(source_block, fallback_successor, fallback_successor + 1),
+    )
+    return_edge = _FakeEdge(
+        source_state=source_state,
+        source_block=source_block,
+        target_state=0x6AAAAAAA,
+        target_entry_anchor=161,
+        source_branch_arm=1,
+        ordered_path=(source_block, fallback_successor, fallback_successor + 1),
+        kind_name="CONDITIONAL_RETURN",
+    )
+    flow_graph = _graph(
+        {
+            source_block: ((taken_successor, fallback_successor), ()),
+            taken_successor: ((69,), (source_block,)),
+            69: ((2,), (taken_successor,)),
+            fallback_successor: ((fallback_successor + 1,), (source_block,)),
+            fallback_successor + 1: ((), (fallback_successor,)),
+            2: ((), (69,)),
+        },
+        entry=source_block,
+    )
+
+    sites, inventory = analyze_exact_conditional_sites(
+        _round_summary([valid_transition, mixed_transition, return_edge]),
+        flow_graph,
+    )
+
+    assert inventory.selected_count >= 1
+    assert any(item[0] == 163 for item in inventory.multi_transition_blocks)
+    assert any(site.target_entry == 98 for site in sites)
 
 
 def test_collect_conditional_node_scope_includes_sibling_return_path() -> None:
