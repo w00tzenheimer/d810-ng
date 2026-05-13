@@ -14,7 +14,7 @@ except ImportError:
     _BLT_2WAY = None
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

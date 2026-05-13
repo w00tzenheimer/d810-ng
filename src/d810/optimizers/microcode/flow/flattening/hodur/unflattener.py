@@ -58,7 +58,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     HandlerPathResult,
     Pass0RedirectRecord,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.family import (
@@ -68,11 +68,11 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     EXPERIMENTAL_STRATEGIES,
     StateWriteReconstructionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
@@ -92,7 +92,7 @@ from d810.hexrays.mutation.cfg_mutations import (
     remove_block_edge,
 )
 
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (

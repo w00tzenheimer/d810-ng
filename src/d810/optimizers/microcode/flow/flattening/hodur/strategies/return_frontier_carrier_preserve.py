@@ -39,7 +39,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -50,7 +50,7 @@ from d810.recon.flow.return_frontier_carrier_audit import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

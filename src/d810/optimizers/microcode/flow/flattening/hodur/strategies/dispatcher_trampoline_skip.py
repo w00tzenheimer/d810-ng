@@ -36,7 +36,7 @@ from d810.cfg.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -44,7 +44,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
