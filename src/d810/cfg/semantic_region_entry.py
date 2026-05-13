@@ -1,9 +1,16 @@
 """Semantic-region entry resolution.
 
-This module classifies the CFG splice point for a semantic DAG region without
-depending on a live Hex-Rays ``mba_t``.  Strategy code supplies a small block
-view; the resolver stays backend-neutral and only reasons about DAG edges plus
-projected block successor shape.
+This module classifies the CFG splice point for a semantic-DAG-like region
+without depending on a live Hex-Rays ``mba_t`` or importing ``d810.recon``.
+Strategy code supplies a small block view and the transition-kind sentinel for
+the DAG representation it is using.  The resolver stays backend-neutral and
+only reasons about DAG edge shape plus projected block successor shape.
+
+The intentionally loose ``dag`` / ``region_head_node`` parameters are a
+layering compromise: concrete DAG node and edge dataclasses currently live in
+``recon``, while this decision logic belongs in ``cfg``.  Keeping the API
+structural lets Hodur pass ``LinearizedStateDag`` data without making ``cfg``
+depend upward on ``recon``.
 """
 from __future__ import annotations
 
@@ -46,6 +53,12 @@ class RegionEntryBlockView(Protocol):
     def succ(self, serial: int, index: int = 0) -> int | None:
         """Return successor at ``index``, or ``None`` when unreadable."""
         ...
+
+
+# TODO(semantic-region-entry-shape): If this resolver gets another caller,
+# define tiny structural Protocols for the DAG node/edge/view shape instead of
+# accepting raw ``object``. Keep those Protocols in cfg, not recon, so the
+# layered architecture contract remains cfg -> core only.
 
 
 @dataclass(frozen=True, slots=True)
