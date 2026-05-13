@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )

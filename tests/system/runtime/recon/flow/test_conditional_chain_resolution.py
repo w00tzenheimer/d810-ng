@@ -10,7 +10,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     StateHandler,
     StateTransition,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
 from d810.recon.flow import conditional_chain_resolution as resolution
 
 

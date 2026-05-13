@@ -9,7 +9,7 @@ from d810.flow.terminal_return import (
     TerminalReturnSourceKind,
 )
 from d810.cfg.graph_modification import RedirectGoto
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     HintAdjustment,
     PipelinePolicy,
     PlannerHintSignals,
@@ -17,12 +17,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.planner import (
     compute_hint_adjustment,
     derive_hint_signals,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     PipelineProvenance,
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
