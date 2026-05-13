@@ -5,8 +5,8 @@ LOCOPT-pre transition facts with the immediate post-dispatcher target:
 
 1. ``StateTransitionAnchorFact`` -- captures source state const +
    LOCOPT-pre transit chain.
-2. The BST ``INTERVAL_DISPATCHER_ROWS`` log line (one-hop interval
-   lookup ``state_const -> handler block``).
+2. The BST interval-dispatcher rows persisted in the diag DB
+   (one-hop interval lookup ``state_const -> handler block``).
 3. ``StateWriteAnchorFact`` at the resolved handler block at LOCOPT-pre
    (gives the next state constant when the handler has a canonical
    state-write).
@@ -118,6 +118,40 @@ def parse_latest_bst_intervals_from_log(log_path: str) -> tuple[BstInterval, ...
     if last_payload is None:
         return ()
     return parse_bst_intervals(last_payload)
+
+
+def load_latest_bst_intervals_from_db(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int | None = None,
+) -> tuple[BstInterval, ...]:
+    """Load the latest persisted BST interval-dispatcher rows from diag DB.
+
+    ``snapshot_id`` can be supplied for deterministic inspection.  Without it,
+    the latest snapshot that has interval rows is selected.
+    """
+    if snapshot_id is None:
+        row = conn.execute(
+            "SELECT snapshot_id FROM bst_interval_dispatcher_rows "
+            "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return ()
+        snapshot_id = int(row[0])
+    rows = conn.execute(
+        "SELECT lo_i64, hi_i64, target_block "
+        "FROM bst_interval_dispatcher_rows "
+        "WHERE snapshot_id=? ORDER BY row_index",
+        (int(snapshot_id),),
+    ).fetchall()
+    return tuple(
+        BstInterval(
+            lo=int(row[0]),
+            hi=int(row[1]),
+            target_block=int(row[2]),
+        )
+        for row in rows
+    )
 
 
 def resolve_via_intervals(
@@ -353,6 +387,7 @@ __all__ = [
     "BstResolution",
     "parse_bst_intervals",
     "parse_latest_bst_intervals_from_log",
+    "load_latest_bst_intervals_from_db",
     "resolve_via_intervals",
     "resolve_state_transition_facts",
     "persist_bst_resolutions",

@@ -384,10 +384,22 @@ if [ -n "$ORACLE_DB" ]; then
     ORACLE_BASE="${WORK_DIR}/.tmp/${DUMP_OUT%.txt}"
     ORACLE_OUT="${ORACLE_BASE}.oracle.md"
     ORACLE_ERR="${ORACLE_BASE}.oracle.stderr.log"
+    BST_ERR="${ORACLE_BASE}.bst-resolutions.stderr.log"
   else
     ORACLE_TS="$(date +%Y%m%d-%H%M%S)"
     ORACLE_OUT="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.md"
     ORACLE_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.stderr.log"
+    BST_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.bst-resolutions.stderr.log"
+  fi
+  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.diagnostics \
+      state-transition-bst-resolutions \
+      --db "$ORACLE_DB" \
+      > /dev/null \
+      2> "$BST_ERR"
+  then
+    echo "bst resolutions persisted: $ORACLE_DB"
+  else
+    echo "WARN: bst resolution persistence exited non-zero; see $BST_ERR"
   fi
   if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.diagnostics region-diff \
       --auto --persist \
