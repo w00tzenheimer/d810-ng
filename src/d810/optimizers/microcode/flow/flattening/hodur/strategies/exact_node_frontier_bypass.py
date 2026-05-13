@@ -14,6 +14,9 @@ from d810.cfg.residual_target_resolution import (
     is_supplemental_feeder_bypass,
     resolve_frontier_target_entry,
 )
+from d810.cfg.semantic_conditional_lowering import (
+    collect_exact_conditional_alias_sites,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -27,9 +30,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     collect_exact_conditional_sites,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
-    collect_exact_conditional_alias_sites,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
     collect_exact_conditional_fork_sites,

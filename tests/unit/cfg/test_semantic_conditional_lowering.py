@@ -4,10 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
+import d810.cfg.semantic_conditional_lowering as semantic_conditional_lowering
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
+    analyze_exact_conditional_alias_sites,
     analyze_exact_conditional_sites,
+    collect_exact_conditional_alias_sites,
     collect_conditional_node_scope,
     conditional_fork_path_from_source,
     normalize_clean_conditional_fork_arms,
@@ -82,6 +85,32 @@ def _fork_arm(
         transition_edge=object(),
         return_distance=None,
     )
+
+
+def test_analyze_exact_conditional_alias_sites_reports_inventory(monkeypatch) -> None:
+    sites = (
+        SimpleNamespace(source_block=30),
+        SimpleNamespace(source_block=10),
+        SimpleNamespace(source_block=30),
+    )
+
+    def _fake_alias_sites(round_summary, flow_graph):
+        assert round_summary == "round"
+        assert flow_graph == "graph"
+        return sites
+
+    monkeypatch.setattr(
+        semantic_conditional_lowering,
+        "analyze_duplicate_alias_conditional_sites",
+        _fake_alias_sites,
+    )
+
+    result, inventory = analyze_exact_conditional_alias_sites("round", "graph")
+
+    assert result == sites
+    assert inventory.selected_count == 3
+    assert inventory.alias_blocks == (10, 30, 30)
+    assert collect_exact_conditional_alias_sites("round", "graph") == sites
 
 
 def _local_hammock_graph() -> FlowGraph:

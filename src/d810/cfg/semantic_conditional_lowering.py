@@ -11,7 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from d810.core import logging
-from d810.cfg.flow.conditional_alias import analyze_duplicate_alias_conditional_sites
+from d810.cfg.flow.conditional_alias import (
+    AliasConditionalSite,
+    analyze_duplicate_alias_conditional_sites,
+)
 from d810.cfg.flow.sese_hammock import (
     ExactConditionalNodeShape,
     classify_exact_conditional_shape,
@@ -25,10 +28,13 @@ __all__ = [
     "ConditionalExactNodeSite",
     "ConditionalForkExactNodeArm",
     "ConditionalForkExactNodeSite",
+    "ExactConditionalAliasInventory",
     "ExactConditionalNodeShape",
     "ExactConditionalForkInventory",
     "ExactConditionalSiteInventory",
+    "analyze_exact_conditional_alias_sites",
     "analyze_exact_conditional_sites",
+    "collect_exact_conditional_alias_sites",
     "collect_conditional_node_scope",
     "collect_exact_conditional_sites",
     "conditional_fork_path_from_source",
@@ -111,6 +117,14 @@ class ExactConditionalSiteInventory:
     missing_return_blocks: tuple[int, ...]
     shape_rejected_blocks: tuple[int, ...]
     alias_handled_blocks: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExactConditionalAliasInventory:
+    """Diagnostic inventory of duplicate-arm exact-conditional alias sites."""
+
+    selected_count: int
+    alias_blocks: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,9 +465,37 @@ def analyze_exact_conditional_sites(
     )
 
 
+def analyze_exact_conditional_alias_sites(
+    round_summary: object,
+    flow_graph: object,
+) -> tuple[tuple[AliasConditionalSite, ...], ExactConditionalAliasInventory]:
+    """Collect duplicate-arm alias sites plus a compact inventory.
+
+    Hodur owns materialization. The cfg layer owns this backend-neutral
+    inventory so exact-node strategies can recognize alias-handled source
+    blocks without importing another Hodur strategy.
+    """
+    sites = analyze_duplicate_alias_conditional_sites(round_summary, flow_graph)
+    return (
+        sites,
+        ExactConditionalAliasInventory(
+            selected_count=len(sites),
+            alias_blocks=tuple(sorted(int(site.source_block) for site in sites)),
+        ),
+    )
+
+
 def collect_exact_conditional_sites(
     round_summary: object,
     flow_graph: object,
 ) -> tuple[ConditionalExactNodeSite, ...]:
     sites, _inventory = analyze_exact_conditional_sites(round_summary, flow_graph)
+    return sites
+
+
+def collect_exact_conditional_alias_sites(
+    round_summary: object,
+    flow_graph: object,
+) -> tuple[AliasConditionalSite, ...]:
+    sites, _inventory = analyze_exact_conditional_alias_sites(round_summary, flow_graph)
     return sites
