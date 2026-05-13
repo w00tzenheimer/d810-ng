@@ -1473,8 +1473,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--kind",
-        default="unresolved",
-        help="Filter by diagnostic kind (default: unresolved).",
+        default="unresolved,resolved",
+        help=(
+            "Filter by diagnostic kind, comma-separated "
+            "(default: unresolved,resolved)."
+        ),
     )
     sp.add_argument(
         "--all-kinds",

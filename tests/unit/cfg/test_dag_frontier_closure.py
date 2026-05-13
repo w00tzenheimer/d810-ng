@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import d810.cfg.dag_frontier_closure as dag_frontier_closure
 from d810.cfg.dag_frontier_closure import (
     _build_indexes,
     _choices_for_observed_edge,
     plan_dag_authoritative_frontier_closure,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import InsertBlock, RedirectBranch, RedirectGoto
 from d810.cfg.state_dag_key import StateDagNodeKey
 
@@ -42,6 +43,50 @@ def _flow(succs_by_block: dict[int, tuple[int, ...]]) -> FlowGraph:
         for serial, succs in succs_by_block.items()
     }
     return FlowGraph(blocks=blocks, entry_serial=10, func_ea=0x1000)
+
+
+def _flow_with_instructions(
+    succs_by_block: dict[int, tuple[int, ...]],
+    insns_by_block: dict[int, tuple[InsnSnapshot, ...]],
+) -> FlowGraph:
+    pred_map: dict[int, list[int]] = {serial: [] for serial in succs_by_block}
+    for serial, succs in succs_by_block.items():
+        for succ in succs:
+            pred_map.setdefault(succ, []).append(serial)
+    blocks = {
+        serial: BlockSnapshot(
+            serial=serial,
+            block_type=2 if len(succs) == 2 else 1,
+            succs=succs,
+            preds=tuple(sorted(pred_map.get(serial, ()))),
+            flags=0,
+            start_ea=0x1000 + serial,
+            insn_snapshots=insns_by_block.get(serial, ()),
+        )
+        for serial, succs in succs_by_block.items()
+    }
+    return FlowGraph(blocks=blocks, entry_serial=129, func_ea=0x1800134E0)
+
+
+def _state_jz(state_const: int, target: int) -> InsnSnapshot:
+    try:
+        import ida_hexrays  # type: ignore
+
+        opcode = int(ida_hexrays.m_jz)
+    except Exception:
+        opcode = 5
+    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC)
+    const = MopSnapshot(t=2, size=4, value=state_const)
+    dest = MopSnapshot(t=5, size=0, block_ref=target)
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=0x180000000 + target,
+        operands=(state_var, const, dest),
+        operand_slots=(("l", state_var), ("r", const), ("d", dest)),
+        l=state_var,
+        r=const,
+        d=dest,
+    )
 
 
 def _node(key: StateDagNodeKey, entry: int):
@@ -434,6 +479,193 @@ def test_does_not_close_same_dag_scc_alternate_successor_by_default(
     assert unresolved_rows[0].branch_arm == 0
     assert unresolved_rows[0].candidate_targets == (11,)
     assert unresolved_rows[0].path == (10, 20)
+
+
+def _bst_interval_frontier_dag():
+    tail = StateDagNodeKey(handler_serial=131, state_const=0x0ACD0BD5)
+    chunk = StateDagNodeKey(handler_serial=171, state_const=0x0D64F20F)
+    return SimpleNamespace(
+        nodes=(
+            _node_with_blocks(tail, 131, 129, 174),
+            _node(chunk, 171),
+        ),
+        edges=(
+            _edge(chunk, tail, source_block=171, target_entry=131, ordered_path=(171,)),
+        ),
+        sccs=(
+            _scc(11, tail, is_cyclic=True),
+            _scc(19, chunk, is_cyclic=True),
+        ),
+    )
+
+
+def _bst_interval_frontier_flow(
+    *,
+    candidate_succ: int = 131,
+    observed_succ: int = 130,
+    state_const: int = 0x0ACD0BD5,
+) -> FlowGraph:
+    return _flow_with_instructions(
+        {
+            129: (observed_succ, candidate_succ),
+            observed_succ: (143,),
+            143: (145,),
+            145: (155,),
+            155: (171,),
+            171: (129,),
+            candidate_succ: (174,),
+            174: (129,),
+        },
+        {129: (_state_jz(state_const, candidate_succ),)},
+    )
+
+
+def _bst_interval_rows(
+    *,
+    singleton_hi: int = 0x0ACD0BD6,
+    singleton_target: int = 131,
+    observed_target: int = 130,
+):
+    return (
+        SimpleNamespace(
+            snapshot_id=5,
+            row_index=0,
+            lo=0x09EB3383,
+            hi=0x0ACD0BD5,
+            target_block=observed_target,
+        ),
+        SimpleNamespace(
+            snapshot_id=5,
+            row_index=1,
+            lo=0x0ACD0BD5,
+            hi=singleton_hi,
+            target_block=singleton_target,
+        ),
+        SimpleNamespace(
+            snapshot_id=5,
+            row_index=2,
+            lo=0x0ACD0BD6,
+            hi=0x0D64F20F,
+            target_block=observed_target,
+        ),
+    )
+
+
+def test_closes_same_scc_frontier_with_bst_interval_singleton_proof(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("D810_DAG_FRONTIER_SAME_SCC_ALTERNATE", raising=False)
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(),
+    )
+
+    assert result.leaks_before
+    assert result.leaks_after == ()
+    assert result.unresolved_frontiers == ()
+    assert result.emitted_modifications == (
+        InsertBlock(
+            pred_serial=129,
+            old_target_serial=130,
+            succ_serial=131,
+            instructions=(),
+        ),
+    )
+    assert len(result.resolved_frontiers) == 1
+    assert result.resolved_frontiers[0].reason == "bst_interval_proven_frontier"
+    resolved_rows = [
+        row for row in result.diagnostic_rows if row.kind == "resolved"
+    ]
+    assert len(resolved_rows) == 1
+    assert resolved_rows[0].reason == "bst_interval_proven_frontier"
+    assert resolved_rows[0].source_block == 129
+    assert resolved_rows[0].observed_target == 130
+    assert resolved_rows[0].branch_arm == 0
+    assert resolved_rows[0].candidate_targets == (131,)
+    assert resolved_rows[0].payload["proof"] == "BST_INTERVAL_PROVEN_FRONTIER"
+    assert resolved_rows[0].payload["state"] == "0x0ACD0BD5"
+
+
+def test_explicit_bst_interval_rows_do_not_use_db_fallback(monkeypatch) -> None:
+    def fail_db_fallback(_flow_graph):
+        raise AssertionError("DB fallback should not run with explicit rows")
+
+    monkeypatch.setattr(
+        dag_frontier_closure,
+        "_load_latest_bst_interval_rows",
+        fail_db_fallback,
+    )
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(),
+    )
+
+    assert result.unresolved_frontiers == ()
+    assert result.resolved_frontiers[0].reason == "bst_interval_proven_frontier"
+
+
+def test_rejects_bst_frontier_when_singleton_interval_is_not_singleton() -> None:
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(singleton_hi=0x0ACD0BD7),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.leaks_after
+    assert result.unresolved_frontiers[0].reason == "same_scc_alternate_disabled"
+
+
+def test_rejects_bst_frontier_when_candidate_is_not_dag_entry() -> None:
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(candidate_succ=132),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(singleton_target=132),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.leaks_after
+    assert result.unresolved_frontiers[0].reason == "no_dag_choice_for_source"
+
+
+def test_rejects_bst_frontier_when_candidate_is_not_source_successor() -> None:
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(candidate_succ=132),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.leaks_after
+    assert result.unresolved_frontiers[0].reason == "no_dag_choice_for_source"
+
+
+def test_rejects_bst_frontier_without_observed_range_sibling() -> None:
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_bst_interval_frontier_dag(),
+        flow_graph=_bst_interval_frontier_flow(),
+        modifications=[],
+        dispatcher_serial=0,
+        bst_interval_rows=_bst_interval_rows(observed_target=140),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.leaks_after
+    assert result.unresolved_frontiers[0].reason == "same_scc_alternate_disabled"
 
 
 def test_can_close_dispatch_frontier_to_same_dag_scc_alternate_successor(

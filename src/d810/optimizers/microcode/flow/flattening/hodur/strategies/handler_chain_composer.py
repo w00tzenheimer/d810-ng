@@ -3208,6 +3208,14 @@ class HandlerChainComposerStrategy:
                 modifications=combined_modifications,
                 dispatcher_serial=filter_dispatcher_serial,
                 bst_node_blocks=filter_bst_node_blocks,
+                bst_interval_rows=tuple(
+                    getattr(
+                        getattr(bst_result_for_filter, "dispatcher", None),
+                        "_rows",
+                        (),
+                    )
+                    or ()
+                ),
             )
             if frontier_closure.changed:
                 combined_modifications = list(frontier_closure.modifications)

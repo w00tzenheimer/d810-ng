@@ -47,6 +47,19 @@ class UnresolvedFrontier:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedFrontier:
+    """A semantic SCC leak closed by a non-DAG-edge structural proof."""
+
+    leak: SemanticSccLeak
+    source_block: int
+    observed_target: int
+    branch_arm: int | None
+    reason: str
+    target_block: int
+    payload: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class FrontierClosureDiagnosticRow:
     """Structured diagnostic row for DB persistence."""
 
@@ -73,6 +86,7 @@ class FrontierClosureResult:
     stale_hazard_override_keys: frozenset[RedirectKey]
     leaks_before: tuple[SemanticSccLeak, ...]
     leaks_after: tuple[SemanticSccLeak, ...]
+    resolved_frontiers: tuple[ResolvedFrontier, ...]
     unresolved_frontiers: tuple[UnresolvedFrontier, ...]
     diagnostic_rows: tuple[FrontierClosureDiagnosticRow, ...]
 
@@ -87,6 +101,16 @@ class _DagIndexes:
     scc_reachability: dict[int, frozenset[int]]
     choices_by_anchor: dict[tuple[int, int | None], tuple["_FrontierChoice", ...]]
     cyclic_scc_ids: frozenset[int]
+    entry_by_state: dict[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _BstIntervalFrontierRow:
+    snapshot_id: int | None
+    row_index: int | None
+    lo: int
+    hi: int
+    target_block: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +121,7 @@ class _FrontierChoice:
     edge_kind: str
     proof: tuple[object, ...]
     is_path_step: bool
+    payload: dict[str, object] | None = None
 
 
 def plan_dag_authoritative_frontier_closure(
@@ -106,6 +131,7 @@ def plan_dag_authoritative_frontier_closure(
     modifications: list[object] | tuple[object, ...],
     dispatcher_serial: int,
     bst_node_blocks: set[int] | frozenset[int] | tuple[int, ...] = (),
+    bst_interval_rows: tuple[object, ...] | list[object] | None = None,
     max_iterations: int = 32,
 ) -> FrontierClosureResult:
     """Close projected CFG semantic-SCC leaks using only DAG-proven edges.
@@ -130,6 +156,7 @@ def plan_dag_authoritative_frontier_closure(
             stale_hazard_override_keys=frozenset(),
             leaks_before=(),
             leaks_after=(),
+            resolved_frontiers=(),
             unresolved_frontiers=(),
             diagnostic_rows=(),
         )
@@ -143,18 +170,31 @@ def plan_dag_authoritative_frontier_closure(
             stale_hazard_override_keys=frozenset(),
             leaks_before=(),
             leaks_after=(),
+            resolved_frontiers=(),
             unresolved_frontiers=(),
             diagnostic_rows=(),
         )
 
     frontier_blocks = {int(dispatcher_serial)}
     frontier_blocks.update(int(block) for block in bst_node_blocks)
+    if bst_interval_rows is None:
+        interval_rows = _load_latest_bst_interval_rows(flow_graph)
+        if interval_rows:
+            logger.info(
+                "DAG_FRONTIER_CLOSURE: using DB fallback for BST interval "
+                "frontier proof rows=%d func_ea=0x%x",
+                len(interval_rows),
+                int(getattr(flow_graph, "func_ea", 0) or 0),
+            )
+    else:
+        interval_rows = _coerce_bst_interval_rows(bst_interval_rows)
 
     current_modifications = list(modifications)
     projected = _project(flow_graph, current_modifications)
     leaks_before = _find_semantic_scc_leaks(projected, indexes)
     emitted: list[object] = []
     dropped: list[object] = []
+    resolved: list[ResolvedFrontier] = []
     seen_signatures: set[tuple[tuple[int, int, int] | str, ...]] = set()
 
     for _iteration in range(max(0, int(max_iterations))):
@@ -179,14 +219,17 @@ def plan_dag_authoritative_frontier_closure(
             current_modifications=current_modifications,
             frontier_blocks=frontier_blocks,
             base_flow_graph=flow_graph,
+            bst_interval_rows=interval_rows,
         )
         if action is None:
             break
-        current_modifications, emitted_mod, dropped_mod = action
+        current_modifications, emitted_mod, dropped_mod, resolved_frontier = action
         if emitted_mod is not None:
             emitted.append(emitted_mod)
         if dropped_mod is not None:
             dropped.append(dropped_mod)
+        if resolved_frontier is not None:
+            resolved.append(resolved_frontier)
         projected = _project(flow_graph, current_modifications)
 
     leaks_after = _find_semantic_scc_leaks(projected, indexes)
@@ -199,6 +242,7 @@ def plan_dag_authoritative_frontier_closure(
     diagnostic_rows = _build_diagnostic_rows(
         leaks_before=leaks_before,
         leaks_after=leaks_after,
+        resolved_frontiers=tuple(resolved),
         unresolved_frontiers=unresolved_frontiers,
     )
     override_keys: set[RedirectKey] = set()
@@ -258,6 +302,7 @@ def plan_dag_authoritative_frontier_closure(
         stale_hazard_override_keys=frozenset(override_keys),
         leaks_before=tuple(leaks_before),
         leaks_after=tuple(leaks_after),
+        resolved_frontiers=tuple(resolved),
         unresolved_frontiers=tuple(unresolved_frontiers),
         diagnostic_rows=diagnostic_rows,
     )
@@ -298,6 +343,7 @@ def _build_indexes(dag: object) -> _DagIndexes:
             scc_nodes[scc_id].add(key)
 
     block_to_sccs_mut: dict[int, set[int]] = defaultdict(set)
+    state_to_entries: dict[int, set[int]] = defaultdict(set)
     for node in getattr(dag, "nodes", ()) or ():
         key = getattr(node, "key", None)
         if key not in node_to_scc:
@@ -305,6 +351,10 @@ def _build_indexes(dag: object) -> _DagIndexes:
         scc_id = node_to_scc[key]
         for block in _node_blocks(node):
             block_to_sccs_mut[int(block)].add(scc_id)
+        state_const = getattr(key, "state_const", None)
+        entry = _node_entry_block(node)
+        if state_const is not None and entry is not None:
+            state_to_entries[int(state_const) & 0xFFFFFFFFFFFFFFFF].add(int(entry))
 
     dag_succs: dict[int, set[int]] = defaultdict(set)
     choices_by_anchor_mut: dict[tuple[int, int | None], list[_FrontierChoice]] = (
@@ -413,7 +463,24 @@ def _build_indexes(dag: object) -> _DagIndexes:
         scc_reachability=reachability,
         choices_by_anchor=choices_by_anchor,
         cyclic_scc_ids=frozenset(cyclic_scc_ids),
+        entry_by_state={
+            state: next(iter(entries))
+            for state, entries in state_to_entries.items()
+            if len(entries) == 1
+        },
     )
+
+
+def _node_entry_block(node: object) -> int | None:
+    for attr in ("entry_anchor", "handler_serial"):
+        value = getattr(node, attr, None)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _node_blocks(node: object) -> frozenset[int]:
@@ -642,7 +709,13 @@ def _select_frontier_action(
     current_modifications: list[object],
     frontier_blocks: set[int],
     base_flow_graph: object,
-) -> tuple[list[object], object | None, object | None] | None:
+    bst_interval_rows: tuple[_BstIntervalFrontierRow, ...],
+) -> tuple[
+    list[object],
+    object | None,
+    object | None,
+    ResolvedFrontier | None,
+] | None:
     for leak in sorted(leaks, key=lambda item: (len(item.path), item.path)):
         path = leak.path
         if len(path) < 2:
@@ -662,6 +735,21 @@ def _select_frontier_action(
                 observed_target=int(observed_target),
                 frontier_blocks=frontier_blocks,
             )
+            if not choices:
+                bst_choice = _bst_interval_proven_frontier_choice(
+                    projected_flow_graph,
+                    indexes,
+                    leak=leak,
+                    source=int(source),
+                    arm=arm,
+                    observed_target=int(observed_target),
+                    succs=succs,
+                    interval_rows=bst_interval_rows,
+                )
+                if bst_choice is not None:
+                    choices = (bst_choice,)
+                else:
+                    choices = ()
             if not choices:
                 same_scc_choice = None
                 if _env_enabled(
@@ -689,7 +777,19 @@ def _select_frontier_action(
                 choice=choice,
             )
             if replacement is not None:
-                return replacement
+                resolved_frontier = None
+                if choice.edge_kind == "BST_INTERVAL_PROVEN_FRONTIER":
+                    resolved_frontier = ResolvedFrontier(
+                        leak=leak,
+                        source_block=int(source),
+                        observed_target=int(observed_target),
+                        branch_arm=arm,
+                        reason="bst_interval_proven_frontier",
+                        target_block=int(choice.target_block),
+                        payload=dict(choice.payload or {}),
+                    )
+                new_mods, emitted_mod, dropped_mod = replacement
+                return new_mods, emitted_mod, dropped_mod, resolved_frontier
     return None
 
 
@@ -764,11 +864,33 @@ def _build_diagnostic_rows(
     *,
     leaks_before: tuple[SemanticSccLeak, ...],
     leaks_after: tuple[SemanticSccLeak, ...],
+    resolved_frontiers: tuple[ResolvedFrontier, ...],
     unresolved_frontiers: tuple[UnresolvedFrontier, ...],
 ) -> tuple[FrontierClosureDiagnosticRow, ...]:
     rows: list[FrontierClosureDiagnosticRow] = []
     rows.extend(_leak_diagnostic_rows("leak_before", leaks_before))
     rows.extend(_leak_diagnostic_rows("leak_after", leaks_after))
+    for resolved in resolved_frontiers:
+        leak = resolved.leak
+        rows.append(
+            FrontierClosureDiagnosticRow(
+                kind="resolved",
+                reason=resolved.reason,
+                source_block=int(resolved.source_block),
+                observed_target=int(resolved.observed_target),
+                branch_arm=resolved.branch_arm,
+                from_dag_scc=int(leak.from_dag_scc),
+                to_dag_scc=int(leak.to_dag_scc),
+                candidate_targets=(int(resolved.target_block),),
+                path=tuple(int(block) for block in leak.path),
+                cfg_scc_size=len(leak.cfg_scc_blocks),
+                payload={
+                    "verifier": "dag_frontier_closure",
+                    "behavior": "repair_authorized",
+                    **dict(resolved.payload),
+                },
+            )
+        )
     for unresolved in unresolved_frontiers:
         leak = unresolved.leak
         rows.append(
@@ -942,6 +1064,302 @@ def _same_scc_alternate_successor_choice(
             int(leak.to_dag_scc),
         ),
         is_path_step=True,
+    )
+
+
+def _bst_interval_proven_frontier_choice(
+    flow_graph: object,
+    indexes: _DagIndexes,
+    *,
+    leak: SemanticSccLeak,
+    source: int,
+    arm: int | None,
+    observed_target: int,
+    succs: tuple[int, ...],
+    interval_rows: tuple[_BstIntervalFrontierRow, ...],
+) -> _FrontierChoice | None:
+    """Close a BST singleton frontier using persisted interval evidence.
+
+    This is intentionally not a same-SCC heuristic. It fires only when the
+    live source block is an equality comparison against state ``K``, the
+    alternate successor is both the DAG entry for ``K`` and the persisted
+    singleton interval target ``[K, K+1)``, and the observed successor is an
+    adjacent non-singleton/range interval target.
+    """
+
+    if len(succs) != 2 or int(observed_target) not in succs:
+        return None
+    if not interval_rows:
+        return None
+    alternate_succs = tuple(int(succ) for succ in succs if int(succ) != int(observed_target))
+    if len(alternate_succs) != 1:
+        return None
+    candidate = int(alternate_succs[0])
+
+    block = flow_graph.get_block(int(source))
+    if block is None:
+        return None
+    state_const = _equality_compare_constant(block)
+    if state_const is None:
+        return None
+    state_const &= 0xFFFFFFFFFFFFFFFF
+
+    dag_entry = indexes.entry_by_state.get(state_const)
+    if dag_entry is None or int(dag_entry) != candidate:
+        return None
+
+    singleton = _singleton_interval_for_state(
+        interval_rows,
+        state_const=state_const,
+        target_block=candidate,
+    )
+    if singleton is None:
+        return None
+
+    sibling_rows = _adjacent_range_siblings(
+        interval_rows,
+        state_const=state_const,
+        target_block=int(observed_target),
+    )
+    if not sibling_rows:
+        return None
+
+    payload = {
+        "proof": "BST_INTERVAL_PROVEN_FRONTIER",
+        "state": _compact_state_hex(state_const),
+        "state_hex": f"0x{state_const:016x}",
+        "source": int(source),
+        "observed": int(observed_target),
+        "candidate": int(candidate),
+        "singleton_interval": _interval_payload(singleton),
+        "observed_sibling_intervals": [
+            _interval_payload(row) for row in sibling_rows
+        ],
+    }
+    return _FrontierChoice(
+        source_block=int(source),
+        branch_arm=arm,
+        target_block=int(candidate),
+        edge_kind="BST_INTERVAL_PROVEN_FRONTIER",
+        proof=(
+            int(source),
+            arm,
+            int(observed_target),
+            int(candidate),
+            "BST_INTERVAL_PROVEN_FRONTIER",
+            _compact_state_hex(state_const),
+            tuple((row.lo, row.hi, row.target_block) for row in sibling_rows),
+        ),
+        is_path_step=True,
+        payload=payload,
+    )
+
+
+def _equality_compare_constant(block: object) -> int | None:
+    succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+    if len(succs) != 2:
+        return None
+    tail = getattr(block, "tail", None)
+    if tail is None:
+        insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+        tail = insns[-1] if insns else None
+    if tail is None:
+        return None
+    opcode = getattr(tail, "opcode", None)
+    if opcode is None or int(opcode) not in _equality_jump_opcodes():
+        return None
+
+    left = getattr(tail, "l", None)
+    right = getattr(tail, "r", None)
+    constants: list[int] = []
+    non_constants = 0
+    for operand in (left, right):
+        if operand is None:
+            continue
+        value = getattr(operand, "value", None)
+        if value is not None:
+            try:
+                constants.append(int(value))
+                continue
+            except (TypeError, ValueError):
+                return None
+        non_constants += 1
+
+    if not constants:
+        # Older unit fixtures may only populate ``operands``. Do a narrow
+        # fallback over operands that expose an immediate ``value``.
+        for operand in getattr(tail, "operands", ()) or ():
+            value = getattr(operand, "value", None)
+            if value is None:
+                continue
+            try:
+                constants.append(int(value))
+            except (TypeError, ValueError):
+                return None
+    if len(constants) != 1 or non_constants == 0:
+        return None
+    return int(constants[0])
+
+
+def _equality_jump_opcodes() -> frozenset[int]:
+    try:
+        import ida_hexrays  # type: ignore
+
+        return frozenset({
+            int(getattr(ida_hexrays, "m_jnz")),
+            int(getattr(ida_hexrays, "m_jz")),
+        })
+    except Exception:
+        # The local test stubs and cfg invariant fallback use these values.
+        return frozenset({4, 5})
+
+
+def _singleton_interval_for_state(
+    rows: tuple[_BstIntervalFrontierRow, ...],
+    *,
+    state_const: int,
+    target_block: int,
+) -> _BstIntervalFrontierRow | None:
+    for row in rows:
+        if int(row.target_block) != int(target_block):
+            continue
+        if int(row.lo) == int(state_const) and int(row.hi) == int(state_const) + 1:
+            return row
+    return None
+
+
+def _adjacent_range_siblings(
+    rows: tuple[_BstIntervalFrontierRow, ...],
+    *,
+    state_const: int,
+    target_block: int,
+) -> tuple[_BstIntervalFrontierRow, ...]:
+    siblings: list[_BstIntervalFrontierRow] = []
+    for row in rows:
+        if int(row.target_block) != int(target_block):
+            continue
+        width = int(row.hi) - int(row.lo)
+        if width <= 1:
+            continue
+        if int(row.hi) == int(state_const) or int(row.lo) == int(state_const) + 1:
+            siblings.append(row)
+    return tuple(siblings)
+
+
+def _interval_payload(row: _BstIntervalFrontierRow) -> dict[str, object]:
+    return {
+        "snapshot_id": row.snapshot_id,
+        "row_index": row.row_index,
+        "lo": _compact_state_hex(row.lo),
+        "hi": _compact_state_hex(row.hi),
+        "target": int(row.target_block),
+    }
+
+
+def _compact_state_hex(value: int) -> str:
+    value = int(value) & 0xFFFFFFFFFFFFFFFF
+    width = 8 if value <= 0xFFFFFFFF else 16
+    return f"0x{value:0{width}X}"
+
+
+def _coerce_bst_interval_rows(
+    rows: tuple[object, ...] | list[object] | tuple[_BstIntervalFrontierRow, ...],
+) -> tuple[_BstIntervalFrontierRow, ...]:
+    out: list[_BstIntervalFrontierRow] = []
+    for row in rows or ():
+        if isinstance(row, _BstIntervalFrontierRow):
+            out.append(row)
+            continue
+        snapshot_id = _row_value(row, "snapshot_id")
+        row_index = _row_value(row, "row_index")
+        lo = _row_value(row, "lo")
+        hi = _row_value(row, "hi")
+        target = _row_value(row, "target_block")
+        if target is None:
+            target = _row_value(row, "target")
+        try:
+            out.append(
+                _BstIntervalFrontierRow(
+                    snapshot_id=(
+                        int(snapshot_id) if snapshot_id is not None else None
+                    ),
+                    row_index=int(row_index) if row_index is not None else None,
+                    lo=_parse_int(lo),
+                    hi=_parse_int(hi),
+                    target_block=_parse_int(target),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
+
+
+def _row_value(row: object, key: str) -> object | None:
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _parse_int(value: object) -> int:
+    if isinstance(value, str):
+        return int(value, 0)
+    return int(value)  # type: ignore[arg-type]
+
+
+def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFrontierRow, ...]:
+    try:
+        from d810.core.observability import get_active_diag_conn
+    except Exception:
+        return ()
+    func_ea = int(getattr(flow_graph, "func_ea", 0) or 0)
+    try:
+        conn = get_active_diag_conn(func_ea)
+    except Exception:
+        return ()
+    if conn is None:
+        return ()
+    func_hex = f"0x{func_ea & 0xFFFFFFFFFFFFFFFF:016x}"
+    try:
+        row = conn.execute(
+            """
+            SELECT r.snapshot_id
+            FROM bst_interval_dispatcher_rows r
+            JOIN snapshots s ON s.id = r.snapshot_id
+            WHERE s.func_ea_hex = ?
+            GROUP BY r.snapshot_id
+            ORDER BY r.snapshot_id DESC
+            LIMIT 1
+            """,
+            (func_hex,),
+        ).fetchone()
+        if row is None and func_ea == 0:
+            row = conn.execute(
+                "SELECT snapshot_id FROM bst_interval_dispatcher_rows "
+                "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return ()
+        snapshot_id = int(row[0])
+        rows = conn.execute(
+            """
+            SELECT snapshot_id, row_index, lo_i64, hi_i64, target_block
+            FROM bst_interval_dispatcher_rows
+            WHERE snapshot_id = ?
+            ORDER BY row_index
+            """,
+            (snapshot_id,),
+        ).fetchall()
+    except Exception:
+        return ()
+    return tuple(
+        _BstIntervalFrontierRow(
+            snapshot_id=int(row[0]),
+            row_index=int(row[1]),
+            lo=int(row[2]),
+            hi=int(row[3]),
+            target_block=int(row[4]),
+        )
+        for row in rows
     )
 
 
@@ -1137,6 +1555,7 @@ __all__ = [
     "FrontierClosureResult",
     "FrontierClosureDiagnosticRow",
     "RedirectKey",
+    "ResolvedFrontier",
     "SemanticSccLeak",
     "UnresolvedFrontier",
     "plan_dag_authoritative_frontier_closure",
