@@ -95,7 +95,7 @@ def test_transition_report_exit_rows_become_handler_origin_return_sites() -> Non
     sites = transition_report_return_sites(report)
 
     assert [site.origin_block for site in sites] == [10, 20]
-    assert sites[0].site_id == "hodur_handler_10_state_00001000"
+    assert sites[0].site_id == "return_handler_10_state_00001000"
     assert sites[0].expected_terminal_kind == "return"
     assert sites[0].metadata["path_chain"] == [10, 219]
 
@@ -122,8 +122,18 @@ def test_transition_report_site_id_supports_range_and_unknown_state_tags() -> No
 
     sites = transition_report_return_sites(report)
 
-    assert sites[0].site_id == "hodur_handler_10_state_range_00000100_000001ff"
-    assert sites[1].site_id == "hodur_handler_20_state_unknown"
+    assert sites[0].site_id == "return_handler_10_state_range_00000100_000001ff"
+    assert sites[1].site_id == "return_handler_20_state_unknown"
+
+
+def test_transition_report_site_id_accepts_family_prefix() -> None:
+    report = _make_report([
+        _make_row(10, TransitionKind.EXIT, state_const=0x1000),
+    ])
+
+    sites = transition_report_return_sites(report, site_id_prefix="example")
+
+    assert sites[0].site_id == "example_handler_10_state_00001000"
 
 
 def test_transition_report_exit_with_missing_path_preserves_legacy_error() -> None:
@@ -154,9 +164,20 @@ def test_legacy_handler_path_return_sites_dedup_by_exit_block() -> None:
     })
 
     assert len(sites) == 1
-    assert sites[0].site_id == "hodur_ret_10_55"
+    assert sites[0].site_id == "return_ret_10_55"
     assert sites[0].origin_block == 55
     assert sites[0].provenance == "handler_10_path_0"
+
+
+def test_legacy_handler_path_return_sites_accepts_family_prefix() -> None:
+    sites = legacy_handler_path_return_sites(
+        {
+            10: [_FakePath(exit_block=55, final_state=None, state_writes=[(1, 2)])],
+        },
+        site_id_prefix="example",
+    )
+
+    assert sites[0].site_id == "example_ret_10_55"
 
 
 def test_legacy_guard_hash_matches_prior_formula() -> None:

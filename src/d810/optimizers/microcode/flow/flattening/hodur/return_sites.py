@@ -67,7 +67,7 @@ class HodurReturnSiteProvider:
         Returns:
             Tuple of ReturnSite, sorted by (origin_block, site_id).
         """
-        sites = transition_report_return_sites(report)
+        sites = transition_report_return_sites(report, site_id_prefix="hodur")
 
         logger.info(
             "HodurReturnSiteProvider: collected %d return sites from transition report "
@@ -97,7 +97,7 @@ class HodurReturnSiteProvider:
         Returns:
             Tuple of :class:`ReturnSite` descriptors, deduplicated by exit block.
         """
-        sites = legacy_handler_path_return_sites(handler_paths)
+        sites = legacy_handler_path_return_sites(handler_paths, site_id_prefix="hodur")
 
         logger.info(
             "HodurReturnSiteProvider: collected %d return sites from %d handlers",
