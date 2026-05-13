@@ -4,11 +4,14 @@ from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.residual_target_resolution import (
+    BstConditionalTail,
+    BstGotoTail,
     collect_owned_exact_sources,
     collect_supported_exact_entries,
     is_structured_conditional_path_feeder,
     is_supplemental_feeder_bypass,
     resolve_frontier_target_entry,
+    walk_bst_dispatcher,
 )
 
 
@@ -20,11 +23,9 @@ def test_resolve_frontier_target_entry_prefers_residual_effective_target() -> No
         dispatcher_model=SimpleNamespace(lookup=None),
         bst_blocks={2},
         semantic_reference_program=None,
-        state_var_stkoff=0x7BC,
-        mba=SimpleNamespace(),
+        residual_effective_target=14,
         dispatcher_exact_state_target_fn=lambda *_args, **_kwargs: None,
         supplemental_selected_entry_for_state_fn=lambda *_args, **_kwargs: 14,
-        resolve_effective_target_entry_fn=lambda *_args, **_kwargs: 14,
         resolve_exact_dag_entry_for_state_fn=lambda *_args, **_kwargs: 66,
         resolve_semantic_reference_entry_for_state_fn=lambda *_args, **_kwargs: 66,
         resolve_dag_entry_for_state_fn=lambda *_args, **_kwargs: 66,
@@ -125,3 +126,97 @@ def test_is_supplemental_feeder_bypass_requires_semantic_or_return_support() -> 
         state_has_semantic_support_fn=lambda *_args, **_kwargs: False,
         can_reach_return_fn=lambda *_args, **_kwargs: True,
     )
+
+
+def test_walk_bst_dispatcher_follows_goto_to_non_bst_target() -> None:
+    tails = {
+        2: BstGotoTail(target=3),
+        3: BstGotoTail(target=20),
+    }
+
+    assert walk_bst_dispatcher(
+        root=2,
+        bst_blocks={2, 3},
+        state_value=0x42,
+        tail_for_block_fn=tails.get,
+        is_conditional_taken_fn=lambda *_args: None,
+    ) == 20
+
+
+def test_walk_bst_dispatcher_follows_taken_conditional_target() -> None:
+    tails = {
+        2: BstConditionalTail(
+            opcode=100,
+            rhs_value=0x10,
+            rhs_size=4,
+            taken_target=7,
+            successors=(3, 7),
+        ),
+        7: BstGotoTail(target=30),
+    }
+
+    assert walk_bst_dispatcher(
+        root=2,
+        bst_blocks={2, 7},
+        state_value=0x10,
+        tail_for_block_fn=tails.get,
+        is_conditional_taken_fn=lambda opcode, state, rhs, size: (
+            opcode == 100 and state == rhs and size == 4
+        ),
+    ) == 30
+
+
+def test_walk_bst_dispatcher_prefers_structural_fallthrough_successor() -> None:
+    tails = {
+        2: BstConditionalTail(
+            opcode=100,
+            rhs_value=0x10,
+            rhs_size=4,
+            taken_target=7,
+            successors=(3, 7),
+        ),
+        3: BstGotoTail(target=40),
+    }
+
+    assert walk_bst_dispatcher(
+        root=2,
+        bst_blocks={2, 3},
+        state_value=0x11,
+        tail_for_block_fn=tails.get,
+        is_conditional_taken_fn=lambda *_args: False,
+    ) == 40
+
+
+def test_walk_bst_dispatcher_returns_none_on_cycle() -> None:
+    tails = {
+        2: BstGotoTail(target=3),
+        3: BstGotoTail(target=2),
+    }
+
+    assert walk_bst_dispatcher(
+        root=2,
+        bst_blocks={2, 3},
+        state_value=0x42,
+        tail_for_block_fn=tails.get,
+        is_conditional_taken_fn=lambda *_args: None,
+    ) is None
+
+
+def test_walk_bst_dispatcher_returns_none_when_conditional_unknown() -> None:
+    tails = {
+        2: BstConditionalTail(
+            opcode=100,
+            rhs_value=0x10,
+            rhs_size=4,
+            taken_target=7,
+            successors=(3, 7),
+        ),
+    }
+
+    assert walk_bst_dispatcher(
+        root=2,
+        bst_blocks={2},
+        state_value=0x10,
+        tail_for_block_fn=tails.get,
+        is_conditional_taken_fn=lambda *_args: None,
+    ) is None

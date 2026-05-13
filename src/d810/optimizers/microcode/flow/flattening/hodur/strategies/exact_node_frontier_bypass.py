@@ -1,6 +1,8 @@
 """Redirect residual dispatcher feeders into dominating exact-node heads."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ida_hexrays
 
 from d810.core import logging
@@ -124,6 +126,43 @@ def _collect_trivial_frontier_zero_state_write_modification(
     if len(tuple(getattr(site, "trailing_insn_eas", ()))) > 1:
         return None
     return setup.builder.zero_state_write(int(source_block), insn_ea)
+
+
+def _resolve_residual_effective_frontier_target(
+    *,
+    dag: object,
+    pred_serial: int,
+    raw_state: int,
+    dispatcher_model: object | None,
+    bst_blocks: set[int],
+    state_var_stkoff: int | None,
+    mba: object | None,
+) -> int | None:
+    if dispatcher_model is None or state_var_stkoff is None or mba is None:
+        return None
+
+    synthetic_target_entry = supplemental_selected_entry_for_state(
+        dag,
+        int(raw_state) & 0xFFFFFFFF,
+    )
+    synthetic_edge = SimpleNamespace(
+        source_anchor=SimpleNamespace(block_serial=int(pred_serial), branch_arm=None),
+        source_key=SimpleNamespace(state_const=None),
+        target_key=None,
+        target_state=int(raw_state) & 0xFFFFFFFF,
+        target_label=f"STATE_{int(raw_state) & 0xFFFFFFFF:08X}",
+        target_entry_anchor=synthetic_target_entry,
+        ordered_path=(int(pred_serial),),
+    )
+    return resolve_effective_residual_target_entry(
+        dag,
+        synthetic_edge,
+        bst_node_blocks=bst_blocks,
+        state_var_stkoff=int(state_var_stkoff),
+        dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
+        dispatcher=dispatcher_model,
+        mba=mba,
+    )
 
 
 @algorithm_metadata(
@@ -265,18 +304,26 @@ class ExactNodeFrontierBypassStrategy:
             ):
                 skipped_structured_conditional_feeder += 1
                 continue
+            raw_state = int(state_value) & 0xFFFFFFFF
+            residual_effective_target = _resolve_residual_effective_frontier_target(
+                dag=round_summary.dag,
+                pred_serial=int(pred_serial),
+                raw_state=raw_state,
+                dispatcher_model=dispatcher_model,
+                bst_blocks=bst_blocks,
+                state_var_stkoff=int(state_var_stkoff),
+                mba=mba,
+            )
             exact_dispatch_target, target_entry = resolve_frontier_target_entry(
                 round_summary.dag,
                 pred_serial=int(pred_serial),
-                state_value=int(state_value) & 0xFFFFFFFF,
+                state_value=raw_state,
                 dispatcher_model=dispatcher_model,
                 bst_blocks=bst_blocks,
                 semantic_reference_program=getattr(round_summary, "semantic_reference_program", None),
-                state_var_stkoff=int(state_var_stkoff),
-                mba=mba,
+                residual_effective_target=residual_effective_target,
                 dispatcher_exact_state_target_fn=dispatcher_exact_state_target,
                 supplemental_selected_entry_for_state_fn=supplemental_selected_entry_for_state,
-                resolve_effective_target_entry_fn=resolve_effective_residual_target_entry,
                 resolve_exact_dag_entry_for_state_fn=resolve_exact_dag_entry_for_state,
                 resolve_semantic_reference_entry_for_state_fn=resolve_semantic_reference_entry_for_state,
                 resolve_dag_entry_for_state_fn=resolve_dag_entry_for_state,

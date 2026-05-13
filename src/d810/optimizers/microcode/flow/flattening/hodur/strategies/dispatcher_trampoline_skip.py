@@ -33,6 +33,11 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
 from d810.cfg.modification_builder import ModificationBuilder
+from d810.cfg.residual_target_resolution import (
+    BstConditionalTail,
+    BstGotoTail,
+    walk_bst_dispatcher,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
 )
@@ -368,66 +373,54 @@ class DispatcherTrampolineSkipStrategy:
         taken / fall-through edge.  Returns the first non-BST block reached,
         or ``None`` if the walk hit an unrecognized block.
         """
-        current = int(root)
-        visited: set[int] = set()
-        max_steps = 64
-        for _ in range(max_steps):
-            if current in visited:
-                return None
-            visited.add(current)
-            if current not in bst_blocks:
-                return current
-            blk = mba.get_mblock(current)
-            if blk is None:
-                return None
-            tail = blk.tail
-            if tail is None:
-                return None
-            opcode = tail.opcode
-            if opcode == ida_hexrays.m_goto:
-                tgt = tail.l
-                if tgt is None or tgt.t != ida_hexrays.mop_b:
-                    return None
-                current = int(tgt.b)
-                continue
-            if opcode in _BST_COND_OPCODES:
-                lhs = tail.l
-                rhs = tail.r
-                taken_target = tail.d
-                if (
-                    rhs is None
-                    or rhs.t != ida_hexrays.mop_n
-                    or taken_target is None
-                    or taken_target.t != ida_hexrays.mop_b
-                ):
-                    return None
-                # Determine compare size from the rhs constant.
-                try:
-                    rhs_value = int(rhs.nnn.value)
-                    rhs_size = int(rhs.size) if rhs.size > 0 else 4
-                except Exception:
-                    return None
-                taken = HodurStateMachineDetector._is_jump_taken_for_state(
-                    opcode, int(state_value), rhs_value, rhs_size
-                )
-                if taken is None:
-                    return None
-                if taken:
-                    current = int(taken_target.b)
-                    continue
-                # Fall-through: prefer the structural fall-through successor
-                # (the non-taken successor of a 2-way block).
-                fallthrough = None
-                taken_serial = int(taken_target.b)
-                for j in range(blk.nsucc()):
-                    s = int(blk.succ(j))
-                    if s != taken_serial:
-                        fallthrough = s
-                        break
-                if fallthrough is None:
-                    fallthrough = current + 1
-                current = fallthrough
-                continue
-            # Unknown tail opcode for a BST block -- bail out.
+        return walk_bst_dispatcher(
+            root=int(root),
+            bst_blocks=bst_blocks,
+            state_value=int(state_value),
+            tail_for_block_fn=lambda serial: DispatcherTrampolineSkipStrategy._bst_tail_view(
+                mba,
+                serial,
+            ),
+            is_conditional_taken_fn=HodurStateMachineDetector._is_jump_taken_for_state,
+        )
+
+    @staticmethod
+    def _bst_tail_view(
+        mba: object,
+        serial: int,
+    ) -> BstGotoTail | BstConditionalTail | None:
+        blk = mba.get_mblock(int(serial))
+        if blk is None:
             return None
-        return None
+        tail = blk.tail
+        if tail is None:
+            return None
+        opcode = tail.opcode
+        if opcode == ida_hexrays.m_goto:
+            target = tail.l
+            if target is None or target.t != ida_hexrays.mop_b:
+                return None
+            return BstGotoTail(target=int(target.b))
+        if opcode not in _BST_COND_OPCODES:
+            return None
+        rhs = tail.r
+        taken_target = tail.d
+        if (
+            rhs is None
+            or rhs.t != ida_hexrays.mop_n
+            or taken_target is None
+            or taken_target.t != ida_hexrays.mop_b
+        ):
+            return None
+        try:
+            rhs_value = int(rhs.nnn.value)
+            rhs_size = int(rhs.size) if rhs.size > 0 else 4
+        except Exception:
+            return None
+        return BstConditionalTail(
+            opcode=int(opcode),
+            rhs_value=rhs_value,
+            rhs_size=rhs_size,
+            taken_target=int(taken_target.b),
+            successors=tuple(int(blk.succ(index)) for index in range(blk.nsucc())),
+        )
