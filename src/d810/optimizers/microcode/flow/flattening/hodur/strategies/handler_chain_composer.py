@@ -226,6 +226,9 @@ from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoin
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
+from d810.recon.flow.terminal_byte_evidence import (
+    collect_terminal_tail_byte_source_eas,
+)
 from d810.recon.flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
@@ -1856,55 +1859,6 @@ def _resolve_state_var_stkoff_loose(snapshot: "AnalysisSnapshot") -> int | None:
             if isinstance(stkoff, int):
                 return int(stkoff)
     return None
-
-
-def _collect_byte_evidence_eas(snapshot: object) -> frozenset[int]:
-    """Source EAs of every ``TerminalByteEmitterFact`` terminal-tail observation.
-
-    Mirrors the extraction used by ``ByteCascadeCoverageTracer`` so both
-    consumers see the same byte-emitter EA universe.  Returns an empty
-    frozenset when no fact view is attached (the production stub path).
-
-    Used by ``_compose_region`` to relax the composition's jcond-at-tail
-    refusal when the block carries a byte m_stx the materialised
-    InsertBlock body must preserve.
-    """
-    fact_view = (
-        getattr(snapshot, "diagnostic_fact_view", None)
-        or getattr(snapshot, "validated_fact_view", None)
-    )
-    if fact_view is None:
-        return frozenset()
-    out: set[int] = set()
-    for obs in getattr(fact_view, "active_observations", ()) or ():
-        if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
-            continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("corridor_role") != "terminal_tail":
-            continue
-        for candidate in (
-            payload.get("source_ea"),
-            payload.get("source_ea_hex"),
-            getattr(obs, "source_ea", None),
-            getattr(obs, "source_ea_hex", None),
-            getattr(obs, "source_ea_i64", None),
-        ):
-            if candidate is None:
-                continue
-            if isinstance(candidate, bool):
-                continue
-            if isinstance(candidate, int):
-                out.add(int(candidate))
-                continue
-            if isinstance(candidate, str):
-                text = candidate.strip()
-                if not text:
-                    continue
-                try:
-                    out.add(int(text, 16) if text.lower().startswith("0x") else int(text))
-                except (ValueError, TypeError):
-                    continue
-    return frozenset(out)
 
 
 def _find_live_def_insn(
@@ -4521,7 +4475,7 @@ class HandlerChainComposerStrategy:
         # handler bodies (m_add + m_stx + jcond) materialise into the
         # emitted InsertBlock instead of being blanket-rejected and
         # leaving the m_stx for IDA's finalisation DCE.
-        byte_evidence_eas = _collect_byte_evidence_eas(snapshot)
+        byte_evidence_eas = collect_terminal_tail_byte_source_eas(snapshot)
 
         # BST analysis result -- the dispatcher tree built by recon.
         # ``_compose_region`` consults it when the natural splice pred
