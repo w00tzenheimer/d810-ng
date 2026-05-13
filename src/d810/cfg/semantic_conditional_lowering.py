@@ -8,7 +8,7 @@ materializing any returned sites into backend-specific modifications.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.core import logging
 from d810.cfg.flow.conditional_alias import analyze_duplicate_alias_conditional_sites
@@ -23,12 +23,17 @@ logger = logging.getLogger("D810.cfg.semantic_conditional_lowering", logging.DEB
 
 __all__ = [
     "ConditionalExactNodeSite",
+    "ConditionalForkExactNodeArm",
+    "ConditionalForkExactNodeSite",
     "ExactConditionalNodeShape",
+    "ExactConditionalForkInventory",
     "ExactConditionalSiteInventory",
     "analyze_exact_conditional_sites",
     "collect_conditional_node_scope",
     "collect_exact_conditional_sites",
+    "conditional_fork_path_from_source",
     "edge_kind_name",
+    "normalize_clean_conditional_fork_arms",
     "site_key",
 ]
 
@@ -106,6 +111,159 @@ class ExactConditionalSiteInventory:
     missing_return_blocks: tuple[int, ...]
     shape_rejected_blocks: tuple[int, ...]
     alias_handled_blocks: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalForkExactNodeArm:
+    """One semantic transition arm for an exact conditional fork site."""
+
+    target_state: int
+    target_entry: int
+    first_hop: int
+    tail: int
+    ordered_path: tuple[int, ...]
+    transition_edge: object
+    return_distance: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalForkExactNodeSite:
+    """Two-arm exact conditional fork selected by a strategy."""
+
+    source_block: int
+    follow_block: int | None
+    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm]
+
+
+@dataclass(frozen=True, slots=True)
+class ExactConditionalForkInventory:
+    """Diagnostic inventory of exact conditional fork sites."""
+
+    selected_count: int
+    candidate_blocks: tuple[int, ...]
+    plannable_incomplete_blocks: tuple[int, ...]
+    shape_rejected_blocks: tuple[int, ...]
+    clean_fork_blocks: tuple[int, ...] = ()
+    boundary_preservation_blocks: tuple[int, ...] = ()
+    alias_handled_blocks: tuple[int, ...] = ()
+
+
+def conditional_fork_path_from_source(
+    *,
+    source_block: int,
+    first_hop: int,
+    ordered_path: tuple[int, ...],
+) -> tuple[int, ...] | None:
+    """Return the suffix of a semantic path that starts at the physical fork."""
+    if not ordered_path:
+        return None
+    try:
+        source_index = ordered_path.index(int(source_block))
+    except ValueError:
+        return None
+    path = ordered_path[source_index:]
+    if len(path) < 2:
+        return None
+    if int(path[1]) != int(first_hop):
+        return None
+    return path
+
+
+def _path_edges_exist(flow_graph: object, path: tuple[int, ...]) -> bool:
+    for current, nxt in zip(path, path[1:]):
+        block = flow_graph.get_block(int(current))
+        if block is None:
+            return False
+        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+        if int(nxt) not in succs:
+            return False
+    return True
+
+
+def _single_pred_path_blocks(flow_graph: object, path: tuple[int, ...]) -> bool:
+    for block_serial in path:
+        block = flow_graph.get_block(int(block_serial))
+        if block is None:
+            return False
+        if int(getattr(block, "npred", 0)) != 1:
+            return False
+    return True
+
+
+def normalize_clean_conditional_fork_arms(
+    flow_graph: object,
+    *,
+    source_block: int,
+    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm],
+    dispatcher_region: set[int],
+) -> tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm] | None:
+    """Accept only Hex-Rays-friendly exact-fork arm paths.
+
+    Independent arm paths are accepted when every post-source block has one
+    predecessor.  Shared-suffix paths are accepted only when the shared join is
+    an empty, non-dispatcher trampoline with exactly one successor and one
+    predecessor per arm.  In that case the returned arms are normalized to end
+    at their private pre-join tails.
+    """
+    paths: list[tuple[int, ...]] = []
+    for arm in arms:
+        path = conditional_fork_path_from_source(
+            source_block=source_block,
+            first_hop=arm.first_hop,
+            ordered_path=arm.ordered_path,
+        )
+        if path is None or not _path_edges_exist(flow_graph, path):
+            return None
+        paths.append(path)
+
+    terminal_blocks = {int(path[-1]) for path in paths}
+    if len(terminal_blocks) == len(arms):
+        if all(_single_pred_path_blocks(flow_graph, path[1:]) for path in paths):
+            return arms
+        return None
+
+    if len(terminal_blocks) != 1:
+        return None
+
+    shared_join = next(iter(terminal_blocks))
+    join_block = flow_graph.get_block(shared_join)
+    if join_block is None:
+        return None
+    if shared_join in dispatcher_region:
+        return None
+    join_succs = tuple(int(succ) for succ in getattr(join_block, "succs", ()) or ())
+    if len(join_succs) != 1:
+        return None
+    if any(succ in dispatcher_region for succ in join_succs):
+        return None
+    if tuple(getattr(join_block, "insn_snapshots", ()) or ()):
+        return None
+
+    if any(len(path) < 3 for path in paths):
+        return None
+    arm_tails = tuple(int(path[-2]) for path in paths)
+    if len(set(arm_tails)) != len(arms):
+        return None
+    join_preds = {int(pred) for pred in getattr(join_block, "preds", ()) or ()}
+    if join_preds != set(arm_tails):
+        return None
+    if int(getattr(join_block, "npred", 0)) != len(arms):
+        return None
+
+    seen_path_blocks: set[int] = set()
+    for path in paths:
+        arm_path = path[1:-1]
+        if not _single_pred_path_blocks(flow_graph, arm_path):
+            return None
+        for block_serial in arm_path:
+            if int(block_serial) in seen_path_blocks:
+                return None
+            seen_path_blocks.add(int(block_serial))
+
+    return tuple(
+        replace(arm, tail=int(path[-2]))
+        for arm, path in zip(arms, paths)
+    )
 
 
 def _describe_sibling_transitions(transition_edges: list[object]) -> list[tuple[int, int | None, int | None, object]]:
