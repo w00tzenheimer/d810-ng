@@ -9,7 +9,13 @@ from d810.cfg.dag_frontier_closure import (
     plan_dag_authoritative_frontier_closure,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import InsertBlock, RedirectBranch, RedirectGoto
+from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
+    DuplicateBlock,
+    InsertBlock,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.cfg.state_dag_key import StateDagNodeKey
 
 
@@ -989,6 +995,193 @@ def test_rejects_direct_dag_bst_residue_when_only_path_step_is_proven() -> None:
                 target_block=42,
             ),
         ),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.resolved_frontiers == ()
+
+
+def _shared_condition_clone_dag(
+    *,
+    include_entry_edge: bool = True,
+    include_arm_edges: bool = True,
+):
+    entry_key = StateDagNodeKey(handler_serial=52, state_const=0x737189D5)
+    condition_key = StateDagNodeKey(handler_serial=81, state_const=0x5FE86821)
+    false_key = StateDagNodeKey(handler_serial=63, state_const=0x45B18E82)
+    true_key = StateDagNodeKey(handler_serial=117, state_const=0x02760C0D)
+    edges = []
+    if include_entry_edge:
+        edges.append(
+            _edge(
+                entry_key,
+                condition_key,
+                source_block=52,
+                target_entry=81,
+                ordered_path=(52,),
+                kind="TRANSITION",
+            )
+        )
+    if include_arm_edges:
+        edges.extend(
+            (
+                _edge(
+                    condition_key,
+                    false_key,
+                    source_block=81,
+                    branch_arm=0,
+                    target_entry=63,
+                    ordered_path=(81, 82),
+                    kind="CONDITIONAL_TRANSITION",
+                ),
+                _edge(
+                    condition_key,
+                    true_key,
+                    source_block=81,
+                    branch_arm=1,
+                    target_entry=117,
+                    ordered_path=(81, 83),
+                    kind="CONDITIONAL_TRANSITION",
+                ),
+            )
+        )
+    return SimpleNamespace(
+        nodes=(
+            _node(entry_key, 52),
+            _node_with_blocks(condition_key, 81, 82, 83),
+            _node(false_key, 63),
+            _node(true_key, 117),
+        ),
+        edges=tuple(edges),
+        sccs=(
+            _scc(0, entry_key),
+            _scc(1, condition_key, is_cyclic=True),
+            _scc(2, false_key),
+            _scc(3, true_key),
+        ),
+    )
+
+
+def _shared_condition_clone_flow(*, base_pred_targets_condition: bool = True) -> FlowGraph:
+    pred_succ = (81,) if base_pred_targets_condition else (2,)
+    return _flow_with_instructions(
+        {
+            129: (2,),
+            2: (3, 112),
+            3: (),
+            50: (52,),
+            52: pred_succ,
+            79: (80, 81),
+            80: (),
+            81: (82, 83),
+            82: (),
+            83: (),
+            112: (),
+            117: (),
+            239: (81,),
+        },
+        {
+            2: (_state_jbe(0x37B42A3F, 112),),
+            81: (_state_mov(0x5FE86821), _state_jz(0x1234, 83)),
+        },
+    )
+
+
+def test_clones_dag_backed_shared_condition_entry(monkeypatch) -> None:
+    monkeypatch.setenv("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", "1")
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_shared_condition_clone_dag(),
+        flow_graph=_shared_condition_clone_flow(),
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(),
+    )
+
+    assert result.emitted_modifications == (
+        DuplicateBlock(
+            source_block=81,
+            target_block=None,
+            pred_serial=52,
+            patch_kind="dag_entry_shared_condition_clone",
+        ),
+    )
+    assert len(result.resolved_frontiers) == 1
+    assert result.resolved_frontiers[0].reason == "dag_entry_shared_condition_clone"
+    assert result.resolved_frontiers[0].source_block == 52
+    assert result.resolved_frontiers[0].target_block == 81
+
+    resolved_rows = [
+        row for row in result.diagnostic_rows if row.kind == "resolved"
+    ]
+    assert len(resolved_rows) == 1
+    assert resolved_rows[0].reason == "dag_entry_shared_condition_clone"
+    assert resolved_rows[0].payload["proof"] == "DAG_ENTRY_SHARED_CONDITION_CLONE"
+
+
+def test_shared_condition_clone_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", "0")
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_shared_condition_clone_dag(),
+        flow_graph=_shared_condition_clone_flow(),
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.resolved_frontiers == ()
+
+
+def test_replaces_dag_redirect_with_shared_condition_clone(monkeypatch) -> None:
+    monkeypatch.setenv("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", "1")
+    existing = RedirectGoto(from_serial=52, old_target=2, new_target=81)
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_shared_condition_clone_dag(),
+        flow_graph=_shared_condition_clone_flow(base_pred_targets_condition=False),
+        modifications=[existing],
+        dispatcher_serial=2,
+        bst_interval_rows=(),
+    )
+
+    assert result.dropped_modifications == (existing,)
+    assert result.emitted_modifications == (
+        CreateConditionalRedirect(
+            source_block=52,
+            ref_block=81,
+            conditional_target=83,
+            fallthrough_target=82,
+        ),
+    )
+    assert result.resolved_frontiers[0].reason == "dag_entry_shared_condition_clone"
+
+
+def test_rejects_shared_condition_clone_without_dag_entry_edge(monkeypatch) -> None:
+    monkeypatch.setenv("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", "1")
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_shared_condition_clone_dag(include_entry_edge=False),
+        flow_graph=_shared_condition_clone_flow(),
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.resolved_frontiers == ()
+
+
+def test_rejects_shared_condition_clone_without_dag_arm_edges(monkeypatch) -> None:
+    monkeypatch.setenv("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", "1")
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=_shared_condition_clone_dag(include_arm_edges=False),
+        flow_graph=_shared_condition_clone_flow(),
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(),
     )
 
     assert result.emitted_modifications == ()

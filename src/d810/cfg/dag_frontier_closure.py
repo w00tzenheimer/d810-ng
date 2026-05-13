@@ -12,7 +12,13 @@ from dataclasses import dataclass
 import os
 
 from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.graph_modification import InsertBlock, RedirectBranch, RedirectGoto
+from d810.cfg.graph_modification import (
+    CreateConditionalRedirect,
+    DuplicateBlock,
+    InsertBlock,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.core import logging
@@ -227,6 +233,14 @@ def plan_dag_authoritative_frontier_closure(
                 dispatcher_serial=dispatcher_serial,
                 base_flow_graph=flow_graph,
                 bst_interval_rows=interval_rows,
+            )
+        if action is None:
+            action = _select_shared_condition_entry_clone_action(
+                projected,
+                indexes,
+                current_modifications=current_modifications,
+                dispatcher_serial=dispatcher_serial,
+                base_flow_graph=flow_graph,
             )
         if action is None:
             break
@@ -915,6 +929,268 @@ def _select_dispatcher_state_residue_action(
                     },
                 ),
             )
+    return None
+
+
+def _select_shared_condition_entry_clone_action(
+    projected_flow_graph: object,
+    indexes: _DagIndexes,
+    *,
+    current_modifications: list[object],
+    dispatcher_serial: int,
+    base_flow_graph: object,
+) -> tuple[
+    list[object],
+    object | None,
+    object | None,
+    ResolvedFrontier | None,
+] | None:
+    """Clone shared condition entries that are DAG-backed but structurally fused.
+
+    This is a structuring repair, not a semantic-SCC rewrite.  It handles the
+    pattern where HCC has a DAG-proven entry edge into a shared two-way
+    condition block, but multiple incoming CFG paths keep Hex-Rays presenting
+    the condition as a ``goto LABEL`` into a residual ``while (1)`` loop.  The
+    clone preserves the condition and both arms; it only gives the proven
+    predecessor a private copy.
+    """
+
+    if not _env_enabled("D810_DAG_FRONTIER_SHARED_CONDITION_CLONE", default=True):
+        return None
+
+    state_stkoff = _dispatcher_state_stkoff(projected_flow_graph, dispatcher_serial)
+    if state_stkoff is None:
+        state_stkoff = _dispatcher_state_stkoff(base_flow_graph, dispatcher_serial)
+    if state_stkoff is None:
+        return None
+
+    blocks = getattr(projected_flow_graph, "blocks", {}) or {}
+    for source in sorted(int(serial) for serial in blocks):
+        block = projected_flow_graph.get_block(source)
+        if block is None:
+            continue
+        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+        if len(succs) != 2:
+            continue
+        preds = tuple(int(pred) for pred in getattr(block, "preds", ()) or ())
+        if len(preds) < 2:
+            continue
+        if not _is_shared_condition_clone_block(block, state_stkoff):
+            continue
+        if not _condition_successors_are_dag_proven(indexes, source, succs):
+            continue
+
+        base_block = base_flow_graph.get_block(source)
+        base_succs = (
+            tuple(int(succ) for succ in getattr(base_block, "succs", ()) or ())
+            if base_block
+            else ()
+        )
+        if len(base_succs) != 2:
+            continue
+
+        for pred in sorted(preds):
+            pred_block = projected_flow_graph.get_block(pred)
+            if pred_block is None:
+                continue
+            pred_succs = tuple(
+                int(succ) for succ in getattr(pred_block, "succs", ()) or ()
+            )
+            if pred_succs != (source,):
+                continue
+            base_pred = base_flow_graph.get_block(pred)
+            base_pred_succs = (
+                tuple(int(succ) for succ in getattr(base_pred, "succs", ()) or ())
+                if base_pred
+                else ()
+            )
+            entry_choice = _direct_dag_entry_choice(indexes, pred=pred, target=source)
+            if entry_choice is None:
+                continue
+            if _has_duplicate_block_mod(
+                current_modifications,
+                source_block=source,
+                pred_serial=pred,
+            ):
+                continue
+            if _has_conditional_redirect_mod(
+                current_modifications,
+                source_block=pred,
+                ref_block=source,
+            ):
+                continue
+
+            mod: object
+            dropped_mod: object | None = None
+            if source in base_pred_succs:
+                mod = DuplicateBlock(
+                    source_block=source,
+                    target_block=None,
+                    pred_serial=pred,
+                    patch_kind="dag_entry_shared_condition_clone",
+                )
+                new_modifications = [*current_modifications, mod]
+            else:
+                dropped_mod = _find_redirect_to_target_mod(
+                    current_modifications,
+                    source=pred,
+                    new_target=source,
+                )
+                if dropped_mod is None:
+                    continue
+                # BLT_2WAY succset order is [fallthrough, conditional target].
+                mod = CreateConditionalRedirect(
+                    source_block=pred,
+                    ref_block=source,
+                    conditional_target=int(succs[1]),
+                    fallthrough_target=int(succs[0]),
+                )
+                new_modifications = [
+                    existing
+                    for existing in current_modifications
+                    if existing is not dropped_mod
+                ]
+                new_modifications.append(mod)
+            logger.info(
+                "DAG_FRONTIER_CLOSURE: cloning DAG-proven shared condition "
+                "blk[%d] for pred=blk[%d] proof=%s",
+                source,
+                pred,
+                entry_choice.proof,
+            )
+            return (
+                new_modifications,
+                mod,
+                dropped_mod,
+                ResolvedFrontier(
+                    leak=None,
+                    source_block=pred,
+                    observed_target=source,
+                    branch_arm=None,
+                    reason="dag_entry_shared_condition_clone",
+                    target_block=source,
+                    payload={
+                        "proof": "DAG_ENTRY_SHARED_CONDITION_CLONE",
+                        "predecessor": pred,
+                        "condition_block": source,
+                        "condition_successors": succs,
+                        "dag_entry_proof": tuple(entry_choice.proof),
+                    },
+                ),
+            )
+    return None
+
+
+def _direct_dag_entry_choice(
+    indexes: _DagIndexes,
+    *,
+    pred: int,
+    target: int,
+) -> _FrontierChoice | None:
+    choices = indexes.choices_by_anchor.get((int(pred), None), ())
+    for choice in choices:
+        if int(choice.target_block) != int(target):
+            continue
+        if choice.is_path_step:
+            continue
+        if not _is_direct_dag_frontier_choice(choice):
+            continue
+        return choice
+    return None
+
+
+def _condition_successors_are_dag_proven(
+    indexes: _DagIndexes,
+    source: int,
+    succs: tuple[int, int],
+) -> bool:
+    for arm, succ in enumerate(succs):
+        choices = indexes.choices_by_anchor.get((int(source), arm), ())
+        if not any(int(choice.target_block) == int(succ) for choice in choices):
+            return False
+    return True
+
+
+def _is_shared_condition_clone_block(block: object, state_stkoff: int) -> bool:
+    if _state_write_constant(block, state_stkoff) is None:
+        return False
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    if len(insns) < 2:
+        return False
+    tail = insns[-1]
+    opcode = getattr(tail, "opcode", None)
+    try:
+        tail_opcode = int(opcode)
+    except (TypeError, ValueError):
+        return False
+    if tail_opcode not in _equality_jump_opcodes():
+        return False
+    for insn in insns[:-1]:
+        if not _is_dispatcher_state_mov(insn, state_stkoff):
+            return False
+    return True
+
+
+def _is_dispatcher_state_mov(insn: object, state_stkoff: int) -> bool:
+    opcode = getattr(insn, "opcode", None)
+    try:
+        opcode_int = int(opcode)
+    except (TypeError, ValueError):
+        return False
+    if opcode_int not in _mov_opcodes():
+        return False
+    dest = getattr(insn, "d", None)
+    src = getattr(insn, "l", None)
+    if dest is None or src is None:
+        return False
+    try:
+        dest_stkoff = int(getattr(dest, "stkoff", None))
+    except (TypeError, ValueError):
+        return False
+    if dest_stkoff != int(state_stkoff):
+        return False
+    return getattr(src, "value", None) is not None
+
+
+def _has_duplicate_block_mod(
+    modifications: list[object],
+    *,
+    source_block: int,
+    pred_serial: int,
+) -> bool:
+    for mod in modifications:
+        info = _duplicate_info(mod)
+        if info == (int(source_block), int(pred_serial)):
+            return True
+    return False
+
+
+def _has_conditional_redirect_mod(
+    modifications: list[object],
+    *,
+    source_block: int,
+    ref_block: int,
+) -> bool:
+    for mod in modifications:
+        info = _conditional_redirect_info(mod)
+        if info == (int(source_block), int(ref_block)):
+            return True
+    return False
+
+
+def _find_redirect_to_target_mod(
+    modifications: list[object],
+    *,
+    source: int,
+    new_target: int,
+) -> object | None:
+    for mod in modifications:
+        info = _redirect_info(mod)
+        if info is None:
+            continue
+        mod_source, _old_target, mod_target = info
+        if int(mod_source) == int(source) and int(mod_target) == int(new_target):
+            return mod
     return None
 
 
@@ -1761,14 +2037,36 @@ def _insert_info(mod: object) -> tuple[int, int, int] | None:
     return (int(mod.pred_serial), int(old_target), int(mod.succ_serial))
 
 
+def _duplicate_info(mod: object) -> tuple[int, int] | None:
+    if not isinstance(mod, DuplicateBlock):
+        return None
+    if mod.pred_serial is None:
+        return None
+    return (int(mod.source_block), int(mod.pred_serial))
+
+
+def _conditional_redirect_info(mod: object) -> tuple[int, int] | None:
+    if not isinstance(mod, CreateConditionalRedirect):
+        return None
+    return (int(mod.source_block), int(mod.ref_block))
+
+
 def _mod_summary(mod: object) -> str:
     info = _redirect_info(mod)
     if info is None:
         insert_info = _insert_info(mod)
-        if insert_info is None:
-            return type(mod).__name__
-        source, old_target, new_target = insert_info
-        return f"InsertBlock(blk[{source}] {old_target}->new->{new_target})"
+        if insert_info is not None:
+            source, old_target, new_target = insert_info
+            return f"InsertBlock(blk[{source}] {old_target}->new->{new_target})"
+        duplicate_info = _duplicate_info(mod)
+        if duplicate_info is not None:
+            source, pred = duplicate_info
+            return f"DuplicateBlock(blk[{source}] pred=blk[{pred}])"
+        conditional_info = _conditional_redirect_info(mod)
+        if conditional_info is not None:
+            source, ref = conditional_info
+            return f"CreateConditionalRedirect(blk[{source}] ref=blk[{ref}])"
+        return type(mod).__name__
     source, old_target, new_target = info
     return f"{type(mod).__name__}(blk[{source}] {old_target}->{new_target})"
 
@@ -1790,6 +2088,20 @@ def _modification_signature(
                     insert_info[0],
                     insert_info[1],
                     insert_info[2],
+                )
+            )
+            continue
+        duplicate_info = _duplicate_info(mod)
+        if duplicate_info is not None:
+            signature.append(("DuplicateBlock", duplicate_info[0], duplicate_info[1]))
+            continue
+        conditional_info = _conditional_redirect_info(mod)
+        if conditional_info is not None:
+            signature.append(
+                (
+                    "CreateConditionalRedirect",
+                    conditional_info[0],
+                    conditional_info[1],
                 )
             )
             continue
