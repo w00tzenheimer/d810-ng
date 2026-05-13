@@ -2,9 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extract hodur's strategy/planner/executor infrastructure into a shared unflattening engine, making it the single execution paradigm for all unflattening strategies once the live Hodur semantic surface is stable enough to expose the right shared API.
+**Goal:** Make `flattening/engine` the normal execution model for all
+unflattening work, not just Hodur. Hodur remains the proving client because it
+has the hardest live semantics, but the architecture target is broader:
+simple transforms, legacy `generic.py` dispatcher lowering, Hodur, and future
+CFF families should all use the same family/strategy pipeline and the same
+`recon` -> `cfg` -> backend materialization boundaries.
 
-**Architecture:** One execution model (detect -> snapshot -> plan -> execute) with variable complexity per strategy. Simple transforms (FakeJump, BadWhileLoop) can become trivial strategies with 1-edit plans. Complex attacks (hodur's multi-strategy OLLVM pipeline) remain the proving ground for the abstractions before anything is promoted into a shared `flattening/engine` package. Future CFF attacks should consume shared `recon/flow` and `cfg` boundaries where appropriate, not bypass them.
+**Architecture:** One execution model (detect -> snapshot -> plan -> execute)
+with variable complexity per strategy family. Simple transforms (FakeJump,
+BadWhileLoop) are trivial families or strategies with one-edit plans. Complex
+attacks (Hodur's multi-strategy OLLVM pipeline, emulated dispatcher lowering,
+future Tigress-like families) use the same engine with richer detection,
+snapshot, planning, and validation. Shared analysis belongs in `recon/flow`;
+backend-agnostic graph plans belong in `cfg`; Hex-Rays-specific mutation stays
+behind the existing backend/materialization layer. Hodur should become one
+normal strategy family composed from those packages, not a special framework
+that other unflatteners import through compatibility shims.
 
 **Tech Stack:** Python 3.13, IDA Pro 9+ microcode API, pytest, d810 plugin infrastructure
 
@@ -14,14 +28,16 @@
 
 1. [Research & Reasoning](#research--reasoning)
 2. [Architecture Decision Record](#architecture-decision-record)
-3. [Execution Order Correction](#execution-order-correction)
-4. [File Structure](#file-structure)
-5. [P0: Engine Extraction](#p0-engine-extraction)
-6. [P1: CFFStrategyFamily Orchestrator](#p1-cffstrategyfamily-orchestrator)
-7. [P2: Wrap Simple Transforms](#p2-wrap-simple-transforms)
-8. [P3: Wrap generic.py Emulated-Dispatcher Family](#p3-wrap-genericpy-emulated-dispatcher-family)
-9. [P4: Audit linearized_state_dag Generality](#p4-audit-linearized_state_dag-generality)
-10. [P5: Document Extension Contract](#p5-document-extension-contract)
+3. [Current Status: 2026-05-13](#current-status-2026-05-13)
+4. [Revised Execution Order](#revised-execution-order)
+5. [Historical Execution Order Correction](#historical-execution-order-correction)
+6. [File Structure](#file-structure)
+7. [P0: Engine Extraction](#p0-engine-extraction)
+8. [P1: CFFStrategyFamily Orchestrator](#p1-cffstrategyfamily-orchestrator)
+9. [P2: Wrap Simple Transforms](#p2-wrap-simple-transforms)
+10. [P3: Wrap generic.py Emulated-Dispatcher Family](#p3-wrap-genericpy-emulated-dispatcher-family)
+11. [P4: Audit linearized_state_dag Generality](#p4-audit-linearized_state_dag-generality)
+12. [P5: Document Extension Contract](#p5-document-extension-contract)
 
 ---
 
@@ -37,7 +53,18 @@ The hodur subpackage was built as an analysis-driven unflattening strategy for O
 - Immutable analysis snapshots (snapshot.py, 91 lines)
 - Quality metrics (metrics.py, 49 lines)
 
-This infrastructure is architecturally general but lives inside `flattening/hodur/`, forcing any future strategy to import from a sibling attack package. Meanwhile, the old unflattening framework (`generic.py`) uses a different paradigm: inheritance-based, per-block emulation, no planning phase, no transactions.
+This infrastructure was originally architecturally general but lived inside
+`flattening/hodur/`, forcing any future strategy to import from a sibling
+attack package. The current branch has already extracted the core engine
+package. The remaining work is no longer "copy Hodur files into engine"; it is
+to make every unflattening family consume the shared engine and to move generic
+Hodur-grown algorithms to `recon`/`cfg` when they are not actually
+family-specific.
+
+The old unflattening framework (`generic.py`) is still important because it
+represents the other production unflattening lineage. Its behavior should be
+adapted into the family/strategy model incrementally rather than treated as a
+separate paradigm.
 
 ### Package Audit Results
 
@@ -159,22 +186,170 @@ A new contributor:
 
 ---
 
+## Current Status: 2026-05-13
+
+The architecture has moved beyond the original March P0/P1 plan.
+
+Already present on this branch:
+
+- `src/d810/optimizers/microcode/flow/flattening/engine/` contains the
+  shared protocol, snapshot, planner, executor, provenance, metrics, family,
+  and runtime surfaces.
+- `HodurStrategyFamily` implements `CFFStrategyFamily`, and
+  `HodurUnflattener` calls `plan_family_pipeline()` /
+  `execute_family_pipeline()`.
+- `EmulatedDispatcherStrategyFamily` is a second family-shaped consumer of
+  the engine surface.
+- `FakeJump`, `SingleIteration`, and the safe subset of `BadWhileLoop` already
+  have engine-native strategy implementations under `flattening/strategies/`.
+- The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
+  regression gate for this line of work. Engine extraction must not regress its
+  dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
+- The first post-merge de-specialization slice landed:
+  `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`.
+  HCC now consumes this recon helper instead of owning the pure semantic-DAG
+  region walk locally.
+
+What remains:
+
+- Remove dependence on Hodur compatibility imports in production call sites
+  where the canonical engine import is available.
+- Continue extracting reusable HCC algorithms into `recon` and `cfg` based on
+  behavior, not on import churn.
+- Convert the remaining legacy unflattening families to the engine/family
+  model where doing so preserves behavior.
+- Document the extension contract for new unflattening families after the
+  current package boundaries are proven by at least Hodur and one non-Hodur
+  family.
+
+This means the plan should not be executed as a file-move/shim project. The
+engine package exists. The active work is now adoption, de-specialization, and
+regression-gated behavior preservation across all unflattening families.
+
+---
+
 ## Architecture Decision Record
 
 | ID | Decision | Rationale |
 |-|-|-|
 | ADR-1 | One execution paradigm for all unflattening | Two models = two mental models. Simple strategies have trivial plans with zero overhead. |
-| ADR-2 | Engine extracted from hodur, not built from scratch | hodur's infrastructure IS the engine. Extracting is safer than rewriting. |
+| ADR-2 | Engine extracted from hodur, not built from scratch | Hodur's infrastructure proved the engine. The canonical engine package now exists; remaining work should adopt it and move reusable algorithms to the right layer. |
 | ADR-3 | recon/flow stays as-is | CFF-general algorithms, not hodur-specific. Consumer count misleading. |
 | ADR-4 | generic.py adapts incrementally | Old code keeps working while new strategies added alongside. No big-bang rewrite. |
 | ADR-5 | Dispatcher analysis stays in recon/flow | BST and switch-table dispatchers are multi-obfuscator analyses, not Hodur-only quirks. |
-| ADR-6 | Backward-compat re-exports during transition | hodur/ originals become thin re-exports. Tests keep passing during migration. |
-| ADR-7 | Engine extraction is deferred until live Hodur semantics are stabilized | Current shared-feeder selection and direct/terminal lowering still define the real engine boundary. |
+| ADR-6 | Compatibility re-exports are transitional, not the architecture | Existing Hodur re-exports may remain while old imports are paid down, but new work should import canonical engine/recon/cfg surfaces directly. Do not add new compatibility shims as the endpoint. |
+| ADR-7 | Live behavior defines the extraction boundary | The sub7FFD recovery work showed which algorithms are truly shared: DAG/BST/frontier reasoning belongs in recon/cfg, while Hodur owns family detection and strategy ordering. |
 | ADR-8 | Shared dispatcher IR belongs in recon/flow before engine extraction | `DispatcherHandlerMap` and switch-table analysis proved new dispatcher forms should first land as shared recon artifacts plus Hodur adapters. |
+| ADR-9 | Hodur is a normal strategy family, not the goal of the engine | Extraction succeeds when simple transforms, generic/emulated dispatchers, Hodur, and future families share detect -> snapshot -> plan -> execute without importing through Hodur. |
 
 ---
 
-## Execution Order Correction
+## Revised Execution Order
+
+The old P0/P1 steps below are now historical. They describe work that has
+largely happened already and should not be assigned to an implementer as-is.
+The current execution order is:
+
+### E0: Preserve the baseline gate
+
+Before each behavior-affecting extraction slice:
+
+- Start from the `structure-recovery-pass` baseline artifacts archived under
+  `_gitless/baselines/sub7ffd-structure-recovery-pass-2026-05-13/`.
+- Run or compare the focused sub7FFD dump/oracle when the slice can affect
+  planning, execution, CFG lowering, or Hex-Rays materialization.
+- Require no new `Failed to decompile`, `INTERR`, `verify_failed`,
+  `CFG_50xxx`, unresolved frontier rows, oracle regressions, or AFTER stats
+  regressions outside an explicitly accepted behavior change.
+
+### E1: Pay down compatibility imports
+
+Goal: production code should depend on canonical engine surfaces directly.
+
+- Replace production imports from `flattening.hodur.strategy`,
+  `flattening.hodur.snapshot`, `flattening.hodur.planner`,
+  `flattening.hodur.executor`, `flattening.hodur.provenance`, and
+  `flattening.hodur.metrics` with `flattening.engine.*` imports when the type
+  is engine-generic.
+- Keep Hodur-local imports only when the imported object is genuinely
+  family-specific.
+- Do not remove compatibility modules until all production consumers are gone
+  and tests confirm no external runtime path still needs them.
+
+### E2: Extract reusable HCC algorithms by responsibility
+
+Goal: Hodur's HCC remains a strategy, but generic reasoning moves to the
+package that owns it.
+
+Completed:
+
+- `detect_linear_transition_regions()` moved to `d810.recon.flow`.
+
+Next candidates, in order:
+
+1. Semantic entry candidate resolution:
+   - `EntryEligibility`
+   - `SemanticEntryCandidate`
+   - `_resolve_semantic_entry_candidate(...)`
+   - likely target: `d810.cfg.semantic_region_lowering` or a small
+     `d810.recon.flow` helper, depending on whether the final API takes live
+     CFG block shape as input.
+2. Raw semantic-region observation/admission:
+   - `_RawRegionInfo`
+   - source-covered / fusion classification helpers
+   - keep HCC-specific logging in HCC; move reusable classification data
+     structures and pure predicates out.
+3. Region materialization contract:
+   - separate "which region is semantically lowerable" from "how HCC captures
+     Hex-Rays instructions into an InsertBlock body."
+   - backend-independent contract belongs in `cfg`; Hex-Rays instruction
+     capture stays in the Hex-Rays-facing strategy/backend layer until a
+     cleaner adapter exists.
+
+### E3: Normalize non-Hodur families onto the engine
+
+Goal: the shared engine is proven by more than Hodur.
+
+- Keep the existing `FakeJump`, `SingleIteration`, `BadWhileLoop`, and
+  `EmulatedDispatcherStrategyFamily` paths working.
+- Identify one legacy rule whose old path still performs meaningful lowering
+  and add or complete an engine-family equivalent.
+- Prefer examples that use different detection evidence from Hodur so the
+  family boundary is exercised rather than merely copied.
+
+### E4: Retire legacy paths only after parity
+
+Goal: old unflatteners are not ripped out before the engine path proves equal
+or better behavior.
+
+- For each migrated transform/family, keep old entry points until there is a
+  focused parity test or an explicit abstention contract.
+- Deprecate old entry points with documentation once the engine path is the
+  default.
+- Remove old paths only when tests and field samples no longer depend on them.
+
+### E5: Document the extension contract
+
+Goal: a new unflattening family should be implementable without reading Hodur
+internals.
+
+The extension guide should explain:
+
+- how to publish observations through recon collectors;
+- how to build a family detection result and snapshot;
+- how to emit `PlanFragment` instances;
+- when to add a new `recon` helper versus a family-local heuristic;
+- when to add a new `cfg.GraphModification` or patch primitive;
+- how to validate with cff_debug, diag/oracle artifacts, and family-specific
+  regression gates.
+
+---
+
+## Historical Execution Order Correction
+
+This section is retained for context. It describes the state of the branch
+before the shared engine package and family runtime landed. Do not use it as
+the active task ordering; use "Revised Execution Order" above.
 
 This document describes the intended destination, but the live branch is not
 ready to execute P0 first.
@@ -200,6 +375,10 @@ implementation order.
 ---
 
 ## File Structure
+
+Historical note: the engine package described below already exists on the
+current branch. The remaining work is not to recreate this tree, but to migrate
+call sites and reusable algorithms to the canonical surfaces.
 
 ### New Files
 
@@ -238,6 +417,10 @@ src/d810/optimizers/microcode/flow/flattening/hodur/metrics.py
 ---
 
 ## P0: Engine Extraction
+
+Historical note: P0 is effectively complete on the current branch. Do not
+execute the shim/file-move steps below as new work. Use E1/E2 from the revised
+execution order instead.
 
 **Risk:** Medium-high. This is not a pure file move on the current branch.
 `snapshot.py`, `planner.py`, and `executor.py` still encode Hodur-specific
@@ -791,6 +974,10 @@ Expected: `engine OK`
 
 ## P1: CFFStrategyFamily Orchestrator
 
+Historical note: `CFFStrategyFamily`, `DetectionResult`,
+`plan_family_pipeline()`, and `execute_family_pipeline()` already exist. The
+remaining work is broader adoption by all unflattening families.
+
 **Risk:** Medium. New code that codifies the detect -> snapshot -> plan -> execute pipeline as a reusable base class.
 
 **Depends on:** P0 complete.
@@ -1055,6 +1242,10 @@ git commit -m "feat(engine): export CFFStrategyFamily from engine package"
 
 ## P2: Wrap Simple Transforms
 
+Current note: this is partly complete. The next useful work is not "wrap all
+simple transforms for its own sake"; it is to make the engine path the default
+only when parity or an explicit abstention contract exists.
+
 **Risk:** Low-medium. Each simple transform becomes a strategy with ~20-30 lines of glue. Old code stays working — new strategies are registered alongside.
 
 **Depends on:** P0 complete. P1 recommended but not strictly required.
@@ -1238,6 +1429,10 @@ mutation pipeline.
 
 ## P3: Wrap generic.py Emulated-Dispatcher Family
 
+Current note: the emulated dispatcher family boundary exists. Continue with
+cases where legacy generic lowering materially rewrites a function and use
+those to prove the engine/family model outside Hodur.
+
 **Risk:** Medium. This is the most complex adaptation — generic.py's per-father emulation loop needs to be untangled into plan/execute phases.
 
 **Depends on:** P0 complete. P1 recommended.
@@ -1332,6 +1527,10 @@ The implementer reads the design note from Task 3.1 and wraps the existing emula
 
 ## P4: Audit linearized_state_dag Generality
 
+Current note: keep this audit alive, but treat it as broader recon/family
+generality rather than a Hodur-only audit. The `detect_linear_transition_regions`
+extraction is one completed result of this direction.
+
 **Risk:** Low (research only, no code changes). High importance — this is the load-bearing wall.
 
 **Depends on:** Nothing. Can run in parallel with P0-P3.
@@ -1372,6 +1571,10 @@ Add to the audit document from Task 4.1.
 ---
 
 ## P5: Document Extension Contract
+
+Current note: do this after at least one non-Hodur family path has meaningful
+engine parity. The guide should describe the shared engine/family architecture,
+not Hodur internals.
 
 **Risk:** None (documentation only).
 
@@ -1414,28 +1617,42 @@ git commit -m "docs(engine): add extension guide for new CFF strategy families"
 ## Execution Dependencies
 
 ```
-P0 (engine extraction)  ──→  P1 (CFFStrategyFamily)  ──→  P5 (extension docs)
-                        ──→  P2 (simple transforms)
-                        ──→  P3 (generic.py adaptation)
-P4 (DAG audit)  ← independent, run anytime
+E0 baseline gate  ──→  E1 canonical engine imports
+                 └─→  E2 reusable HCC algorithm extraction
+                 └─→  E3 non-Hodur family normalization
+
+E1/E2/E3  ──→  E4 retire legacy paths after parity
+E1/E2/E3  ──→  E5 extension contract
 ```
 
-P0 is the critical path. P4 can run in parallel from day one. P2 and P3 are independent of each other. P5 depends on P0+P1 being stable.
+E0 is always active. E1, E2, and E3 can proceed independently as long as each
+slice preserves the baseline gate. E4 depends on parity evidence. E5 should be
+written only after the architecture has at least Hodur plus one non-Hodur
+family exercising the shared engine path.
 
 ## Risk Assessment
 
 | Phase | Risk | Mitigation |
 |-|-|-|
-| P0 | Low — pure file moves + re-exports | Re-export shims keep all existing imports working |
-| P1 | Medium — new abstraction | Protocol-only, no behavioral changes until adopted |
-| P2 | Low — ~20 lines per transform | Old code untouched, new strategies registered alongside |
-| P3 | Medium — untangling emulation loop | Keep old GenericUnflatteningRule working, new strategy is alternative |
-| P4 | None — research only | Findings may influence future work but no code changes |
-| P5 | None — documentation only | Validates architecture by explaining it |
+| E0 | Medium — baseline drift is easy during extraction | Keep structure-recovery-pass artifacts; rerun cff_debug/oracle for behavior-affecting slices |
+| E1 | Low-medium — import changes can expose hidden IDA dependencies | Replace only engine-generic imports; run import contracts and focused unit slices |
+| E2 | Medium — HCC helpers mix pure analysis, live CFG probes, and Hex-Rays instruction capture | Extract one responsibility at a time; keep HCC behavior-preserving; require sub7FFD no-regression when lowering behavior can change |
+| E3 | Medium — old generic/simple rules have implicit behavior | Keep old paths until engine parity or explicit abstention is proven |
+| E4 | Medium-high — premature deletion loses fallback behavior | Remove only after parity tests and field samples stop depending on legacy path |
+| E5 | Low — docs only | Write after the architecture is exercised by more than Hodur |
 
 ## Success Criteria
 
-1. `PYTHONPATH=src pytest tests/unit/ -v` passes with same count before and after P0
-2. `from d810.optimizers.microcode.flow.flattening.engine import UnflatteningStrategy` works
-3. hodur's 15 strategies continue to work unchanged via re-export shims
-4. A new contributor can read EXTENSION_GUIDE.md and create a strategy family without reading hodur's internals
+1. Existing engine imports keep working:
+   `from d810.optimizers.microcode.flow.flattening.engine import UnflatteningStrategy`.
+2. Production code no longer imports engine-generic types through
+   `flattening.hodur.*` compatibility modules.
+3. Hodur remains a normal `CFFStrategyFamily` consumer and sub7FFD does not
+   regress against the `structure-recovery-pass` baseline.
+4. At least one non-Hodur family path has meaningful engine parity or a
+   documented abstention contract.
+5. Reusable algorithms grown inside Hodur/HCC move to `recon` or `cfg` when
+   their responsibility is analysis or backend-agnostic CFG planning.
+6. New unflattening families can be built from `recon` collectors,
+   `CFFStrategyFamily`, `PlanFragment`, `cfg.GraphModification`, and backend
+   materialization without reading Hodur internals.
