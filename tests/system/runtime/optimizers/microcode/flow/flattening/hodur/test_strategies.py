@@ -35,7 +35,7 @@ import d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction import (
     StateWriteReconstructionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
@@ -50,7 +50,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalSegmentKind,
