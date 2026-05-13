@@ -213,13 +213,57 @@ CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_class
 CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_terminal
     ON dag_edge_diagnostics(is_terminal_tail, classification);
 
+-- DAG-frontier closure verifier output. Diagnostic-only: these rows explain
+-- semantic-SCC leaks and unresolved repair candidates. No runtime behavior may
+-- use them to authorize redirects.
+CREATE TABLE IF NOT EXISTS dag_frontier_closure_diagnostics (
+    snapshot_id             INTEGER NOT NULL REFERENCES snapshots(id),
+    kind                    TEXT NOT NULL,
+    reason                  TEXT,
+    source_block            INTEGER,
+    observed_target         INTEGER,
+    branch_arm              INTEGER,
+    from_dag_scc            INTEGER,
+    to_dag_scc              INTEGER,
+    candidate_targets_json  TEXT NOT NULL DEFAULT '[]',
+    path_json               TEXT NOT NULL DEFAULT '[]',
+    cfg_scc_size            INTEGER,
+    payload_json            TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (
+        snapshot_id,
+        kind,
+        source_block,
+        observed_target,
+        branch_arm,
+        reason
+    )
+);
+CREATE INDEX IF NOT EXISTS idx_dag_frontier_closure_diag_kind
+    ON dag_frontier_closure_diagnostics(snapshot_id, kind, reason);
+
 -- BST-resolved next-state enrichment for StateTransitionAnchorFact rows.
 -- Computed by composing:
 --   * an existing LOCOPT-pre StateTransitionAnchorFact (source_state_const)
---   * the GLBOPT1 BST INTERVAL_DISPATCHER_ROWS (single-hop value -> handler)
+--   * the GLBOPT1 BST interval dispatcher rows (single-hop value -> handler)
 --   * the LOCOPT-pre StateWriteAnchorFact at the resolved handler block
 -- Observability-only: NO recon edge target selection or HCC behavior
 -- depends on these rows.  Single-hop only; no recursive walking.
+CREATE TABLE IF NOT EXISTS bst_interval_dispatcher_rows (
+    snapshot_id             INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index               INTEGER NOT NULL,
+    lo_hex                  TEXT NOT NULL,
+    lo_i64                  INTEGER NOT NULL,
+    hi_hex                  TEXT NOT NULL,
+    hi_i64                  INTEGER NOT NULL,
+    target_block            INTEGER NOT NULL,
+    dispatcher_entry_block  INTEGER,
+    maturity                TEXT,
+    payload_json            TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_bst_interval_dispatcher_rows_target
+    ON bst_interval_dispatcher_rows(snapshot_id, target_block);
+
 CREATE TABLE IF NOT EXISTS state_transition_bst_resolutions (
     snapshot_id                       INTEGER NOT NULL REFERENCES snapshots(id),
     fact_id                           TEXT NOT NULL,

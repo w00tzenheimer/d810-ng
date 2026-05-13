@@ -34,6 +34,8 @@ import threading
 from d810.core import logging as _d810_logging
 from d810.core.diag import get_diag_db
 from d810.core.diag.snapshot import (
+    snapshot_bst_interval_dispatcher_rows,
+    snapshot_dag_frontier_closure_diagnostics,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_fact_conflicts,
@@ -55,8 +57,10 @@ from d810.core.observability import (
 )
 from d810.core.observability_events import (
     BlockLineageDrainRequested,
+    BstIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,
     CfgProvenanceObserved,
+    DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved,
     DagObserved,
     FactConflictsObserved,
@@ -89,6 +93,9 @@ _snapshot_id_by_ref_key: dict[str, int] = {}
 # between MBA captures and flush them during snapshot_mba.
 _provenance_lock = threading.Lock()
 _pending_provenance: list[CfgProvenanceObserved] = []
+
+_bst_interval_lock = threading.Lock()
+_pending_bst_intervals: list[BstIntervalDispatcherObserved] = []
 
 
 def _resolve_snapshot_id(snap: SnapshotRef) -> int | None:
@@ -139,6 +146,7 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     # last snapshot and this one. They share the "next snapshot"
     # attribution semantics with the legacy IoC drain.
     _flush_pending_provenance(conn, snap_id)
+    _flush_pending_bst_intervals(conn, snap_id, snap.func_ea)
     # Block-lineage drain is fired by snapshot_mba via
     # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
     # subscriber writes the rows. No explicit invocation here.
@@ -154,6 +162,75 @@ def _handle_dag(ev: DagObserved) -> None:
         )
         return
     snapshot_dag(conn, snap_id, list(ev.nodes), list(ev.edges))
+
+
+def _handle_dag_frontier_closure_diagnostics(
+    ev: DagFrontierClosureDiagnosticsObserved,
+) -> None:
+    conn = _conn_for(ev.snapshot)
+    snap_id = _resolve_snapshot_id(ev.snapshot)
+    if conn is None or snap_id is None:
+        return
+    snapshot_dag_frontier_closure_diagnostics(conn, snap_id, ev.rows)
+
+
+def _handle_bst_interval_dispatcher(
+    ev: BstIntervalDispatcherObserved,
+) -> None:
+    try:
+        conn = get_diag_db(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None or not ev.rows:
+        return
+    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+    row = conn.execute(
+        "SELECT id FROM snapshots WHERE func_ea_hex=? "
+        "ORDER BY id DESC LIMIT 1",
+        (func_hex,),
+    ).fetchone()
+    if row is None:
+        _buffer_bst_interval_dispatcher(ev)
+        return
+    snapshot_bst_interval_dispatcher_rows(
+        conn,
+        int(row[0]),
+        ev.rows,
+        dispatcher_entry_block=ev.dispatcher_entry_block,
+        maturity=ev.maturity,
+    )
+
+
+def _buffer_bst_interval_dispatcher(
+    ev: BstIntervalDispatcherObserved,
+) -> None:
+    with _bst_interval_lock:
+        _pending_bst_intervals.append(ev)
+
+
+def _flush_pending_bst_intervals(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    func_ea: int,
+) -> None:
+    with _bst_interval_lock:
+        matching = [
+            ev for ev in _pending_bst_intervals
+            if int(ev.func_ea) == int(func_ea)
+        ]
+        if matching:
+            _pending_bst_intervals[:] = [
+                ev for ev in _pending_bst_intervals
+                if int(ev.func_ea) != int(func_ea)
+            ]
+    for ev in matching:
+        snapshot_bst_interval_dispatcher_rows(
+            conn,
+            int(snap_id),
+            ev.rows,
+            dispatcher_entry_block=ev.dispatcher_entry_block,
+            maturity=ev.maturity,
+        )
 
 
 def _handle_dag_local_facts(ev: DagLocalFactsObserved) -> None:
@@ -370,7 +447,12 @@ def _provenance_extra_json(ev: CfgProvenanceObserved) -> str | None:
 # subscriber registration is symmetric.
 _HANDLERS: tuple[tuple[type, object], ...] = (
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
+    (BstIntervalDispatcherObserved, _handle_bst_interval_dispatcher),
     (DagObserved, _handle_dag),
+    (
+        DagFrontierClosureDiagnosticsObserved,
+        _handle_dag_frontier_closure_diagnostics,
+    ),
     (DagLocalFactsObserved, _handle_dag_local_facts),
     (FactObservationsObserved, _handle_fact_observation),
     (FactMappingsObserved, _handle_fact_mapping),
@@ -423,6 +505,8 @@ def _uninstall_locked() -> None:
     _clear_snapshot_mapping()
     with _provenance_lock:
         _pending_provenance.clear()
+    with _bst_interval_lock:
+        _pending_bst_intervals.clear()
 
 
 def is_installed() -> bool:

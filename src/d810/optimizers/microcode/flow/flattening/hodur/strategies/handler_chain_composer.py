@@ -3345,6 +3345,9 @@ class HandlerChainComposerStrategy:
                 modifications=fragment.modifications,
                 mba=snapshot.mba,
                 strategy_name=self.name,
+                dag_frontier_closure_diagnostics=(
+                    frontier_closure.diagnostic_rows
+                ),
             )
             if self._byte_cascade_tracer is not None:
                 self._byte_cascade_tracer.record_stage_modifications(

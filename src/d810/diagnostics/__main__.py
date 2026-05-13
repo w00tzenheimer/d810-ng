@@ -55,7 +55,7 @@ from d810.recon.flow.alternate_selection import (
 )
 from d810.recon.flow.bst_resolution import (
     BstResolution,
-    parse_bst_intervals,
+    load_latest_bst_intervals_from_db,
     parse_latest_bst_intervals_from_log,
     persist_bst_resolutions,
     resolve_state_transition_facts,
@@ -1594,7 +1594,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Path to a d810.log containing INTERVAL_DISPATCHER_ROWS "
-            "(default: .tmp/logs/d810_logs/d810.log relative to cwd)"
+            "for old runs whose diag DB lacks persisted BST interval rows"
         ),
     )
     p_bst_resolve.add_argument(
@@ -2023,8 +2023,12 @@ def main(argv: list[str] | None = None) -> int:
         register_parser as _register_residual_worksheet,
     )
     from d810.diagnostics.snap_render import register_parser as _register_snap_render
+    from d810.diagnostics.frontier_diagnostics import (
+        register_parser as _register_frontier_diagnostics,
+    )
 
     _register_dump_after(sub)
+    _register_frontier_diagnostics(sub)
     _register_inspect_state_node(sub)
     _register_residual_worksheet(sub)
     _register_snap_render(sub)
@@ -2046,6 +2050,13 @@ def main(argv: list[str] | None = None) -> int:
         from d810.diagnostics.snap_render import run as _run_snap_render
 
         return _run_snap_render(args)
+
+    if args.command == "frontier-diagnostics":
+        from d810.diagnostics.frontier_diagnostics import (
+            run as _run_frontier_diagnostics,
+        )
+
+        return _run_frontier_diagnostics(args)
 
     # inspect-state-node opens its own DB on a path that may differ from
     # the heuristic default, so it does not flow through the common
@@ -2420,11 +2431,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{args.classification or 'any'})"
             )
     elif args.command == "state-transition-bst-resolutions":
-        bst_log = args.bst_log or ".tmp/logs/d810_logs/d810.log"
-        try:
-            intervals = parse_latest_bst_intervals_from_log(bst_log)
-        except FileNotFoundError:
-            intervals = ()
+        intervals = load_latest_bst_intervals_from_db(conn)
+        if not intervals and args.bst_log:
+            try:
+                intervals = parse_latest_bst_intervals_from_log(args.bst_log)
+            except FileNotFoundError:
+                intervals = ()
         if args.snap_id is not None:
             locopt_snap = int(args.snap_id)
         else:

@@ -568,6 +568,39 @@ def cmd_egress_plan(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_frontier_diagnostics(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics frontier-diagnostics`."""
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "frontier-diagnostics",
+        "--db",
+        str(db),
+    ]
+    if args.snapshot_id is not None:
+        diag_argv += ["--snapshot-id", str(args.snapshot_id)]
+    if args.kind:
+        diag_argv += ["--kind", args.kind]
+    if args.all_kinds:
+        diag_argv.append("--all-kinds")
+    if args.json_output:
+        diag_argv.append("--json")
+    print(f"DB={db}", file=sys.stderr)
+    print(
+        f"cff-debug: frontier-diagnostics: diag argv: {' '.join(diag_argv)}",
+        file=sys.stderr,
+    )
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_returns(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics return-ledger`.
 
@@ -1425,6 +1458,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit JSON instead of a markdown report",
     )
     sp.set_defaults(func=cmd_oracle)
+
+    sp = sub.add_parser(
+        "frontier-diagnostics",
+        help="Print persisted DAG-frontier closure diagnostics.",
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--snapshot-id",
+        type=int,
+        default=None,
+        help="Filter to one snapshot id (default: all snapshots).",
+    )
+    sp.add_argument(
+        "--kind",
+        default="unresolved",
+        help="Filter by diagnostic kind (default: unresolved).",
+    )
+    sp.add_argument(
+        "--all-kinds",
+        action="store_true",
+        help="Show every diagnostic kind instead of only unresolved rows.",
+    )
+    sp.add_argument("--json", action="store_true", dest="json_output")
+    sp.set_defaults(func=cmd_frontier_diagnostics)
 
     sp = sub.add_parser(
         "egress-plan",
