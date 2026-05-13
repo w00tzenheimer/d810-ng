@@ -21,13 +21,14 @@ form a cascade with a clear retirement criterion.
      strictly more expressive than uniform redirect).  Pure intra-fragment
      pass; does NOT consult the cumulative view.
 
-  2. ``_drop_dag_disagreement`` (Phase 3 of uee-jrgq) — the DAG-as-arbiter
-     check.  When ``cumulative_planner_view.dag_authority`` is present,
-     each redirect mod is validated against the recon DAG's canonical
-     decision.  Drops on ``DAG_DISAGREEMENT``; keeps and lets through on
-     ``ALLOW`` or ``DAG_GAP:<name>`` (DAG silent).  Records each
-     disagreement as a ``DagDisagreementRecord`` (Phase 5) for the
-     pipeline-level audit summary.
+  2. ``filter_dag_disagreements`` (Phase 3 of uee-jrgq) — the shared
+     engine DAG-as-arbiter check.  When
+     ``cumulative_planner_view.dag_authority`` is present, each redirect
+     mod is validated against the recon DAG's canonical decision.  Drops
+     on ``DAG_DISAGREEMENT``; keeps and lets through on ``ALLOW`` or
+     ``DAG_GAP:<name>`` (DAG silent).  Records each disagreement as a
+     ``DagDisagreementRecord`` (Phase 5) for the pipeline-level audit
+     summary.
 
   3. ``_drop_conflicting_redirects`` — legacy "first-fragment-wins"
      Mode 1 filter.  Fallback for DAG_GAP regions where the DAG cannot
@@ -74,8 +75,9 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
-    DagDisagreementRecord,
+from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration import (
+    DAG_AUDIT_METADATA_KEY,
+    filter_dag_disagreements,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
@@ -84,13 +86,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
 )
 
-
-# Metadata key under which finalize_reconstruction_fragment stores the
-# tuple[DagDisagreementRecord, ...] captured during DAG-arbiter conformance
-# filtering.  Parallel to PLANNER_CTX_METADATA_KEY; the planner aggregates
-# every fragment's records into ``PipelineProvenance.dag_audit_records``
-# at the end of ``UnflatteningPlanner.plan()``.
-DAG_AUDIT_METADATA_KEY: str = "dag_audit"
 
 __all__ = (
     "DAG_AUDIT_METADATA_KEY",
@@ -265,148 +260,6 @@ def _drop_intra_fragment_dup_conflicts(
     return kept
 
 
-_DAG_DISAGREEMENT_REGEX = (
-    "DAG_DISAGREEMENT:"  # used only for prefix detection in callers
-)
-
-
-def _parse_dag_target_from_reason(reason: str) -> int | None:
-    """Extract the DAG canonical target from a DAG_DISAGREEMENT reason.
-
-    The reason format is
-    ``DAG_DISAGREEMENT:<src>->{planner=<T1>,dag=<T2>}``. Returns ``T2``
-    as ``int`` when parseable, else ``None``. Robust to integer formats
-    Python ``int()`` accepts (decimal, ``0x`` hex). Non-numeric or
-    malformed reasons return ``None`` so the audit record carries the
-    raw reason without crashing.
-    """
-    marker = "dag="
-    idx = reason.find(marker)
-    if idx == -1:
-        return None
-    tail = reason[idx + len(marker):]
-    # Trim trailing punctuation like '}' or ',' or whitespace.
-    end = 0
-    for ch in tail:
-        if ch in "0123456789abcdefABCDEFxX":
-            end += 1
-        else:
-            break
-    raw = tail[:end]
-    if not raw:
-        return None
-    try:
-        return int(raw, 0)
-    except ValueError:
-        return None
-
-
-def _drop_dag_disagreement(
-    modifications: list,
-    cumulative_planner_view: CumulativePlannerView | None,
-    *,
-    strategy_name: str,
-    phase: str = "post_apply_filter",
-) -> tuple[list, tuple[DagDisagreementRecord, ...]]:
-    """Drop redirect mods the DAG-arbiter refuses (Phase 3 of uee-jrgq).
-
-    Phase 5 extension: alongside the filtered modification list, returns a
-    tuple of :class:`DagDisagreementRecord` per dropped mod so the
-    planner can aggregate per-run audit data into
-    :attr:`PipelineProvenance.dag_audit_records` and emit a
-    ``PLANNER_DAG_AUDIT`` summary at the end of the run.
-
-    DAG-as-arbiter conformance check: ask the DagAuthority whether each
-    redirect mod is permitted by the canonical recon DAG.  Resolution
-    rules:
-
-      * ``ALLOW`` → keep (mod conforms to DAG)
-      * ``DAG_DISAGREEMENT:...`` → drop (planner proposed a target the
-        DAG explicitly disagrees with) + log DAG_DISAGREEMENT + record
-      * ``DAG_GAP:...`` → keep (DAG silent; let the legacy
-        prior-fragment-wins filter
-        ``_drop_conflicting_redirects`` decide whether to drop)
-
-    Only RedirectGoto / ConvertToGoto are validated here today — those
-    are the two mod kinds whose DAG queries are fully covered.  Other
-    mod kinds (DupAndRedirect, ZSW) currently get strict ``DAG_GAP``
-    refusals from DagAuthority; we keep them in the fragment and let
-    the existing intra-fragment dup-conflict filter / coalescer handle
-    them downstream.
-
-    No-op when ``cumulative_planner_view`` lacks a ``dag_authority``
-    (legacy / non-Hodur families that haven't built a recon DAG yet);
-    returns ``(modifications, ())`` unchanged.
-    """
-    if cumulative_planner_view is None:
-        return modifications, ()
-    authority = cumulative_planner_view.dag_authority
-    if authority is None:
-        return modifications, ()
-
-    kept: list = []
-    dropped: list[tuple[str, int, str]] = []  # (mod_type, src, reason)
-    records: list[DagDisagreementRecord] = []
-    gaps: int = 0
-    for mod in modifications:
-        # Only validate redirect-shaped mods; let everything else pass.
-        if _redirect_source(mod) is None:
-            kept.append(mod)
-            continue
-        decision = authority.permits(mod)
-        if decision.allowed:
-            kept.append(mod)
-            continue
-        if decision.is_gap:
-            # DAG silent — leave the mod in place for the legacy
-            # prior-fragment-wins filter to potentially drop.
-            kept.append(mod)
-            gaps += 1
-            continue
-        # decision is a refusal (disagreement or other).  Drop + record.
-        src = int(_redirect_source(mod) or -1)
-        planner_tgt = _redirect_target(mod)
-        dag_tgt = (
-            _parse_dag_target_from_reason(decision.reason)
-            if decision.is_disagreement
-            else None
-        )
-        records.append(
-            DagDisagreementRecord(
-                planner_name=strategy_name,
-                mod_kind=type(mod).__name__,
-                source_block=src,
-                # branch_arm: today every emission is unconditional
-                # (RedirectGoto / ConvertToGoto), so the canonical anchor
-                # is None.  Future arm-aware mod kinds will populate this.
-                branch_arm=None,
-                planner_target=int(planner_tgt) if planner_tgt is not None else None,
-                dag_target=dag_tgt,
-                phase=phase,
-                decision_reason=decision.reason,
-            )
-        )
-        dropped.append((type(mod).__name__, src, decision.reason))
-    if dropped:
-        logger.warning(
-            "RECON DAG_ARBITER: dropped %d mod(s) from strategy %r as "
-            "DAG-disagreement (planner target ≠ DAG canonical target): %s",
-            len(dropped),
-            strategy_name,
-            "; ".join(
-                f"{mtype}(src={src} reason={reason})"
-                for mtype, src, reason in dropped[:10]
-            ),
-        )
-    if gaps:
-        logger.debug(
-            "RECON DAG_ARBITER: %d mod(s) from strategy %r in DAG_GAP "
-            "regions; deferring to legacy prior-fragment-wins filter",
-            gaps, strategy_name,
-        )
-    return kept, tuple(records)
-
-
 def _drop_conflicting_redirects(
     modifications: list,
     cumulative_planner_view: CumulativePlannerView | None,
@@ -419,7 +272,7 @@ def _drop_conflicting_redirects(
     uee-jrgq, this filter is the FALLBACK consulted only for mods the
     DagAuthority returned ``DAG_GAP`` for — i.e., regions where the
     recon DAG cannot answer authoritatively.  For DAG-known regions,
-    ``_drop_dag_disagreement`` has already dropped any planner mod that
+    ``filter_dag_disagreements`` has already dropped any planner mod that
     disagreed with the canonical DAG decision, so this filter sees
     only conforming or gap-region mods.
 
@@ -519,10 +372,12 @@ def finalize_reconstruction_fragment(
     # DAG_GAP the legacy filter is consulted as a fallback.
     # Phase 5: also captures structured DagDisagreementRecord per drop
     # for the per-run PLANNER_DAG_AUDIT summary.
-    modifications, dag_audit_records = _drop_dag_disagreement(
+    modifications, dag_audit_records = filter_dag_disagreements(
         modifications,
         cumulative_planner_view,
         strategy_name=strategy_name,
+        phase="post_apply_filter",
+        log_prefix="RECON DAG_ARBITER",
     )
 
     modifications = _drop_conflicting_redirects(

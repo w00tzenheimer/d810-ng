@@ -423,7 +423,7 @@ class TestIntraFragmentDupAndRedirectConflicts:
 
 class TestDagArbiterConformance:
     """Phase 3: when CumulativePlannerView carries a DagAuthority, the new
-    _drop_dag_disagreement filter runs BEFORE the legacy
+    filter_dag_disagreements runs BEFORE the legacy
     _drop_conflicting_redirects filter and drops mods the DAG explicitly
     disagrees with.  Mods in DAG_GAP regions still flow into the legacy
     filter.

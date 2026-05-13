@@ -482,7 +482,7 @@ class DagAuthority:
         * If no corridor data is seeded for this shared block,
           ``DAG_GAP:edge_redirect_via_pred_split_seed_missing``.
 
-        The Hodur fragment-level filter (``_drop_dag_disagreement``)
+        The shared fragment-level filter (``filter_dag_disagreements``)
         currently only validates RedirectGoto / ConvertToGoto; this
         method exists to make the validation path *available* for
         tests + future filter extensions.
