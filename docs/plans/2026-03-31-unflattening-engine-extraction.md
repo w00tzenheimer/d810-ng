@@ -209,7 +209,7 @@ Already present on this branch:
 - The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
   regression gate for this line of work. Engine extraction must not regress its
   dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
-- The first seven post-merge de-specialization/adoption slices landed:
+- The first eight post-merge de-specialization/adoption slices landed:
   - `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`
     now owns the pure semantic-DAG region walk (`d322b957`).
   - `d810.cfg.semantic_region_entry` now owns semantic region entry
@@ -224,18 +224,22 @@ Already present on this branch:
     now owns shared DAG-authoritative fragment arbitration (`54f46a14`).
   - `d810.cfg.flow.sese_hammock` is now the shared exact conditional shape
     classifier used by HCC (`704d458f`).
+  - `d810.cfg.semantic_conditional_lowering` now owns exact conditional site
+    analysis; the Hodur exact-conditional strategy delegates to that generic
+    cfg analyzer (`67d65cdb`), and the pure analyzer tests now live under cfg
+    (`ce50f99c`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
 What remains:
 
-- Finish E1 validation cleanup: production import paydown is complete, but a
-  test-order fragility in exact conditional monkeypatch paths is being fixed
-  before E1 is marked fully closed.
+- E1 is complete for production imports and validation stability. Remaining
+  Hodur imports in tests are intentional compatibility checks or
+  strategy-specific surfaces that do not yet have a generic extraction target.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
   `engine` based on behavior, not on import churn. The next large
-  algorithmic candidates are exact semantic/conditional lowering and
-  residual dispatcher target resolution.
+  algorithmic candidates are semantic exact/fork/alias lowering and residual
+  dispatcher target resolution.
 - Convert the remaining legacy unflattening families to the engine/family
   model where doing so preserves behavior.
 - Document the extension contract for new unflattening families after the
@@ -295,11 +299,12 @@ Status:
   `flattening.hodur.metrics`.
 - `HodurStrategyFamily` preserves Hodur executor policy by constructing the
   shared `TransactionalExecutor` with `safeguard_profile="hodur"`.
-- Remaining follow-up before closing E1: fix the order-sensitive exact
-  conditional test monkeypatch paths exposed when `test_sese_hammock.py` runs
-  before `test_exact_conditional_alias.py`. Runtime behavior and the sub7FFD
-  gate are clean; this is validation stability, not a known decompiler
-  regression.
+- Validation cleanup landed:
+  - `d276e3d0` stabilizes exact conditional monkeypatch tests.
+  - `1cacc58c` codemods 17 test files from Hodur compatibility imports to
+    canonical `flattening.engine.*` imports.
+  - `f500732e` stabilizes exact-node frontier monkeypatch tests after the
+    codemod exposed another dotted-path ordering hazard.
 - Compatibility modules should remain until tests and any external runtime
   consumers no longer need them.
 
@@ -338,16 +343,20 @@ Completed:
 - Exact conditional shape classification now reuses
   `d810.cfg.flow.sese_hammock` instead of a Hodur-local duplicate
   (`704d458f`).
+- Exact conditional site analysis moved to
+  `d810.cfg.semantic_conditional_lowering` (`67d65cdb`), with the pure analyzer
+  tests migrated to cfg (`ce50f99c`).
 
 Next candidates, in order:
 
-1. Exact semantic node and conditional lowering analysis:
-   - current sources: `semantic_exact_node.py`, `exact_conditional_node.py`,
-     `exact_conditional_fork.py`, `exact_conditional_alias.py`;
+1. Semantic exact node, fork, and alias lowering analysis:
+   - current sources: `semantic_exact_node.py`, `exact_conditional_fork.py`,
+     `exact_conditional_alias.py`, and `exact_node_frontier_bypass.py`;
    - target: `d810.cfg.semantic_exact_lowering` or
      `d810.cfg.semantic_conditional_lowering`;
-   - note: the pure SESE/hammock shape classifier is already shared; the
-     remaining extraction is candidate/site inventory, proof classification,
+   - note: the pure SESE/hammock classifier and exact conditional site
+     analyzer are already shared; the remaining extraction is candidate/site
+     inventory, fork/alias proof classification, frontier target selection,
      and backend-neutral lowering decisions;
    - keep strategy wrappers, thresholds, and fallback order in Hodur.
 2. Residual dispatcher target resolution and trampoline skipping:
@@ -368,17 +377,10 @@ Next candidates, in order:
 
 Recommended next implementer slices:
 
-1. **E1 validation cleanup.**
-   - Fix the order-sensitive exact conditional monkeypatch tests by patching
-     imported module objects or otherwise avoiding fragile parent-package
-     dotted-string resolution.
-   - Re-run the combined exact conditional/CFG hammock suite that currently
-     exposes the issue.
-   - Do not change runtime behavior for this slice.
-2. **E2 exact semantic/conditional lowering extraction.**
+1. **E2 semantic exact / fork / alias lowering extraction.**
    - Start with a read-only extraction of backend-neutral candidate/site
-     analysis from `semantic_exact_node.py`, `exact_conditional_node.py`,
-     `exact_conditional_fork.py`, and `exact_conditional_alias.py`.
+     analysis from `semantic_exact_node.py`, `exact_conditional_fork.py`,
+     `exact_conditional_alias.py`, and `exact_node_frontier_bypass.py`.
    - Target `d810.cfg.semantic_exact_lowering` or
      `d810.cfg.semantic_conditional_lowering`.
    - Keep live `mblock_t`/`minsn_t` mutation, strategy ordering, and Hodur
@@ -386,7 +388,7 @@ Recommended next implementer slices:
    - Validation: pure `cfg` unit tests plus existing exact-node/fork Hodur
      tests. Run the sub7FFD dump/oracle gate if any planner or CFG-lowering
      behavior changes.
-3. **E2 residual dispatcher target resolution extraction.**
+2. **E2 residual dispatcher target resolution extraction.**
    - Move backend-neutral target-resolution predicates from
      `dispatcher_trampoline_skip.py` and the relevant exact-node helpers into
      `d810.cfg.residual_target_resolution` and/or
@@ -394,15 +396,20 @@ Recommended next implementer slices:
    - Keep Hodur's execution gates, logging, and ordering local.
    - Validation: focused residual/dispatcher tests, import contracts, and the
      sub7FFD gate for any behavior-affecting slice.
+3. **E3 parity survey and one small adopter slice.**
+   - Inspect legacy non-Hodur transforms and current
+     `flattening/strategies/*` engine equivalents.
+   - Pick one concrete parity slice with tests instead of adding another
+     compatibility shim.
 
 Parallelizable read-only work:
 
 - **Exact semantic/conditional inventory.** One agent can enumerate candidate
   dataclasses/functions across `semantic_exact_node.py`,
-  `exact_conditional_node.py`, `exact_conditional_fork.py`, and
-  `exact_conditional_alias.py`, classify each as backend-neutral proof logic
-  vs live Hex-Rays mutation, and produce the extraction write-set. No behavior
-  changes.
+  `exact_conditional_fork.py`, `exact_conditional_alias.py`, and
+  `exact_node_frontier_bypass.py`, classify each as backend-neutral proof
+  logic vs live Hex-Rays mutation, and produce the extraction write-set. No
+  behavior changes.
 - **Residual dispatcher target-resolution inventory.** A second agent can map
   `dispatcher_trampoline_skip.py` and exact-node target-selection helpers to
   existing `cfg.residual_target_resolution` / `recon.flow.bst_resolution`
