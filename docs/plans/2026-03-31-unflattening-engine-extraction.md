@@ -202,10 +202,14 @@ Already present on this branch:
   the engine surface.
 - `FakeJump`, `SingleIteration`, and the safe subset of `BadWhileLoop` already
   have engine-native strategy implementations under `flattening/strategies/`.
+- Production imports of generic engine objects have been paid down from Hodur
+  compatibility shims to canonical `flattening.engine.*` imports
+  (`4408d059`). Compatibility modules still exist for tests, backcompat, and
+  any external/runtime consumers that have not been audited.
 - The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
   regression gate for this line of work. Engine extraction must not regress its
   dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
-- The first six post-merge de-specialization slices landed:
+- The first seven post-merge de-specialization/adoption slices landed:
   - `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`
     now owns the pure semantic-DAG region walk (`d322b957`).
   - `d810.cfg.semantic_region_entry` now owns semantic region entry
@@ -218,14 +222,16 @@ Already present on this branch:
     byte source-EA evidence extraction (`132b2146`).
   - `d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration`
     now owns shared DAG-authoritative fragment arbitration (`54f46a14`).
+  - `d810.cfg.flow.sese_hammock` is now the shared exact conditional shape
+    classifier used by HCC (`704d458f`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
 What remains:
 
-- Remove dependence on Hodur compatibility imports in production call sites
-  where the canonical engine import is available. This is the largest
-  remaining "architecture looks Hodur-centered" cleanup.
+- Finish E1 validation cleanup: production import paydown is complete, but a
+  test-order fragility in exact conditional monkeypatch paths is being fixed
+  before E1 is marked fully closed.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
   `engine` based on behavior, not on import churn. The next large
   algorithmic candidates are exact semantic/conditional lowering and
@@ -280,6 +286,23 @@ Before each behavior-affecting extraction slice:
 
 Goal: production code should depend on canonical engine surfaces directly.
 
+Status:
+
+- Production import paydown landed in `4408d059`. Current production source no
+  longer imports generic engine types through `flattening.hodur.strategy`,
+  `flattening.hodur.snapshot`, `flattening.hodur.planner`,
+  `flattening.hodur.executor`, `flattening.hodur.provenance`, or
+  `flattening.hodur.metrics`.
+- `HodurStrategyFamily` preserves Hodur executor policy by constructing the
+  shared `TransactionalExecutor` with `safeguard_profile="hodur"`.
+- Remaining follow-up before closing E1: fix the order-sensitive exact
+  conditional test monkeypatch paths exposed when `test_sese_hammock.py` runs
+  before `test_exact_conditional_alias.py`. Runtime behavior and the sub7FFD
+  gate are clean; this is validation stability, not a known decompiler
+  regression.
+- Compatibility modules should remain until tests and any external runtime
+  consumers no longer need them.
+
 - Replace production imports from `flattening.hodur.strategy`,
   `flattening.hodur.snapshot`, `flattening.hodur.planner`,
   `flattening.hodur.executor`, `flattening.hodur.provenance`, and
@@ -312,6 +335,9 @@ Completed:
 - DAG-authoritative fragment arbitration moved to
   `d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration`
   (`54f46a14`).
+- Exact conditional shape classification now reuses
+  `d810.cfg.flow.sese_hammock` instead of a Hodur-local duplicate
+  (`704d458f`).
 
 Next candidates, in order:
 
@@ -320,6 +346,9 @@ Next candidates, in order:
      `exact_conditional_fork.py`, `exact_conditional_alias.py`;
    - target: `d810.cfg.semantic_exact_lowering` or
      `d810.cfg.semantic_conditional_lowering`;
+   - note: the pure SESE/hammock shape classifier is already shared; the
+     remaining extraction is candidate/site inventory, proof classification,
+     and backend-neutral lowering decisions;
    - keep strategy wrappers, thresholds, and fallback order in Hodur.
 2. Residual dispatcher target resolution and trampoline skipping:
    - current sources: `dispatcher_trampoline_skip.py` and pieces of
@@ -339,17 +368,13 @@ Next candidates, in order:
 
 Recommended next implementer slices:
 
-1. **E1 import paydown slice.**
-   - Replace production imports of generic engine objects through
-     `flattening.hodur.strategy`, `snapshot`, `planner`, `executor`,
-     `provenance`, and `metrics` with canonical
-     `flattening.engine.*` imports.
-   - Keep Hodur-local imports when the imported object is genuinely
-     family-specific.
-   - Do not delete compatibility modules yet.
-   - Validation: focused engine/Hodur import tests, import contracts, and
-     no production import of generic engine types through Hodur shims except
-     where explicitly justified.
+1. **E1 validation cleanup.**
+   - Fix the order-sensitive exact conditional monkeypatch tests by patching
+     imported module objects or otherwise avoiding fragile parent-package
+     dotted-string resolution.
+   - Re-run the combined exact conditional/CFG hammock suite that currently
+     exposes the issue.
+   - Do not change runtime behavior for this slice.
 2. **E2 exact semantic/conditional lowering extraction.**
    - Start with a read-only extraction of backend-neutral candidate/site
      analysis from `semantic_exact_node.py`, `exact_conditional_node.py`,
@@ -369,6 +394,26 @@ Recommended next implementer slices:
    - Keep Hodur's execution gates, logging, and ordering local.
    - Validation: focused residual/dispatcher tests, import contracts, and the
      sub7FFD gate for any behavior-affecting slice.
+
+Parallelizable read-only work:
+
+- **Exact semantic/conditional inventory.** One agent can enumerate candidate
+  dataclasses/functions across `semantic_exact_node.py`,
+  `exact_conditional_node.py`, `exact_conditional_fork.py`, and
+  `exact_conditional_alias.py`, classify each as backend-neutral proof logic
+  vs live Hex-Rays mutation, and produce the extraction write-set. No behavior
+  changes.
+- **Residual dispatcher target-resolution inventory.** A second agent can map
+  `dispatcher_trampoline_skip.py` and exact-node target-selection helpers to
+  existing `cfg.residual_target_resolution` / `recon.flow.bst_resolution`
+  surfaces, then propose the smallest pure extraction. No behavior changes.
+- **E3 parity survey.** A third agent can inspect legacy non-Hodur transforms
+  and current `flattening/strategies/*` engine equivalents, then recommend one
+  concrete parity slice with tests. No behavior changes.
+
+These three investigations are independent of the E1 test fix and can run in
+parallel. Only one should move from read-only inventory to code changes at a
+time so baseline attribution stays clear.
 
 Do not extract:
 
