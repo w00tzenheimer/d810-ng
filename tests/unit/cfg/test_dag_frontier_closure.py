@@ -139,6 +139,7 @@ def test_emits_dag_redirect_for_illegal_tail_to_chunk_backpath() -> None:
 
     assert result.leaks_before
     assert result.leaks_after == ()
+    assert result.unresolved_frontiers == ()
     assert result.emitted_modifications == (
         RedirectGoto(from_serial=10, old_target=0, new_target=30),
     )
@@ -187,6 +188,7 @@ def test_closes_ordered_path_tail_instead_of_rewriting_internal_step() -> None:
 
     assert result.leaks_before
     assert result.leaks_after == ()
+    assert result.unresolved_frontiers == ()
     assert result.emitted_modifications == (
         RedirectGoto(from_serial=11, old_target=0, new_target=30),
     )
@@ -417,6 +419,11 @@ def test_does_not_close_same_dag_scc_alternate_successor_by_default(
     assert result.leaks_before
     assert result.leaks_after
     assert result.emitted_modifications == ()
+    assert len(result.unresolved_frontiers) == 1
+    assert result.unresolved_frontiers[0].reason == "same_scc_alternate_disabled"
+    assert result.unresolved_frontiers[0].source_block == 10
+    assert result.unresolved_frontiers[0].observed_target == 20
+    assert result.unresolved_frontiers[0].candidate_targets == (11,)
 
 
 def test_can_close_dispatch_frontier_to_same_dag_scc_alternate_successor(
@@ -454,6 +461,7 @@ def test_can_close_dispatch_frontier_to_same_dag_scc_alternate_successor(
 
     assert result.leaks_before
     assert result.leaks_after == ()
+    assert result.unresolved_frontiers == ()
     assert result.emitted_modifications == (
         InsertBlock(
             pred_serial=10,
@@ -500,3 +508,5 @@ def test_does_not_close_dispatch_frontier_without_same_dag_scc_alternate() -> No
     assert result.leaks_before
     assert result.leaks_after
     assert result.emitted_modifications == ()
+    assert len(result.unresolved_frontiers) == 1
+    assert result.unresolved_frontiers[0].reason == "no_dag_choice_for_source"

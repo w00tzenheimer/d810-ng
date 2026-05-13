@@ -3304,10 +3304,22 @@ class HandlerChainComposerStrategy:
                 frontier_closure.leaks_before
                 or frontier_closure.emitted_modifications
                 or frontier_closure.dropped_modifications
+                or frontier_closure.unresolved_frontiers
             ):
                 fragment.metadata["dag_frontier_closure"] = {
                     "leaks_before": len(frontier_closure.leaks_before),
                     "leaks_after": len(frontier_closure.leaks_after),
+                    "unresolved": len(frontier_closure.unresolved_frontiers),
+                    "unresolved_reasons": tuple(
+                        sorted(
+                            {
+                                unresolved.reason
+                                for unresolved in (
+                                    frontier_closure.unresolved_frontiers
+                                )
+                            }
+                        )
+                    ),
                     "emitted": tuple(
                         type(mod).__name__
                         for mod in frontier_closure.emitted_modifications
