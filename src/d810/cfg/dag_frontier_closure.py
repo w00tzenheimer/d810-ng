@@ -35,6 +35,18 @@ class SemanticSccLeak:
 
 
 @dataclass(frozen=True, slots=True)
+class UnresolvedFrontier:
+    """A semantic SCC leak with no DAG-proven CFG rewrite."""
+
+    leak: SemanticSccLeak
+    source_block: int
+    observed_target: int
+    branch_arm: int | None
+    reason: str
+    candidate_targets: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class FrontierClosureResult:
     """Result of one DAG-authoritative frontier-closure planning run."""
 
@@ -44,6 +56,7 @@ class FrontierClosureResult:
     stale_hazard_override_keys: frozenset[RedirectKey]
     leaks_before: tuple[SemanticSccLeak, ...]
     leaks_after: tuple[SemanticSccLeak, ...]
+    unresolved_frontiers: tuple[UnresolvedFrontier, ...]
 
     @property
     def changed(self) -> bool:
@@ -99,6 +112,7 @@ def plan_dag_authoritative_frontier_closure(
             stale_hazard_override_keys=frozenset(),
             leaks_before=(),
             leaks_after=(),
+            unresolved_frontiers=(),
         )
 
     indexes = _build_indexes(dag)
@@ -110,6 +124,7 @@ def plan_dag_authoritative_frontier_closure(
             stale_hazard_override_keys=frozenset(),
             leaks_before=(),
             leaks_after=(),
+            unresolved_frontiers=(),
         )
 
     frontier_blocks = {int(dispatcher_serial)}
@@ -155,6 +170,12 @@ def plan_dag_authoritative_frontier_closure(
         projected = _project(flow_graph, current_modifications)
 
     leaks_after = _find_semantic_scc_leaks(projected, indexes)
+    unresolved_frontiers = _find_unresolved_frontiers(
+        projected,
+        leaks_after,
+        indexes,
+        frontier_blocks=frontier_blocks,
+    )
     override_keys: set[RedirectKey] = set()
     if _env_enabled("D810_DAG_FRONTIER_STALE_OVERRIDES", default=False):
         override_keys = _collect_stale_hazard_override_keys(
@@ -165,15 +186,16 @@ def plan_dag_authoritative_frontier_closure(
             frontier_blocks=frontier_blocks,
         )
 
-    if emitted or dropped or override_keys or leaks_before:
+    if emitted or dropped or override_keys or leaks_before or unresolved_frontiers:
         logger.info(
             "DAG_FRONTIER_CLOSURE: leaks_before=%d leaks_after=%d "
-            "emitted=%s dropped=%s stale_overrides=%s",
+            "emitted=%s dropped=%s stale_overrides=%s unresolved=%d",
             len(leaks_before),
             len(leaks_after),
             [_mod_summary(mod) for mod in emitted],
             [_mod_summary(mod) for mod in dropped],
             sorted(override_keys),
+            len(unresolved_frontiers),
         )
         for prefix, leaks in (
             ("before", leaks_before),
@@ -189,6 +211,20 @@ def plan_dag_authoritative_frontier_closure(
                     list(leak.path),
                     len(leak.cfg_scc_blocks),
                 )
+        for unresolved in unresolved_frontiers[:4]:
+            logger.info(
+                "DAG_FRONTIER_CLOSURE_UNRESOLVED: reason=%s "
+                "source=blk[%d] observed=blk[%d] arm=%s "
+                "dag_scc=%d->%d candidates=%s path=%s",
+                unresolved.reason,
+                unresolved.source_block,
+                unresolved.observed_target,
+                unresolved.branch_arm,
+                unresolved.leak.from_dag_scc,
+                unresolved.leak.to_dag_scc,
+                list(unresolved.candidate_targets),
+                list(unresolved.leak.path),
+            )
 
     return FrontierClosureResult(
         modifications=tuple(current_modifications),
@@ -197,6 +233,7 @@ def plan_dag_authoritative_frontier_closure(
         stale_hazard_override_keys=frozenset(override_keys),
         leaks_before=tuple(leaks_before),
         leaks_after=tuple(leaks_after),
+        unresolved_frontiers=tuple(unresolved_frontiers),
     )
 
 
@@ -630,6 +667,97 @@ def _select_frontier_action(
     return None
 
 
+def _find_unresolved_frontiers(
+    projected_flow_graph: object,
+    leaks: tuple[SemanticSccLeak, ...],
+    indexes: _DagIndexes,
+    *,
+    frontier_blocks: set[int],
+) -> tuple[UnresolvedFrontier, ...]:
+    unresolved: list[UnresolvedFrontier] = []
+    for leak in sorted(leaks, key=lambda item: (len(item.path), item.path)):
+        path = leak.path
+        if len(path) < 2:
+            continue
+        for source, observed_target in zip(path, path[1:]):
+            block = projected_flow_graph.get_block(int(source))
+            if block is None:
+                continue
+            succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+            if int(observed_target) not in succs:
+                continue
+            arm = succs.index(int(observed_target)) if len(succs) > 1 else None
+            choices = _choices_for_observed_edge(
+                indexes,
+                source=int(source),
+                arm=arm,
+                observed_target=int(observed_target),
+                frontier_blocks=frontier_blocks,
+            )
+            if choices:
+                break
+            same_scc_choice = _same_scc_alternate_successor_choice(
+                indexes,
+                leak=leak,
+                source=int(source),
+                arm=arm,
+                observed_target=int(observed_target),
+                succs=succs,
+            )
+            if same_scc_choice is not None:
+                unresolved.append(
+                    UnresolvedFrontier(
+                        leak=leak,
+                        source_block=int(source),
+                        observed_target=int(observed_target),
+                        branch_arm=arm,
+                        reason="same_scc_alternate_disabled",
+                        candidate_targets=(int(same_scc_choice.target_block),),
+                    )
+                )
+                break
+            unresolved.append(
+                UnresolvedFrontier(
+                    leak=leak,
+                    source_block=int(source),
+                    observed_target=int(observed_target),
+                    branch_arm=arm,
+                    reason=_unresolved_frontier_reason(
+                        indexes,
+                        source=int(source),
+                        arm=arm,
+                        observed_target=int(observed_target),
+                    ),
+                )
+            )
+            break
+    return tuple(unresolved)
+
+
+def _unresolved_frontier_reason(
+    indexes: _DagIndexes,
+    *,
+    source: int,
+    arm: int | None,
+    observed_target: int,
+) -> str:
+    raw_choices = list(indexes.choices_by_anchor.get((int(source), arm), ()))
+    if arm is not None:
+        raw_choices.extend(indexes.choices_by_anchor.get((int(source), None), ()))
+    if not raw_choices:
+        return "no_dag_choice_for_source"
+    matching_choices = [
+        choice
+        for choice in raw_choices
+        if int(choice.target_block) == int(observed_target)
+    ]
+    if matching_choices:
+        if any(choice.is_path_step for choice in matching_choices):
+            return "observed_edge_is_dag_path_step"
+        return "observed_edge_is_dag_target"
+    return "no_alternate_dag_choice"
+
+
 def _choices_for_observed_edge(
     indexes: _DagIndexes,
     *,
@@ -917,5 +1045,6 @@ __all__ = [
     "FrontierClosureResult",
     "RedirectKey",
     "SemanticSccLeak",
+    "UnresolvedFrontier",
     "plan_dag_authoritative_frontier_closure",
 ]
