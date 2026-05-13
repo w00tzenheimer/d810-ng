@@ -235,11 +235,11 @@ class DecisionRecord:
 class DagDisagreementRecord:
     """One DAG-arbiter disagreement (Phase 5 of uee-jrgq).
 
-    Captured by ``_drop_dag_disagreement`` in
-    :mod:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder`
+    Captured by
+    :mod:`d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration`
     when the DagAuthority refuses a planner-emitted modification.  Records
-    flow to :class:`PipelineProvenance.dag_audit_records` so the planner
-    can emit a per-run ``PLANNER_DAG_AUDIT`` summary at INFO log level.
+    flow to :class:`PipelineProvenance.dag_audit_records` so the planner can
+    emit a per-run ``PLANNER_DAG_AUDIT`` summary at INFO log level.
 
     Distinguished by ``decision_reason``:
 

@@ -177,7 +177,7 @@ class TestSingleFragmentRecordCapture:
 
     def test_dag_gap_does_not_produce_disagreement_record(self) -> None:
         # Phase 5 records are only captured for refusals (drops).  GAPs
-        # are kept by ``_drop_dag_disagreement`` and deferred to legacy.
+        # are kept by ``filter_dag_disagreements`` and deferred to legacy.
         authority = _stub_authority(gap_for={76})
         view = CumulativePlannerView.empty(dag_authority=authority)
 
@@ -571,9 +571,9 @@ class TestPlanRunEndToEnd:
 # ----------------------------------------------------------------------------
 
 
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
-    _apply_engine_dag_conformance_gate,
-    _DAG_AUDIT_METADATA_KEY,
+from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration import (
+    DAG_AUDIT_METADATA_KEY as _DAG_AUDIT_METADATA_KEY,
+    apply_dag_conformance_gate as _apply_engine_dag_conformance_gate,
 )
 
 
