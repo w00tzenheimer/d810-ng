@@ -21,6 +21,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
+from d810.cfg.state_var_cleanup import collect_state_constants
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
@@ -272,25 +273,7 @@ class StateConstantReturnFixupStrategy:
         Returns:
             Set of integer state constant values.
         """
-        consts: set[int] = set(snapshot.state_constants)
-
-        bst = snapshot.bst_result
-        if bst is not None:
-            handler_state_map: dict = (
-                getattr(bst, "handler_state_map", {}) or {}
-            )
-            handler_range_map: dict = (
-                getattr(bst, "handler_range_map", {}) or {}
-            )
-            for state_val in handler_state_map.values():
-                consts.add(int(state_val))
-            for low, high in handler_range_map.values():
-                if low is not None:
-                    consts.add(int(low))
-                if high is not None:
-                    consts.add(int(high))
-
-        return consts
+        return set(collect_state_constants(snapshot.state_constants, snapshot.bst_result))
 
     @staticmethod
     def _find_stop_block(mba: object) -> int | None:
