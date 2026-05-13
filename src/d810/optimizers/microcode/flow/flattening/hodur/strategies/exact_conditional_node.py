@@ -121,17 +121,6 @@ class ConditionalExactNodeSite:
 
 
 @dataclass(frozen=True, slots=True)
-class ExactConditionalNodeShape:
-    """SESE-ish shape facts for an exact conditional source site."""
-
-    taken_successor: int
-    fallback_successor: int
-    follow_block: int | None
-    taken_return_distance: int | None
-    fallback_return_distance: int | None
-
-
-@dataclass(frozen=True, slots=True)
 class ExactConditionalSiteInventory:
     """Diagnostic inventory of conditional exact-node physical sites."""
 
@@ -140,61 +129,6 @@ class ExactConditionalSiteInventory:
     missing_return_blocks: tuple[int, ...]
     shape_rejected_blocks: tuple[int, ...]
     alias_handled_blocks: tuple[int, ...] = ()
-
-
-def _return_path_first_hop(edge: object, source_block: int) -> int | None:
-    ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-    if not ordered_path:
-        return None
-    if ordered_path[0] == source_block:
-        return ordered_path[1] if len(ordered_path) >= 2 else None
-    return ordered_path[0]
-
-
-def _classify_exact_conditional_shape(
-    *,
-    flow_graph: object,
-    source_block: int,
-    transition_edge: object,
-    sibling_return_edge: object,
-    postdom_tree: object | None,
-    return_distance: dict[int, int],
-) -> ExactConditionalNodeShape | None:
-    source_snapshot = flow_graph.get_block(source_block)
-    if source_snapshot is None or int(getattr(source_snapshot, "nsucc", 0)) != 2:
-        return None
-    succs = tuple(int(succ) for succ in getattr(source_snapshot, "succs", ()))
-    ordered_path = tuple(int(node) for node in getattr(transition_edge, "ordered_path", ()) or ())
-    if len(ordered_path) < 2:
-        return None
-    taken_successor = int(ordered_path[1])
-    if taken_successor not in succs:
-        return None
-    fallback_candidates = tuple(succ for succ in succs if succ != taken_successor)
-    if len(fallback_candidates) != 1:
-        return None
-    fallback_successor = fallback_candidates[0]
-    return_first_hop = _return_path_first_hop(sibling_return_edge, source_block)
-    if return_first_hop is not None and return_first_hop != fallback_successor:
-        return None
-
-    taken_distance = return_distance.get(taken_successor)
-    fallback_distance = return_distance.get(fallback_successor)
-    if fallback_distance is None:
-        return None
-    if taken_distance is not None and fallback_distance > taken_distance:
-        return None
-
-    follow_block = None
-    if postdom_tree is not None:
-        follow_block = getattr(postdom_tree, "idom", {}).get(source_block)
-    return ExactConditionalNodeShape(
-        taken_successor=taken_successor,
-        fallback_successor=fallback_successor,
-        follow_block=follow_block,
-        taken_return_distance=taken_distance,
-        fallback_return_distance=fallback_distance,
-    )
 
 
 def analyze_exact_conditional_sites(
