@@ -6,12 +6,14 @@ import sqlite3
 
 from d810.recon.flow.bst_resolution import (
     BstInterval,
+    load_latest_bst_intervals_from_db,
     parse_bst_intervals,
     persist_bst_resolutions,
     resolve_state_transition_facts,
     resolve_via_intervals,
 )
 from d810.core.diag.schema import create_tables
+from d810.core.diag.snapshot import snapshot_bst_interval_dispatcher_rows
 
 
 def _make_db() -> sqlite3.Connection:
@@ -119,6 +121,37 @@ def test_parse_bst_intervals_basic() -> None:
     intervals = parse_bst_intervals(payload)
     assert len(intervals) == 2
     assert intervals[0] == BstInterval(lo=0x100, hi=0x200, target_block=7)
+
+
+def test_load_latest_bst_intervals_from_db() -> None:
+    conn = _make_db()
+    conn.execute(
+        """
+        INSERT INTO snapshots
+            (id, label, func_ea_hex, func_ea_i64,
+             maturity, phase, block_count, timestamp)
+        VALUES (2, 'MMAT_GLBOPT1_post_d810', '0x180012df0',
+                0x180012df0, 'MMAT_GLBOPT1', 'post_d810', 0, 1.0)
+        """,
+    )
+    snapshot_bst_interval_dispatcher_rows(
+        conn,
+        1,
+        [{"lo": 0x100, "hi": 0x180, "target": 7}],
+        dispatcher_entry_block=2,
+        maturity="MMAT_GLBOPT1",
+    )
+    snapshot_bst_interval_dispatcher_rows(
+        conn,
+        2,
+        [{"lo": 0x200, "hi": 0x280, "target": 8}],
+        dispatcher_entry_block=3,
+        maturity="MMAT_GLBOPT1",
+    )
+
+    intervals = load_latest_bst_intervals_from_db(conn)
+
+    assert intervals == (BstInterval(lo=0x200, hi=0x280, target_block=8),)
 
 
 def test_resolve_via_intervals_point_match() -> None:

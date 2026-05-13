@@ -1897,6 +1897,21 @@ def analyze_bst_dispatcher(
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
+        try:
+            from d810.recon.observability import (
+                observe_bst_interval_dispatcher,
+            )
+            observe_bst_interval_dispatcher(
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity="MMAT_GLBOPT1",
+                dispatcher_entry_block=int(dispatcher_entry_serial),
+                rows=tuple(dispatcher._rows),
+            )
+        except Exception:
+            logger.debug(
+                "INTERVAL_DISPATCHER_ROWS structured persistence failed",
+                exc_info=True,
+            )
 
     # Back-fill handler_state_map from IntervalDispatcher for handlers
     # missed by legacy walk (e.g., JNZ taken branches with range_is_pair=False)

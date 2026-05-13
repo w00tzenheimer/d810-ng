@@ -14,6 +14,7 @@ from d810.diagnostics.__main__ import main
 from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import (
     _dual,
+    snapshot_bst_interval_dispatcher_rows,
     snapshot_fact_conflicts,
     snapshot_fact_consumers,
     snapshot_fact_mappings,
@@ -431,6 +432,38 @@ class TestStateTransitionBstResolutionsCommand:
         ).fetchone()
         conn.close()
         assert row[0] == 1
+
+    def test_persists_from_db_intervals_without_log(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        db_path, _log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        conn = sqlite3.connect(str(db_path))
+        snapshot_bst_interval_dispatcher_rows(
+            conn,
+            1,
+            [{"lo": 0x100, "hi": 0x200, "target": 7}],
+            dispatcher_entry_block=2,
+            maturity="MMAT_GLBOPT1",
+        )
+        conn.close()
+
+        rc = main([
+            "state-transition-bst-resolutions",
+            "--db",
+            str(db_path),
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "persisted=True" in out
+        assert "intervals=1" in out
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT bst_resolved_next_block_serial "
+            "FROM state_transition_bst_resolutions"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 7
 
     def test_no_persist_opt_out(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
