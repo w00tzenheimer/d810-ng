@@ -701,6 +701,14 @@ def resolve_frontier_target_entry(
     resolve_semantic_reference_alias_entry_fn: Callable[..., int | None] = resolve_semantic_reference_alias_entry,
 ) -> tuple[int | None, int | None]:
     """Resolve the best semantic entry for a residual feeder state write."""
+    # TODO(backend-adapter-cleanup): This cfg-layer resolver is intentionally
+    # backend-neutral, but the current API still accepts `mba` and
+    # `state_var_stkoff` as opaque context solely to forward them into the
+    # caller-supplied `resolve_effective_target_entry_fn` callback. That kept the
+    # Hodur extraction small and behavior-preserving, but the cleaner endpoint is
+    # a tiny resolver protocol/dataclass owned by the caller/backend adapter
+    # (for example `ResidualTargetResolutionContext`) so cfg never exposes
+    # Hex-Rays-shaped parameters in its public signature.
     raw_state = int(state_value) & 0xFFFFFFFF
     exact_dispatch_target = dispatcher_exact_state_target_fn(
         raw_state,
