@@ -609,6 +609,102 @@ def snapshot_reachability(
     )
 
 
+def snapshot_dag_frontier_closure_diagnostics(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist DAG-frontier closure verifier diagnostics.
+
+    Rows are diagnostic-only. They explain verifier leaks and unresolved repair
+    candidates, but no behavior code consumes this table.
+    """
+    conn.execute(
+        "DELETE FROM dag_frontier_closure_diagnostics WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row in rows:
+        db_rows.append((
+            int(snapshot_id),
+            str(_mapping_value(row, "kind")),
+            _mapping_value(row, "reason"),
+            _mapping_value(row, "source_block"),
+            _mapping_value(row, "observed_target"),
+            _mapping_value(row, "branch_arm"),
+            _mapping_value(row, "from_dag_scc"),
+            _mapping_value(row, "to_dag_scc"),
+            _json_text(_mapping_value(row, "candidate_targets"), []),
+            _json_text(_mapping_value(row, "path"), []),
+            _mapping_value(row, "cfg_scc_size"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO dag_frontier_closure_diagnostics VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_bst_interval_dispatcher_rows(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+    *,
+    dispatcher_entry_block: int | None = None,
+    maturity: str | None = None,
+) -> None:
+    """Persist recovered BST interval dispatcher rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM bst_interval_dispatcher_rows WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        lo = _mapping_value(row, "lo")
+        hi = _mapping_value(row, "hi")
+        target = _mapping_value(row, "target")
+        if target is None:
+            continue
+        try:
+            lo_i = int(lo, 0) if isinstance(lo, str) else int(lo)
+            hi_i = int(hi, 0) if isinstance(hi, str) else int(hi)
+            target_i = (
+                int(target, 0) if isinstance(target, str) else int(target)
+            )
+        except (TypeError, ValueError):
+            continue
+        payload = {
+            "lo": f"0x{lo_i:x}",
+            "hi": f"0x{hi_i:x}",
+            "target": target_i,
+        }
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            f"0x{lo_i:x}",
+            lo_i,
+            f"0x{hi_i:x}",
+            hi_i,
+            target_i,
+            (
+                int(dispatcher_entry_block)
+                if dispatcher_entry_block is not None else None
+            ),
+            maturity,
+            _json_text(payload, {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO bst_interval_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
 def snapshot_watch_transition(
     conn: sqlite3.Connection,
     *,

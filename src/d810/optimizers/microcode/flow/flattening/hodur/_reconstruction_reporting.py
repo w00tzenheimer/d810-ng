@@ -95,6 +95,7 @@ def snapshot_reconstruction_post_apply(
     modifications: list,
     mba,
     strategy_name: str,
+    dag_frontier_closure_diagnostics=(),
 ) -> None:
     try:
         from d810.hexrays.observability import request_capture_mba_snapshot
@@ -104,6 +105,7 @@ def snapshot_reconstruction_post_apply(
             Modification,
             dag_node_diagnostic_state,
             observe_dag,
+            observe_dag_frontier_closure_diagnostics,
             observe_dag_local_facts,
             observe_modifications,
         )
@@ -213,6 +215,11 @@ def snapshot_reconstruction_post_apply(
                 ))
 
             observe_modifications(snap_ref, mod_snapshots)
+            if dag_frontier_closure_diagnostics:
+                observe_dag_frontier_closure_diagnostics(
+                    snap_ref,
+                    dag_frontier_closure_diagnostics,
+                )
     except Exception:
         logger.warning(
             "Diagnostic DAG/modifications snapshot failed (non-critical)",

@@ -63,6 +63,28 @@ class DagObserved:
 
 
 @dataclass(frozen=True)
+class DagFrontierClosureDiagnosticsObserved:
+    """Recon observed DAG-frontier closure verifier diagnostics."""
+
+    snapshot: SnapshotRef
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class BstIntervalDispatcherObserved:
+    """Recon observed recovered BST interval-dispatcher rows.
+
+    The producer may not have a fresh SnapshotRef at the emission site, so the
+    diag sink attaches these rows to the latest snapshot for ``func_ea``.
+    """
+
+    func_ea: int
+    maturity: str
+    dispatcher_entry_block: int | None
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class DagLocalFactsObserved:
     """Recon observed node-local DAG facts for a LinearizedStateDag.
 
@@ -224,6 +246,8 @@ __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
     # Recon
+    "BstIntervalDispatcherObserved",
+    "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
     "FactConflictsObserved",

@@ -47,6 +47,23 @@ class UnresolvedFrontier:
 
 
 @dataclass(frozen=True, slots=True)
+class FrontierClosureDiagnosticRow:
+    """Structured diagnostic row for DB persistence."""
+
+    kind: str
+    reason: str | None
+    source_block: int | None
+    observed_target: int | None
+    branch_arm: int | None
+    from_dag_scc: int | None
+    to_dag_scc: int | None
+    candidate_targets: tuple[int, ...] = ()
+    path: tuple[int, ...] = ()
+    cfg_scc_size: int | None = None
+    payload: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FrontierClosureResult:
     """Result of one DAG-authoritative frontier-closure planning run."""
 
@@ -57,6 +74,7 @@ class FrontierClosureResult:
     leaks_before: tuple[SemanticSccLeak, ...]
     leaks_after: tuple[SemanticSccLeak, ...]
     unresolved_frontiers: tuple[UnresolvedFrontier, ...]
+    diagnostic_rows: tuple[FrontierClosureDiagnosticRow, ...]
 
     @property
     def changed(self) -> bool:
@@ -113,6 +131,7 @@ def plan_dag_authoritative_frontier_closure(
             leaks_before=(),
             leaks_after=(),
             unresolved_frontiers=(),
+            diagnostic_rows=(),
         )
 
     indexes = _build_indexes(dag)
@@ -125,6 +144,7 @@ def plan_dag_authoritative_frontier_closure(
             leaks_before=(),
             leaks_after=(),
             unresolved_frontiers=(),
+            diagnostic_rows=(),
         )
 
     frontier_blocks = {int(dispatcher_serial)}
@@ -175,6 +195,11 @@ def plan_dag_authoritative_frontier_closure(
         leaks_after,
         indexes,
         frontier_blocks=frontier_blocks,
+    )
+    diagnostic_rows = _build_diagnostic_rows(
+        leaks_before=leaks_before,
+        leaks_after=leaks_after,
+        unresolved_frontiers=unresolved_frontiers,
     )
     override_keys: set[RedirectKey] = set()
     if _env_enabled("D810_DAG_FRONTIER_STALE_OVERRIDES", default=False):
@@ -234,6 +259,7 @@ def plan_dag_authoritative_frontier_closure(
         leaks_before=tuple(leaks_before),
         leaks_after=tuple(leaks_after),
         unresolved_frontiers=tuple(unresolved_frontiers),
+        diagnostic_rows=diagnostic_rows,
     )
 
 
@@ -734,6 +760,72 @@ def _find_unresolved_frontiers(
     return tuple(unresolved)
 
 
+def _build_diagnostic_rows(
+    *,
+    leaks_before: tuple[SemanticSccLeak, ...],
+    leaks_after: tuple[SemanticSccLeak, ...],
+    unresolved_frontiers: tuple[UnresolvedFrontier, ...],
+) -> tuple[FrontierClosureDiagnosticRow, ...]:
+    rows: list[FrontierClosureDiagnosticRow] = []
+    rows.extend(_leak_diagnostic_rows("leak_before", leaks_before))
+    rows.extend(_leak_diagnostic_rows("leak_after", leaks_after))
+    for unresolved in unresolved_frontiers:
+        leak = unresolved.leak
+        rows.append(
+            FrontierClosureDiagnosticRow(
+                kind="unresolved",
+                reason=unresolved.reason,
+                source_block=int(unresolved.source_block),
+                observed_target=int(unresolved.observed_target),
+                branch_arm=unresolved.branch_arm,
+                from_dag_scc=int(leak.from_dag_scc),
+                to_dag_scc=int(leak.to_dag_scc),
+                candidate_targets=tuple(
+                    int(target) for target in unresolved.candidate_targets
+                ),
+                path=tuple(int(block) for block in leak.path),
+                cfg_scc_size=len(leak.cfg_scc_blocks),
+                payload={
+                    "verifier": "dag_frontier_closure",
+                    "behavior": "diagnostic_only",
+                },
+            )
+        )
+    return tuple(rows)
+
+
+def _leak_diagnostic_rows(
+    kind: str,
+    leaks: tuple[SemanticSccLeak, ...],
+) -> tuple[FrontierClosureDiagnosticRow, ...]:
+    rows: list[FrontierClosureDiagnosticRow] = []
+    for leak in leaks:
+        source_block = leak.path[0] if leak.path else None
+        observed_target = leak.path[1] if len(leak.path) > 1 else None
+        rows.append(
+            FrontierClosureDiagnosticRow(
+                kind=kind,
+                reason="semantic_scc_leak",
+                source_block=(
+                    int(source_block) if source_block is not None else None
+                ),
+                observed_target=(
+                    int(observed_target) if observed_target is not None else None
+                ),
+                branch_arm=None,
+                from_dag_scc=int(leak.from_dag_scc),
+                to_dag_scc=int(leak.to_dag_scc),
+                path=tuple(int(block) for block in leak.path),
+                cfg_scc_size=len(leak.cfg_scc_blocks),
+                payload={
+                    "verifier": "dag_frontier_closure",
+                    "behavior": "diagnostic_only",
+                },
+            )
+        )
+    return tuple(rows)
+
+
 def _unresolved_frontier_reason(
     indexes: _DagIndexes,
     *,
@@ -1043,6 +1135,7 @@ def _modification_signature(
 
 __all__ = [
     "FrontierClosureResult",
+    "FrontierClosureDiagnosticRow",
     "RedirectKey",
     "SemanticSccLeak",
     "UnresolvedFrontier",

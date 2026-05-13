@@ -29,6 +29,8 @@ from d810.core.observability import (
 # The recon facade re-exports the recon-relevant types so call sites
 # don't have to know where they live.
 from d810.core.observability_events import (
+    BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
+    DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
     DagObserved as DagObserved,
     FactConflictsObserved as FactConflictsObserved,
@@ -67,6 +69,36 @@ def observe_dag(
         snapshot=snapshot,
         nodes=tuple(nodes),
         edges=tuple(edges),
+    ))
+
+
+def observe_dag_frontier_closure_diagnostics(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish DAG-frontier closure verifier diagnostics."""
+    _emit(DagFrontierClosureDiagnosticsObserved(
+        snapshot=snapshot,
+        rows=tuple(rows),
+    ))
+
+
+def observe_bst_interval_dispatcher(
+    *,
+    func_ea: int,
+    maturity: str,
+    dispatcher_entry_block: int | None,
+    rows,
+) -> None:
+    """Publish recovered BST interval-dispatcher rows."""
+    _emit(BstIntervalDispatcherObserved(
+        func_ea=int(func_ea),
+        maturity=str(maturity),
+        dispatcher_entry_block=(
+            int(dispatcher_entry_block)
+            if dispatcher_entry_block is not None else None
+        ),
+        rows=tuple(rows),
     ))
 
 
@@ -175,6 +207,8 @@ def diagnostics_enabled() -> bool:
         _has_subscribers(t)
         for t in (
             DagObserved,
+            BstIntervalDispatcherObserved,
+            DagFrontierClosureDiagnosticsObserved,
             DagLocalFactsObserved,
             FactObservationsObserved,
             FactMappingsObserved,
@@ -189,6 +223,8 @@ def diagnostics_enabled() -> bool:
 
 __all__ = [
     # Event dataclasses
+    "BstIntervalDispatcherObserved",
+    "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
     "FactConflictsObserved",
@@ -206,6 +242,8 @@ __all__ = [
     # Emit helpers
     "diagnostics_enabled",
     "observe_dag",
+    "observe_bst_interval_dispatcher",
+    "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",
     "observe_fact_consumer",

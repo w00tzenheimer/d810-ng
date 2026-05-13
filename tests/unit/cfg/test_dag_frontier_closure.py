@@ -424,6 +424,16 @@ def test_does_not_close_same_dag_scc_alternate_successor_by_default(
     assert result.unresolved_frontiers[0].source_block == 10
     assert result.unresolved_frontiers[0].observed_target == 20
     assert result.unresolved_frontiers[0].candidate_targets == (11,)
+    unresolved_rows = [
+        row for row in result.diagnostic_rows if row.kind == "unresolved"
+    ]
+    assert len(unresolved_rows) == 1
+    assert unresolved_rows[0].reason == "same_scc_alternate_disabled"
+    assert unresolved_rows[0].source_block == 10
+    assert unresolved_rows[0].observed_target == 20
+    assert unresolved_rows[0].branch_arm == 0
+    assert unresolved_rows[0].candidate_targets == (11,)
+    assert unresolved_rows[0].path == (10, 20)
 
 
 def test_can_close_dispatch_frontier_to_same_dag_scc_alternate_successor(
