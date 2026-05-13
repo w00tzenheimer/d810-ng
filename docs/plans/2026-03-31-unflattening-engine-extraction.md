@@ -205,17 +205,29 @@ Already present on this branch:
 - The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
   regression gate for this line of work. Engine extraction must not regress its
   dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
-- The first post-merge de-specialization slice landed:
-  `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`.
-  HCC now consumes this recon helper instead of owning the pure semantic-DAG
-  region walk locally.
+- The first five post-merge de-specialization slices landed:
+  - `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`
+    now owns the pure semantic-DAG region walk (`d322b957`).
+  - `d810.cfg.semantic_region_entry` now owns semantic region entry
+    candidate resolution (`3a5ceb53`, follow-up note `cc49dbab`).
+  - `d810.cfg.semantic_region_admission` now owns backend-neutral raw
+    semantic-region admission/classification predicates (`babe1529`).
+  - `d810.cfg.semantic_region_materialization` now owns backend-neutral
+    instruction-capture/materialization decisions (`37678021`).
+  - `d810.recon.flow.terminal_byte_evidence` now owns read-only terminal
+    byte source-EA evidence extraction (`132b2146`).
+  HCC consumes these helpers while keeping family policy, logging, ordering,
+  live Hex-Rays microblock walking, and snapshot materialization local.
 
 What remains:
 
 - Remove dependence on Hodur compatibility imports in production call sites
-  where the canonical engine import is available.
-- Continue extracting reusable HCC algorithms into `recon` and `cfg` based on
-  behavior, not on import churn.
+  where the canonical engine import is available. This is the largest
+  remaining "architecture looks Hodur-centered" cleanup.
+- Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
+  `engine` based on behavior, not on import churn. The next large
+  algorithmic candidate is DAG-authoritative fragment arbitration from
+  `hodur/reconstruction_fragment_builder.py`.
 - Convert the remaining legacy unflattening families to the engine/family
   model where doing so preserves behavior.
 - Document the extension contract for new unflattening families after the
@@ -283,28 +295,57 @@ package that owns it.
 
 Completed:
 
-- `detect_linear_transition_regions()` moved to `d810.recon.flow`.
+- `detect_linear_transition_regions()` moved to `d810.recon.flow`
+  (`d322b957`).
+- `EntryEligibility`, `SemanticEntryCandidate`, and
+  `resolve_semantic_entry_candidate()` moved to
+  `d810.cfg.semantic_region_entry` (`3a5ceb53`, follow-up `cc49dbab`).
+- `RawRegionInfo`, source-coverage classification, and YES_HANDLERS
+  fusion/admission predicates moved to
+  `d810.cfg.semantic_region_admission` (`babe1529`).
+- Backend-neutral region instruction-capture/materialization decisions moved
+  to `d810.cfg.semantic_region_materialization` (`37678021`).
+- Terminal-tail byte source-EA evidence extraction moved to
+  `d810.recon.flow.terminal_byte_evidence` (`132b2146`).
 
 Next candidates, in order:
 
-1. Semantic entry candidate resolution:
-   - `EntryEligibility`
-   - `SemanticEntryCandidate`
-   - `_resolve_semantic_entry_candidate(...)`
-   - likely target: `d810.cfg.semantic_region_lowering` or a small
-     `d810.recon.flow` helper, depending on whether the final API takes live
-     CFG block shape as input.
-2. Raw semantic-region observation/admission:
-   - `_RawRegionInfo`
-   - source-covered / fusion classification helpers
-   - keep HCC-specific logging in HCC; move reusable classification data
-     structures and pure predicates out.
-3. Region materialization contract:
-   - separate "which region is semantically lowerable" from "how HCC captures
-     Hex-Rays instructions into an InsertBlock body."
-   - backend-independent contract belongs in `cfg`; Hex-Rays instruction
-     capture stays in the Hex-Rays-facing strategy/backend layer until a
-     cleaner adapter exists.
+1. DAG-authoritative fragment arbitration:
+   - current source: `hodur/reconstruction_fragment_builder.py`;
+   - target: `flattening/engine/dag_authority.py` and/or small `cfg`
+     helpers for graph-claim conflict checks;
+   - move backend-neutral filtering/finalization policy, not Hodur metadata
+     formatting.
+2. Exact semantic node and conditional lowering analysis:
+   - current sources: `semantic_exact_node.py`, `exact_conditional_node.py`,
+     `exact_conditional_fork.py`, `exact_conditional_alias.py`;
+   - target: `d810.cfg.semantic_exact_lowering` or
+     `d810.cfg.semantic_conditional_lowering`;
+   - keep strategy wrappers, thresholds, and fallback order in Hodur.
+3. Residual dispatcher target resolution and trampoline skipping:
+   - current sources: `dispatcher_trampoline_skip.py` and pieces of
+     `semantic_exact_node.py`;
+   - target: `d810.cfg.residual_target_resolution` and/or
+     `d810.recon.flow.bst_resolution`;
+   - keep Hodur execution gates and strategy order local.
+4. State-variable cleanup planning:
+   - current sources: `dead_state_variable_elimination.py` and
+     `state_constant_return_fixup.py`;
+   - target: `d810.cfg.state_var_cleanup` or `d810.cfg.transform`;
+   - move the plan/classification, not Hex-Rays NOP/rewrite mechanics.
+5. Return-frontier site derivation:
+   - current source: `hodur/return_sites.py`;
+   - target: `d810.recon.flow.return_sites` or a `cfg` return-frontier helper;
+   - keep Hodur snapshot/report adapters local.
+
+Do not extract:
+
+- live `mblock_t`/`minsn_t` walking and microcode copy mechanics until a
+  backend adapter boundary exists;
+- Hodur strategy ordering, env gates, logging labels, and family-local
+  thresholds;
+- dormant `linearized_flow_graph.py` work unless it is deliberately revived
+  into the current HCC path.
 
 ### E3: Normalize non-Hodur families onto the engine
 
