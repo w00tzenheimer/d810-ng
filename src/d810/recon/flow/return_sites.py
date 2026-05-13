@@ -41,13 +41,27 @@ def _state_tag_for_row(row: object) -> str:
     return "unknown"
 
 
-def transition_report_return_sites(report: object) -> tuple[ReturnSite, ...]:
+def _normalise_site_id_prefix(site_id_prefix: str) -> str:
+    prefix = str(site_id_prefix).strip("_")
+    return prefix or "return"
+
+
+def transition_report_return_sites(
+    report: object,
+    *,
+    site_id_prefix: str = "return",
+) -> tuple[ReturnSite, ...]:
     """Build one ReturnSite per EXIT handler in a transition report.
 
     The derivation is intentionally strict: a row must be classified EXIT and
     its path must confirm exit-block reachability.  Sites are keyed by handler
     origin and state identity, not by the shared physical return block.
+
+    ``site_id_prefix`` names the consuming strategy family.  The generic recon
+    helper defaults to a neutral prefix; family adapters can pass a stable
+    family-specific prefix when compatibility matters.
     """
+    prefix = _normalise_site_id_prefix(site_id_prefix)
     sites: list[ReturnSite] = []
     seen_ids: set[str] = set()
 
@@ -59,7 +73,7 @@ def transition_report_return_sites(report: object) -> tuple[ReturnSite, ...]:
             continue
 
         handler_serial = int(getattr(row, "handler_serial"))
-        site_id = f"hodur_handler_{handler_serial}_state_{_state_tag_for_row(row)}"
+        site_id = f"{prefix}_handler_{handler_serial}_state_{_state_tag_for_row(row)}"
         if site_id in seen_ids:
             continue
         seen_ids.add(site_id)
@@ -100,8 +114,11 @@ def compute_legacy_return_site_guard_hash(entry_serial: int, path: object) -> st
 
 def legacy_handler_path_return_sites(
     handler_paths: dict[int, list[object]],
+    *,
+    site_id_prefix: str = "return",
 ) -> tuple[ReturnSite, ...]:
     """Extract legacy return sites from handler path analysis results."""
+    prefix = _normalise_site_id_prefix(site_id_prefix)
     sites: list[ReturnSite] = []
     seen_blocks: set[int] = set()
 
@@ -115,7 +132,7 @@ def legacy_handler_path_return_sites(
             seen_blocks.add(exit_block)
             sites.append(
                 ReturnSite(
-                    site_id=f"hodur_ret_{entry_serial}_{exit_block}",
+                    site_id=f"{prefix}_ret_{entry_serial}_{exit_block}",
                     origin_block=exit_block,
                     guard_hash=compute_legacy_return_site_guard_hash(entry_serial, path),
                     expected_terminal_kind="return",
