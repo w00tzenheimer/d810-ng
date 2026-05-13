@@ -7,9 +7,8 @@ import ida_hexrays
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto, ZeroStateWrite
 from d810.cfg.modification_builder import ModificationBuilder
-from d810.optimizers.microcode.flow.flattening.hodur.family import (
-    HodurStrategyFamily,
-)
+from d810.cfg.residual_target_resolution import is_structured_conditional_path_feeder
+from d810.optimizers.microcode.flow.flattening.hodur.family import HodurStrategyFamily
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     OwnershipScope,
@@ -18,10 +17,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass import (
     ExactNodeFrontierBypassStrategy,
-    _collect_owned_exact_sources,
-    _collect_supported_exact_entries,
-    _is_structured_conditional_path_feeder,
-    _resolve_frontier_target_entry,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     exact_node_frontier_bypass as exact_node_frontier_bypass_module,
@@ -283,55 +278,6 @@ def test_exact_node_frontier_bypass_redirects_return_reachable_supplemental_feed
     )
 
 
-def test_resolve_frontier_target_entry_prefers_residual_effective_target(monkeypatch):
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "supplemental_selected_entry_for_state",
-        lambda *_args, **_kwargs: 14,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_effective_residual_target_entry",
-        lambda *_args, **_kwargs: 14,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_exact_dag_entry_for_state",
-        lambda *_args, **_kwargs: 66,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_semantic_reference_entry_for_state",
-        lambda *_args, **_kwargs: 66,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
-        lambda *_args, **_kwargs: 66,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
-        lambda *_args, **_kwargs: 66,
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "_resolve_semantic_reference_alias_entry",
-        lambda *_args, **_kwargs: None,
-    )
-
-    exact_dispatch_target, target_entry = _resolve_frontier_target_entry(
-        SimpleNamespace(nodes=(), edges=()),
-        pred_serial=16,
-        state_value=0x4C77464F,
-        dispatcher_model=SimpleNamespace(lookup=None),
-        bst_blocks={2},
-        semantic_reference_program=None,
-        state_var_stkoff=0x7BC,
-        mba=SimpleNamespace(),
-    )
-
-    assert exact_dispatch_target is None
-    assert target_entry == 14
-
-
 def test_exact_node_frontier_bypass_uses_supplemental_selected_entry_when_direct_entry_missing(monkeypatch):
     flow_graph = FlowGraph(
         blocks={
@@ -543,7 +489,7 @@ def test_is_structured_conditional_path_feeder_detects_immediate_conditional_fee
         )
     )
 
-    assert _is_structured_conditional_path_feeder(
+    assert is_structured_conditional_path_feeder(
         dag,
         pred_serial=16,
         state_value=0x4C77464F,
@@ -921,62 +867,3 @@ def test_exact_node_frontier_bypass_prefers_direct_semantic_state_entry(monkeypa
         isinstance(mod, ZeroStateWrite) and mod.block_serial == 16 and mod.insn_ea == 0x4010
         for mod in fragment.modifications
     )
-
-
-def test_collect_supported_exact_entries_includes_straight_line_targets(monkeypatch) -> None:
-    flow_graph = FlowGraph(
-        blocks={
-            2: BlockSnapshot(2, 0, (14,), (), 0, 0, ()),
-            14: BlockSnapshot(14, 0, (136,), (2,), 0, 0, ()),
-            136: BlockSnapshot(136, 0, (151,), (14,), 0, 0, ()),
-        },
-        entry_serial=2,
-        func_ea=0x180012B60,
-    )
-    edge = SimpleNamespace(
-        kind=SimpleNamespace(name="TRANSITION"),
-        source_key=SimpleNamespace(state_const=0x606DC166),
-        target_state=0x139F2922,
-    )
-    round_summary = SimpleNamespace(
-        dag=SimpleNamespace(edges=(edge,)),
-        plannable_edges=(SimpleNamespace(edge=edge),),
-    )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
-        lambda *_args, **_kwargs: 136,
-    )
-
-    supported = _collect_supported_exact_entries(
-        round_summary,
-        flow_graph,
-        bst_blocks={2},
-    )
-
-    assert 136 in supported
-
-
-def test_collect_owned_exact_sources_includes_straight_line_source_block() -> None:
-    flow_graph = FlowGraph(
-        blocks={
-            2: BlockSnapshot(2, 0, (14,), (), 0, 0, ()),
-            14: BlockSnapshot(14, 0, (136,), (2,), 0, 0, ()),
-            136: BlockSnapshot(136, 0, (151,), (14,), 0, 0, ()),
-        },
-        entry_serial=2,
-        func_ea=0x180012B60,
-    )
-    edge = SimpleNamespace(
-        kind=SimpleNamespace(name="TRANSITION"),
-        source_key=SimpleNamespace(state_const=0x606DC166),
-        source_anchor=SimpleNamespace(block_serial=14),
-        target_state=0x139F2922,
-    )
-    round_summary = SimpleNamespace(
-        dag=SimpleNamespace(edges=(edge,)),
-        plannable_edges=(SimpleNamespace(edge=edge),),
-    )
-
-    owned = _collect_owned_exact_sources(round_summary, flow_graph)
-
-    assert 14 in owned
