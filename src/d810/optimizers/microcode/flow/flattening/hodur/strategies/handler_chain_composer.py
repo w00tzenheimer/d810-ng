@@ -73,7 +73,6 @@ Prerequisites: ``[]`` -- this strategy IS the linearizer.
 """
 from __future__ import annotations
 
-import enum
 import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
@@ -112,6 +111,11 @@ from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.cfg.reconstruction_recording import RoundAcceptLedger
+from d810.cfg.semantic_region_entry import (
+    EntryEligibility,
+    SemanticEntryCandidate,
+    resolve_semantic_entry_candidate as _resolve_semantic_entry_candidate,
+)
 from d810.cfg.state_edge_pair import state_edge_pair
 from d810.hexrays.mutation.ir_translator import capture_insn_snapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
@@ -540,220 +544,40 @@ class _WalkBackResult:
     prepended_chunks: tuple[_WalkBackChunk, ...]
 
 
-# ---------------------------------------------------------------------------
-# Logging-only DAG-edge-driven entry resolver (uee-b7ze Step 1).
-#
-# This resolver runs alongside the existing physical-CFG-predecessor splice
-# (``_resolve_first_pred``) and emits a structured ``REGION_LOWERING_CANDIDATE``
-# log line per detected region.  It DOES NOT change emission behavior --
-# ``InsertBlock.pred_serial`` continues to come from ``_resolve_first_pred``.
-#
-# Goal: collect data on (a) how often the new resolver agrees with the old
-# one, (b) how often ``source_covered_by_other_region`` triggers, and (c) the
-# per-eligibility distribution.  Step 2 (call-barrier segmentation) is OUT
-# OF SCOPE here.
-# ---------------------------------------------------------------------------
+class _MbaRegionEntryBlockView:
+    """Backend adapter for cfg-level semantic-region entry resolution."""
 
+    __slots__ = ("_mba",)
 
-class EntryEligibility(str, enum.Enum):
-    """Why a region head's semantic incoming edge is/isn't usable as a splice.
+    def __init__(self, mba: object) -> None:
+        self._mba = mba
 
-    Logging-only.  No emission decision currently consumes this enum.
-    """
-
-    NO_TRANSITION_INCOMING = "NO_TRANSITION_INCOMING"
-    MULTIPLE_DISTINCT_SPLICE_SOURCES = "MULTIPLE_DISTINCT_SPLICE_SOURCES"
-    SOURCE_DEAD = "SOURCE_DEAD"
-    SOURCE_INSIDE_REGION = "SOURCE_INSIDE_REGION"
-    SOURCE_NOT_1WAY = "SOURCE_NOT_1WAY"
-    SOURCE_OLD_TARGET_UNREADABLE = "SOURCE_OLD_TARGET_UNREADABLE"
-    UNCONDITIONAL_1WAY = "UNCONDITIONAL_1WAY"
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticEntryCandidate:
-    """Logging-only candidate for splicing a region via its DAG TRANSITION edge.
-
-    Fields:
-        head_state: ``state_const`` of the region head node (or 0 if absent).
-        head_entry: Entry anchor block serial of the region head node.
-        splice_source_block: The unique TRANSITION source block (when
-            classification reaches the per-source check), else ``None``.
-        splice_old_target: Existing single successor of ``splice_source_block``
-            (the outgoing edge that would be replaced), else ``None``.
-        transition_source_blocks: All distinct TRANSITION source blocks for
-            edges incoming to the region head, ordered ascending.
-        nontransition_source_blocks: All distinct non-TRANSITION (e.g.
-            CONDITIONAL_TRANSITION) source blocks for edges incoming to the
-            region head, ordered ascending.  Informational only -- never
-            blocks ``UNCONDITIONAL_1WAY`` classification.
-        eligibility: The classification (see ``EntryEligibility``).
-        reason: Human-readable explanation of the classification.
-    """
-
-    head_state: int
-    head_entry: int
-    splice_source_block: int | None
-    splice_old_target: int | None
-    transition_source_blocks: tuple[int, ...]
-    nontransition_source_blocks: tuple[int, ...]
-    eligibility: EntryEligibility
-    reason: str
-
-
-def _resolve_semantic_entry_candidate(
-    *,
-    dag: LinearizedStateDag,
-    region_head_node: StateDagNode,
-    region_anchors: frozenset[int],
-    mba: object,
-) -> SemanticEntryCandidate:
-    """Logging-only resolver for the semantic incoming edge of a region.
-
-    Algorithm (per spec):
-      1. Collect all ``dag.edges`` where ``target_key == region_head_node.key``.
-      2. Partition by ``edge.kind``: TRANSITION vs everything else.
-      3. If no TRANSITION edges -> ``NO_TRANSITION_INCOMING``.
-      4. Group TRANSITION edges by source block (using
-         ``edge.source_anchor.block_serial`` -- there is no separate
-         ``source_block`` field on the edge dataclass).  If multiple distinct
-         source blocks -> ``MULTIPLE_DISTINCT_SPLICE_SOURCES``.
-      5. With a single source block:
-           - ``mba.get_mblock(source_block)``; if ``None`` -> ``SOURCE_DEAD``
-           - if ``source_block in region_anchors`` -> ``SOURCE_INSIDE_REGION``
-           - if ``nsucc() != 1`` -> ``SOURCE_NOT_1WAY``
-           - else: read ``succ(0)`` as ``splice_old_target``; on any failure
-             -> ``SOURCE_OLD_TARGET_UNREADABLE``.  Otherwise:
-             ``UNCONDITIONAL_1WAY``.
-
-    Conditional-kind edges are NEVER allowed to block ``UNCONDITIONAL_1WAY``.
-    They appear in ``nontransition_source_blocks`` for diagnostics only.
-    """
-    head_key = region_head_node.key
-    head_state = int(getattr(head_key, "state_const", 0) or 0)
-    head_entry = int(region_head_node.entry_anchor)
-
-    transition_sources: list[int] = []
-    nontransition_sources: list[int] = []
-    for edge in dag.edges:
-        if edge.target_key != head_key:
-            continue
+    def _block(self, serial: int) -> object | None:
         try:
-            src = int(edge.source_anchor.block_serial)
+            return self._mba.get_mblock(serial)  # type: ignore[attr-defined]
         except Exception:
-            continue
-        if edge.kind is SemanticEdgeKind.TRANSITION:
-            transition_sources.append(src)
-        else:
-            nontransition_sources.append(src)
+            return None
 
-    transition_unique = tuple(sorted(set(transition_sources)))
-    nontransition_unique = tuple(sorted(set(nontransition_sources)))
+    def block_exists(self, serial: int) -> bool:
+        return self._block(serial) is not None
 
-    if not transition_unique:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=None,
-            splice_old_target=None,
-            transition_source_blocks=(),
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.NO_TRANSITION_INCOMING,
-            reason="no TRANSITION edges target region head",
-        )
+    def nsucc(self, serial: int) -> int | None:
+        blk = self._block(serial)
+        if blk is None:
+            return None
+        try:
+            return int(blk.nsucc())  # type: ignore[attr-defined]
+        except Exception:
+            return None
 
-    if len(transition_unique) > 1:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=None,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.MULTIPLE_DISTINCT_SPLICE_SOURCES,
-            reason=(
-                "TRANSITION edges to region head originate from "
-                f"{len(transition_unique)} distinct source blocks"
-            ),
-        )
-
-    splice_source = int(transition_unique[0])
-
-    src_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, splice_source)
-    if src_blk is None:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_DEAD,
-            reason=f"mba.get_mblock({splice_source}) returned None",
-        )
-
-    if splice_source in region_anchors:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_INSIDE_REGION,
-            reason=f"source block blk[{splice_source}] is itself a region anchor",
-        )
-
-    try:
-        nsucc = int(src_blk.nsucc())  # type: ignore[attr-defined]
-    except Exception:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_NOT_1WAY,
-            reason=f"blk[{splice_source}].nsucc() raised",
-        )
-
-    if nsucc != 1:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_NOT_1WAY,
-            reason=f"blk[{splice_source}].nsucc()={nsucc}, expected 1",
-        )
-
-    try:
-        old_target = int(src_blk.succ(0))  # type: ignore[attr-defined]
-    except Exception:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_OLD_TARGET_UNREADABLE,
-            reason=f"blk[{splice_source}].succ(0) raised",
-        )
-
-    return SemanticEntryCandidate(
-        head_state=head_state,
-        head_entry=head_entry,
-        splice_source_block=splice_source,
-        splice_old_target=old_target,
-        transition_source_blocks=transition_unique,
-        nontransition_source_blocks=nontransition_unique,
-        eligibility=EntryEligibility.UNCONDITIONAL_1WAY,
-        reason="single TRANSITION source is a 1-way block; semantic splice eligible",
-    )
+    def succ(self, serial: int, index: int = 0) -> int | None:
+        blk = self._block(serial)
+        if blk is None:
+            return None
+        try:
+            return int(blk.succ(index))  # type: ignore[attr-defined]
+        except Exception:
+            return None
 
 
 def _format_blk_list(serials: tuple[int, ...]) -> str:
@@ -7998,7 +7822,8 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     region_head_node=head_node,
                     region_anchors=region_anchors,
-                    mba=mba,
+                    block_view=_MbaRegionEntryBlockView(mba),
+                    transition_kind=SemanticEdgeKind.TRANSITION,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic
                 logger.warning(
