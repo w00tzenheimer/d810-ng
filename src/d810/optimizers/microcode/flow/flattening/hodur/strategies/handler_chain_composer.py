@@ -116,6 +116,10 @@ from d810.cfg.semantic_region_entry import (
     SemanticEntryCandidate,
     resolve_semantic_entry_candidate as _resolve_semantic_entry_candidate,
 )
+from d810.cfg.semantic_region_materialization import (
+    InstructionCaptureFacts,
+    decide_instruction_capture,
+)
 from d810.cfg.semantic_region_admission import (
     RawRegionInfo as _RawRegionInfo,
     classify_source_covered_by_other_region as _classify_source_covered_by_other_region,
@@ -8313,39 +8317,48 @@ class HandlerChainComposerStrategy:
                     kind="closing_abort",
                     abort_reason="opcode_unreadable",
                 )
-            if opcode in (ida_hexrays.m_goto, ida_hexrays.m_nop):
-                insn = insn.next
-                continue
-            # Closing-forbidden opcodes: never become call anchors.
-            if opcode in _CLOSING_FORBIDDEN:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason=f"closing_forbidden_opcode={opcode}",
-                )
+            is_jcond = False
+            jcond_check_failed = False
             try:
-                if ida_hexrays.is_mcode_jcond(opcode):
-                    if (
-                        block_has_byte_evidence
-                        and getattr(insn, "next", None) is None
-                    ):
-                        # Byte-emitter handler block with jcond at tail:
-                        # drop the jcond from the composable body; the
-                        # InsertBlock's pred->succ wiring carries the
-                        # DAG-aligned next-state edge.
-                        break
-                    return _CaptureResult(
-                        kind="closing_abort",
-                        abort_reason=f"jcond_opcode={opcode}",
-                    )
+                is_jcond = bool(ida_hexrays.is_mcode_jcond(opcode))
             except Exception:
+                jcond_check_failed = True
+            if jcond_check_failed:
                 return _CaptureResult(
                     kind="closing_abort",
                     abort_reason="jcond_check_raised",
                 )
+            decision = decide_instruction_capture(
+                InstructionCaptureFacts(
+                    is_goto=(opcode == ida_hexrays.m_goto),
+                    is_nop=(opcode == ida_hexrays.m_nop),
+                    is_closing_forbidden=(opcode in _CLOSING_FORBIDDEN),
+                    is_conditional_jump=is_jcond,
+                    is_call=(opcode in _CALL_FORBIDDEN),
+                    is_state_write=_is_state_write(insn, state_var_stkoff),
+                    is_tail=(getattr(insn, "next", None) is None),
+                    block_has_required_payload_evidence=block_has_byte_evidence,
+                ),
+                opcode=opcode,
+            )
+            if decision.action == "skip":
+                insn = insn.next
+                continue
+            if decision.action == "abort":
+                return _CaptureResult(
+                    kind="closing_abort",
+                    abort_reason=decision.abort_reason,
+                )
+            if decision.action == "drop_control_tail":
+                # Byte-emitter handler block with jcond at tail:
+                # drop the jcond from the composable body; the
+                # InsertBlock's pred->succ wiring carries the
+                # DAG-aligned next-state edge.
+                break
             # Side-effecting calls: record the EA but do not capture a
             # snapshot for them (the call body stays in the original
             # block; Phase B never copies it elsewhere).
-            if opcode in _CALL_FORBIDDEN:
+            if decision.action == "record_call":
                 try:
                     call_ea = int(getattr(insn, "ea", 0))
                 except Exception:
@@ -8353,9 +8366,6 @@ class HandlerChainComposerStrategy:
                 is_indirect = opcode == ida_hexrays.m_icall
                 call_eas.append((call_ea, is_indirect))
                 seen_call = True
-                insn = insn.next
-                continue
-            if _is_state_write(insn, state_var_stkoff):
                 insn = insn.next
                 continue
             try:
