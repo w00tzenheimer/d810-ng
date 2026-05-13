@@ -237,8 +237,24 @@ ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINAR
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
-  ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1 D810_DIAG_SNAPSHOT=1"
+  ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1 D810_DIAG_SNAPSHOT=1 D810_FACT_LIFECYCLE=${D810_FACT_LIFECYCLE:-1}"
 fi
+
+# Forward every set D810_* env var to the container via docker -e flags.
+# Wrapper-only vars (those that only affect this script) are excluded.
+_d810_extra_env_flags() {
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES "
+  local _out=""
+  local _var _val
+  for _var in ${!D810_@}; do
+    case "$_skip" in
+      *" $_var "*) continue ;;
+    esac
+    eval "_val=\${$_var}"
+    [ -n "$_val" ] && _out="$_out -e $_var=$_val"
+  done
+  echo "$_out"
+}
 
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
@@ -248,9 +264,9 @@ SETUP_CMD="export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && 
 
 run_bash() {
   local inner="$1"
-  local extra_env=""
-  [ -n "${D810_BISECT_SKIP:-}" ] && extra_env="-e D810_BISECT_SKIP=$D810_BISECT_SKIP"
+  local extra_env="$(_d810_extra_env_flags)"
   docker run --rm \
+    --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
@@ -262,9 +278,11 @@ run_bash() {
 
 run_bash_it() {
   local inner="$1"
+  local extra_env="$(_d810_extra_env_flags)"
   docker run -it --rm \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
+    $extra_env \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -278,9 +296,12 @@ run_bash_it() {
 
 run_bash_exec() {
   local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
+  local extra_env="$(_d810_extra_env_flags)"
   docker run --rm \
+    --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
+    $extra_env \
     $VOL_WORK \
     $VOL_LOGS \
     -w /work \
@@ -356,3 +377,43 @@ fi
 
 INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP ${DUMP_ARGS[*]} -v $REDIR"
 run_bash "$INNER"
+
+# --- BEGIN region oracle hook (Track A.8 of uee-32r3) ---
+# Non-fatal: any failure in the oracle is logged but never propagated.
+ORACLE_DB="$(ls -t "${WORK_DIR}/.tmp/logs/d810_logs/"*.diag.sqlite3 2>/dev/null | head -1 || true)"
+if [ -n "$ORACLE_DB" ]; then
+  if [ -n "${DUMP_OUT:-}" ]; then
+    ORACLE_BASE="${WORK_DIR}/.tmp/${DUMP_OUT%.txt}"
+    ORACLE_OUT="${ORACLE_BASE}.oracle.md"
+    ORACLE_ERR="${ORACLE_BASE}.oracle.stderr.log"
+    BST_ERR="${ORACLE_BASE}.bst-resolutions.stderr.log"
+  else
+    ORACLE_TS="$(date +%Y%m%d-%H%M%S)"
+    ORACLE_OUT="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.md"
+    ORACLE_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.oracle.stderr.log"
+    BST_ERR="${WORK_DIR}/.tmp/oracle_${ORACLE_TS}.bst-resolutions.stderr.log"
+  fi
+  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.diagnostics \
+      state-transition-bst-resolutions \
+      --db "$ORACLE_DB" \
+      > /dev/null \
+      2> "$BST_ERR"
+  then
+    echo "bst resolutions persisted: $ORACLE_DB"
+  else
+    echo "WARN: bst resolution persistence exited non-zero; see $BST_ERR"
+  fi
+  if PYTHONPATH="${WORK_DIR}/src" python3 -m d810.diagnostics region-diff \
+      --auto --persist \
+      --db "$ORACLE_DB" \
+      --output "$ORACLE_OUT" \
+      2> "$ORACLE_ERR"
+  then
+    echo "oracle written: $ORACLE_OUT"
+  else
+    echo "WARN: oracle exited non-zero; see $ORACLE_ERR"
+  fi
+else
+  echo "oracle skipped: no diag DB present (run with --enable-debug-logging to capture one)"
+fi
+# --- END region oracle hook ---

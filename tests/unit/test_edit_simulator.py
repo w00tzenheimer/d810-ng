@@ -252,7 +252,7 @@ class TestSimulateEdits:
         clone = min(sim.created_clones)
         nop_blk = max(sim.created_clones)
         assert sim.adj[0] == [clone]
-        assert sim.adj[clone] == [10, nop_blk]
+        assert sim.adj[clone] == [nop_blk, 10]
         assert sim.adj[nop_blk] == [11]
 
     def test_duplicate_block_creates_clone_and_redirects_predecessor(self):
@@ -271,6 +271,39 @@ class TestSimulateEdits:
                 DuplicateBlock(
                     source_block=10,
                     target_block=11,
+                    pred_serial=9,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(),
+            patch_plan_to_simulated_edits(patch_plan),
+        )
+
+        assert sim.adj[9] == [11]
+        assert sim.adj[10] == [12]
+        assert sim.adj[11] == [12]
+        assert sim.adj[12] == []
+
+    def test_duplicate_block_private_target_split_redirects_1way_predecessor(self):
+        cfg = FlowGraph(
+            blocks={
+                2: _block(2, (), (9,)),
+                9: _block(9, (2,), ()),
+                10: _block(10, (11,), ()),
+                11: _block(11, (), (10,)),
+            },
+            entry_serial=9,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=10,
+                    target_block=None,
                     pred_serial=9,
                 )
             ],
@@ -510,6 +543,38 @@ class TestModificationProjection:
         assert sim.adj[3] == []
         assert prove_terminal_sink(2, sim.adj, exits={3}, forbidden=set()).ok
 
+    def test_patch_plan_insert_block_replaces_explicit_old_target(self):
+        cfg = FlowGraph(
+            blocks={
+                1: _block(1, (2,), ()),
+                2: _block(2, (), (1,)),
+                4: _block(4, (), ()),
+            },
+            entry_serial=1,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=1,
+                    succ_serial=4,
+                    instructions=(InsnSnapshot(opcode=0x90, ea=0x1000, operands=()),),
+                    old_target_serial=2,
+                )
+            ],
+            cfg,
+        )
+
+        sim = simulate_edits(
+            cfg.as_adjacency_dict(), patch_plan_to_simulated_edits(patch_plan)
+        )
+
+        assert sim.adj[1] == [4]
+        assert sim.adj[2] == []
+        assert sim.adj[4] == [5]
+        assert sim.adj[5] == []
+
     def test_patch_plan_conditional_redirect_relocates_stop(self):
         cfg = FlowGraph(
             blocks={
@@ -539,7 +604,7 @@ class TestModificationProjection:
         )
 
         assert sim.adj[0] == [5]
-        assert sim.adj[5] == [7, 6]
+        assert sim.adj[5] == [6, 7]
         assert sim.adj[6] == [2]
         assert sim.adj[7] == []
 

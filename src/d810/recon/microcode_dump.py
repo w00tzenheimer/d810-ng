@@ -54,16 +54,21 @@ from d810.recon.flow.bst_analysis import (
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
+    LinearizedStateDag,
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderedProgramSnapshot,
     RenderOrderStrategy,
+    StateAnchorDivergence,
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
+    compute_dag_anchor_divergence,
+    render_dag_anchor_divergence,
     render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
+from d810.recon.flow.persisted_recon_dag import get_persisted_recon_dag
 from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
     TransitionKind,
@@ -613,8 +618,10 @@ def _print_list_pair(
 
     may_s = ""
     if may is not None and not may.empty() and may != must:
-        may.sub(must)  # may -= must  (leaves the "may-only" part)
-        may_s = may.dstr()
+        may_only = idaapi.mlist_t()
+        may_only.add(may)
+        may_only.sub(must)  # may -= must  (leaves the "may-only" part)
+        may_s = may_only.dstr()
 
     rval = f"; {label}: {must_s}"
     if may_s:
@@ -1173,13 +1180,50 @@ def dump_linearized_dag(
     *,
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
-    """Build and render the unified state-level DAG for a dispatcher."""
-    dag = _build_live_linearized_state_dag(
+    """Render the canonical recon-time DAG when available, else the
+    post-mutation live rebuild with an explicit non-canonical label.
+
+    Diagnostics that rebuild the DAG from a mutated MBA can produce
+    different anchor selections than what HCC actually consumed at
+    recon time (the BST/state-machine analysis reads the live CFG).
+    The recon-time DAG is captured into the per-function process-level
+    cache by ``build_round_discovery_context``; consult it first so the
+    diagnostic shows what the engine actually saw.
+
+    Adds an explicit ``POST_MUTATION_INFERRED — not canonical`` header
+    to live-rebuild output so future debuggers don't trust it as
+    semantic ground truth.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    persisted = get_persisted_recon_dag(func_ea) if func_ea else None
+    if persisted is not None:
+        rendered = render_linearized_state_dag(persisted, order_strategy=order_strategy)
+        return _prepend_dag_header_label(rendered, "persisted recon-time")
+    live_dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag(dag, order_strategy=order_strategy)
+    rendered = render_linearized_state_dag(live_dag, order_strategy=order_strategy)
+    return _prepend_dag_header_label(rendered, "POST_MUTATION_INFERRED — not canonical")
+
+
+def _prepend_dag_header_label(rendered: str, label: str) -> str:
+    """Replace ``render_linearized_state_dag``'s opening header with a
+    labeled variant so callers can distinguish persisted vs live-rebuild
+    output without scanning structurally.
+    """
+    lines = rendered.split("\n", 1)
+    first = lines[0] if lines else ""
+    if first.startswith("=== LINEARIZED STATE DAG"):
+        # Insert " (label)" before the trailing " ===".
+        if first.endswith(" ==="):
+            new_first = first[:-4] + f" ({label}) ==="
+        else:
+            new_first = first + f" ({label})"
+        rest = lines[1] if len(lines) > 1 else ""
+        return new_first + ("\n" + rest if rest else "")
+    return rendered
 
 
 def _build_block_payload_by_serial(
@@ -1285,12 +1329,24 @@ def build_live_linearized_program(
     boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
     comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
 ) -> RenderedProgramSnapshot:
-    """Build the linearized-program IR for a dispatcher."""
-    dag = _build_live_linearized_state_dag(
-        mba,
-        dispatcher_entry_serial,
-        state_var_stkoff=state_var_stkoff,
-    )
+    """Build the linearized-program IR for a dispatcher.
+
+    Prefers the canonical recon-time DAG (persisted by
+    ``build_round_discovery_context``) when available so the rendered
+    program reflects what HCC actually consumed.  Falls back to live
+    rebuild from the post-mutation MBA only when no persisted DAG
+    exists; live rebuilds are intrinsically less stable across pipeline
+    mutations and may produce different anchor selections than recon
+    time.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    if dag is None:
+        dag = _build_live_linearized_state_dag(
+            mba,
+            dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+        )
     block_payload_by_serial = _build_block_payload_by_serial(mba)
     return build_linearized_state_program(
         dag,
@@ -1306,38 +1362,30 @@ def build_live_linearized_program(
 def snapshot_linearized_program(
     mba: "idaapi.mbl_array_t",
     program: RenderedProgramSnapshot,
-) -> int | None:
-    """Persist a built linearized-program IR into the diag DB."""
-    try:
-        from d810.core.diag import get_diag_db
-        from d810.core.diag.mba_serializer import mba_to_block_snapshots
-        from d810.core.diag.snapshot import snapshot_rendered_program
-        from d810.core.diag.snapshot import snapshot_mba
+) -> "SnapshotRef | None":
+    """Persist a built linearized-program IR into the diag DB.
 
-        diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-        snapshot_row = (
-            diag_db.execute("SELECT MAX(id) FROM snapshots").fetchone()
-            if diag_db is not None
-            else None
+    Requests a fresh capture (so the rendered program lands under a
+    well-formed snapshots row) and emits a RenderedProgramObserved
+    event against the returned SnapshotRef. Returns the SnapshotRef
+    so callers can correlate downstream observations; returns
+    ``None`` when no diag subscriber is installed.
+    """
+    try:
+        from d810.hexrays.mba_serializer import mba_to_block_snapshots
+        from d810.hexrays.observability import request_capture_mba_snapshot
+        from d810.recon.observability import observe_rendered_program
+
+        snap = request_capture_mba_snapshot(
+            blocks=mba_to_block_snapshots(mba),
+            label="render_dump",
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+            maturity=MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN"),
+            phase="post_d810",
         )
-        snapshot_id = (
-            int(snapshot_row[0])
-            if snapshot_row is not None and snapshot_row[0] is not None
-            else None
-        )
-        if diag_db is not None and snapshot_id is None:
-            maturity_name = MATURITY_NAMES.get(int(getattr(mba, "maturity", -1)), "UNKNOWN")
-            snapshot_id = snapshot_mba(
-                diag_db,
-                mba_to_block_snapshots(mba),
-                label="render_dump",
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=maturity_name,
-                phase="post_d810",
-            )
-        if diag_db is not None and snapshot_id is not None:
-            snapshot_rendered_program(diag_db, snapshot_id, program)
-            return snapshot_id
+        if snap is not None:
+            observe_rendered_program(snap, program)
+            return snap
     except Exception:
         logger.debug("rendered program diag snapshot failed", exc_info=True)
     return None
@@ -1355,13 +1403,41 @@ def dump_linearized_dag_dot(
     *,
     expanded: bool = False,
 ) -> str:
-    """Build and render the unified state-level DAG as Graphviz DOT."""
+    """Build and render the unified state-level DAG as Graphviz DOT.
+
+    Prefers the canonical recon-time DAG (persisted by
+    ``build_round_discovery_context``) when available so the rendered
+    graph reflects what HCC actually consumed.  Falls back to live
+    rebuild from the post-mutation MBA only when no persisted DAG
+    exists; live rebuilds are intrinsically less stable across pipeline
+    mutations and may produce different anchor selections than recon
+    time.  The fallback output is explicitly labeled
+    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as
+    semantic ground truth.
+    """
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    dag = get_persisted_recon_dag(func_ea) if func_ea else None
+    rendered = None
+    if dag is not None:
+        rendered = render_linearized_state_dag_dot(dag, expanded=expanded)
+        return _prepend_dot_header_label(rendered, "persisted recon-time")
     dag = _build_live_linearized_state_dag(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return render_linearized_state_dag_dot(dag, expanded=expanded)
+    rendered = render_linearized_state_dag_dot(dag, expanded=expanded)
+    return _prepend_dot_header_label(rendered, "POST_MUTATION_INFERRED — not canonical")
+
+
+def _prepend_dot_header_label(rendered: str, label: str) -> str:
+    """Prepend a DOT comment header so callers can distinguish persisted
+    vs live-rebuild output without scanning structurally.
+
+    Uses a ``// `` comment line which is valid Graphviz syntax and is
+    preserved verbatim by ``dot`` rendering tools (or simply ignored).
+    """
+    return f"// LINEARIZED STATE DAG ({label})\n{rendered}"
 
 
 # -----------------------------------------------------------------------------

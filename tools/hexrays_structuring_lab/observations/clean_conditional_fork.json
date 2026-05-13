@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "case_id": "clean_conditional_fork",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:966b81fd4adc7a117a5cf4b8dda1addf0d5c7382a16e02ebbcd9c93e9648adb5",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "entry_serial": 1,
+    "entry_relative_start_ea": "0x0",
+    "entry_succ_relative_start_eas": [
+      "0x1c",
+      "0x1e"
+    ],
+    "arm_paths_relative_start_eas": [
+      [
+        "0x1c",
+        "0x58",
+        "0x2e"
+      ],
+      [
+        "0x1e",
+        "0x44",
+        "0x2e"
+      ]
+    ],
+    "join_serial": 5,
+    "join_relative_start_ea": "0x2e",
+    "join_pred_relative_start_eas": [
+      "0x44",
+      "0x58"
+    ],
+    "join_succ_relative_start_eas": [
+      "0x20"
+    ],
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 9,
+      "MMAT_PREOPTIMIZED": 9,
+      "MMAT_LOCOPT": 9
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        4,
+        12,
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        44
+      ],
+      "0x1c": [
+        55
+      ],
+      "0x1e": [
+        55
+      ],
+      "0x20": [
+        4,
+        9,
+        4,
+        55
+      ],
+      "0x2e": [
+        4,
+        4,
+        33,
+        31,
+        29,
+        21,
+        9,
+        4,
+        55
+      ],
+      "0x44": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        13,
+        9,
+        4,
+        55
+      ],
+      "0x58": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        12,
+        9,
+        4,
+        55
+      ]
+    },
+    "body_opcode_names_by_relative_start": {
+      "0x0": [
+        "op_4",
+        "op_12",
+        "op_9",
+        "op_4",
+        "op_4",
+        "op_33",
+        "op_31",
+        "op_4",
+        "op_44"
+      ],
+      "0x1c": [
+        "op_55"
+      ],
+      "0x1e": [
+        "op_55"
+      ],
+      "0x20": [
+        "op_4",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x2e": [
+        "op_4",
+        "op_4",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_21",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x44": [
+        "op_25",
+        "op_26",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_13",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x58": [
+        "op_25",
+        "op_26",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_12",
+        "op_9",
+        "op_4",
+        "op_55"
+      ]
+    }
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_clean_conditional_fork_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_clean_conditional_fork_GLBOPT1",
+    "from_block_count": 9,
+    "to_block_count": 6,
+    "vanished_count": 3,
+    "disposition_counts": {
+      "absorbed": 2,
+      "synthesized_only": 1
+    },
+    "cross_tab": {
+      "empty": {
+        "synthesized_only": 1
+      },
+      "has_content": {
+        "absorbed": 2
+      }
+    },
+    "outcome_class": "clean_structured_compaction",
+    "classification": "validated clean conditional fork compacts from 9 LOCOPT blocks to 6 GLBOPT1 blocks while preserving a simple if/else pseudocode shape; this is the friendly baseline for exact conditional-region emission"
+  },
+  "pseudocode": {
+    "before_lines": 10,
+    "after_lines": 10,
+    "changed": false,
+    "shape": "simple if/else assignment followed by a folded xor store and return",
+    "before_metrics": {
+      "returns": 1,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 1
+    },
+    "after_metrics": {
+      "returns": 1,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 1
+    }
+  }
+}

@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.typing import Union
 
 
@@ -43,6 +44,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     NopInstructions,
     ZeroStateWrite,
+    PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringSite,
@@ -181,6 +183,23 @@ class PatchZeroStateWrite:
 
 
 @dataclass(frozen=True)
+class PatchPromoteOperandToScalar:
+    """Promote a fused sub-instruction operand into a fresh kreg standalone insn."""
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    operand_side: str  # "l" | "r"
+
+    def to_graph_modification(self) -> PromoteOperandToScalar:
+        return PromoteOperandToScalar(
+            block_serial=self.block_serial,
+            host_ea=self.host_ea,
+            host_opcode=self.host_opcode,
+            operand_side=self.operand_side,
+        )
+
+
+@dataclass(frozen=True)
 class PatchEdgeSplitTrampoline:
     """Finalized edge-split trampoline materialization step."""
 
@@ -206,6 +225,7 @@ class PatchConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    instructions: tuple[InsnSnapshot, ...] = ()
 
     def to_graph_modification(self) -> CreateConditionalRedirect:
         return CreateConditionalRedirect(
@@ -213,6 +233,7 @@ class PatchConditionalRedirect:
             ref_block=self.ref_block,
             conditional_target=self.conditional_target,
             fallthrough_target=self.fallthrough_target,
+            instructions=self.instructions,
         )
 
 
@@ -225,12 +246,14 @@ class PatchInsertBlock:
     pred_serial: int
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...]
+    old_target_serial: int | None = None
 
     def to_graph_modification(self) -> InsertBlock:
         return InsertBlock(
             pred_serial=self.pred_serial,
             succ_serial=self.succ_serial,
             instructions=self.instructions,
+            old_target_serial=self.old_target_serial,
         )
 
 
@@ -255,6 +278,8 @@ class PatchDuplicateBlock:
             source_block=self.source_serial,
             target_block=self.target_serial,
             pred_serial=self.pred_serial,
+            conditional_target=self.conditional_target,
+            fallthrough_target=self.fallthrough_target,
         )
 
 
@@ -377,6 +402,7 @@ PatchOperation = Union[
     PatchRemoveEdge,
     PatchNopInstructions,
     PatchZeroStateWrite,
+    PatchPromoteOperandToScalar,
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
     PatchInsertBlock,
@@ -724,12 +750,18 @@ def _compile_legacy_block_step(
             )
             return LegacyBlockOperation(modification=modification, block_id=block_id), spec
 
-        case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
+        case InsertBlock(
+            pred_serial=pred,
+            succ_serial=succ,
+            instructions=insns,
+            old_target_serial=old_target,
+        ):
+            effective_old_target = succ if old_target is None else old_target
             block_id = allocator.alloc("insert_block")
             spec = PatchBlockSpec(
                 block_id=block_id,
                 kind="insert_block",
-                incoming_edge=PatchEdgeRef(source=pred, target=succ),
+                incoming_edge=PatchEdgeRef(source=pred, target=effective_old_target),
                 outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                 instructions=insns,
             )
@@ -760,6 +792,11 @@ def _compile_duplicate_block_step(
         return None
     if source_block.nsucc == 2 and modification.target_block is not None:
         return None
+    if source_block.nsucc != 2 and (
+        modification.conditional_target is not None
+        or modification.fallthrough_target is not None
+    ):
+        return None
 
     block_id = allocator.alloc("duplicate_block")
     incoming_edge = PatchEdgeRef(
@@ -787,14 +824,25 @@ def _compile_duplicate_block_step(
         clone_outgoing_edges.append(PatchEdgeRef(source=block_id, target=clone_target))
 
     elif source_block.nsucc == 2:
-        conditional_target = _infer_conditional_target(source_block)
-        if conditional_target is None:
+        source_conditional_target = _infer_conditional_target(source_block)
+        if source_conditional_target is None:
             return None
-        fallthrough_target = _infer_fallthrough_target(
-            source_block,
-            conditional_target=conditional_target,
+        conditional_target = (
+            modification.conditional_target
+            if modification.conditional_target is not None
+            else source_conditional_target
+        )
+        fallthrough_target = (
+            modification.fallthrough_target
+            if modification.fallthrough_target is not None
+            else _infer_fallthrough_target(
+                source_block,
+                conditional_target=source_conditional_target,
+            )
         )
         if fallthrough_target is None:
+            return None
+        if conditional_target == fallthrough_target:
             return None
 
         fallthrough_block_id = allocator.alloc("duplicate_block_fallthrough")
@@ -877,6 +925,9 @@ def _finalize_step(
         case PatchZeroStateWrite():
             return step
 
+        case PatchPromoteOperandToScalar():
+            return step
+
         case _PendingEdgeSplitTrampoline(
             modification=EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -906,6 +957,7 @@ def _finalize_step(
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                instructions=instructions,
             ),
             block_id=block_id,
             fallthrough_block_id=fallthrough_block_id,
@@ -925,10 +977,16 @@ def _finalize_step(
                 ref_block=relocation_map.rewrite_serial(ref),
                 conditional_target=relocation_map.rewrite_serial(conditional),
                 fallthrough_target=relocation_map.rewrite_serial(fallthrough),
+                instructions=_rewrite_instruction_snapshots(instructions, relocation_map),
             )
 
         case _PendingInsertBlock(
-            modification=InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns),
+            modification=InsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                instructions=insns,
+                old_target_serial=old_target,
+            ),
             block_id=block_id,
         ):
             assigned_serial = relocation_map.assigned_serial_for(block_id)
@@ -940,6 +998,11 @@ def _finalize_step(
                 pred_serial=pred,
                 succ_serial=relocation_map.rewrite_serial(succ),
                 instructions=_rewrite_instruction_snapshots(insns, relocation_map),
+                old_target_serial=(
+                    None
+                    if old_target is None
+                    else relocation_map.rewrite_serial(old_target)
+                ),
             )
 
         case _PendingDuplicateBlock(
@@ -1095,6 +1158,24 @@ def _finalize_step(
             raise TypeError(f"Unsupported PatchPlan step: {type(step).__name__}")
 
 
+@algorithm_metadata(
+    algorithm_id="cfg.compile_patch_plan",
+    family="tail_block_duplication_and_redirect",
+    summary="Compiles abstract GraphModification intents into ordered PatchPlan steps.",
+    use_cases=(
+        "Materialize redirect, duplication, pred-split, and private-suffix edits into an execution-safe patch order.",
+        "Simulate or validate CFG mutations before they hit the live MBA.",
+    ),
+    examples=(
+        "Compile RedirectGoto/RedirectBranch edits into a patch plan preview inside the executor.",
+        "Lower EdgeRedirectViaPredSplit into symbolic trampoline blocks when a shared suffix must split by predecessor.",
+    ),
+    tags=("cfg", "patch-plan", "redirect", "duplication", "simulation"),
+    related_paths=(
+        "src/d810/cfg/plan.py",
+        "src/d810/cfg/modification_builder.py",
+    ),
+)
 def compile_patch_plan(
     modifications: list[GraphModification],
     cfg: FlowGraph | None = None,
@@ -1137,16 +1218,33 @@ def compile_patch_plan(
             case ZeroStateWrite(block_serial=serial, insn_ea=ea):
                 raw_steps.append(PatchZeroStateWrite(block_serial=serial, insn_ea=ea))
 
+            case PromoteOperandToScalar(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                operand_side=side,
+            ):
+                raw_steps.append(PatchPromoteOperandToScalar(
+                    block_serial=serial,
+                    host_ea=host_ea,
+                    host_opcode=opcode,
+                    operand_side=side,
+                ))
+
             case EdgeRedirectViaPredSplit(
                 src_block=src,
                 old_target=old,
                 new_target=new,
                 via_pred=pred,
+                clone_until=clone_until,
             ):
                 if cfg is None:
                     raise ValueError(
                         "compile_patch_plan requires FlowGraph context for EdgeRedirectViaPredSplit"
                     )
+                if clone_until is not None:
+                    raw_steps.append(LegacyBlockOperation(modification=modification))
+                    continue
                 block_id = allocator.alloc("edge_split")
                 new_blocks.append(
                     PatchBlockSpec(
@@ -1227,7 +1325,13 @@ def compile_patch_plan(
                         )
                     )
 
-            case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
+            case InsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                instructions=insns,
+                old_target_serial=old_target,
+            ):
+                effective_old_target = succ if old_target is None else old_target
                 if cfg is None:
                     legacy_step, spec = _compile_legacy_block_step(modification, allocator)
                     raw_steps.append(legacy_step)
@@ -1238,7 +1342,10 @@ def compile_patch_plan(
                         PatchBlockSpec(
                             block_id=block_id,
                             kind="insert_block",
-                            incoming_edge=PatchEdgeRef(source=pred, target=succ),
+                            incoming_edge=PatchEdgeRef(
+                                source=pred,
+                                target=effective_old_target,
+                            ),
                             outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                             instructions=insns,
                         )
@@ -1452,6 +1559,7 @@ __all__ = [
     "PatchRemoveEdge",
     "PatchNopInstructions",
     "PatchZeroStateWrite",
+    "PatchPromoteOperandToScalar",
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
     "PatchInsertBlock",

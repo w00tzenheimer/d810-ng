@@ -671,6 +671,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
+        self._post_d810_pipeline_last_maturity: int = -1
         # When the PassPipeline fires and applies changes, we must skip all
         # remaining block optimizer rule calls for the rest of this maturity.
         # IDA will re-enter at the next maturity with fresh block pointers.
@@ -705,7 +706,57 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         each new function decompilation.
         """
         self._pipeline_last_maturity = -1
+        self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
+
+    def _is_loop_carrier_only_pipeline(self) -> bool:
+        pipeline = self._pass_pipeline
+        if pipeline is None:
+            return False
+        passes = tuple(getattr(pipeline, "passes", ()) or ())
+        if not passes:
+            return False
+        return all(
+            getattr(pass_, "name", None) == "loop_carrier_backedge_refresh"
+            for pass_ in passes
+        )
+
+    def _run_pass_pipeline_once(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+        *,
+        phase_label: str,
+    ) -> None:
+        if self._pass_pipeline is None:
+            return
+        try:
+            func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
+            optimizer_logger.info(
+                "PassPipeline: running %d pass(es) on function %s at %s",
+                len(self._pass_pipeline.passes),
+                func_ea_hex,
+                phase_label,
+            )
+            total = self._pass_pipeline.run(mba)
+            if total > 0:
+                optimizer_logger.info(
+                    "PassPipeline: applied %d total modification(s) on function %s at %s",
+                    total,
+                    func_ea_hex,
+                    phase_label,
+                )
+                self._pipeline_just_fired = True
+            else:
+                optimizer_logger.debug(
+                    "PassPipeline: no modifications applied on function %s at %s",
+                    func_ea_hex,
+                    phase_label,
+                )
+        except Exception:
+            optimizer_logger.exception(
+                "PassPipeline: error during %s processing",
+                phase_label,
+            )
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -830,25 +881,22 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # maturity level. Policy decisions (capture/logging/etc.) are handled
             # by subscribers in the manager layer.
             # --- Diagnostic: post_d810 snapshot for the PREVIOUS maturity ---
-            _post_snap_id = None
+            _post_snap_ref = None
             if self.current_maturity is not None:
                 try:
-                    from d810.core.diag import get_diag_db
-                    from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                    from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                    from d810.hexrays.mba_serializer import mba_to_block_snapshots
+                    from d810.hexrays.observability import (
+                        request_capture_mba_snapshot,
+                    )
 
                     _prev_mat_name = maturity_to_string(self.current_maturity)
-                    _diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-                    if _diag_conn is not None:
-                        _snap_blocks = mba_to_block_snapshots(mba)
-                        _post_snap_id = _snap_mba(
-                            _diag_conn,
-                            _snap_blocks,
-                            label=f"maturity_{_prev_mat_name}_post_d810",
-                            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                            maturity=_prev_mat_name,
-                            phase="post_d810",
-                        )
+                    _post_snap_ref = request_capture_mba_snapshot(
+                        blocks=mba_to_block_snapshots(mba),
+                        label=f"maturity_{_prev_mat_name}_post_d810",
+                        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                        maturity=_prev_mat_name,
+                        phase="post_d810",
+                    )
                 except Exception:
                     pass  # diagnostic, never gates decompilation
 
@@ -857,7 +905,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     DecompilationEvent.POST_D810_CAPTURE,
                     mba,
                     int(self.current_maturity),
-                    _post_snap_id,
+                    _post_snap_ref,
+                )
+
+            if (
+                self._pass_pipeline is not None
+                and int(self.current_maturity) == int(ida_hexrays.MMAT_GLBOPT1)
+                and self._post_d810_pipeline_last_maturity != int(self.current_maturity)
+                and self._is_loop_carrier_only_pipeline()
+            ):
+                self._post_d810_pipeline_last_maturity = int(self.current_maturity)
+                self._run_pass_pipeline_once(
+                    mba,
+                    phase_label="MMAT_GLBOPT1_post_d810",
                 )
 
             self.current_maturity = mba.maturity
@@ -866,25 +926,137 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._invalidate_flow_context("maturity changed")
 
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
-            _pre_snap_id = None
-            _pre_diag_conn = None
+            _pre_snap_ref = None
             try:
-                from d810.core.diag import get_diag_db
-                from d810.core.diag.mba_serializer import mba_to_block_snapshots
-                from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                from d810.hexrays.mba_serializer import mba_to_block_snapshots
+                from d810.hexrays.observability import (
+                    request_capture_mba_snapshot,
+                )
 
                 _new_mat_name = maturity_to_string(self.current_maturity)
-                _pre_diag_conn = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-                if _pre_diag_conn is not None:
-                    _snap_blocks = mba_to_block_snapshots(mba)
-                    _pre_snap_id = _snap_mba(
-                        _pre_diag_conn,
-                        _snap_blocks,
-                        label=f"maturity_{_new_mat_name}_pre_d810",
-                        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                        maturity=_new_mat_name,
-                        phase="pre_d810",
+                _pre_snap_ref = request_capture_mba_snapshot(
+                    blocks=mba_to_block_snapshots(mba),
+                    label=f"maturity_{_new_mat_name}_pre_d810",
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity=_new_mat_name,
+                    phase="pre_d810",
+                )
+            except Exception:
+                pass  # diagnostic, never gates decompilation
+
+            # uee-b7ze renderer-boundary isolation: when
+            # ``D810_FORCE_BLK129_TO_BLK130`` is set AND we're entering
+            # MMAT_LVARS for the sub_7FFD3338C040 entry_ea, force
+            # blk[129]'s 2-way conditional to unconditionally route to
+            # blk[130].  Diagnostic-only knob: tests whether IDA's
+            # pseudocode renderer drops the call because the renderer
+            # proves blk[130]'s arm of blk[129] unreachable, vs. some
+            # other renderer-side DCE.  Acceptance: final --- AFTER ---
+            # contains "0x11, 0x4A".
+            try:
+                import os as _os_force
+                _force_env = _os_force.environ.get(
+                    "D810_FORCE_BLK129_TO_BLK130", "",
+                )
+                # Fire on entering MMAT_GLBOPT3 (the last maturity
+                # d810 observes before MMAT_LVARS).  d810 doesn't get
+                # a per-block callback at MMAT_LVARS itself, so this
+                # is the latest moment we can mutate the live mba
+                # before IDA's variable analysis + ctree generation.
+                _is_late_pre_lvars = int(self.current_maturity) in (
+                    int(ida_hexrays.MMAT_GLBOPT3),
+                    int(ida_hexrays.MMAT_LVARS),
+                )
+                if _force_env and _is_late_pre_lvars:
+                    from d810.hexrays.mutation.cfg_mutations import (
+                        change_1way_block_successor,
                     )
+                    _qty = int(getattr(mba, "qty", 0) or 0)
+                    if _qty > 130:
+                        _b129 = mba.get_mblock(129)
+                        _b130 = mba.get_mblock(130)
+                        if _b129 is not None and _b130 is not None:
+                            try:
+                                _b129_type = int(_b129.type)
+                                _b129_nsucc = int(_b129.nsucc())
+                                _b129_succs = tuple(
+                                    int(_b129.succ(i))
+                                    for i in range(_b129_nsucc)
+                                )
+                                _b129_tail_op = (
+                                    int(_b129.tail.opcode)
+                                    if _b129.tail is not None else -1
+                                )
+                                # Dump blk[129] condition + raw context
+                                # so we can correlate with renderer
+                                # behavior even if the patch fails.
+                                main_logger.warning(
+                                    "FORCE_BLK129 LVARS pre-patch:"
+                                    " type=%d nsucc=%d succs=%s"
+                                    " tail_opcode=%d (env=%r)",
+                                    _b129_type, _b129_nsucc,
+                                    list(_b129_succs), _b129_tail_op,
+                                    _force_env,
+                                )
+                                # Try to coerce to a clean 1-way goto
+                                # to blk[130].  If blk[129] is already
+                                # 1-way, just retarget; else convert.
+                                if _b129_nsucc == 1:
+                                    _ok = change_1way_block_successor(
+                                        _b129, 130, verify=False,
+                                    )
+                                    main_logger.warning(
+                                        "FORCE_BLK129 retarget 1-way -> 130: %s",
+                                        _ok,
+                                    )
+                                else:
+                                    # 2-way: rewrite tail to m_goto.
+                                    # Drop conditional jump, set type
+                                    # BLT_1WAY, succset = [130],
+                                    # blk[130] preds += blk[129].
+                                    _tail = _b129.tail
+                                    if _tail is not None:
+                                        # Replace tail with m_goto blk[130]
+                                        _tail.opcode = ida_hexrays.m_goto
+                                        # Operand layout for m_goto:
+                                        # l = mop_b(target).
+                                        _tail.l.t = ida_hexrays.mop_b
+                                        _tail.l.b = 130
+                                        _tail.l.size = 0
+                                        # Clear r/d
+                                        _tail.r.t = ida_hexrays.mop_z
+                                        _tail.d.t = ida_hexrays.mop_z
+                                    # Update succset.
+                                    for _s in list(_b129.succset):
+                                        _succ_blk = mba.get_mblock(int(_s))
+                                        if _succ_blk is not None:
+                                            try:
+                                                _succ_blk.predset._del(
+                                                    _b129.serial,
+                                                )
+                                            except Exception:
+                                                pass
+                                        _b129.succset._del(int(_s))
+                                    _b129.succset.push_back(130)
+                                    if 130 not in [
+                                        int(p) for p in _b130.predset
+                                    ]:
+                                        _b130.predset.push_back(
+                                            _b129.serial,
+                                        )
+                                    _b129.type = ida_hexrays.BLT_1WAY
+                                    _b129.flags |= ida_hexrays.MBL_GOTO
+                                    _b129.mark_lists_dirty()
+                                    _b130.mark_lists_dirty()
+                                    mba.mark_chains_dirty()
+                                    main_logger.warning(
+                                        "FORCE_BLK129 rewrite 2-way -> 1-way goto blk[130] applied"
+                                    )
+                            except Exception as _e_force:
+                                main_logger.warning(
+                                    "FORCE_BLK129 patch raised: %s",
+                                    _e_force,
+                                )
             except Exception:
                 pass  # diagnostic, never gates decompilation
 
@@ -923,8 +1095,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             func_ea=mba_ea,
                             maturity=mba.maturity,
                             phase="pre_d810",
-                            snapshot_id=_pre_snap_id,
-                            diag_conn=_pre_diag_conn,
+                            snapshot=_pre_snap_ref,
                         )
                     except Exception:
                         optimizer_logger.exception("FactLifecycleRuntime (block) failed")
@@ -954,37 +1125,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # level per decompilation.  No-op when _pass_pipeline is None.
             if (
                 self._pass_pipeline is not None
-                and self.current_maturity == ida_hexrays.MMAT_GLBOPT2
-                and self._pipeline_last_maturity != self.current_maturity
+                and int(self.current_maturity) == int(ida_hexrays.MMAT_GLBOPT2)
+                and self._pipeline_last_maturity != int(self.current_maturity)
             ):
-                self._pipeline_last_maturity = self.current_maturity
-                try:
-                    func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
-                    optimizer_logger.info(
-                        "PassPipeline: running %d pass(es) on function %s at MMAT_GLBOPT2",
-                        len(self._pass_pipeline.passes),
-                        func_ea_hex,
-                    )
-                    total = self._pass_pipeline.run(mba)
-                    if total > 0:
-                        optimizer_logger.info(
-                            "PassPipeline: applied %d total modification(s) on function %s",
-                            total,
-                            func_ea_hex,
-                        )
-                        # Mark that pipeline mutations happened. Block optimizer
-                        # rules must NOT run for the rest of this maturity -
-                        # their mop_t pointers are now stale and would segfault.
-                        self._pipeline_just_fired = True
-                    else:
-                        optimizer_logger.debug(
-                            "PassPipeline: no modifications applied on function %s",
-                            func_ea_hex,
-                        )
-                except Exception:
-                    optimizer_logger.exception(
-                        "PassPipeline: error during MMAT_GLBOPT2 processing"
-                    )
+                self._pipeline_last_maturity = int(self.current_maturity)
+                # Marking _pipeline_just_fired when this applies remains
+                # important: block optimizer rules must not touch stale mop_t
+                # pointers after the pipeline mutates CFG.
+                self._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
 
     # statistics are managed centrally via the stats object
 
@@ -1167,6 +1315,37 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         cfg_rule, blk.mba.entry_ea
                     )
                 if guard:
+                    # uee-b7ze causality fence: when
+                    # ``D810_FENCE_INSN_OPT_AT_GLBOPT1`` is set, also
+                    # gate FlowOptimizationRule.optimize at GLBOPT1
+                    # (covers JumpFixer / IndirectBranchResolver /
+                    # IdentityCallResolver / etc.).  HCC's hodur
+                    # unflattener fires through a SEPARATE
+                    # orchestration path (not cfg_rule.optimize), so
+                    # this fence does NOT block HCC.
+                    try:
+                        import os as _os
+                        if (
+                            _os.environ.get(
+                                "D810_FENCE_INSN_OPT_AT_GLBOPT1", "",
+                            )
+                            and int(self.current_maturity)
+                            == int(ida_hexrays.MMAT_GLBOPT1)
+                        ):
+                            if not getattr(
+                                cfg_rule,
+                                "_fence_logged_glbopt1",
+                                False,
+                            ):
+                                optimizer_logger.info(
+                                    "FENCE_INSN_OPT_AT_GLBOPT1 active for"
+                                    " FlowOptimizationRule %s",
+                                    type(cfg_rule).__name__,
+                                )
+                                cfg_rule._fence_logged_glbopt1 = True
+                            continue
+                    except Exception:
+                        pass
                     nb_patch = cfg_rule.optimize(blk)
                     if nb_patch > 0:
                         optimizer_logger.info(
@@ -1253,8 +1432,12 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
         try:
-            from d810.core.diag import open_diag_session
-            open_diag_session(int(mba.entry_ea))
+            from d810.core.observability import open_observability_session
+            # open_observability_session opens the diag session
+            # (idempotent re-installation on re-decompilation) by
+            # delegating to the registered backend; nothing here
+            # imports d810.core.diag.
+            open_observability_session(int(mba.entry_ea))
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.STARTED)
@@ -1405,8 +1588,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         @param ct: (control_graph_t *)"""
         main_logger.info("Structural analysis has been finished")
         try:
-            from d810.core.diag import close_diag_session
-            close_diag_session()
+            from d810.core.observability import close_observability_session
+            # close_observability_session unsubscribes event-handler
+            # subscribers and closes the diag DB via the registered
+            # backend; nothing here imports d810.core.diag.
+            close_observability_session()
         except Exception:
             pass  # diagnostic, never gates decompilation
         self.callback(DecompilationEvent.FINISHED)

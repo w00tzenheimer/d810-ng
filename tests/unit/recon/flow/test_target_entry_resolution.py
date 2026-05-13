@@ -9,7 +9,11 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
 )
-from d810.recon.flow.target_entry_resolution import resolve_edge_target_entry
+from d810.recon.flow.target_entry_resolution import (
+    resolve_edge_target_entry,
+    resolve_exact_dag_entry_for_state,
+    resolve_semantic_reference_entry_for_state,
+)
 
 
 def _node(
@@ -79,6 +83,52 @@ class TestResolveEdgeTargetEntry:
         assert result.rejection_reason is None
         assert result.original_dispatcher_entry is None
 
+    def test_prefers_same_state_head_over_interior_non_dispatcher_target(self):
+        semantic_head = _node(entry=24, handler=24, state=0x11)
+        interior_target = _node(entry=30, handler=30, state=0x11)
+        edge = _edge(
+            source_handler=10,
+            target_key=interior_target.key,
+            target_entry=30,
+            target_state=0x11,
+        )
+
+        result = resolve_edge_target_entry(
+            edge,
+            node_by_key={
+                semantic_head.key: semantic_head,
+                interior_target.key: interior_target,
+            },
+            dispatcher_region={2, 6},
+        )
+
+        assert result.target_entry == 24
+        assert result.rejection_reason is None
+        assert result.original_dispatcher_entry is None
+
+    def test_preserves_dispatcher_resolved_entry_over_stale_raw_exact_node(self):
+        stale_exact = _node(entry=110, handler=110, state=0x3E7EA8B8)
+        dispatcher_resolved = _node(entry=111, handler=111, state=0x3FFC21D1)
+        edge = _edge(
+            source_handler=211,
+            target_key=dispatcher_resolved.key,
+            target_entry=111,
+            target_state=0x3E7EA8B8,
+        )
+
+        result = resolve_edge_target_entry(
+            edge,
+            node_by_key={
+                stale_exact.key: stale_exact,
+                dispatcher_resolved.key: dispatcher_resolved,
+            },
+            dispatcher_region={2, 107},
+        )
+
+        assert result.target_entry == 111
+        assert result.rejection_reason is None
+        assert result.original_dispatcher_entry is None
+
     def test_resolves_dispatcher_target_to_non_bst_block_from_target_node(self):
         node = _node(entry=2, handler=2, state=0x11, exclusive=(24,))
         edge = _edge(
@@ -91,6 +141,28 @@ class TestResolveEdgeTargetEntry:
         result = resolve_edge_target_entry(
             edge,
             node_by_key={node.key: node},
+            dispatcher_region={2, 6},
+        )
+
+        assert result.target_entry == 24
+        assert result.original_dispatcher_entry == 2
+
+    def test_prefers_same_state_non_dispatcher_head_over_interior_owned_block(self):
+        dispatcher_node = _node(entry=2, handler=2, state=0x11, exclusive=(30,))
+        semantic_head = _node(entry=24, handler=24, state=0x11)
+        edge = _edge(
+            source_handler=10,
+            target_key=dispatcher_node.key,
+            target_entry=2,
+            target_state=0x11,
+        )
+
+        result = resolve_edge_target_entry(
+            edge,
+            node_by_key={
+                dispatcher_node.key: dispatcher_node,
+                semantic_head.key: semantic_head,
+            },
             dispatcher_region={2, 6},
         )
 
@@ -147,3 +219,79 @@ class TestResolveEdgeTargetEntry:
         )
         assert unresolved.target_entry is None
         assert unresolved.rejection_reason == "dispatcher_target_entry"
+
+
+def test_resolve_exact_dag_entry_for_state_prefers_exact_non_dispatcher_head():
+    fallback_node = _node(entry=71, handler=71, state=0x4C77464F)
+    exact_node = _node(entry=66, handler=66, state=0x4C77464F)
+    dag = type("Dag", (), {"nodes": (fallback_node, exact_node)})()
+
+    entry = resolve_exact_dag_entry_for_state(
+        dag,
+        0x4C77464F,
+        dispatcher_region={2, 71},
+    )
+
+    assert entry == 66
+
+
+def test_resolve_semantic_reference_entry_for_state_resolves_direct_state_label():
+    semantic_reference_program = type(
+        "SemanticReferenceProgram",
+        (),
+        {
+            "nodes": (
+                type(
+                    "Node",
+                    (),
+                    {
+                        "label_text": "STATE_4C77464F",
+                        "entry_anchor": 66,
+                    },
+                )(),
+            )
+        },
+    )()
+
+    entry = resolve_semantic_reference_entry_for_state(
+        0x4C77464F,
+        semantic_reference_program=semantic_reference_program,
+        dispatcher_region={2, 71},
+    )
+
+    assert entry == 66
+
+
+def test_resolve_semantic_reference_entry_for_state_allows_dispatcher_exact_head():
+    semantic_reference_program = type(
+        "SemanticReferenceProgram",
+        (),
+        {
+            "nodes": (
+                type(
+                    "Node",
+                    (),
+                    {
+                        "label_text": "STATE_4E69F350",
+                        "entry_anchor": 72,
+                        "node_kind": "state_family",
+                    },
+                )(),
+            )
+        },
+    )()
+
+    denied = resolve_semantic_reference_entry_for_state(
+        0x4E69F350,
+        semantic_reference_program=semantic_reference_program,
+        dispatcher_region={66, 71, 72},
+    )
+    allowed = resolve_semantic_reference_entry_for_state(
+        0x4E69F350,
+        semantic_reference_program=semantic_reference_program,
+        dispatcher_region={66, 71, 72},
+        allow_dispatcher_exact_head=True,
+    )
+
+    assert denied is None
+    assert allowed == 72

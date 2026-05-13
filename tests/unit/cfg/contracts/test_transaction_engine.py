@@ -60,9 +60,10 @@ class TestTransactionResultFactory:
 
     def test_failed_factory(self) -> None:
         exc = _make_contract_error("projected")
-        result = TransactionResult.failed("projected_contract", exc)
+        result = TransactionResult.failed("projected_contract", exc, detail="projected")
         assert result.success is False
         assert result.failure_phase == "projected_contract"
+        assert result.failure_detail == "projected"
         assert result.classification is not None
         assert result.classification.rollback_needed is False
         assert result.error is exc
@@ -171,6 +172,22 @@ class TestCfgTransactionEngine:
 
         assert result.success is False
         assert result.failure_phase == "native_verify"
+        assert result.classification is not None
+        assert result.classification.rollback_needed is True
+
+    def test_apply_lower_raises_exception_uses_translator_phase_detail(
+        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+    ) -> None:
+        translator.lower.side_effect = RuntimeError("boom")
+        translator.last_lowering_phase = "backend_apply"
+        translator.last_lowering_subphase = "optimize_local"
+        engine = CfgTransactionEngine(translator)
+
+        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba)
+
+        assert result.success is False
+        assert result.failure_phase == "backend_apply"
+        assert result.failure_detail == "optimize_local"
         assert result.classification is not None
         assert result.classification.rollback_needed is True
 

@@ -6,6 +6,10 @@ from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+    resolve_fake_jump_target,
+    should_skip_fake_jump_predecessor,
+)
 from d810.evaluator.hexrays_microcode.tracker import get_all_possibles_values
 
 unflat_logger = getLogger("D810.unflat")
@@ -78,9 +82,10 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             # (10x threshold) AND we have very few resolved paths (< 3). This handles:
             # - Simple cases: few paths, strict check (original behavior)
             # - OLLVM FLA: many resolved paths, relax ratio requirement
-            few_resolved = len(resolved_histories) < 3
-            extreme_ratio = unresolved_count > 10 * len(resolved_histories)
-            if few_resolved and extreme_ratio:
+            if should_skip_fake_jump_predecessor(
+                len(resolved_histories),
+                unresolved_count,
+            ):
                 unflat_logger.warning(
                     "Pred %s has extreme unresolved:resolved ratio (%d vs %d) with few resolved - "
                     "unsafe to ignore unresolved, skipping",
@@ -124,54 +129,30 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             return False
         jmp_ins = fake_loop_block.tail
         compared_value = jmp_ins.r.nnn.value
-        jmp_taken = False
-        jmp_not_taken = False
-        dst_serial = None
-        if jmp_ins.opcode == ida_hexrays.m_jz:
-            jmp_taken = all(
-                [
-                    possible_value == compared_value
-                    for possible_value in pred_comparison_values
-                ]
-            )
-
-            jmp_not_taken = all(
-                [
-                    possible_value != compared_value
-                    for possible_value in pred_comparison_values
-                ]
-            )
-        elif jmp_ins.opcode == ida_hexrays.m_jnz:
-            jmp_taken = all(
-                [
-                    possible_value != compared_value
-                    for possible_value in pred_comparison_values
-                ]
-            )
-            jmp_not_taken = all(
-                [
-                    possible_value == compared_value
-                    for possible_value in pred_comparison_values
-                ]
-            )
-        # TODO: handles other jumps cases
-        if jmp_taken:
+        resolution = resolve_fake_jump_target(
+            opcode=jmp_ins.opcode,
+            compared_value=compared_value,
+            pred_comparison_values=pred_comparison_values,
+            taken_target=jmp_ins.d.b,
+            fallthrough_target=fake_loop_block.nextb.serial,
+            jz_opcode=ida_hexrays.m_jz,
+            jnz_opcode=ida_hexrays.m_jnz,
+        )
+        if resolution.always_taken:
             unflat_logger.info(
                 "It seems that '%s' is always taken when coming from %s: %s",
                 format_minsn_t(jmp_ins),
                 pred.serial,
                 pred_comparison_values,
             )
-            dst_serial = jmp_ins.d.b
-        if jmp_not_taken:
+        if resolution.always_not_taken:
             unflat_logger.info(
                 "It seems that '%s' is never taken when coming from %s: %s",
                 format_minsn_t(jmp_ins),
                 pred.serial,
                 pred_comparison_values,
             )
-            dst_serial = fake_loop_block.nextb.serial
-        if dst_serial is None:
+        if resolution.new_target is None:
             unflat_logger.debug(
                 "Jump seems legit '%s' from %s: %s",
                 format_minsn_t(jmp_ins),
@@ -189,7 +170,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             "Making pred %s with value %s goto %s (%s)",
             pred.serial,
             pred_comparison_values,
-            dst_serial,
+            resolution.new_target,
             format_minsn_t(jmp_ins),
         )
         if self.dump_intermediate_microcode:
@@ -198,7 +179,11 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                 self.log_dir,
                 f"{self.cur_maturity_pass}_after_fake_jump",
             )
-        return change_1way_block_successor(pred, dst_serial, verify=False)
+        return change_1way_block_successor(
+            pred,
+            resolution.new_target,
+            verify=False,
+        )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if self._verify_failed:

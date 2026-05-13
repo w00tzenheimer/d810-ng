@@ -676,6 +676,14 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             return None
 
         cloned = self.mba.copy_block(cond_blk, self.mba.qty - 1)
+        # MBL_KEEP (0x10000) so optimize_global's structural sweep doesn't
+        # cull this clone -- mba.copy_block does not inherit it.  See memory
+        # ``ida_optimize_global_cfg_kill``.
+        if cloned is not None:
+            try:
+                cloned.flags |= 0x10000
+            except Exception:
+                pass
         cloned = self.mba.get_mblock(cloned.serial)
         if cloned is None:
             return None

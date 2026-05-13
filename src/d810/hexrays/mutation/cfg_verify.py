@@ -72,7 +72,7 @@ def safe_verify(
 
     try:
         mba.verify(True)
-    except RuntimeError as e:
+    except Exception as e:
         interr_code = catcher.last_code if catcher is not None else None
         if interr_code is not None:
             logger_func(

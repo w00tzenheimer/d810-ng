@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from d810.core.logging import getLogger
+from d810.core.algorithm_metadata import algorithm_metadata
 from dataclasses import dataclass
 
 from d810.cfg.flow.state_var_alias import VarRef
@@ -159,6 +160,24 @@ class DispatchTable:
         return f"DispatchTable([{entries_str}]{default_str})"
 
 
+@algorithm_metadata(
+    algorithm_id="cfg.compare_chain_resolver",
+    family="compare_chain_interval_dispatch_reconstruction",
+    summary="Reconstructs dispatch tables from equality-compare chains over state aliases.",
+    use_cases=(
+        "Recover a dispatcher table when flattened code uses linear compare chains instead of a switch.",
+        "Normalize compare-based dispatch information before BST or interval reconstruction merges it.",
+    ),
+    examples=(
+        "Resolve `if (state == 0x42) goto A; if (state == 0x100) goto B;` into `{0x42: A, 0x100: B}`.",
+        "Merge compare-chain results with interval-dispatch analysis to seed handler-entry discovery.",
+    ),
+    tags=("compare-chain", "dispatcher", "state-machine", "intervals"),
+    related_paths=(
+        "src/d810/cfg/flow/compare_chain.py",
+        "src/d810/recon/flow/bst_analysis.py",
+    ),
+)
 class CompareChainResolver:
     """Extract dispatch tables from compare chains in flattened control flow.
 

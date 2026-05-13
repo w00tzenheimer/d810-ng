@@ -7,11 +7,26 @@ import time
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
 
-from d810.core.diag.formatting import format_block_id
+# Neutral observation dataclasses live under d810.core.observability_models
+# so the runtime producer and the SQLite sink can share them without a
+# layer violation. The names are re-exported here for back-compat with
+# existing callers (`from d810.core.diag.snapshot import BlockSnapshot`).
+from d810.core.formatting import format_block_id
+from d810.core.observability_models import (
+    BlockSnapshot as BlockSnapshot,
+    DagEdge as DagEdge,
+    DagNode as DagNode,
+    InstructionSnapshot as InstructionSnapshot,
+    Modification as Modification,
+    _fnv1a_64,
+    dag_node_diagnostic_state as dag_node_diagnostic_state,
+)
 from d810.core.typing import Any, Iterable, Mapping
 
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_SYNTHETIC_DAG_NODE_STATE_PREFIX = 0xD810000000000000
+_SYNTHETIC_DAG_NODE_STATE_MASK = 0x0000FFFFFFFFFFFF
 
 
 def _safe_int(val: int | None) -> int | None:
@@ -37,163 +52,82 @@ def _dual(val: int | None) -> tuple[str | None, int | None]:
     return (hex_text, i64)
 
 
-@dataclass
-class InstructionSnapshot:
-    """Snapshot of a single microcode instruction.
+def _hex64_or_none(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return f"0x{int(value) & _MASK64:016x}"
 
-    Attributes:
-        index: Instruction index within the block.
-        ea: Effective address.
-        opcode: Numeric opcode.
-        opcode_name: Human-readable opcode name (e.g. "m_mov").
-        dest_type: Destination mop type (e.g. "mop_S", "mop_r").
-        dest_stkoff: Stack offset if dest is mop_S.
-        dest_size: Destination operand size in bytes.
-        src_l_type: Left source operand mop type.
-        src_l_stkoff: Left source stack offset if mop_S.
-        src_l_value: Left source immediate value if mop_n.
-        src_r_type: Right source operand mop type.
-        src_r_stkoff: Right source stack offset if mop_S.
-        src_r_value: Right source immediate value if mop_n.
-        dstr: IDA's display string for the instruction.
-        meta: Optional JSON metadata (iprops, sub-insn tree, etc.).
+
+def _insn_ea_fingerprint(block: BlockSnapshot) -> str:
+    return json.dumps(
+        [_hex64_or_none(insn.ea) for insn in block.instructions],
+        separators=(",", ":"),
+    )
+
+
+def _opcode_fingerprint(block: BlockSnapshot) -> str:
+    return json.dumps(
+        [int(insn.opcode) for insn in block.instructions],
+        separators=(",", ":"),
+    )
+
+
+def _operand_fingerprint(block: BlockSnapshot) -> str:
+    """Return a stable operand-shape fingerprint for a block body.
+
+    This deliberately avoids ``dstr`` because the display string is a human
+    rendering and can change independently of the microcode shape.
     """
-
-    index: int
-    ea: int
-    opcode: int
-    opcode_name: str
-    dest_type: str | None = None
-    dest_stkoff: int | None = None
-    dest_size: int | None = None
-    src_l_type: str | None = None
-    src_l_stkoff: int | None = None
-    src_l_value: int | None = None
-    src_r_type: str | None = None
-    src_r_stkoff: int | None = None
-    src_r_value: int | None = None
-    dstr: str = ""
-    meta: str | None = None
-
-    def __str__(self) -> str:
-        return self.dstr
+    rows: list[dict[str, object | None]] = []
+    for insn in block.instructions:
+        rows.append({
+            "d_t": insn.dest_type,
+            "d_o": _safe_int(insn.dest_stkoff),
+            "d_s": _safe_int(insn.dest_size),
+            "l_t": insn.src_l_type,
+            "l_o": _safe_int(insn.src_l_stkoff),
+            "l_v": _hex64_or_none(insn.src_l_value),
+            "r_t": insn.src_r_type,
+            "r_o": _safe_int(insn.src_r_stkoff),
+            "r_v": _hex64_or_none(insn.src_r_value),
+        })
+    return json.dumps(rows, sort_keys=True, separators=(",", ":"))
 
 
-@dataclass
-class BlockSnapshot:
-    """Snapshot of a single microcode block.
-
-    Attributes:
-        serial: Block serial number.
-        block_type: Numeric block type (BLT_1WAY=1, BLT_2WAY=2, etc.).
-        type_name: Human-readable block type name.
-        start_ea: Start effective address (may be None).
-        end_ea: End effective address (may be None).
-        nsucc: Number of successors.
-        npred: Number of predecessors.
-        succs: List of successor block serials.
-        preds: List of predecessor block serials.
-        instructions: List of instruction snapshots.
-        meta: Optional JSON metadata (valranges, USE/DEF/DNU, flags).
-    """
-
-    serial: int
-    block_type: int
-    type_name: str
-    start_ea: int | None = None
-    end_ea: int | None = None
-    nsucc: int = 0
-    npred: int = 0
-    succs: list[int] = field(default_factory=list)
-    preds: list[int] = field(default_factory=list)
-    instructions: list[InstructionSnapshot] = field(default_factory=list)
-    meta: str | None = None
-
-    def __str__(self) -> str:
-        block_id = format_block_id(
-            self.serial,
-            start_ea=self.start_ea,
-            synthetic=self.start_ea is None,
-        )
-        header = (
-            f"{block_id} {self.type_name} "
-            f"succs={self.succs} preds={self.preds}"
-        )
-        lines = [header]
-        for insn in self.instructions:
-            lines.append(f"  {self.serial}.{insn.index} {insn.dstr}")
-        return "\n".join(lines)
+def _body_fingerprint(block: BlockSnapshot) -> str:
+    payload = json.dumps(
+        {
+            "ea": _insn_ea_fingerprint(block),
+            "op": _opcode_fingerprint(block),
+            "operand": _operand_fingerprint(block),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"fnv1a64:0x{_fnv1a_64(payload):016x}"
 
 
-@dataclass
-class DagNode:
-    """Snapshot of a DAG node (handler state).
-
-    Attributes:
-        state: Handler state constant (integer).
-        state_hex: Hex string representation (e.g. "0x5D0AEBD3").
-        entry_block: Entry block serial number.
-        classification: Node classification ("TRANSITION", "EXIT", etc.).
-        shared_suffix: Optional JSON array of shared block serials.
-    """
-
-    state: int
-    state_hex: str
-    entry_block: int
-    classification: str
-    shared_suffix: str | None = None
-
-
-@dataclass
-class DagEdge:
-    """Snapshot of a DAG edge (transition).
-
-    Attributes:
-        edge_id: Unique edge identifier.
-        source_state: Source handler state (or None).
-        target_state: Target handler state (or None).
-        edge_kind: Edge classification string.
-        source_block: Source block serial.
-        source_arm: Branch arm (0=fallthrough, 1=taken, None=unconditional).
-        target_entry: Target entry block serial (or None).
-        ordered_path: JSON array of block serials in the path.
-    """
-
-    edge_id: int
-    source_state: int | None
-    target_state: int | None
-    edge_kind: str
-    source_block: int | None = None
-    source_arm: int | None = None
-    target_entry: int | None = None
-    ordered_path: str = "[]"
-
-
-@dataclass
-class Modification:
-    """Snapshot of a reconstruction modification.
-
-    Attributes:
-        mod_index: Modification index.
-        mod_type: Type string (e.g. "goto_redirect").
-        source_block: Source block serial.
-        target_block: Target block serial.
-        old_target: Original target block serial.
-        write_site_ea: Write site effective address.
-        write_site_blk: Write site block serial.
-        status: Status string ("emitted", "skipped", "rejected").
-        reason: Optional reason string.
-    """
-
-    mod_index: int
-    mod_type: str
-    source_block: int | None = None
-    target_block: int | None = None
-    old_target: int | None = None
-    write_site_ea: int | None = None
-    write_site_blk: int | None = None
-    status: str = "emitted"
-    reason: str | None = None
+def _block_observation_row(
+    snapshot_id: int,
+    block: BlockSnapshot,
+    *,
+    maturity: str,
+    phase: str,
+) -> tuple[object, ...]:
+    start_hex, start_i64 = _dual(block.start_ea)
+    return (
+        int(snapshot_id),
+        int(block.serial),
+        str(maturity),
+        str(phase),
+        start_hex,
+        start_i64,
+        len(block.instructions),
+        _insn_ea_fingerprint(block),
+        _opcode_fingerprint(block),
+        _operand_fingerprint(block),
+        _body_fingerprint(block),
+    )
 
 
 def snapshot_mba(
@@ -253,6 +187,20 @@ def snapshot_mba(
         "INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         block_rows,
     )
+    observation_rows = [
+        _block_observation_row(
+            snap_id,
+            b,
+            maturity=maturity,
+            phase=phase,
+        )
+        for b in blocks
+    ]
+    if observation_rows:
+        conn.executemany(
+            "INSERT INTO block_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            observation_rows,
+        )
 
     # Bulk insert instructions
     insn_rows = []
@@ -289,6 +237,52 @@ def snapshot_mba(
             "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             insn_rows,
         )
+
+    # Flush any pending CFG provenance entries under this snapshot_id. Each
+    # call to ``log_cfg_provenance`` appends to a per-process buffer; the
+    # next ``snapshot_mba`` call drains that buffer and persists it to
+    # ``cfg_provenance``. Best-effort: failure here must NOT break snapshots.
+    try:
+        from d810.core.diag import drain_pending_provenance
+        prov_entries = drain_pending_provenance()
+        if prov_entries:
+            prov_rows = [
+                (
+                    snap_id,
+                    seq_idx,
+                    e.pass_name,
+                    e.action,
+                    int(e.block_serial),
+                    (int(e.target_serial) if e.target_serial is not None else None),
+                    e.reason,
+                    e.extra_json,
+                )
+                for seq_idx, e in enumerate(prov_entries)
+            ]
+            conn.executemany(
+                "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
+                prov_rows,
+            )
+    except Exception:
+        pass
+
+    # Flush any pending created-block lineage entries under this snapshot_id.
+    # The executor buffers these after PatchPlan apply and before
+    # taking the post-apply snapshot so clone/insert origins are
+    # attached to the concrete assigned serials visible in this
+    # snapshot. ``cfg.block_lineage`` owns the buffer and subscribes
+    # to ``BlockLineageDrainRequested`` to drain it; the event carries
+    # the live conn + snap_id so the subscriber can write rows
+    # immediately without round-tripping through the global session
+    # lookup.
+    try:
+        from d810.core.observability import emit
+        from d810.core.observability_events import (
+            BlockLineageDrainRequested,
+        )
+        emit(BlockLineageDrainRequested(conn=conn, snapshot_id=snap_id))
+    except Exception:
+        pass
 
     conn.commit()
     return snap_id
@@ -345,6 +339,107 @@ def snapshot_dag(
         "INSERT INTO dag_edges VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         edge_rows,
     )
+
+    conn.commit()
+
+
+def _enum_name(value: object) -> str:
+    name = getattr(value, "name", None)
+    if name is not None:
+        return str(name)
+    return str(value)
+
+
+def _node_state_value(node: object) -> int:
+    return dag_node_diagnostic_state(node)
+
+
+def snapshot_dag_local_facts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    dag: object,
+) -> None:
+    """Snapshot typed node-local facts from a LinearizedStateDag-like object.
+
+    This intentionally uses duck typing so the core diag module remains pure
+    Python and does not import the recon layer. ``snapshot_dag`` stores the
+    outer state graph; this stores each node's block roles, local segments, and
+    state-local CFG edges for on-demand DB rendering and planner audits.
+    """
+    nodes = tuple(getattr(dag, "nodes", ()) or ())
+    block_rows: list[tuple] = []
+    segment_rows: list[tuple] = []
+    edge_rows: list[tuple] = []
+
+    for node in nodes:
+        state_hex, _state_i64 = _dual(_node_state_value(node))
+        if state_hex is None:
+            continue
+        entry_block = int(getattr(node, "entry_anchor"))
+
+        for role, attr in (
+            ("owned", "owned_blocks"),
+            ("exclusive", "exclusive_blocks"),
+            ("shared_suffix", "shared_suffix_blocks"),
+        ):
+            for block_index, block_serial in enumerate(
+                getattr(node, attr, ()) or ()
+            ):
+                block_rows.append((
+                    snapshot_id,
+                    state_hex,
+                    entry_block,
+                    int(block_serial),
+                    block_index,
+                    role,
+                ))
+
+        for segment_index, segment in enumerate(
+            getattr(node, "local_segments", ()) or ()
+        ):
+            blocks = [int(block) for block in getattr(segment, "blocks", ()) or ()]
+            segment_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                segment_index,
+                str(getattr(segment, "segment_id")),
+                _enum_name(getattr(segment, "kind")),
+                json.dumps(blocks),
+            ))
+
+        for edge_index, edge in enumerate(getattr(node, "local_edges", ()) or ()):
+            branch_arm = getattr(edge, "branch_arm", None)
+            edge_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                edge_index,
+                str(getattr(edge, "source_segment_id")),
+                str(getattr(edge, "target_segment_id")),
+                _enum_name(getattr(edge, "kind")),
+                int(branch_arm) if branch_arm is not None else None,
+            ))
+
+    conn.execute("DELETE FROM dag_node_blocks WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM dag_local_segments WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM dag_local_edges WHERE snapshot_id=?", (snapshot_id,))
+
+    if block_rows:
+        conn.executemany(
+            "INSERT INTO dag_node_blocks VALUES (?,?,?,?,?,?)",
+            block_rows,
+        )
+    if segment_rows:
+        conn.executemany(
+            "INSERT INTO dag_local_segments VALUES (?,?,?,?,?,?,?)",
+            segment_rows,
+        )
+    if edge_rows:
+        conn.executemany(
+            "INSERT INTO dag_local_edges VALUES (?,?,?,?,?,?,?,?)",
+            edge_rows,
+        )
 
     conn.commit()
 
@@ -511,6 +606,152 @@ def snapshot_reachability(
     conn.executemany(
         "INSERT INTO block_classification VALUES (?,?,?,?,?,?)",
         rows,
+    )
+
+
+def snapshot_dag_frontier_closure_diagnostics(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist DAG-frontier closure verifier diagnostics.
+
+    Rows are diagnostic-only. They explain verifier leaks and unresolved repair
+    candidates, but no behavior code consumes this table.
+    """
+    conn.execute(
+        "DELETE FROM dag_frontier_closure_diagnostics WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row in rows:
+        db_rows.append((
+            int(snapshot_id),
+            str(_mapping_value(row, "kind")),
+            _mapping_value(row, "reason"),
+            _mapping_value(row, "source_block"),
+            _mapping_value(row, "observed_target"),
+            _mapping_value(row, "branch_arm"),
+            _mapping_value(row, "from_dag_scc"),
+            _mapping_value(row, "to_dag_scc"),
+            _json_text(_mapping_value(row, "candidate_targets"), []),
+            _json_text(_mapping_value(row, "path"), []),
+            _mapping_value(row, "cfg_scc_size"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO dag_frontier_closure_diagnostics VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_bst_interval_dispatcher_rows(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+    *,
+    dispatcher_entry_block: int | None = None,
+    maturity: str | None = None,
+) -> None:
+    """Persist recovered BST interval dispatcher rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM bst_interval_dispatcher_rows WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        lo = _mapping_value(row, "lo")
+        hi = _mapping_value(row, "hi")
+        target = _mapping_value(row, "target")
+        if target is None:
+            continue
+        try:
+            lo_i = int(lo, 0) if isinstance(lo, str) else int(lo)
+            hi_i = int(hi, 0) if isinstance(hi, str) else int(hi)
+            target_i = (
+                int(target, 0) if isinstance(target, str) else int(target)
+            )
+        except (TypeError, ValueError):
+            continue
+        payload = {
+            "lo": f"0x{lo_i:x}",
+            "hi": f"0x{hi_i:x}",
+            "target": target_i,
+        }
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            f"0x{lo_i:x}",
+            lo_i,
+            f"0x{hi_i:x}",
+            hi_i,
+            target_i,
+            (
+                int(dispatcher_entry_block)
+                if dispatcher_entry_block is not None else None
+            ),
+            maturity,
+            _json_text(payload, {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO bst_interval_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_watch_transition(
+    conn: sqlite3.Connection,
+    *,
+    func_ea: int,
+    apply_session_id: str,
+    mod_index: int | None,
+    mod_type: str,
+    phase: str,
+    block_serial: int,
+    prev_type_name: str | None,
+    prev_succs: tuple[int, ...] | None,
+    prev_preds: tuple[int, ...] | None,
+    now_type_name: str | None,
+    now_succs: tuple[int, ...] | None,
+    now_preds: tuple[int, ...] | None,
+) -> None:
+    """Persist a single watch-block transition.
+
+    Called by ``DeferredGraphModifier.apply`` when ``D810_DEFERRED_WATCH_BLOCKS``
+    is set AND ``D810_DEFERRED_DIAG_PHASES=1`` OR any of the explicit opt-in
+    flags enable DB persistence. Each row captures (before, after) state for
+    one watched block at one observation point so later SQL queries can
+    answer "which mod mutated blk[X]?" programmatically.
+    """
+    func_hex, func_i64 = _dual(func_ea)
+    conn.execute(
+        "INSERT INTO watch_block_transitions ("
+        "func_ea_hex, func_ea_i64, apply_session_id, mod_index, mod_type, "
+        "phase, block_serial, prev_type_name, prev_succs, prev_preds, "
+        "now_type_name, now_succs, now_preds, timestamp"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            func_hex,
+            func_i64,
+            apply_session_id,
+            mod_index,
+            mod_type,
+            phase,
+            int(block_serial),
+            prev_type_name,
+            json.dumps(list(prev_succs)) if prev_succs is not None else None,
+            json.dumps(list(prev_preds)) if prev_preds is not None else None,
+            now_type_name,
+            json.dumps(list(now_succs)) if now_succs is not None else None,
+            json.dumps(list(now_preds)) if now_preds is not None else None,
+            time.time(),
+        ),
     )
     conn.commit()
 

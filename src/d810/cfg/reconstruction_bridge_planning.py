@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.logging import getLogger
+from d810.cfg.block_identity import (
+    block_label,
+    edge_label,
+    flow_graph_context_label,
+)
+from d810.cfg.reconstruction_redirect_log import log_redirect_attempt
 from d810.cfg.lowering_selector import (
     SharedFeederContext,
     SharedFeederLoweringKind,
@@ -9,6 +16,8 @@ from d810.cfg.lowering_selector import (
     target_reaches_source_ignoring_blocks,
 )
 from d810.cfg.mod_claims import collect_mod_claims
+
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +144,15 @@ def plan_reconstruction_preheader_bridge(
             resolved_target=None,
         )
 
+    log_redirect_attempt(
+        phase="preheader_bridge",
+        src=int(dag.pre_header_serial),
+        old_target=int(old_target),
+        new_target=int(resolved),
+        dag=dag,
+        state_const=int(dag.initial_state) if dag.initial_state is not None else None,
+    )
+
     return ReconstructionPreheaderBridgeResult(
         modification=builder.goto_redirect(
             source_block=dag.pre_header_serial,
@@ -155,6 +173,7 @@ def plan_reconstruction_bridge_modifications(
     claimed_sources: set[int],
     claimed_targets: set[int],
     suppressed_bridge_pairs: set[tuple[int, int]],
+    redirect_veto=None,
 ) -> ReconstructionBridgePlanResult:
     bridge_mods: list = []
     log_entries: list[ReconstructionBridgeLogEntry] = []
@@ -196,25 +215,67 @@ def plan_reconstruction_bridge_modifications(
         if block.nsucc == 1:
             old_target = int(block.succs[0])
             if old_target == dispatcher_serial or old_target in bst_set:
-                bridge_mods.append(
-                    builder.goto_redirect(
-                        source_block=exit_block,
-                        target_block=target_entry,
-                        old_target=old_target,
-                    )
+                edge_state = getattr(
+                    getattr(edge, "source_key", None), "state_const", None
                 )
+                log_redirect_attempt(
+                    phase="dag_bridge",
+                    src=int(exit_block),
+                    old_target=int(old_target),
+                    new_target=int(target_entry),
+                    dag=dag,
+                    state_const=edge_state,
+                )
+                modification = builder.goto_redirect(
+                    source_block=exit_block,
+                    target_block=target_entry,
+                    old_target=old_target,
+                )
+                veto_reason = None
+                if callable(redirect_veto):
+                    try:
+                        veto_reason = redirect_veto(
+                            modification=modification,
+                            source_block=int(exit_block),
+                            old_target=int(old_target),
+                            target_block=int(target_entry),
+                            state_value=int(edge_state),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "RECON BRIDGE: redirect veto callback raised"
+                            " for %s state=0x%08X %s",
+                            edge_label(flow_graph, int(exit_block), int(target_entry)),
+                            int(edge_state) & 0xFFFFFFFF,
+                            flow_graph_context_label(flow_graph),
+                            exc_info=True,
+                        )
+                        veto_reason = None
+                if veto_reason:
+                    logger.warning(
+                        "RECON BRIDGE: redirect vetoed %s old=%s state=0x%08X"
+                        " reason=%s %s",
+                        edge_label(flow_graph, int(exit_block), int(target_entry)),
+                        block_label(flow_graph, int(old_target)),
+                        int(edge_state) & 0xFFFFFFFF,
+                        veto_reason,
+                        flow_graph_context_label(flow_graph),
+                    )
+                    continue
+                bridge_mods.append(modification)
                 claimed_targets.add(target_entry)
                 claimed_sources.add(exit_block)
+                tag = (
+                    "empty-path direct wire"
+                    if not edge.ordered_path
+                    else "1-way"
+                )
                 log_entries.append(
                     ReconstructionBridgeLogEntry(
                         source_block=exit_block,
                         branch_arm=None,
                         target_block=target_entry,
-                        tag=(
-                            "empty-path direct wire"
-                            if not edge.ordered_path
-                            else "1-way"
-                        ),
+                        tag=tag,
                     )
                 )
         elif block.nsucc == 2:
@@ -222,25 +283,67 @@ def plan_reconstruction_bridge_modifications(
                 arm_target = int(block.succs[arm])
                 if arm_target == dispatcher_serial or arm_target in bst_set:
                     if arm == 1:
-                        bridge_mods.append(
-                            builder.edge_redirect(
-                                source_block=exit_block,
-                                target_block=target_entry,
-                                old_target=arm_target,
-                            )
+                        edge_state = getattr(
+                            getattr(edge, "source_key", None), "state_const", None
                         )
+                        log_redirect_attempt(
+                            phase="dag_bridge",
+                            src=int(exit_block),
+                            old_target=int(arm_target),
+                            new_target=int(target_entry),
+                            dag=dag,
+                            state_const=edge_state,
+                        )
+                        modification = builder.edge_redirect(
+                            source_block=exit_block,
+                            target_block=target_entry,
+                            old_target=arm_target,
+                        )
+                        veto_reason = None
+                        if callable(redirect_veto):
+                            try:
+                                veto_reason = redirect_veto(
+                                    modification=modification,
+                                    source_block=int(exit_block),
+                                    old_target=int(arm_target),
+                                    target_block=int(target_entry),
+                                    state_value=int(edge_state),
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "RECON BRIDGE: redirect veto callback raised"
+                                    " for %s state=0x%08X %s",
+                                    edge_label(flow_graph, int(exit_block), int(target_entry)),
+                                    int(edge_state) & 0xFFFFFFFF,
+                                    flow_graph_context_label(flow_graph),
+                                    exc_info=True,
+                                )
+                                veto_reason = None
+                        if veto_reason:
+                            logger.warning(
+                                "RECON BRIDGE: redirect vetoed %s old=%s state=0x%08X"
+                                " reason=%s %s",
+                                edge_label(flow_graph, int(exit_block), int(target_entry)),
+                                block_label(flow_graph, int(arm_target)),
+                                int(edge_state) & 0xFFFFFFFF,
+                                veto_reason,
+                                flow_graph_context_label(flow_graph),
+                            )
+                            continue
+                        bridge_mods.append(modification)
                         claimed_targets.add(target_entry)
                         claimed_sources.add(exit_block)
+                        tag = (
+                            "empty-path direct wire"
+                            if not edge.ordered_path
+                            else "2-way"
+                        )
                         log_entries.append(
                             ReconstructionBridgeLogEntry(
                                 source_block=exit_block,
                                 branch_arm=arm,
                                 target_block=target_entry,
-                                tag=(
-                                    "empty-path direct wire"
-                                    if not edge.ordered_path
-                                    else "2-way"
-                                ),
+                                tag=tag,
                             )
                         )
                     break
@@ -434,6 +537,7 @@ def plan_fixpoint_feeder_modifications(
     constant_result,
     state_var_stkoff: int | None,
     dispatcher,
+    redirect_veto=None,
 ) -> ReconstructionFixpointFeederPlanResult:
     feeder_mods: list = []
     log_entries: list[ReconstructionFixpointFeederLogEntry] = []
@@ -467,13 +571,43 @@ def plan_fixpoint_feeder_modifications(
         resolved = dispatcher.lookup(state_val)
         if resolved is None or int(resolved) in bst_set:
             continue
-        feeder_mods.append(
-            builder.goto_redirect(
-                source_block=blk_serial,
-                target_block=int(resolved),
-                old_target=old_target,
-            )
+        modification = builder.goto_redirect(
+            source_block=blk_serial,
+            target_block=int(resolved),
+            old_target=old_target,
         )
+        veto_reason = None
+        if callable(redirect_veto):
+            try:
+                veto_reason = redirect_veto(
+                    modification=modification,
+                    source_block=int(blk_serial),
+                    old_target=int(old_target),
+                    target_block=int(resolved),
+                    state_value=int(state_val),
+                )
+            except Exception:
+                logger.debug(
+                    "RECON FIXPOINT FEEDER: redirect veto callback raised"
+                    " for %s state=0x%08X %s",
+                    edge_label(flow_graph, int(blk_serial), int(resolved)),
+                    int(state_val) & 0xFFFFFFFF,
+                    flow_graph_context_label(flow_graph),
+                    exc_info=True,
+                )
+                veto_reason = None
+        if veto_reason:
+            logger.warning(
+                "RECON FIXPOINT FEEDER: redirect vetoed %s old=%s state=0x%08X"
+                " reason=%s %s",
+                edge_label(flow_graph, int(blk_serial), int(resolved)),
+                block_label(flow_graph, int(old_target)),
+                int(state_val) & 0xFFFFFFFF,
+                veto_reason,
+                flow_graph_context_label(flow_graph),
+            )
+            continue
+        feeder_mods.append(modification)
         claimed_sources.add(int(blk_serial))
         log_entries.append(
             ReconstructionFixpointFeederLogEntry(

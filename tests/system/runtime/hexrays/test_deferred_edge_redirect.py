@@ -204,6 +204,36 @@ class TestCoalesceNoCrossContamination:
         ]
         assert len(edge_mods) == 1
 
+    def test_distinct_branch_old_targets_both_survive_terminal_conflict_pass(self):
+        """Distinct conditional-arm rewrites on one block must both survive coalesce.
+
+        Regression guard for block 15 in the semantic-region lowering path:
+        two BLOCK_TARGET_CHANGE modifications with different ``old_target``
+        values must not collapse into a single winner during coalesce().
+        """
+        m = _make_modifier()
+        m.queue_conditional_target_change(
+            block_serial=15,
+            new_target=66,
+            old_target=16,
+        )
+        m.queue_conditional_target_change(
+            block_serial=15,
+            new_target=202,
+            old_target=17,
+        )
+
+        removed = m.coalesce()
+
+        assert removed == 0
+        assert len(m.modifications) == 2
+        surviving_pairs = {
+            (mod.old_target, mod.new_target)
+            for mod in m.modifications
+            if mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE
+        }
+        assert surviving_pairs == {(16, 66), (17, 202)}
+
 
 # ---------------------------------------------------------------------------
 # Test 6: priority ordering --- EDGE_REDIRECT (8) sorts between 5 and 10

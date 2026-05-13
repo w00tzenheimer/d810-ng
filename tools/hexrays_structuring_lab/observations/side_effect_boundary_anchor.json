@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "case_id": "side_effect_boundary_anchor",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:16fa6f22d1534ce4f0a9af48b0b3ba3534c731b5b7c77c428648b300415f8e12",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "boundary_serial": 7,
+    "boundary_relative_start_ea": "0x64",
+    "boundary_pred_relative_start_eas": [
+      "0x1f",
+      "0x4d"
+    ],
+    "boundary_succ_relative_start_eas": [
+      "0x81"
+    ],
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 10,
+      "MMAT_PREOPTIMIZED": 10,
+      "MMAT_LOCOPT": 10
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        4,
+        12,
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        43
+      ],
+      "0x1f": [
+        4,
+        55
+      ],
+      "0x21": [
+        55
+      ],
+      "0x23": [
+        4,
+        9,
+        55
+      ],
+      "0x36": [
+        25,
+        26,
+        33,
+        31,
+        29,
+        13,
+        9,
+        4,
+        55
+      ],
+      "0x4d": [
+        9,
+        14,
+        9,
+        4
+      ],
+      "0x64": [
+        4,
+        4,
+        33,
+        31,
+        29,
+        9,
+        21,
+        9,
+        4,
+        56
+      ],
+      "0x81": [
+        4,
+        55
+      ]
+    },
+    "body_opcode_names_by_relative_start": {
+      "0x0": [
+        "op_4",
+        "op_12",
+        "op_9",
+        "op_35",
+        "op_30",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_43"
+      ],
+      "0x1f": [
+        "op_4",
+        "op_55"
+      ],
+      "0x21": [
+        "op_55"
+      ],
+      "0x23": [
+        "op_4",
+        "op_9",
+        "op_55"
+      ],
+      "0x36": [
+        "op_25",
+        "op_26",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_13",
+        "op_9",
+        "op_4",
+        "op_55"
+      ],
+      "0x4d": [
+        "op_9",
+        "op_14",
+        "op_9",
+        "op_4"
+      ],
+      "0x64": [
+        "op_4",
+        "op_4",
+        "op_33",
+        "op_31",
+        "op_29",
+        "op_9",
+        "op_21",
+        "op_9",
+        "op_4",
+        "op_56"
+      ],
+      "0x81": [
+        "op_4",
+        "op_55"
+      ]
+    },
+    "boundary_call_target_name": "hexrays_lab_boundary_anchor_helper",
+    "boundary_call_target_ea": "0x18000b000",
+    "boundary_call_targets": [
+      {
+        "ea": "0x18000b000",
+        "name": "hexrays_lab_boundary_anchor_helper"
+      }
+    ],
+    "boundary_instructions": [
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_4",
+        "dstr": "mov    #0.1, cf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_4",
+        "dstr": "mov    #0.1, of.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_33",
+        "dstr": "setz   (%var_8.4 ^ #0x55AA.4), #0.4, zf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_31",
+        "dstr": "setp   (%var_8.4 ^ #0x55AA.4), #0.4, pf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_29",
+        "dstr": "sets   %var_8.4, sf.1",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b168",
+        "opcode_name": "op_9",
+        "dstr": "xdu    (%var_8.4 ^ #0x55AA.4), rax.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b16d",
+        "opcode_name": "op_21",
+        "dstr": "xor    %var_8.4, #0x55AA.4, %var_8.4",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b171",
+        "opcode_name": "op_9",
+        "dstr": "xdu    %var_8.4, rdx.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b175",
+        "opcode_name": "op_4",
+        "dstr": "mov    &($dword_18001C454).8, rcx.8",
+        "call_target_name": null,
+        "call_target_ea": null
+      },
+      {
+        "ea": "0x18000b17c",
+        "opcode_name": "op_56",
+        "dstr": "call   $hexrays_lab_boundary_anchor_helper",
+        "call_target_name": "hexrays_lab_boundary_anchor_helper",
+        "call_target_ea": "0x18000b000"
+      }
+    ]
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_side_effect_boundary_anchor_GLBOPT1",
+    "from_block_count": 10,
+    "to_block_count": 5,
+    "vanished_count": 5,
+    "disposition_counts": {
+      "absorbed": 1,
+      "deleted": 3,
+      "synthesized_only": 1
+    },
+    "content_counts": {
+      "empty": 1,
+      "has_content": 4
+    },
+    "outcome_class": "semantic_visible_boundary_folded",
+    "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
+  },
+  "pseudocode": {
+    "before_lines": 12,
+    "after_lines": 12,
+    "changed": false,
+    "shape": "guarded multiply followed by helper-call expression folded into final assignment"
+  },
+  "reproduce": {
+    "validate_cfg": "python -m tools.hexrays_structuring_lab validate-cfg side_effect_boundary_anchor",
+    "dump": "python -m tools.hexrays_structuring_lab command side_effect_boundary_anchor",
+    "summary_template": "python -m tools.hexrays_structuring_lab summarize --db <diag.sqlite3> --cfg-validation <validation.json> --require-cfg-validation"
+  }
+}

@@ -1372,6 +1372,27 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
+        "--hexrays-lab-case",
+        action="store",
+        default=None,
+        help="Hex-Rays structuring lab case id for compiled-CFG validation.",
+    )
+    parser.addoption(
+        "--hexrays-lab-function",
+        action="store",
+        default=None,
+        help="Function name to validate for a Hex-Rays structuring lab case.",
+    )
+    parser.addoption(
+        "--hexrays-lab-output-json",
+        action="store",
+        default=None,
+        help=(
+            "Relative path where the Hex-Rays structuring lab should write "
+            "the compiled-CFG validation JSON artifact."
+        ),
+    )
+    parser.addoption(
         "--dump-force-rettype",
         action="store",
         default=None,

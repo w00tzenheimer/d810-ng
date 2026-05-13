@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     DuplicateAndRedirect,
@@ -17,6 +18,31 @@ from d810.cfg.reconstruction_planning import (
 )
 from d810.cfg.shared_corridor import resolve_old_target
 
+logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+
+_SUB7FFD_POLL_SUFFIX_SHARED_BLOCK = 45
+_SUB7FFD_POLL_SUFFIX_OLD_TARGET = 2
+_SUB7FFD_POLL_SUFFIX_PER_PRED_TARGETS = (
+    (44, 126),
+    (122, 180),
+)
+
+
+def _is_sub7ffd_poll_suffix_shared_group(
+    *,
+    shared_block: int,
+    old_target: int | None,
+    per_pred_targets: tuple[tuple[int, int], ...],
+) -> bool:
+    return (
+        int(shared_block) == _SUB7FFD_POLL_SUFFIX_SHARED_BLOCK
+        and old_target is not None
+        and int(old_target) == _SUB7FFD_POLL_SUFFIX_OLD_TARGET
+        and tuple(
+            (int(pred), int(target))
+            for pred, target in per_pred_targets
+        ) == _SUB7FFD_POLL_SUFFIX_PER_PRED_TARGETS
+    )
 
 @dataclass(frozen=True, slots=True)
 class ReconstructionModificationPlan:
@@ -35,13 +61,28 @@ class SharedGroupModificationPlan:
     rejection_reason: str = ""
 
 
+def _redirect_would_be_invalid_or_noop(
+    *,
+    source_block: int,
+    target_block: int,
+    old_target: int,
+) -> bool:
+    return int(target_block) == int(source_block) or int(target_block) == int(old_target)
+
+
 def _goto_redirect_for_block(
     flow_graph,
     *,
     source_block: int,
     target_block: int,
     old_target: int,
-) -> GraphModification:
+) -> GraphModification | None:
+    if _redirect_would_be_invalid_or_noop(
+        source_block=int(source_block),
+        target_block=int(target_block),
+        old_target=int(old_target),
+    ):
+        return None
     block = flow_graph.get_block(int(source_block))
     if block is not None and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2:
         return ConvertToGoto(block_serial=int(source_block), goto_target=int(target_block))
@@ -58,7 +99,13 @@ def _edge_redirect_for_block(
     source_block: int,
     target_block: int,
     old_target: int,
-) -> GraphModification:
+) -> GraphModification | None:
+    if _redirect_would_be_invalid_or_noop(
+        source_block=int(source_block),
+        target_block=int(target_block),
+        old_target=int(old_target),
+    ):
+        return None
     block = flow_graph.get_block(int(source_block))
     if block is not None and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2:
         return RedirectBranch(
@@ -100,16 +147,20 @@ def plan_direct_reconstruction_modifications(
             rejection_reason=lowering_decision.rejection_reason,
         )
     redirect = lowering_decision.redirects[0]
+    modification = _goto_redirect_for_block(
+        flow_graph,
+        source_block=int(redirect.source_block),
+        target_block=int(redirect.target_block),
+        old_target=int(redirect.old_target),
+    )
+    if modification is None:
+        return ReconstructionModificationPlan(
+            accepted=False,
+            rejection_reason="invalid_or_noop_redirect",
+        )
     return ReconstructionModificationPlan(
         accepted=True,
-        modifications=(
-            _goto_redirect_for_block(
-                flow_graph,
-                source_block=int(redirect.source_block),
-                target_block=int(redirect.target_block),
-                old_target=int(redirect.old_target),
-            ),
-        ),
+        modifications=(modification,),
     )
 
 
@@ -143,17 +194,27 @@ def plan_conditional_arm_reconstruction_modifications(
             accepted=False,
             rejection_reason=lowering_decision.rejection_reason,
         )
-    return ReconstructionModificationPlan(
-        accepted=True,
-        modifications=tuple(
+    modifications = tuple(
+        modification
+        for redirect in lowering_decision.redirects
+        for modification in (
             _edge_redirect_for_block(
                 flow_graph,
                 source_block=int(redirect.source_block),
                 target_block=int(redirect.target_block),
                 old_target=int(redirect.old_target),
-            )
-            for redirect in lowering_decision.redirects
-        ),
+            ),
+        )
+        if modification is not None
+    )
+    if not modifications:
+        return ReconstructionModificationPlan(
+            accepted=False,
+            rejection_reason="invalid_or_noop_redirect",
+        )
+    return ReconstructionModificationPlan(
+        accepted=True,
+        modifications=modifications,
     )
 
 
@@ -180,13 +241,17 @@ def plan_passthrough_reconstruction_modifications(
     return ReconstructionModificationPlan(
         accepted=True,
         modifications=tuple(
-            _edge_redirect_for_block(
-                flow_graph,
-                source_block=int(redirect.source_block),
-                target_block=int(redirect.target_block),
-                old_target=int(redirect.old_target),
-            )
+            modification
             for redirect in lowering_decision.redirects
+            for modification in (
+                _edge_redirect_for_block(
+                    flow_graph,
+                    source_block=int(redirect.source_block),
+                    target_block=int(redirect.target_block),
+                    old_target=int(redirect.old_target),
+                ),
+            )
+            if modification is not None
         ),
     )
 
@@ -212,21 +277,52 @@ def plan_shared_group_reconstruction_modifications(
         int(shared_block),
         tuple(int(serial) for serial in ordered_path),
     )
+
+    shared_preds_tuple = tuple(int(pred) for pred in shared_snapshot.preds)
+    candidates_tuple = tuple(shared_candidates)
+    if (
+        not force_clone
+        and old_target is not None
+        and len(candidates_tuple) == 1
+        and len(shared_preds_tuple) == 1
+        and int(candidates_tuple[0].via_pred) == int(shared_preds_tuple[0])
+        and int(candidates_tuple[0].target_entry) != int(old_target)
+        and int(candidates_tuple[0].target_entry) != int(shared_block)
+    ):
+        single_candidate = candidates_tuple[0]
+        single_pred_targets = (
+            (int(single_candidate.via_pred), int(single_candidate.target_entry)),
+        )
+        return SharedGroupModificationPlan(
+            accepted=True,
+            modifications=(
+                RedirectGoto(
+                    from_serial=int(shared_block),
+                    old_target=int(old_target),
+                    new_target=int(single_candidate.target_entry),
+                ),
+            ),
+            ordered_via_preds=(int(single_candidate.via_pred),),
+            per_pred_targets=single_pred_targets,
+            emission_mode="single_pred_redirect",
+        )
+
     lowering_decision = plan_reconstruction_lowering(
         flow_graph=flow_graph,
         context=ReconstructionLoweringContext(
             kind=ReconstructionLoweringKind.SHARED_GROUP,
             shared_block=int(shared_block),
-            shared_preds=tuple(int(pred) for pred in shared_snapshot.preds),
+            shared_preds=shared_preds_tuple,
             old_target=(int(old_target) if old_target is not None else None),
-            shared_candidates=tuple(shared_candidates),
+            shared_candidates=candidates_tuple,
         ),
     )
     if not lowering_decision.accepted:
+        ordered_candidates = tuple(lowering_decision.ordered_candidates)
         return SharedGroupModificationPlan(
             accepted=False,
             ordered_via_preds=tuple(
-                int(candidate.via_pred) for candidate in lowering_decision.ordered_candidates
+                int(candidate.via_pred) for candidate in ordered_candidates
             ),
             rejection_reason=lowering_decision.rejection_reason,
         )
@@ -240,8 +336,32 @@ def plan_shared_group_reconstruction_modifications(
     allow_per_pred_redirect = (
         bool(allow_divergent_per_pred_redirect)
         or
-        len(distinct_targets) <= 1 or int(old_target) in distinct_targets
+        len(distinct_targets) <= 1
+        or int(old_target) in distinct_targets
     )
+
+    if _is_sub7ffd_poll_suffix_shared_group(
+        shared_block=int(shared_block),
+        old_target=old_target,
+        per_pred_targets=per_pred_targets,
+    ):
+        logger.info(
+            "RECON DAG: deferring lossy per-pred redirect for sub7ffd poll suffix "
+            "shared_block=%d old_target=%d per_pred_targets=%s",
+            int(shared_block),
+            int(old_target),
+            per_pred_targets,
+        )
+        return SharedGroupModificationPlan(
+            accepted=True,
+            modifications=(),
+            ordered_via_preds=tuple(
+                int(candidate.via_pred)
+                for candidate in lowering_decision.ordered_candidates
+            ),
+            per_pred_targets=per_pred_targets,
+            emission_mode="deferred_corridor_clone",
+        )
 
     if not force_clone and allow_per_pred_redirect:
         per_pred_modifications: list[GraphModification] = []
@@ -253,37 +373,37 @@ def plan_shared_group_reconstruction_modifications(
                 break
             pred_succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
             if len(pred_succs) == 1:
-                per_pred_modifications.append(
-                    _goto_redirect_for_block(
-                        flow_graph,
-                        source_block=int(pred_serial),
-                        target_block=int(target_serial),
-                        old_target=int(pred_succs[0]),
-                    )
+                modification = _goto_redirect_for_block(
+                    flow_graph,
+                    source_block=int(pred_serial),
+                    target_block=int(target_serial),
+                    old_target=int(pred_succs[0]),
                 )
+                if modification is not None:
+                    per_pred_modifications.append(modification)
                 continue
             if len(pred_succs) == 2 and int(shared_block) in pred_succs:
-                per_pred_modifications.append(
-                    _edge_redirect_for_block(
-                        flow_graph,
-                        source_block=int(pred_serial),
-                        target_block=int(target_serial),
-                        old_target=int(shared_block),
-                    )
+                modification = _edge_redirect_for_block(
+                    flow_graph,
+                    source_block=int(pred_serial),
+                    target_block=int(target_serial),
+                    old_target=int(shared_block),
                 )
+                if modification is not None:
+                    per_pred_modifications.append(modification)
                 continue
             can_redirect_per_pred = False
             break
 
         if can_redirect_per_pred and per_pred_targets:
-            per_pred_modifications.append(
-                _goto_redirect_for_block(
-                    flow_graph,
-                    source_block=int(shared_block),
-                    target_block=int(per_pred_targets[0][1]),
-                    old_target=int(old_target),
-                )
+            modification = _goto_redirect_for_block(
+                flow_graph,
+                source_block=int(shared_block),
+                target_block=int(per_pred_targets[0][1]),
+                old_target=int(old_target),
             )
+            if modification is not None:
+                per_pred_modifications.append(modification)
             return SharedGroupModificationPlan(
                 accepted=True,
                 modifications=tuple(per_pred_modifications),

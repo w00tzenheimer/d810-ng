@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "case_id": "terminal_tail_split_guard",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 22,
+      "MMAT_PREOPTIMIZED": 22,
+      "MMAT_LOCOPT": 22
+    },
+    "guard_serials": [
+      1,
+      4,
+      7,
+      10,
+      13,
+      16
+    ],
+    "guard_relative_start_eas": [
+      "0x0",
+      "0x4e",
+      "0x88",
+      "0xc2",
+      "0xfc",
+      "0x133"
+    ],
+    "early_return_relative_start_eas": [
+      "0x3f",
+      "0x79",
+      "0xb3",
+      "0xed",
+      "0x127",
+      "0x15e"
+    ],
+    "continue_relative_start_eas": [
+      "0x4c",
+      "0x86",
+      "0xc0",
+      "0xfa",
+      "0x131",
+      "0x168"
+    ],
+    "guard_continue_paths_relative_start_eas": [
+      [
+        "0x4c",
+        "0x4e"
+      ],
+      [
+        "0x86",
+        "0x88"
+      ],
+      [
+        "0xc0",
+        "0xc2"
+      ],
+      [
+        "0xfa",
+        "0xfc"
+      ],
+      [
+        "0x131",
+        "0x133"
+      ],
+      [
+        "0x168",
+        "0x16a"
+      ]
+    ],
+    "final_emit_serial": 19,
+    "final_emit_relative_start_ea": "0x16a",
+    "return_epilogue_serial": 20,
+    "return_epilogue_relative_start_ea": "0x18b",
+    "return_epilogue_pred_relative_start_eas": [
+      "0x3f",
+      "0x79",
+      "0xb3",
+      "0xed",
+      "0x127",
+      "0x15e",
+      "0x16a"
+    ]
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_terminal_tail_split_guard_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_terminal_tail_split_guard_GLBOPT1",
+    "from_block_count": 22,
+    "to_block_count": 16,
+    "vanished_count": 6,
+    "disposition_counts": {
+      "absorbed": 4,
+      "synthesized_only": 2
+    },
+    "cross_tab": {
+      "empty": {
+        "synthesized_only": 2
+      },
+      "has_content": {
+        "absorbed": 4
+      }
+    },
+    "outcome_class": "clean_structured_compaction",
+    "classification": "validated split emit/guard source compiles to the same LOCOPT cascade class as the REF oracle and preserves unchanged nested early-return pseudocode; source-level split alone does not create a distinct microblock construction"
+  },
+  "pseudocode": {
+    "before_lines": 54,
+    "after_lines": 54,
+    "changed": false,
+    "shape": "nested early-return byte-emission cascade with no goto scaffolding",
+    "before_metrics": {
+      "returns": 7,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 6
+    },
+    "after_metrics": {
+      "returns": 7,
+      "whiles": 0,
+      "gotos": 0,
+      "calls": 1,
+      "ifs": 6
+    }
+  },
+  "commands": {
+    "validate_cfg": "python3 -m tools.hexrays_structuring_lab validate-cfg terminal_tail_split_guard",
+    "dump": "python3 -m tools.hexrays_structuring_lab command terminal_tail_split_guard",
+    "summary": "python3 -m tools.hexrays_structuring_lab summarize --db .tmp/logs/d810_logs/000000018000b5d0_1778349396_33.diag.sqlite3 --from-label dump_raw_hexrays_lab_terminal_tail_split_guard_LOCOPT --to-label dump_raw_hexrays_lab_terminal_tail_split_guard_GLBOPT1 --cfg-validation .tmp/hexrays_structuring_lab/cfg_validation/terminal_tail_split_guard.json --require-cfg-validation"
+  }
+}

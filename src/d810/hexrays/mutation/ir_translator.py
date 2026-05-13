@@ -37,6 +37,7 @@ from d810.cfg.plan import (
     PatchInsertBlock,
     PatchNopInstructions,
     PatchZeroStateWrite,
+    PatchPromoteOperandToScalar,
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
@@ -57,6 +58,8 @@ if TYPE_CHECKING:
     from d810.hexrays.mutation.cfg_verify import safe_verify as safe_verify_type
 
 logger = getLogger(__name__)
+
+import os
 
 import ida_hexrays
 
@@ -221,6 +224,7 @@ class IDAIRTranslator:
         self.allow_legacy_block_creation = allow_legacy_block_creation
         self._contract = contract
         self._last_lowering_phase: str | None = None
+        self._last_lowering_subphase: str | None = None
 
     @property
     def contract(self) -> IDACfgContract | None:
@@ -234,6 +238,11 @@ class IDAIRTranslator:
     def last_lowering_phase(self) -> str | None:
         """Phase of last failure from lower(), or None if lower() succeeded."""
         return self._last_lowering_phase
+
+    @property
+    def last_lowering_subphase(self) -> str | None:
+        """Most specific subphase reported by the backend, when available."""
+        return self._last_lowering_subphase
 
     @property
     def name(self) -> str:
@@ -285,6 +294,7 @@ class IDAIRTranslator:
         from d810.hexrays.mutation import deferred_modifier
 
         self._last_lowering_phase = None
+        self._last_lowering_subphase = None
 
         if not isinstance(patch_plan, PatchPlan):
             raise TypeError(
@@ -360,20 +370,41 @@ class IDAIRTranslator:
         # Under NOP_CLEANUP_RELAXED, disable rollback so the NOPs survive
         # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
         enable_rollback = not relaxed
-        result_count = modifier.apply(
-            run_optimize_local=True,
-            run_deep_cleaning=False,
-            verify_each_mod=verify_each_mod and enable_rollback,
-            rollback_on_verify_failure=verify_each_mod and enable_rollback,
-            continue_on_verify_failure=verify_each_mod,
-            enable_snapshot_rollback=enable_rollback,
-            post_apply_hook=effective_hook,
-        )
+        # Opt-in transactional mode: gates the batch with pre-apply conflict
+        # detection and rolls back on any mid-batch abort. Off by default to
+        # preserve existing behavior; enable for probes that want all-or-nothing.
+        use_transactional = os.getenv(
+            "D810_DEFERRED_TRANSACTIONAL", ""
+        ).strip() == "1" and enable_rollback
+        # Opt-in staged atomic mode: destructive mods lowered to copy-and-swap
+        # via mba.copy_block so intermediate state is invisible to IDA-level
+        # observers. Composable with transactional.
+        use_staged_atomic = os.getenv(
+            "D810_DEFERRED_STAGED_ATOMIC", ""
+        ).strip() == "1"
+        try:
+            result_count = modifier.apply(
+                run_optimize_local=True,
+                run_deep_cleaning=False,
+                verify_each_mod=verify_each_mod and enable_rollback,
+                rollback_on_verify_failure=verify_each_mod and enable_rollback,
+                continue_on_verify_failure=verify_each_mod,
+                enable_snapshot_rollback=enable_rollback,
+                post_apply_hook=effective_hook,
+                transactional=use_transactional,
+                staged_atomic=use_staged_atomic,
+            )
+        except Exception:
+            self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
+            self._last_lowering_subphase = modifier.last_apply_subphase
+            raise
 
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
         # means rollback also failed - the MBA may be corrupted.
         if modifier.verify_failed:
+            self._last_lowering_phase = modifier.last_apply_phase or "native_verify"
+            self._last_lowering_subphase = modifier.last_apply_subphase
             if relaxed and result_count > 0:
                 logger.info(
                     "DeferredGraphModifier.verify_failed is set after apply "
@@ -386,8 +417,11 @@ class IDAIRTranslator:
                     "DeferredGraphModifier.verify_failed is set after apply; "
                     "returning 0 to prevent pipeline from treating changes as successful"
                 )
-                self._last_lowering_phase = "native_verify"
                 return 0
+
+        if result_count == 0 and self._last_lowering_phase is None:
+            self._last_lowering_phase = modifier.last_apply_phase
+            self._last_lowering_subphase = modifier.last_apply_subphase
 
         return result_count
 
@@ -398,6 +432,8 @@ class IDAIRTranslator:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
                 case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
+                    continue
+                case PatchPromoteOperandToScalar():
                     continue
                 case PatchPrivateTerminalSuffix():
                     continue
@@ -461,6 +497,7 @@ class IDAIRTranslator:
                 modifier.queue_conditional_target_change(
                     src,
                     new,
+                    old_target=old,
                     description=f"redirect branch {src}: {old}->{new}",
                 )
 
@@ -493,6 +530,23 @@ class IDAIRTranslator:
                     description=f"zero state write {hex(ea)} in block {serial}",
                 )
 
+            case PatchPromoteOperandToScalar(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                operand_side=side,
+            ):
+                modifier.queue_promote_operand_to_scalar(
+                    serial,
+                    host_ea,
+                    opcode,
+                    side,
+                    description=(
+                        f"promote operand {side} of insn at {hex(host_ea)} "
+                        f"in block {serial}"
+                    ),
+                )
+
             case PatchEdgeSplitTrampoline(
                 source_serial=src,
                 via_pred=pred,
@@ -519,12 +573,14 @@ class IDAIRTranslator:
                 fallthrough_target=fallthrough_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
+                instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
                     source_blk_serial=src,
                     ref_blk_serial=ref,
                     conditional_target_serial=conditional_target,
                     fallthrough_target_serial=fallthrough_target,
+                    instructions_to_copy=instructions,
                     expected_conditional_serial=assigned,
                     expected_fallthrough_serial=fallthrough_serial,
                     description=(
@@ -539,6 +595,7 @@ class IDAIRTranslator:
                 succ_serial=succ,
                 assigned_serial=assigned,
                 instructions=instructions,
+                old_target_serial=old_target,
             ):
                 modifier.queue_create_and_redirect(
                     source_block_serial=pred,
@@ -546,9 +603,11 @@ class IDAIRTranslator:
                     instructions_to_copy=list(instructions),
                     is_0_way=False,
                     expected_serial=assigned,
+                    old_target_serial=old_target,
                     description=(
                         f"insert block {pred}->{assigned}->{succ} "
-                        f"with {len(instructions)} instructions"
+                        f"with {len(instructions)} instructions "
+                        f"(old_target={old_target})"
                     ),
                 )
 
@@ -556,6 +615,8 @@ class IDAIRTranslator:
                 source_serial=src,
                 pred_serial=pred,
                 target_serial=target,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
             ):
@@ -563,11 +624,14 @@ class IDAIRTranslator:
                     source_block_serial=src,
                     pred_serial=pred,
                     target_serial=target,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
                     expected_serial=assigned,
                     expected_secondary_serial=fallthrough_serial,
                     description=(
                         f"duplicate block src={src} pred={pred} "
-                        f"target={target} via {assigned}"
+                        f"target={target} cond={conditional_target} "
+                        f"ft={fallthrough_target} via {assigned}"
                     ),
                 )
 
@@ -648,6 +712,7 @@ class IDAIRTranslator:
                 old_target=old,
                 new_target=new,
                 via_pred=pred,
+                clone_until=clone_until,
                 rule_priority=priority,
             ):
                 modifier.queue_edge_redirect(
@@ -655,6 +720,7 @@ class IDAIRTranslator:
                     old_target=old,
                     new_target=new,
                     via_pred=pred,
+                    clone_until=clone_until,
                     rule_priority=priority,
                     description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
                 )
@@ -664,24 +730,37 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=cond_target,
                 fallthrough_target=fallthrough_target,
+                instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
                     source_blk_serial=src,
                     ref_blk_serial=ref,
                     conditional_target_serial=cond_target,
                     fallthrough_target_serial=fallthrough_target,
+                    instructions_to_copy=instructions,
                     description=(
                         f"create conditional redirect src={src} ref={ref} "
                         f"cond={cond_target} fallthrough={fallthrough_target}"
                     ),
                 )
 
-            case DuplicateBlock(source_block=src, target_block=target, pred_serial=pred):
-                logger.warning(
-                    "DuplicateBlock(source=%d, target=%s, pred=%s) not implemented, skipping",
-                    src,
-                    target,
-                    pred,
+            case DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                modifier.queue_duplicate_block(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    target_serial=target,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
+                    description=(
+                        f"duplicate block src={src} pred={pred} target={target} "
+                        f"cond={conditional_target} ft={fallthrough_target}"
+                    ),
                 )
 
             case DuplicateAndRedirect(

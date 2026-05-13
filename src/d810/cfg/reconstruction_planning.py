@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.reconstruction_emission import plan_reconstruction_emission
+from d810.cfg.reconstruction_emission_planning import plan_reconstruction_emission
 from d810.cfg.reconstruction_lowering import (
     ConditionalArmEmissionPlan,
     DirectEmissionPlan,

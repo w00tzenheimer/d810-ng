@@ -8,7 +8,19 @@ from d810.cfg.graph_modification import (
     GraphModification,
     RedirectGoto,
 )
+from d810.cfg.loop_bound_writer_guard import (
+    LoopBoundWriterDiagnostic,
+    detect_loop_bound_writer_redirect,
+)
 from d810.cfg.lowering_selector import can_duplicate_path_tail, is_valid_pred_split_pair
+
+
+# ``LoopBoundWriterDiagnostic`` and ``detect_loop_bound_writer_redirect`` are
+# re-exported above from :mod:`d810.cfg.loop_bound_writer_guard` so the
+# shared-group reconstruction emitter can use the same predicate without
+# importing planner internals.  See that module for the four-condition
+# detector.
+
 
 
 class PathTailEmissionKind:
@@ -63,6 +75,7 @@ class PathTailRedirectContext:
     source_anchor_block: int
     source_branch_arm: int | None
     other_preds: tuple[int, ...]
+    loop_bound_writer_diag: LoopBoundWriterDiagnostic | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +226,11 @@ def plan_path_tail_emission(
 def plan_path_tail_redirect(
     context: PathTailRedirectContext,
 ) -> PathTailRedirectDecision:
+    if context.loop_bound_writer_diag is not None:
+        return PathTailRedirectDecision(
+            accepted=False,
+            rejection_reason="loop_bound_writer_guard",
+        )
     if context.source_handler_is_report_exit:
         return PathTailRedirectDecision(
             accepted=False,
@@ -375,6 +393,8 @@ def apply_path_tail_emission_plan(
 
 __all__ = [
     "apply_path_tail_emission_plan",
+    "detect_loop_bound_writer_redirect",
+    "LoopBoundWriterDiagnostic",
     "PathTailEmissionKind",
     "PathTailEmissionPlan",
     "PathTailRedirectContext",

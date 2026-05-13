@@ -192,6 +192,35 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         *,
         allowed_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        # uee-b7ze causality test: when ``D810_FENCE_INSN_OPT_AT_GLBOPT1``
+        # is set, suppress every instruction-level optimizer (Z3 const
+        # opt, PatternOptimizer, egraph rules, etc.) at MMAT_GLBOPT1
+        # without touching CFG/HCC mutations.  Diagnostic-only knob:
+        # used to attribute the 247->44 block drop between
+        # post_bundle_stabilize and maturity_MMAT_GLBOPT1_post_d810
+        # to either (a) IDA's native GLBOPT1 cleanup or (b) d810
+        # instruction-level mutations making the chain look dead.
+        try:
+            import os
+            _fence_env = os.environ.get("D810_FENCE_INSN_OPT_AT_GLBOPT1", "")
+            if _fence_env and blk is not None:
+                _maturity = int(blk.mba.maturity)
+                if _maturity == int(ida_hexrays.MMAT_GLBOPT1):
+                    if not getattr(self, "_fence_logged_glbopt1", False):
+                        optimizer_logger.info(
+                            "FENCE_INSN_OPT_AT_GLBOPT1 active for %s"
+                            " (maturity=%d, env=%r)",
+                            type(self).__name__, _maturity, _fence_env,
+                        )
+                        self._fence_logged_glbopt1 = True
+                    return None
+        except Exception as _exc:
+            try:
+                optimizer_logger.warning(
+                    "FENCE_INSN_OPT_AT_GLBOPT1 check raised: %s", _exc,
+                )
+            except Exception:
+                pass
         # Fast opcode gate for chain rules to avoid work on unrelated instructions
         # Only applies to optimizers whose rules expose a "TARGET_OPCODES" set.
         try:

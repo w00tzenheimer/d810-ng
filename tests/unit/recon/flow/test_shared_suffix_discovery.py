@@ -111,6 +111,29 @@ class TestSharedSuffixDiscovery:
             bst_node_blocks={2, 6},
         )
 
+    def test_has_prior_branch_cut_for_state_allows_immediate_conditional_leaf_tail(self) -> None:
+        target_node = _node(entry=24, handler=24, state=0x11)
+        dag = SimpleNamespace(
+            nodes=(target_node,),
+            edges=(
+                _edge(
+                    source_handler=40,
+                    target_key=target_node.key,
+                    target_state=0x11,
+                    target_entry=24,
+                    source_block=40,
+                    ordered_path=(40, 60),
+                ),
+            ),
+        )
+
+        assert not has_prior_branch_cut_for_state(
+            dag,
+            source_block=60,
+            state_value=0x11,
+            bst_node_blocks={2, 6},
+        )
+
     def test_is_shared_suffix_conditional_tail_requires_suffix_membership(self) -> None:
         source_node = _node(entry=10, handler=10, state=0x22, shared_suffix=(60,))
         dag = SimpleNamespace(
@@ -129,6 +152,23 @@ class TestSharedSuffixDiscovery:
         assert is_shared_suffix_conditional_tail(dag, source_block=60)
         assert not is_shared_suffix_conditional_tail(dag, source_block=50)
 
+    def test_is_shared_suffix_conditional_tail_allows_immediate_conditional_leaf_tail(self) -> None:
+        source_node = _node(entry=10, handler=10, state=0x22, shared_suffix=(60,))
+        dag = SimpleNamespace(
+            nodes=(source_node,),
+            edges=(
+                _edge(
+                    source_handler=10,
+                    target_key=source_node.key,
+                    target_state=0x22,
+                    source_block=40,
+                    ordered_path=(40, 60),
+                ),
+            ),
+        )
+
+        assert not is_shared_suffix_conditional_tail(dag, source_block=60)
+
     def test_can_rewrite_shared_suffix_family_fallback_matches_owner_fallback(self) -> None:
         owner = _node(entry=20, handler=20, state=0x11, owned=(12,))
         fallback = _node(
@@ -145,6 +185,43 @@ class TestSharedSuffixDiscovery:
             target_entry=30,
             current_preds=(12,),
             bst_node_blocks={2, 6},
+        )
+
+    def test_can_rewrite_shared_suffix_family_fallback_allows_pruned_oneway_tail(self) -> None:
+        dag = SimpleNamespace(nodes=(), edges=())
+        flow_graph = _DummyFlowGraph(
+            {
+                12: _DummyBlock(succs=(40,), preds=(8,)),
+                40: _DummyBlock(succs=(2,), preds=(12,)),
+            }
+        )
+
+        assert can_rewrite_shared_suffix_family_fallback(
+            dag,
+            source_block=40,
+            target_entry=30,
+            current_preds=(12,),
+            bst_node_blocks={2, 6},
+            flow_graph=flow_graph,
+        )
+
+    def test_can_rewrite_shared_suffix_family_fallback_allows_multi_pred_funnel_tail(self) -> None:
+        dag = SimpleNamespace(nodes=(), edges=())
+        flow_graph = _DummyFlowGraph(
+            {
+                12: _DummyBlock(succs=(40,), preds=(8,)),
+                13: _DummyBlock(succs=(40,), preds=(9,)),
+                40: _DummyBlock(succs=(2,), preds=(12, 13)),
+            }
+        )
+
+        assert can_rewrite_shared_suffix_family_fallback(
+            dag,
+            source_block=40,
+            target_entry=30,
+            current_preds=(12, 13),
+            bst_node_blocks={2, 6},
+            flow_graph=flow_graph,
         )
 
     def test_pred_split_target_reaches_via_pred_ignores_source_block(self) -> None:

@@ -173,6 +173,43 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
             row,
         )
 
+    state_h, state_i = _dual(0x298372CC)
+    conn.execute(
+        "INSERT INTO dag_nodes VALUES (1, ?, ?, 205, 'RANGE_BACKED', ?)",
+        (state_h, state_i, json.dumps([217, 218])),
+    )
+    for role, serials in (
+        ("owned", [205, 207, 206, 217, 218]),
+        ("exclusive", [205, 207, 206]),
+        ("shared_suffix", [217, 218]),
+    ):
+        for block_index, serial in enumerate(serials):
+            conn.execute(
+                "INSERT INTO dag_node_blocks VALUES (1, ?, 205, ?, ?, ?)",
+                (state_h, serial, block_index, role),
+            )
+    for segment_index, (segment_id, kind, blocks_json) in enumerate((
+        ("blk[205]", "BRANCH", [205]),
+        ("blk[207]", "STRAIGHT_LINE", [207]),
+        ("blk[206]", "STRAIGHT_LINE", [206]),
+        ("blk[217]", "SHARED_SUFFIX", [217]),
+        ("blk[218]", "TERMINAL_SUFFIX", [218]),
+    )):
+        conn.execute(
+            "INSERT INTO dag_local_segments VALUES (1, ?, 205, ?, ?, ?, ?)",
+            (state_h, segment_index, segment_id, kind, json.dumps(blocks_json)),
+        )
+    for edge_index, src, dst, kind, branch_arm in (
+        (0, "blk[205]", "blk[207]", "TAKEN", 1),
+        (1, "blk[205]", "blk[206]", "FALLTHROUGH", 0),
+        (2, "blk[206]", "blk[217]", "SHARED_SUFFIX", None),
+        (3, "blk[217]", "blk[218]", "TERMINAL", None),
+    ):
+        conn.execute(
+            "INSERT INTO dag_local_edges VALUES (1, ?, 205, ?, ?, ?, ?, ?)",
+            (state_h, edge_index, src, dst, kind, branch_arm),
+        )
+
     # Block classification
     for serial in [131, 174, 175, 176, 200, 23, 24, 32, 62, 206, 207, 217, 218, 219]:
         is_bst = 0

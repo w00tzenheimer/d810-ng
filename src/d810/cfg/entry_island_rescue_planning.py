@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.cfg.entry_island_rescue import (
     EntryIslandRescueOption,
     build_entry_island_rescue_modification,
@@ -10,6 +12,40 @@ from d810.cfg.entry_island_rescue import (
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flow.edit_simulator import project_post_state
+
+logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+
+_SUB7FFD_RESCUE_SOURCE = 34
+_SUB7FFD_RESCUE_TARGET = 212
+_SUB7FFD_RESCUE_ENV = "D810_SUB7FFD_ENTRY_ISLAND_MODE"
+_SUB7FFD_RESCUE_MODE_OVERRIDE = ""
+
+
+def _sub7ffd_entry_island_mode() -> str:
+    if _SUB7FFD_RESCUE_MODE_OVERRIDE:
+        return _SUB7FFD_RESCUE_MODE_OVERRIDE.strip().lower()
+    return os.environ.get(_SUB7FFD_RESCUE_ENV, "").strip().lower()
+
+
+def _should_keep_sub7ffd_option(option: EntryIslandRescueOption) -> bool:
+    if (
+        int(option.source_block) != _SUB7FFD_RESCUE_SOURCE
+        or int(option.lifted_entry) != _SUB7FFD_RESCUE_TARGET
+    ):
+        return True
+
+    mode = _sub7ffd_entry_island_mode()
+    if not mode or mode == "default":
+        return True
+    if mode == "suppress":
+        return False
+    if mode == "direct":
+        return option.via_pred is None
+    if mode == "via92":
+        return int(option.via_pred) == 92 if option.via_pred is not None else False
+    if mode == "via170":
+        return int(option.via_pred) == 170 if option.via_pred is not None else False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +150,8 @@ def select_entry_island_rescue(
             dispatcher_region=dispatcher_region,
             claimed_sources=claimed_sources,
         ):
+            if not _should_keep_sub7ffd_option(option):
+                continue
             option_key = (
                 int(option.source_block),
                 int(option.lifted_entry),
@@ -132,6 +170,19 @@ def select_entry_island_rescue(
                 baseline_reachable_blocks=reachable_blocks,
                 compute_reachable_blocks=compute_reachable_blocks,
             )
+            if (
+                int(option.source_block) == 34
+                and int(option.lifted_entry) == 212
+            ):
+                logger.info(
+                    "RECON DAG: rescue option probe 34->212 via_pred=%s scored=%s",
+                    (
+                        int(option.via_pred)
+                        if option.via_pred is not None
+                        else None
+                    ),
+                    scored[0] if scored is not None else None,
+                )
             if scored is None:
                 continue
 

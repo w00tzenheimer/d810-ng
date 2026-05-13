@@ -23,7 +23,60 @@ from d810.cfg.residual_handoff_planning import (
 
 
 class TestPlanResidualDispatcherSource:
-    def test_prefix_before_branch_anchor_wins(self):
+    def test_goto_wins_over_prefix_before_branch_anchor(self):
+        plan = plan_residual_dispatcher_source(
+            ResidualDispatcherSourceContext(
+                source_block=18,
+                dispatcher_serial=6,
+                prefix_before_attempts=(
+                    ResidualPrefixAttempt(
+                        via_pred=14,
+                        prefix_target=20,
+                        owned_transition=(0x1111, 0x2222),
+                        edge_kind_name="transition",
+                        branch_context=ResidualBranchAnchorContext(
+                            is_conditional_branch_source=True,
+                            branch_source=12,
+                            source_block=18,
+                            via_pred=14,
+                            prefix_target=20,
+                            branch_succs=(18, 24),
+                            old_target=18,
+                            ordered_path=(12, 14, 18),
+                            dispatcher_serial=6,
+                            bst_node_blocks=frozenset(),
+                            target_reaches_branch=False,
+                        ),
+                    ),
+                ),
+                goto_attempt=ResidualGotoAttempt(
+                    target_entry=26,
+                    state_value=0x3333,
+                    context=ResidualGotoHandoffContext(
+                        source_block=18,
+                        target_entry=26,
+                        dispatcher_serial=6,
+                        bst_node_blocks=frozenset(),
+                        allow_family_fallback_tail=False,
+                        is_shared_suffix_conditional_tail=False,
+                        has_prior_branch_cut=False,
+                        target_reaches_source=False,
+                        already_emitted=False,
+                        live_oneway_noop=False,
+                    ),
+                ),
+            )
+        )
+
+        assert plan.accepted
+        assert plan.kind == ResidualDispatcherSourcePlanKind.GOTO
+        assert plan.redirected_count == 1
+        assert plan.modifications == (
+            RedirectGoto(from_serial=18, old_target=6, new_target=26),
+        )
+        assert plan.claimed_1way_updates == ((18, 26),)
+
+    def test_prefix_before_branch_anchor_wins_without_goto(self):
         plan = plan_residual_dispatcher_source(
             ResidualDispatcherSourceContext(
                 source_block=18,

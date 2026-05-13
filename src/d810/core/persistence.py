@@ -147,6 +147,7 @@ class SupportsOptimizationStorage(Protocol):
     def get_function_rules(
         self, function_addr: int
     ) -> Optional[FunctionRuleConfig]: ...
+    def clear_function_rules(self, function_addr: int) -> None: ...
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
     def get_function_tags(self, function_addr: int) -> Set[str]: ...
     def set_active_rule_inference(
@@ -626,6 +627,11 @@ class NetnodeOptimizationStorage:
             tags=set(row.get("tags", [])),
             notes=str(row.get("notes", "")),
         )
+
+    def clear_function_rules(self, function_addr: int) -> None:
+        self._state["function_rules"].pop(self._func_key(function_addr), None)
+        self._flush_state()
+        logger.info("Cleared rule configuration for function %x", function_addr)
 
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
         fkey = self._func_key(function_addr)
@@ -1200,6 +1206,24 @@ class SQLiteOptimizationStorage:
             tags=tags,
             notes=row["notes"] or "",
         )
+
+    def clear_function_rules(self, function_addr: int) -> None:
+        """Delete the persisted per-function rule configuration row.
+
+        This removes enabled/disabled rule overrides and any tags/notes stored
+        in the same record. Callers that need to preserve tags should re-save
+        them before returning control to normal execution.
+        """
+        if not self.conn:
+            return
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "DELETE FROM function_rules WHERE function_addr = ?",
+            (function_addr,),
+        )
+        self.conn.commit()
+        logger.info("Cleared rule configuration for function %x", function_addr)
 
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
         if not self.conn:

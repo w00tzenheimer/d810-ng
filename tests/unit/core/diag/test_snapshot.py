@@ -8,6 +8,11 @@ import pytest
 
 from d810.core.diag.formatting import format_block_id
 from d810.core.diag.schema import create_tables
+from d810.cfg.block_lineage import (
+    BlockLineageEntry,
+    buffer_block_lineage,
+    reset_pending_block_lineage,
+)
 from d810.core.diag.snapshot import (
     BlockSnapshot,
     DagEdge,
@@ -16,7 +21,9 @@ from d810.core.diag.snapshot import (
     Modification,
     _dual,
     _safe_int,
+    dag_node_diagnostic_state,
     snapshot_dag,
+    snapshot_dag_local_facts,
     snapshot_fact_conflicts,
     snapshot_fact_consumers,
     snapshot_fact_mappings,
@@ -29,12 +36,20 @@ from d810.core.diag.snapshot import (
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
+    LinearizedStateDag,
+    LocalEdgeKind,
+    LocalSegmentKind,
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderOrderStrategy,
     RenderedProgramLine,
     RenderedProgramNode,
     RenderedProgramSnapshot,
+    StateDagNode,
+    StateDagNodeKey,
+    StateLocalEdge,
+    StateLocalSegment,
+    StateNodeKind,
 )
 from d810.recon.facts import (
     FactConflict,
@@ -121,6 +136,164 @@ class TestSnapshotMba:
             "SELECT COUNT(*) FROM instructions WHERE snapshot_id=1"
         ).fetchone()
         assert rows[0] == 6  # 3 blocks * 2 insns
+
+    def test_writes_block_observations(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        block = BlockSnapshot(
+            serial=33,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x18001340F,
+            nsucc=1,
+            npred=1,
+            succs=[24],
+            preds=[28],
+            instructions=[
+                _make_insn(
+                    0,
+                    ea=0x18001340F,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dest_type="mop_S",
+                    dest_stkoff=0x400,
+                    src_l_type="mop_n",
+                    src_l_value=0x27EEEA11,
+                ),
+                _make_insn(
+                    1,
+                    ea=0x180013421,
+                    opcode=6,
+                    opcode_name="m_goto",
+                ),
+            ],
+        )
+        snapshot_mba(
+            conn,
+            [block],
+            label="test",
+            func_ea=0x1000,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+
+        row = conn.execute(
+            "SELECT maturity, phase, start_ea_hex, insn_count, "
+            "insn_ea_fingerprint, opcode_fingerprint, operand_fingerprint, "
+            "body_fingerprint "
+            "FROM block_observations WHERE snapshot_id=1 AND serial=33"
+        ).fetchone()
+        assert row[0] == "MMAT_GLBOPT1"
+        assert row[1] == "post_apply"
+        assert row[2] == "0x000000018001340f"
+        assert row[3] == 2
+        assert json.loads(row[4]) == [
+            "0x000000018001340f",
+            "0x0000000180013421",
+        ]
+        assert json.loads(row[5]) == [4, 6]
+        operand_fp = json.loads(row[6])
+        assert operand_fp[0]["d_o"] == 0x400
+        assert operand_fp[0]["l_v"] == "0x0000000027eeea11"
+        assert row[7].startswith("fnv1a64:0x")
+
+    def test_duplicate_ea_observations_remain_distinct_by_serial(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        original = BlockSnapshot(
+            serial=32,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[2],
+            preds=[24],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        clone = BlockSnapshot(
+            serial=220,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[62],
+            preds=[31],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        snapshot_mba(
+            conn,
+            [original, clone],
+            label="post_hcc",
+            func_ea=0x1000,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+
+        rows = conn.execute(
+            "SELECT serial, start_ea_hex, body_fingerprint "
+            "FROM block_observations WHERE start_ea_hex=? ORDER BY serial",
+            ("0x0000000180013274",),
+        ).fetchall()
+        assert [row[0] for row in rows] == [32, 220]
+        assert rows[0][1] == rows[1][1]
+        assert rows[0][2] == rows[1][2]
+
+    def test_snapshot_mba_flushes_pending_block_lineage(self) -> None:
+        reset_pending_block_lineage()
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        block = BlockSnapshot(
+            serial=220,
+            block_type=1,
+            type_name="BLT_1WAY",
+            start_ea=0x180013274,
+            nsucc=1,
+            npred=1,
+            succs=[62],
+            preds=[31],
+            instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
+        )
+        buffer_block_lineage([
+            BlockLineageEntry(
+                serial=220,
+                origin_snapshot_id=7,
+                origin_serial=32,
+                origin_start_ea_hex="0x180013274",
+                origin_body_fingerprint="fp=[0x180013274:op4]",
+                creation_kind="edge_split_trampoline",
+                creation_reason="patch_plan:edge_split_trampoline",
+                planner_block_id="edge_split:0",
+                source_mod_type="EdgeRedirectViaPredSplit",
+                extra_json='{"origin_label":"blk[32]@0x180013274"}',
+            )
+        ])
+        try:
+            snap_id = snapshot_mba(
+                conn,
+                [block],
+                label="post_hcc",
+                func_ea=0x1000,
+                maturity="MMAT_GLBOPT1",
+                phase="post_apply",
+            )
+            row = conn.execute(
+                "SELECT snapshot_id, serial, origin_snapshot_id, origin_serial, "
+                "creation_kind, planner_block_id "
+                "FROM block_lineage WHERE snapshot_id=? AND serial=220",
+                (snap_id,),
+            ).fetchone()
+            assert row == (
+                snap_id,
+                220,
+                7,
+                32,
+                "edge_split_trampoline",
+                "edge_split:0",
+            )
+        finally:
+            reset_pending_block_lineage()
 
     def test_snapshot_id_increments(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
         conn = sqlite3.connect(":memory:")
@@ -561,6 +734,135 @@ class TestSnapshotDag:
             "SELECT ordered_path FROM dag_edges WHERE snapshot_id=1"
         ).fetchone()
         assert json.loads(row[0]) == [131, 174, 176]
+
+    def test_snapshot_dag_local_facts_writes_node_internals(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+
+        node = StateDagNode(
+            key=StateDagNodeKey(handler_serial=205, state_const=0x298372CC),
+            kind=StateNodeKind.RANGE_BACKED,
+            state_label="STATE_298372CC",
+            handler_serial=205,
+            entry_anchor=205,
+            owned_blocks=(205, 207, 206, 217, 218),
+            exclusive_blocks=(205, 207, 206),
+            shared_suffix_blocks=(217, 218),
+            local_segments=(
+                StateLocalSegment("blk[205]", LocalSegmentKind.BRANCH, (205,)),
+                StateLocalSegment("blk[207]", LocalSegmentKind.STRAIGHT_LINE, (207,)),
+                StateLocalSegment("blk[206]", LocalSegmentKind.STRAIGHT_LINE, (206,)),
+                StateLocalSegment("blk[217]", LocalSegmentKind.SHARED_SUFFIX, (217,)),
+                StateLocalSegment("blk[218]", LocalSegmentKind.TERMINAL_SUFFIX, (218,)),
+            ),
+            local_edges=(
+                StateLocalEdge("blk[205]", "blk[207]", LocalEdgeKind.TAKEN, 1),
+                StateLocalEdge("blk[205]", "blk[206]", LocalEdgeKind.FALLTHROUGH, 0),
+                StateLocalEdge("blk[206]", "blk[217]", LocalEdgeKind.SHARED_SUFFIX),
+                StateLocalEdge("blk[217]", "blk[218]", LocalEdgeKind.TERMINAL),
+            ),
+        )
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=1,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=0x298372CC,
+            bst_node_blocks=(),
+            nodes=(node,),
+            edges=(),
+        )
+
+        snapshot_dag_local_facts(conn, 1, dag)
+
+        block_rows = conn.execute(
+            "SELECT role, block_serial FROM dag_node_blocks "
+            "WHERE snapshot_id=1 ORDER BY role, block_serial"
+        ).fetchall()
+        assert ("shared_suffix", 217) in block_rows
+        assert ("owned", 205) in block_rows
+
+        segment_row = conn.execute(
+            "SELECT kind, blocks_json FROM dag_local_segments "
+            "WHERE snapshot_id=1 AND segment_id='blk[205]'"
+        ).fetchone()
+        assert segment_row == ("BRANCH", "[205]")
+
+        edge_rows = conn.execute(
+            "SELECT source_segment_id, target_segment_id, kind, branch_arm "
+            "FROM dag_local_edges WHERE snapshot_id=1 ORDER BY edge_index"
+        ).fetchall()
+        assert edge_rows[0] == ("blk[205]", "blk[207]", "TAKEN", 1)
+        assert edge_rows[-1] == ("blk[217]", "blk[218]", "TERMINAL", None)
+
+    def test_range_only_node_identity_matches_outer_and_local_tables(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        create_tables(conn)
+        conn.execute(
+            "INSERT INTO snapshots VALUES "
+            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        )
+
+        node = StateDagNode(
+            key=StateDagNodeKey(
+                handler_serial=205,
+                state_const=None,
+                range_lo=0x29837000,
+                range_hi=0x29837FFF,
+            ),
+            kind=StateNodeKind.RANGE_BACKED,
+            state_label="STATE_29837000",
+            handler_serial=205,
+            entry_anchor=205,
+            owned_blocks=(205,),
+            exclusive_blocks=(205,),
+            shared_suffix_blocks=(),
+            local_segments=(
+                StateLocalSegment("blk[205]", LocalSegmentKind.STRAIGHT_LINE, (205,)),
+            ),
+            local_edges=(),
+        )
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=1,
+            state_var_stkoff=0x3C,
+            pre_header_serial=None,
+            initial_state=None,
+            bst_node_blocks=(),
+            nodes=(node,),
+            edges=(),
+        )
+        diagnostic_state = dag_node_diagnostic_state(node)
+        assert diagnostic_state == 0x29837000
+
+        snapshot_dag(
+            conn,
+            1,
+            [DagNode(diagnostic_state, "ignored", 205, "RANGE_BACKED")],
+            [],
+        )
+        snapshot_dag_local_facts(conn, 1, dag)
+
+        outer_hex = conn.execute(
+            "SELECT state_hex FROM dag_nodes WHERE snapshot_id=1"
+        ).fetchone()[0]
+        local_hex = conn.execute(
+            "SELECT DISTINCT state_hex FROM dag_node_blocks WHERE snapshot_id=1"
+        ).fetchone()[0]
+        assert outer_hex == "0x0000000029837000"
+        assert local_hex == outer_hex
+
+    def test_anonymous_node_identity_is_stable_and_nonzero(self) -> None:
+        key = StateDagNodeKey(handler_serial=77)
+
+        first = dag_node_diagnostic_state(key)
+        second = dag_node_diagnostic_state(key)
+
+        assert first == second
+        assert first != 0
+        assert f"0x{first:016x}".startswith("0xd810")
 
 
 class TestSnapshotModifications:

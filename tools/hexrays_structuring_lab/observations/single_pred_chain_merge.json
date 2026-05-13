@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "case_id": "single_pred_chain_merge",
+  "status": "observed",
+  "binary": "libobfuscated.dll",
+  "binary_hash": "sha256:9de9b2f211f81b020ba66566a1c8e1b9af4f71fa297db93e15c22d6d6bc15c1b",
+  "compiler_flags": [
+    "-O0"
+  ],
+  "cfg_validation": {
+    "status": "passed",
+    "accepted_maturity": "MMAT_LOCOPT",
+    "accepted_chain": [
+      0,
+      1,
+      4,
+      3,
+      2,
+      5
+    ],
+    "accepted_chain_length": 6,
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 6,
+      "MMAT_PREOPTIMIZED": 6,
+      "MMAT_LOCOPT": 6
+    },
+    "body_relative_start_eas": [
+      "0x0",
+      "0x33",
+      "0x1f",
+      "0x11"
+    ],
+    "body_opcode_signatures": [
+      [
+        4,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        12,
+        55
+      ],
+      [
+        9,
+        14,
+        4,
+        4,
+        33,
+        31,
+        29,
+        21,
+        9,
+        4,
+        55
+      ],
+      [
+        25,
+        26,
+        33,
+        31,
+        29,
+        13,
+        9,
+        4,
+        55
+      ],
+      [
+        4,
+        9,
+        4,
+        55
+      ]
+    ]
+  },
+  "structuring_observation": {
+    "from_label": "dump_raw_hexrays_lab_single_pred_chain_merge_LOCOPT",
+    "to_label": "dump_raw_hexrays_lab_single_pred_chain_merge_GLBOPT1",
+    "from_block_count": 6,
+    "to_block_count": 3,
+    "vanished_count": 3,
+    "disposition_counts": {
+      "deleted": 2,
+      "synthesized_only": 1
+    },
+    "content_counts": {
+      "empty": 1,
+      "has_content": 2
+    },
+    "outcome_class": "expression_folded_deleted",
+    "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
+  },
+  "pseudocode": {
+    "before_lines": 5,
+    "after_lines": 5,
+    "changed": false,
+    "shape": "single expression assignment plus return"
+  },
+  "reproduce": {
+    "validate_cfg": "python -m tools.hexrays_structuring_lab validate-cfg single_pred_chain_merge",
+    "dump": "python -m tools.hexrays_structuring_lab command single_pred_chain_merge",
+    "summary_template": "python -m tools.hexrays_structuring_lab summarize --db <diag.sqlite3> --cfg-validation <validation.json> --require-cfg-validation"
+  }
+}

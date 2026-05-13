@@ -1,35 +1,58 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+from d810.core.observability import SnapshotRef
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
 
 
-def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None:
-    try:
-        from d810.core.diag import get_diag_db
-        diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-        if diag_db is not None:
-            from d810.core.diag.snapshot import (
-                DagEdge,
-                DagNode,
-                snapshot_dag,
-                snapshot_mba,
-            )
-            import json as _json
+@dataclass(frozen=True, slots=True)
+class SnapshotReconstructionResult:
+    """Result of :func:`snapshot_reconstruction_dag`.
 
-            snap_id = snapshot_mba(
-                diag_db,
-                [],
-                label=f"{strategy_name}_state_write_reconstruction_dag",
-                func_ea=mba.entry_ea if mba is not None else 0,
-                maturity="MMAT_GLBOPT1",
-                phase="post_apply",
-            )
+    ``persisted`` is ``True`` only when the snapshot landed in the
+    diagnostic DB without raising.  Consumers (e.g. the selected-
+    alternate edge override helper) carry the ``snap_ref`` through the
+    bridge to look up the just-written ``dag_edges`` rows; on any
+    failure ``snap_ref`` is ``None`` so callers can no-op cleanly.
+    """
+
+    snap_ref: SnapshotRef | None
+    persisted: bool
+
+
+def snapshot_reconstruction_dag(
+    logger,
+    *,
+    dag,
+    mba,
+    strategy_name: str,
+) -> SnapshotReconstructionResult:
+    try:
+        from d810.hexrays.observability import request_capture_mba_snapshot
+        from d810.recon.observability import (
+            DagEdge,
+            DagNode,
+            dag_node_diagnostic_state,
+            observe_dag,
+            observe_dag_local_facts,
+        )
+        snap_ref = request_capture_mba_snapshot(
+            blocks=[],
+            label=f"{strategy_name}_state_write_reconstruction_dag",
+            func_ea=mba.entry_ea if mba is not None else 0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+        if snap_ref is not None:
+            import json as _json
 
             dag_nodes = []
             for node in dag.nodes:
+                diagnostic_state = dag_node_diagnostic_state(node)
                 dag_nodes.append(DagNode(
-                    state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                    state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
+                    state=diagnostic_state,
+                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
                     entry_block=int(node.entry_anchor),
                     classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
                     shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
@@ -48,12 +71,21 @@ def snapshot_reconstruction_dag(logger, *, dag, mba, strategy_name: str) -> None
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            observe_dag(snap_ref, dag_nodes, dag_edges)
+            observe_dag_local_facts(snap_ref, dag)
+            return SnapshotReconstructionResult(
+                snap_ref=snap_ref,
+                persisted=True,
+            )
     except Exception:
         logger.warning(
             "Early diagnostic DAG snapshot failed (non-critical)",
             exc_info=True,
         )
+    return SnapshotReconstructionResult(
+        snap_ref=None,
+        persisted=False,
+    )
 
 
 def snapshot_reconstruction_post_apply(
@@ -63,35 +95,36 @@ def snapshot_reconstruction_post_apply(
     modifications: list,
     mba,
     strategy_name: str,
+    dag_frontier_closure_diagnostics=(),
 ) -> None:
     try:
-        from d810.core.diag import get_diag_db
-        diag_db = get_diag_db(mba.entry_ea if mba is not None else 0)
-        if diag_db is not None:
-            from d810.core.diag.snapshot import (
-                DagEdge,
-                DagNode,
-                Modification,
-                snapshot_dag,
-                snapshot_mba,
-                snapshot_modifications,
-            )
+        from d810.hexrays.observability import request_capture_mba_snapshot
+        from d810.recon.observability import (
+            DagEdge,
+            DagNode,
+            Modification,
+            dag_node_diagnostic_state,
+            observe_dag,
+            observe_dag_frontier_closure_diagnostics,
+            observe_dag_local_facts,
+            observe_modifications,
+        )
+        snap_ref = request_capture_mba_snapshot(
+            blocks=[],
+            label=f"{strategy_name}_state_write_reconstruction_post_apply",
+            func_ea=mba.entry_ea if mba is not None else 0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+        )
+        if snap_ref is not None:
             import json as _json
-
-            snap_id = snapshot_mba(
-                diag_db,
-                [],
-                label=f"{strategy_name}_state_write_reconstruction_post_apply",
-                func_ea=mba.entry_ea if mba is not None else 0,
-                maturity="MMAT_GLBOPT1",
-                phase="post_apply",
-            )
 
             dag_nodes = []
             for node in dag.nodes:
+                diagnostic_state = dag_node_diagnostic_state(node)
                 dag_nodes.append(DagNode(
-                    state=int(node.key.state_const) if node.key.state_const is not None else 0,
-                    state_hex=f"0x{node.key.state_const:08X}" if node.key.state_const is not None else "None",
+                    state=diagnostic_state,
+                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
                     entry_block=int(node.entry_anchor),
                     classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
                     shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
@@ -110,33 +143,83 @@ def snapshot_reconstruction_post_apply(
                     ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
                 ))
 
-            snapshot_dag(diag_db, snap_id, dag_nodes, dag_edges)
+            observe_dag(snap_ref, dag_nodes, dag_edges)
+            observe_dag_local_facts(snap_ref, dag)
 
             mod_snapshots = []
             for midx, mod in enumerate(modifications):
                 mod_type = type(mod).__name__
-                source_block = (
-                    getattr(mod, "from_serial", None)
-                    or getattr(mod, "source_block", None)
-                    or getattr(mod, "src_block", None)
-                    or getattr(mod, "block_serial", None)
-                )
-                target_block = (
-                    getattr(mod, "new_target", None)
-                    or getattr(mod, "goto_target", None)
-                    or getattr(mod, "conditional_target", None)
-                )
-                old_target = getattr(mod, "old_target", None)
+                # Mod-type-specific extraction: each GraphModification dataclass
+                # carries different field names for "where the edge starts /
+                # ends / used to end."  The previous getattr chain only matched
+                # RedirectGoto/RedirectBranch/EdgeRedirectViaPredSplit, leaving
+                # InsertBlock/DuplicateAndRedirect/CreateConditionalRedirect/
+                # DuplicateBlock with all three columns NULL — making the
+                # modifications table useless for tracing corridor topology
+                # mutations driven by HCC's bulk-splice operations.
+                source_block: int | None = None
+                target_block: int | None = None
+                old_target: int | None = None
+                # 1) source-of-edit candidates by field name
+                for src_attr in (
+                    "from_serial",
+                    "src_block",          # EdgeRedirectViaPredSplit
+                    "source_block",       # RedirectGoto, RedirectBranch,
+                                          # ConvertToGoto, RemoveEdge,
+                                          # CreateConditionalRedirect,
+                                          # DuplicateBlock
+                    "source_serial",      # DuplicateAndRedirect, ReorderBlocks
+                    "pred_serial",        # InsertBlock
+                    "block_serial",       # NopInstructions, ZeroStateWrite,
+                                          # PromoteOperandToScalar
+                    "anchor_serial",      # PrivateTerminalSuffix
+                ):
+                    val = getattr(mod, src_attr, None)
+                    if val is not None:
+                        source_block = int(val)
+                        break
+                # 2) target-of-edit candidates by field name
+                for tgt_attr in (
+                    "new_target",         # RedirectGoto, RedirectBranch,
+                                          # EdgeRedirectViaPredSplit
+                    "goto_target",        # ConvertToGoto
+                    "conditional_target", # CreateConditionalRedirect,
+                                          # DuplicateAndRedirect (per-pred)
+                    "succ_serial",        # InsertBlock
+                    "target_block",       # DuplicateBlock
+                    "to_serial",          # RemoveEdge
+                    "shared_entry_serial",  # PrivateTerminalSuffix
+                ):
+                    val = getattr(mod, tgt_attr, None)
+                    if val is not None:
+                        target_block = int(val)
+                        break
+                # 3) old-target candidates: explicit field, then fall through
+                #    to InsertBlock's old_target_serial alias.
+                for old_attr in (
+                    "old_target",         # EdgeRedirectViaPredSplit,
+                                          # RedirectBranch
+                    "old_target_serial",  # InsertBlock
+                ):
+                    val = getattr(mod, old_attr, None)
+                    if val is not None:
+                        old_target = int(val)
+                        break
                 mod_snapshots.append(Modification(
                     mod_index=midx,
                     mod_type=mod_type,
-                    source_block=int(source_block) if source_block is not None else None,
-                    target_block=int(target_block) if target_block is not None else None,
-                    old_target=int(old_target) if old_target is not None else None,
+                    source_block=source_block,
+                    target_block=target_block,
+                    old_target=old_target,
                     status="emitted",
                 ))
 
-            snapshot_modifications(diag_db, snap_id, mod_snapshots)
+            observe_modifications(snap_ref, mod_snapshots)
+            if dag_frontier_closure_diagnostics:
+                observe_dag_frontier_closure_diagnostics(
+                    snap_ref,
+                    dag_frontier_closure_diagnostics,
+                )
     except Exception:
         logger.warning(
             "Diagnostic DAG/modifications snapshot failed (non-critical)",
