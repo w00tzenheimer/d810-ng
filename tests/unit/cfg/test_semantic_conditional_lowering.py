@@ -6,8 +6,11 @@ import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.semantic_conditional_lowering import (
+    ConditionalForkExactNodeArm,
     analyze_exact_conditional_sites,
     collect_conditional_node_scope,
+    conditional_fork_path_from_source,
+    normalize_clean_conditional_fork_arms,
 )
 
 
@@ -61,6 +64,23 @@ def _round_summary(edges: list[_FakeEdge]) -> SimpleNamespace:
             for edge in edges
             if getattr(edge.kind, "name", "") == "CONDITIONAL_TRANSITION"
         ),
+    )
+
+
+def _fork_arm(
+    *,
+    first_hop: int,
+    tail: int,
+    ordered_path: tuple[int, ...],
+) -> ConditionalForkExactNodeArm:
+    return ConditionalForkExactNodeArm(
+        target_state=0x22222222,
+        target_entry=99,
+        first_hop=first_hop,
+        tail=tail,
+        ordered_path=ordered_path,
+        transition_edge=object(),
+        return_distance=None,
     )
 
 
@@ -301,3 +321,102 @@ def test_collect_conditional_node_scope_includes_sibling_return_path() -> None:
 
     assert blocks == {10, 11, 12, 14, 21}
     assert edges == {(10, 11), (11, 14), (14, 21), (10, 12), (12, 21)}
+
+
+def test_conditional_fork_path_from_source_requires_source_and_first_hop() -> None:
+    assert conditional_fork_path_from_source(
+        source_block=10,
+        first_hop=11,
+        ordered_path=(9, 10, 11, 20),
+    ) == (10, 11, 20)
+    assert conditional_fork_path_from_source(
+        source_block=10,
+        first_hop=12,
+        ordered_path=(9, 10, 11, 20),
+    ) is None
+    assert conditional_fork_path_from_source(
+        source_block=99,
+        first_hop=11,
+        ordered_path=(9, 10, 11, 20),
+    ) is None
+
+
+def test_normalize_clean_conditional_fork_arms_accepts_independent_single_pred_arms() -> None:
+    flow_graph = _graph(
+        {
+            10: ((11, 12), ()),
+            11: ((21,), (10,)),
+            12: ((22,), (10,)),
+            21: ((30,), (11,)),
+            22: ((31,), (12,)),
+            30: ((), (21,)),
+            31: ((), (22,)),
+        },
+        entry=10,
+    )
+    arms = (
+        _fork_arm(first_hop=11, tail=30, ordered_path=(10, 11, 21, 30)),
+        _fork_arm(first_hop=12, tail=31, ordered_path=(10, 12, 22, 31)),
+    )
+
+    assert normalize_clean_conditional_fork_arms(
+        flow_graph,
+        source_block=10,
+        arms=arms,
+        dispatcher_region=set(),
+    ) == arms
+
+
+def test_normalize_clean_conditional_fork_arms_rewrites_empty_shared_join_tails() -> None:
+    flow_graph = _graph(
+        {
+            10: ((11, 12), ()),
+            11: ((21,), (10,)),
+            12: ((22,), (10,)),
+            21: ((40,), (11,)),
+            22: ((40,), (12,)),
+            40: ((50,), (21, 22)),
+            50: ((), (40,)),
+        },
+        entry=10,
+    )
+    arms = (
+        _fork_arm(first_hop=11, tail=40, ordered_path=(10, 11, 21, 40)),
+        _fork_arm(first_hop=12, tail=40, ordered_path=(10, 12, 22, 40)),
+    )
+
+    normalized = normalize_clean_conditional_fork_arms(
+        flow_graph,
+        source_block=10,
+        arms=arms,
+        dispatcher_region=set(),
+    )
+
+    assert normalized is not None
+    assert tuple(arm.tail for arm in normalized) == (21, 22)
+
+
+def test_normalize_clean_conditional_fork_arms_rejects_join_to_dispatcher() -> None:
+    flow_graph = _graph(
+        {
+            10: ((11, 12), ()),
+            11: ((21,), (10,)),
+            12: ((22,), (10,)),
+            21: ((40,), (11,)),
+            22: ((40,), (12,)),
+            40: ((2,), (21, 22)),
+            2: ((), (40,)),
+        },
+        entry=10,
+    )
+    arms = (
+        _fork_arm(first_hop=11, tail=40, ordered_path=(10, 11, 21, 40)),
+        _fork_arm(first_hop=12, tail=40, ordered_path=(10, 12, 22, 40)),
+    )
+
+    assert normalize_clean_conditional_fork_arms(
+        flow_graph,
+        source_block=10,
+        arms=arms,
+        dispatcher_region={2},
+    ) is None

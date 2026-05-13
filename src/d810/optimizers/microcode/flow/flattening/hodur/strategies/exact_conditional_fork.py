@@ -1,7 +1,6 @@
 """Experimental lowering for exact conditional nodes with two semantic exits."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import os
 import re
 
@@ -16,6 +15,12 @@ from d810.cfg.graph_modification import NopInstructions, ZeroStateWrite
 from d810.cfg.semantic_region_lowering import (
     _collect_semantic_entry_by_label,
     _collect_semantic_successors_by_state,
+)
+from d810.cfg.semantic_conditional_lowering import (
+    ConditionalForkExactNodeArm,
+    ConditionalForkExactNodeSite,
+    ExactConditionalForkInventory,
+    normalize_clean_conditional_fork_arms,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
@@ -69,35 +74,6 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class ConditionalForkExactNodeArm:
-    target_state: int
-    target_entry: int
-    first_hop: int
-    tail: int
-    ordered_path: tuple[int, ...]
-    transition_edge: object
-    return_distance: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class ConditionalForkExactNodeSite:
-    source_block: int
-    follow_block: int | None
-    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm]
-
-
-@dataclass(frozen=True, slots=True)
-class ExactConditionalForkInventory:
-    selected_count: int
-    candidate_blocks: tuple[int, ...]
-    plannable_incomplete_blocks: tuple[int, ...]
-    shape_rejected_blocks: tuple[int, ...]
-    clean_fork_blocks: tuple[int, ...] = ()
-    boundary_preservation_blocks: tuple[int, ...] = ()
-    alias_handled_blocks: tuple[int, ...] = ()
-
-
 def _require_clean_fork_paths() -> bool:
     """Default exact-fork lowering to Hex-Rays-friendly clean fork shapes.
 
@@ -111,115 +87,6 @@ def _require_clean_fork_paths() -> bool:
     return (
         os.environ.get("D810_EXACT_CONDITIONAL_FORK_REQUIRE_CLEAN", "1").strip()
         != "0"
-    )
-
-
-def _path_from_source(
-    *,
-    source_block: int,
-    first_hop: int,
-    ordered_path: tuple[int, ...],
-) -> tuple[int, ...] | None:
-    if not ordered_path:
-        return None
-    try:
-        source_index = ordered_path.index(int(source_block))
-    except ValueError:
-        return None
-    path = ordered_path[source_index:]
-    if len(path) < 2:
-        return None
-    if int(path[1]) != int(first_hop):
-        return None
-    return path
-
-
-def _path_edges_exist(flow_graph, path: tuple[int, ...]) -> bool:
-    for current, nxt in zip(path, path[1:]):
-        block = flow_graph.get_block(int(current))
-        if block is None:
-            return False
-        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
-        if int(nxt) not in succs:
-            return False
-    return True
-
-
-def _single_pred_path_blocks(flow_graph, path: tuple[int, ...]) -> bool:
-    for block_serial in path:
-        block = flow_graph.get_block(int(block_serial))
-        if block is None:
-            return False
-        if int(getattr(block, "npred", 0)) != 1:
-            return False
-    return True
-
-
-def _normalize_clean_fork_arms(
-    flow_graph,
-    *,
-    source_block: int,
-    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm],
-    dispatcher_region: set[int],
-) -> tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm] | None:
-    paths: list[tuple[int, ...]] = []
-    for arm in arms:
-        path = _path_from_source(
-            source_block=source_block,
-            first_hop=arm.first_hop,
-            ordered_path=arm.ordered_path,
-        )
-        if path is None or not _path_edges_exist(flow_graph, path):
-            return None
-        paths.append(path)
-
-    terminal_blocks = {int(path[-1]) for path in paths}
-    if len(terminal_blocks) == len(arms):
-        if all(_single_pred_path_blocks(flow_graph, path[1:]) for path in paths):
-            return arms
-        return None
-
-    if len(terminal_blocks) != 1:
-        return None
-
-    shared_join = next(iter(terminal_blocks))
-    join_block = flow_graph.get_block(shared_join)
-    if join_block is None:
-        return None
-    if shared_join in dispatcher_region:
-        return None
-    join_succs = tuple(int(succ) for succ in getattr(join_block, "succs", ()) or ())
-    if len(join_succs) != 1:
-        return None
-    if any(succ in dispatcher_region for succ in join_succs):
-        return None
-    if tuple(getattr(join_block, "insn_snapshots", ()) or ()):
-        return None
-
-    if any(len(path) < 3 for path in paths):
-        return None
-    arm_tails = tuple(int(path[-2]) for path in paths)
-    if len(set(arm_tails)) != len(arms):
-        return None
-    join_preds = {int(pred) for pred in getattr(join_block, "preds", ()) or ()}
-    if join_preds != set(arm_tails):
-        return None
-    if int(getattr(join_block, "npred", 0)) != len(arms):
-        return None
-
-    seen_path_blocks: set[int] = set()
-    for path in paths:
-        arm_path = path[1:-1]
-        if not _single_pred_path_blocks(flow_graph, arm_path):
-            return None
-        for block_serial in arm_path:
-            if int(block_serial) in seen_path_blocks:
-                return None
-            seen_path_blocks.add(int(block_serial))
-
-    return tuple(
-        replace(arm, tail=int(path[-2]))
-        for arm, path in zip(arms, paths)
     )
 
 
@@ -896,7 +763,7 @@ def analyze_exact_conditional_fork_sites(
             continue
 
         arms = tuple(arms_by_first_hop[succ] for succ in succs)
-        clean_arms = _normalize_clean_fork_arms(
+        clean_arms = normalize_clean_conditional_fork_arms(
             flow_graph,
             source_block=source_block,
             arms=arms,
