@@ -121,6 +121,7 @@ def filter_return_carrier_fact_redirects(
     mba: Any,
     fact_view: Any | None,
     dispatcher_serial: int,
+    stale_hazard_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
 ) -> tuple[list[GraphModification], tuple[ReturnCarrierFactRejection, ...]]:
     """Reject fact-proven return-carrier constant-feed redirects.
 
@@ -176,6 +177,23 @@ def filter_return_carrier_fact_redirects(
                 overlap=tuple(sorted(overlap)),
                 const_written=tuple(sorted(const_written)),
             )
+            if (
+                fact_status == "stale_hazard"
+                and (source, old_target, target) in stale_hazard_override_keys
+            ):
+                logger.info(
+                    "RETURN_CARRIER_FACT_REDIRECT_STALE_HAZARD_OVERRIDDEN "
+                    "src=blk[%d] target=blk[%d] hazard=blk[%d] old=blk[%d] "
+                    "fact_id=%s overlap=%s const_written=%s",
+                    source,
+                    target,
+                    hazard_block,
+                    old_target,
+                    fact_id,
+                    list(rejection.overlap),
+                    list(rejection.const_written),
+                )
+                continue
             rejections.append(rejection)
             logger.info(
                 "RECON_REDIRECT_REJECTED_RETURN_CARRIER_CONST_FEED "

@@ -66,6 +66,39 @@ def _fact_lifecycle_enabled() -> bool:
     return os.environ.get(_FACT_LIFECYCLE_ENV, "") == "1"
 
 
+def _refresh_graph_metadata_after_edge_override(dag):
+    """Recompute SCC-derived metadata after behavior rewrites DAG edges."""
+    from d810.recon.flow.scc_analysis import (
+        classify_loop_regions,
+        compute_state_sccs,
+        log_sccs,
+    )
+
+    sccs = compute_state_sccs(dag)
+    log_sccs(sccs)
+    refreshed = dataclasses.replace(dag, sccs=sccs)
+    dispatcher_region = set(getattr(refreshed, "bst_node_blocks", ()) or ())
+    dispatcher_serial = getattr(refreshed, "dispatcher_entry_serial", None)
+    if dispatcher_serial is not None:
+        try:
+            dispatcher_region.add(int(dispatcher_serial))
+        except (TypeError, ValueError):
+            pass
+    refreshed = dataclasses.replace(
+        refreshed,
+        loop_regions=classify_loop_regions(
+            refreshed,
+            dispatcher_region=dispatcher_region,
+        ),
+    )
+    logger.info(
+        "RECON_DAG_OVERRIDE_METADATA_REFRESHED scc_count=%d loop_regions=%d",
+        len(getattr(refreshed, "sccs", ()) or ()),
+        len(getattr(refreshed, "loop_regions", ()) or ()),
+    )
+    return refreshed
+
+
 def _run_cascade(diag_db: sqlite3.Connection, snap_id: int) -> None:
     """Run classify -> correlate -> select against ``snap_id``.
 
@@ -403,7 +436,9 @@ def apply_selected_alternate_edge_overrides_from_diag(
         overrides_attempted,
         overrides_applied,
     )
-    return dataclasses.replace(dag, edges=tuple(new_edges))
+    return _refresh_graph_metadata_after_edge_override(
+        dataclasses.replace(dag, edges=tuple(new_edges))
+    )
 
 
 __all__ = [

@@ -37,9 +37,10 @@ from d810.cfg.backedge_classifier import (
     BackedgeClassification,
     classify_backedges,
 )
+from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.core.logging import getLogger
-from d810.core.typing import Mapping
+from d810.core.typing import Mapping, Sequence
 
 logger = getLogger(__name__)
 
@@ -81,11 +82,18 @@ def plan_spurious_backedge_redirects(
     by ``(src_serial, old_target)``.
     """
     sccs = compute_live_cfg_sccs(block_succs)
+    dom_backedges = _dominator_backedges(block_succs)
     plans: list[SpuriousRedirectPlan] = []
     seen: set[tuple[int, int]] = set()
 
     for scc in nontrivial_sccs(sccs):
-        edges = sorted(scc.cyclic_edges)
+        edges = sorted(
+            edge
+            for edge in scc.cyclic_edges
+            if edge in dom_backedges
+        )
+        if not edges:
+            continue
         classifications = classify_backedges(
             edges,
             block_writes=block_writes,
@@ -106,6 +114,67 @@ def plan_spurious_backedge_redirects(
             plans.append(plan)
 
     return tuple(plans)
+
+
+def _graph_nodes_and_roots(
+    block_succs: Mapping[int, Sequence[int]],
+) -> tuple[set[int], list[int]]:
+    nodes: set[int] = set()
+    preds: dict[int, set[int]] = {}
+    for src, succs in block_succs.items():
+        src_i = int(src)
+        nodes.add(src_i)
+        preds.setdefault(src_i, set())
+        for succ in succs:
+            succ_i = int(succ)
+            nodes.add(succ_i)
+            preds.setdefault(succ_i, set()).add(src_i)
+    if not nodes:
+        return set(), []
+    roots = sorted(node for node in nodes if not preds.get(node))
+    if 0 in nodes:
+        roots = [0] + [node for node in roots if node != 0]
+    return nodes, roots
+
+
+def _dominator_backedges(
+    block_succs: Mapping[int, Sequence[int]],
+) -> frozenset[tuple[int, int]]:
+    """Return edges whose target dominates their source."""
+
+    nodes, roots = _graph_nodes_and_roots(block_succs)
+    if not nodes:
+        return frozenset()
+    edges: set[tuple[int, int]] = set()
+    covered: set[int] = set()
+    entries = list(roots)
+    if not entries:
+        entries.append(min(nodes))
+
+    while entries:
+        entry = entries.pop(0)
+        if entry in covered:
+            continue
+        dom_tree = compute_dom_tree(block_succs, entry=entry)
+        reachable = set(dom_tree.idom)
+        covered.update(reachable)
+        for src, succs in block_succs.items():
+            src_i = int(src)
+            if src_i not in reachable:
+                continue
+            for succ in succs:
+                succ_i = int(succ)
+                if succ_i not in reachable:
+                    continue
+                if dom_tree.dominates(succ_i, src_i):
+                    edges.add((src_i, succ_i))
+
+        remaining_roots = [
+            node for node in sorted(nodes - covered) if node not in entries
+        ]
+        if remaining_roots and not entries:
+            entries.append(remaining_roots[0])
+    return frozenset(edges)
 
 
 def _try_make_plan(

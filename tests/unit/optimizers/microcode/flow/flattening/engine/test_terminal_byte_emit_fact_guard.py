@@ -156,6 +156,57 @@ def test_state_flow_source_into_terminal_byte_emit_target_rejects(monkeypatch) -
     assert all("7bc" in r.state_const_writes for r in rejections)
 
 
+def test_dag_frontier_override_keeps_exact_terminal_byte_redirect(monkeypatch) -> None:
+    """DAG-authoritative frontier closure may prove that a state-flow
+    scaffold is the required predecessor for a terminal byte emitter.  The
+    terminal guard accepts only that exact redirect key."""
+    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    fact = _terminal_byte_emit_fact(
+        "byte_emit:byte6",
+        destination_block=217,
+        byte_index=6,
+    )
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+    redirect = RedirectGoto(from_serial=100, old_target=2, new_target=217)
+
+    filtered, rejections = filter_terminal_byte_emit_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        dag_frontier_override_keys=frozenset({(100, 2, 217)}),
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_dag_frontier_override_is_exact_keyed(monkeypatch) -> None:
+    """A DAG-frontier override is not a blanket bypass for nearby terminal
+    byte redirects."""
+    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    fact = _terminal_byte_emit_fact(
+        "byte_emit:byte6",
+        destination_block=217,
+        byte_index=6,
+    )
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+    redirect = RedirectGoto(from_serial=100, old_target=2, new_target=217)
+
+    filtered, rejections = filter_terminal_byte_emit_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        dag_frontier_override_keys=frozenset({(100, 3, 217)}),
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].source_block == 100
+    assert rejections[0].target_block == 217
+
+
 def test_zero_guard_return_successor_into_terminal_byte_emit_rejects(monkeypatch) -> None:
     """The residual-zero fallthrough is a return path.  Redirecting it to a
     terminal byte-emitter block turns ``v53 == 0`` into a byte6 emit; reject

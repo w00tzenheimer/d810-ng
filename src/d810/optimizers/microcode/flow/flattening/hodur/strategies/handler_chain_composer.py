@@ -88,6 +88,9 @@ from d810.cfg.block_identity import (
     edge_label as flow_edge_label,
     flow_graph_context_label,
 )
+from d810.cfg.dag_frontier_closure import (
+    plan_dag_authoritative_frontier_closure,
+)
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.cfg.frontier_override_emission import emit_frontier_overrides
 from d810.cfg.graph_modification import (
@@ -114,6 +117,7 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
     validate_insn_snapshots,
 )
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    CumulativePlannerView,
     PLANNER_CTX_METADATA_KEY,
     PlannerContextContribution,
 )
@@ -219,6 +223,23 @@ logger = logging.getLogger(
     "D810.hodur.strategy.handler_chain_composer",
     logging.DEBUG,
 )
+
+
+def _refresh_cumulative_view_dag_authority(
+    cumulative_view: CumulativePlannerView | None,
+    dag: LinearizedStateDag,
+) -> CumulativePlannerView:
+    """Return a planner view whose arbiter matches HCC's corrected DAG."""
+
+    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        DagAuthority,
+    )
+
+    authority = DagAuthority(dag)
+    if cumulative_view is None:
+        return CumulativePlannerView.empty(dag_authority=authority)
+    return replace(cumulative_view, dag_authority=authority)
+
 
 __all__ = [
     "HandlerChainCandidate",
@@ -3181,6 +3202,22 @@ class HandlerChainComposerStrategy:
                             _carrier_facts,
                         )
                     )
+            frontier_closure = plan_dag_authoritative_frontier_closure(
+                dag=swr_result["dag"],
+                flow_graph=snapshot.flow_graph,
+                modifications=combined_modifications,
+                dispatcher_serial=filter_dispatcher_serial,
+                bst_node_blocks=filter_bst_node_blocks,
+            )
+            if frontier_closure.changed:
+                combined_modifications = list(frontier_closure.modifications)
+                if self._byte_cascade_tracer is not None:
+                    self._byte_cascade_tracer.record_stage_modifications(
+                        ByteCascadeStage.POSTPROCESS,
+                        combined_modifications,
+                    )
+            else:
+                combined_modifications = list(frontier_closure.modifications)
             combined_owned_blocks = set(swr_result["owned_blocks"])
             combined_owned_blocks.update(region_owned_blocks)
             combined_owned_blocks.update(call_barrier_owned_blocks)
@@ -3192,6 +3229,19 @@ class HandlerChainComposerStrategy:
             # AROUND the original anchor; the call instruction stays
             # in place.  This invariant fires loudly on violation.
             self._assert_no_call_in_insert_blocks(combined_modifications)
+            try:
+                hcc_cumulative_view = _refresh_cumulative_view_dag_authority(
+                    getattr(snapshot, "cumulative_planner_view", None),
+                    swr_result["dag"],
+                )
+            except Exception:
+                logger.debug(
+                    "HCC DAG authority refresh failed; using snapshot view",
+                    exc_info=True,
+                )
+                hcc_cumulative_view = getattr(
+                    snapshot, "cumulative_planner_view", None
+                )
 
             fragment = finalize_reconstruction_fragment(
                 strategy_name=self.name,
@@ -3212,9 +3262,7 @@ class HandlerChainComposerStrategy:
                 structured_region_fidelity=swr_result[
                     "structured_region_fidelity"
                 ],
-                cumulative_planner_view=getattr(
-                    snapshot, "cumulative_planner_view", None
-                ),
+                cumulative_planner_view=hcc_cumulative_view,
             )
             direct_use_def_veto_sources = frozenset(
                 int(src)
@@ -3245,6 +3293,30 @@ class HandlerChainComposerStrategy:
                     "veto sources=%s",
                     sorted(direct_use_def_veto_sources),
                 )
+            if frontier_closure.stale_hazard_override_keys:
+                fragment.metadata["return_carrier_stale_hazard_overrides"] = (
+                    tuple(sorted(frontier_closure.stale_hazard_override_keys))
+                )
+                fragment.metadata["terminal_byte_emit_dag_frontier_overrides"] = (
+                    tuple(sorted(frontier_closure.stale_hazard_override_keys))
+                )
+            if (
+                frontier_closure.leaks_before
+                or frontier_closure.emitted_modifications
+                or frontier_closure.dropped_modifications
+            ):
+                fragment.metadata["dag_frontier_closure"] = {
+                    "leaks_before": len(frontier_closure.leaks_before),
+                    "leaks_after": len(frontier_closure.leaks_after),
+                    "emitted": tuple(
+                        type(mod).__name__
+                        for mod in frontier_closure.emitted_modifications
+                    ),
+                    "dropped": tuple(
+                        type(mod).__name__
+                        for mod in frontier_closure.dropped_modifications
+                    ),
+                }
             # Annotate metadata with HCC-specific counts for diagnostics.
             fragment.metadata["handler_chain_composer_emitted"] = emitted
             fragment.metadata["handler_chain_composer_region_anchors"] = tuple(

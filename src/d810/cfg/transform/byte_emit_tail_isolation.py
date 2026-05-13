@@ -202,6 +202,24 @@ class StateCascadeReport:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalTailCascadeEgressLoweringReport:
+    """Result of fact-backed terminal-tail cascade egress lowering.
+
+    This is the production lane for connecting the terminal byte cascade.
+    It is intentionally stricter than the older byte5->byte6 falsification
+    probe: rows with bypassed state writes are only applied when the planner
+    supplies an exact state-write block to clone.
+    """
+
+    applied: bool
+    reason: str
+    applied_rows: tuple[int, ...] = ()
+    skipped_rows: tuple[str, ...] = ()
+    cloned_state_write_blocks: tuple[int, ...] = ()
+    split_blocks: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ConvergenceDuplicationReport:
     """Result of one duplicate_convergence_for_byte_path call.
 
@@ -692,6 +710,8 @@ def duplicate_convergence_for_byte_path(
 
 
 _PROOF_SAFE_TARGET_POST_GUARD = "SAFE_TARGET_POST_GUARD"
+_PROOF_SAFE_STATE_ALREADY_SET = "SAFE_STATE_ALREADY_SET"
+_PROOF_NEEDS_STATE_WRITE = "NEEDS_STATE_WRITE"
 
 
 def execute_state_cascade(
@@ -839,4 +859,122 @@ def execute_state_cascade(
         planner_state_required_value=getattr(
             plan_row, "state_required_value", None,
         ),
+    )
+
+
+def _lower_one_cascade_row(
+    *,
+    plan_row,
+    adapter,
+) -> tuple[bool, str, int | None]:
+    """Lower one planner row with cloned proven state writes only."""
+    source_block = getattr(plan_row, "source_block", None)
+    if source_block is None:
+        return (False, "planner_row_missing_source_block", None)
+
+    intended_target = getattr(plan_row, "intended_target", None)
+    if intended_target is None:
+        return (False, "planner_row_missing_intended_target", None)
+
+    old_advance = getattr(plan_row, "current_continuation_target", None)
+    if old_advance is None:
+        return (False, "planner_row_missing_current_continuation", None)
+
+    if not bool(getattr(plan_row, "preserves_early_return", False)):
+        return (False, "planner_row_does_not_preserve_early_return", None)
+
+    verdict = getattr(plan_row, "state_update_verdict", "")
+    cloned_serial: int | None = None
+    if verdict == _PROOF_NEEDS_STATE_WRITE:
+        if not bool(getattr(plan_row, "state_write_bypassed", False)):
+            return (False, "planner_needs_state_write_but_not_bypassed", None)
+        state_write = getattr(plan_row, "state_write_block", None)
+        if state_write is None:
+            return (False, "planner_needs_state_write_without_template", None)
+        cloned_serial = int(
+            adapter.clone_state_write_block(
+                template_serial=int(state_write),
+                tail_goto_target=int(intended_target),
+            )
+        )
+        new_target = cloned_serial
+    elif verdict in {_PROOF_SAFE_TARGET_POST_GUARD, _PROOF_SAFE_STATE_ALREADY_SET}:
+        new_target = int(intended_target)
+    else:
+        return (False, f"planner_verdict_not_safe:{verdict}", None)
+
+    adapter.redirect_advance_edge(
+        source_serial=int(source_block),
+        old_target_serial=int(old_advance),
+        new_target_serial=int(new_target),
+    )
+    return (True, "ok", cloned_serial)
+
+
+def execute_terminal_tail_cascade_egress_lowering(
+    *,
+    plan_rows: Iterable[Any],
+    adapter,
+    byte_indices: Iterable[int] = (1, 2, 5),
+    split_byte_indices: Iterable[int] = (3,),
+) -> TerminalTailCascadeEgressLoweringReport:
+    """Lower safe planner rows for the terminal byte-tail cascade.
+
+    ``byte_indices`` are ordinary egress redirects. ``split_byte_indices``
+    are same-block byte facts that should only split at the tail conditional
+    so the byte body and its guard are no longer one shared render unit.
+    """
+    rows_by_byte = {
+        int(getattr(row, "byte_index")): row
+        for row in plan_rows
+        if getattr(row, "byte_index", None) is not None
+    }
+
+    applied: list[int] = []
+    skipped: list[str] = []
+    clones: list[int] = []
+    splits: list[int] = []
+
+    for byte_index in byte_indices:
+        row = rows_by_byte.get(int(byte_index))
+        if row is None:
+            skipped.append(f"byte{int(byte_index)}:missing_planner_row")
+            continue
+        ok, reason, clone = _lower_one_cascade_row(
+            plan_row=row,
+            adapter=adapter,
+        )
+        if not ok:
+            skipped.append(f"byte{int(byte_index)}:{reason}")
+            continue
+        applied.append(int(byte_index))
+        if clone is not None:
+            clones.append(int(clone))
+
+    for byte_index in split_byte_indices:
+        row = rows_by_byte.get(int(byte_index))
+        if row is None:
+            skipped.append(f"byte{int(byte_index)}:missing_split_row")
+            continue
+        if getattr(row, "source_block", None) is None:
+            skipped.append(f"byte{int(byte_index)}:split_missing_source")
+            continue
+        if getattr(row, "intended_target", None) != getattr(row, "source_block", None):
+            skipped.append(f"byte{int(byte_index)}:split_not_same_block")
+            continue
+        try:
+            split_serial = adapter.split_block_at_tail_jcnd(int(row.source_block))
+        except Exception as exc:  # noqa: BLE001 - adapter boundary
+            skipped.append(f"byte{int(byte_index)}:split_failed:{type(exc).__name__}")
+            continue
+        splits.append(int(split_serial))
+        applied.append(int(byte_index))
+
+    return TerminalTailCascadeEgressLoweringReport(
+        applied=bool(applied),
+        reason="ok" if applied else "no_rows_applied",
+        applied_rows=tuple(applied),
+        skipped_rows=tuple(skipped),
+        cloned_state_write_blocks=tuple(clones),
+        split_blocks=tuple(splits),
     )

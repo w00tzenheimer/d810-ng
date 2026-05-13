@@ -133,6 +133,56 @@ def test_stale_hazard_on_immediate_successor_rejects_redirect(monkeypatch) -> No
     assert rejections[0].hazard_block == 94
 
 
+def test_dag_frontier_override_bypasses_only_matching_stale_hazard(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    fact = _return_carrier_fact("return:stale", block_serial=254)
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+                target_block=94,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=_FakeMba({93: (94, 95)}),
+        fact_view=view,
+        dispatcher_serial=2,
+        stale_hazard_override_keys=frozenset({(132, 2, 93)}),
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_dag_frontier_override_does_not_bypass_active_hazard(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    fact = _return_carrier_fact("return:active")
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        stale_hazard_override_keys=frozenset({(132, 2, 93)}),
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].fact_status == "active"
+
+
 def test_contradicted_stale_hazard_is_ignored(monkeypatch) -> None:
     _patch_const_refs(monkeypatch, frozenset({"228"}))
     fact = _return_carrier_fact("return:contradicted")

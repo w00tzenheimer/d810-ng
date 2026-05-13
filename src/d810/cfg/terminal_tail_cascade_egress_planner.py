@@ -28,6 +28,7 @@ _MOV_CONST_RE = re.compile(
     r"\bmov\s+#(?P<value>[-+]?(?:0x[0-9A-Fa-f]+|\d+))\.\d+\s*,\s*"
     r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+",
 )
+_BRANCH_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +45,10 @@ class TerminalTailBlock:
 
     @property
     def has_explicit_store(self) -> bool:
-        return any(opcode == "m_stx" for opcode in self.insn_opcodes)
+        return any(
+            opcode in {"m_stx", "op_1"} or text.lstrip().startswith("stx")
+            for opcode, text in zip(self.insn_opcodes, self.insn_text)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,9 +197,22 @@ def terminal_byte_emit_site_from_payload(
     )
 
 
+def _site_mentions_exact_source_byte(site: TerminalByteEmitSite) -> bool:
+    if site.byte_index == 0:
+        return "%var_190" in site.source_expression
+    needles = (
+        f"%var_190.8+#{site.byte_index}.8",
+        f"%var_190+#{site.byte_index}",
+        f"%var_190.8 + #{site.byte_index}.8",
+    )
+    return any(needle in site.source_expression for needle in needles)
+
+
 def _site_score(site: TerminalByteEmitSite) -> tuple[int, float, int]:
     """Prefer the site most likely to represent the real byte emit."""
     score = 0
+    if _site_mentions_exact_source_byte(site):
+        score += 60
     if site.is_terminal_tail:
         score += 40
     if site.explicit_store:
@@ -220,12 +237,103 @@ def _select_sites_by_byte(
 ) -> dict[int, TerminalByteEmitSite]:
     selected: dict[int, TerminalByteEmitSite] = {}
     for site in sites:
-        if not site.is_terminal_tail:
+        if not site.is_terminal_tail and not _site_mentions_exact_source_byte(site):
             continue
         current = selected.get(site.byte_index)
         if current is None or _site_score(site) > _site_score(current):
             selected[site.byte_index] = site
     return selected
+
+
+def _block_has_call(block: TerminalTailBlock) -> bool:
+    return any(
+        opcode in {"m_call", "op_56"} or text.lstrip().startswith("call")
+        for opcode, text in zip(block.insn_opcodes, block.insn_text)
+    )
+
+
+def _block_has_guard(block: TerminalTailBlock) -> bool:
+    return any(_GUARD_COMPARE_RE.search(text) for text in block.insn_text)
+
+
+def _entry_predecessor_score(
+    *,
+    candidate: TerminalTailBlock,
+    first_byte_block: int,
+) -> tuple[int, int, int]:
+    score = 0
+    if tuple(candidate.succs) == (int(first_byte_block),):
+        score += 80
+    if candidate.type_name == "BLT_1WAY":
+        score += 30
+    if _block_has_call(candidate):
+        score += 20
+    if not _block_has_guard(candidate):
+        score += 10
+    if not candidate.has_explicit_store:
+        score += 5
+    # Prefer the closest predecessor when scores tie.
+    return (score, -abs(int(candidate.serial) - int(first_byte_block)), -int(candidate.serial))
+
+
+def select_effective_terminal_tail_entry_block(
+    blocks: Mapping[int, TerminalTailBlock],
+    sites: Iterable[TerminalByteEmitSite],
+) -> int | None:
+    """Return the materialized terminal-tail entry block in snapshot space.
+
+    The DAG's nominal target entry can point at a dispatcher/state block that
+    later materializes as a byte-tail island.  For CFG lowering we want the
+    first preserved block of that island, including the prep/helper-call block
+    immediately before the first byte body when it exists:
+
+    ``prep -> first_byte`` rather than the literal DAG ``target_entry``.
+
+    The choice is fact-backed: find the earliest usable terminal byte emitter,
+    then prefer a single-successor, non-guard predecessor that flows directly
+    into that byte block.  If no prep block exists, fall back to the byte block
+    itself.  Callers bridge the returned snapshot serial to the live MBA by EA.
+    """
+    by_byte = _select_sites_by_byte(sites)
+    ordered_sites = [
+        site
+        for byte_index, site in sorted(by_byte.items())
+        if byte_index >= 1 and site.block_serial in blocks
+    ]
+    if not ordered_sites:
+        ordered_sites = [
+            site for _, site in sorted(by_byte.items()) if site.block_serial in blocks
+        ]
+    if not ordered_sites:
+        return None
+
+    first_site = ordered_sites[0]
+    first_block = blocks.get(int(first_site.block_serial))
+    if first_block is None:
+        return None
+
+    candidates: list[TerminalTailBlock] = []
+    for pred in first_block.preds:
+        pred_block = blocks.get(int(pred))
+        if pred_block is None:
+            continue
+        if int(first_block.serial) not in tuple(int(s) for s in pred_block.succs):
+            continue
+        candidates.append(pred_block)
+
+    if not candidates:
+        return int(first_block.serial)
+    candidates.sort(
+        key=lambda block: _entry_predecessor_score(
+            candidate=block,
+            first_byte_block=int(first_block.serial),
+        ),
+        reverse=True,
+    )
+    best = candidates[0]
+    if _entry_predecessor_score(candidate=best, first_byte_block=int(first_block.serial))[0] <= 0:
+        return int(first_block.serial)
+    return int(best.serial)
 
 
 def _largest_cyclic_scc_size(block_succs: Mapping[int, tuple[int, ...]]) -> int:
@@ -270,12 +378,35 @@ def _guard_state_requirement(
 ) -> tuple[str | None, int | None]:
     if block is None:
         return (None, None)
-    for text in reversed(block.insn_text):
+    for index in range(len(block.insn_text) - 1, -1, -1):
+        text = block.insn_text[index]
         match = _GUARD_COMPARE_RE.search(text)
         if match is None:
             continue
+        has_prior_store = any(
+            opcode in {"m_stx", "op_1"} or prior_text.lstrip().startswith("stx")
+            for opcode, prior_text in zip(
+                block.insn_opcodes[:index],
+                block.insn_text[:index],
+            )
+        )
+        if has_prior_store:
+            # This is the byte block's own post-emit early-return guard,
+            # not a precondition that the predecessor must synthesize.
+            continue
         return (match.group("var"), _parse_int_literal(match.group("value")))
     return (None, None)
+
+
+def _tail_branch_target(block: TerminalTailBlock) -> int | None:
+    for text in reversed(block.insn_text):
+        if not _GUARD_COMPARE_RE.search(text):
+            continue
+        match = _BRANCH_TARGET_RE.search(text)
+        if match is None:
+            continue
+        return _parse_int_literal(match.group("target"))
+    return None
 
 
 def _state_write_in_block(
@@ -359,6 +490,9 @@ def _current_continuation(
     site: TerminalByteEmitSite,
     early_return: int | None,
 ) -> int | None:
+    branch_target = _tail_branch_target(block)
+    if branch_target in block.succs and len(block.succs) == 2:
+        return branch_target
     if site.continuation_edge in block.succs:
         return site.continuation_edge
     for succ in block.succs:
@@ -371,6 +505,11 @@ def _early_return_target(
     block: TerminalTailBlock,
     site: TerminalByteEmitSite,
 ) -> int | None:
+    branch_target = _tail_branch_target(block)
+    if branch_target in block.succs and len(block.succs) == 2:
+        for succ in block.succs:
+            if succ != branch_target:
+                return succ
     if site.return_edge in block.succs:
         return site.return_edge
     if site.return_edge is not None:
@@ -615,5 +754,6 @@ __all__ = [
     "TerminalTailCascadeEgressPlanner",
     "TerminalTailCascadeEgressRow",
     "format_cascade_egress_plan",
+    "select_effective_terminal_tail_entry_block",
     "terminal_byte_emit_site_from_payload",
 ]

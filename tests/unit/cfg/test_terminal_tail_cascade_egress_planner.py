@@ -10,6 +10,7 @@ from d810.cfg.terminal_tail_cascade_egress_planner import (
     TerminalTailBlock,
     TerminalTailCascadeEgressPlanner,
     format_cascade_egress_plan,
+    select_effective_terminal_tail_entry_block,
     terminal_byte_emit_site_from_payload,
 )
 
@@ -144,6 +145,86 @@ class TestTerminalTailCascadeEgressPlanner:
         assert plan.rows[3].reason == "next_byte_emit_resolves_to_same_block_split_required"
         assert not plan.rows[3].removes_from_scc
 
+    def test_tail_branch_target_overrides_swapped_fact_edges(self) -> None:
+        blocks = {
+            1: _block(1, (10, 20), text=("jnz    %var_198.8, #1.8, @20",)),
+            2: _block(2, (), text=("stx    %x, ds.2, %y",)),
+            10: _block(10, ()),
+            20: _block(20, ()),
+        }
+        sites = [
+            _site(1, 1, continuation=10, return_edge=20),
+            _site(2, 2, continuation=None, return_edge=None),
+        ]
+
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+
+        assert plan.rows[1].current_continuation_target == 20
+        assert plan.rows[1].early_return_target == 10
+
+    def test_post_emit_target_guard_does_not_require_pre_state_write(self) -> None:
+        blocks = {
+            1: _block(1, (10, 90)),
+            2: _block(
+                2,
+                (),
+                text=(
+                    "stx    %byte, ds.2, %dst",
+                    "jnz    %var_198.8, #2.8, @20",
+                ),
+            ),
+            10: _block(10, ()),
+            90: _block(90, (2,)),
+        }
+        sites = [
+            _site(1, 1, continuation=90, return_edge=10),
+            _site(2, 2, continuation=None, return_edge=None),
+        ]
+
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+
+        assert plan.rows[1].state_update_verdict == SAFE_TARGET_POST_GUARD
+        assert plan.rows[1].state_variable is None
+
+    def test_exact_source_byte_site_can_beat_terminal_tail_counter_fact(self) -> None:
+        blocks = {
+            4: _block(4, (40, 41)),
+            5: _block(5, (50,)),
+            6: _block(6, ()),
+            40: _block(40, ()),
+            41: _block(41, ()),
+            50: _block(50, ()),
+        }
+        counter_fact = _site(
+            5,
+            4,
+            continuation=40,
+            return_edge=41,
+            destination="%var_178.8",
+        )
+        exact_source_fact = TerminalByteEmitSite(
+            byte_index=5,
+            block_serial=5,
+            opcode="m_stx",
+            emitter_role="memory_store",
+            corridor_role="non_terminal_byte_emitter",
+            source_expression="xdu.8([ds.2:(%var_190.8+#5.8)].1)",
+            continuation_edge=50,
+            return_edge=None,
+            confidence=0.6,
+        )
+        plan = TerminalTailCascadeEgressPlanner(
+            blocks,
+            [
+                counter_fact,
+                exact_source_fact,
+                _site(6, 6, continuation=None, return_edge=None),
+            ],
+        ).build_plan()
+
+        assert plan.rows[5].source_block == 5
+        assert plan.rows[5].current_continuation_target == 50
+
     def test_state_proof_marks_post_guard_target_safe(self) -> None:
         blocks = {
             5: _block(5, (50, 6)),
@@ -245,3 +326,59 @@ class TestTerminalTailCascadeEgressPlanner:
         assert "| byte | source block | current continuation | intended target |" in rendered
         assert "state verdict" in rendered
         assert "terminal_byte_has_no_next_emit_target" in rendered
+
+    def test_select_effective_entry_prefers_prep_before_first_byte_block(self) -> None:
+        blocks = {
+            129: TerminalTailBlock(
+                serial=129,
+                succs=(130, 131),
+                type_name="BLT_2WAY",
+                insn_opcodes=("m_jz",),
+                insn_text=("jz     %var_7BC.4, #0xACD0BD5.4, @131",),
+            ),
+            130: TerminalTailBlock(
+                serial=130,
+                succs=(143,),
+                type_name="BLT_1WAY",
+                insn_opcodes=("m_call", "m_goto"),
+                insn_text=("call   $0x180000000", "goto   @143"),
+            ),
+            135: TerminalTailBlock(
+                serial=135,
+                succs=(136, 143),
+                type_name="BLT_2WAY",
+                insn_opcodes=("m_jnz",),
+                insn_text=("jnz    %var_7BC.4, #0x139F2922.4, @143",),
+            ),
+            143: TerminalTailBlock(
+                serial=143,
+                preds=(130, 135),
+                succs=(144, 145),
+                type_name="BLT_2WAY",
+                insn_opcodes=("m_call", "m_add", "m_stx", "m_jnz"),
+                insn_text=(
+                    "call   $0x180000000",
+                    "add    %var_218.8, #0x80.8, %var_330.8",
+                    "stx    #0x80.8, ds.2, %var_178.8",
+                    "jnz    %var_320.8, #1.8, @145",
+                ),
+            ),
+        }
+        sites = [_site(1, 143, continuation=145, return_edge=144)]
+
+        assert select_effective_terminal_tail_entry_block(blocks, sites) == 130
+
+    def test_select_effective_entry_falls_back_to_first_byte_when_no_prep(self) -> None:
+        blocks = {
+            143: TerminalTailBlock(
+                serial=143,
+                preds=(),
+                succs=(144, 145),
+                type_name="BLT_2WAY",
+                insn_opcodes=("m_stx", "m_jnz"),
+                insn_text=("stx    #0x80.8, ds.2, %var_178.8", "jnz @145"),
+            ),
+        }
+        sites = [_site(1, 143, continuation=145, return_edge=144)]
+
+        assert select_effective_terminal_tail_entry_block(blocks, sites) == 143

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import sqlite3
@@ -336,6 +337,29 @@ def test_replaces_byte5_collapsed_edge() -> None:
     assert edge.target_state == 0x6107F8EC
     assert edge.target_entry_anchor == 15
     assert edge.target_label.startswith("STATE_")
+
+
+def test_recomputes_sccs_after_selected_alternate_rewrite() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    _seed_byte5_diag(conn)
+    base = _make_byte5_dag()
+    reverse_edge = _make_edge(
+        src_state=0x6107F8EC,
+        src_entry=15,
+        tgt_state=0x385BBE2D,
+        tgt_entry=100,
+        source_block=15,
+    )
+    dag = dataclasses.replace(base, edges=(*base.edges, reverse_edge))
+
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \
+            _bridge_resolves_to(conn, 1):
+        new_dag = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
+
+    cyclic = [scc for scc in new_dag.sccs if scc.is_cyclic]
+    assert len(cyclic) == 1
+    assert cyclic[0].states == frozenset({0x385BBE2D, 0x6107F8EC})
 
 
 def test_abstain_on_value_mapping_miss() -> None:
