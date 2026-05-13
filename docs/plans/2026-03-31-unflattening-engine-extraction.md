@@ -6,8 +6,8 @@
 unflattening work, not just Hodur. Hodur remains the proving client because it
 has the hardest live semantics, but the architecture target is broader:
 simple transforms, legacy `generic.py` dispatcher lowering, Hodur, and future
-CFF families should all use the same family/strategy pipeline and the same
-`recon` -> `cfg` -> backend materialization boundaries.
+CFF families should all use the same detect -> snapshot -> plan -> execute
+pipeline and the same `recon` -> `cfg` -> backend materialization boundaries.
 
 **Architecture:** One execution model (detect -> snapshot -> plan -> execute)
 with variable complexity per strategy family. Simple transforms (FakeJump,
@@ -16,9 +16,9 @@ attacks (Hodur's multi-strategy OLLVM pipeline, emulated dispatcher lowering,
 future Tigress-like families) use the same engine with richer detection,
 snapshot, planning, and validation. Shared analysis belongs in `recon/flow`;
 backend-agnostic graph plans belong in `cfg`; Hex-Rays-specific mutation stays
-behind the existing backend/materialization layer. Hodur should become one
-normal strategy family composed from those packages, not a special framework
-that other unflatteners import through compatibility shims.
+behind the existing backend/materialization layer. Hodur should become a
+compatibility/profile entrypoint over the generic state-machine unflattening
+engine, not the family/framework that owns the architecture.
 
 **Tech Stack:** Python 3.13, IDA Pro 9+ microcode API, pytest, d810 plugin infrastructure
 
@@ -170,7 +170,8 @@ recon/
 
 flattening/
   engine/             UnflatteningStrategy protocol + planner + executor
-  hodur/              OLLVM CFF attack (first client of engine + recon/flow)
+  profiles/           FUTURE: profile/config objects selecting detectors + strategies
+  hodur/              Hodur compatibility profile/entrypoint (first hard client)
   tigress_v2/         FUTURE: same shape, consumes shared recon/flow + cfg
   generic.py          LEGACY: gradually adapts to engine (P3)
 ```
@@ -183,6 +184,11 @@ A new contributor:
 5. Keeps family-local heuristics inside their package until a second consumer appears
 6. Writes strategies against `UnflatteningStrategy` protocol
 7. Extends `recon`/`cfg` only when the new behavior is genuinely shared
+
+Hodur should follow the same model. It may keep a compatibility entrypoint
+named `unflattener_hodur.py`, but that entrypoint should select a generic
+state-machine unflattening profile rather than serving as the architectural
+home for strategy algorithms.
 
 ---
 
@@ -228,6 +234,15 @@ Already present on this branch:
     analysis; the Hodur exact-conditional strategy delegates to that generic
     cfg analyzer (`67d65cdb`), and the pure analyzer tests now live under cfg
     (`ce50f99c`).
+  - `d810.cfg.residual_target_resolution` now owns residual
+    dispatcher/frontier target resolution (`ca01ff46`), with follow-up cleanup
+    removing backend parameters from the cfg API (`255fb9f0`).
+  - `d810.cfg.state_var_cleanup` now owns shared state-variable cleanup
+    planning, and `d810.recon.flow.return_sites` now owns return-site
+    derivation (`4fe6b8fe`).
+  - Return-site IDs are family-neutral by default, with Hodur passing an
+    explicit `site_id_prefix="hodur"` where compatibility needs stable labels
+    (`5ac465b2`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
@@ -238,8 +253,13 @@ What remains:
   strategy-specific surfaces that do not yet have a generic extraction target.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
   `engine` based on behavior, not on import churn. The next large
-  algorithmic candidates are semantic exact/fork/alias lowering and residual
-  dispatcher target resolution.
+  algorithmic candidates are the remaining semantic exact/fork/alias helpers,
+  recon artifact persistence, and the backend materialization boundary.
+- Reframe the Hodur-specific layer as a profile/entrypoint over the generic
+  state-machine unflattening engine. `HodurStrategyFamily` can remain as a
+  transitional adapter name while behavior is being extracted, but the target
+  shape is not "Hodur owns a family"; it is "Hodur profile selects generic
+  state-machine strategies."
 - Convert the remaining legacy unflattening families to the engine/family
   model where doing so preserves behavior.
 - Document the extension contract for new unflattening families after the
@@ -264,7 +284,8 @@ regression-gated behavior preservation across all unflattening families.
 | ADR-6 | Compatibility re-exports are transitional, not the architecture | Existing Hodur re-exports may remain while old imports are paid down, but new work should import canonical engine/recon/cfg surfaces directly. Do not add new compatibility shims as the endpoint. |
 | ADR-7 | Live behavior defines the extraction boundary | The sub7FFD recovery work showed which algorithms are truly shared: DAG/BST/frontier reasoning belongs in recon/cfg, while Hodur owns family detection and strategy ordering. |
 | ADR-8 | Shared dispatcher IR belongs in recon/flow before engine extraction | `DispatcherHandlerMap` and switch-table analysis proved new dispatcher forms should first land as shared recon artifacts plus Hodur adapters. |
-| ADR-9 | Hodur is a normal strategy family, not the goal of the engine | Extraction succeeds when simple transforms, generic/emulated dispatchers, Hodur, and future families share detect -> snapshot -> plan -> execute without importing through Hodur. |
+| ADR-9 | Hodur is a compatibility profile, not the engine family | Extraction succeeds when simple transforms, generic/emulated dispatchers, Hodur, and future profiles share detect -> snapshot -> plan -> execute without importing through Hodur. Hodur should select generic state-machine strategies; it should not remain the organizing abstraction. |
+| ADR-10 | Do not rebuild the Hodur monolith | `unflattener_hodur.py` may own the compatibility entrypoint, profile defaults, strategy order, env gates, and detector thresholds. It should not absorb `hodur/strategies/*`; strategy wrappers should either shrink, move to generic strategy modules, or disappear when empty. |
 
 ---
 
@@ -317,6 +338,52 @@ Status:
   family-specific.
 - Do not remove compatibility modules until all production consumers are gone
   and tests confirm no external runtime path still needs them.
+
+### E1.5: Reframe Hodur as a profile over the generic engine
+
+Goal: Hodur stops being the architectural owner of the state-machine
+unflattening pipeline. It becomes a compatibility/profile entrypoint that
+selects generic engine, recon, cfg, and backend materialization pieces.
+
+Target shape:
+
+- `unflattener_hodur.py` owns the plugin-facing compatibility entrypoint,
+  Hodur profile defaults, detector thresholds, strategy order, env gates, and
+  legacy rule registration.
+- A generic state-machine unflattening family/profile owns the reusable
+  detect -> snapshot -> plan -> execute lifecycle.
+- `hodur/strategies/*` remain small strategy adapters only while they carry
+  Hodur-specific policy, logging, ordering hooks, or live Hex-Rays adaptation.
+  They should not be merged into `unflattener_hodur.py`.
+- When a strategy adapter becomes backend-neutral, move it to shared
+  `flattening/strategies`, `cfg`, `recon`, or `engine`. When it becomes empty,
+  delete it.
+
+Implementation sequence:
+
+1. Introduce a generic profile/config object, for example
+   `StateMachineUnflatteningProfile` or `CFFUnflatteningProfile`, that carries
+   strategy classes, safeguard profile, detector configuration, feature gates,
+   and labels.
+2. Change `HodurStrategyFamily` from "the owner of Hodur strategies" into an
+   adapter over that profile. Keep the class name temporarily if a rename would
+   create too much churn.
+3. Move the authoritative Hodur strategy list/order out of
+   `hodur/strategies/__init__.py` and into the Hodur profile/entrypoint.
+4. Keep each strategy implementation in its own module. Do not collapse the
+   modules into the entrypoint.
+5. Once the generic profile is exercised by Hodur and at least one non-Hodur
+   path, rename the transitional Hodur family objects to the generic profile
+   terminology.
+
+Validation:
+
+- Focused family/profile tests should prove strategy ordering and env gates
+  remain stable.
+- sub7FFD dump/oracle/AFTER diffs are required if the profile refactor changes
+  strategy ordering, gate defaults, or executor configuration.
+- Import contracts must continue to prevent `cfg`/`recon` from importing
+  Hodur-specific runtime code.
 
 ### E2: Extract reusable HCC algorithms by responsibility
 
@@ -461,7 +528,7 @@ internals.
 The extension guide should explain:
 
 - how to publish observations through recon collectors;
-- how to build a family detection result and snapshot;
+- how to build a profile/family detection result and snapshot;
 - how to emit `PlanFragment` instances;
 - when to add a new `recon` helper versus a family-local heuristic;
 - when to add a new `cfg.GraphModification` or patch primitive;
@@ -1743,17 +1810,18 @@ git commit -m "docs(engine): add extension guide for new CFF strategy families"
 
 ```
 E0 baseline gate  ──→  E1 canonical engine imports
+                 └─→  E1.5 Hodur profile boundary
                  └─→  E2 reusable HCC algorithm extraction
                  └─→  E3 non-Hodur family normalization
 
-E1/E2/E3  ──→  E4 retire legacy paths after parity
-E1/E2/E3  ──→  E5 extension contract
+E1/E1.5/E2/E3  ──→  E4 retire legacy paths after parity
+E1/E1.5/E2/E3  ──→  E5 extension contract
 ```
 
-E0 is always active. E1, E2, and E3 can proceed independently as long as each
-slice preserves the baseline gate. E4 depends on parity evidence. E5 should be
-written only after the architecture has at least Hodur plus one non-Hodur
-family exercising the shared engine path.
+E0 is always active. E1, E1.5, E2, and E3 can proceed independently as long as
+each slice preserves the baseline gate. E4 depends on parity evidence. E5
+should be written only after the architecture has at least the Hodur profile
+plus one non-Hodur profile/family exercising the shared engine path.
 
 ## Risk Assessment
 
@@ -1761,6 +1829,7 @@ family exercising the shared engine path.
 |-|-|-|
 | E0 | Medium — baseline drift is easy during extraction | Keep structure-recovery-pass artifacts; rerun cff_debug/oracle for behavior-affecting slices |
 | E1 | Low-medium — import changes can expose hidden IDA dependencies | Replace only engine-generic imports; run import contracts and focused unit slices |
+| E1.5 | Medium — profile/entrypoint refactors can accidentally recreate the old monolith or reorder strategies | Move registry/config first; keep strategy modules separate; require focused ordering tests and sub7FFD gate for behavior-affecting changes |
 | E2 | Medium — HCC helpers mix pure analysis, live CFG probes, and Hex-Rays instruction capture | Extract one responsibility at a time; keep HCC behavior-preserving; require sub7FFD no-regression when lowering behavior can change |
 | E3 | Medium — old generic/simple rules have implicit behavior | Keep old paths until engine parity or explicit abstention is proven |
 | E4 | Medium-high — premature deletion loses fallback behavior | Remove only after parity tests and field samples stop depending on legacy path |
@@ -1772,12 +1841,14 @@ family exercising the shared engine path.
    `from d810.optimizers.microcode.flow.flattening.engine import UnflatteningStrategy`.
 2. Production code no longer imports engine-generic types through
    `flattening.hodur.*` compatibility modules.
-3. Hodur remains a normal `CFFStrategyFamily` consumer and sub7FFD does not
-   regress against the `structure-recovery-pass` baseline.
+3. Hodur is represented as a compatibility/profile entrypoint over the generic
+   state-machine unflattening engine, and sub7FFD does not regress against the
+   `structure-recovery-pass` baseline.
 4. At least one non-Hodur family path has meaningful engine parity or a
    documented abstention contract.
 5. Reusable algorithms grown inside Hodur/HCC move to `recon` or `cfg` when
    their responsibility is analysis or backend-agnostic CFG planning.
-6. New unflattening families can be built from `recon` collectors,
-   `CFFStrategyFamily`, `PlanFragment`, `cfg.GraphModification`, and backend
-   materialization without reading Hodur internals.
+6. New unflattening profiles/families can be built from `recon` collectors,
+   a generic state-machine profile/family contract, `PlanFragment`,
+   `cfg.GraphModification`, and backend materialization without reading Hodur
+   internals.
