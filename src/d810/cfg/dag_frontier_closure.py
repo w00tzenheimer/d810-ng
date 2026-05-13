@@ -835,13 +835,16 @@ def _select_dispatcher_state_residue_action(
         if state_const is None:
             continue
         state_const &= 0xFFFFFFFFFFFFFFFF
+        raw_choices = tuple(indexes.choices_by_anchor.get((source, None), ()))
+        if any(choice.is_path_step for choice in raw_choices):
+            continue
         choices = tuple(
             choice
-            for choice in indexes.choices_by_anchor.get((source, None), ())
+            for choice in raw_choices
             if (
                 not choice.is_path_step
                 and int(choice.target_block) != dispatcher_serial
-                and _is_chain_target_choice(choice)
+                and _is_direct_dag_frontier_choice(choice)
             )
         )
         for choice in choices:
@@ -862,20 +865,20 @@ def _select_dispatcher_state_residue_action(
                     source_block=source,
                     branch_arm=None,
                     target_block=int(choice.target_block),
-                    edge_kind="DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                    edge_kind="DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
                     proof=(
                         source,
                         None,
                         dispatcher_serial,
                         int(choice.target_block),
-                        "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
                         _compact_state_hex(state_const),
                         choice.proof,
                         (interval.lo, interval.hi, interval.target_block),
                     ),
                     is_path_step=False,
                     payload={
-                        "proof": "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "proof": "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
                         "state": _compact_state_hex(state_const),
                         "state_hex": f"0x{state_const:016x}",
                         "source": source,
@@ -898,10 +901,10 @@ def _select_dispatcher_state_residue_action(
                     source_block=source,
                     observed_target=dispatcher_serial,
                     branch_arm=None,
-                    reason="dag_chain_bst_interval_dispatcher_residue",
+                    reason="dag_bst_interval_dispatcher_residue",
                     target_block=int(choice.target_block),
                     payload={
-                        "proof": "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "proof": "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
                         "state": _compact_state_hex(state_const),
                         "state_hex": f"0x{state_const:016x}",
                         "source": source,
@@ -915,10 +918,18 @@ def _select_dispatcher_state_residue_action(
     return None
 
 
-def _is_chain_target_choice(choice: _FrontierChoice) -> bool:
-    if len(choice.proof) < 4:
+def _is_direct_dag_frontier_choice(choice: _FrontierChoice) -> bool:
+    if choice.is_path_step or len(choice.proof) < 5:
         return False
-    return str(choice.proof[3]).endswith("_CHAIN_TARGET")
+    proof_kind = str(choice.proof[3])
+    if proof_kind.endswith("_CHAIN_TARGET"):
+        return True
+    return bool(choice.proof[4]) is False and proof_kind in {
+        "TRANSITION",
+        "CONDITIONAL_TRANSITION",
+        "CONDITIONAL_RETURN",
+        "EXIT_ROUTINE",
+    }
 
 
 def _find_unresolved_frontiers(
