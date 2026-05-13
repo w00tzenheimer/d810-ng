@@ -29,7 +29,8 @@ Strategy
      execute primary → execute shared-group → postprocess.
 
   2. **Region collapse** -- detect maximal linear DAG regions (via
-     ``detect_chains`` / ``_detect_dag_regions`` / ``_compose_region``)
+     ``detect_chains`` / ``detect_linear_transition_regions`` /
+     ``_compose_region``)
      and emit ONE ``InsertBlock`` per region containing the composed
      bodies of every handler in that region.  Within a single block,
      def→use dominance is trivially preserved (instruction order =
@@ -150,6 +151,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.recon.flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
 )
+from d810.recon.flow.dag_region_detection import detect_linear_transition_regions
 from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
 from d810.recon.flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
@@ -4889,7 +4891,7 @@ class HandlerChainComposerStrategy:
                 " composed bodies will retain state-var writes"
             )
 
-        regions = self._detect_dag_regions(dag)
+        regions = list(detect_linear_transition_regions(dag))
         logger.info(
             "HandlerChainComposer: detected %d region(s) from DAG"
             " (nodes=%d edges=%d)",
@@ -8212,66 +8214,6 @@ class HandlerChainComposerStrategy:
             if isinstance(facts, DagLocalFacts):
                 return facts
         return _build_dag_local_facts(dag)
-
-    @staticmethod
-    def _detect_dag_regions(
-        dag: LinearizedStateDag,
-    ) -> list[tuple[StateDagNode, ...]]:
-        """Return maximal linear paths through the DAG."""
-        node_by_key = {node.key: node for node in dag.nodes}
-
-        out_by_src: dict[object, list[StateDagNode]] = defaultdict(list)
-        in_count: dict[object, int] = defaultdict(int)
-        for edge in dag.edges:
-            if edge.kind is not SemanticEdgeKind.TRANSITION:
-                continue
-            target_node: StateDagNode | None = None
-            if edge.target_key is not None:
-                target_node = node_by_key.get(edge.target_key)
-            if target_node is None:
-                continue
-            out_by_src[edge.source_key].append(target_node)
-            in_count[edge.target_key] = in_count.get(edge.target_key, 0) + 1
-
-        is_region_start: set[object] = set()
-        for node in dag.nodes:
-            n_in = in_count.get(node.key, 0)
-            if n_in != 1:
-                is_region_start.add(node.key)
-
-        visited: set[object] = set()
-        regions: list[tuple[StateDagNode, ...]] = []
-
-        ordered_nodes = sorted(
-            dag.nodes,
-            key=lambda n: (int(n.entry_anchor), str(n.state_label)),
-        )
-
-        for node in ordered_nodes:
-            if node.key in visited:
-                continue
-            if node.key not in is_region_start:
-                continue
-            path = [node]
-            visited.add(node.key)
-            cur = node
-            depth = 0
-            while depth < 4096:
-                outs = out_by_src.get(cur.key, [])
-                if len(outs) != 1:
-                    break
-                nxt = outs[0]
-                if in_count.get(nxt.key, 0) != 1:
-                    break
-                if nxt.key in visited:
-                    break
-                path.append(nxt)
-                visited.add(nxt.key)
-                cur = nxt
-                depth += 1
-            regions.append(tuple(path))
-
-        return regions
 
     def _compose_region(
         self,
