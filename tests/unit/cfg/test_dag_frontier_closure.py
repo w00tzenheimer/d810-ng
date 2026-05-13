@@ -774,7 +774,7 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> No
     assert len(result.resolved_frontiers) == 1
     assert (
         result.resolved_frontiers[0].reason
-        == "dag_chain_bst_interval_dispatcher_residue"
+        == "dag_bst_interval_dispatcher_residue"
     )
     resolved_rows = [
         row for row in result.diagnostic_rows if row.kind == "resolved"
@@ -782,13 +782,13 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> No
     assert len(resolved_rows) == 1
     assert (
         resolved_rows[0].reason
-        == "dag_chain_bst_interval_dispatcher_residue"
+        == "dag_bst_interval_dispatcher_residue"
     )
     assert resolved_rows[0].source_block == 140
     assert resolved_rows[0].observed_target == 2
     assert resolved_rows[0].candidate_targets == (20,)
     assert resolved_rows[0].payload["proof"] == (
-        "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE"
+        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE"
     )
     assert resolved_rows[0].payload["state"] == "0x63F502FA"
 
@@ -848,6 +848,145 @@ def test_rejects_dispatcher_state_residue_without_matching_bst_interval() -> Non
                 lo=0x63D54756,
                 hi=0x6465D165,
                 target_block=21,
+            ),
+        ),
+    )
+
+    assert result.emitted_modifications == ()
+    assert result.resolved_frontiers == ()
+
+
+def test_closes_direct_dag_bst_dispatcher_residue_without_scc_leak() -> None:
+    source_key = StateDagNodeKey(handler_serial=56, state_const=0x7D9C16EC)
+    target_key = StateDagNodeKey(handler_serial=42, state_const=0x72AFE1BC)
+    dag = SimpleNamespace(
+        nodes=(
+            _node(source_key, 56),
+            _node(target_key, 42),
+        ),
+        edges=(
+            _edge(
+                source_key,
+                target_key,
+                source_block=56,
+                target_entry=42,
+                ordered_path=(56,),
+                kind="TRANSITION",
+            ),
+        ),
+        sccs=(
+            _scc(0, source_key),
+            _scc(1, target_key),
+        ),
+    )
+    flow = _flow_with_instructions(
+        {
+            129: (56,),
+            2: (3, 62),
+            3: (),
+            42: (),
+            56: (2,),
+            62: (),
+        },
+        {
+            2: (_state_jbe(0x37B42A3F, 62),),
+            56: (_state_mov(0x72AFE1BC),),
+        },
+    )
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=dag,
+        flow_graph=flow,
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(
+            SimpleNamespace(
+                snapshot_id=5,
+                row_index=40,
+                lo=0x72AFE1BC,
+                hi=0x72AFE1BD,
+                target_block=42,
+            ),
+        ),
+    )
+
+    assert result.leaks_before == ()
+    assert result.emitted_modifications == (
+        RedirectGoto(from_serial=56, old_target=2, new_target=42),
+    )
+    assert len(result.resolved_frontiers) == 1
+    assert (
+        result.resolved_frontiers[0].reason
+        == "dag_bst_interval_dispatcher_residue"
+    )
+    resolved_rows = [
+        row for row in result.diagnostic_rows if row.kind == "resolved"
+    ]
+    assert len(resolved_rows) == 1
+    assert (
+        resolved_rows[0].reason
+        == "dag_bst_interval_dispatcher_residue"
+    )
+    assert resolved_rows[0].source_block == 56
+    assert resolved_rows[0].observed_target == 2
+    assert resolved_rows[0].candidate_targets == (42,)
+    assert resolved_rows[0].payload["proof"] == (
+        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE"
+    )
+    assert resolved_rows[0].payload["state"] == "0x72AFE1BC"
+
+
+def test_rejects_direct_dag_bst_residue_when_only_path_step_is_proven() -> None:
+    source_key = StateDagNodeKey(handler_serial=56, state_const=0x7D9C16EC)
+    target_key = StateDagNodeKey(handler_serial=42, state_const=0x72AFE1BC)
+    dag = SimpleNamespace(
+        nodes=(
+            _node(source_key, 56),
+            _node(target_key, 42),
+        ),
+        edges=(
+            _edge(
+                source_key,
+                target_key,
+                source_block=56,
+                target_entry=42,
+                ordered_path=(56, 57),
+                kind="TRANSITION",
+            ),
+        ),
+        sccs=(
+            _scc(0, source_key),
+            _scc(1, target_key),
+        ),
+    )
+    flow = _flow_with_instructions(
+        {
+            129: (56,),
+            2: (3, 62),
+            3: (),
+            42: (),
+            56: (2,),
+            57: (42,),
+            62: (),
+        },
+        {
+            2: (_state_jbe(0x37B42A3F, 62),),
+            56: (_state_mov(0x72AFE1BC),),
+        },
+    )
+
+    result = plan_dag_authoritative_frontier_closure(
+        dag=dag,
+        flow_graph=flow,
+        modifications=[],
+        dispatcher_serial=2,
+        bst_interval_rows=(
+            SimpleNamespace(
+                snapshot_id=5,
+                row_index=40,
+                lo=0x72AFE1BC,
+                hi=0x72AFE1BD,
+                target_block=42,
             ),
         ),
     )
