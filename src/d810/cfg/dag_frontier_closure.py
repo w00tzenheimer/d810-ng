@@ -50,7 +50,7 @@ class UnresolvedFrontier:
 class ResolvedFrontier:
     """A semantic SCC leak closed by a non-DAG-edge structural proof."""
 
-    leak: SemanticSccLeak
+    leak: SemanticSccLeak | None
     source_block: int
     observed_target: int
     branch_arm: int | None
@@ -198,8 +198,6 @@ def plan_dag_authoritative_frontier_closure(
     seen_signatures: set[tuple[tuple[int, int, int] | str, ...]] = set()
 
     for _iteration in range(max(0, int(max_iterations))):
-        if not leaks_before and _iteration == 0:
-            break
         signature = _modification_signature(current_modifications)
         if signature in seen_signatures:
             logger.info(
@@ -210,17 +208,26 @@ def plan_dag_authoritative_frontier_closure(
             break
         seen_signatures.add(signature)
         leaks = _find_semantic_scc_leaks(projected, indexes)
-        if not leaks:
-            break
-        action = _select_frontier_action(
-            projected,
-            leaks,
-            indexes,
-            current_modifications=current_modifications,
-            frontier_blocks=frontier_blocks,
-            base_flow_graph=flow_graph,
-            bst_interval_rows=interval_rows,
-        )
+        action = None
+        if leaks:
+            action = _select_frontier_action(
+                projected,
+                leaks,
+                indexes,
+                current_modifications=current_modifications,
+                frontier_blocks=frontier_blocks,
+                base_flow_graph=flow_graph,
+                bst_interval_rows=interval_rows,
+            )
+        if action is None:
+            action = _select_dispatcher_state_residue_action(
+                projected,
+                indexes,
+                current_modifications=current_modifications,
+                dispatcher_serial=dispatcher_serial,
+                base_flow_graph=flow_graph,
+                bst_interval_rows=interval_rows,
+            )
         if action is None:
             break
         current_modifications, emitted_mod, dropped_mod, resolved_frontier = action
@@ -793,6 +800,127 @@ def _select_frontier_action(
     return None
 
 
+def _select_dispatcher_state_residue_action(
+    projected_flow_graph: object,
+    indexes: _DagIndexes,
+    *,
+    current_modifications: list[object],
+    dispatcher_serial: int,
+    base_flow_graph: object,
+    bst_interval_rows: tuple[_BstIntervalFrontierRow, ...],
+) -> tuple[
+    list[object],
+    object | None,
+    object | None,
+    ResolvedFrontier | None,
+] | None:
+    if not bst_interval_rows:
+        return None
+    dispatcher_serial = int(dispatcher_serial)
+    state_stkoff = _dispatcher_state_stkoff(projected_flow_graph, dispatcher_serial)
+    if state_stkoff is None:
+        state_stkoff = _dispatcher_state_stkoff(base_flow_graph, dispatcher_serial)
+    if state_stkoff is None:
+        return None
+
+    blocks = getattr(projected_flow_graph, "blocks", {}) or {}
+    for source in sorted(int(serial) for serial in blocks):
+        block = projected_flow_graph.get_block(source)
+        if block is None:
+            continue
+        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+        if succs != (dispatcher_serial,):
+            continue
+        state_const = _state_write_constant(block, state_stkoff)
+        if state_const is None:
+            continue
+        state_const &= 0xFFFFFFFFFFFFFFFF
+        choices = tuple(
+            choice
+            for choice in indexes.choices_by_anchor.get((source, None), ())
+            if (
+                not choice.is_path_step
+                and int(choice.target_block) != dispatcher_serial
+                and _is_chain_target_choice(choice)
+            )
+        )
+        for choice in choices:
+            interval = _interval_for_state_target(
+                bst_interval_rows,
+                state_const=state_const,
+                target_block=int(choice.target_block),
+            )
+            if interval is None:
+                continue
+            replacement = _replace_or_add_redirect(
+                current_modifications,
+                projected_flow_graph=projected_flow_graph,
+                base_flow_graph=base_flow_graph,
+                source=source,
+                observed_target=dispatcher_serial,
+                choice=_FrontierChoice(
+                    source_block=source,
+                    branch_arm=None,
+                    target_block=int(choice.target_block),
+                    edge_kind="DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                    proof=(
+                        source,
+                        None,
+                        dispatcher_serial,
+                        int(choice.target_block),
+                        "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        _compact_state_hex(state_const),
+                        choice.proof,
+                        (interval.lo, interval.hi, interval.target_block),
+                    ),
+                    is_path_step=False,
+                    payload={
+                        "proof": "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "state": _compact_state_hex(state_const),
+                        "state_hex": f"0x{state_const:016x}",
+                        "source": source,
+                        "observed": dispatcher_serial,
+                        "candidate": int(choice.target_block),
+                        "dag_choice_proof": tuple(choice.proof),
+                        "interval": _interval_payload(interval),
+                    },
+                ),
+            )
+            if replacement is None:
+                continue
+            new_mods, emitted_mod, dropped_mod = replacement
+            return (
+                new_mods,
+                emitted_mod,
+                dropped_mod,
+                ResolvedFrontier(
+                    leak=None,
+                    source_block=source,
+                    observed_target=dispatcher_serial,
+                    branch_arm=None,
+                    reason="dag_chain_bst_interval_dispatcher_residue",
+                    target_block=int(choice.target_block),
+                    payload={
+                        "proof": "DAG_CHAIN_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "state": _compact_state_hex(state_const),
+                        "state_hex": f"0x{state_const:016x}",
+                        "source": source,
+                        "observed": dispatcher_serial,
+                        "candidate": int(choice.target_block),
+                        "dag_choice_proof": tuple(choice.proof),
+                        "interval": _interval_payload(interval),
+                    },
+                ),
+            )
+    return None
+
+
+def _is_chain_target_choice(choice: _FrontierChoice) -> bool:
+    if len(choice.proof) < 4:
+        return False
+    return str(choice.proof[3]).endswith("_CHAIN_TARGET")
+
+
 def _find_unresolved_frontiers(
     projected_flow_graph: object,
     leaks: tuple[SemanticSccLeak, ...],
@@ -872,6 +1000,18 @@ def _build_diagnostic_rows(
     rows.extend(_leak_diagnostic_rows("leak_after", leaks_after))
     for resolved in resolved_frontiers:
         leak = resolved.leak
+        from_dag_scc = int(leak.from_dag_scc) if leak is not None else None
+        to_dag_scc = int(leak.to_dag_scc) if leak is not None else None
+        path = (
+            tuple(int(block) for block in leak.path)
+            if leak is not None
+            else (
+                int(resolved.source_block),
+                int(resolved.observed_target),
+                int(resolved.target_block),
+            )
+        )
+        cfg_scc_size = len(leak.cfg_scc_blocks) if leak is not None else None
         rows.append(
             FrontierClosureDiagnosticRow(
                 kind="resolved",
@@ -879,11 +1019,11 @@ def _build_diagnostic_rows(
                 source_block=int(resolved.source_block),
                 observed_target=int(resolved.observed_target),
                 branch_arm=resolved.branch_arm,
-                from_dag_scc=int(leak.from_dag_scc),
-                to_dag_scc=int(leak.to_dag_scc),
+                from_dag_scc=from_dag_scc,
+                to_dag_scc=to_dag_scc,
                 candidate_targets=(int(resolved.target_block),),
-                path=tuple(int(block) for block in leak.path),
-                cfg_scc_size=len(leak.cfg_scc_blocks),
+                path=path,
+                cfg_scc_size=cfg_scc_size,
                 payload={
                     "verifier": "dag_frontier_closure",
                     "behavior": "repair_authorized",
@@ -1201,6 +1341,87 @@ def _equality_compare_constant(block: object) -> int | None:
     return int(constants[0])
 
 
+def _dispatcher_state_stkoff(flow_graph: object, dispatcher_serial: int) -> int | None:
+    block = flow_graph.get_block(int(dispatcher_serial))
+    if block is None:
+        return None
+    tail = getattr(block, "tail", None)
+    if tail is None:
+        insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+        tail = insns[-1] if insns else None
+    if tail is None:
+        return None
+    constants = 0
+    stack_offsets: list[int] = []
+    for operand in (getattr(tail, "l", None), getattr(tail, "r", None)):
+        if operand is None:
+            continue
+        if getattr(operand, "value", None) is not None:
+            constants += 1
+            continue
+        stkoff = getattr(operand, "stkoff", None)
+        if stkoff is None:
+            continue
+        try:
+            stack_offsets.append(int(stkoff))
+        except (TypeError, ValueError):
+            continue
+    if constants != 1 or len(stack_offsets) != 1:
+        return None
+    return stack_offsets[0]
+
+
+def _state_write_constant(block: object, state_stkoff: int) -> int | None:
+    for insn in reversed(tuple(getattr(block, "insn_snapshots", ()) or ())):
+        opcode = getattr(insn, "opcode", None)
+        if opcode is None:
+            continue
+        try:
+            opcode_int = int(opcode)
+        except (TypeError, ValueError):
+            continue
+        if opcode_int in _goto_opcodes():
+            continue
+        if opcode_int not in _mov_opcodes():
+            continue
+        dest = getattr(insn, "d", None)
+        src = getattr(insn, "l", None)
+        if dest is None or src is None:
+            continue
+        try:
+            dest_stkoff = int(getattr(dest, "stkoff", None))
+        except (TypeError, ValueError):
+            continue
+        if dest_stkoff != int(state_stkoff):
+            continue
+        value = getattr(src, "value", None)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _mov_opcodes() -> frozenset[int]:
+    try:
+        import ida_hexrays  # type: ignore
+
+        return frozenset({int(getattr(ida_hexrays, "m_mov"))})
+    except Exception:
+        return frozenset({4})
+
+
+def _goto_opcodes() -> frozenset[int]:
+    try:
+        import ida_hexrays  # type: ignore
+
+        return frozenset({int(getattr(ida_hexrays, "m_goto"))})
+    except Exception:
+        return frozenset({55})
+
+
 def _equality_jump_opcodes() -> frozenset[int]:
     try:
         import ida_hexrays  # type: ignore
@@ -1244,6 +1465,20 @@ def _adjacent_range_siblings(
         if int(row.hi) == int(state_const) or int(row.lo) == int(state_const) + 1:
             siblings.append(row)
     return tuple(siblings)
+
+
+def _interval_for_state_target(
+    rows: tuple[_BstIntervalFrontierRow, ...],
+    *,
+    state_const: int,
+    target_block: int,
+) -> _BstIntervalFrontierRow | None:
+    for row in rows:
+        if int(row.target_block) != int(target_block):
+            continue
+        if int(row.lo) <= int(state_const) < int(row.hi):
+            return row
+    return None
 
 
 def _interval_payload(row: _BstIntervalFrontierRow) -> dict[str, object]:
