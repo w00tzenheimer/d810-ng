@@ -80,6 +80,56 @@ def test_collect_live_residual_dispatcher_preds_falls_back_to_generic_collector(
     assert residual == (50,)
 
 
+def test_resolve_residual_effective_frontier_target_builds_synthetic_edge(monkeypatch):
+    dag = SimpleNamespace(nodes=(), edges=())
+    dispatcher = SimpleNamespace(lookup=lambda _state: 99)
+    mba = SimpleNamespace()
+    captured = {}
+
+    monkeypatch.setattr(
+        exact_node_frontier_bypass_module,
+        "supplemental_selected_entry_for_state",
+        lambda _dag, _state: 14,
+    )
+
+    def fake_resolve_effective_target(_dag, edge, **kwargs):
+        captured["edge"] = edge
+        captured["kwargs"] = kwargs
+        return 117
+
+    monkeypatch.setattr(
+        exact_node_frontier_bypass_module,
+        "resolve_effective_residual_target_entry",
+        fake_resolve_effective_target,
+    )
+
+    target = exact_node_frontier_bypass_module._resolve_residual_effective_frontier_target(
+        dag=dag,
+        pred_serial=16,
+        raw_state=0x4C77464F,
+        dispatcher_model=dispatcher,
+        bst_blocks={2},
+        state_var_stkoff=0x7BC,
+        mba=mba,
+    )
+
+    edge = captured["edge"]
+    kwargs = captured["kwargs"]
+    assert target == 117
+    assert edge.source_anchor.block_serial == 16
+    assert edge.source_anchor.branch_arm is None
+    assert edge.source_key.state_const is None
+    assert edge.target_state == 0x4C77464F
+    assert edge.target_label == "STATE_4C77464F"
+    assert edge.target_entry_anchor == 14
+    assert edge.ordered_path == (16,)
+    assert kwargs["bst_node_blocks"] == {2}
+    assert kwargs["state_var_stkoff"] == 0x7BC
+    assert kwargs["dispatcher"] is dispatcher
+    assert kwargs["dispatcher_lookup"] is dispatcher.lookup
+    assert kwargs["mba"] is mba
+
+
 def test_exact_node_frontier_bypass_redirects_residual_pred_to_supported_entry(monkeypatch):
     flow_graph = FlowGraph(
         blocks={

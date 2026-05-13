@@ -7,8 +7,8 @@ keeps strategy ordering, live state-write extraction, and modification emission.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
-from types import SimpleNamespace
 
 from d810.cfg.dag_index import build_dag_node_maps
 from d810.core.typing import Callable, Iterable
@@ -26,6 +26,8 @@ _RAW_STATE_LABEL_PREFIX_RE = re.compile(
 __all__ = [
     "collect_owned_exact_sources",
     "collect_supported_exact_entries",
+    "BstConditionalTail",
+    "BstGotoTail",
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
     "is_raw_state_label",
@@ -36,11 +38,88 @@ __all__ = [
     "resolve_owner_semantic_entry_for_blocks",
     "resolve_frontier_target_entry",
     "resolve_semantic_reference_alias_entry",
+    "walk_bst_dispatcher",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class BstGotoTail:
+    """Backend-neutral view of a BST goto tail."""
+
+    target: int
+
+
+@dataclass(frozen=True, slots=True)
+class BstConditionalTail:
+    """Backend-neutral view of a BST conditional tail."""
+
+    opcode: int
+    rhs_value: int
+    rhs_size: int
+    taken_target: int
+    successors: tuple[int, ...]
 
 
 def _node_kind_name(node: object) -> str:
     return str(getattr(getattr(node, "kind", None), "name", "") or getattr(node, "kind", "") or "")
+
+
+def walk_bst_dispatcher(
+    *,
+    root: int,
+    bst_blocks: set[int],
+    state_value: int,
+    tail_for_block_fn: Callable[[int], BstGotoTail | BstConditionalTail | None],
+    is_conditional_taken_fn: Callable[[int, int, int, int], bool | None],
+    max_steps: int = 64,
+) -> int | None:
+    """Walk a BST dispatcher for ``state_value`` until a non-BST block.
+
+    The cfg layer owns the target-resolution algorithm, while the caller owns
+    backend-specific tail decoding and conditional semantics.  This keeps the
+    shared resolver free of Hex-Rays objects but lets Hodur reuse the exact
+    same walk it historically performed over live ``mblock_t`` tails.
+    """
+    current = int(root)
+    visited: set[int] = set()
+    for _ in range(max_steps):
+        if current in visited:
+            return None
+        visited.add(current)
+        if current not in bst_blocks:
+            return current
+
+        tail = tail_for_block_fn(current)
+        if tail is None:
+            return None
+        if isinstance(tail, BstGotoTail):
+            current = int(tail.target)
+            continue
+
+        taken = is_conditional_taken_fn(
+            int(tail.opcode),
+            int(state_value),
+            int(tail.rhs_value),
+            int(tail.rhs_size),
+        )
+        if taken is None:
+            return None
+        if taken:
+            current = int(tail.taken_target)
+            continue
+
+        fallthrough = next(
+            (
+                int(successor)
+                for successor in tail.successors
+                if int(successor) != int(tail.taken_target)
+            ),
+            None,
+        )
+        if fallthrough is None:
+            fallthrough = current + 1
+        current = fallthrough
+    return None
 
 
 def dispatcher_has_exact_state_row(
@@ -689,59 +768,25 @@ def resolve_frontier_target_entry(
     dispatcher_model: object | None,
     bst_blocks: set[int],
     semantic_reference_program: object | None,
-    state_var_stkoff: int | None,
-    mba: object | None,
     dispatcher_exact_state_target_fn: Callable[..., int | None],
     supplemental_selected_entry_for_state_fn: Callable[..., int | None],
-    resolve_effective_target_entry_fn: Callable[..., int | None],
     resolve_exact_dag_entry_for_state_fn: Callable[..., int | None],
     resolve_semantic_reference_entry_for_state_fn: Callable[..., int | None],
     resolve_dag_entry_for_state_fn: Callable[..., int | None],
     resolve_normalized_alias_entry_for_state_fn: Callable[..., int | None],
+    residual_effective_target: int | None = None,
     resolve_semantic_reference_alias_entry_fn: Callable[..., int | None] = resolve_semantic_reference_alias_entry,
 ) -> tuple[int | None, int | None]:
     """Resolve the best semantic entry for a residual feeder state write."""
-    # TODO(backend-adapter-cleanup): This cfg-layer resolver is intentionally
-    # backend-neutral, but the current API still accepts `mba` and
-    # `state_var_stkoff` as opaque context solely to forward them into the
-    # caller-supplied `resolve_effective_target_entry_fn` callback. That kept the
-    # Hodur extraction small and behavior-preserving, but the cleaner endpoint is
-    # a tiny resolver protocol/dataclass owned by the caller/backend adapter
-    # (for example `ResidualTargetResolutionContext`) so cfg never exposes
-    # Hex-Rays-shaped parameters in its public signature.
     raw_state = int(state_value) & 0xFFFFFFFF
     exact_dispatch_target = dispatcher_exact_state_target_fn(
         raw_state,
         dispatcher=dispatcher_model,
     )
-    residual_effective_target = None
     synthetic_target_entry = supplemental_selected_entry_for_state_fn(
         dag,
         raw_state,
     )
-    if (
-        dispatcher_model is not None
-        and state_var_stkoff is not None
-        and mba is not None
-    ):
-        synthetic_edge = SimpleNamespace(
-            source_anchor=SimpleNamespace(block_serial=int(pred_serial), branch_arm=None),
-            source_key=SimpleNamespace(state_const=None),
-            target_key=None,
-            target_state=raw_state,
-            target_label=f"STATE_{raw_state:08X}",
-            target_entry_anchor=synthetic_target_entry,
-            ordered_path=(int(pred_serial),),
-        )
-        residual_effective_target = resolve_effective_target_entry_fn(
-            dag,
-            synthetic_edge,
-            bst_node_blocks=bst_blocks,
-            state_var_stkoff=int(state_var_stkoff),
-            dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
-            dispatcher=dispatcher_model,
-            mba=mba,
-        )
     exact_dag_entry = resolve_exact_dag_entry_for_state_fn(
         dag,
         raw_state,
