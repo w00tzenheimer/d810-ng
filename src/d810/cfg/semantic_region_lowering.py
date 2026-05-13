@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from types import SimpleNamespace
 
 from d810.core import logging
@@ -15,6 +14,12 @@ from d810.cfg.residual_target_resolution import (
     resolve_nonexact_dispatch_target,
     resolve_owner_semantic_entry_for_blocks,
 )
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
+    normalize_semantic_target_label,
+    semantic_state_value_from_label,
+)
 from d810.cfg.target_entry_resolution import (
     resolve_edge_target_entry,
     resolve_exact_dag_entry_for_state,
@@ -22,14 +27,6 @@ from d810.cfg.target_entry_resolution import (
 )
 
 
-_STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?$")
-_RAW_STATE_LABEL_RE = re.compile(r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?$")
-_STATE_LABEL_PREFIX_RE = re.compile(
-    r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
-)
-_RAW_STATE_LABEL_PREFIX_RE = re.compile(
-    r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
-)
 logger = logging.getLogger("D810.cfg.semantic_region_lowering")
 
 
@@ -57,33 +54,6 @@ class SemanticRegionFallbackLowering:
     emission_mode: str
     horizon_block: int
     target_entry_anchor: int
-
-
-def _normalize_semantic_target_label(label_text: str | None) -> str | None:
-    text = str(label_text or "").strip()
-    if not text:
-        return None
-    state_match = _STATE_LABEL_PREFIX_RE.match(text)
-    if state_match is not None:
-        state_hex = state_match.group(1).upper()
-        fallback_suffix = "_fallback" if state_match.group(2) else ""
-        return f"STATE_{state_hex}{fallback_suffix}"
-    raw_match = _RAW_STATE_LABEL_PREFIX_RE.match(text)
-    if raw_match is not None:
-        state_hex = raw_match.group(1).upper()
-        fallback_suffix = "_fallback" if raw_match.group(2) else ""
-        return f"STATE_{state_hex}{fallback_suffix}"
-    return None
-
-
-def _semantic_state_value_from_label(label_text: str | None) -> int | None:
-    normalized = _normalize_semantic_target_label(label_text)
-    if normalized is None:
-        return None
-    match = _STATE_LABEL_RE.match(normalized)
-    if match is None:
-        return None
-    return int(match.group(1), 16) & 0xFFFFFFFF
 
 
 def _infer_semantic_target_from_entry(
@@ -123,10 +93,10 @@ def _infer_semantic_target_from_entry(
             and int(target_entry_anchor) not in owned_blocks
         ):
             continue
-        candidate_label = _normalize_semantic_target_label(
+        candidate_label = normalize_semantic_target_label(
             getattr(node, "state_label", None)
         )
-        candidate_state = _semantic_state_value_from_label(candidate_label)
+        candidate_state = semantic_state_value_from_label(candidate_label)
         if candidate_label is None or candidate_state is None:
             continue
         if candidate_state == normalized_target_state and not candidate_label.endswith("_fallback"):
@@ -199,12 +169,12 @@ def collect_admissible_region_lowering_sites(
     dispatcher_blocks = {int(block) for block in dispatcher_region}
     accepted: list[SemanticRegionLoweringSite] = []
 
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
+    semantic_entry_by_label = collect_semantic_entry_by_label(
         semantic_reference_program
     )
     semantic_successors_by_state = _merge_region_contract_semantic_successors_by_state(
         region=region,
-        semantic_successors_by_state=_collect_semantic_successors_by_state(
+        semantic_successors_by_state=collect_semantic_successors_by_state(
             semantic_reference_program
         ),
         semantic_entry_by_label=semantic_entry_by_label,
@@ -634,7 +604,7 @@ def collect_admissible_region_lowering_sites(
                     inferred_successor_state_value
                     if inferred_successor_state_value is not None
                     else (
-                        _semantic_state_value_from_label(semantic_target_label)
+                        semantic_state_value_from_label(semantic_target_label)
                         if semantic_target_label is not None
                         else int(target_state) & 0xFFFFFFFF
                     )
@@ -690,34 +660,6 @@ def collect_admissible_region_lowering_sites(
     return tuple(accepted)
 
 
-def _collect_semantic_entry_by_label(
-    semantic_reference_program: object | None,
-) -> dict[str, int]:
-    if semantic_reference_program is None:
-        return {}
-    entries: dict[str, int] = {}
-    for node in getattr(semantic_reference_program, "nodes", ()) or ():
-        label_text = str(getattr(node, "label_text", "") or "")
-        entry_anchor = getattr(node, "entry_anchor", None)
-        if not label_text or entry_anchor is None:
-            continue
-        entry_value = int(entry_anchor)
-        entries[label_text] = entry_value
-        normalized_label = _normalize_semantic_target_label(label_text)
-        if normalized_label is not None:
-            entries.setdefault(normalized_label, entry_value)
-        raw_match = _RAW_STATE_LABEL_RE.match(label_text)
-        if raw_match is not None:
-            suffix = raw_match.group(2) or ""
-            entries[f"STATE_{raw_match.group(1).upper()}{suffix}"] = entry_value
-            continue
-        state_match = _STATE_LABEL_RE.match(label_text)
-        if state_match is not None:
-            suffix = state_match.group(2) or ""
-            entries[f"0x{state_match.group(1).upper()}{suffix}"] = entry_value
-    return entries
-
-
 def _resolve_supplemental_selected_entry(
     dag: object,
     state_value: int,
@@ -754,44 +696,6 @@ def _resolve_owner_semantic_head_for_candidates(
     return int(owner_entry)
 
 
-def _collect_semantic_successors_by_state(
-    semantic_reference_program: object | None,
-) -> dict[int, tuple[str, ...]]:
-    if semantic_reference_program is None:
-        return {}
-    lines = tuple(getattr(semantic_reference_program, "lines", ()) or ())
-    by_state: dict[int, list[str]] = {}
-    for node in getattr(semantic_reference_program, "nodes", ()) or ():
-        label_text = str(getattr(node, "label_text", "") or "")
-        match = _STATE_LABEL_PREFIX_RE.match(label_text)
-        if match is None:
-            match = _RAW_STATE_LABEL_PREFIX_RE.match(label_text)
-        if match is None:
-            continue
-        source_state = int(match.group(1), 16) & 0xFFFFFFFF
-        line_start = int(getattr(node, "line_start", 0) or 0)
-        line_end = int(getattr(node, "line_end", 0) or 0)
-        targets: list[str] = []
-        for line in lines:
-            line_no = int(getattr(line, "line_no", 0) or 0)
-            if line_no < line_start or line_no > line_end:
-                continue
-            target_label = getattr(line, "target_label", None)
-            if target_label is None:
-                continue
-            targets.append(str(target_label))
-        if targets:
-            existing = by_state.setdefault(source_state, [])
-            for target in targets:
-                if target not in existing:
-                    existing.append(target)
-    return {
-        int(source_state) & 0xFFFFFFFF: tuple(targets)
-        for source_state, targets in by_state.items()
-        if targets
-    }
-
-
 def _preferred_semantic_labels_for_state(
     *,
     state_value: int,
@@ -801,10 +705,10 @@ def _preferred_semantic_labels_for_state(
     candidates: list[str] = []
     seen: set[str] = set()
     for label in semantic_entry_by_label:
-        normalized_label = _normalize_semantic_target_label(label)
+        normalized_label = normalize_semantic_target_label(label)
         if normalized_label is None:
             continue
-        if _semantic_state_value_from_label(normalized_label) != normalized_state:
+        if semantic_state_value_from_label(normalized_label) != normalized_state:
             continue
         if normalized_label in seen:
             continue
@@ -887,7 +791,7 @@ def _merge_region_contract_semantic_successors_by_state(
                     break
             existing_non_region_labels: list[str] = []
             for label in existing_labels:
-                label_state = _semantic_state_value_from_label(label)
+                label_state = semantic_state_value_from_label(label)
                 if label_state is None or label_state in region_states:
                     continue
                 if label not in existing_non_region_labels:
@@ -972,7 +876,7 @@ def _augment_region_contract_semantic_successors_by_state(
                 if label not in existing
             ]
             labels_describe_raw_self = bool(preferred_labels) and all(
-                (_semantic_state_value_from_label(label) == (int(exit_state) & 0xFFFFFFFF))
+                (semantic_state_value_from_label(label) == (int(exit_state) & 0xFFFFFFFF))
                 and not str(label).endswith("_fallback")
                 for label in preferred_labels
             )
@@ -1069,7 +973,7 @@ def _normalize_semantic_alias_targets(
                 )
                 if branch_arm not in (0, 1):
                     continue
-                current_label = _normalize_semantic_target_label(site.semantic_target_label)
+                current_label = normalize_semantic_target_label(site.semantic_target_label)
                 if current_label is None:
                     direct_label = f"STATE_{int(site.target_state) & 0xFFFFFFFF:08X}"
                     if direct_label in semantic_labels:
@@ -1123,10 +1027,7 @@ def _normalize_semantic_alias_targets(
             target_label = unmatched_labels[0]
             target_entry_anchor = semantic_entry_by_label.get(target_label)
             if target_entry_anchor is not None:
-                successor_state_value: int | None = None
-                match = _STATE_LABEL_RE.match(target_label)
-                if match is not None:
-                    successor_state_value = int(match.group(1), 16) & 0xFFFFFFFF
+                successor_state_value = semantic_state_value_from_label(target_label)
                 for alias_site in alias_sites:
                     normalized_target_state = (
                         int(successor_state_value) & 0xFFFFFFFF
@@ -1192,7 +1093,7 @@ def _normalize_semantic_alias_targets(
             if branch_arm in (0, 1) and branch_semantic_label_by_arm:
                 branch_target_label = branch_semantic_label_by_arm[int(branch_arm)]
                 branch_target_entry = semantic_entry_by_label.get(branch_target_label)
-                branch_successor_state_value = _semantic_state_value_from_label(
+                branch_successor_state_value = semantic_state_value_from_label(
                     branch_target_label
                 )
                 if (
@@ -1226,10 +1127,10 @@ def _normalize_semantic_alias_targets(
                         ),
                     )
 
-            current_label = _normalize_semantic_target_label(site.semantic_target_label)
+            current_label = normalize_semantic_target_label(site.semantic_target_label)
             if current_label is None:
                 current_label = direct_target_label
-            current_label_state = _semantic_state_value_from_label(current_label)
+            current_label_state = semantic_state_value_from_label(current_label)
             current_label_entry = semantic_entry_by_label.get(current_label)
             direct_target_is_semantic_successor = direct_target_label in semantic_labels
             stale_current_label_for_target = (
@@ -1297,7 +1198,7 @@ def _normalize_semantic_alias_targets(
             best_choice: tuple[tuple[int, int, int, int, int], str, int, int] | None = None
             for label in semantic_labels:
                 entry_anchor = semantic_entry_by_label.get(label)
-                state_value = _semantic_state_value_from_label(label)
+                state_value = semantic_state_value_from_label(label)
                 if entry_anchor is None or state_value is None:
                     continue
                 entry_anchor = int(entry_anchor)
@@ -1565,8 +1466,8 @@ def _synthesize_missing_conditional_exit_sites(
         order: list[int | str] = []
         for raw_label in labels:
             label = str(raw_label)
-            normalized_label = _normalize_semantic_target_label(label) or label
-            label_state = _semantic_state_value_from_label(normalized_label)
+            normalized_label = normalize_semantic_target_label(label) or label
+            label_state = semantic_state_value_from_label(normalized_label)
             label_key: int | str = (
                 int(label_state) & 0xFFFFFFFF
                 if label_state is not None
@@ -1632,7 +1533,7 @@ def _synthesize_missing_conditional_exit_sites(
             continue
         target_label = unmatched_labels[0]
         target_entry_anchor = semantic_entry_by_label.get(target_label)
-        successor_state_value = _semantic_state_value_from_label(target_label)
+        successor_state_value = semantic_state_value_from_label(target_label)
         if target_entry_anchor is None or successor_state_value is None:
             continue
         successor_state_value = int(successor_state_value) & 0xFFFFFFFF
@@ -1790,7 +1691,7 @@ def _synthesize_missing_conditional_exit_sites(
             state_const=int(source_state_value) & 0xFFFFFFFF,
         )
         for branch_arm, target_label in ((1, semantic_labels[0]), (0, semantic_labels[1])):
-            successor_state_value = _semantic_state_value_from_label(target_label)
+            successor_state_value = semantic_state_value_from_label(target_label)
             target_entry_anchor = semantic_entry_by_label.get(str(target_label))
             if successor_state_value is None or target_entry_anchor is None:
                 if (
@@ -1906,7 +1807,7 @@ def override_exit_sites_with_child_region_entries(
         return tuple(sites)
 
     dispatcher_blocks = {int(block) for block in dispatcher_region}
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
+    semantic_entry_by_label = collect_semantic_entry_by_label(
         semantic_reference_program
     )
     child_region_names_by_state = {
@@ -1922,7 +1823,7 @@ def override_exit_sites_with_child_region_entries(
             int(site.successor_state_value) & 0xFFFFFFFF
             if site.successor_state_value is not None
             else (
-                _semantic_state_value_from_label(site.semantic_target_label)
+                semantic_state_value_from_label(site.semantic_target_label)
                 if site.semantic_target_label is not None
                 else raw_target_state
             )
@@ -1970,7 +1871,7 @@ def override_exit_sites_with_child_region_entries(
             site.semantic_target_label or f"STATE_{effective_target_state:08X}"
         )
         direct_effective_target_label = f"STATE_{int(effective_target_state) & 0xFFFFFFFF:08X}"
-        current_semantic_target_state = _semantic_state_value_from_label(
+        current_semantic_target_state = semantic_state_value_from_label(
             semantic_target_label
         )
         if (
@@ -2208,7 +2109,7 @@ def override_exit_sites_with_child_region_entries(
             else str(getattr(site, "semantic_target_label"))
         )
         normalized_successor = (
-            _semantic_state_value_from_label(normalized_label)
+            semantic_state_value_from_label(normalized_label)
             if normalized_label is not None
             else None
         )
@@ -2408,7 +2309,7 @@ def _prefer_exact_target_head_over_path_entry(
     if exact_dag_entry == current_entry:
         return current_entry
     if semantic_target_label is not None:
-        semantic_state = _semantic_state_value_from_label(semantic_target_label)
+        semantic_state = semantic_state_value_from_label(semantic_target_label)
         if (
             str(semantic_target_label).endswith("_fallback")
             or (

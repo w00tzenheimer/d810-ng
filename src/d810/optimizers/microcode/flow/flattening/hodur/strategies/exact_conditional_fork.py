@@ -12,9 +12,9 @@ from d810.cfg.flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
 from d810.cfg.graph_modification import NopInstructions, ZeroStateWrite
-from d810.cfg.semantic_region_lowering import (
-    _collect_semantic_entry_by_label,
-    _collect_semantic_successors_by_state,
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
 )
 from d810.cfg.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
@@ -493,10 +493,10 @@ def analyze_exact_conditional_fork_sites(
         for state in tuple(getattr(region, "state_values", ()) or ())
     }
     semantic_reference_program = getattr(round_summary, "semantic_reference_program", None)
-    semantic_successors_by_state = _collect_semantic_successors_by_state(
+    semantic_successors_by_state = collect_semantic_successors_by_state(
         semantic_reference_program
     )
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
+    semantic_entry_by_label = collect_semantic_entry_by_label(
         semantic_reference_program
     )
     bst_blocks = {int(block) for block in (bst_node_blocks or set())}

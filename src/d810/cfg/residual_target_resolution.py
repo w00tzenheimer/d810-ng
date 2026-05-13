@@ -8,20 +8,14 @@ keeps strategy ordering, live state-write extraction, and modification emission.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 from d810.cfg.dag_index import build_dag_node_maps
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
+)
 from d810.core.typing import Callable, Iterable
 
-
-_STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?$")
-_RAW_STATE_LABEL_RE = re.compile(r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?$")
-_STATE_LABEL_PREFIX_RE = re.compile(
-    r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
-)
-_RAW_STATE_LABEL_PREFIX_RE = re.compile(
-    r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
-)
 
 __all__ = [
     "collect_owned_exact_sources",
@@ -741,89 +735,6 @@ def resolve_nonexact_dispatch_target(
     return None
 
 
-def _normalize_semantic_target_label(label_text: str | None) -> str | None:
-    text = str(label_text or "").strip()
-    if not text:
-        return None
-    state_match = _STATE_LABEL_PREFIX_RE.match(text)
-    if state_match is not None:
-        state_hex = state_match.group(1).upper()
-        fallback_suffix = "_fallback" if state_match.group(2) else ""
-        return f"STATE_{state_hex}{fallback_suffix}"
-    raw_match = _RAW_STATE_LABEL_PREFIX_RE.match(text)
-    if raw_match is not None:
-        state_hex = raw_match.group(1).upper()
-        fallback_suffix = "_fallback" if raw_match.group(2) else ""
-        return f"STATE_{state_hex}{fallback_suffix}"
-    return None
-
-
-def _collect_semantic_entry_by_label(
-    semantic_reference_program: object | None,
-) -> dict[str, int]:
-    if semantic_reference_program is None:
-        return {}
-    entries: dict[str, int] = {}
-    for node in getattr(semantic_reference_program, "nodes", ()) or ():
-        label_text = str(getattr(node, "label_text", "") or "")
-        entry_anchor = getattr(node, "entry_anchor", None)
-        if not label_text or entry_anchor is None:
-            continue
-        entry_value = int(entry_anchor)
-        entries[label_text] = entry_value
-        normalized_label = _normalize_semantic_target_label(label_text)
-        if normalized_label is not None:
-            entries.setdefault(normalized_label, entry_value)
-        raw_match = _RAW_STATE_LABEL_RE.match(label_text)
-        if raw_match is not None:
-            suffix = raw_match.group(2) or ""
-            entries[f"STATE_{raw_match.group(1).upper()}{suffix}"] = entry_value
-            continue
-        state_match = _STATE_LABEL_RE.match(label_text)
-        if state_match is not None:
-            suffix = state_match.group(2) or ""
-            entries[f"0x{state_match.group(1).upper()}{suffix}"] = entry_value
-    return entries
-
-
-def _collect_semantic_successors_by_state(
-    semantic_reference_program: object | None,
-) -> dict[int, tuple[str, ...]]:
-    if semantic_reference_program is None:
-        return {}
-    lines = tuple(getattr(semantic_reference_program, "lines", ()) or ())
-    by_state: dict[int, list[str]] = {}
-    for node in getattr(semantic_reference_program, "nodes", ()) or ():
-        label_text = str(getattr(node, "label_text", "") or "")
-        match = _STATE_LABEL_PREFIX_RE.match(label_text)
-        if match is None:
-            match = _RAW_STATE_LABEL_PREFIX_RE.match(label_text)
-        if match is None:
-            continue
-        source_state = int(match.group(1), 16) & 0xFFFFFFFF
-        line_start = int(getattr(node, "line_start", 0) or 0)
-        line_end = int(getattr(node, "line_end", 0) or 0)
-        targets: list[str] = []
-        for line in lines:
-            line_no = int(getattr(line, "line_no", 0) or 0)
-            if line_no < line_start or line_no > line_end:
-                continue
-            target_label = getattr(line, "target_label", None)
-            if target_label is None:
-                continue
-            targets.append(str(target_label))
-        if targets:
-            existing = by_state.setdefault(source_state, [])
-            for target in targets:
-                if target not in existing:
-                    existing.append(target)
-    return {
-        int(source_state) & 0xFFFFFFFF: tuple(targets)
-        for source_state, targets in by_state.items()
-        if targets
-    }
-
-
 def resolve_semantic_reference_alias_entry(
     dag: object,
     semantic_reference_program: object | None,
@@ -832,10 +743,10 @@ def resolve_semantic_reference_alias_entry(
     state_value: int,
 ) -> int | None:
     """Resolve a raw alias state through the semantic reference program."""
-    semantic_successors_by_state = _collect_semantic_successors_by_state(
+    semantic_successors_by_state = collect_semantic_successors_by_state(
         semantic_reference_program
     )
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
+    semantic_entry_by_label = collect_semantic_entry_by_label(
         semantic_reference_program
     )
     if not semantic_successors_by_state or not semantic_entry_by_label:
