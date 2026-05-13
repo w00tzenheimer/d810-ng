@@ -30,7 +30,7 @@ from d810.cfg.spurious_backedge_redirect import (
 )
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -38,7 +38,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

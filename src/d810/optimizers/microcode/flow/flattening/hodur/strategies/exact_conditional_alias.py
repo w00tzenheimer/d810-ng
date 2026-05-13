@@ -11,7 +11,7 @@ from d810.cfg.flow.conditional_alias import (
     AliasConditionalSite,
     analyze_duplicate_alias_conditional_sites,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

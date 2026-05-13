@@ -79,7 +79,7 @@ from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration impor
     DAG_AUDIT_METADATA_KEY,
     filter_dag_disagreements,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

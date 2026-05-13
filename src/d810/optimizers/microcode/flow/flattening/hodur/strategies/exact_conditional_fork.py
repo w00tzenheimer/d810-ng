@@ -17,7 +17,7 @@ from d810.cfg.semantic_region_lowering import (
     _collect_semantic_entry_by_label,
     _collect_semantic_successors_by_state,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

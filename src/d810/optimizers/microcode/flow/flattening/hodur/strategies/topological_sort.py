@@ -16,7 +16,7 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 from d810.cfg.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
     OwnershipScope,
@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.recon.flow.bst_model import resolve_target_via_bst
 if TYPE_CHECKING:
     from d810.cfg.graph_modification import ReorderBlocks
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

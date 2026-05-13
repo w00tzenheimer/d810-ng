@@ -192,7 +192,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
     check_redirect_severs_use_def,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -248,7 +248,7 @@ if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
         DispatcherStateMachine,
     )
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

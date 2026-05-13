@@ -30,11 +30,11 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
 )
@@ -428,7 +428,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         allow_legacy_block_creation: bool,
     ):
         """Return the live executor factory for the Hodur family."""
-        from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+        from d810.optimizers.microcode.flow.flattening.engine.executor import (
             TransactionalExecutor,
         )
 
@@ -437,6 +437,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 mba,
                 gate=gate,
                 allow_legacy_block_creation=allow_legacy_block_creation,
+                safeguard_profile="hodur",
             )
 
         return _factory

@@ -1,8 +1,8 @@
 """Concrete unflattening strategies for Hodur CFF.
 
 Each strategy implements the
-:class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.UnflatteningStrategy`
-Protocol and proposes :class:`~d810.optimizers.microcode.flow.flattening.hodur.strategy.PlanFragment`
+:class:`~d810.optimizers.microcode.flow.flattening.engine.strategy.UnflatteningStrategy`
+Protocol and proposes :class:`~d810.optimizers.microcode.flow.flattening.engine.strategy.PlanFragment`
 objects describing CFG edits without mutating the microcode directly.
 
 Available strategies (in dependency order):

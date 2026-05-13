@@ -17,7 +17,7 @@ if TYPE_CHECKING:
         DispatcherStateMachine,
         HandlerPathResult,
     )
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
     from d810.recon.flow.transition_report import (
         DispatcherTransitionReport,
         TransitionRow,

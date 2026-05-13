@@ -156,7 +156,7 @@ from d810.evaluator.hexrays_microcode.chains import (
     find_reaching_defs_for_stkvar,
 )
 from d810.evaluator.hexrays_microcode.sccp import run_sccp
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
