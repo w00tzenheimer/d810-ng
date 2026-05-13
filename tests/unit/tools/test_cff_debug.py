@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -48,3 +50,84 @@ def test_latest_db_errors_when_only_empty_sqlite_placeholders_exist(
 
     with pytest.raises(SystemExit):
         cff_debug.latest_db("wt")
+
+
+def _make_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(cff_debug, "REPO_ROOT", tmp_path)
+    wt = tmp_path / ".worktrees" / "wt"
+    (wt / "src").mkdir(parents=True)
+    return wt
+
+
+def test_after_stats_appends_stats_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_worktree(tmp_path, monkeypatch)
+    dump = wt / ".tmp" / "dump.txt"
+    dump.parent.mkdir()
+    dump.write_text("--- AFTER ---\nbody\n=== STATS: f ===\nAFTER: lines=1\n")
+
+    subprocess_calls: list[list[str]] = []
+    stats_calls: list[argparse.Namespace] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        subprocess_calls.append(argv)
+        assert env is not None
+        assert str(wt / "src") in env["PYTHONPATH"]
+        return 0
+
+    def fake_stats(args: argparse.Namespace) -> int:
+        stats_calls.append(args)
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+    monkeypatch.setattr(cff_debug, "cmd_stats", fake_stats)
+
+    rc = cff_debug.cmd_after(
+        argparse.Namespace(
+            worktree="wt",
+            dump=str(dump),
+            line_numbers=True,
+            stats=True,
+        )
+    )
+
+    assert rc == 0
+    assert subprocess_calls
+    assert subprocess_calls[0][-1] == "-n"
+    assert len(stats_calls) == 1
+    assert stats_calls[0].worktree == "wt"
+    assert stats_calls[0].dump == str(dump.resolve())
+
+
+def test_after_stats_does_not_run_when_after_renderer_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_worktree(tmp_path, monkeypatch)
+    dump = wt / ".tmp" / "dump.txt"
+    dump.parent.mkdir()
+    dump.write_text("--- AFTER ---\nbody\n")
+
+    monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: 7)
+
+    def fail_stats(args: argparse.Namespace) -> int:
+        raise AssertionError("stats should not run after dump-after failure")
+
+    monkeypatch.setattr(cff_debug, "cmd_stats", fail_stats)
+
+    rc = cff_debug.cmd_after(
+        argparse.Namespace(
+            worktree="wt",
+            dump=str(dump),
+            line_numbers=False,
+            stats=True,
+        )
+    )
+
+    assert rc == 7

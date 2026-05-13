@@ -245,7 +245,13 @@ def cmd_after(args: argparse.Namespace) -> int:
     ]
     if args.line_numbers:
         diag_argv.append("-n")
-    return subprocess.call(diag_argv, env=env)
+    rc = subprocess.call(diag_argv, env=env)
+    if rc != 0:
+        return rc
+    if args.stats:
+        print()
+        return cmd_stats(argparse.Namespace(worktree=wt, dump=str(dump)))
+    return 0
 
 
 def cmd_snap_render(args: argparse.Namespace) -> int:
@@ -1004,6 +1010,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.add_argument("-n", "--line-numbers", action="store_true")
+    sp.add_argument(
+        "--stats",
+        action="store_true",
+        help="append the dump's STATS block after the AFTER pseudocode",
+    )
     sp.set_defaults(func=cmd_after)
 
     sp = sub.add_parser(
