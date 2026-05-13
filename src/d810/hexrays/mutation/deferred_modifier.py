@@ -5379,21 +5379,21 @@ class DeferredGraphModifier:
                 and new_cond_blk.serial != expected_conditional_serial
             ):
                 logger.warning(
-                    "create_conditional_redirect: created conditional blk[%d], expected blk[%d]",
+                    "create_conditional_redirect: created conditional blk[%d], expected blk[%d]; "
+                    "continuing with actual serial",
                     new_cond_blk.serial,
                     expected_conditional_serial,
                 )
-                return False
             if (
                 expected_fallthrough_serial is not None
                 and nop_blk.serial != expected_fallthrough_serial
             ):
                 logger.warning(
-                    "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]",
+                    "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]; "
+                    "continuing with actual serial",
                     nop_blk.serial,
                     expected_fallthrough_serial,
                 )
-                return False
 
             logger.debug(
                 "Duplicated conditional block %d -> %d (with NOP fallthrough %d)",
