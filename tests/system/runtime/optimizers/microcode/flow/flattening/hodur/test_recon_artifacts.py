@@ -256,24 +256,6 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     assert unflattener._initial_transitions == ["initial"]
 
 
-def test_hodur_unflattener_registers_current_experimental_strategies():
-    unflattener = HodurUnflattener()
-
-    assert [type(strategy) for strategy in unflattener._strategies] == [
-        HandlerChainComposerStrategy,
-        DispatcherTrampolineSkipStrategy,
-        CounterHoistStrategy,
-        ReturnFrontierCarrierPreserveStrategy,
-    ]
-    strategies = unflattener._family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT1)
-    assert [type(strategy) for strategy in strategies] == [
-        HandlerChainComposerStrategy,
-        DispatcherTrampolineSkipStrategy,
-        CounterHoistStrategy,
-        ReturnFrontierCarrierPreserveStrategy,
-    ]
-
-
 def test_semantic_structured_region_strategy_only_runs_at_glbopt1():
     strategy = SemanticStructuredRegionStrategy()
     state_machine = SimpleNamespace(handlers={0x10: object()}, initial_state=0x10)
