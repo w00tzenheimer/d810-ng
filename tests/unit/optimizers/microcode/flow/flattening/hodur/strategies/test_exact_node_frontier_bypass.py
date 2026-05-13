@@ -23,6 +23,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_front
     _is_structured_conditional_path_feeder,
     _resolve_frontier_target_entry,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    exact_node_frontier_bypass as exact_node_frontier_bypass_module,
+)
 
 
 def test_collect_post_apply_bst_cleanup_blockers_uses_group_live_preds() -> None:
@@ -111,19 +114,19 @@ def test_exact_node_frontier_bypass_redirects_residual_pred_to_supported_entry(m
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (50,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x5FE86821,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 81,
     )
 
@@ -168,23 +171,23 @@ def test_exact_node_frontier_bypass_redirects_semantic_supplemental_feeder(monke
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (45,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x00C0C59F,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 122,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
 
@@ -234,27 +237,27 @@ def test_exact_node_frontier_bypass_redirects_return_reachable_supplemental_feed
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (33,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x27EEEA11,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 34,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 24,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: False,
     )
 
@@ -282,35 +285,35 @@ def test_exact_node_frontier_bypass_redirects_return_reachable_supplemental_feed
 
 def test_resolve_frontier_target_entry_prefers_residual_effective_target(monkeypatch):
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.supplemental_selected_entry_for_state",
+        exact_node_frontier_bypass_module, "supplemental_selected_entry_for_state",
         lambda *_args, **_kwargs: 14,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_effective_residual_target_entry",
+        exact_node_frontier_bypass_module, "resolve_effective_residual_target_entry",
         lambda *_args, **_kwargs: 14,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_exact_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_exact_dag_entry_for_state",
         lambda *_args, **_kwargs: 66,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_semantic_reference_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_semantic_reference_entry_for_state",
         lambda *_args, **_kwargs: 66,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 66,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_normalized_alias_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
         lambda *_args, **_kwargs: 66,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass._resolve_semantic_reference_alias_entry",
+        exact_node_frontier_bypass_module, "_resolve_semantic_reference_alias_entry",
         lambda *_args, **_kwargs: None,
     )
 
@@ -352,27 +355,27 @@ def test_exact_node_frontier_bypass_uses_supplemental_selected_entry_when_direct
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (33,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x27EEEA11,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 24,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: False,
     )
 
@@ -420,23 +423,23 @@ def test_exact_node_frontier_bypass_skips_terminal_owned_supplemental_feeder(mon
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (208,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x09EB3382,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 132,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
 
@@ -480,31 +483,31 @@ def test_exact_node_frontier_bypass_prefers_normalized_alias_entry_over_raw_exac
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x4C77464F,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_normalized_alias_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
         lambda *_args, **_kwargs: 14,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
 
@@ -580,15 +583,15 @@ def test_exact_node_frontier_bypass_skips_structured_conditional_feeder(monkeypa
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x4C77464F,
     )
 
@@ -662,31 +665,31 @@ def test_exact_node_frontier_bypass_uses_semantic_reference_alias_entry(monkeypa
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x4C77464F,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_normalized_alias_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
 
@@ -773,31 +776,31 @@ def test_exact_node_frontier_bypass_scopes_semantic_alias_matching_to_local_sour
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x4C77464F,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_normalized_alias_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 72,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
 
@@ -857,35 +860,35 @@ def test_exact_node_frontier_bypass_prefers_direct_semantic_state_entry(monkeypa
         bst_node_blocks=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.build_semantic_exact_round_summary",
+        exact_node_frontier_bypass_module, "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.collect_residual_dispatcher_predecessors",
+        exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_singleton_state_write_value",
+        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
         lambda *_args, **_kwargs: 0x4C77464F,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 71,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_normalized_alias_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_normalized_alias_entry_for_state",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.dispatcher_exact_state_target",
+        exact_node_frontier_bypass_module, "dispatcher_exact_state_target",
         lambda *_args, **_kwargs: 71,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.state_has_semantic_support",
+        exact_node_frontier_bypass_module, "state_has_semantic_support",
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.find_last_state_write_site_snapshot",
+        exact_node_frontier_bypass_module, "find_last_state_write_site_snapshot",
         lambda *_args, **_kwargs: SimpleNamespace(
             state_value=0x4C77464F,
             insn_ea=0x4010,
@@ -940,7 +943,7 @@ def test_collect_supported_exact_entries_includes_straight_line_targets(monkeypa
         plannable_edges=(SimpleNamespace(edge=edge),),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_frontier_bypass.resolve_dag_entry_for_state",
+        exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
         lambda *_args, **_kwargs: 136,
     )
 
