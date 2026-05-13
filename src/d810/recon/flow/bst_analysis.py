@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
 from d810.core.typing import (
     Any,
@@ -1780,6 +1781,24 @@ def _detect_state_var_stkoff(
 # -----------------------------------------------------------------------------
 
 
+@algorithm_metadata(
+    algorithm_id="recon.analyze_bst_dispatcher",
+    family="compare_chain_interval_dispatch_reconstruction",
+    summary="Analyzes BST-style state dispatchers to recover handler states and transitions.",
+    use_cases=(
+        "Recover handler-entry mappings and successor states from interval/BST dispatch ladders.",
+        "Seed dispatcher reports and semantic DAG construction from a resolved BST dispatcher root.",
+    ),
+    examples=(
+        "Walk a JNZ/JZ/JBE ladder to map state constants to handler blocks and terminal exits.",
+        "Detect the default block and handler transitions for a state variable dispatched through a BST.",
+    ),
+    tags=("bst", "dispatcher", "intervals", "state-machine", "analysis"),
+    related_paths=(
+        "src/d810/recon/flow/bst_analysis.py",
+        "src/d810/cfg/flow/compare_chain.py",
+    ),
+)
 def analyze_bst_dispatcher(
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
@@ -1878,6 +1897,21 @@ def analyze_bst_dispatcher(
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
+        try:
+            from d810.recon.observability import (
+                observe_bst_interval_dispatcher,
+            )
+            observe_bst_interval_dispatcher(
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity="MMAT_GLBOPT1",
+                dispatcher_entry_block=int(dispatcher_entry_serial),
+                rows=tuple(dispatcher._rows),
+            )
+        except Exception:
+            logger.debug(
+                "INTERVAL_DISPATCHER_ROWS structured persistence failed",
+                exc_info=True,
+            )
 
     # Back-fill handler_state_map from IntervalDispatcher for handlers
     # missed by legacy walk (e.g., JNZ taken branches with range_is_pair=False)

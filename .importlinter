@@ -34,6 +34,7 @@ name = Layered architecture prevents upward imports
 type = layers
 layers =
     d810.ui
+    d810.diagnostics
     d810.optimizers
     d810.recon
     d810.backends
@@ -100,3 +101,32 @@ source_modules =
     d810.hexrays.expr
 forbidden_modules =
     d810.hexrays.hooks
+
+[importlinter:contract:runtime-no-core-diag]
+# Runtime layers must route diagnostic capture through the
+# observability facades / event bus, not import d810.core.diag
+# directly. After the event-refactor follow-on plan completed,
+# every cross-layer access (observability legacy capture shims,
+# cfg.provenance IoC registration) is mediated through
+# `importlib.import_module("d810.core.diag")` so the static import
+# graph has zero recognised edges. The contract therefore needs no
+# ignore_imports entry.
+#
+# d810.diagnostics is the post-hoc CLI/query layer and is allowed to
+# read from core.diag; it is excluded by being absent from
+# source_modules.
+name = Runtime code must not import core diag directly
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.manager
+    d810.optimizers
+    d810.recon
+    d810.cfg
+    d810.hexrays
+forbidden_modules =
+    d810.core.diag
+# No ignore_imports: the observability facades and cfg.provenance
+# IoC registration use `importlib.import_module` to delegate to
+# d810.core.diag, so the static import graph has zero recognised
+# runtime -> core.diag edges.

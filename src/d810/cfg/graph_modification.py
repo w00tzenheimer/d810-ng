@@ -39,11 +39,71 @@ Design Notes
 from __future__ import annotations
 
 import enum
+import os
+import sys
 from dataclasses import dataclass
 from d810.core.typing import Union
 
+from d810.core import logging
+
 # Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
+
+
+# Construction tracer for graph mods. When
+# ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` is set, every
+# ``RedirectGoto(...)`` construction logs its args + the caller frame.
+# Helps locate which of the ~20 direct-construction sites emitted a
+# specific mod when a Mode 1 bug surfaces. Off by default because
+# every RedirectGoto goes through this — the log volume is only
+# manageable for targeted investigations.
+_redirect_goto_tracer = logging.getLogger(
+    "D810.cfg.graph_modification.redirect_goto_trace", logging.DEBUG
+)
+_TRACE_REDIRECT_GOTO = (
+    os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"
+)
+# Unified knob that turns on construction traces for every graph-mod type
+# (RedirectGoto, RedirectBranch, DuplicateAndRedirect, ZeroStateWrite).
+# ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` is an alias for backwards
+# compat; new callers should use ``D810_TRACE_MOD_CONSTRUCTION=1``.
+_TRACE_MOD_CONSTRUCTION = (
+    _TRACE_REDIRECT_GOTO
+    or os.environ.get("D810_TRACE_MOD_CONSTRUCTION", "").strip() == "1"
+)
+
+
+def _construction_caller() -> str:
+    """Walk past ``_construction_caller`` + ``__post_init__`` +
+    dataclass-generated ``__init__`` (filename ``<string>``) to find the
+    first user frame. Returns ``"filename:func:line"`` or ``"<unknown>"``
+    if the stack is shallower than expected.
+
+    Depth model when called from ``__post_init__``:
+      0: _construction_caller (this function)
+      1: __post_init__ (graph_modification.py)
+      2: <string> (dataclass-generated __init__)
+      3: user caller site
+    """
+    # Start at depth=2 to skip both our helper and __post_init__.
+    depth = 2
+    try:
+        frame = sys._getframe(depth)
+    except ValueError:
+        return "<unknown>"
+    # Skip any number of consecutive <string> frames (dataclass internals).
+    while frame is not None and frame.f_code.co_filename == "<string>":
+        depth += 1
+        try:
+            frame = sys._getframe(depth)
+        except ValueError:
+            return "<unknown>"
+    if frame is None:
+        return "<unknown>"
+    return (
+        f"{frame.f_code.co_filename.rsplit('/', 1)[-1]}:"
+        f"{frame.f_code.co_name}:{frame.f_lineno}"
+    )
 
 
 @dataclass(frozen=True)
@@ -69,6 +129,15 @@ class RedirectGoto:
     old_target: int
     new_target: int
 
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "REDIRECT_GOTO_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
+            self.from_serial, self.old_target, self.new_target,
+            _construction_caller(),
+        )
+
 
 @dataclass(frozen=True)
 class RedirectBranch:
@@ -92,6 +161,15 @@ class RedirectBranch:
     from_serial: int
     old_target: int
     new_target: int
+
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "REDIRECT_BRANCH_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
+            self.from_serial, self.old_target, self.new_target,
+            _construction_caller(),
+        )
 
 
 @dataclass(frozen=True)
@@ -127,6 +205,9 @@ class EdgeRedirectViaPredSplit:
         old_target: Existing successor target on the source path.
         new_target: New successor target on the cloned path.
         via_pred: Predecessor whose edge to src_block is rewired to clone.
+        clone_until: Optional final block in a strict 1-way corridor clone.
+            When set, the backend clones the corridor ``src_block .. clone_until``
+            and retargets the final clone to ``new_target``.
         rule_priority: Rule priority for conflict resolution.
     """
 
@@ -134,6 +215,7 @@ class EdgeRedirectViaPredSplit:
     old_target: int
     new_target: int
     via_pred: int
+    clone_until: int | None = None
     rule_priority: int = 550
 
 
@@ -148,20 +230,26 @@ class CreateConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    instructions: tuple[InsnSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
 class DuplicateBlock:
     """Request duplication of a block and predecessor redirect.
 
-    Backend support is intentionally deferred in Phase 1; translators should
-    emit diagnostics and skip.
+    The duplicate keeps the source instructions and is wired to the redirected
+    predecessor. For 1-way sources, ``target_block`` optionally overrides the
+    clone successor. For 2-way conditional sources, leave ``target_block`` as
+    ``None`` and optionally provide explicit ``conditional_target`` and
+    ``fallthrough_target`` to retarget the cloned conditional shape.
     """
 
     source_block: int
     target_block: int | None
     pred_serial: int | None = None
     patch_kind: str = ""
+    conditional_target: int | None = None
+    fallthrough_target: int | None = None
 
 
 @dataclass(frozen=True)
@@ -170,12 +258,17 @@ class InsertBlock:
 
     Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_REDIRECT.
     Creates a new intermediate block containing the specified instructions
-    and redirects pred -> new_block -> succ.
+    and redirects pred -> new_block -> succ. By default, the existing edge
+    being replaced is assumed to be ``pred -> succ``; callers may override
+    that with ``old_target_serial`` when the new block should redirect a
+    predecessor away from a different current successor.
 
     Attributes:
         pred_serial: Predecessor block serial (edge source).
-        succ_serial: Successor block serial (edge target).
+        succ_serial: Final successor block serial for the inserted block.
         instructions: Tuple of instruction snapshots to place in new block.
+        old_target_serial: Existing successor edge being replaced. When unset,
+            defaults to ``succ_serial``.
 
     Example:
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -190,6 +283,7 @@ class InsertBlock:
     pred_serial: int
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...]
+    old_target_serial: int | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +350,50 @@ class ZeroStateWrite:
     """
     block_serial: int
     insn_ea: int
+
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "ZERO_STATE_WRITE_CONSTRUCTED block=%s insn_ea=0x%x caller=%s",
+            self.block_serial, self.insn_ea, _construction_caller(),
+        )
+
+
+@dataclass(frozen=True)
+class PromoteOperandToScalar:
+    """Promote a fused sub-instruction operand (mop_d) into its own
+    standalone microcode instruction with a fresh scalar destination.
+
+    LLVM-style mem2reg analog: extracts an embedded compute (e.g. the
+    ``m_ldx`` carried inside an ``m_add``'s ``l`` operand) and binds
+    its result to a fresh kreg so downstream passes see an explicit
+    def-use chain. Used to defeat IDA's MMAT_LVARS DCE on fused
+    load-add-store induction patterns where the load only appears as
+    a sub-operand and gets eliminated.
+
+    Maps to DeferredGraphModifier's INSN_PROMOTE_OPERAND_TO_SCALAR.
+
+    Attributes:
+        block_serial: Block containing the host instruction.
+        host_ea: Effective address of the host instruction (the
+            instruction whose operand will be hoisted).
+        host_opcode: Microcode opcode of the host (m_add, m_sub, etc.) —
+            used to disambiguate when multiple insns share an EA.
+        operand_side: Which operand to promote: ``"l"`` or ``"r"``.
+
+    Example:
+        >>> mod = PromoteOperandToScalar(
+        ...     block_serial=23, host_ea=0x180013d08, host_opcode=0x21,
+        ...     operand_side="l",
+        ... )
+        >>> mod.operand_side
+        'l'
+    """
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    operand_side: str
 
 
 @dataclass(frozen=True)
@@ -360,6 +498,46 @@ class DuplicateAndRedirect:
     source_serial: int
     per_pred_targets: tuple[tuple[int, int], ...]
 
+    def __post_init__(self) -> None:
+        if not _TRACE_MOD_CONSTRUCTION:
+            return
+        _redirect_goto_tracer.info(
+            "DUPLICATE_AND_REDIRECT_CONSTRUCTED src=%s per_pred_targets=%s caller=%s",
+            self.source_serial,
+            list(self.per_pred_targets),
+            _construction_caller(),
+        )
+
+
+@dataclass(frozen=True)
+class PhaseCycleLowering:
+    """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
+
+    This primitive captures a loop phase that must remain recognizable as a
+    header/body/latch subgraph rather than being lowered as independent
+    edge-local inserts. It is intended for dispatcher phases where:
+
+    - one role acts as the phase header/check,
+    - one role acts as the body/latch update,
+    - exits must flow into a single next phase,
+    - the body carries an explicit backedge to the header.
+
+    The current backend does not materialize this primitive yet. It exists to
+    pin the missing contract at the graph-modification layer before production
+    integration.
+    """
+
+    header_entries: tuple[int, ...]
+    header_target: int
+    body_entries: tuple[int, ...]
+    body_target: int
+    next_phase_entries: tuple[int, ...]
+    next_phase_target: int
+    terminal_entries: tuple[int, ...] = ()
+    terminal_target: int | None = None
+    state_roles: tuple[tuple[str, int], ...] = ()
+    reason: str = "dispatcher_phase_cycle"
+
 
 class DirectTerminalLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
@@ -399,10 +577,12 @@ GraphModification = Union[
     CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateAndRedirect,
+    PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
     ZeroStateWrite,
+    PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     DirectTerminalLoweringGroup,
@@ -418,10 +598,12 @@ __all__ = [
     "CreateConditionalRedirect",
     "DuplicateBlock",
     "DuplicateAndRedirect",
+    "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",
     "ZeroStateWrite",
+    "PromoteOperandToScalar",
     "PrivateTerminalSuffix",
     "PrivateTerminalSuffixGroup",
     "DirectTerminalLoweringKind",

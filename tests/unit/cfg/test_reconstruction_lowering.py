@@ -140,3 +140,24 @@ class TestPlanPassthroughRedirects:
             RedirectSpec(source_block=10, target_block=18, old_target=6),
             RedirectSpec(source_block=11, target_block=18, old_target=6),
         )
+
+    def test_ignores_suffix_blocks_after_horizon(self):
+        flow_graph = _DummyFlowGraph({
+            10: (6,),
+            11: (20, 6),
+            14: (30, 31),
+            15: (6,),
+        })
+
+        redirects = plan_passthrough_redirects(
+            flow_graph=flow_graph,
+            ordered_path=(10, 11, 14, 15),
+            horizon_block=14,
+            dispatcher_serial=6,
+            current_state_entry=18,
+        )
+
+        assert redirects == (
+            RedirectSpec(source_block=10, target_block=18, old_target=6),
+            RedirectSpec(source_block=11, target_block=18, old_target=6),
+        )

@@ -21,6 +21,7 @@ from __future__ import annotations
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
 )
@@ -169,6 +170,24 @@ def _blocks_in_nontrivial_sccs(
 # ---------------------------------------------------------------------------
 
 
+@algorithm_metadata(
+    algorithm_id="hodur.inner_merge_duplication",
+    family="shared_block_duplication_merge_cleanup",
+    summary="Tail-duplicates small DAG merge blocks so each predecessor gets a private merge suffix.",
+    use_cases=(
+        "Reduce structurer gotos after direct linearization by cloning small non-loop merge blocks.",
+        "Privatize merge points when shared post-dominator blocks prevent clean nesting.",
+    ),
+    examples=(
+        "Duplicate a 2-pred non-loop merge block so each handler chain can inline its own copy.",
+        "Skip large or loop-carried merges while still cleaning up tiny DAG joins.",
+    ),
+    tags=("shared-block", "duplication", "merge-cleanup", "tail-duplication"),
+    related_paths=(
+        "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/inner_merge_duplication.py",
+        "src/d810/cfg/modification_builder.py",
+    ),
+)
 class InnerMergeDuplicationStrategy:
     """Tail-duplicate small DAG merge blocks to eliminate structurer gotos.
 

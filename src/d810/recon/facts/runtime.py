@@ -21,10 +21,17 @@ from d810.recon.facts.model import (
 
 logger = getLogger("D810.recon.facts.runtime")
 
+_GENERIC_LIFECYCLE_FACT_KINDS = frozenset({
+    "ByteEmitCorridorFact",
+    "CallAnchorFact",
+    "ReturnFrontierFact",
+    "ZeroBlobFact",
+})
+
 FactPersistenceCallback = Callable[
     [
+        # SnapshotRef | None (forward-typed; see d810.core.observability)
         Any,
-        int,
         int,
         tuple[FactObservation, ...],
         tuple[FactMapping, ...],
@@ -553,6 +560,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
+        target: Any,
         maturity: int,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
@@ -583,6 +591,7 @@ class FactLifecycleRuntime:
             mapping_key = (observation.fact_id, maturity_rank)
             if mapping_key in existing_mapping_keys:
                 continue
+            target_block = self._find_block_for_ea(target, observation.source_ea)
             mappings.append(
                 FactMapping(
                     source_fact_id=observation.fact_id,
@@ -590,6 +599,8 @@ class FactLifecycleRuntime:
                     target_maturity=maturity_text,
                     status=FactStatus.IDENTITY_LOST,
                     confidence=0.72,
+                    target_block=target_block,
+                    target_ea=observation.source_ea if target_block is not None else None,
                     reason=(
                         "ReturnCarrierFact observation observed at an earlier "
                         "maturity but absent from this maturity's collection"
@@ -601,10 +612,41 @@ class FactLifecycleRuntime:
                         "source_block": observation.source_block,
                         "source_ea": observation.source_ea,
                         "source_mop_signature": observation.mop_signature,
+                        "source_payload": dict(observation.payload or {}),
                     },
                 )
             )
         return tuple(mappings)
+
+    @staticmethod
+    def _find_block_for_ea(target: Any, ea: int | None) -> int | None:
+        if ea is None:
+            return None
+        try:
+            wanted = int(ea)
+            qty = int(getattr(target, "qty", 0))
+        except (TypeError, ValueError):
+            return None
+        if qty <= 0:
+            return None
+        for serial in range(qty):
+            try:
+                blk = target.get_mblock(serial)
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            insn = getattr(blk, "head", None)
+            seen = 0
+            while insn is not None and seen < 10000:
+                seen += 1
+                try:
+                    if int(getattr(insn, "ea", -1)) == wanted:
+                        return serial
+                except (TypeError, ValueError):
+                    pass
+                insn = getattr(insn, "next", None)
+        return None
 
     @staticmethod
     def _terminal_byte_emitter_continuity_key(
@@ -725,6 +767,483 @@ class FactLifecycleRuntime:
             )
         return tuple(mappings)
 
+    @staticmethod
+    def _generic_continuity_key(
+        observation: FactObservation,
+    ) -> tuple[str, str, int, str] | None:
+        if observation.kind not in _GENERIC_LIFECYCLE_FACT_KINDS:
+            return None
+        if observation.source_ea is None or not observation.mop_signature:
+            return None
+        return (
+            observation.kind,
+            observation.semantic_key,
+            int(observation.source_ea),
+            str(observation.mop_signature),
+        )
+
+    def _derive_generic_lifecycle(
+        self,
+        func_ea: int,
+        *,
+        maturity: int,
+        current_observations: tuple[FactObservation, ...],
+        current_mappings: tuple[FactMapping, ...],
+        ran_fact_kinds: frozenset[str],
+    ) -> tuple[FactMapping, ...]:
+        active_kinds = _GENERIC_LIFECYCLE_FACT_KINDS & ran_fact_kinds
+        if not active_kinds:
+            return ()
+
+        current_facts = tuple(
+            observation
+            for observation in current_observations
+            if observation.kind in active_kinds
+        )
+        current_fact_ids = {observation.fact_id for observation in current_facts}
+        current_by_continuity: dict[tuple[str, str, int, str], list[FactObservation]] = {}
+        for observation in current_facts:
+            key = self._generic_continuity_key(observation)
+            if key is not None:
+                current_by_continuity.setdefault(key, []).append(observation)
+
+        maturity_text = self._maturity_text(maturity)
+        maturity_rank = self._maturity_rank(maturity_text)
+        existing_mapping_keys = {
+            (
+                mapping.source_fact_id,
+                self._maturity_rank(mapping.target_maturity),
+            )
+            for mapping in (*self._mappings_by_func.get(func_ea, ()), *current_mappings)
+        }
+
+        mappings: list[FactMapping] = []
+        for observation in self._observations_by_func.get(func_ea, ()):
+            if observation.kind not in active_kinds:
+                continue
+            if self._maturity_rank(observation.maturity) >= maturity_rank:
+                continue
+            if observation.fact_id in current_fact_ids:
+                continue
+            mapping_key = (observation.fact_id, maturity_rank)
+            if mapping_key in existing_mapping_keys:
+                continue
+
+            remap_target: FactObservation | None = None
+            continuity_key = self._generic_continuity_key(observation)
+            if continuity_key is not None:
+                candidates = current_by_continuity.get(continuity_key, ())
+                if len(candidates) == 1:
+                    remap_target = candidates[0]
+
+            if remap_target is not None:
+                mappings.append(
+                    FactMapping(
+                        source_fact_id=observation.fact_id,
+                        source_maturity=observation.maturity,
+                        target_maturity=maturity_text,
+                        status=FactStatus.REMAPPED,
+                        confidence=min(0.8, observation.confidence, remap_target.confidence),
+                        target_fact_id=remap_target.fact_id,
+                        target_block=remap_target.source_block,
+                        target_ea=remap_target.source_ea,
+                        target_mop_signature=remap_target.mop_signature,
+                        reason=(
+                            f"{observation.kind} remapped by stable "
+                            "semantic/source-EA/mop continuity"
+                        ),
+                        payload={
+                            "kind": observation.kind,
+                            "semantic_key": observation.semantic_key,
+                            "source_fact_id": observation.fact_id,
+                            "source_block": observation.source_block,
+                            "source_ea": observation.source_ea,
+                            "source_mop_signature": observation.mop_signature,
+                            "target_fact_id": remap_target.fact_id,
+                            "target_block": remap_target.source_block,
+                            "target_ea": remap_target.source_ea,
+                            "target_mop_signature": remap_target.mop_signature,
+                        },
+                    )
+                )
+                continue
+
+            mappings.append(
+                FactMapping(
+                    source_fact_id=observation.fact_id,
+                    source_maturity=observation.maturity,
+                    target_maturity=maturity_text,
+                    status=FactStatus.IDENTITY_LOST,
+                    confidence=0.68,
+                    reason=(
+                        f"{observation.kind} observation observed at an earlier "
+                        "maturity but absent from this maturity's collection"
+                    ),
+                    payload={
+                        "kind": observation.kind,
+                        "semantic_key": observation.semantic_key,
+                        "source_fact_id": observation.fact_id,
+                        "source_block": observation.source_block,
+                        "source_ea": observation.source_ea,
+                        "source_mop_signature": observation.mop_signature,
+                    },
+                )
+            )
+        return tuple(mappings)
+
+    @staticmethod
+    def _state_write_anchor_continuity_key(
+        observation: FactObservation,
+    ) -> tuple[int, int, int] | None:
+        """Return ``(instruction_ea, block_serial, state_var_stkoff)``
+        for a ``StateWriteAnchorFact`` observation, or ``None`` if any
+        component is missing.
+
+        This is the cross-maturity correlation key: two observations of
+        the same write site at different maturities will share this
+        triple but may carry DIFFERENT ``state_const`` payload values
+        (which is exactly the rewrite signal we want to surface).
+        """
+        if observation.kind != "StateWriteAnchorFact":
+            return None
+        payload = observation.payload or {}
+        ea = payload.get("instruction_ea")
+        block = payload.get("block_serial")
+        stkoff = payload.get("state_var_stkoff")
+        if ea is None or block is None or stkoff is None:
+            return None
+        try:
+            return (int(ea), int(block), int(stkoff))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _state_write_anchor_fallback_key(
+        observation: FactObservation,
+    ) -> tuple[int, int] | None:
+        """Return ``(block_serial, state_var_stkoff)`` for fallback
+        cross-maturity correlation.
+
+        IDA's MMAT_LOCOPT/MMAT_CALLS pass can REPLACE a state-write
+        instruction at a NEW EA (rather than mutating the const in
+        place), so the primary EA-based continuity key fails to match.
+        For canonical state-var writes (single dispatcher state var
+        slot per function), ``(block_serial, state_var_stkoff)`` is
+        still a stable identity since the state-var slot itself does
+        not move.
+        """
+        if observation.kind != "StateWriteAnchorFact":
+            return None
+        payload = observation.payload or {}
+        block = payload.get("block_serial")
+        stkoff = payload.get("state_var_stkoff")
+        if block is None or stkoff is None:
+            return None
+        try:
+            return (int(block), int(stkoff))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _state_write_anchor_const(observation: FactObservation) -> int | None:
+        """Return the ``state_const`` (u64) recorded in this observation."""
+        if observation.kind != "StateWriteAnchorFact":
+            return None
+        payload = observation.payload or {}
+        raw = payload.get("state_const_u64")
+        if raw is None:
+            raw = payload.get("state_const")
+        if raw is None:
+            return None
+        try:
+            return int(raw) & 0xFFFFFFFFFFFFFFFF
+        except (TypeError, ValueError):
+            return None
+
+    def _canonical_state_var_stkoff(
+        self,
+        func_ea: int,
+        current_observations: tuple[FactObservation, ...],
+    ) -> int | None:
+        """Return the canonical state-var stkoff for ``func_ea`` based
+        on the mode (most-frequent stkoff) across ALL recorded
+        ``StateWriteAnchorFact`` observations.
+
+        Rationale: the dispatcher state variable resides at a single
+        stack slot per function and is the most-written stkvar across
+        the whole CFG (every handler writes a successor state into
+        it). Byte-table writes target many different stkoffs and never
+        approach the dominance of the canonical state slot. A simple
+        mode is therefore reliable in practice and avoids plumbing a
+        dispatcher-detection dependency into the fact runtime.
+        """
+        counts: dict[int, int] = {}
+        observed: tuple[FactObservation, ...] = (
+            *self._observations_by_func.get(func_ea, ()),
+            *current_observations,
+        )
+        for obs in observed:
+            if obs.kind != "StateWriteAnchorFact":
+                continue
+            payload = obs.payload or {}
+            raw = payload.get("state_var_stkoff")
+            if raw is None:
+                continue
+            try:
+                stkoff = int(raw)
+            except (TypeError, ValueError):
+                continue
+            counts[stkoff] = counts.get(stkoff, 0) + 1
+        if not counts:
+            return None
+        # Mode: highest count wins. Tie-breaker: smallest stkoff (more
+        # likely the canonical state slot since it tends to be a small
+        # 4-byte field rather than an array offset).
+        return max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+
+    def _derive_state_write_anchor_lifecycle(
+        self,
+        func_ea: int,
+        *,
+        maturity: int,
+        current_observations: tuple[FactObservation, ...],
+        current_mappings: tuple[FactMapping, ...],
+    ) -> tuple[FactMapping, ...]:
+        """Emit ``STATE_CONST_REWRITTEN`` mappings when the same write
+        site carries a DIFFERENT ``state_const`` at a later maturity
+        than the earliest recorded observation.
+
+        Continuity keys (in priority order):
+
+        1. **Primary**: ``(instruction_ea, block_serial, state_var_stkoff)``
+           — applies whenever the EA is stable across maturities (true
+           in-place mutation).
+        2. **Fallback**: ``(block_serial, state_var_stkoff)`` —
+           applies ONLY for the canonical dispatcher state-var slot
+           when the primary key did not match. IDA's
+           MMAT_LOCOPT/MMAT_CALLS pass can REPLACE the state-write
+           instruction at a NEW EA, so EA-based continuity drops the
+           rewrite signal. The fallback is gated on
+           ``stkoff == canonical_state_var_stkoff`` to avoid mistakenly
+           correlating arbitrary stack writes (byte tables, locals)
+           between maturities.
+
+        Also emits ``IDENTITY_LOST`` mappings when an earlier write
+        site is absent from the current maturity's collection AND
+        neither key matched (the write was folded away entirely
+        rather than rewritten in place).
+        """
+        current_facts = tuple(
+            observation
+            for observation in current_observations
+            if observation.kind == "StateWriteAnchorFact"
+        )
+        current_fact_ids = {observation.fact_id for observation in current_facts}
+        current_by_continuity: dict[
+            tuple[int, int, int], list[FactObservation]
+        ] = {}
+        current_by_fallback: dict[
+            tuple[int, int], list[FactObservation]
+        ] = {}
+        for observation in current_facts:
+            key = self._state_write_anchor_continuity_key(observation)
+            if key is not None:
+                current_by_continuity.setdefault(key, []).append(observation)
+            fallback = self._state_write_anchor_fallback_key(observation)
+            if fallback is not None:
+                current_by_fallback.setdefault(fallback, []).append(observation)
+
+        canonical_stkoff = self._canonical_state_var_stkoff(
+            func_ea, current_observations
+        )
+
+        maturity_text = self._maturity_text(maturity)
+        maturity_rank = self._maturity_rank(maturity_text)
+        existing_mapping_keys = {
+            (
+                mapping.source_fact_id,
+                self._maturity_rank(mapping.target_maturity),
+            )
+            for mapping in (*self._mappings_by_func.get(func_ea, ()), *current_mappings)
+        }
+
+        mappings: list[FactMapping] = []
+        for observation in self._observations_by_func.get(func_ea, ()):
+            if observation.kind != "StateWriteAnchorFact":
+                continue
+            if self._maturity_rank(observation.maturity) >= maturity_rank:
+                continue
+            mapping_key = (observation.fact_id, maturity_rank)
+            if mapping_key in existing_mapping_keys:
+                continue
+
+            continuity_key = self._state_write_anchor_continuity_key(observation)
+            if continuity_key is None:
+                continue
+            candidates = current_by_continuity.get(continuity_key, ())
+            primary_matched = bool(candidates)
+
+            # Primary key failed -- try fallback for canonical state-var.
+            fallback_used = False
+            if not primary_matched:
+                fallback_key = self._state_write_anchor_fallback_key(observation)
+                if (
+                    fallback_key is not None
+                    and canonical_stkoff is not None
+                    and fallback_key[1] == canonical_stkoff
+                ):
+                    candidates = current_by_fallback.get(fallback_key, ())
+                    fallback_used = bool(candidates)
+
+            if not candidates:
+                if observation.fact_id in current_fact_ids:
+                    # Same fact_id surfaced again -- nothing to record.
+                    continue
+                # Site absent at this maturity (and fallback did not
+                # rescue) -- IDA folded it entirely.
+                mappings.append(
+                    FactMapping(
+                        source_fact_id=observation.fact_id,
+                        source_maturity=observation.maturity,
+                        target_maturity=maturity_text,
+                        status=FactStatus.IDENTITY_LOST,
+                        confidence=0.7,
+                        reason=(
+                            "StateWriteAnchorFact observation observed at an "
+                            "earlier maturity but the (block, ea, stkoff) "
+                            "triple is absent from this maturity's collection"
+                        ),
+                        payload={
+                            "kind": observation.kind,
+                            "semantic_key": observation.semantic_key,
+                            "source_fact_id": observation.fact_id,
+                            "source_block": observation.source_block,
+                            "source_ea": observation.source_ea,
+                            "source_mop_signature": observation.mop_signature,
+                            "instruction_ea": continuity_key[0],
+                            "block_serial": continuity_key[1],
+                            "state_var_stkoff": continuity_key[2],
+                            "original_state_const": (
+                                self._state_write_anchor_const(observation)
+                            ),
+                        },
+                    )
+                )
+                continue
+
+            original_const = self._state_write_anchor_const(observation)
+            if original_const is None:
+                continue
+
+            for candidate in candidates:
+                candidate_const = self._state_write_anchor_const(candidate)
+                if candidate_const is None:
+                    continue
+                if candidate_const == original_const:
+                    # Same value at later maturity -- not a rewrite.
+                    continue
+                candidate_payload = candidate.payload or {}
+                rewritten_ea_raw = candidate_payload.get("instruction_ea")
+                try:
+                    rewritten_ea = (
+                        int(rewritten_ea_raw)
+                        if rewritten_ea_raw is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    rewritten_ea = None
+                original_ea = continuity_key[0]
+                ea_changed = (
+                    rewritten_ea is not None and rewritten_ea != original_ea
+                )
+                if fallback_used:
+                    reason = (
+                        f"state_const rewritten via canonical-state-var "
+                        f"fallback (EA changed): "
+                        f"0x{original_const:016x} -> "
+                        f"0x{candidate_const:016x} "
+                        f"blk={continuity_key[1]} "
+                        f"stkoff=0x{continuity_key[2]:x} "
+                        f"original_ea=0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x} "
+                        + (
+                            f"rewritten_ea=0x{rewritten_ea & 0xFFFFFFFFFFFFFFFF:016x}"
+                            if rewritten_ea is not None
+                            else "rewritten_ea=?"
+                        )
+                    )
+                else:
+                    reason = (
+                        f"state_const rewritten in place: "
+                        f"0x{original_const:016x} -> "
+                        f"0x{candidate_const:016x} "
+                        f"at ea=0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x} "
+                        f"blk={continuity_key[1]} "
+                        f"stkoff=0x{continuity_key[2]:x}"
+                    )
+                payload: dict[str, Any] = {
+                    "kind": observation.kind,
+                    "instruction_ea": original_ea,
+                    "instruction_ea_hex": (
+                        f"0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x}"
+                    ),
+                    "block_serial": continuity_key[1],
+                    "state_var_stkoff": continuity_key[2],
+                    "state_var_stkoff_hex": f"0x{continuity_key[2]:x}",
+                    "original_state_const": original_const,
+                    "original_state_const_hex": f"0x{original_const:016x}",
+                    "original_const_hex": f"0x{original_const:016x}",
+                    "original_const_u64": original_const,
+                    "rewritten_state_const": candidate_const,
+                    "rewritten_state_const_hex": (
+                        f"0x{candidate_const:016x}"
+                    ),
+                    "rewritten_const_hex": f"0x{candidate_const:016x}",
+                    "rewritten_const_u64": candidate_const,
+                    "original_ea_hex": (
+                        f"0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x}"
+                    ),
+                    "rewritten_ea_hex": (
+                        f"0x{rewritten_ea & 0xFFFFFFFFFFFFFFFF:016x}"
+                        if rewritten_ea is not None
+                        else None
+                    ),
+                    "ea_changed": ea_changed,
+                    "continuity_kind": (
+                        "fallback_canonical_state_var"
+                        if fallback_used
+                        else "primary_ea_block_stkoff"
+                    ),
+                    "from_maturity": observation.maturity,
+                    "to_maturity": maturity_text,
+                    "source_fact_id": observation.fact_id,
+                    "target_fact_id": candidate.fact_id,
+                    "source_maturity": observation.maturity,
+                    "target_maturity": maturity_text,
+                }
+                mappings.append(
+                    FactMapping(
+                        source_fact_id=observation.fact_id,
+                        source_maturity=observation.maturity,
+                        target_maturity=maturity_text,
+                        status=FactStatus.STATE_CONST_REWRITTEN,
+                        confidence=min(
+                            0.92,
+                            observation.confidence,
+                            candidate.confidence,
+                        ),
+                        target_fact_id=candidate.fact_id,
+                        target_block=candidate.source_block,
+                        target_ea=candidate.source_ea,
+                        target_mop_signature=candidate.mop_signature,
+                        reason=reason,
+                        payload=payload,
+                    )
+                )
+                # Only record one mapping per source fact per target
+                # maturity even if multiple candidates remap.
+                break
+        return tuple(mappings)
+
     def _update_latest_observations(
         self,
         func_ea: int,
@@ -743,8 +1262,7 @@ class FactLifecycleRuntime:
         func_ea: int,
         maturity: int,
         phase: str = "pre_d810",
-        snapshot_id: int | None = None,
-        diag_conn: Any = None,
+        snapshot: Any = None,
     ) -> FactCaptureSummary:
         settings = get_settings()
         if not settings.fact_lifecycle:
@@ -790,6 +1308,9 @@ class FactLifecycleRuntime:
                 mappings.extend(result.mappings)
                 conflicts.extend(result.conflicts)
                 ran_fact_kinds.update(getattr(collector, "fact_kinds", frozenset()))
+                ran_fact_kinds.update(
+                    observation.kind for observation in result.observations
+                )
             except Exception:
                 logger.exception(
                     "FactCollector '%s' failed at func=0x%x maturity=%d",
@@ -798,18 +1319,24 @@ class FactLifecycleRuntime:
                     maturity,
                 )
 
-        derived_mappings, derived_conflicts = self._derive_induction_lifecycle(
-            func_ea,
-            maturity=maturity,
-            current_observations=tuple(observations),
-            current_mappings=tuple(mappings),
-        )
-        return_carrier_mappings = self._derive_return_carrier_lifecycle(
-            func_ea,
-            maturity=maturity,
-            current_observations=tuple(observations),
-            current_mappings=(*tuple(mappings), *derived_mappings),
-        )
+        derived_mappings: tuple[FactMapping, ...] = ()
+        derived_conflicts: tuple[FactConflict, ...] = ()
+        if "InductionCarrierFact" in ran_fact_kinds:
+            derived_mappings, derived_conflicts = self._derive_induction_lifecycle(
+                func_ea,
+                maturity=maturity,
+                current_observations=tuple(observations),
+                current_mappings=tuple(mappings),
+            )
+        return_carrier_mappings: tuple[FactMapping, ...] = ()
+        if "ReturnCarrierFact" in ran_fact_kinds:
+            return_carrier_mappings = self._derive_return_carrier_lifecycle(
+                func_ea,
+                target=target,
+                maturity=maturity,
+                current_observations=tuple(observations),
+                current_mappings=(*tuple(mappings), *derived_mappings),
+            )
         terminal_byte_mappings: tuple[FactMapping, ...] = ()
         if "TerminalByteEmitterFact" in ran_fact_kinds:
             terminal_byte_mappings = self._derive_terminal_byte_emitter_lifecycle(
@@ -822,9 +1349,37 @@ class FactLifecycleRuntime:
                     *return_carrier_mappings,
                 ),
             )
+        generic_mappings = self._derive_generic_lifecycle(
+            func_ea,
+            maturity=maturity,
+            current_observations=tuple(observations),
+            current_mappings=(
+                *tuple(mappings),
+                *derived_mappings,
+                *return_carrier_mappings,
+                *terminal_byte_mappings,
+            ),
+            ran_fact_kinds=frozenset(ran_fact_kinds),
+        )
+        state_write_mappings: tuple[FactMapping, ...] = ()
+        if "StateWriteAnchorFact" in ran_fact_kinds:
+            state_write_mappings = self._derive_state_write_anchor_lifecycle(
+                func_ea,
+                maturity=maturity,
+                current_observations=tuple(observations),
+                current_mappings=(
+                    *tuple(mappings),
+                    *derived_mappings,
+                    *return_carrier_mappings,
+                    *terminal_byte_mappings,
+                    *generic_mappings,
+                ),
+            )
         mappings.extend(derived_mappings)
         mappings.extend(return_carrier_mappings)
         mappings.extend(terminal_byte_mappings)
+        mappings.extend(generic_mappings)
+        mappings.extend(state_write_mappings)
         conflicts.extend(derived_conflicts)
 
         if observations or mappings or conflicts:
@@ -833,12 +1388,10 @@ class FactLifecycleRuntime:
             self._update_latest_observations(func_ea, tuple(observations))
             if (
                 self._persistence_callback is not None
-                and snapshot_id is not None
-                and diag_conn is not None
+                and snapshot is not None
             ):
                 self._persistence_callback(
-                    diag_conn,
-                    snapshot_id,
+                    snapshot,
                     func_ea,
                     tuple(observations),
                     tuple(mappings),
@@ -847,14 +1400,14 @@ class FactLifecycleRuntime:
             else:
                 logger.warning(
                     "FACT_LIFECYCLE_DROPPED func=0x%x maturity=%d phase=%s "
-                    "observations=%d mappings=%d conflicts=%d snapshot_id=%s callback=%s",
+                    "observations=%d mappings=%d conflicts=%d snapshot=%s callback=%s",
                     func_ea,
                     maturity,
                     phase,
                     len(observations),
                     len(mappings),
                     len(conflicts),
-                    snapshot_id,
+                    snapshot,
                     self._persistence_callback is not None,
                 )
 

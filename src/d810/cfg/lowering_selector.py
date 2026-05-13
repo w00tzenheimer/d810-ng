@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.core.typing import Protocol
 from d810.cfg.lowering_scope import derive_edge_predecessor, requires_pred_scoped_lowering
+
+
+logger = logging.getLogger(__name__)
 
 
 class SharedFeederLoweringKind:
@@ -482,6 +486,18 @@ def plan_shared_group_duplication(
                 rejection_reason="noop_or_missing_old_target",
             )
         if not non_candidate_preds:
+            logger.info(
+                "RECON DAG planner: missing_keep_pred shared_block=%d old_target=%d "
+                "shared_preds=%s candidate_preds=%s ordered_candidates=%s",
+                int(context.shared_block),
+                int(old_target),
+                tuple(int(pred) for pred in context.shared_preds),
+                tuple(sorted(candidate_preds)),
+                tuple(
+                    (int(candidate.via_pred), int(candidate.target_entry))
+                    for candidate in ordered_candidates
+                ),
+            )
             return SharedGroupDuplicationPlan(
                 accepted=False,
                 rejection_reason="missing_keep_pred",

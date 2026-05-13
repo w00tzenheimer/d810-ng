@@ -33,7 +33,7 @@ class _FakeMBA:
         self.maturity = 0
         self.blocks: dict[int, _FakeBlock] = {}
         self.marked_dirty = 0
-        self.verify_error: RuntimeError | None = None
+        self.verify_error: Exception | None = None
 
     def get_mblock(self, serial: int):
         return self.blocks[serial]
@@ -64,13 +64,22 @@ class _FakeBlock:
         self.flags = 0
         self.marked_dirty = 0
         self.nopped: list[object] = []
+        self.nextb = None
+        self.prevb = None
+        self.build_lists_calls: list[bool] = []
         mba.blocks[serial] = self
 
     def nsucc(self) -> int:
         return len(self.succset)
 
+    def is_simple_goto_block(self) -> bool:
+        return self.nsucc() == 1 and self.tail is not None and self.tail.opcode == 55
+
     def mark_lists_dirty(self):
         self.marked_dirty += 1
+
+    def build_lists(self, kill_deads: bool) -> None:
+        self.build_lists_calls.append(kill_deads)
 
     def make_nop(self, ins):
         self.nopped.append(ins)
@@ -322,6 +331,110 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     assert mba.marked_dirty == 1
 
 
+def test_insert_nop_blk_2way_does_not_duplicate_fallthrough_successor(monkeypatch):
+    """2-way helper insertion must preserve succset=[fallthrough, conditional]."""
+    from d810.hexrays.mutation import cfg_mutations
+
+    _hr = cfg_mutations.ida_hexrays
+    monkeypatch.setattr(_hr, "mop_b", 1, raising=False)
+    monkeypatch.setattr(_hr, "is_mcode_jcond", lambda _opcode: True, raising=False)
+
+    mba = _FakeMBA(qty=20)
+    fallthrough = _FakeBlock(5, mba, succs=[], preds=[10])
+    conditional = _FakeBlock(6, mba, succs=[], preds=[10])
+    blk = _FakeBlock(
+        10,
+        mba,
+        succs=[5, 6],
+        preds=[],
+        tail=SimpleNamespace(opcode=0x70, d=SimpleNamespace(t=_hr.mop_b, b=6)),
+    )
+    blk.nextb = fallthrough
+    fallthrough.prevb = blk
+
+    def _copy_block(src_blk, dest_serial):
+        assert dest_serial == src_blk.serial + 1
+        nop_blk = _FakeBlock(
+            11,
+            mba,
+            succs=[5, 6],
+            preds=[src_blk.serial],
+            tail=SimpleNamespace(opcode=_hr.m_goto),
+        )
+        nop_blk.head = SimpleNamespace(next=None)
+        nop_blk.nextb = None
+        src_blk.nextb = nop_blk
+        # Emulate the real IDA side effect: inserting the helper after the
+        # conditional block already rehomes the fallthrough edge to the helper.
+        src_blk.succset = _FakeSet([11, 6])
+        return nop_blk
+
+    mba.copy_block = _copy_block  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        cfg_mutations,
+        "insert_goto_instruction",
+        lambda blk, target_serial, nop_previous_instruction=False: setattr(
+            blk, "goto_target", target_serial
+        ),
+    )
+
+    nop_blk = cfg_mutations.insert_nop_blk(blk)
+
+    assert nop_blk.serial == 11
+    assert list(blk.succset) == [11, 6]
+    assert list(nop_blk.succset) == [5]
+    assert list(nop_blk.predset) == [10]
+    assert nop_blk.build_lists_calls == [False]
+
+
+def test_mba_remove_simple_goto_blocks_preserves_2way_fallthrough_helper(monkeypatch):
+    """2-way fallthrough helpers must not be collapsed as ordinary goto chains."""
+    from d810.hexrays.mutation import cfg_mutations
+
+    _hr = cfg_mutations.ida_hexrays
+    mba = _FakeMBA(qty=6)
+    _FakeBlock(0, mba, succs=[1], preds=[])
+    pred = _FakeBlock(
+        1,
+        mba,
+        succs=[2, 3],
+        preds=[0],
+        tail=SimpleNamespace(opcode=0x70, d=SimpleNamespace(b=3)),
+    )
+    helper = _FakeBlock(
+        2,
+        mba,
+        succs=[4],
+        preds=[1],
+        tail=SimpleNamespace(opcode=_hr.m_goto, l=SimpleNamespace(b=4)),
+    )
+    cond = _FakeBlock(3, mba, succs=[5], preds=[1])
+    target = _FakeBlock(4, mba, succs=[5], preds=[2])
+    sentinel = _FakeBlock(5, mba, succs=[], preds=[3, 4])
+
+    pred.nextb = helper
+    helper.prevb = pred
+    helper.nextb = cond
+    cond.prevb = helper
+    target.prevb = cond
+    sentinel.prevb = target
+
+    monkeypatch.setattr(
+        cfg_mutations,
+        "update_blk_successor",
+        lambda *_a, **_k: pytest.fail(
+            "2-way fallthrough helper should not be rewritten by simple goto cleanup"
+        ),
+    )
+
+    changed = cfg_mutations.mba_remove_simple_goto_blocks(mba, verify=False)
+
+    assert changed == 0
+    assert list(pred.succset) == [2, 3]
+    assert list(helper.succset) == [4]
+    assert list(helper.predset) == [1]
+
+
 def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     """safe_verify should emit a JSON artifact with focused block capture."""
     from d810.hexrays.mutation import cfg_verify
@@ -365,6 +478,38 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     assert 1 in payload["focus_blocks"]
     captured_serials = {blk["serial"] for blk in payload["captured_blocks"]}
     assert 1 in captured_serials
+
+
+def test_safe_verify_persists_failure_artifact_for_non_runtime_exception(tmp_path, monkeypatch, request):
+    """safe_verify should capture verify failures even when IDA raises a non-RuntimeError."""
+    from d810.hexrays.mutation import cfg_verify
+
+    mba = _FakeMBA(qty=4)
+    _FakeBlock(0, mba, succs=[1], preds=[])
+    _FakeBlock(1, mba, succs=[2], preds=[0])
+    _FakeBlock(2, mba, succs=[], preds=[1])
+    mba.verify_error = ValueError("opaque verify failure")
+
+    from d810.core.settings import configure_settings, reset_settings
+    configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
+    request.addfinalizer(reset_settings)
+    monkeypatch.setattr(cfg_verify, "log_block_info", lambda *_a, **_k: None)
+
+    with pytest.raises(ValueError):
+        cfg_verify.safe_verify(
+            mba,
+            "unit-test non-runtime verify failure",
+            capture_blocks=[1],
+            capture_metadata={"rule": "unit_test_rule_non_runtime"},
+        )
+
+    artifacts = list(tmp_path.glob("verify_fail_*.json"))
+    assert len(artifacts) == 1
+
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["context"] == "verify failure after unit-test non-runtime verify failure"
+    assert payload["error_type"] == "ValueError"
+    assert payload["metadata"]["rule"] == "unit_test_rule_non_runtime"
 
 
 def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys, request):

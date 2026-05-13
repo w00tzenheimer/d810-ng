@@ -53,10 +53,25 @@ class TestD810Settings:
         reset_settings()
         assert get_settings().fact_lifecycle is True
 
-    def test_from_env_invalid_maturity_returns_none(self, monkeypatch):
+    def test_from_env_invalid_maturity_raises(self, monkeypatch):
         monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "not_a_number")
+        with pytest.raises(ValueError, match="not an integer and not a known maturity name"):
+            reset_settings()
+
+    def test_from_env_reads_maturity_by_symbolic_name(self, monkeypatch):
+        monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "GLBOPT1")
         reset_settings()
-        assert get_settings().capture_post_maturity is None
+        assert get_settings().capture_post_maturity == 4
+
+    def test_from_env_reads_maturity_by_full_symbolic_name(self, monkeypatch):
+        monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "MMAT_GLBOPT1")
+        reset_settings()
+        assert get_settings().capture_post_maturity == 4
+
+    def test_from_env_maturity_name_is_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "glbopt1")
+        reset_settings()
+        assert get_settings().capture_post_maturity == 4
 
     def test_configure_settings_overrides(self):
         configure_settings(diag_snapshots=True, capture_post_maturity=5)

@@ -35,6 +35,53 @@ def _env_int(name: str, default: int | None = None) -> int | None:
         return default
 
 
+# Symbolic Hex-Rays maturity names accepted in addition to integers.
+# Kept in sync with ``d810.core.stats._MATURITY_NAMES`` -- duplicated here to
+# avoid importing IDA-coupled modules from settings.py.
+_MATURITY_NAME_TO_INT = {
+    "MMAT_GENERATED":     0,
+    "GENERATED":          0,
+    "MMAT_PREOPTIMIZED":  1,
+    "PREOPTIMIZED":       1,
+    "MMAT_LOCOPT":        2,
+    "LOCOPT":             2,
+    "MMAT_CALLS":         3,
+    "CALLS":              3,
+    "MMAT_GLBOPT1":       4,
+    "GLBOPT1":            4,
+    "MMAT_GLBOPT2":       5,
+    "GLBOPT2":            5,
+    "MMAT_GLBOPT3":       6,
+    "GLBOPT3":            6,
+    "MMAT_LVARS":         7,
+    "LVARS":              7,
+}
+
+
+def _env_maturity(name: str, default: int | None = None) -> int | None:
+    """Parse a maturity env var that accepts either an int or a symbolic name.
+
+    Returns ``default`` only when the var is unset or empty.  An unparseable
+    value (neither int nor known name) raises ``ValueError`` so the
+    misconfiguration surfaces at startup instead of silently disabling the
+    diagnostic that depends on it.
+    """
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    key = raw.strip().upper()
+    if key in _MATURITY_NAME_TO_INT:
+        return _MATURITY_NAME_TO_INT[key]
+    raise ValueError(
+        f"{name}={raw!r} is not an integer and not a known maturity name "
+        f"(expected one of: {sorted(set(_MATURITY_NAME_TO_INT))})"
+    )
+
+
 @dataclass
 class D810Settings:
     """Flat bag of every D810 runtime toggle.
@@ -77,7 +124,7 @@ class D810Settings:
                 "D810_VERIFY_CAPTURE_DIR",
                 os.path.expanduser("~/.idapro/logs/d810_logs/verify_failures"),
             ),
-            capture_post_maturity=_env_int("D810_CAPTURE_POST_MATURITY"),
+            capture_post_maturity=_env_maturity("D810_CAPTURE_POST_MATURITY"),
             capture_post_file=_env_str("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE"),
         )

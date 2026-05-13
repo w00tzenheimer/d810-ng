@@ -1,0 +1,843 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "single_pred_chain_merge",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_single_pred_chain_merge",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "single-pred",
+        "single-succ",
+        "boundary-collapse"
+      ],
+      "question": "When Hex-Rays sees a BLT_1WAY chain where each successor has exactly one predecessor, does it merge the chain after cleanup?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:9de9b2f211f81b020ba66566a1c8e1b9af4f71fa297db93e15c22d6d6bc15c1b",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 6",
+          "chain_length": "== 6",
+          "body_relative_start_eas": [
+            "0x0",
+            "0x33",
+            "0x1f",
+            "0x11"
+          ],
+          "body_opcode_signatures": [
+            [
+              4,
+              25,
+              26,
+              33,
+              31,
+              29,
+              9,
+              12,
+              55
+            ],
+            [
+              9,
+              14,
+              4,
+              4,
+              33,
+              31,
+              29,
+              21,
+              9,
+              4,
+              55
+            ],
+            [
+              25,
+              26,
+              33,
+              31,
+              29,
+              13,
+              9,
+              4,
+              55
+            ],
+            [
+              4,
+              9,
+              4,
+              55
+            ]
+          ],
+          "edge_predicates": [
+            "BLT_1WAY chain length == 6",
+            "each middle block has npred == 1",
+            "each middle block has nsucc == 1",
+            "body block relative EA starts match the fixture label layout",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/single_pred_chain_merge.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "post-apply and post-d810 snapshots",
+        "merge-causality disposition rows",
+        "pseudocode before/after metrics"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 6,
+        "to_block_count": 3,
+        "vanished_count": 3,
+        "outcome_class": "expression_folded_deleted",
+        "classification": "validated single-pred chain collapses by GLBOPT1; content is expression-folded, so current merge-causality reports deleted rather than absorbed"
+      }
+    },
+    {
+      "id": "multi_pred_boundary_barrier",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_multi_pred_boundary_barrier",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "multi-pred",
+        "boundary-barrier",
+        "cfg-shaping"
+      ],
+      "question": "What is the smallest CFG change that prevents Hex-Rays from merging across a handler boundary without leaking bad pseudocode?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:b2c97510463d290a66ec3e07f94b5abd9b1798437bdbe2a7f15e8d15c27adedb",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/multi_pred_boundary_barrier.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 9",
+          "boundary_relative_start_ea": "0x55",
+          "boundary_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            21,
+            9,
+            4,
+            55
+          ],
+          "boundary_incoming_relative_start_eas": [
+            "0x1b",
+            "0x41"
+          ],
+          "boundary_successor_relative_start_ea": "0x2d",
+          "edge_predicates": [
+            "boundary block exists at fixture relative EA 0x55",
+            "boundary block has npred == 2 and nsucc == 1",
+            "boundary predecessor relative EAs are exactly 0x1b and 0x41",
+            "boundary successor relative EA is exactly 0x2d",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/multi_pred_boundary_barrier.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "boundary block survives or vanishes by block-trace",
+        "merge-causality disposition for protected boundary",
+        "pseudocode shape after optimization"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 9,
+        "to_block_count": 5,
+        "vanished_count": 4,
+        "outcome_class": "expression_folded_deleted",
+        "classification": "validated multi-pred boundary survives the compiled-CFG gate but still folds to 5 blocks by GLBOPT1; the barrier blocks a simple one-pred chain merge, not later expression folding/deletion"
+      }
+    },
+    {
+      "id": "side_effect_boundary_anchor",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_side_effect_boundary_anchor",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "block-merge",
+        "multi-pred",
+        "boundary-barrier",
+        "side-effect-anchor",
+        "noinline-helper",
+        "volatile"
+      ],
+      "question": "Does a boundary-local noinline volatile side-effect anchor prevent Hex-Rays from folding a multi-pred handler boundary?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:16fa6f22d1534ce4f0a9af48b0b3ba3534c731b5b7c77c428648b300415f8e12",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/side_effect_boundary_anchor.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 10",
+          "boundary_relative_start_ea": "0x64",
+          "boundary_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            9,
+            21,
+            9,
+            4,
+            56
+          ],
+          "boundary_incoming_relative_start_eas": [
+            "0x1f",
+            "0x4d"
+          ],
+          "boundary_successor_relative_start_ea": "0x81",
+          "edge_predicates": [
+            "boundary block exists at fixture relative EA 0x64",
+            "boundary block has npred == 2 and nsucc == 1",
+            "boundary predecessor relative EAs are exactly 0x1f and 0x4d",
+            "boundary successor relative EA is exactly 0x81",
+            "boundary body calls hexrays_lab_boundary_anchor_helper as the noinline volatile anchor",
+            "body opcode groups match the fixture operation sequence"
+          ],
+          "boundary_call_target_name": "hexrays_lab_boundary_anchor_helper",
+          "boundary_call_target_ea": "0x18000b000"
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/side_effect_boundary_anchor.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "boundary-local helper call appears in LOCOPT boundary block",
+        "merge-causality disposition for protected boundary",
+        "pseudocode retains the helper call in readable form"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 10,
+        "to_block_count": 5,
+        "vanished_count": 5,
+        "outcome_class": "semantic_visible_boundary_folded",
+        "classification": "validated side-effect boundary preserves the helper call semantically in pseudocode, but GLBOPT1 still folds the boundary block into the successor expression; a noinline volatile call is not by itself a block-structure barrier"
+      }
+    },
+    {
+      "id": "conditional_shell_boundary",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_conditional_shell_boundary",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "conditional",
+        "boundary-barrier",
+        "conditional-shell",
+        "semantic-structure"
+      ],
+      "question": "Does a real opaque conditional shell around a boundary produce better pseudocode than direct boundary preservation attempts?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:c7cf189dd4d0c98939879a8922c7a7af2e73b0d03d8a6344ed7784ff0d34dd5d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/conditional_shell_boundary.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 13",
+          "entry_relative_start_ea": "0x0",
+          "entry_successor_relative_start_eas": [
+            "0x1b",
+            "0x1d"
+          ],
+          "entry_to_shell_paths_relative_start_eas": [
+            [
+              "0x1b",
+              "0x76"
+            ],
+            [
+              "0x1d",
+              "0x62",
+              "0x76"
+            ]
+          ],
+          "shell_relative_start_ea": "0x76",
+          "shell_incoming_relative_start_eas": [
+            "0x1b",
+            "0x62"
+          ],
+          "shell_successor_relative_start_eas": [
+            "0x84",
+            "0x86"
+          ],
+          "shell_arm_paths_relative_start_eas": [
+            [
+              "0x84",
+              "0x57",
+              "0x41"
+            ],
+            [
+              "0x86",
+              "0x41"
+            ]
+          ],
+          "boundary_relative_start_ea": "0x41",
+          "boundary_incoming_relative_start_eas": [
+            "0x57",
+            "0x86"
+          ],
+          "boundary_successor_relative_start_ea": "0x2d",
+          "edge_predicates": [
+            "entry block exists at fixture relative EA 0x0",
+            "entry block has BLT_2WAY type with nsucc == 2",
+            "entry-to-shell paths are exactly 0x1b -> 0x76 and 0x1d -> 0x62 -> 0x76",
+            "shell block exists at fixture relative EA 0x76",
+            "shell block has npred == 2 and nsucc == 2",
+            "shell arm paths are exactly 0x84 -> 0x57 -> 0x41 and 0x86 -> 0x41",
+            "boundary block exists at fixture relative EA 0x41",
+            "boundary block has npred == 2 and nsucc == 1",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/conditional_shell_boundary.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "entry BLT_2WAY successor shape",
+        "explicit entry-arm-to-shell relative-EA paths",
+        "explicit shell-arm-to-boundary relative-EA paths",
+        "LOCOPT-to-GLBOPT1 merge-causality disposition",
+        "pseudocode before/after metrics"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 13,
+        "to_block_count": 8,
+        "vanished_count": 5,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated conditional shell boundary compacts from 13 LOCOPT blocks to 8 GLBOPT1 blocks while preserving the shell as readable two-if pseudocode; it is semantically acceptable but heavier than the clean conditional fork baseline"
+      }
+    },
+    {
+      "id": "clean_conditional_fork",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_clean_conditional_fork",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "conditional",
+        "fork",
+        "join",
+        "exact-conditional-baseline"
+      ],
+      "question": "How does Hex-Rays structure a clean two-child conditional fork with a single two-pred join?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:966b81fd4adc7a117a5cf4b8dda1addf0d5c7382a16e02ebbcd9c93e9648adb5",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/clean_conditional_fork.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 9",
+          "entry_relative_start_ea": "0x0",
+          "entry_opcode_signature": [
+            4,
+            12,
+            9,
+            4,
+            4,
+            33,
+            31,
+            4,
+            44
+          ],
+          "entry_successor_relative_start_eas": [
+            "0x1c",
+            "0x1e"
+          ],
+          "arm_paths_relative_start_eas": [
+            [
+              "0x1c",
+              "0x58",
+              "0x2e"
+            ],
+            [
+              "0x1e",
+              "0x44",
+              "0x2e"
+            ]
+          ],
+          "join_relative_start_ea": "0x2e",
+          "join_opcode_signature": [
+            4,
+            4,
+            33,
+            31,
+            29,
+            21,
+            9,
+            4,
+            55
+          ],
+          "join_incoming_relative_start_eas": [
+            "0x44",
+            "0x58"
+          ],
+          "join_successor_relative_start_ea": "0x20",
+          "edge_predicates": [
+            "entry block exists at fixture relative EA 0x0",
+            "entry block has BLT_2WAY type with nsucc == 2",
+            "entry successors are exactly relative EAs 0x1c and 0x1e",
+            "entry arm paths are exactly 0x1c -> 0x58 -> 0x2e and 0x1e -> 0x44 -> 0x2e",
+            "join block exists at fixture relative EA 0x2e",
+            "join block has npred == 2 and nsucc == 1",
+            "join predecessor relative EAs are exactly 0x44 and 0x58",
+            "join successor relative EA is exactly 0x20",
+            "body opcode groups match the fixture operation sequence"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/clean_conditional_fork.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "entry BLT_2WAY successor shape",
+        "explicit fork-arm-to-join relative-EA paths",
+        "two-pred join block shape",
+        "LOCOPT-to-GLBOPT1 merge-causality disposition",
+        "pseudocode before/after metrics"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 9,
+        "to_block_count": 6,
+        "vanished_count": 3,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated clean conditional fork compacts from 9 LOCOPT blocks to 6 GLBOPT1 blocks while preserving a simple if/else pseudocode shape; this is the friendly baseline for exact conditional-region emission"
+      }
+    },
+    {
+      "id": "terminal_tail_ref_cascade",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_ref_cascade",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "early-return",
+        "ref-cascade",
+        "acyclic"
+      ],
+      "question": "Does a REF-like byte emit and early-return cascade survive Hex-Rays as readable terminal-tail pseudocode?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_ref_cascade.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 22",
+          "byte_emit_count": "== 7",
+          "early_return_guard_count": "== 6",
+          "terminal_region": "acyclic",
+          "largest_scc_size": "== 1",
+          "guard_relative_start_eas": [
+            "0x0",
+            "0x4d",
+            "0x87",
+            "0xc1",
+            "0xfb",
+            "0x132"
+          ],
+          "early_return_relative_start_eas": [
+            "0x3e",
+            "0x78",
+            "0xb2",
+            "0xec",
+            "0x126",
+            "0x15d"
+          ],
+          "continue_relative_start_eas": [
+            "0x4b",
+            "0x85",
+            "0xbf",
+            "0xf9",
+            "0x130",
+            "0x167"
+          ],
+          "final_emit_relative_start_ea": "0x169",
+          "return_epilogue_relative_start_ea": "0x18a",
+          "edge_predicates": [
+            "byte emit blocks appear in index order base+0 through base+6",
+            "each byte emit base+0 through base+5 reaches its own early-return guard before the next byte emit",
+            "guard0 through guard5 each have one return arm and one continue arm",
+            "the continue arm from guard[k] reaches byte[k + 1] through a distinct empty handoff",
+            "byte6 reaches the shared return epilogue",
+            "the shared return epilogue has exactly seven incoming returns and contains only the return-value xdu"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_ref_cascade.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "early_return_guard[0..5] presence after GLBOPT1",
+        "terminal-region SCC summary",
+        "pseudocode cascade readability verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 22,
+        "to_block_count": 16,
+        "vanished_count": 6,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated REF-like terminal tail compacts from 22 LOCOPT blocks to 16 GLBOPT1 blocks while preserving unchanged nested early-return pseudocode with seven byte emits; this is the current good construction oracle"
+      }
+    },
+    {
+      "id": "terminal_tail_shared_convergence",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_shared_convergence",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "shared-convergence",
+        "d810-like",
+        "bad-shape-candidate"
+      ],
+      "question": "Does a D810-like shared convergence block cause Hex-Rays to fold byte emits into a shared terminal body?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_shared_convergence.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 26",
+          "byte_emit_count": "== 7",
+          "shared_convergence_blocks": "== 1",
+          "shared_convergence_predicate": "npred >= 6",
+          "shared_guard_relative_start_ea": "0x1e",
+          "byte_emit_relative_start_eas": [
+            "0x94",
+            "0xb9",
+            "0xdf",
+            "0x105",
+            "0x12b",
+            "0x151",
+            "0x177"
+          ],
+          "return_epilogue_relative_start_ea": "0x192",
+          "edge_predicates": [
+            "byte emit blocks appear for base+0 through base+6",
+            "byte emit blocks base+0 through base+6 all flow to the same shared guard/convergence block",
+            "the shared convergence block contains the early-return test and stage dispatch",
+            "the shared convergence block can continue to the next byte stage",
+            "the terminal return is reached through the same shared convergence corridor"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_shared_convergence.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "shared convergence survival or fold disposition",
+        "terminal-region SCC summary",
+        "pseudocode shared-label/body verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 26,
+        "to_block_count": 19,
+        "vanished_count": 7,
+        "outcome_class": "bad_topology_collapse",
+        "classification": "validated D810-like shared convergence compacts from 26 LOCOPT blocks to 19 GLBOPT1 blocks and renders as a staged loop nest with five whiles and only two returns; this is the negative control for terminal-tail lowering"
+      }
+    },
+    {
+      "id": "terminal_tail_split_guard",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_split_guard",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "split-guard",
+        "track-b-v2",
+        "acyclic"
+      ],
+      "question": "Does splitting each byte emit from its guard preserve a readable acyclic terminal tail better than a shared convergence body?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_split_guard.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 22",
+          "byte_emit_count": "== 7",
+          "split_guard_count": "== 6",
+          "terminal_region": "acyclic",
+          "largest_scc_size": "== 1",
+          "guard_relative_start_eas": [
+            "0x0",
+            "0x4e",
+            "0x88",
+            "0xc2",
+            "0xfc",
+            "0x133"
+          ],
+          "early_return_relative_start_eas": [
+            "0x3f",
+            "0x79",
+            "0xb3",
+            "0xed",
+            "0x127",
+            "0x15e"
+          ],
+          "continue_relative_start_eas": [
+            "0x4c",
+            "0x86",
+            "0xc0",
+            "0xfa",
+            "0x131",
+            "0x168"
+          ],
+          "final_emit_relative_start_ea": "0x16a",
+          "return_epilogue_relative_start_ea": "0x18b",
+          "edge_predicates": [
+            "source-level emit/check split is fused by LOCOPT into six BLT_2WAY emit+guard blocks",
+            "each fused emit+guard block has a return arm and a continue arm",
+            "each continue arm from check[k] reaches byte[k + 1]",
+            "no guard block is shared by multiple byte emit blocks",
+            "byte6 reaches the terminal return path"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_split_guard.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "split check block presence after GLBOPT1",
+        "terminal-region SCC summary",
+        "pseudocode cascade readability verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 22,
+        "to_block_count": 16,
+        "vanished_count": 6,
+        "outcome_class": "clean_structured_compaction",
+        "classification": "validated split emit/guard source compiles to the same LOCOPT cascade class as the REF oracle and preserves unchanged nested early-return pseudocode; source-level split alone does not create a distinct microblock construction"
+      }
+    },
+    {
+      "id": "terminal_tail_unique_continuation",
+      "status": "observed",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_terminal_tail_unique_continuation",
+      "binary": "libobfuscated.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "terminal-tail",
+        "byte-emit",
+        "unique-continuation",
+        "topology-only",
+        "shared-convergence"
+      ],
+      "question": "Can topology-only unique continuations before a shared guard preserve terminal-tail intent without adding side-effect anchors?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:2e3801dc5e3a2d34ab085e73a03de9b1d635362a0e7a96dfa985d14bd486da3d",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/terminal_tail_unique_continuation.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "block_count": "== 26",
+          "byte_emit_count": "== 7",
+          "unique_continuation_count": "== 7",
+          "shared_convergence_blocks": "== 1",
+          "shared_guard_relative_start_ea": "0x2a",
+          "byte_emit_relative_start_eas": [
+            "0xab",
+            "0xdd",
+            "0x110",
+            "0x143",
+            "0x176",
+            "0x1a9",
+            "0x1dc"
+          ],
+          "return_epilogue_relative_start_ea": "0x204",
+          "edge_predicates": [
+            "byte emit blocks appear for base+0 through base+6",
+            "source-level unique continuations are folded into byte emit bodies by LOCOPT",
+            "each byte emit/continuation body reaches the same shared guard/convergence block",
+            "the shared guard performs early-return testing and stage dispatch"
+          ]
+        }
+      },
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/terminal_tail_unique_continuation.json",
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "LOCOPT and GLBOPT1 block counts",
+        "byte_emit[0..6] presence after GLBOPT1",
+        "unique continuation survival or fold disposition",
+        "terminal-region SCC summary",
+        "pseudocode shared-label/body verdict"
+      ],
+      "observation_summary": {
+        "status": "observed",
+        "from_block_count": 26,
+        "to_block_count": 19,
+        "vanished_count": 7,
+        "outcome_class": "bad_topology_collapse",
+        "classification": "validated unique-continuation source still compiles into a shared-guard topology and renders as a staged loop nest with five whiles and only two returns; topology-only continuations do not preserve the terminal-tail cascade"
+      }
+    }
+  ]
+}

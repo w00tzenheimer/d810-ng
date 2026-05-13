@@ -189,6 +189,14 @@ def plan_conditional_arm_emission(
                 old_target=int(dispatcher_serial),
             )
         )
+    elif transition_arm_target != int(target_entry):
+        redirects.append(
+            RedirectSpec(
+                source_block=int(horizon_block),
+                target_block=int(target_entry),
+                old_target=int(transition_arm_target),
+            )
+        )
     if (
         other_arm_target == dispatcher_serial
         and current_entry is not None
@@ -218,11 +226,15 @@ def plan_passthrough_redirects(
     if current_state_entry is None:
         return ()
 
-    redirects: list[RedirectSpec] = []
-    for serial in ordered_path:
-        if int(serial) == int(horizon_block):
-            continue
+    effective_path = tuple(int(serial) for serial in ordered_path)
+    try:
+        horizon_index = effective_path.index(int(horizon_block))
+    except ValueError:
+        horizon_index = len(effective_path)
+    passthrough_path = effective_path[:horizon_index]
 
+    redirects: list[RedirectSpec] = []
+    for serial in passthrough_path:
         block = flow_graph.get_block(int(serial))
         if block is None:
             continue

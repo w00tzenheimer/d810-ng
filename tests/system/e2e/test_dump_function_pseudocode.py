@@ -586,7 +586,7 @@ class TestDumpFunctionPseudocode:
                 try:
                     if mba:
                         from d810.core.diag import get_diag_db
-                        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                        from d810.hexrays.mba_serializer import mba_to_block_snapshots
                         from d810.core.diag.snapshot import (
                             snapshot_mba as _snap_mba,
                             snapshot_rendered_program as _snap_rendered_program,
@@ -722,7 +722,7 @@ class TestDumpFunctionPseudocode:
                     # --- Diagnostic SQLite snapshot (gated by D810_DIAG_SNAPSHOT=1) ---
                     try:
                         from d810.core.diag import get_diag_db
-                        from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                        from d810.hexrays.mba_serializer import mba_to_block_snapshots
                         from d810.core.diag.snapshot import snapshot_mba as _snap_mba
 
                         _diag_conn = get_diag_db(func_ea)
@@ -842,7 +842,7 @@ class TestDumpFunctionPseudocode:
 
                     try:
                         from d810.core.diag import get_diag_db
-                        from d810.core.diag.query import rendered_program_text
+                        from d810.diagnostics.query import rendered_program_text
 
                         _diag_conn = get_diag_db(func_ea)
                         if _diag_conn is not None:
@@ -950,7 +950,7 @@ class TestDumpFunctionPseudocode:
 
                         _diag_conn = get_diag_db(func_ea)
                         if _diag_conn is not None:
-                            from d810.core.diag.mba_serializer import mba_to_block_snapshots
+                            from d810.hexrays.mba_serializer import mba_to_block_snapshots
                             from d810.core.diag.snapshot import snapshot_mba as _snap_mba
 
                             # Re-use the live MBA from human-readable if available,

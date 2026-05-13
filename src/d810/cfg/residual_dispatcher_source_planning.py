@@ -325,30 +325,31 @@ def plan_residual_dispatcher_source(
     if prefix_before.accepted:
         return prefix_before
 
+    goto_plan: ResidualDispatcherSourcePlan | None = None
+    if context.goto_attempt is not None:
+        goto_plan = _plan_goto_attempt(
+            source_block=int(context.source_block),
+            dispatcher_serial=int(context.dispatcher_serial),
+            attempt=context.goto_attempt,
+        )
+        if goto_plan.accepted:
+            return goto_plan
+        if goto_plan.rejection_reason in {
+            "shared_suffix_conditional_tail",
+            "prior_branch_cut",
+            "cycle_risk",
+            "live_oneway_noop",
+            "invalid_target",
+            "handoff_already_emitted",
+        }:
+            return goto_plan
+
     if context.goto_attempt is None:
         return _plan_pred_split_attempts(
             source_block=int(context.source_block),
             dispatcher_serial=int(context.dispatcher_serial),
             attempts=tuple(context.pred_split_attempts),
         )
-
-    goto_plan = _plan_goto_attempt(
-        source_block=int(context.source_block),
-        dispatcher_serial=int(context.dispatcher_serial),
-        attempt=context.goto_attempt,
-    )
-    if goto_plan.accepted:
-        return goto_plan
-
-    if goto_plan.rejection_reason in {
-        "shared_suffix_conditional_tail",
-        "prior_branch_cut",
-        "cycle_risk",
-        "live_oneway_noop",
-        "invalid_target",
-        "handoff_already_emitted",
-    }:
-        return goto_plan
 
     prefix_after = _plan_prefix_attempts(
         source_block=int(context.source_block),
@@ -358,7 +359,7 @@ def plan_residual_dispatcher_source(
         return prefix_after
     if prefix_after.rejection_reason:
         return prefix_after
-    return goto_plan
+    return goto_plan or prefix_before
 
 
 def apply_residual_dispatcher_source_plan(

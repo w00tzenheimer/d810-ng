@@ -11,6 +11,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -78,6 +79,7 @@ class SimulatedEdit:
     old_target: int
     new_target: int | None
     via_pred: int | None = None  # only for edge_split_redirect
+    clone_until: int | None = None  # only for corridor edge_split_redirect
     fallthrough_target: int | None = None  # only for create_conditional_redirect
     duplicate_target: int | None = None  # only for duplicate_block
     source_successors: tuple[int, ...] = ()  # only for duplicate_block
@@ -417,6 +419,7 @@ def graph_modifications_to_simulated_edits(
                 old_target=old,
                 new_target=new,
                 via_pred=pred,
+                clone_until=clone_until,
             ):
                 simulated.append(
                     SimulatedEdit(
@@ -425,6 +428,7 @@ def graph_modifications_to_simulated_edits(
                         old_target=old,
                         new_target=new,
                         via_pred=pred,
+                        clone_until=clone_until,
                     )
                 )
 
@@ -438,19 +442,44 @@ def graph_modifications_to_simulated_edits(
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=ref,
+                        old_target=-1,
                         new_target=conditional,
                         fallthrough_target=fallthrough,
                     )
                 )
 
-            case InsertBlock(pred_serial=pred, succ_serial=succ):
+            case InsertBlock(
+                pred_serial=pred,
+                succ_serial=succ,
+                old_target_serial=old_target,
+            ):
+                effective_old_target = succ if old_target is None else old_target
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=succ,
+                        old_target=effective_old_target,
                         new_target=succ,
+                    )
+                )
+
+            case DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+                conditional_target=conditional_target,
+                fallthrough_target=fallthrough_target,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="duplicate_block",
+                        source=src,
+                        old_target=-1,
+                        new_target=target,
+                        via_pred=pred,
+                        duplicate_target=target,
+                        conditional_target=conditional_target,
+                        fallthrough_target=fallthrough_target,
                     )
                 )
 
@@ -551,7 +580,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=ref,
+                        old_target=-1,
                         new_target=conditional,
                         fallthrough_target=fallthrough,
                         created_serial=assigned,
@@ -565,12 +594,14 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 pred_serial=pred,
                 succ_serial=succ,
                 assigned_serial=assigned,
+                old_target_serial=old_target,
             ):
+                effective_old_target = succ if old_target is None else old_target
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=succ,
+                        old_target=effective_old_target,
                         new_target=succ,
                         created_serial=assigned,
                         stop_serial_before=stop_serial_before,
@@ -761,7 +792,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=patch_plan.relocation_map.rewrite_serial(ref),
+                        old_target=-1,
                         new_target=patch_plan.relocation_map.rewrite_serial(
                             conditional
                         ),
@@ -775,16 +806,25 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 )
 
             case LegacyBlockOperation(
-                modification=InsertBlock(pred_serial=pred, succ_serial=succ),
+                modification=InsertBlock(
+                    pred_serial=pred,
+                    succ_serial=succ,
+                    old_target_serial=old_target,
+                ),
                 block_id=block_id,
             ):
                 assigned = patch_plan.relocation_map.assigned_serial_for(block_id)
                 relocated_succ = patch_plan.relocation_map.rewrite_serial(succ)
+                relocated_old_target = (
+                    relocated_succ
+                    if old_target is None
+                    else patch_plan.relocation_map.rewrite_serial(old_target)
+                )
                 simulated.append(
                     SimulatedEdit(
                         kind="insert_block",
                         source=pred,
-                        old_target=relocated_succ,
+                        old_target=relocated_old_target,
                         new_target=relocated_succ,
                         created_serial=assigned,
                         stop_serial_before=stop_serial_before,
@@ -946,7 +986,9 @@ def simulate_edits(
                 fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
                 if fallthrough_serial == clone_serial:
                     fallthrough_serial += 1
-            clone_succs = [edit.new_target, fallthrough_serial]
+            # Keep Hex-Rays BLT_2WAY ordering: succset[0] is fallthrough,
+            # succset[1] is the conditional branch target.
+            clone_succs = [fallthrough_serial, edit.new_target]
             result[clone_serial] = clone_succs
             if edit.fallthrough_target is None:
                 result[fallthrough_serial] = []
@@ -958,11 +1000,14 @@ def simulate_edits(
             clone_origins[fallthrough_serial] = edit
 
             new_succs = list(succs)
-            try:
-                idx = new_succs.index(edit.old_target)
-                new_succs[idx] = clone_serial
-            except ValueError:
-                new_succs.append(clone_serial)
+            if len(new_succs) == 1:
+                new_succs[0] = clone_serial
+            else:
+                try:
+                    idx = new_succs.index(edit.old_target)
+                    new_succs[idx] = clone_serial
+                except ValueError:
+                    new_succs.append(clone_serial)
             result[edit.source] = new_succs
 
         elif edit.kind == "duplicate_block":
@@ -973,10 +1018,16 @@ def simulate_edits(
             duplicate_target = edit.duplicate_target
             source_successors = list(edit.source_successors)
             clone_succs: list[int]
+            explicit_conditional_clone = (
+                edit.conditional_target is not None
+                and edit.fallthrough_target is not None
+            )
 
             fallthrough_serial = edit.secondary_created_serial
             needs_fallthrough_clone = (
-                len(source_successors) == 2 or fallthrough_serial is not None
+                len(source_successors) == 2
+                or fallthrough_serial is not None
+                or explicit_conditional_clone
             )
             if needs_fallthrough_clone and fallthrough_serial is None:
                 fallthrough_serial = max({*result.keys(), clone_serial}, default=-1) + 1
@@ -985,7 +1036,7 @@ def simulate_edits(
 
             if duplicate_target is not None:
                 clone_succs = [duplicate_target]
-            elif len(source_successors) <= 1:
+            elif len(source_successors) <= 1 and not explicit_conditional_clone:
                 clone_succs = source_successors
             else:
                 # 2-way block (m_jcnd): IDA verify.cpp expects

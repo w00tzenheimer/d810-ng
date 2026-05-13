@@ -58,6 +58,19 @@ _indexable
 
 # docs
 docs/
+!docs/
+docs/*
+!docs/recon/
+!docs/recon/linearized_state_dag.md
+!docs/debug-tooling-migration.md
+!docs/diag-observability-boundary.md
 .tmp/
 
 pyrefly.toml
+
+# Equivalence harness build/IDA artifacts (not source)
+tools/equivalence/harness.i64
+tools/equivalence/harness_x86
+tools/equivalence/harness_x86.asm
+tools/equivalence/harness_x86.i64
+tools/equivalence/harness_x86.dSYM/

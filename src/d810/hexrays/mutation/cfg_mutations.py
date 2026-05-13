@@ -17,6 +17,71 @@ from d810.hexrays.ir.cfg_queries import _serial_in_predset
 
 helper_logger = getLogger(__name__)
 
+# MBL_KEEP -- IDA SDK ``hexrays.hpp``: "do not remove even if unreachable".
+# Set on every block IDA creates via ``mba_get_or_create_block``; NOT inherited
+# by ``mba.copy_block``.  ``mba.optimize_global`` calls
+# ``mba_remove_empty_and_unreachable_blocks`` which collects MBL_KEEP blocks
+# as preserved roots and sweeps unreachable non-KEEP blocks, so any block
+# D810 clones via ``copy_block`` must explicitly carry MBL_KEEP or risk
+# being culled regardless of the new CFG wiring.
+MBL_KEEP = 0x10000
+
+
+def copy_block_keep(
+    mba: "ida_hexrays.mba_t",
+    ref_blk: "ida_hexrays.mblock_t",
+    dest_serial: int,
+) -> "ida_hexrays.mblock_t":
+    """Wrapper around ``mba.copy_block`` that sets ``MBL_KEEP`` on the clone.
+
+    Use everywhere D810 clones a block.  Without ``MBL_KEEP`` the clone is
+    a candidate for removal by ``mba.optimize_global``'s structural sweep
+    (see memory ``ida_optimize_global_cfg_kill``).
+    """
+    new_blk = mba.copy_block(ref_blk, dest_serial)
+    if new_blk is not None:
+        try:
+            new_blk.flags |= MBL_KEEP
+        except Exception:
+            pass
+    return new_blk
+
+
+def _rebuild_block_lists_if_available(blk: "ida_hexrays.mblock_t") -> None:
+    """Recompute copied block use/def lists when the Hex-Rays API exposes it."""
+    for attr_name in (
+        "dead_at_start",
+        "mustbuse",
+        "maybuse",
+        "mustbdef",
+        "maybdef",
+        "dnu",
+    ):
+        lst = getattr(blk, attr_name, None)
+        clear = getattr(lst, "clear", None)
+        if clear is None:
+            continue
+        try:
+            clear()
+        except Exception as exc:
+            helper_logger.debug(
+                "%s.clear() failed for blk[%d]: %s",
+                attr_name,
+                getattr(blk, "serial", -1),
+                exc,
+            )
+    build_lists = getattr(blk, "build_lists", None)
+    if build_lists is None:
+        return
+    try:
+        build_lists(False)
+    except Exception as exc:
+        helper_logger.debug(
+            "build_lists(False) failed for blk[%d]: %s",
+            getattr(blk, "serial", -1),
+            exc,
+        )
+
 
 def _rewire_edge(
     blk: "ida_hexrays.mblock_t",
@@ -151,6 +216,19 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     mba: ida_hexrays.mbl_array_t = blk.mba
     previous_blk_successor_serial = blk.succset[0]
     previous_blk_successor = mba.get_mblock(previous_blk_successor_serial)
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="change_1way_block_successor",
+            extra={"old_target": int(previous_blk_successor_serial)},
+            mba=mba,
+        )
+    except Exception:
+        pass
 
     if blk.tail is None:
         # We add a goto instruction
@@ -269,6 +347,21 @@ def change_2way_block_conditional_successor(
             "but current branch target is %d",
             blk.serial, old_target, previous_blk_conditional_successor_serial,
         )
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="change_2way_block_conditional_successor",
+            extra={
+                "old_target": int(previous_blk_conditional_successor_serial),
+            },
+            mba=mba,
+        )
+    except Exception:
+        pass
     previous_blk_conditional_successor = mba.get_mblock(
         previous_blk_conditional_successor_serial
     )
@@ -333,6 +426,21 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
         return False
     mba = blk.mba
     previous_blk_successor_serials = [x for x in blk.succset]
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="make_2way_block_goto",
+            extra={
+                "old_succs": [int(s) for s in previous_blk_successor_serials],
+            },
+            mba=mba,
+        )
+    except Exception:
+        pass
     previous_blk_successors = [
         mba.get_mblock(x) for x in previous_blk_successor_serials
     ]
@@ -400,6 +508,7 @@ def create_block(
             prev_succ.mark_lists_dirty()
 
     new_blk.mark_lists_dirty()
+    _rebuild_block_lists_if_available(new_blk)
     mba.mark_chains_dirty()
     if not verify:
         return new_blk
@@ -440,8 +549,27 @@ def create_standalone_block(
     """
     mba = ref_blk.mba
 
-    # 1. Copy ref_blk to get a fresh block at the end of the MBA
-    new_blk = mba.copy_block(ref_blk, mba.qty - 1)
+    # 1. Copy ref_blk to get a fresh block at the end of the MBA.
+    # ``copy_block_keep`` ensures the clone carries MBL_KEEP so
+    # ``optimize_global``'s structural sweep doesn't cull it.
+    new_blk = copy_block_keep(mba, ref_blk, mba.qty - 1)
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="CREATE",
+            block_serial=int(new_blk.serial),
+            target_serial=(int(target_serial) if target_serial is not None else None),
+            reason="create_standalone_block",
+            extra={
+                "ref_blk": int(ref_blk.serial),
+                "is_0_way": bool(is_0_way),
+                "n_instructions": len(blk_ins),
+            },
+            mba=mba,
+        )
+    except Exception:
+        pass
 
     # 2. Clean ALL inherited successor edges (copy_block clones them)
     prev_successor_serials = [x for x in new_blk.succset]
@@ -893,7 +1021,11 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     # shifts in the middle of the MBA.
     insert_after_blk = blk.nsucc() > 1
     if insert_after_blk:
-        nop_block = mba.copy_block(blk, blk.serial)
+        # copy_block(dest_serial) inserts the new block *before* dest_serial.
+        # For BLT_2WAY fallthrough, verifier semantics require succset[0] to
+        # equal blk.nextb, so the synthesized fallthrough helper must be placed
+        # physically after blk, not before it.
+        nop_block = copy_block_keep(mba, blk, blk.serial + 1)
         # Mid-CFG insertion can shift serials; refresh from the original block
         # object to keep bookkeeping tied to the same logical successor.
         if original_successor_blk is not None:
@@ -901,7 +1033,23 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     else:
         # Append the new block at the end of the MBA (before the dummy last
         # block) to avoid serial shifts for generic rewrites.
-        nop_block = mba.copy_block(blk, mba.qty - 1)
+        nop_block = copy_block_keep(mba, blk, mba.qty - 1)
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="CREATE",
+            block_serial=int(nop_block.serial),
+            target_serial=int(original_successor_serial),
+            reason="insert_nop_blk",
+            extra={
+                "ref_blk": int(blk.serial),
+                "insert_after_blk": bool(insert_after_blk),
+            },
+            mba=mba,
+        )
+    except Exception:
+        pass
     # Use mba.entry_ea for synthesized NOP instructions to guarantee the EA
     # is within the decompiled function's range (prevents INTERR 50863).
     safe_ea = mba.entry_ea
@@ -978,16 +1126,43 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # blk -> original_successor as blk -> nop_block -> original_successor.
         # This keeps succ/pred bidirectional consistency and avoids detached
         # NOP blocks (preds=[]), which trigger INTERR 50856/50858.
-        blk.succset._del(original_successor_serial)
-        blk.succset.push_back(nop_block.serial)
+        cond_target = (
+            blk.tail.d.b
+            if blk.tail is not None
+            and ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+            and blk.tail.d is not None
+            and blk.tail.d.t == ida_hexrays.mop_b
+            else None
+        )
+
+        prev_blk_succs = [int(x) for x in blk.succset]
+        for prev_serial in prev_blk_succs:
+            blk.succset._del(prev_serial)
+
+        # For conditional blocks, verifier semantics require
+        # succset=[nextb, conditional_target] == [fallthrough, taken].
+        if cond_target is not None:
+            blk.succset.push_back(nop_block.serial)
+            if cond_target != nop_block.serial:
+                blk.succset.push_back(cond_target)
+        else:
+            if original_successor_serial in prev_blk_succs:
+                prev_blk_succs.remove(original_successor_serial)
+            blk.succset.push_back(nop_block.serial)
+            for prev_serial in prev_blk_succs:
+                if prev_serial != nop_block.serial:
+                    blk.succset.push_back(prev_serial)
         blk.mark_lists_dirty()
 
-        original_successor_blk.predset._del(blk.serial)
-        original_successor_blk.predset.push_back(nop_block.serial)
+        if _serial_in_predset(original_successor_blk, blk.serial):
+            original_successor_blk.predset._del(blk.serial)
+        if not _serial_in_predset(original_successor_blk, nop_block.serial):
+            original_successor_blk.predset.push_back(nop_block.serial)
         if original_successor_blk.serial != mba.qty - 1:
             original_successor_blk.mark_lists_dirty()
 
-        nop_block.predset.push_back(blk.serial)
+        if not _serial_in_predset(nop_block, blk.serial):
+            nop_block.predset.push_back(blk.serial)
 
     # Update any m_jtbl case targets across the entire MBA that reference
     # the original successor.  When the NOP block is spliced between blk and
@@ -1016,6 +1191,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
                 )
 
     nop_block.mark_lists_dirty()
+    _rebuild_block_lists_if_available(nop_block)
     mba.mark_chains_dirty()
     return nop_block
 
@@ -1035,7 +1211,7 @@ def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t, verify: bool = True)
 
 def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
     mba = block_to_duplicate.mba
-    duplicated_blk = mba.copy_block(block_to_duplicate, mba.qty - 1)
+    duplicated_blk = copy_block_keep(mba, block_to_duplicate, mba.qty - 1)
 
     # Clean inherited predecessor set -- copy_block clones predecessors
     # from block_to_duplicate, but those predecessors point to the
@@ -1168,6 +1344,10 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
             duplicated_blk.type = new_type
             mba.mark_chains_dirty()
 
+    _rebuild_block_lists_if_available(duplicated_blk)
+    if duplicated_blk_default is not None:
+        _rebuild_block_lists_if_available(duplicated_blk_default)
+
     return duplicated_blk, duplicated_blk_default
 
 
@@ -1185,6 +1365,26 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
     for goto_blk_serial in range(last_block_index):
         goto_blk: ida_hexrays.mblock_t = mba.get_mblock(goto_blk_serial)
         if goto_blk.is_simple_goto_block():
+            # A synthetic fallthrough helper for a 2-way predecessor must
+            # remain physically adjacent to that predecessor. Collapsing
+            # father -> helper -> target into father -> target would try to
+            # rewrite the direct fallthrough edge of a BLT_2WAY block, which
+            # the legacy helpers intentionally reject.
+            if any(
+                (
+                    father_blk := mba.get_mblock(father_serial)
+                ) is not None
+                and father_blk.nsucc() == 2
+                and father_blk.nextb is not None
+                and father_blk.nextb.serial == goto_blk_serial
+                for father_serial in list(goto_blk.predset)
+            ):
+                helper_logger.debug(
+                    "Skipping simple goto cleanup for blk[%d]: required 2-way "
+                    "fallthrough helper",
+                    goto_blk_serial,
+                )
+                continue
             goto_blk_dst_serial = goto_blk.tail.l.b
             goto_blk_preset = [x for x in goto_blk.predset]
             for father_serial in goto_blk_preset:
@@ -1192,6 +1392,19 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                 nb_change += update_blk_successor(
                     father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
                 )
+                try:
+                    from d810.cfg.observability import observe_cfg_provenance
+                    observe_cfg_provenance(
+                        pass_name="remove_simple_goto",
+                        action="REDIRECT_EDGE",
+                        block_serial=int(father_serial),
+                        target_serial=int(goto_blk_dst_serial),
+                        reason="bypass_simple_goto_block",
+                        extra={"old_target": int(goto_blk_serial)},
+                        mba=mba,
+                    )
+                except Exception:
+                    pass
     return nb_change
 
 
@@ -1200,18 +1413,65 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
         # Doing this optimization before MMAT_CALLS may create blocks with call instruction (not last instruction)
         # IDA does like that and will raise a 50864 error
         return 0
+    pre_qty = int(mba.qty)
+    pre_serials = set(range(pre_qty))
     if call_mba_combine_block:
         # Ideally we want IDA to simplify the graph for us with combine_blocks
         # However, We observe several crashes when this option is activated
         # (especially when it is used during  O-LLVM unflattening)
         # TODO: investigate the root cause of this issue
         mba.merge_blocks()
+        action_kind = "MERGE"
+        api_call = "mba.merge_blocks"
     else:
         if idaapi.IDA_SDK_VERSION >= 760:
             # In IDA Pro 7.6, remove_empty_blocks is removed and replaced (?) by remove_empty_and_unreachable_blocks
             mba.remove_empty_and_unreachable_blocks()
+            api_call = "mba.remove_empty_and_unreachable_blocks"
         else:
             mba.remove_empty_blocks()  # type: ignore
+            api_call = "mba.remove_empty_blocks"
+        action_kind = "DELETE"
+    post_qty = int(mba.qty)
+    delta = pre_qty - post_qty
+
+    # Provenance: we cannot tell exactly which serials IDA removed/merged
+    # (the API gives no callback), but we can record the call site and the
+    # qty delta, plus emit per-serial DELETE rows for any pre-serials that
+    # are now out-of-range (qty shrunk).
+    try:
+        from d810.cfg.observability import observe_cfg_provenance
+        observe_cfg_provenance(
+            pass_name="mba_deep_cleaning",
+            action="BULK_DEEP_CLEAN",
+            block_serial=-1,
+            target_serial=None,
+            reason=api_call,
+            extra={
+                "pre_qty": pre_qty,
+                "post_qty": post_qty,
+                "delta": delta,
+                "kind": action_kind,
+                "maturity": int(getattr(mba, "maturity", -1)),
+            },
+            mba=mba,
+        )
+        if delta > 0:
+            # Per-serial DELETE rows for any serial out-of-range now.
+            for s in sorted(pre_serials):
+                if s >= post_qty:
+                    observe_cfg_provenance(
+                        pass_name="mba_deep_cleaning",
+                        action=action_kind,
+                        block_serial=s,
+                        target_serial=None,
+                        reason=f"{api_call}_qty_shrunk",
+                        extra={"pre_qty": pre_qty, "post_qty": post_qty},
+                        mba=mba,
+                    )
+    except Exception:
+        pass
+
     nb_change = mba_remove_simple_goto_blocks(mba)
     return nb_change
 

@@ -112,3 +112,455 @@ def test_validated_view_filters_inactive_observations() -> None:
 
 def test_canonical_json_is_stable() -> None:
     assert canonical_json({"z": 1, "a": {"b": 2}}) == '{"a":{"b":2},"z":1}'
+
+
+def test_return_carrier_sites_for_block_filters_by_block_serial() -> None:
+    """``ValidatedFactView.return_carrier_sites_for_block`` returns
+    only ``ReturnCarrierFact`` observations whose payload's
+    ``upstream_writer_block_serial`` matches the requested serial,
+    after stale / REMAPPED / CONTRADICTED / SUPERSEDED / IDENTITY_LOST
+    filtering applied by ``active_observations``."""
+    matching = FactObservation(
+        fact_id="return:matching",
+        kind="ReturnCarrierFact",
+        semantic_key="return:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    other_block = FactObservation(
+        fact_id="return:other",
+        kind="ReturnCarrierFact",
+        semantic_key="return:other:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 100},
+    )
+    other_kind = FactObservation(
+        fact_id="byte_emit:matching_block",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    no_payload = FactObservation(
+        fact_id="return:nopayload",
+        kind="ReturnCarrierFact",
+        semantic_key="return:nopayload:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(matching, other_block, other_kind, no_payload),
+    )
+
+    sites = view.return_carrier_sites_for_block(93)
+
+    # Only the ReturnCarrierFact with the matching block_serial returns.
+    assert len(sites) == 1
+    assert sites[0].fact_id == "return:matching"
+
+
+def test_return_carrier_sites_for_block_excludes_stale_facts() -> None:
+    """A ReturnCarrierFact whose lifecycle status is IDENTITY_LOST /
+    STALE / etc. must NOT appear in the result -- the helper goes
+    through ``active_observations``."""
+    stale = FactObservation(
+        fact_id="return:stale",
+        kind="ReturnCarrierFact",
+        semantic_key="return:stale:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.return_carrier_sites_for_block(93) == ()
+
+
+def test_return_carrier_sites_for_block_returns_empty_on_invalid_input() -> None:
+    """Non-int / out-of-range block serials must return an empty tuple
+    rather than raising."""
+    obs = FactObservation(
+        fact_id="return:matching",
+        kind="ReturnCarrierFact",
+        semantic_key="return:matching:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={"upstream_writer_block_serial": 93},
+    )
+    view = ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,))
+
+    assert view.return_carrier_sites_for_block("not-an-int") == ()  # type: ignore[arg-type]
+    # Block serial 0 is not "matching" since the fact is for blk[93].
+    assert view.return_carrier_sites_for_block(0) == ()
+
+
+def test_stale_return_carrier_hazards_require_exact_ea_target_mapping() -> None:
+    stale = FactObservation(
+        fact_id="return:stale",
+        kind="ReturnCarrierFact",
+        semantic_key="return:stale:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "upstream_writer_block_serial": 93,
+            "upstream_writer_ea": 0x401020,
+            "upstream_writer_var_refs": ["228", "650"],
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.return_carrier_sites_for_block(93) == ()
+    assert view.stale_return_carrier_hazards_for_block(93) == ()
+
+
+def test_stale_return_carrier_hazards_match_lifecycle_target_block() -> None:
+    stale = FactObservation(
+        fact_id="return:stale",
+        kind="ReturnCarrierFact",
+        semantic_key="return:stale:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "upstream_writer_block_serial": 254,
+            "upstream_writer_ea": 0x401020,
+            "upstream_writer_var_refs": ["228", "650"],
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+                target_block=94,
+                target_ea=0x401000,
+            ),
+        ),
+    )
+
+    assert view.stale_return_carrier_hazards_for_block(94) == (stale,)
+
+
+def test_stale_return_carrier_hazards_ignore_contradicted_fact() -> None:
+    stale = FactObservation(
+        fact_id="return:contradicted",
+        kind="ReturnCarrierFact",
+        semantic_key="return:contradicted:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "upstream_writer_block_serial": 93,
+            "upstream_writer_ea": 0x401020,
+            "upstream_writer_var_refs": ["228"],
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:contradicted",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+            FactMapping(
+                source_fact_id="return:contradicted",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.CONTRADICTED,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.stale_return_carrier_hazards_for_block(93) == ()
+
+
+def test_terminal_byte_emit_sites_for_block_filters_by_role_and_destination() -> None:
+    """``ValidatedFactView.terminal_byte_emit_sites_for_block`` returns
+    only ``TerminalByteEmitterFact`` rows with ``corridor_role ==
+    "terminal_tail"`` whose ``destination_block`` (or fallback
+    ``block_serial``) matches the requested serial.  Non-terminal and
+    guard-only emitter facts are excluded so the bulk emitter
+    ``STATE_2FBA4611`` corridor is not protected by mistake."""
+    terminal_match = FactObservation(
+        fact_id="byte_emit:terminal_match",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:terminal_match:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x180015906,
+        payload={
+            "corridor_role": "terminal_tail",
+            "byte_index": 1,
+            "destination_block": 143,
+            "block_serial": 211,
+        },
+    )
+    non_terminal = FactObservation(
+        fact_id="byte_emit:non_terminal",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:non_terminal:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "non_terminal_byte_emitter",
+            "byte_index": 2,
+            "destination_block": 143,
+            "block_serial": 143,
+        },
+    )
+    guard_only = FactObservation(
+        fact_id="byte_emit:guard_only",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:guard_only:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "guard_only",
+            "byte_index": 0,
+            "destination_block": 143,
+            "block_serial": 143,
+        },
+    )
+    terminal_tail_guard_only = FactObservation(
+        fact_id="byte_emit:terminal_tail_guard_only",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:terminal_tail_guard_only:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "destination_block": 143,
+            "block_serial": 143,
+        },
+    )
+    other_block = FactObservation(
+        fact_id="byte_emit:other_block",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:other_block:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "byte_index": 5,
+            "destination_block": 200,
+            "block_serial": 200,
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(
+            terminal_match,
+            non_terminal,
+            guard_only,
+            terminal_tail_guard_only,
+            other_block,
+        ),
+    )
+
+    sites = view.terminal_byte_emit_sites_for_block(143)
+
+    assert len(sites) == 1
+    assert sites[0].fact_id == "byte_emit:terminal_match"
+
+    # Invalid input must yield an empty tuple.
+    assert view.terminal_byte_emit_sites_for_block("not-an-int") == ()  # type: ignore[arg-type]
+
+
+def test_terminal_byte_emit_sites_for_block_excludes_stale_facts() -> None:
+    """Lifecycle-invalidated rows must be filtered out via
+    ``active_observations``."""
+    stale = FactObservation(
+        fact_id="byte_emit:stale",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:stale:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "byte_index": 1,
+            "destination_block": 143,
+            "block_serial": 143,
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(stale,),
+        mappings=(
+            FactMapping(
+                source_fact_id="byte_emit:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.terminal_byte_emit_sites_for_block(143) == ()
+
+
+def test_terminal_zero_guard_return_sites_for_block_filters_by_return_successor() -> None:
+    matching = FactObservation(
+        fact_id="byte_emit:zero_guard",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:zero_guard:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "destination_block": 206,
+            "block_serial": 206,
+            "return_edge": 207,
+            "continuation_edge": 208,
+        },
+    )
+    concrete_emit = FactObservation(
+        fact_id="byte_emit:byte6",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:byte6:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "byte_index": 6,
+            "destination_block": 217,
+            "block_serial": 217,
+            "return_edge": None,
+        },
+    )
+    wrong_successor = FactObservation(
+        fact_id="byte_emit:wrong_successor",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte:wrong_successor:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        payload={
+            "corridor_role": "terminal_tail",
+            "emitter_role": "guard_only",
+            "byte_index": 0,
+            "return_edge": 300,
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(matching, concrete_emit, wrong_successor),
+    )
+
+    sites = view.terminal_zero_guard_return_sites_for_block(207)
+
+    assert len(sites) == 1
+    assert sites[0].fact_id == "byte_emit:zero_guard"
+    assert view.terminal_zero_guard_return_sites_for_block("bad") == ()  # type: ignore[arg-type]
+
+
+def test_stale_return_carrier_hazards_ignore_unrelated_or_incomplete_fact() -> None:
+    unrelated = FactObservation(
+        fact_id="return:unrelated",
+        kind="ReturnCarrierFact",
+        semantic_key="return:unrelated:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "upstream_writer_block_serial": 94,
+            "upstream_writer_ea": 0x401020,
+            "upstream_writer_var_refs": ["228"],
+        },
+    )
+    incomplete = FactObservation(
+        fact_id="return:incomplete",
+        kind="ReturnCarrierFact",
+        semantic_key="return:incomplete:key",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "upstream_writer_block_serial": 93,
+            "upstream_writer_ea": 0x401030,
+        },
+    )
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(unrelated, incomplete),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:unrelated",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+            FactMapping(
+                source_fact_id="return:incomplete",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    assert view.stale_return_carrier_hazards_for_block(93) == ()

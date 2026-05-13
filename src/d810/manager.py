@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import pstats
+import sqlite3
 import tempfile
 import time
 
@@ -57,9 +58,16 @@ from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollecto
 from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
 from d810.recon.facts.collectors import (
+    ByteEmitCorridorFactCollector,
+    CallAnchorFactCollector,
     InductionCarrierFactCollector,
+    LoopCarrierFactCollector,
     ReturnCarrierFactCollector,
+    ReturnFrontierFactCollector,
+    StateTransitionAnchorFactCollector,
+    StateWriteAnchorFactCollector,
     TerminalByteEmitterFactCollector,
+    ZeroBlobFactCollector,
 )
 from d810.recon.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
@@ -80,6 +88,231 @@ if TYPE_CHECKING:
 D810_LOG_DIR_NAME = "d810_logs"
 
 logger = getLogger("D810")
+
+
+def maybe_run_tail_distinct(mba: typing.Any) -> None:
+    """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
+
+    Thin manager-level re-export of the implementation in
+    :mod:`d810.cfg.transform.byte_emit_tail_isolation_runtime`.  The real
+    helper lives outside ``d810.manager`` so optimizer call sites can
+    import it without crossing the layered-architecture import contract
+    (optimizers must not depend on ``d810.ui``, and manager transitively
+    imports UI).
+    """
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        maybe_run_tail_distinct as _impl,
+    )
+    _impl(mba)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PostD810ProtectedBundleSpec:
+    """Diagnostic bundle that must remain sound across post-D810 compaction."""
+
+    func_ea_i64: int
+    maturity_name: str
+    name: str
+    pre_blocks: tuple[int, ...]
+    pre_markers: tuple[str, ...]
+    protected_offsets: tuple[int, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PostD810HandoffViolation:
+    """Diagnostic-only post-D810 invariant failure."""
+
+    bundle_name: str
+    pre_snapshot_id: int
+    post_snapshot_id: int
+    missing_def_offsets: tuple[int, ...]
+    use_sites: tuple[str, ...]
+    def_sites: tuple[str, ...]
+
+
+_POST_D810_PROTECTED_BUNDLES: tuple[PostD810ProtectedBundleSpec, ...] = (
+    PostD810ProtectedBundleSpec(
+        func_ea_i64=0x180012B60,
+        maturity_name="MMAT_GLBOPT1",
+        name="sub7ffd_80_118_setup_bundle",
+        pre_blocks=(80, 118),
+        pre_markers=(
+            "ldx    ds.2, %var_178.8, %var_230.8",
+            "#-0x4B6C02C3E6626146.8",
+            "#-0x4B6C02C3E6626145.8",
+            "#0xE6334342.4",
+            "#0x1C6BAB0E.4",
+            "%var_230.8",
+            "%var_678.8",
+            "%var_680.8",
+        ),
+        protected_offsets=(0x4D8, 0x4E8),
+    ),
+    PostD810ProtectedBundleSpec(
+        func_ea_i64=0x180012B60,
+        maturity_name="MMAT_GLBOPT1",
+        name="sub7ffd_223_221_private_setup_bundle",
+        pre_blocks=(223, 221),
+        pre_markers=(
+            "ldx    ds.2, %var_178.8, %var_230.8",
+            "#-0x4B6C02C3E6626146.8",
+            "#-0x4B6C02C3E6626145.8",
+            "%var_230.8",
+            "%var_678.8",
+            "%var_680.8",
+        ),
+        protected_offsets=(0x4D8, 0x4E8),
+    ),
+)
+
+
+def _find_previous_snapshot_id(
+    conn: sqlite3.Connection,
+    *,
+    func_ea_i64: int,
+    maturity_name: str,
+    phase: str,
+    before_snapshot_id: int,
+) -> int | None:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM snapshots
+        WHERE func_ea_i64 = ? AND maturity = ? AND phase = ? AND id < ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (int(func_ea_i64), str(maturity_name), str(phase), int(before_snapshot_id)),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _snapshot_contains_bundle_markers(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
+    blocks: tuple[int, ...],
+    markers: tuple[str, ...],
+) -> bool:
+    placeholders = ",".join("?" for _ in blocks)
+    rows = conn.execute(
+        f"""
+        SELECT dstr
+        FROM instructions
+        WHERE snapshot_id = ? AND block_serial IN ({placeholders})
+        ORDER BY block_serial, insn_index
+        """,
+        (int(snapshot_id), *[int(block) for block in blocks]),
+    ).fetchall()
+    if not rows:
+        return False
+    texts = tuple(str(row[0] or "") for row in rows)
+    return all(any(marker in text for text in texts) for marker in markers)
+
+
+def _collect_offset_sites(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
+    offsets: tuple[int, ...],
+) -> tuple[set[int], tuple[str, ...], set[int], tuple[str, ...]]:
+    placeholders = ",".join("?" for _ in offsets)
+    use_rows = conn.execute(
+        f"""
+        SELECT block_serial, insn_index, src_l_stkoff, src_r_stkoff, dstr
+        FROM instructions
+        WHERE snapshot_id = ?
+          AND (src_l_stkoff IN ({placeholders}) OR src_r_stkoff IN ({placeholders}))
+        ORDER BY block_serial, insn_index
+        """,
+        (
+            int(snapshot_id),
+            *[int(offset) for offset in offsets],
+            *[int(offset) for offset in offsets],
+        ),
+    ).fetchall()
+    def_rows = conn.execute(
+        f"""
+        SELECT block_serial, insn_index, dest_stkoff, dstr
+        FROM instructions
+        WHERE snapshot_id = ? AND dest_stkoff IN ({placeholders})
+        ORDER BY block_serial, insn_index
+        """,
+        (int(snapshot_id), *[int(offset) for offset in offsets]),
+    ).fetchall()
+
+    used_offsets: set[int] = set()
+    use_sites: list[str] = []
+    for block_serial, insn_index, src_l_stkoff, src_r_stkoff, dstr in use_rows:
+        if src_l_stkoff in offsets:
+            used_offsets.add(int(src_l_stkoff))
+        if src_r_stkoff in offsets:
+            used_offsets.add(int(src_r_stkoff))
+        use_sites.append(f"blk[{int(block_serial)}]:{int(insn_index)} {str(dstr or '')}")
+
+    defined_offsets: set[int] = {int(row[2]) for row in def_rows if row[2] is not None}
+    def_sites = tuple(
+        f"blk[{int(block_serial)}]:{int(insn_index)} {str(dstr or '')}"
+        for block_serial, insn_index, _, dstr in def_rows
+    )
+    return used_offsets, tuple(use_sites), defined_offsets, def_sites
+
+
+def detect_post_d810_handoff_violations(
+    conn: sqlite3.Connection,
+    *,
+    func_ea_i64: int,
+    maturity_name: str,
+    post_snapshot_id: int,
+) -> tuple[PostD810HandoffViolation, ...]:
+    """Detect protected-bundle def/use violations introduced at post-D810."""
+
+    pre_snapshot_id = _find_previous_snapshot_id(
+        conn,
+        func_ea_i64=int(func_ea_i64),
+        maturity_name=str(maturity_name),
+        phase="post_pipeline",
+        before_snapshot_id=int(post_snapshot_id),
+    )
+    if pre_snapshot_id is None:
+        return ()
+
+    violations: list[PostD810HandoffViolation] = []
+    for bundle in _POST_D810_PROTECTED_BUNDLES:
+        if int(bundle.func_ea_i64) != int(func_ea_i64):
+            continue
+        if bundle.maturity_name != str(maturity_name):
+            continue
+        if not _snapshot_contains_bundle_markers(
+            conn,
+            snapshot_id=pre_snapshot_id,
+            blocks=bundle.pre_blocks,
+            markers=bundle.pre_markers,
+        ):
+            continue
+        used_offsets, use_sites, defined_offsets, def_sites = _collect_offset_sites(
+            conn,
+            snapshot_id=int(post_snapshot_id),
+            offsets=bundle.protected_offsets,
+        )
+        if not used_offsets:
+            continue
+        missing_offsets = tuple(sorted(used_offsets - defined_offsets))
+        if not missing_offsets:
+            continue
+        violations.append(
+            PostD810HandoffViolation(
+                bundle_name=bundle.name,
+                pre_snapshot_id=int(pre_snapshot_id),
+                post_snapshot_id=int(post_snapshot_id),
+                missing_def_offsets=missing_offsets,
+                use_sites=use_sites,
+                def_sites=def_sites,
+            )
+        )
+    return tuple(violations)
 
 
 class CProfileWrapper:
@@ -264,7 +497,7 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
         """Write post-maturity MBA snapshot when configured via environment."""
         from d810.core.settings import get_settings
@@ -286,6 +519,38 @@ class D810Manager:
             )
         except Exception:
             logger.exception("Post-D810 capture failed")
+
+    def capture_post_d810_facts(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot: typing.Any = None,
+    ) -> None:
+        """Capture maturity facts on the post-D810 snapshot.
+
+        Pre-D810 fact capture happens in the Hex-Rays block hook before D810
+        runs at a maturity.  Some fact classes are specifically about what D810
+        leaves behind after reconstruction, so they need the matching
+        post-D810 view as well.  The lifecycle runtime deduplicates by
+        ``(func_ea, maturity, phase)``, making this a no-op on repeated events.
+
+        ``snapshot`` is the SnapshotRef emitted by the hexrays hook's
+        post-D810 capture; the persistence callback emits
+        ``observe_fact_*`` events against it.
+        """
+        if self._recon_runtime is None:
+            return
+        try:
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            self._recon_runtime.capture_maturity_facts(
+                mba,
+                func_ea=func_ea,
+                maturity=int(maturity),
+                phase="post_d810",
+                snapshot=snapshot,
+            )
+        except Exception:
+            logger.exception("FactLifecycleRuntime post-D810 capture failed")
 
     def _resolve_post_d810_linearization_context(
         self,
@@ -346,21 +611,28 @@ class D810Manager:
         self,
         mba: typing.Any,
         maturity: int,
-        snapshot_id: int | None = None,
+        snapshot: typing.Any = None,
     ) -> None:
-        """Attach a rendered linearized program to a post-D810 snapshot."""
+        """Attach a rendered linearized program to a post-D810 snapshot.
+
+        ``snapshot`` is the SnapshotRef emitted by the hexrays hook's
+        post-D810 capture. When ``None``, the diag pipeline is
+        disabled / no capture happened, and there is nothing to attach.
+        """
         from d810.core.settings import get_settings
+
         _s = get_settings()
         if _s.capture_post_maturity is None:
             return
-        if int(maturity) != _s.capture_post_maturity:
+        target_mat = _s.capture_post_maturity
+        if int(maturity) != target_mat:
             return
         if int(getattr(mba, "qty", 0) or 0) <= 0:
             return
+        if snapshot is None:
+            return
 
         try:
-            from d810.core.diag import get_diag_db
-            from d810.core.diag.snapshot import snapshot_rendered_program
             from d810.recon.flow.linearized_state_dag import (
                 BoundaryInlineMode,
                 ProgramCommentMode,
@@ -371,20 +643,7 @@ class D810Manager:
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
-
-            diag_db = get_diag_db(int(getattr(mba, "entry_ea", 0) or 0))
-            if diag_db is None:
-                return
-
-            snap_id = snapshot_id
-            if snap_id is None:
-                snap_row = diag_db.execute(
-                    "SELECT MAX(id) FROM snapshots WHERE func_ea=? AND maturity=? AND phase='post_d810'",
-                    (int(getattr(mba, "entry_ea", 0) or 0), _maturity_name(int(maturity))),
-                ).fetchone()
-                if snap_row is None or snap_row[0] is None:
-                    return
-                snap_id = int(snap_row[0])
+            from d810.recon.observability import observe_rendered_program
 
             dispatcher_serial, state_var_stkoff = self._resolve_post_d810_linearization_context(
                 mba,
@@ -413,9 +672,115 @@ class D810Manager:
                 boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                 comment_mode=ProgramCommentMode.MINIMAL,
             )
-            snapshot_rendered_program(diag_db, snap_id, program)
+            observe_rendered_program(snapshot, program)
         except Exception:
-            logger.debug("post_d810 rendered program attach failed", exc_info=True)
+            logger.warning(
+                "post_d810 rendered program attach failed for func=0x%x maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                _maturity_name(int(maturity)),
+                exc_info=True,
+            )
+
+    def probe_post_d810_glbopt_dce(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot: typing.Any = None,
+    ) -> None:
+        """Run the GLBOPT DCE probe against byte-emit EAs from the environment.
+
+        Triggered by ``D810_GLBOPT_DCE_EAS=0xAAA,0xBBB`` (comma-separated
+        hex EAs).  The probe is non-destructive: it forces def/use lists
+        ready via ``make_lists_ready()`` and logs IDA's classification of
+        each byte-emit instruction so we can see *why* ``optimize_global``
+        will DCE it between snap17 and snap18.
+        """
+        import os
+
+        raw = os.environ.get("D810_GLBOPT_DCE_EAS", "")
+        if not raw:
+            return
+        # Only probe at the first POST_D810_CAPTURE for the function (LOCOPT
+        # event arrives with the mba already advanced to MMAT_GLBOPT1 -- the
+        # state we actually want to inspect, prior to optimize_global running
+        # its full kill pass).
+        try:
+            import ida_hexrays as _hx
+            if int(maturity) != int(_hx.MMAT_LOCOPT):
+                return
+        except Exception:
+            pass
+        try:
+            byte_emit_eas = [int(s.strip(), 0) for s in raw.split(",") if s.strip()]
+        except ValueError:
+            logger.warning(
+                "D810_GLBOPT_DCE_EAS=%r is not parseable as comma-separated hex EAs",
+                raw,
+            )
+            return
+        if int(getattr(mba, "qty", 0) or 0) <= 0:
+            return
+        try:
+            from d810.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
+
+            lines = probe_byte_emit_dce(mba, byte_emit_eas)
+        except Exception:
+            logger.warning(
+                "glbopt DCE probe failed for func=0x%x maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                _maturity_name(int(maturity)),
+                exc_info=True,
+            )
+            return
+        report = "\n".join(lines)
+        logger.warning(
+            "\n[GLBOPT_DCE_PROBE func=0x%x maturity=%s]\n%s",
+            int(getattr(mba, "entry_ea", 0) or 0),
+            _maturity_name(int(maturity)),
+            report,
+        )
+
+    def validate_post_d810_handoff(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot: typing.Any = None,
+    ) -> None:
+        """Log diagnostic violations when post-D810 compaction orphans live uses."""
+        if snapshot is None:
+            return
+        try:
+            from d810.core.observability import (
+                get_active_diag_conn,
+                resolve_snapshot_id_for,
+            )
+
+            diag_db = get_active_diag_conn(int(getattr(mba, "entry_ea", 0) or 0))
+            snapshot_id = resolve_snapshot_id_for(snapshot)
+            if diag_db is None or snapshot_id is None:
+                return
+            violations = detect_post_d810_handoff_violations(
+                diag_db,
+                func_ea_i64=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity_name=_maturity_name(int(maturity)),
+                post_snapshot_id=int(snapshot_id),
+            )
+            for violation in violations:
+                missing_offsets = ", ".join(
+                    f"0x{offset:X}" for offset in violation.missing_def_offsets
+                )
+                logger.warning(
+                    "post_d810 handoff invalid for %s: snapshot %d -> %d left live uses "
+                    "without defs for offsets [%s]; uses=%s defs=%s",
+                    violation.bundle_name,
+                    violation.pre_snapshot_id,
+                    violation.post_snapshot_id,
+                    missing_offsets,
+                    list(violation.use_sites),
+                    list(violation.def_sites),
+                )
+        except Exception:
+            logger.debug("post_d810 handoff validation failed", exc_info=True)
 
     def start(self):
         if self._started:
@@ -474,11 +839,19 @@ class D810Manager:
             cfg_rule.log_dir = self.log_dir
             self.block_optimizer.add_rule(cfg_rule)
 
-        # Build PassPipeline when feature flag is enabled (default OFF).
-        # Zero overhead when disabled - no imports of pass modules occur.
+        # Build PassPipeline when feature flag is enabled (default OFF), or when
+        # the explicit loop-carrier experiment is requested. Zero overhead when
+        # both are disabled - no imports of pass modules occur.
         _pass_pipeline = None
-        if self.config.get("enable_pass_pipeline", False):
-            _pass_pipeline = self._build_pass_pipeline()
+        _enable_pass_pipeline = bool(self.config.get("enable_pass_pipeline", False))
+        _enable_loop_carrier_refresh = (
+            os.environ.get("D810_LOOP_CARRIER_BACKEDGE_REFRESH", "").strip() == "1"
+        )
+        if _enable_pass_pipeline or _enable_loop_carrier_refresh:
+            _pass_pipeline = self._build_pass_pipeline(
+                include_default_cleanup=_enable_pass_pipeline,
+                enable_loop_carrier_backedge_refresh=_enable_loop_carrier_refresh,
+            )
 
         # Build ReconPhase when feature flag is enabled (default ON).
         # Passive collection with minimal overhead; disable with
@@ -498,8 +871,15 @@ class D810Manager:
                 self._recon_phase._store,
             )
             self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(LoopCarrierFactCollector())
             self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
+            self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
+            self._recon_runtime.register_fact_collector(CallAnchorFactCollector())
+            self._recon_runtime.register_fact_collector(ZeroBlobFactCollector())
+            self._recon_runtime.register_fact_collector(ReturnFrontierFactCollector())
+            self._recon_runtime.register_fact_collector(StateWriteAnchorFactCollector())
+            self._recon_runtime.register_fact_collector(StateTransitionAnchorFactCollector())
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,
@@ -651,6 +1031,36 @@ class D810Manager:
             func_eas=frozenset({int(function_addr)}),
             changed_rules=frozenset(
                 (enabled_rules or set()) | (disabled_rules or set())
+            ),
+        )
+
+    def clear_function_rule_override(self, function_addr: int) -> None:
+        if self.storage is None:
+            self._init_storage()
+        if self.storage is None:
+            logger.warning("Function-rules storage unavailable; override not cleared")
+            return
+
+        existing = self.storage.get_function_rules(function_addr)
+        if existing is None:
+            return
+
+        if existing.tags:
+            self.storage.set_function_rules(
+                function_addr=function_addr,
+                enabled_rules=set(),
+                disabled_rules=set(),
+                notes="",
+            )
+        else:
+            self.storage.clear_function_rules(function_addr)
+
+        self.emit_rule_scope_invalidation(
+            RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            project_name=str(self.config.get("project_name", "")),
+            func_eas=frozenset({int(function_addr)}),
+            changed_rules=frozenset(
+                set(existing.enabled_rules) | set(existing.disabled_rules)
             ),
         )
 
@@ -820,6 +1230,12 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.attach_post_d810_rendered_program
         )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.validate_post_d810_handoff
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.probe_post_d810_glbopt_dce
+        )
 
         self.instruction_optimizer.event_emitter = self.event_emitter
         self.block_optimizer.event_emitter = self.event_emitter
@@ -827,7 +1243,12 @@ class D810Manager:
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
 
-    def _build_pass_pipeline(self):
+    def _build_pass_pipeline(
+        self,
+        *,
+        include_default_cleanup: bool = True,
+        enable_loop_carrier_backedge_refresh: bool = False,
+    ):
         """Construct a PassPipeline with the 2 safe cleanup FlowGraphTransformes for MMAT_GLBOPT2.
 
         Only called when config["enable_pass_pipeline"] is True. Imports are
@@ -864,10 +1285,29 @@ class D810Manager:
         )
 
         backend = IDAIRTranslator()
-        passes = [
-            SimplifyIdenticalBranchPass(),
-            GotoChainRemovalPass(),
-        ]
+        passes = []
+        if include_default_cleanup:
+            passes.extend(
+                [
+                    SimplifyIdenticalBranchPass(),
+                    GotoChainRemovalPass(),
+                ]
+            )
+        if enable_loop_carrier_backedge_refresh:
+            from d810.cfg.transform.loop_carrier_backedge_refresh import (
+                LoopCarrierBackedgeRefreshPass,
+            )
+
+            def _fact_view_provider(func_ea: int, maturity: int | str):
+                if self._recon_runtime is None:
+                    return None
+                return self._recon_runtime.validated_fact_view(func_ea, maturity)
+
+            passes.append(
+                LoopCarrierBackedgeRefreshPass(
+                    fact_view_provider=_fact_view_provider,
+                )
+            )
         pipeline = FlowGraphTransformPipeline(backend, passes)
         logger.info(
             "PassPipeline enabled: %s",

@@ -14,10 +14,15 @@ def test_create_tables_creates_all_expected_tables():
     )
     tables = [row[0] for row in cursor]
     assert "blocks" in tables
+    assert "block_observations" in tables
+    assert "block_lineage" in tables
     assert "instructions" in tables
     assert "snapshots" in tables
     assert "dag_edges" in tables
     assert "dag_nodes" in tables
+    assert "dag_node_blocks" in tables
+    assert "dag_local_segments" in tables
+    assert "dag_local_edges" in tables
     assert "modifications" in tables
     assert "block_classification" in tables
     assert "rendered_programs" in tables

@@ -1,0 +1,263 @@
+"""Tests for the executor return-carrier fact guard."""
+from __future__ import annotations
+
+from d810.cfg.graph_modification import RedirectGoto
+from d810.optimizers.microcode.flow.flattening.engine import return_carrier_fact_guard
+from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
+    filter_return_carrier_fact_redirects,
+)
+from d810.recon.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView
+
+
+class _FakeBlock:
+    def __init__(self, succs: tuple[int, ...]) -> None:
+        self.succset = succs
+
+
+class _FakeMba:
+    def __init__(self, succs_by_block: dict[int, tuple[int, ...]]) -> None:
+        self._succs_by_block = succs_by_block
+
+    def get_mblock(self, serial: int) -> _FakeBlock:
+        return _FakeBlock(self._succs_by_block.get(int(serial), ()))
+
+
+def _return_carrier_fact(
+    fact_id: str,
+    *,
+    block_serial: int = 93,
+    refs: tuple[str, ...] = ("228", "650"),
+) -> FactObservation:
+    return FactObservation(
+        fact_id=fact_id,
+        kind="ReturnCarrierFact",
+        semantic_key=f"{fact_id}:semantic",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_ea=0x401000,
+        payload={
+            "return_slot_stkoff": 8,
+            "carrier_dst_stkoff": 0x30,
+            "upstream_writer_block_serial": block_serial,
+            "upstream_writer_ea": 0x401020,
+            "upstream_writer_dest_stkoff": 0x30,
+            "upstream_writer_var_refs": list(refs),
+        },
+    )
+
+
+def _patch_const_refs(monkeypatch, refs: frozenset[str]) -> None:
+    monkeypatch.setattr(
+        return_carrier_fact_guard,
+        "collect_const_var_refs_in_block",
+        lambda _mba, _block_serial: refs,
+    )
+
+
+def test_active_return_carrier_fact_rejects_redirect(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    fact = _return_carrier_fact("return:active")
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [RedirectGoto(from_serial=132, old_target=2, new_target=93)],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].fact_status == "active"
+    assert rejections[0].overlap == ("228",)
+
+
+def test_identity_lost_fact_without_target_block_is_ignored(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    fact = _return_carrier_fact("return:stale")
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_stale_hazard_on_immediate_successor_rejects_redirect(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    fact = _return_carrier_fact("return:stale", block_serial=254)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+                target_block=94,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [RedirectGoto(from_serial=132, old_target=2, new_target=93)],
+        mba=_FakeMba({93: (94, 95)}),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].fact_status == "stale_hazard"
+    assert rejections[0].hazard_block == 94
+
+
+def test_dag_frontier_override_bypasses_only_matching_stale_hazard(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    fact = _return_carrier_fact("return:stale", block_serial=254)
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:stale",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+                target_block=94,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=_FakeMba({93: (94, 95)}),
+        fact_view=view,
+        dispatcher_serial=2,
+        stale_hazard_override_keys=frozenset({(132, 2, 93)}),
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_dag_frontier_override_does_not_bypass_active_hazard(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    fact = _return_carrier_fact("return:active")
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        stale_hazard_override_keys=frozenset({(132, 2, 93)}),
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].fact_status == "active"
+
+
+def test_contradicted_stale_hazard_is_ignored(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    fact = _return_carrier_fact("return:contradicted")
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:contradicted",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+            FactMapping(
+                source_fact_id="return:contradicted",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.CONTRADICTED,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_unrelated_lost_fact_is_ignored(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    fact = _return_carrier_fact("return:unrelated", block_serial=94)
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(fact,),
+        mappings=(
+            FactMapping(
+                source_fact_id="return:unrelated",
+                source_maturity="MMAT_LOCOPT",
+                target_maturity="MMAT_GLBOPT1",
+                status=FactStatus.IDENTITY_LOST,
+                confidence=1.0,
+            ),
+        ),
+    )
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_no_fact_view_is_noop(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=None,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()

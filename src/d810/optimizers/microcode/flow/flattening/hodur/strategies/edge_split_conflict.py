@@ -13,6 +13,7 @@ from __future__ import annotations
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
+from d810.core.algorithm_metadata import algorithm_metadata
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     FAMILY_DIRECT,
     PlanFragment,
@@ -28,6 +29,24 @@ logger = logging.getLogger("D810.hodur.strategy.edge_split_conflict")
 __all__ = ["EdgeSplitConflictResolutionStrategy"]
 
 
+@algorithm_metadata(
+    algorithm_id="hodur.edge_split_conflict_resolution",
+    family="shared_block_duplication_merge_cleanup",
+    summary="Conflict-resolution placeholder for shared-block splitting when ownership overlaps.",
+    use_cases=(
+        "Diagnose when two lowerings want the same shared block and symbolic splitting is required.",
+        "Mark the intended insertion point for future conflict-driven duplication materialization.",
+    ),
+    examples=(
+        "Surface an ownership conflict between two handler rewrites that both claim the same merge block.",
+        "Keep a shared exit block visible as a split candidate instead of silently choosing one strategy.",
+    ),
+    tags=("shared-block", "conflict", "duplication", "ownership"),
+    related_paths=(
+        "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/edge_split_conflict.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/inner_merge_duplication.py",
+    ),
+)
 class EdgeSplitConflictResolutionStrategy:
     """Placeholder strategy until symbolic duplicate materialization exists.
 
