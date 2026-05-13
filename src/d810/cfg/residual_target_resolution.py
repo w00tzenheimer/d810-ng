@@ -1,8 +1,42 @@
-"""Pure semantic target-resolution helpers for cfg lowering."""
+"""Backend-neutral residual dispatcher frontier target resolution.
 
+The routines here classify residual dispatcher feeders and choose semantic
+frontier targets from DAG/CFG evidence.  They intentionally accept callback
+resolvers from the caller instead of importing recon or backend modules; Hodur
+keeps strategy ordering, live state-write extraction, and modification emission.
+"""
 from __future__ import annotations
 
+import re
+from types import SimpleNamespace
+
 from d810.cfg.dag_index import build_dag_node_maps
+from d810.core.typing import Callable, Iterable
+
+
+_STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?$")
+_RAW_STATE_LABEL_RE = re.compile(r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?$")
+_STATE_LABEL_PREFIX_RE = re.compile(
+    r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
+)
+_RAW_STATE_LABEL_PREFIX_RE = re.compile(
+    r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
+)
+
+__all__ = [
+    "collect_owned_exact_sources",
+    "collect_supported_exact_entries",
+    "dispatcher_exact_state_target",
+    "dispatcher_has_exact_state_row",
+    "is_raw_state_label",
+    "is_structured_conditional_path_feeder",
+    "is_supplemental_feeder_bypass",
+    "resolve_nonexact_dispatch_target",
+    "resolve_normalized_alias_entry_for_state",
+    "resolve_owner_semantic_entry_for_blocks",
+    "resolve_frontier_target_entry",
+    "resolve_semantic_reference_alias_entry",
+]
 
 
 def _node_kind_name(node: object) -> str:
@@ -479,11 +513,440 @@ def resolve_nonexact_dispatch_target(
     return None
 
 
-__all__ = [
-    "dispatcher_exact_state_target",
-    "dispatcher_has_exact_state_row",
-    "is_raw_state_label",
-    "resolve_nonexact_dispatch_target",
-    "resolve_normalized_alias_entry_for_state",
-    "resolve_owner_semantic_entry_for_blocks",
-]
+def _normalize_semantic_target_label(label_text: str | None) -> str | None:
+    text = str(label_text or "").strip()
+    if not text:
+        return None
+    state_match = _STATE_LABEL_PREFIX_RE.match(text)
+    if state_match is not None:
+        state_hex = state_match.group(1).upper()
+        fallback_suffix = "_fallback" if state_match.group(2) else ""
+        return f"STATE_{state_hex}{fallback_suffix}"
+    raw_match = _RAW_STATE_LABEL_PREFIX_RE.match(text)
+    if raw_match is not None:
+        state_hex = raw_match.group(1).upper()
+        fallback_suffix = "_fallback" if raw_match.group(2) else ""
+        return f"STATE_{state_hex}{fallback_suffix}"
+    return None
+
+
+def _collect_semantic_entry_by_label(
+    semantic_reference_program: object | None,
+) -> dict[str, int]:
+    if semantic_reference_program is None:
+        return {}
+    entries: dict[str, int] = {}
+    for node in getattr(semantic_reference_program, "nodes", ()) or ():
+        label_text = str(getattr(node, "label_text", "") or "")
+        entry_anchor = getattr(node, "entry_anchor", None)
+        if not label_text or entry_anchor is None:
+            continue
+        entry_value = int(entry_anchor)
+        entries[label_text] = entry_value
+        normalized_label = _normalize_semantic_target_label(label_text)
+        if normalized_label is not None:
+            entries.setdefault(normalized_label, entry_value)
+        raw_match = _RAW_STATE_LABEL_RE.match(label_text)
+        if raw_match is not None:
+            suffix = raw_match.group(2) or ""
+            entries[f"STATE_{raw_match.group(1).upper()}{suffix}"] = entry_value
+            continue
+        state_match = _STATE_LABEL_RE.match(label_text)
+        if state_match is not None:
+            suffix = state_match.group(2) or ""
+            entries[f"0x{state_match.group(1).upper()}{suffix}"] = entry_value
+    return entries
+
+
+def _collect_semantic_successors_by_state(
+    semantic_reference_program: object | None,
+) -> dict[int, tuple[str, ...]]:
+    if semantic_reference_program is None:
+        return {}
+    lines = tuple(getattr(semantic_reference_program, "lines", ()) or ())
+    by_state: dict[int, list[str]] = {}
+    for node in getattr(semantic_reference_program, "nodes", ()) or ():
+        label_text = str(getattr(node, "label_text", "") or "")
+        match = _STATE_LABEL_PREFIX_RE.match(label_text)
+        if match is None:
+            match = _RAW_STATE_LABEL_PREFIX_RE.match(label_text)
+        if match is None:
+            continue
+        source_state = int(match.group(1), 16) & 0xFFFFFFFF
+        line_start = int(getattr(node, "line_start", 0) or 0)
+        line_end = int(getattr(node, "line_end", 0) or 0)
+        targets: list[str] = []
+        for line in lines:
+            line_no = int(getattr(line, "line_no", 0) or 0)
+            if line_no < line_start or line_no > line_end:
+                continue
+            target_label = getattr(line, "target_label", None)
+            if target_label is None:
+                continue
+            targets.append(str(target_label))
+        if targets:
+            existing = by_state.setdefault(source_state, [])
+            for target in targets:
+                if target not in existing:
+                    existing.append(target)
+    return {
+        int(source_state) & 0xFFFFFFFF: tuple(targets)
+        for source_state, targets in by_state.items()
+        if targets
+    }
+
+
+def resolve_semantic_reference_alias_entry(
+    dag: object,
+    semantic_reference_program: object | None,
+    *,
+    pred_serial: int,
+    state_value: int,
+) -> int | None:
+    """Resolve a raw alias state through the semantic reference program."""
+    semantic_successors_by_state = _collect_semantic_successors_by_state(
+        semantic_reference_program
+    )
+    semantic_entry_by_label = _collect_semantic_entry_by_label(
+        semantic_reference_program
+    )
+    if not semantic_successors_by_state or not semantic_entry_by_label:
+        return None
+
+    relevant_edges = [
+        edge
+        for edge in getattr(dag, "edges", ()) or ()
+        if getattr(edge, "target_state", None) is not None
+        and (int(getattr(edge, "target_state")) & 0xFFFFFFFF) == (int(state_value) & 0xFFFFFFFF)
+        and int(pred_serial) in tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+    ]
+    if not relevant_edges:
+        return None
+
+    source_sites: set[tuple[int, int | None]] = set()
+    for edge in relevant_edges:
+        source_state = getattr(getattr(edge, "source_key", None), "state_const", None)
+        if source_state is None:
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = getattr(source_anchor, "block_serial", None)
+        source_sites.add(
+            (
+                int(source_state) & 0xFFFFFFFF,
+                None if source_block is None else int(source_block),
+            )
+        )
+
+    for source_state, source_block in source_sites:
+        semantic_labels = tuple(semantic_successors_by_state.get(source_state, ()))
+        if not semantic_labels:
+            continue
+        source_edges = [
+            edge
+            for edge in getattr(dag, "edges", ()) or ()
+            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
+            and (int(getattr(getattr(edge, "source_key", None), "state_const")) & 0xFFFFFFFF) == source_state
+            and (
+                source_block is None
+                or int(
+                    getattr(getattr(edge, "source_anchor", None), "block_serial", -1)
+                )
+                == source_block
+            )
+        ]
+        matched_labels: set[str] = set()
+        unmatched_alias_edges: list[object] = []
+        for edge in source_edges:
+            target_state_attr = getattr(edge, "target_state", None)
+            if target_state_attr is None:
+                continue
+            target_state_value = int(target_state_attr) & 0xFFFFFFFF
+            direct_label = f"STATE_{target_state_value:08X}"
+            if direct_label in semantic_labels:
+                matched_labels.add(direct_label)
+            else:
+                unmatched_alias_edges.append(edge)
+        unmatched_labels = [
+            label for label in semantic_labels if label not in matched_labels
+        ]
+        if len(unmatched_alias_edges) != 1 or len(unmatched_labels) != 1:
+            continue
+        alias_edge = unmatched_alias_edges[0]
+        ordered_path = tuple(int(node) for node in getattr(alias_edge, "ordered_path", ()) or ())
+        if int(pred_serial) not in ordered_path:
+            continue
+        target_entry = semantic_entry_by_label.get(unmatched_labels[0])
+        if target_entry is not None and int(target_entry) != int(pred_serial):
+            return int(target_entry)
+    return None
+
+
+def resolve_frontier_target_entry(
+    dag: object,
+    *,
+    pred_serial: int,
+    state_value: int,
+    dispatcher_model: object | None,
+    bst_blocks: set[int],
+    semantic_reference_program: object | None,
+    state_var_stkoff: int | None,
+    mba: object | None,
+    dispatcher_exact_state_target_fn: Callable[..., int | None],
+    supplemental_selected_entry_for_state_fn: Callable[..., int | None],
+    resolve_effective_target_entry_fn: Callable[..., int | None],
+    resolve_exact_dag_entry_for_state_fn: Callable[..., int | None],
+    resolve_semantic_reference_entry_for_state_fn: Callable[..., int | None],
+    resolve_dag_entry_for_state_fn: Callable[..., int | None],
+    resolve_normalized_alias_entry_for_state_fn: Callable[..., int | None],
+    resolve_semantic_reference_alias_entry_fn: Callable[..., int | None] = resolve_semantic_reference_alias_entry,
+) -> tuple[int | None, int | None]:
+    """Resolve the best semantic entry for a residual feeder state write."""
+    raw_state = int(state_value) & 0xFFFFFFFF
+    exact_dispatch_target = dispatcher_exact_state_target_fn(
+        raw_state,
+        dispatcher=dispatcher_model,
+    )
+    residual_effective_target = None
+    synthetic_target_entry = supplemental_selected_entry_for_state_fn(
+        dag,
+        raw_state,
+    )
+    if (
+        dispatcher_model is not None
+        and state_var_stkoff is not None
+        and mba is not None
+    ):
+        synthetic_edge = SimpleNamespace(
+            source_anchor=SimpleNamespace(block_serial=int(pred_serial), branch_arm=None),
+            source_key=SimpleNamespace(state_const=None),
+            target_key=None,
+            target_state=raw_state,
+            target_label=f"STATE_{raw_state:08X}",
+            target_entry_anchor=synthetic_target_entry,
+            ordered_path=(int(pred_serial),),
+        )
+        residual_effective_target = resolve_effective_target_entry_fn(
+            dag,
+            synthetic_edge,
+            bst_node_blocks=bst_blocks,
+            state_var_stkoff=int(state_var_stkoff),
+            dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
+            dispatcher=dispatcher_model,
+            mba=mba,
+        )
+    exact_dag_entry = resolve_exact_dag_entry_for_state_fn(
+        dag,
+        raw_state,
+        dispatcher_region=bst_blocks,
+    )
+    direct_semantic_entry = resolve_semantic_reference_entry_for_state_fn(
+        raw_state,
+        semantic_reference_program=semantic_reference_program,
+        dispatcher_region=bst_blocks,
+    )
+    target_entry = resolve_dag_entry_for_state_fn(
+        dag,
+        raw_state,
+        bst_node_blocks=bst_blocks,
+    )
+    normalized_alias_entry = resolve_normalized_alias_entry_for_state_fn(
+        dag,
+        raw_state,
+        source_block=int(pred_serial),
+        bst_node_blocks=bst_blocks,
+    )
+    semantic_alias_entry = resolve_semantic_reference_alias_entry_fn(
+        dag,
+        semantic_reference_program,
+        pred_serial=int(pred_serial),
+        state_value=raw_state,
+    )
+    if (
+        residual_effective_target is not None
+        and int(residual_effective_target) != int(pred_serial)
+    ):
+        target_entry = int(residual_effective_target)
+    if (
+        residual_effective_target is None
+        and exact_dag_entry is not None
+        and int(exact_dag_entry) != int(pred_serial)
+    ):
+        target_entry = int(exact_dag_entry)
+    if (
+        residual_effective_target is None
+        and
+        direct_semantic_entry is not None
+        and int(direct_semantic_entry) != int(pred_serial)
+    ):
+        target_entry = int(direct_semantic_entry)
+    if (
+        residual_effective_target is None
+        and
+        semantic_alias_entry is not None
+        and semantic_alias_entry != int(pred_serial)
+        and semantic_alias_entry != target_entry
+    ):
+        target_entry = int(semantic_alias_entry)
+    preferred_alias_entry = normalized_alias_entry
+    if (
+        preferred_alias_entry is not None
+        and preferred_alias_entry != int(pred_serial)
+        and (
+            target_entry is None
+            or int(target_entry) == int(pred_serial)
+            or (
+                exact_dispatch_target is not None
+                and int(target_entry) == int(exact_dispatch_target)
+            )
+        )
+    ):
+        target_entry = int(preferred_alias_entry)
+    if (
+        target_entry is None
+        or int(target_entry) in bst_blocks
+        or int(target_entry) == int(pred_serial)
+    ):
+        target_entry = supplemental_selected_entry_for_state_fn(
+            dag,
+            raw_state,
+        )
+    if target_entry is not None:
+        target_entry = int(target_entry)
+    return (
+        None if exact_dispatch_target is None else int(exact_dispatch_target),
+        target_entry,
+    )
+
+
+def collect_supported_exact_entries(
+    round_summary: object,
+    *,
+    exact_source_blocks: Iterable[int],
+    bst_blocks: set[int],
+    is_straight_line_handoff_fn: Callable[[object], bool],
+    resolve_dag_entry_for_state_fn: Callable[..., int | None],
+) -> set[int]:
+    """Return exact-node entry blocks that are safe BST bypass targets."""
+    supported_entries = {int(source_block) for source_block in exact_source_blocks}
+    for plannable in getattr(round_summary, "plannable_edges", ()):
+        edge = getattr(plannable, "edge", None)
+        if edge is None or not is_straight_line_handoff_fn(edge):
+            continue
+        target_state = getattr(edge, "target_state", None)
+        if target_state is None:
+            continue
+        target_entry = resolve_dag_entry_for_state_fn(
+            round_summary.dag,
+            int(target_state) & 0xFFFFFFFF,
+            bst_node_blocks=bst_blocks,
+        )
+        if target_entry is None or int(target_entry) in bst_blocks:
+            continue
+        supported_entries.add(int(target_entry))
+    return supported_entries
+
+
+def collect_owned_exact_sources(
+    round_summary: object,
+    *,
+    exact_source_blocks: Iterable[int],
+    is_straight_line_handoff_fn: Callable[[object], bool],
+) -> set[int]:
+    """Return source blocks already owned by earlier exact-node lowerers."""
+    owned_sources = {int(source_block) for source_block in exact_source_blocks}
+    for plannable in getattr(round_summary, "plannable_edges", ()):
+        edge = getattr(plannable, "edge", None)
+        if edge is None or not is_straight_line_handoff_fn(edge):
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = getattr(source_anchor, "block_serial", None)
+        if source_block is None:
+            continue
+        owned_sources.add(int(source_block))
+    return owned_sources
+
+
+def is_supplemental_feeder_bypass(
+    *,
+    flow_graph: object,
+    pred_serial: int,
+    pred_block: object,
+    state_value: int,
+    exact_dispatch_target: int | None,
+    target_entry: int,
+    bst_blocks: set[int],
+    supported_entries: set[int],
+    owned_exact_sources: set[int],
+    terminal_source_owned_blocks: set[int],
+    terminal_protected_blocks: set[int],
+    dag: object,
+    state_has_semantic_support_fn: Callable[..., bool],
+    can_reach_return_fn: Callable[[object, int], bool],
+) -> bool:
+    """Return whether a residual dispatcher feeder is safe for supplemental bypass.
+
+    This path exists for synthetic corridor/feed blocks that still write one
+    semantic state and jump back into the dispatcher, but whose resolved DAG
+    entry was not part of the first-wave exact-head inventory.
+    """
+    pred_serial = int(pred_serial)
+    target_entry = int(target_entry)
+    if target_entry in bst_blocks or target_entry in supported_entries:
+        return False
+    if pred_serial == target_entry:
+        return False
+    if pred_serial in terminal_source_owned_blocks or pred_serial in terminal_protected_blocks:
+        return False
+    if pred_serial in owned_exact_sources:
+        return False
+    if int(getattr(pred_block, "nsucc", 0)) != 1:
+        return False
+    succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+    if len(succs) != 1:
+        return False
+    if not (
+        state_has_semantic_support_fn(dag, int(state_value) & 0xFFFFFFFF)
+        or (
+            exact_dispatch_target is not None
+            and int(exact_dispatch_target) != int(target_entry)
+        )
+        or can_reach_return_fn(flow_graph, int(target_entry))
+    ):
+        return False
+    return True
+
+
+def is_structured_conditional_path_feeder(
+    dag: object,
+    *,
+    pred_serial: int,
+    state_value: int,
+) -> bool:
+    """Return whether ``pred_serial`` is the feeder row for a conditional path.
+
+    If the live DAG already models a conditional semantic edge as
+    ``source_head -> feeder_row -> target_entry``, then the structured-region
+    lowerer should own that source arm. Redirecting the feeder row itself keeps
+    the flattened encoding alive and competes with the source-arm rewrite.
+    """
+
+    raw_state = int(state_value) & 0xFFFFFFFF
+    pred_serial = int(pred_serial)
+    for edge in getattr(dag, "edges", ()) or ():
+        target_state = getattr(edge, "target_state", None)
+        if target_state is None or (int(target_state) & 0xFFFFFFFF) != raw_state:
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        if getattr(source_anchor, "branch_arm", None) is None:
+            continue
+        ordered_path = tuple(
+            int(block) for block in getattr(edge, "ordered_path", ()) or ()
+        )
+        if len(ordered_path) < 2:
+            continue
+        if int(ordered_path[0]) == pred_serial:
+            continue
+        if int(ordered_path[1]) != pred_serial:
+            continue
+        return True
+    return False
