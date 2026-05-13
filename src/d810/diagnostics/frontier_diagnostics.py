@@ -39,8 +39,18 @@ def load_frontier_diagnostics(
         clauses.append("d.snapshot_id = ?")
         params.append(int(snapshot_id))
     if kind:
-        clauses.append("d.kind = ?")
-        params.append(str(kind))
+        kinds = tuple(
+            item.strip()
+            for item in str(kind).split(",")
+            if item.strip()
+        )
+        if len(kinds) == 1:
+            clauses.append("d.kind = ?")
+            params.append(kinds[0])
+        elif kinds:
+            placeholders = ",".join("?" for _ in kinds)
+            clauses.append(f"d.kind IN ({placeholders})")
+            params.extend(kinds)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
         SELECT
@@ -114,6 +124,19 @@ def _arm(value: object) -> str:
     return "-" if value is None else str(int(value))
 
 
+def _payload_suffix(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    state = payload.get("state")
+    if state:
+        parts.append(f"state={state}")
+    proof = payload.get("proof")
+    if proof:
+        parts.append(f"proof={proof}")
+    return "" if not parts else " " + " ".join(parts)
+
+
 def format_frontier_diagnostics(rows: list[dict[str, object]]) -> str:
     if not rows:
         return "(no DAG frontier closure diagnostics)\n"
@@ -152,6 +175,7 @@ def format_frontier_diagnostics(rows: list[dict[str, object]]) -> str:
                 f"cfg_scc_size={row['cfg_scc_size']} "
                 f"candidates=[{candidates}] "
                 f"path=[{path}]"
+                f"{_payload_suffix(row.get('payload'))}"
             )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -175,8 +199,11 @@ def register_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--kind",
-        default="unresolved",
-        help="Filter by diagnostic kind (default: unresolved).",
+        default="unresolved,resolved",
+        help=(
+            "Filter by diagnostic kind, comma-separated "
+            "(default: unresolved,resolved)."
+        ),
     )
     parser.add_argument(
         "--all-kinds",
