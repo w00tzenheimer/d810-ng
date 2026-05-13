@@ -10,6 +10,7 @@ from d810.cfg.residual_target_resolution import (
     collect_supported_exact_entries,
     is_structured_conditional_path_feeder,
     is_supplemental_feeder_bypass,
+    resolve_dispatcher_trampoline_skip_candidate,
     resolve_frontier_target_entry,
     walk_bst_dispatcher,
 )
@@ -220,3 +221,117 @@ def test_walk_bst_dispatcher_returns_none_when_conditional_unknown() -> None:
         tail_for_block_fn=tails.get,
         is_conditional_taken_fn=lambda *_args: None,
     ) is None
+
+
+def test_resolve_dispatcher_trampoline_skip_candidate_accepts_bst_resolved_target() -> None:
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        source_block=10,
+        bst_root=2,
+        bst_blocks={2, 3},
+        nsucc=1,
+        goto_target=2,
+        direct_use_def_veto=False,
+        state_value_fn=lambda: 0x1234,
+        target_for_state_fn=lambda state: 50 if state == 0x1234 else None,
+        target_exists_fn=lambda target: target == 50,
+        block_count=100,
+    )
+
+    assert decision.is_admitted
+    assert decision.source_block == 10
+    assert decision.old_target == 2
+    assert decision.target_block == 50
+    assert decision.state_value == 0x1234
+    assert decision.rejection_reason is None
+
+
+def test_resolve_dispatcher_trampoline_skip_candidate_rejects_direct_veto_before_callbacks() -> None:
+    callback_calls: list[str] = []
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        source_block=10,
+        bst_root=2,
+        bst_blocks={2, 3},
+        nsucc=1,
+        goto_target=2,
+        direct_use_def_veto=True,
+        state_value_fn=lambda: callback_calls.append("state") or 0x1234,
+        target_for_state_fn=lambda _state: callback_calls.append("target") or 50,
+        target_exists_fn=lambda _target: callback_calls.append("exists") or True,
+        block_count=100,
+    )
+
+    assert not decision.is_admitted
+    assert decision.rejection_reason == "direct_use_def_veto"
+    assert callback_calls == []
+
+
+def test_resolve_dispatcher_trampoline_skip_candidate_requires_one_way_goto_to_bst() -> None:
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        source_block=10,
+        bst_root=2,
+        bst_blocks={2, 3},
+        nsucc=2,
+        goto_target=2,
+        direct_use_def_veto=False,
+        state_value_fn=lambda: 0x1234,
+        target_for_state_fn=lambda _state: 50,
+        target_exists_fn=lambda _target: True,
+        block_count=100,
+    )
+    assert decision.rejection_reason == "source_not_1way"
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        source_block=10,
+        bst_root=2,
+        bst_blocks={2, 3},
+        nsucc=1,
+        goto_target=4,
+        direct_use_def_veto=False,
+        state_value_fn=lambda: 0x1234,
+        target_for_state_fn=lambda _state: 50,
+        target_exists_fn=lambda _target: True,
+        block_count=100,
+    )
+    assert decision.rejection_reason == "goto_not_bst_root"
+
+
+def test_resolve_dispatcher_trampoline_skip_candidate_rejects_unsafe_targets() -> None:
+    common = dict(
+        source_block=10,
+        bst_root=2,
+        bst_blocks={2, 3},
+        nsucc=1,
+        goto_target=2,
+        direct_use_def_veto=False,
+        state_value_fn=lambda: 0x1234,
+        block_count=100,
+    )
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        **common,
+        target_for_state_fn=lambda _state: 3,
+        target_exists_fn=lambda _target: True,
+    )
+    assert decision.rejection_reason == "target_is_bst"
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        **common,
+        target_for_state_fn=lambda _state: 10,
+        target_exists_fn=lambda _target: True,
+    )
+    assert decision.rejection_reason == "target_is_source"
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        **common,
+        target_for_state_fn=lambda _state: 150,
+        target_exists_fn=lambda _target: True,
+    )
+    assert decision.rejection_reason == "target_out_of_range"
+
+    decision = resolve_dispatcher_trampoline_skip_candidate(
+        **common,
+        target_for_state_fn=lambda _state: 50,
+        target_exists_fn=lambda _target: False,
+    )
+    assert decision.rejection_reason == "target_missing"

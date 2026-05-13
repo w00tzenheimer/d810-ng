@@ -28,11 +28,13 @@ __all__ = [
     "collect_supported_exact_entries",
     "BstConditionalTail",
     "BstGotoTail",
+    "DispatcherTrampolineSkipDecision",
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
     "is_raw_state_label",
     "is_structured_conditional_path_feeder",
     "is_supplemental_feeder_bypass",
+    "resolve_dispatcher_trampoline_skip_candidate",
     "resolve_nonexact_dispatch_target",
     "resolve_normalized_alias_entry_for_state",
     "resolve_owner_semantic_entry_for_blocks",
@@ -58,6 +60,153 @@ class BstConditionalTail:
     rhs_size: int
     taken_target: int
     successors: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherTrampolineSkipDecision:
+    """Backend-neutral decision for a residual dispatcher trampoline source."""
+
+    source_block: int
+    old_target: int
+    target_block: int | None = None
+    state_value: int | None = None
+    rejection_reason: str | None = None
+
+    @property
+    def is_admitted(self) -> bool:
+        return self.rejection_reason is None and self.target_block is not None
+
+
+def _reject_trampoline_skip(
+    *,
+    source_block: int,
+    old_target: int,
+    reason: str,
+    state_value: int | None = None,
+    target_block: int | None = None,
+) -> DispatcherTrampolineSkipDecision:
+    return DispatcherTrampolineSkipDecision(
+        source_block=int(source_block),
+        old_target=int(old_target),
+        target_block=None if target_block is None else int(target_block),
+        state_value=None if state_value is None else int(state_value),
+        rejection_reason=reason,
+    )
+
+
+def resolve_dispatcher_trampoline_skip_candidate(
+    *,
+    source_block: int,
+    bst_root: int,
+    bst_blocks: set[int],
+    nsucc: int,
+    goto_target: int | None,
+    direct_use_def_veto: bool,
+    state_value_fn: Callable[[], int | None],
+    target_for_state_fn: Callable[[int], int | None],
+    target_exists_fn: Callable[[int], bool],
+    block_count: int | None = None,
+) -> DispatcherTrampolineSkipDecision:
+    """Resolve one residual trampoline source into an admissible redirect.
+
+    The caller supplies backend-specific reads through callbacks.  The shared
+    cfg layer owns the ordering and safety contract: source must not be a BST
+    node, prior direct use-def vetoes win, source must be a one-way goto to the
+    BST root, a state write must resolve through the BST to a live non-BST,
+    non-self target, and the target must be in range when a block count is
+    available.
+    """
+    source_block = int(source_block)
+    bst_root = int(bst_root)
+    bst_block_set = {int(block) for block in bst_blocks}
+    if source_block in bst_block_set:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_is_bst",
+        )
+    if direct_use_def_veto:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="direct_use_def_veto",
+        )
+    if int(nsucc) != 1:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_not_1way",
+        )
+    if goto_target is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_not_goto",
+        )
+    if int(goto_target) != bst_root:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="goto_not_bst_root",
+            target_block=int(goto_target),
+        )
+
+    state_value = state_value_fn()
+    if state_value is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="state_write_missing",
+        )
+    state_value = int(state_value)
+
+    target_block = target_for_state_fn(state_value)
+    if target_block is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="bst_walk_unresolved",
+            state_value=state_value,
+        )
+    target_block = int(target_block)
+    if target_block in bst_block_set:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_is_bst",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if target_block == source_block:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_is_source",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if block_count is not None and not (0 <= target_block < int(block_count)):
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_out_of_range",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if not target_exists_fn(target_block):
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_missing",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    return DispatcherTrampolineSkipDecision(
+        source_block=source_block,
+        old_target=bst_root,
+        target_block=target_block,
+        state_value=state_value,
+    )
 
 
 def _node_kind_name(node: object) -> str:
