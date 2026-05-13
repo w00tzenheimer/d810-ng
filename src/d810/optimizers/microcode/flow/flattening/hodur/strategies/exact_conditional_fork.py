@@ -20,7 +20,9 @@ from d810.cfg.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
     ConditionalForkExactNodeSite,
     ExactConditionalForkInventory,
+    collect_conditional_fork_scope,
     normalize_clean_conditional_fork_arms,
+    ordered_path_first_hop,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
@@ -88,28 +90,6 @@ def _require_clean_fork_paths() -> bool:
         os.environ.get("D810_EXACT_CONDITIONAL_FORK_REQUIRE_CLEAN", "1").strip()
         != "0"
     )
-
-
-def _collect_conditional_fork_scope(
-    dag: object,
-    *,
-    source_block: int,
-) -> tuple[set[int], set[tuple[int, int]]]:
-    owned_blocks: set[int] = {source_block}
-    owned_edges: set[tuple[int, int]] = set()
-
-    for sibling in getattr(dag, "edges", ()) or ():
-        key = _site_key(sibling)
-        if key is None or key[1] != source_block:
-            continue
-        if _edge_kind_name(sibling) != "CONDITIONAL_TRANSITION":
-            continue
-        path = tuple(int(node) for node in getattr(sibling, "ordered_path", ()) or ())
-        if not path:
-            continue
-        owned_blocks.update(path)
-        owned_edges.update(zip(path, path[1:]))
-    return owned_blocks, owned_edges
 
 
 def _effective_transition_target_entry(
@@ -300,23 +280,6 @@ def _resolve_semantic_target_override_entry(
     if target_entry_anchor is not None:
         return int(target_entry_anchor)
     return None
-
-
-def _ordered_path_first_hop(
-    ordered_path: tuple[int, ...],
-    *,
-    source_block: int,
-) -> int | None:
-    if not ordered_path:
-        return None
-    try:
-        source_index = ordered_path.index(int(source_block))
-    except ValueError:
-        return int(ordered_path[1]) if len(ordered_path) >= 2 else None
-    next_index = source_index + 1
-    if next_index >= len(ordered_path):
-        return None
-    return int(ordered_path[next_index])
 
 
 def _safe_zero_state_write_modification(
@@ -564,7 +527,7 @@ def analyze_exact_conditional_fork_sites(
         unique: dict[tuple[int, int, int], object] = {}
         for edge in transition_edges_by_source.get(source_block, []):
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=int(source_block),
             )
@@ -674,7 +637,7 @@ def analyze_exact_conditional_fork_sites(
         dag_arms = []
         for edge in dag_edges:
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=source_block,
             )
@@ -708,7 +671,7 @@ def analyze_exact_conditional_fork_sites(
         arms_by_first_hop: dict[int, ConditionalForkExactNodeArm] = {}
         for edge in dag_edges:
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=source_block,
             )
@@ -925,7 +888,7 @@ class ExactConditionalForkNodeLoweringStrategy:
             int(setup.state_var_stkoff),
         )
         for site in sites:
-            site_blocks, site_edges = _collect_conditional_fork_scope(
+            site_blocks, site_edges = collect_conditional_fork_scope(
                 round_summary.dag,
                 source_block=site.source_block,
             )

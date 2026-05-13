@@ -35,11 +35,13 @@ __all__ = [
     "analyze_exact_conditional_alias_sites",
     "analyze_exact_conditional_sites",
     "collect_exact_conditional_alias_sites",
+    "collect_conditional_fork_scope",
     "collect_conditional_node_scope",
     "collect_exact_conditional_sites",
     "conditional_fork_path_from_source",
     "edge_kind_name",
     "normalize_clean_conditional_fork_arms",
+    "ordered_path_first_hop",
     "site_key",
 ]
 
@@ -86,6 +88,29 @@ def collect_conditional_node_scope(
         if edge_kind_name(sibling) not in {"CONDITIONAL_TRANSITION", "CONDITIONAL_RETURN"}:
             continue
         _record_path(getattr(sibling, "ordered_path", ()))
+    return owned_blocks, owned_edges
+
+
+def collect_conditional_fork_scope(
+    dag: object,
+    *,
+    source_block: int,
+) -> tuple[set[int], set[tuple[int, int]]]:
+    """Collect owned blocks/edges for all transition arms of one fork source."""
+    owned_blocks: set[int] = {int(source_block)}
+    owned_edges: set[tuple[int, int]] = set()
+
+    for sibling in getattr(dag, "edges", ()) or ():
+        key = site_key(sibling)
+        if key is None or key[1] != int(source_block):
+            continue
+        if edge_kind_name(sibling) != "CONDITIONAL_TRANSITION":
+            continue
+        path = tuple(int(node) for node in getattr(sibling, "ordered_path", ()) or ())
+        if not path:
+            continue
+        owned_blocks.update(path)
+        owned_edges.update(zip(path, path[1:]))
     return owned_blocks, owned_edges
 
 
@@ -181,6 +206,24 @@ def conditional_fork_path_from_source(
     if int(path[1]) != int(first_hop):
         return None
     return path
+
+
+def ordered_path_first_hop(
+    ordered_path: tuple[int, ...],
+    *,
+    source_block: int,
+) -> int | None:
+    """Return the first hop after ``source_block`` in a semantic ordered path."""
+    if not ordered_path:
+        return None
+    try:
+        source_index = ordered_path.index(int(source_block))
+    except ValueError:
+        return int(ordered_path[1]) if len(ordered_path) >= 2 else None
+    next_index = source_index + 1
+    if next_index >= len(ordered_path):
+        return None
+    return int(ordered_path[next_index])
 
 
 def _path_edges_exist(flow_graph: object, path: tuple[int, ...]) -> bool:

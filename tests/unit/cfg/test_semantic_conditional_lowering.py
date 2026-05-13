@@ -11,9 +11,11 @@ from d810.cfg.semantic_conditional_lowering import (
     analyze_exact_conditional_alias_sites,
     analyze_exact_conditional_sites,
     collect_exact_conditional_alias_sites,
+    collect_conditional_fork_scope,
     collect_conditional_node_scope,
     conditional_fork_path_from_source,
     normalize_clean_conditional_fork_arms,
+    ordered_path_first_hop,
 )
 
 
@@ -111,6 +113,64 @@ def test_analyze_exact_conditional_alias_sites_reports_inventory(monkeypatch) ->
     assert inventory.selected_count == 3
     assert inventory.alias_blocks == (10, 30, 30)
     assert collect_exact_conditional_alias_sites("round", "graph") == sites
+
+
+def test_collect_conditional_fork_scope_uses_transition_arms_only() -> None:
+    source_state = 0x11111111
+    transition_a = _FakeEdge(
+        source_state=source_state,
+        source_block=10,
+        target_state=0x22222222,
+        target_entry_anchor=20,
+        ordered_path=(10, 11, 12),
+    )
+    transition_b = _FakeEdge(
+        source_state=source_state,
+        source_block=10,
+        target_state=0x33333333,
+        target_entry_anchor=30,
+        ordered_path=(10, 13, 14),
+    )
+    return_edge = _FakeEdge(
+        source_state=source_state,
+        source_block=10,
+        target_state=0,
+        target_entry_anchor=40,
+        ordered_path=(10, 15, 16),
+        kind_name="CONDITIONAL_RETURN",
+    )
+    unrelated_transition = _FakeEdge(
+        source_state=source_state,
+        source_block=99,
+        target_state=0x44444444,
+        target_entry_anchor=50,
+        ordered_path=(99, 100),
+    )
+    dag = _round_summary([
+        transition_a,
+        transition_b,
+        return_edge,
+        unrelated_transition,
+    ]).dag
+
+    blocks, edges = collect_conditional_fork_scope(dag, source_block=10)
+
+    assert blocks == {10, 11, 12, 13, 14}
+    assert edges == {(10, 11), (11, 12), (10, 13), (13, 14)}
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "expected"),
+    [
+        ((10, 11, 12), 10, 11),
+        ((8, 10, 12), 10, 12),
+        ((8, 9, 10), 10, None),
+        ((8, 9, 10), 7, 9),
+        ((), 7, None),
+    ],
+)
+def test_ordered_path_first_hop(path: tuple[int, ...], source: int, expected: int | None) -> None:
+    assert ordered_path_first_hop(path, source_block=source) == expected
 
 
 def _local_hammock_graph() -> FlowGraph:
