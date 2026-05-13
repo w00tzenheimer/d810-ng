@@ -13,9 +13,15 @@ from d810.cfg.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
     ExactConditionalAliasNodeLoweringStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    exact_conditional_alias as exact_conditional_alias_module,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
     ExactConditionalForkNodeLoweringStrategy,
     analyze_exact_conditional_fork_sites,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    exact_conditional_fork as exact_conditional_fork_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     analyze_exact_conditional_sites,
@@ -657,7 +663,8 @@ def test_exact_conditional_alias_strategy_uses_duplicate_and_redirect_when_tail_
         dispatcher_region=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias.build_semantic_exact_round_summary",
+        exact_conditional_alias_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
 
@@ -1016,15 +1023,18 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         dispatcher=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.build_semantic_exact_round_summary",
+        exact_conditional_fork_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.collect_residual_dispatcher_predecessors",
+        exact_conditional_fork_module,
+        "collect_residual_dispatcher_predecessors",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.run_snapshot_constant_fixpoint",
+        exact_conditional_fork_module,
+        "run_snapshot_constant_fixpoint",
         lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
     )
 
@@ -1046,7 +1056,8 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.resolve_transition_path_horizon",
+        exact_conditional_fork_module,
+        "resolve_transition_path_horizon",
         _fake_path_horizon,
     )
 
@@ -1079,19 +1090,23 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
         dispatcher=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.build_semantic_exact_round_summary",
+        exact_conditional_fork_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.collect_residual_dispatcher_predecessors",
+        exact_conditional_fork_module,
+        "collect_residual_dispatcher_predecessors",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.run_snapshot_constant_fixpoint",
+        exact_conditional_fork_module,
+        "run_snapshot_constant_fixpoint",
         lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.resolve_transition_path_horizon",
+        exact_conditional_fork_module,
+        "resolve_transition_path_horizon",
         lambda *args, **kwargs: None,
     )
 
