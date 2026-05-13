@@ -2022,10 +2022,12 @@ def main(argv: list[str] | None = None) -> int:
     from d810.diagnostics.residual_worksheet import (
         register_parser as _register_residual_worksheet,
     )
+    from d810.diagnostics.snap_render import register_parser as _register_snap_render
 
     _register_dump_after(sub)
     _register_inspect_state_node(sub)
     _register_residual_worksheet(sub)
+    _register_snap_render(sub)
 
     args = parser.parse_args(argv)
 
@@ -2038,6 +2040,12 @@ def main(argv: list[str] | None = None) -> int:
         from d810.diagnostics.dump_after import run as _run_dump_after
 
         return _run_dump_after(args)
+
+    # snap-render takes its own --db; bypass the common connection block.
+    if args.command == "snap-render":
+        from d810.diagnostics.snap_render import run as _run_snap_render
+
+        return _run_snap_render(args)
 
     # inspect-state-node opens its own DB on a path that may differ from
     # the heuristic default, so it does not flow through the common

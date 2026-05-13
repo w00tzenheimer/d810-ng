@@ -367,12 +367,30 @@ class TransactionalExecutor:
                     failure_phase="execution_filter",
                 )
 
+        stale_hazard_override_keys = frozenset(
+            tuple(int(part) for part in key)
+            for key in (
+                fragment.metadata.get("return_carrier_stale_hazard_overrides", ())
+                or ()
+            )
+            if isinstance(key, (tuple, list)) and len(key) == 3
+        )
+        terminal_byte_emit_dag_frontier_overrides = frozenset(
+            tuple(int(part) for part in key)
+            for key in (
+                fragment.metadata.get("terminal_byte_emit_dag_frontier_overrides", ())
+                or ()
+            )
+            if isinstance(key, (tuple, list)) and len(key) == 3
+        )
+
         modifications, return_carrier_rejections = (
             filter_return_carrier_fact_redirects(
                 modifications,
                 mba=self.mba,
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
+                stale_hazard_override_keys=stale_hazard_override_keys,
             )
         )
         if return_carrier_rejections:
@@ -392,6 +410,9 @@ class TransactionalExecutor:
                 mba=self.mba,
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
+                dag_frontier_override_keys=(
+                    terminal_byte_emit_dag_frontier_overrides
+                ),
             )
         )
         if terminal_byte_emit_rejections:

@@ -681,6 +681,65 @@ class D810Manager:
                 exc_info=True,
             )
 
+    def probe_post_d810_glbopt_dce(
+        self,
+        mba: typing.Any,
+        maturity: int,
+        snapshot: typing.Any = None,
+    ) -> None:
+        """Run the GLBOPT DCE probe against byte-emit EAs from the environment.
+
+        Triggered by ``D810_GLBOPT_DCE_EAS=0xAAA,0xBBB`` (comma-separated
+        hex EAs).  The probe is non-destructive: it forces def/use lists
+        ready via ``make_lists_ready()`` and logs IDA's classification of
+        each byte-emit instruction so we can see *why* ``optimize_global``
+        will DCE it between snap17 and snap18.
+        """
+        import os
+
+        raw = os.environ.get("D810_GLBOPT_DCE_EAS", "")
+        if not raw:
+            return
+        # Only probe at the first POST_D810_CAPTURE for the function (LOCOPT
+        # event arrives with the mba already advanced to MMAT_GLBOPT1 -- the
+        # state we actually want to inspect, prior to optimize_global running
+        # its full kill pass).
+        try:
+            import ida_hexrays as _hx
+            if int(maturity) != int(_hx.MMAT_LOCOPT):
+                return
+        except Exception:
+            pass
+        try:
+            byte_emit_eas = [int(s.strip(), 0) for s in raw.split(",") if s.strip()]
+        except ValueError:
+            logger.warning(
+                "D810_GLBOPT_DCE_EAS=%r is not parseable as comma-separated hex EAs",
+                raw,
+            )
+            return
+        if int(getattr(mba, "qty", 0) or 0) <= 0:
+            return
+        try:
+            from d810.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
+
+            lines = probe_byte_emit_dce(mba, byte_emit_eas)
+        except Exception:
+            logger.warning(
+                "glbopt DCE probe failed for func=0x%x maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                _maturity_name(int(maturity)),
+                exc_info=True,
+            )
+            return
+        report = "\n".join(lines)
+        logger.warning(
+            "\n[GLBOPT_DCE_PROBE func=0x%x maturity=%s]\n%s",
+            int(getattr(mba, "entry_ea", 0) or 0),
+            _maturity_name(int(maturity)),
+            report,
+        )
+
     def validate_post_d810_handoff(
         self,
         mba: typing.Any,
@@ -1173,6 +1232,9 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE, self.validate_post_d810_handoff
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE, self.probe_post_d810_glbopt_dce
         )
 
         self.instruction_optimizer.event_emitter = self.event_emitter

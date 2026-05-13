@@ -421,6 +421,7 @@ def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
 from d810.cfg.transform.byte_emit_tail_isolation import (
     StateCascadeReport,
     execute_state_cascade,
+    execute_terminal_tail_cascade_egress_lowering,
     parse_state_cascade_pair_env,
 )
 
@@ -458,6 +459,7 @@ class _FakePlanRow:
     state_update_verdict: str = "SAFE_TARGET_POST_GUARD"
     confidence: float = 0.9
     reason: str = "complete_cascade_egress_candidate"
+    preserves_early_return: bool = True
 
 
 @dataclass
@@ -594,6 +596,115 @@ def test_execute_state_cascade_no_clone_when_bypassed_but_no_state_write_block()
     assert res.state_write_block_cloned is None
     assert adapter.clone_calls == []
     assert adapter.redirect_calls == [(161, 200, 217)]
+
+
+# ----- execute_terminal_tail_cascade_egress_lowering -----
+
+
+def test_execute_terminal_tail_cascade_egress_lowers_safe_rows():
+    row = _FakePlanRow(
+        byte_index=2,
+        source_block=118,
+        current_continuation_target=120,
+        intended_target=161,
+        early_return_target=119,
+        state_update_verdict="SAFE_TARGET_POST_GUARD",
+    )
+    adapter = _FakeStateCascadeAdapter()
+
+    res = execute_terminal_tail_cascade_egress_lowering(
+        plan_rows=(row,),
+        adapter=adapter,
+        byte_indices=(2,),
+        split_byte_indices=(),
+    )
+
+    assert res.applied is True
+    assert res.applied_rows == (2,)
+    assert adapter.redirect_calls == [(118, 120, 161)]
+    assert adapter.clone_calls == []
+
+
+def test_execute_terminal_tail_cascade_egress_rejects_unproven_state_write():
+    row = _FakePlanRow(
+        byte_index=4,
+        source_block=163,
+        current_continuation_target=165,
+        intended_target=101,
+        state_update_verdict="NEEDS_STATE_WRITE",
+        state_write_bypassed=True,
+        state_write_block=None,
+    )
+    adapter = _FakeStateCascadeAdapter()
+
+    res = execute_terminal_tail_cascade_egress_lowering(
+        plan_rows=(row,),
+        adapter=adapter,
+        byte_indices=(4,),
+        split_byte_indices=(),
+    )
+
+    assert res.applied is False
+    assert res.skipped_rows == ("byte4:planner_needs_state_write_without_template",)
+    assert adapter.redirect_calls == []
+    assert adapter.clone_calls == []
+
+
+def test_execute_terminal_tail_cascade_egress_clones_proven_state_write():
+    row = _FakePlanRow(
+        byte_index=4,
+        source_block=163,
+        current_continuation_target=165,
+        intended_target=101,
+        state_update_verdict="NEEDS_STATE_WRITE",
+        state_write_bypassed=True,
+        state_write_block=164,
+    )
+    adapter = _FakeStateCascadeAdapter(next_clone_serial=777)
+
+    res = execute_terminal_tail_cascade_egress_lowering(
+        plan_rows=(row,),
+        adapter=adapter,
+        byte_indices=(4,),
+        split_byte_indices=(),
+    )
+
+    assert res.applied is True
+    assert res.cloned_state_write_blocks == (777,)
+    assert adapter.clone_calls == [(164, 101)]
+    assert adapter.redirect_calls == [(163, 165, 777)]
+
+
+def test_execute_terminal_tail_cascade_egress_splits_same_block_row():
+    row = _FakePlanRow(
+        byte_index=3,
+        source_block=163,
+        current_continuation_target=165,
+        intended_target=163,
+    )
+
+    @dataclass
+    class _SplitAdapter(_FakeStateCascadeAdapter):
+        split_calls: list[int] = field(default_factory=list)
+
+        def split_block_at_tail_jcnd(self, block_serial):
+            self.split_calls.append(block_serial)
+            return 999
+
+    adapter = _SplitAdapter()
+
+    res = execute_terminal_tail_cascade_egress_lowering(
+        plan_rows=(row,),
+        adapter=adapter,
+        byte_indices=(),
+        split_byte_indices=(3,),
+    )
+
+    assert res.applied is True
+    assert res.applied_rows == (3,)
+    assert res.split_blocks == (999,)
+    assert adapter.split_calls == [163]
+    assert adapter.redirect_calls == []
 
 
 # ----- _bridge_plan_row_to_live_mba -----
@@ -847,3 +958,174 @@ def test_bridge_plan_row_requires_state_write_when_bypassed():
     assert reason == (
         "live_block_not_resolvable:state_write_block:None:required_when_bypassed"
     )
+
+
+def test_select_terminal_tail_entry_live_uses_fact_backed_prep_block():
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        TerminalByteEmitSite,
+        TerminalTailBlock,
+    )
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _select_terminal_tail_entry_live,
+    )
+
+    blocks = {
+        130: TerminalTailBlock(
+            serial=130,
+            succs=(143,),
+            type_name="BLT_1WAY",
+            insn_opcodes=("m_call", "m_goto"),
+            insn_text=("call   $0x180000000", "goto   @143"),
+        ),
+        135: TerminalTailBlock(
+            serial=135,
+            succs=(136, 143),
+            type_name="BLT_2WAY",
+            insn_opcodes=("m_jnz",),
+            insn_text=("jnz    %var_7BC.4, #0x139F2922.4, @143",),
+        ),
+        143: TerminalTailBlock(
+            serial=143,
+            preds=(130, 135),
+            succs=(144, 145),
+            type_name="BLT_2WAY",
+            insn_opcodes=("m_call", "m_add", "m_stx", "m_jnz"),
+            insn_text=(
+                "call   $0x180000000",
+                "add    %var_218.8, #0x80.8, %var_330.8",
+                "stx    #0x80.8, ds.2, %var_178.8",
+                "jnz    %var_320.8, #1.8, @145",
+            ),
+        ),
+    }
+    sites = (
+        TerminalByteEmitSite(
+            byte_index=1,
+            block_serial=143,
+            opcode="m_stx",
+            emitter_role="memory_store",
+            corridor_role="terminal_tail",
+            continuation_edge=145,
+            return_edge=144,
+            confidence=0.8,
+        ),
+    )
+    conn = _FakeDiagConn(rows_by_serial={
+        130: 0x1800_51C8,
+        143: 0x1800_5FB8,
+    })
+    adapter = _FakeBridgeAdapter(ea_to_live={
+        0x1800_51C8: 80,
+        0x1800_5FB8: 43,
+    })
+
+    live, reason = _select_terminal_tail_entry_live(
+        blocks=blocks,
+        sites=sites,
+        rows_by_byte={},
+        diag_conn=conn,
+        target_snap=17,
+        adapter=adapter,
+    )
+
+    assert reason == "ok"
+    assert live == 80
+
+
+def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monkeypatch):
+    import d810.cfg.transform.byte_emit_tail_isolation_runtime as runtime
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        TerminalByteEmitSite,
+        TerminalTailBlock,
+    )
+
+    blocks = {
+        130: TerminalTailBlock(
+            serial=130,
+            succs=(143,),
+            type_name="BLT_1WAY",
+            insn_opcodes=("m_call", "m_goto"),
+            insn_text=("call   $0x180000000", "goto   @143"),
+        ),
+        143: TerminalTailBlock(
+            serial=143,
+            preds=(130,),
+            succs=(144, 145),
+            type_name="BLT_2WAY",
+            insn_opcodes=("m_stx", "m_jnz"),
+            insn_text=("stx    #0x80.8, ds.2, %var_178.8", "jnz @145"),
+        ),
+    }
+    sites = (
+        TerminalByteEmitSite(
+            byte_index=1,
+            block_serial=143,
+            opcode="m_stx",
+            emitter_role="memory_store",
+            corridor_role="terminal_tail",
+            continuation_edge=145,
+            return_edge=144,
+            confidence=0.8,
+        ),
+    )
+    dag = runtime._DagSemantics(
+        snapshot_id=7,
+        state_to_scc={0x2315233C: 8},
+        scc_reachable={8: frozenset({8})},
+        block_to_sccs={139: frozenset({4}), 141: frozenset({4}), 130: frozenset({8})},
+        scc_successors={8: frozenset()},
+        edges=(
+            runtime._DagEdge(
+                edge_id=58,
+                source_state=0x139F2922,
+                target_state=0x2315233C,
+                edge_kind="CONDITIONAL_TRANSITION",
+                source_block=139,
+                source_arm=1,
+                target_entry=211,
+                ordered_path=(136, 137, 139, 141),
+            ),
+        ),
+    )
+    conn = _FakeDiagConn(rows_by_serial={
+        130: 0x1800_51C8,
+        139: 0x1800_5F20,
+    })
+
+    @dataclass
+    class _Adapter:
+        ea_to_live: dict[int, int]
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+
+        def find_block_by_ea(self, ea):
+            live = self.ea_to_live.get(int(ea))
+            if live is None:
+                return None
+            return _FakeBlockView(serial=int(live))
+
+        def redirect_advance_edge(self, *, source_serial, old_target_serial, new_target_serial):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+    adapter = _Adapter(ea_to_live={0x1800_51C8: 130, 0x1800_5F20: 139})
+    monkeypatch.setattr(runtime, "_live_reachable_from_entry", lambda adapter: frozenset({0, 139, 130}))
+    monkeypatch.setattr(runtime, "_live_successor_map", lambda adapter: {139: (140, 141), 141: (211,), 130: (143,)})
+    monkeypatch.setattr(runtime, "_map_snap_successor_to_live", lambda **kwargs: (141, "ok"))
+    monkeypatch.setattr(runtime, "_frontier_for_terminal_arm", lambda **kwargs: (141, 211, "state_frontier"))
+    monkeypatch.setattr(runtime, "_first_cyclic_scc_reachable", lambda **kwargs: object())
+    monkeypatch.setattr(runtime, "_cfg_scc_is_illegal_from_dag_sources", lambda **kwargs: True)
+
+    applied, skipped = runtime._close_terminal_tail_entry_frontier(
+        rows_by_byte={},
+        blocks=blocks,
+        sites=sites,
+        dag=dag,
+        diag_conn=conn,
+        target_snap=17,
+        adapter=adapter,
+    )
+
+    assert skipped == ()
+    assert applied == ((141, 211, 130),)
+    assert adapter.redirects == [(141, 211, 130)]

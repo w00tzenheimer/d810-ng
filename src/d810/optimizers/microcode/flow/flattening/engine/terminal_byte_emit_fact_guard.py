@@ -291,6 +291,7 @@ def filter_terminal_byte_emit_fact_redirects(
     mba: Any,
     fact_view: Any | None,
     dispatcher_serial: int,
+    dag_frontier_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
 ) -> tuple[list[GraphModification], tuple[TerminalByteEmitFactRejection, ...]]:
     """Reject fact-proven state-flow predecessor injections.
 
@@ -409,6 +410,31 @@ def filter_terminal_byte_emit_fact_redirects(
         is_scaffolding, const_refs = _is_state_flow_scaffolding(mba, source)
         if not is_scaffolding:
             filtered.append(mod)
+            continue
+
+        if (source, old_target, target) in dag_frontier_override_keys:
+            filtered.append(mod)
+            site = sites[0]
+            fact_id = str(getattr(site, "fact_id", "<unknown>"))
+            byte_index = _byte_index(site)
+            upstream_ea = _byte_emit_source_ea(site)
+            logger.info(
+                "TERMINAL_BYTE_EMIT_FACT_REDIRECT_DAG_FRONTIER_OVERRIDDEN "
+                "source=blk[%d] target=blk[%d] old_target=blk[%d] "
+                "byte_index=%s fact_id=%s state_const_writes=%s "
+                "upstream_byte_emit_ea=%s",
+                source,
+                target,
+                old_target,
+                byte_index,
+                fact_id,
+                sorted(const_refs),
+                (
+                    f"0x{upstream_ea:x}"
+                    if upstream_ea is not None
+                    else "<unknown>"
+                ),
+            )
             continue
 
         # Pick the first matching fact for diagnostics.  All sites for

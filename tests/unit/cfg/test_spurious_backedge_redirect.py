@@ -152,12 +152,11 @@ class TestPlanner:
             assert p.old_target in {1, 2}
             assert p.new_target in {16, 26}
 
-    def test_blt_2way_predicate_block_in_scc_emits_plan(self) -> None:
+    def test_blt_2way_predicate_block_in_scc_without_dom_backedge_skipped(self) -> None:
         # blk[13] is a BLT_2WAY whose two succs are both in the SCC.
-        # If the back-edge from 13 to one succ is SPURIOUS, the planner
-        # legitimately emits a redirect to the OTHER succ — even though
-        # that succ may also be inside the SCC. Documents that "exit
-        # blocks always-out-of-SCC" is NOT a precondition.
+        # Neither 13->15 nor 13->25 is a dominator back-edge, so a strict
+        # back-edge planner must not redirect them just because they are
+        # intra-SCC and locally SPURIOUS.
         block_succs = {
             13: (15, 25),
             15: (13,),
@@ -177,12 +176,32 @@ class TestPlanner:
             block_writes=block_writes,
             block_predicate_reads=block_predicate_reads,
         )
-        # Both 13->15 and 13->25 are SPURIOUS; both are eligible.
-        # Each picks the OTHER succ as new_target.
-        sources_targets = sorted(
-            (p.src_serial, p.old_target, p.new_target) for p in plans
+        assert plans == ()
+
+    def test_actual_dominator_backedge_can_redirect_to_in_scc_successor(self) -> None:
+        block_succs = {
+            0: (13,),
+            13: (15,),
+            15: (16, 13),
+            16: (13,),
+        }
+        block_types = {
+            0: "BLT_1WAY",
+            13: "BLT_1WAY",
+            15: "BLT_2WAY",
+            16: "BLT_1WAY",
+        }
+        block_writes = {15: frozenset({"%var_5B8"})}
+        block_predicate_reads = {13: frozenset({"%var_F0"})}
+        plans = plan_spurious_backedge_redirects(
+            block_succs=block_succs,
+            block_types=block_types,
+            block_writes=block_writes,
+            block_predicate_reads=block_predicate_reads,
         )
-        assert sources_targets == [(13, 15, 25), (13, 25, 15)]
+        assert [(p.src_serial, p.old_target, p.new_target) for p in plans] == [
+            (15, 13, 16)
+        ]
 
     def test_blt_2way_with_three_succs_skipped_defensively(self) -> None:
         block_succs = {15: (16, 17, 13), 13: (15,), 16: (), 17: ()}

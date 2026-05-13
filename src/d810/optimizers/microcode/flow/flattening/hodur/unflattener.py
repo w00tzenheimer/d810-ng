@@ -81,7 +81,12 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     plan_family_pipeline,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
+from d810.cfg.mbl_keep_selection import (
+    TerminalByteKeepTarget,
+    select_terminal_byte_keep_targets,
+)
 from d810.hexrays.mutation.cfg_mutations import (
+    MBL_KEEP,
     change_1way_block_successor,
     make_2way_block_goto,
     remove_block_edge,
@@ -115,6 +120,49 @@ def _mlist_text(value) -> str | None:
     except Exception:
         return None
     return text or None
+
+
+def _mblock_int_attr(blk, *names: str) -> int | None:
+    for name in names:
+        value = getattr(blk, name, None)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _ea_in_block(blk, ea: int) -> bool:
+    start = _mblock_int_attr(blk, "start", "start_ea")
+    if start is None:
+        return False
+    end = _mblock_int_attr(blk, "end", "end_ea")
+    if end is None or end <= start:
+        return int(ea) == start
+    return start <= int(ea) < end
+
+
+def _block_matches_terminal_byte_target(
+    blk,
+    targets: tuple[TerminalByteKeepTarget, ...],
+) -> bool:
+    serial = _mblock_int_attr(blk, "serial")
+    start = _mblock_int_attr(blk, "start", "start_ea")
+    for target in targets:
+        if target.block_ea is not None and start == target.block_ea:
+            return True
+        if target.source_ea is not None and _ea_in_block(blk, target.source_ea):
+            return True
+        if (
+            target.block_serial is not None
+            and target.block_ea is None
+            and target.source_ea is None
+            and serial == target.block_serial
+        ):
+            return True
+    return False
 
 
 class HodurUnflattener(GenericUnflatteningRule):
@@ -979,24 +1027,31 @@ class HodurUnflattener(GenericUnflatteningRule):
                 "inline_add_to_stkvar canonicalisation failed (non-critical)",
                 exc_info=True,
             )
-        # DIAGNOSTIC / fix: ensure every block in the live mba carries MBL_KEEP
-        # (0x10000) so IDA's ``mba_remove_empty_and_unreachable_blocks`` sweep
-        # treats them all as preserved roots.  D810 may clear or fail to set
-        # the flag on original IDA blocks whose CFG it has restructured;
-        # blanket-tagging at the end of GLBOPT1 work is a structural-survival
-        # safety net.  See memory ``ida_optimize_global_cfg_kill``.
-        import os
-        if os.environ.get("D810_TAG_ALL_MBL_KEEP", "1") == "1":
+        if os.environ.get("D810_TERMINAL_BYTE_MBL_KEEP", "1") == "1":
+            try:
+                tagged = self._tag_terminal_byte_mbl_keep(snapshot)
+                if tagged:
+                    self._capture_intermediate_snapshot(
+                        "post_mbl_keep_terminal_byte"
+                    )
+            except Exception:
+                unflat_logger.debug(
+                    "MBL_KEEP terminal-byte tag failed (non-critical)",
+                    exc_info=True,
+                )
+
+        # Diagnostic escape hatch: keep every live block.  Default-off because
+        # it also preserves dispatcher residue that masks structural loop shape.
+        if os.environ.get("D810_TAG_ALL_MBL_KEEP", "0") == "1":
             try:
                 qty = int(getattr(self.mba, "qty", 0) or 0)
-                _MBL_KEEP = 0x10000
                 tagged = 0
                 for serial in range(qty):
                     blk = self.mba.get_mblock(serial)
                     if blk is None:
                         continue
                     try:
-                        blk.flags |= _MBL_KEEP
+                        blk.flags |= MBL_KEEP
                         tagged += 1
                     except Exception:
                         continue
@@ -1022,11 +1077,13 @@ class HodurUnflattener(GenericUnflatteningRule):
                 maybe_run_tail_distinct,
                 maybe_run_tail_duplicate_convergence,
                 maybe_run_tail_state_cascade,
+                maybe_run_terminal_tail_cascade_egress_lowering,
             )
 
             unflat_logger.info(
                 "TAIL_SHAPING_HOOK phase=after_post_bundle_stabilize"
             )
+            maybe_run_terminal_tail_cascade_egress_lowering(self.mba)
             maybe_run_tail_distinct(self.mba)
             maybe_run_tail_duplicate_convergence(self.mba)
             maybe_run_tail_state_cascade(self.mba)
@@ -1110,6 +1167,65 @@ class HodurUnflattener(GenericUnflatteningRule):
             )
 
         return nb_changes
+
+    def _tag_terminal_byte_mbl_keep(self, snapshot: AnalysisSnapshot) -> int:
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        if fact_view is None and self.flow_context is not None:
+            try:
+                fact_view = self.flow_context.validated_fact_view(self.cur_maturity)
+            except Exception:
+                unflat_logger.debug(
+                    "MBL_KEEP_TERMINAL_BYTE fact view lookup failed",
+                    exc_info=True,
+                )
+                fact_view = None
+        if fact_view is None:
+            unflat_logger.info("MBL_KEEP_TERMINAL_BYTE skipped reason=no_fact_view")
+            return 0
+
+        targets = select_terminal_byte_keep_targets(fact_view)
+        if not targets:
+            unflat_logger.info("MBL_KEEP_TERMINAL_BYTE skipped reason=no_targets")
+            return 0
+
+        qty = int(getattr(self.mba, "qty", 0) or 0)
+        tagged_serials: list[int] = []
+        for serial in range(qty):
+            blk = self.mba.get_mblock(serial)
+            if blk is None:
+                continue
+            if not _block_matches_terminal_byte_target(blk, targets):
+                continue
+            try:
+                pre_flags = int(blk.flags)
+                blk.flags |= MBL_KEEP
+                post_flags = int(blk.flags)
+            except Exception:
+                continue
+            tagged_serials.append(serial)
+            if pre_flags != post_flags:
+                unflat_logger.info(
+                    "MBL_KEEP_TERMINAL_BYTE blk[%d] flags 0x%05x -> 0x%05x",
+                    serial,
+                    pre_flags,
+                    post_flags,
+                )
+
+        bytes_kept = sorted(
+            {
+                int(t.byte_index)
+                for t in targets
+                if t.byte_index is not None
+            }
+        )
+        unflat_logger.info(
+            "MBL_KEEP_TERMINAL_BYTE targets=%d bytes=%s tagged=%d serials=%s",
+            len(targets),
+            bytes_kept,
+            len(tagged_serials),
+            tagged_serials[:30],
+        )
+        return len(tagged_serials)
 
     def _stabilize_sub7ffd_post_pipeline_bundle(self) -> int:
         """Make the fragile 80->118 setup/use corridor compaction-stable.

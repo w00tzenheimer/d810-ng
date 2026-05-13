@@ -248,6 +248,40 @@ def cmd_after(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_snap_render(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics snap-render`.
+
+    Resolves the latest diag DB for the worktree (or honours --db) and
+    forwards the snapshot id / label / focus serials.  Rendering lives
+    in ``d810.diagnostics.snap_render`` -- this wrapper is pure path
+    resolution + subprocess shell-out, per the cff_debug architecture
+    rule (no SQL / parsing here).
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "snap-render",
+        "--db", str(db),
+    ]
+    if args.snapshot_id is not None:
+        diag_argv += ["--snapshot-id", str(args.snapshot_id)]
+    if args.label:
+        diag_argv += ["--label", args.label]
+    if args.serials:
+        diag_argv += ["--serials", args.serials]
+    if args.include_eas:
+        diag_argv.append("--include-eas")
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     dump = resolve_dump(args.worktree, args.dump)
     lines = read_dump_lines(dump)
@@ -938,6 +972,42 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.add_argument("-n", "--line-numbers", action="store_true")
     sp.set_defaults(func=cmd_after)
+
+    sp = sub.add_parser(
+        "snap-render",
+        help=(
+            "Render a diag-DB snapshot's microcode as a block-by-block"
+            " listing -- bypasses IDA's post-D810 pipeline so callers can"
+            " inspect the linearized program as D810 emitted it"
+            " (typical: snap17 = post_bundle_stabilize at MMAT_GLBOPT1)."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sel = sp.add_mutually_exclusive_group()
+    sel.add_argument(
+        "--snapshot-id", type=int,
+        help="render this specific snapshot id; default is the most recent",
+    )
+    sel.add_argument(
+        "--label",
+        help=(
+            "resolve snapshot by label (e.g. 'post_bundle_stabilize');"
+            " picks the HIGHEST matching id when the label repeats"
+        ),
+    )
+    sp.add_argument(
+        "--serials",
+        help=(
+            "comma-separated block serials to focus on"
+            " (e.g. '116,118,238,56')"
+        ),
+    )
+    sp.add_argument(
+        "--include-eas", action="store_true",
+        help="emit each instruction's ea_hex alongside opcode + dstr",
+    )
+    sp.set_defaults(func=cmd_snap_render)
 
     sp = sub.add_parser("stats", help="print the '=== STATS: ===' block from the latest dump")
     _add_worktree(sp)
