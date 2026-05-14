@@ -899,6 +899,114 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     assert snapshot.pass_number == 0
 
 
+def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
+    monkeypatch,
+):
+    family = HodurStrategyFamily(strategy_classes=())
+    constant_fixpoint = object()
+    discovery = object()
+    transition_result = object()
+    dispatcher = object()
+    dispatcher_cache = object()
+    reachability = SimpleNamespace(entry_serial=0)
+    base_flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 1, (2,), (), 0, 0, ()),
+            2: BlockSnapshot(2, 0, (), (0,), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph: object, state_var_stkoff: int) -> object:
+            assert flow_graph is base_flow_graph
+            assert state_var_stkoff == 0x7BC
+            return constant_fixpoint
+
+    monkeypatch.setattr(
+        family._cfg_translator,
+        "lift",
+        lambda _mba: base_flow_graph,
+    )
+    monkeypatch.setattr(
+        hodur_family_module,
+        "DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: dispatcher_cache),
+    )
+    monkeypatch.setattr(
+        family,
+        "compute_reachability_info",
+        lambda _mba: reachability,
+    )
+    monkeypatch.setattr(
+        family,
+        "attach_fake_jump_fixes_to_flow_graph",
+        lambda _mba, flow_graph: flow_graph,
+    )
+    monkeypatch.setattr(
+        family,
+        "attach_single_iteration_fixes_to_flow_graph",
+        lambda _mba, flow_graph: flow_graph,
+    )
+    monkeypatch.setattr(
+        hodur_family_module,
+        "build_transition_result_from_state_machine",
+        lambda *args, **kwargs: transition_result,
+    )
+
+    def _fake_build_round_discovery_context(**kwargs):
+        assert kwargs["flow_graph"] is base_flow_graph
+        assert kwargs["transition_result"] is transition_result
+        assert kwargs["dispatcher_entry_serial"] == 2
+        assert kwargs["state_var_stkoff"] == 0x7BC
+        assert kwargs["constant_fixpoint"] is constant_fixpoint
+        assert kwargs["dispatcher"] is dispatcher
+        return discovery
+
+    monkeypatch.setattr(
+        hodur_family_module,
+        "build_round_discovery_context",
+        _fake_build_round_discovery_context,
+    )
+    family._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    family._switch_table_map = SimpleNamespace(
+        dispatcher_serial=2,
+        to_bst_result=lambda: SimpleNamespace(
+            handler_state_map={0x10: 2},
+            pre_header_serial=1,
+            handler_range_map={},
+            bst_node_blocks={2},
+            diagnostics=(),
+            dispatcher=dispatcher,
+        ),
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    state_machine = SimpleNamespace(
+        handlers={0x10: SimpleNamespace(check_block=2)},
+        initial_state=0x10,
+        transitions=(),
+        state_var=SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=0x7BC),
+        ),
+    )
+
+    snapshot = family.build_snapshot(
+        mba,
+        HodurDetection(
+            state_machine=state_machine,
+            detector=object(),
+            detection_source="test",
+        ),
+    )
+
+    assert snapshot.discovery is discovery
+
+
 def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_machine(
     monkeypatch,
 ):

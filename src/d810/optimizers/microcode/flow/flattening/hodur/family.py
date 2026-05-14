@@ -30,6 +30,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
@@ -58,12 +62,14 @@ from d810.recon.flow.graph_reachability import (
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
 
 family_logger = logging.getLogger("D810.unflat.hodur.family", logging.DEBUG)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
 
 __all__ = ["HodurDetection", "HodurStrategyFamily"]
 
@@ -135,6 +141,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
         self._fact_runtime: object | None = fact_runtime
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
         selected_strategy_classes = (
             list(strategy_classes)
             if strategy_classes is not None
@@ -348,7 +357,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     ),
                     strategy_name="hodur_round_discovery_context",
                 )
-                constant_fixpoint = run_snapshot_constant_fixpoint(
+                constant_fixpoint = self._constant_fixpoint_backend.compute(
                     flow_graph,
                     state_var_stkoff,
                 )
