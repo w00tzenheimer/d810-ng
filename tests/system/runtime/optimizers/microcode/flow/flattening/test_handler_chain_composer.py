@@ -46,6 +46,9 @@ if IDA_AVAILABLE:
     from d810.optimizers.microcode.flow.flattening.hodur import (
         handler_chain_live_topology_backend as hcc_topology_backend_module,
     )
+    from d810.optimizers.microcode.flow.flattening.hodur import (
+        handler_chain_topology_walk_backend as hcc_topology_walk_backend_module,
+    )
     from d810.recon.flow.linearized_state_dag import (
         LinearizedStateDag,
         SemanticEdgeKind,
@@ -1540,6 +1543,278 @@ class TestHandlerChainLiveTopologyBackend:
             outbound_target=143,
         ) == [(129, 131)]
         assert backend.seen == [(mba, 150), (mba, 129), (mba, 140)]
+
+
+class TestHandlerChainTopologyWalkBackend:
+    def test_finds_deepest_dispatcher_exit_on_ordered_path(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("topology walk should use backend facts")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.seen.append((mba, serial))
+                if serial == 70:
+                    return (
+                        hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                            block_exists=True,
+                            nsucc=1,
+                            successor=99,
+                        )
+                    )
+                if serial == 60:
+                    return (
+                        hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                            block_exists=True,
+                            nsucc=1,
+                            successor=2,
+                        )
+                    )
+                raise AssertionError(f"unexpected one-way probe {serial}")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        live_backend = _FakeLiveTopologyBackend()
+        backend = (
+            hcc_topology_walk_backend_module
+            .HexRaysHandlerChainTopologyWalkBackend(
+                live_topology_backend=live_backend,
+            )
+        )
+        mba = _MbaWithoutMblocks()
+
+        assert backend.deepest_dispatcher_exit_on_ordered_path(
+            mba,
+            (2, 50, 60, 70, 80),
+            dispatcher_serial=2,
+            excluded_blocks=frozenset({80}),
+        ) == hcc_topology_walk_backend_module.LiveDispatcherExitOnPathProbe(
+            block_serial=60,
+        )
+        assert live_backend.seen == [(mba, 70), (mba, 60)]
+
+    def test_reachability_uses_live_topology_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            qty = 6
+
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("reachability should use backend facts")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 0:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(1, 2),
+                    )
+                if serial == 2:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=1,
+                        successors=(4,),
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        live_backend = _FakeLiveTopologyBackend()
+        backend = (
+            hcc_topology_walk_backend_module
+            .HexRaysHandlerChainTopologyWalkBackend(
+                live_topology_backend=live_backend,
+            )
+        )
+        mba = _MbaWithoutMblocks()
+
+        assert backend.reachable_from_entry(
+            mba,
+            4,
+            entry_serial=0,
+        ) == hcc_topology_walk_backend_module.LiveReachabilityProbe(
+            reachable=True,
+            visited_count=3,
+        )
+        assert live_backend.seen == [(mba, 0), (mba, 2)]
+
+    def test_semantic_predecessor_uses_topology_walk_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            qty = 100
+
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError(
+                    "semantic predecessor should use topology backends"
+                )
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.one_way_seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.one_way_seen.append((mba, serial))
+                assert serial == 90
+                return hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                    block_exists=True,
+                    nsucc=1,
+                    successor=2,
+                )
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        class _FakeTopologyWalkBackend:
+            def __init__(self) -> None:
+                self.path_seen: list[
+                    tuple[object, tuple[int, ...], int, frozenset[int]]
+                ] = []
+                self.reachability_seen: list[tuple[object, int, int]] = []
+
+            def deepest_dispatcher_exit_on_ordered_path(
+                self,
+                mba: object,
+                ordered_path: tuple[int, ...],
+                *,
+                dispatcher_serial: int,
+                excluded_blocks: frozenset[int],
+            ) -> (
+                hcc_topology_walk_backend_module
+                .LiveDispatcherExitOnPathProbe
+            ):
+                self.path_seen.append((
+                    mba,
+                    ordered_path,
+                    dispatcher_serial,
+                    excluded_blocks,
+                ))
+                return (
+                    hcc_topology_walk_backend_module
+                    .LiveDispatcherExitOnPathProbe(block_serial=90)
+                )
+
+            def reachable_from_entry(
+                self,
+                mba: object,
+                target_serial: int,
+                *,
+                entry_serial: int = 0,
+            ) -> hcc_topology_walk_backend_module.LiveReachabilityProbe:
+                self.reachability_seen.append((
+                    mba,
+                    target_serial,
+                    entry_serial,
+                ))
+                return hcc_topology_walk_backend_module.LiveReachabilityProbe(
+                    reachable=True,
+                    visited_count=4,
+                )
+
+        source = _make_dag_node_v2(90, 0x90)
+        target = _make_dag_node_v2(50, 0x50)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x100,
+            pre_header_serial=None,
+            initial_state=0x90,
+            bst_node_blocks=(50,),
+            nodes=(source, target),
+            edges=(_make_dag_edge(source, target),),
+        )
+        strategy = HandlerChainComposerStrategy()
+        live_backend = _FakeLiveTopologyBackend()
+        walk_backend = _FakeTopologyWalkBackend()
+        strategy._live_topology_backend = live_backend
+        strategy._topology_walk_backend = walk_backend
+        mba = _MbaWithoutMblocks()
+
+        pred, detail = strategy._resolve_semantic_predecessor_for_bst_only_source(
+            mba=mba,
+            dag=dag,
+            local_facts=None,
+            splice_source=50,
+            splice_old_target=2,
+            call_anchor_serial=70,
+            bst_node_blocks=frozenset({50}),
+            dispatcher_serial=2,
+            claimed_inbound_sources=set(),
+        )
+
+        assert pred == 90
+        assert detail["reason"] == "ACCEPTED"
+        assert detail["new_old_target"] == 2
+        assert live_backend.one_way_seen == [(mba, 90)]
+        assert walk_backend.path_seen == [
+            (mba, (90, 50), 2, frozenset({50})),
+        ]
+        assert walk_backend.reachability_seen == [(mba, 90, 0)]
 
 
 class TestFindR1ToSuppress:
