@@ -208,6 +208,9 @@ Already present on this branch:
   the engine surface.
 - `FakeJump`, `SingleIteration`, and the safe subset of `BadWhileLoop` already
   have engine-native strategy implementations under `flattening/strategies/`.
+  Hodur no longer attaches the migrated cleanup families implicitly
+  (`e265dd39`), so their parity is now evaluated as standalone engine
+  adoption work rather than as hidden Hodur post-processing.
 - Production imports of generic engine objects have been paid down from Hodur
   compatibility shims to canonical `flattening.engine.*` imports
   (`4408d059`). Compatibility modules still exist for tests, backcompat, and
@@ -249,6 +252,18 @@ Already present on this branch:
   - `d810.cfg.semantic_exact_selection` now owns backend-neutral exact-edge
     pair parsing, focus selection, and window selection for exact semantic
     lowering (`83dc8498`).
+  - Exact fork scope helpers and straight-line handoff predicates have moved to
+    shared cfg surfaces (`f44b4e32`, `41613203`).
+  - The Hodur strategy order now lives in the profile object, and the
+    compatibility import cycle is fixed (`8771f2a4`, `4336a7ef`).
+  - The runtime materialization path now treats expected serials for
+    `CreateConditionalRedirect` as advisory, records actual serial drift in the
+    deferred modifier remap, and keeps downstream queued targets aligned
+    (`14b598a5`).
+  - Baselines were refreshed after Hodur cleanup decoupling; the migration
+    baselines now lock current Hodur behavior against legacy cleanup output
+    without claiming FakeJump/SingleIteration parity inside Hodur
+    (`7d5eb1cf`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
@@ -258,9 +273,10 @@ What remains:
   Hodur imports in tests are intentional compatibility checks or
   strategy-specific surfaces that do not yet have a generic extraction target.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
-  `engine` based on behavior, not on import churn. The next large
-  algorithmic candidates are the remaining semantic exact/fork/alias helpers,
-  recon artifact persistence, and the backend materialization boundary.
+  `engine` based on behavior, not on import churn. The remaining large
+  boundary is backend materialization: cfg should carry opaque captured
+  payloads and lowering intent, while Hex-Rays adapters own live instruction
+  capture, copy, validation, and rewrite mechanics.
 - Continue thinning the Hodur profile/entrypoint now that strategy ordering
   moved into `hodur.profile`. `HodurStrategyFamily` can remain as a
   transitional adapter name while behavior is being extracted, but the target
@@ -372,7 +388,10 @@ Implementation sequence:
    when a second non-Hodur adopter needs the same shape.
 2. Change `HodurStrategyFamily` from "the owner of Hodur strategies" into an
    adapter over that profile. Keep the class name temporarily if a rename would
-   create too much churn.
+   create too much churn. The next slice should inventory what remains in
+   `hodur/family.py` beyond detection/snapshot construction and profile
+   adaptation, then move any generic lifecycle behavior into
+   `flattening.engine`.
 3. ✅ Move the authoritative Hodur strategy list/order out of
    `hodur/strategies/__init__.py` and into the Hodur profile/entrypoint
    (`8771f2a4`, `4336a7ef`).
@@ -381,6 +400,19 @@ Implementation sequence:
 5. Once the generic profile is exercised by Hodur and at least one non-Hodur
    path, rename the transitional Hodur family objects to the generic profile
    terminology.
+
+Current focus:
+
+- `unflattener_hodur.py` / `hodur/unflattener.py` may remain the
+  plugin-facing compatibility entrypoint while the IDA maturity hooks and
+  snapshot timing are still Hodur-specific.
+- `hodur/profile.py` is the right home for Hodur defaults, feature gates, and
+  strategy ordering.
+- `hodur/family.py` should keep detector construction and snapshot adaptation,
+  but should not grow new generic planning/execution behavior.
+- `hodur/strategies/*` should remain separate modules. Do not merge them into
+  the entrypoint; either shrink them to adapters, move generic algorithms out,
+  or delete them when empty.
 
 Validation:
 
@@ -421,77 +453,78 @@ Completed:
   tests migrated to cfg (`ce50f99c`).
 - Exact semantic edge parsing/focus/window selection moved to
   `d810.cfg.semantic_exact_selection` (`83dc8498`).
+- Exact fork scope helpers and straight-line handoff predicates moved to cfg
+  (`f44b4e32`, `41613203`).
+- Residual dispatcher/frontier target resolution, dispatcher trampoline skip
+  decisions, state-variable cleanup planning, return-site derivation, recon
+  artifact helpers, and semantic reference helpers have all moved out of Hodur
+  (`ca01ff46`, `255fb9f0`, `b373123d`, `4fe6b8fe`, `5ac465b2`,
+  `8bd42176`, `f634c8da`).
 
 Next candidates, in order:
 
-1. Semantic exact node, fork, and alias lowering analysis:
-   - current sources: `semantic_exact_node.py`, `exact_conditional_fork.py`,
-     `exact_conditional_alias.py`, and `exact_node_frontier_bypass.py`;
-   - target: `d810.cfg.semantic_exact_lowering` or
-     `d810.cfg.semantic_conditional_lowering`;
-   - note: the pure SESE/hammock classifier, exact conditional site analyzer,
-     and exact-edge selection are already shared; the remaining extraction is
-     candidate/site inventory, fork/alias proof classification, frontier target
-     selection, and backend-neutral lowering decisions;
-   - keep strategy wrappers, thresholds, and fallback order in Hodur.
-2. Residual dispatcher target resolution and trampoline skipping:
-   - current sources: `dispatcher_trampoline_skip.py` and pieces of
-     `semantic_exact_node.py`;
-   - target: `d810.cfg.residual_target_resolution` and/or
-     `d810.recon.flow.bst_resolution`;
-   - keep Hodur execution gates and strategy order local.
-3. State-variable cleanup planning:
-   - current sources: `dead_state_variable_elimination.py` and
-     `state_constant_return_fixup.py`;
-   - target: `d810.cfg.state_var_cleanup` or `d810.cfg.transform`;
-   - move the plan/classification, not Hex-Rays NOP/rewrite mechanics.
-4. Return-frontier site derivation:
-   - current source: `hodur/return_sites.py`;
-   - target: `d810.recon.flow.return_sites` or a `cfg` return-frontier helper;
-   - keep Hodur snapshot/report adapters local.
+1. Backend materialization boundary:
+   - current hotspot: `handler_chain_composer.py` still directly participates
+     in live Hex-Rays body capture, `InsnSnapshot` validation, def-chain
+     capture, and InsertBlock materialization handoff;
+   - comparison worktree:
+     `/Users/mahmoud/src/idapro/d810/.worktrees/hodur-materialization-boundary`
+     has a concrete prototype commit, `87773b9a`, that adds
+     `d810.cfg.materialization_payload.CapturedBlockBody`,
+     `d810.evaluator.hexrays_microcode.instruction_capture_backend.HexRaysInstructionCaptureBackend`,
+     and `InsertBlock.captured_body`;
+   - target shape: cfg carries opaque captured payloads and neutral summaries;
+     the Hex-Rays adapter captures/materializes bodies; HCC decides which body
+     to lower and why;
+   - do not pull this wholesale without rebasing and validating against the
+     current serial-drift and Hodur-cleanup-decoupling commits.
+2. Remaining semantic exact/fork/alias lowering analysis:
+   - most shared predicates are already extracted; inventory the remaining
+     strategy-local logic in `semantic_exact_node.py`,
+     `exact_conditional_alias.py`, `exact_conditional_fork.py`, and
+     `exact_node_frontier_bypass.py`;
+   - move only backend-neutral proof/classification helpers. Keep live
+     microblock walking, strategy gates, logging, and fragment emission local.
+3. Diagnostics/tracing boundary:
+   - `byte_cascade_coverage_tracer.py` remains Hodur-local because its labels
+     are HCC-specific, but reusable report models should move to
+     `d810.diagnostics` if a second family consumes them;
+   - keep runtime capture through observability/core paths, not direct
+     diagnostics imports in runtime code.
 
 Recommended next implementer slices:
 
-1. **E2 semantic exact / fork / alias lowering extraction.**
-   - Start with a read-only extraction of backend-neutral candidate/site
-     analysis from `semantic_exact_node.py`, `exact_conditional_fork.py`,
-     `exact_conditional_alias.py`, and `exact_node_frontier_bypass.py`.
-   - Target `d810.cfg.semantic_exact_lowering` or
-     `d810.cfg.semantic_conditional_lowering`.
-   - Keep live `mblock_t`/`minsn_t` mutation, strategy ordering, and Hodur
-     fallback policy in Hodur.
-   - Validation: pure `cfg` unit tests plus existing exact-node/fork Hodur
-     tests. Run the sub7FFD dump/oracle gate if any planner or CFG-lowering
-     behavior changes.
-2. **E2 residual dispatcher target resolution extraction.**
-   - Move backend-neutral target-resolution predicates from
-     `dispatcher_trampoline_skip.py` and the relevant exact-node helpers into
-     `d810.cfg.residual_target_resolution` and/or
-     `d810.recon.flow.bst_resolution`.
-   - Keep Hodur's execution gates, logging, and ordering local.
-   - Validation: focused residual/dispatcher tests, import contracts, and the
-     sub7FFD gate for any behavior-affecting slice.
-3. **E3 parity survey and one small adopter slice.**
-   - Inspect legacy non-Hodur transforms and current
-     `flattening/strategies/*` engine equivalents.
-   - Pick one concrete parity slice with tests instead of adding another
-     compatibility shim.
+1. **Materialization boundary integration.**
+   - Rebase the `hodur-materialization-boundary` prototype onto this branch.
+   - Keep `CapturedBlockBody` opaque in cfg; avoid letting cfg inspect
+     Hex-Rays payload internals.
+   - Wire one HCC InsertBlock path through the backend body first, then expand
+     to def-chain and call-anchor capture.
+   - Validation: materialization unit tests, HCC byte-cascade tracer tests,
+     sub7FFD dump/oracle/AFTER diff, and import contracts.
+2. **Hodur profile adapter cleanup.**
+   - Inventory `hodur/family.py` after profile extraction and move any generic
+     lifecycle code to `flattening.engine`.
+   - Keep detector construction, snapshot adaptation, feature gates, and
+     profile defaults in Hodur.
+   - Validation: profile/family ordering tests and sub7FFD gate only if
+     ordering or executor configuration changes.
+3. **E3/P2 non-Hodur adoption slice.**
+   - Use FakeJump/SingleIteration/BadWhile migration baselines to select one
+     standalone parity improvement.
+   - Prefer a BadWhile follow-up that can be expressed with existing
+     `GraphModification` primitives or the materialization payload boundary.
+   - Do not reattach BadWhile metadata to Hodur.
 
 Parallelizable read-only work:
 
-- **Exact semantic/conditional inventory.** One agent can enumerate candidate
-  dataclasses/functions across `semantic_exact_node.py`,
-  `exact_conditional_fork.py`, `exact_conditional_alias.py`, and
-  `exact_node_frontier_bypass.py`, classify each as backend-neutral proof
-  logic vs live Hex-Rays mutation, and produce the extraction write-set. No
-  behavior changes.
-- **Residual dispatcher target-resolution inventory.** A second agent can map
-  `dispatcher_trampoline_skip.py` and exact-node target-selection helpers to
-  existing `cfg.residual_target_resolution` / `recon.flow.bst_resolution`
-  surfaces, then propose the smallest pure extraction. No behavior changes.
-- **E3 parity survey.** A third agent can inspect legacy non-Hodur transforms
-  and current `flattening/strategies/*` engine equivalents, then recommend one
-  concrete parity slice with tests. No behavior changes.
+- **Profile/family boundary inventory.** Identify the next generic lifecycle
+  behavior still in `hodur/family.py` and the exact files/classes to change.
+- **Materialization-boundary comparison.** Compare this branch to
+  `.worktrees/hodur-materialization-boundary` and recommend what to port,
+  rewrite, or avoid.
+- **Non-Hodur adoption survey.** Inspect P2/P3 families and recommend one
+  behavior-preserving adopter slice with tests.
 
 These three investigations are independent of the E1 test fix and can run in
 parallel. Only one should move from read-only inventory to code changes at a
@@ -499,8 +532,9 @@ time so baseline attribution stays clear.
 
 Do not extract:
 
-- live `mblock_t`/`minsn_t` walking and microcode copy mechanics until a
-  backend adapter boundary exists;
+- live `mblock_t`/`minsn_t` walking and microcode copy mechanics into cfg or
+  recon; these belong behind a backend adapter such as the materialization
+  boundary prototype;
 - Hodur strategy ordering, env gates, logging labels, and family-local
   thresholds;
 - dormant `linearized_flow_graph.py` work unless it is deliberately revived
@@ -1454,9 +1488,11 @@ only when parity or an explicit abstention contract exists.
 
 **Current branch status:** `FakeJump` and `SingleIteration` are already live
 engine strategies, and `BadWhileLoop` now has an engine-native safe subset.
-The remaining gap is not that the legacy transformations are impossible in the
-modern architecture, but that the richer `BadWhileLoop` cases are not yet
-re-expressed through the shared `cfg` / `recon` / mutation-planning path.
+Hodur no longer consumes these cleanup strategies implicitly, so P2 is a
+standalone engine-adoption lane. The remaining gap is not that the legacy
+transformations are impossible in the modern architecture, but that the richer
+`BadWhileLoop` cases are not yet re-expressed through the shared `cfg` /
+`recon` / mutation-planning path.
 
 ### Task 2.1: BadWhileLoop as a strategy
 
@@ -1579,25 +1615,32 @@ legacy outcomes into generic graph-modification intents.
 - `DuplicateAndRedirect` in `src/d810/cfg/graph_modification.py`, compiled and
   materialized by `src/d810/cfg/plan.py`
 - `CreateConditionalRedirect` in `src/d810/cfg/graph_modification.py`, with
-  corresponding conditional patch steps in `src/d810/cfg/plan.py`; the
-  `BadWhileLoop` wrapper now emits this for the former
-  `dispatcher_case_triangle_requires_trampoline` follow-up when the source is
-  a 1-way predecessor and the dispatcher case can be cloned directly
+  corresponding conditional patch steps in `src/d810/cfg/plan.py`. A previous
+  attempt to promote the former
+  `dispatcher_case_triangle_requires_trampoline` follow-up was too broad for
+  Hodur's structure-recovery baseline, so keep that case classified as
+  follow-up until a fact-preserving proof exists.
 - trampoline materialization in `src/d810/cfg/plan.py` and
   `src/d810/cfg/flow/edit_simulator.py`
 - simple inserted side-effect blocks via `InsertBlock` in
   `src/d810/cfg/graph_modification.py`
+- advisory serial drift in `CreateConditionalRedirect` materialization is now
+  handled by deferred-modifier remaps (`14b598a5`), so parity work should not
+  rely on expected block serials being exact.
 
 **Still missing or immature:**
 - a proven story for replaying copied side effects from live dispatcher
-  emulation into stable `InsnSnapshot`-backed mutation plans
+  emulation into stable mutation plans. The materialization-boundary prototype
+  may provide the right `CapturedBlockBody` carrier for this, but it should be
+  integrated as a backend boundary first rather than used directly from
+  BadWhile analysis.
 
 - [ ] **Step 1: Audit every currently skipped legacy `BadWhileLoop` path**
 
 Classify each skipped case as:
 - `DuplicateAndRedirect`
-- `CreateConditionalRedirect` (implemented for one-way dispatcher case
-  triangles)
+- `CreateConditionalRedirect` (available as a graph primitive, but the
+  dispatcher-case triangle promotion remains follow-up until proof-gated)
 - `InsertBlock`
 - intentionally unsupported / retired
 
