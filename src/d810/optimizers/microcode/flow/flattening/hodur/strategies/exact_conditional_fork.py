@@ -14,6 +14,7 @@ from d810.cfg.semantic_reference import (
     collect_semantic_entry_by_label,
     collect_semantic_successors_by_state,
 )
+from d810.cfg.state_variable import StateVariableRef
 from d810.cfg.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
     ConditionalForkExactNodeSite,
@@ -41,10 +42,11 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditiona
     _edge_kind_name,
     _site_key,
 )
-from d810.recon.flow.path_horizon import resolve_transition_path_horizon
-from d810.recon.flow.residual_handoff_resolution import (
-    resolve_effective_target_entry,
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
+from d810.recon.flow.path_horizon import resolve_transition_path_horizon
 from d810.recon.flow.residual_handoff_discovery import (
     resolve_normalized_alias_entry_for_state,
     resolve_redirect_safe_entry_from_node,
@@ -56,18 +58,28 @@ from d810.recon.flow.target_entry_resolution import (
     resolve_semantic_reference_entry_for_state,
 )
 from d810.recon.flow.graph_reachability import collect_residual_dispatcher_predecessors
-from d810.recon.flow.state_machine_analysis import (
-    run_snapshot_constant_fixpoint,
-)
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
+    StateWriteCleanupEvidenceBackend,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+    EffectiveTargetEvidenceBackend,
+    HexRaysEffectiveTargetEvidenceBackend,
 )
 
 logger = logging.getLogger(
     "D810.hodur.strategy.exact_conditional_fork",
     logging.DEBUG,
 )
-_HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
+_STATE_WRITE_CLEANUP_BACKEND: StateWriteCleanupEvidenceBackend = (
+    HexRaysInstructionCaptureBackend()
+)
+_EFFECTIVE_TARGET_BACKEND: EffectiveTargetEvidenceBackend = (
+    HexRaysEffectiveTargetEvidenceBackend()
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
 
 _STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:_fallback)?$")
 
@@ -167,18 +179,28 @@ def _effective_transition_target_entry(
             return int(normalized_alias_entry)
         if exact_dag_entry is not None and exact_dag_entry != source_block:
             return int(exact_dag_entry)
+    state_variable = (
+        None
+        if state_var_stkoff is None
+        else StateVariableRef(stkoff=int(state_var_stkoff))
+    )
     try:
-        effective_target_entry = resolve_effective_target_entry(
+        effective_target_evidence = _EFFECTIVE_TARGET_BACKEND.resolve_effective_target_entry(
             dag,
             edge,
             bst_node_blocks=bst_node_blocks,
-            state_var_stkoff=state_var_stkoff,
+            state_variable=state_variable,
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
             mba=mba,
         )
     except Exception:
-        effective_target_entry = None
+        effective_target_evidence = None
+    effective_target_entry = (
+        None
+        if effective_target_evidence is None
+        else effective_target_evidence.target_entry
+    )
     if effective_target_entry is not None:
         if (
             normalized_alias_entry is not None
@@ -346,7 +368,7 @@ def _trivial_tail_state_write_cleanup_modification(
     block = flow_graph.get_block(int(tail_block_serial))
     if block is None:
         return None
-    request = _HEX_RAYS_CAPTURE_BACKEND.classify_trivial_tail_state_write_cleanup(
+    request = _STATE_WRITE_CLEANUP_BACKEND.classify_trivial_tail_state_write_cleanup(
         block,
         state_variable=int(state_var_stkoff),
         expected_state=int(expected_state),
@@ -390,7 +412,7 @@ def _fallback_zero_state_write_modification(
                 tail_block_serial,
             )
         return None
-    request = _HEX_RAYS_CAPTURE_BACKEND.classify_matching_state_write_cleanup(
+    request = _STATE_WRITE_CLEANUP_BACKEND.classify_matching_state_write_cleanup(
         block,
         state_variable=int(state_var_stkoff),
         expected_state=int(expected_state),
@@ -745,6 +767,9 @@ def collect_exact_conditional_fork_sites(round_summary, flow_graph) -> tuple[Con
 )
 class ExactConditionalForkNodeLoweringStrategy:
     prerequisites: list[str] = []
+    _constant_fixpoint_backend: ConstantFixpointBackend = (
+        _CONSTANT_FIXPOINT_BACKEND
+    )
 
     @property
     def name(self) -> str:
@@ -821,7 +846,7 @@ class ExactConditionalForkNodeLoweringStrategy:
         owned_edges: set[tuple[int, int]] = set()
         owned_transitions: set[tuple[int, int]] = set()
         accepted_edges: list[tuple[int, int]] = []
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             int(setup.state_var_stkoff),
         )

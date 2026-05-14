@@ -43,6 +43,10 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
 from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
@@ -60,6 +64,10 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
+)
 from d810.recon.flow.linearized_dag_round_discovery import (
     discover_structured_dag_regions,
 )
@@ -70,13 +78,11 @@ from d810.recon.flow.linearized_state_dag import (
     ProgramRenderStrategy,
     RenderOrderStrategy,
     build_linearized_state_program,
-    build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.edge_metadata import make_edge_metadata
 from d810.recon.flow.edge_metadata import edge_kind_name
 from d810.recon.flow.full_coverage_chain_probe import log_chain_coverage
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_boundary_protected_shared_blocks,
@@ -149,6 +155,12 @@ from d810.recon.flow.reconstruction_diagnostics import (
 logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 __all__ = ["StateWriteReconstructionStrategy"]
@@ -362,6 +374,12 @@ class StateWriteReconstructionStrategy:
         self._cached_force_edge_direct_overrides_by_round: dict[
             tuple[int, int, tuple[int, int]], tuple[int, int, tuple[int, ...]]
         ] = {}
+        self._projected_topology_backend: ProjectedTopologyBackend = (
+            _PROJECTED_TOPOLOGY_BACKEND
+        )
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
 
     @property
     def name(self) -> str:
@@ -509,7 +527,7 @@ class StateWriteReconstructionStrategy:
             strategy_name=self.name,
         )
         _corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             flow_graph,
             transition_result,
             dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
@@ -539,7 +557,7 @@ class StateWriteReconstructionStrategy:
         # .claude/notes/investigations/2026-04-23-sub_7ffd_lowering.md).
         log_chain_coverage(corrected_dag, context_label="SRW corrected_dag")
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             state_var_stkoff,
         )

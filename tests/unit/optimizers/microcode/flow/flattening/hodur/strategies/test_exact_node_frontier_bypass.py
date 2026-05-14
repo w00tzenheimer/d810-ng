@@ -8,6 +8,11 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto, ZeroStateWrite
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.cfg.residual_target_resolution import is_structured_conditional_path_feeder
+from d810.cfg.state_variable import StateVariableRef
+from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+    ResidualEffectiveTargetEvidence,
+    ResidualStateWriteEvidence,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.family import HodurStrategyFamily
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
@@ -21,6 +26,89 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_front
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     exact_node_frontier_bypass as exact_node_frontier_bypass_module,
 )
+
+
+class _FakeResidualFrontierEvidenceBackend:
+    def __init__(
+        self,
+        *,
+        state_values: dict[int, int] | None = None,
+        effective_targets: dict[tuple[int, int], int | None] | None = None,
+        state_variable: StateVariableRef | None = StateVariableRef(0x10, 4),
+    ) -> None:
+        self.state_values = dict(state_values or {})
+        self.effective_targets = dict(effective_targets or {})
+        self.state_variable = state_variable
+        self.state_write_calls: list[tuple[object, int, StateVariableRef]] = []
+        self.effective_target_calls: list[tuple[int, int, StateVariableRef | None]] = []
+
+    def resolve_state_variable(
+        self,
+        *,
+        state_machine: object | None,
+    ) -> StateVariableRef | None:
+        return self.state_variable
+
+    def resolve_singleton_state_write(
+        self,
+        mba: object,
+        block_serial: int,
+        *,
+        state_variable: StateVariableRef,
+    ) -> ResidualStateWriteEvidence | None:
+        self.state_write_calls.append((mba, int(block_serial), state_variable))
+        value = self.state_values.get(int(block_serial))
+        if value is None:
+            return None
+        return ResidualStateWriteEvidence(
+            block_serial=int(block_serial),
+            state_value=int(value),
+            reason="fake_singleton_state_write",
+        )
+
+    def resolve_residual_effective_target(
+        self,
+        dag: object,
+        *,
+        pred_serial: int,
+        state_value: int,
+        dispatcher_model: object | None,
+        bst_node_blocks: set[int] | frozenset[int],
+        state_variable: StateVariableRef | None,
+        mba: object | None,
+    ) -> ResidualEffectiveTargetEvidence:
+        self.effective_target_calls.append(
+            (int(pred_serial), int(state_value) & 0xFFFFFFFF, state_variable)
+        )
+        target = self.effective_targets.get(
+            (int(pred_serial), int(state_value) & 0xFFFFFFFF)
+        )
+        return ResidualEffectiveTargetEvidence(
+            source_block=int(pred_serial),
+            state_value=int(state_value) & 0xFFFFFFFF,
+            target_entry=target,
+            reason="fake_effective_target",
+        )
+
+
+def _install_residual_frontier_backend(
+    monkeypatch,
+    *,
+    state_values: dict[int, int],
+    effective_targets: dict[tuple[int, int], int | None] | None = None,
+    state_variable: StateVariableRef | None = StateVariableRef(0x10, 4),
+) -> _FakeResidualFrontierEvidenceBackend:
+    backend = _FakeResidualFrontierEvidenceBackend(
+        state_values=state_values,
+        effective_targets=effective_targets,
+        state_variable=state_variable,
+    )
+    monkeypatch.setattr(
+        exact_node_frontier_bypass_module,
+        "_RESIDUAL_FRONTIER_EVIDENCE_BACKEND",
+        backend,
+    )
+    return backend
 
 
 def test_collect_post_apply_bst_cleanup_blockers_uses_group_live_preds() -> None:
@@ -80,56 +168,6 @@ def test_collect_live_residual_dispatcher_preds_falls_back_to_generic_collector(
     assert residual == (50,)
 
 
-def test_resolve_residual_effective_frontier_target_builds_synthetic_edge(monkeypatch):
-    dag = SimpleNamespace(nodes=(), edges=())
-    dispatcher = SimpleNamespace(lookup=lambda _state: 99)
-    mba = SimpleNamespace()
-    captured = {}
-
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module,
-        "supplemental_selected_entry_for_state",
-        lambda _dag, _state: 14,
-    )
-
-    def fake_resolve_effective_target(_dag, edge, **kwargs):
-        captured["edge"] = edge
-        captured["kwargs"] = kwargs
-        return 117
-
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module,
-        "resolve_effective_residual_target_entry",
-        fake_resolve_effective_target,
-    )
-
-    target = exact_node_frontier_bypass_module._resolve_residual_effective_frontier_target(
-        dag=dag,
-        pred_serial=16,
-        raw_state=0x4C77464F,
-        dispatcher_model=dispatcher,
-        bst_blocks={2},
-        state_var_stkoff=0x7BC,
-        mba=mba,
-    )
-
-    edge = captured["edge"]
-    kwargs = captured["kwargs"]
-    assert target == 117
-    assert edge.source_anchor.block_serial == 16
-    assert edge.source_anchor.branch_arm is None
-    assert edge.source_key.state_const is None
-    assert edge.target_state == 0x4C77464F
-    assert edge.target_label == "STATE_4C77464F"
-    assert edge.target_entry_anchor == 14
-    assert edge.ordered_path == (16,)
-    assert kwargs["bst_node_blocks"] == {2}
-    assert kwargs["state_var_stkoff"] == 0x7BC
-    assert kwargs["dispatcher"] is dispatcher
-    assert kwargs["dispatcher_lookup"] is dispatcher.lookup
-    assert kwargs["mba"] is mba
-
-
 def test_exact_node_frontier_bypass_redirects_residual_pred_to_supported_entry(monkeypatch):
     flow_graph = FlowGraph(
         blocks={
@@ -166,9 +204,9 @@ def test_exact_node_frontier_bypass_redirects_residual_pred_to_supported_entry(m
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (50,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x5FE86821,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={50: 0x5FE86821},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -223,9 +261,9 @@ def test_exact_node_frontier_bypass_redirects_semantic_supplemental_feeder(monke
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (45,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x00C0C59F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={45: 0x00C0C59F},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -289,9 +327,9 @@ def test_exact_node_frontier_bypass_redirects_return_reachable_supplemental_feed
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (33,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x27EEEA11,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={33: 0x27EEEA11},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -358,9 +396,9 @@ def test_exact_node_frontier_bypass_uses_supplemental_selected_entry_when_direct
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (33,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x27EEEA11,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={33: 0x27EEEA11},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -426,9 +464,9 @@ def test_exact_node_frontier_bypass_skips_terminal_owned_supplemental_feeder(mon
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (208,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x09EB3382,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={208: 0x09EB3382},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -486,9 +524,9 @@ def test_exact_node_frontier_bypass_prefers_normalized_alias_entry_over_raw_exac
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x4C77464F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={16: 0x4C77464F},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -586,9 +624,9 @@ def test_exact_node_frontier_bypass_skips_structured_conditional_feeder(monkeypa
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x4C77464F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={16: 0x4C77464F},
     )
 
     snapshot = SimpleNamespace(
@@ -668,9 +706,9 @@ def test_exact_node_frontier_bypass_uses_semantic_reference_alias_entry(monkeypa
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x4C77464F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={16: 0x4C77464F},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -779,9 +817,9 @@ def test_exact_node_frontier_bypass_scopes_semantic_alias_matching_to_local_sour
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x4C77464F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={16: 0x4C77464F},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
@@ -863,9 +901,9 @@ def test_exact_node_frontier_bypass_prefers_direct_semantic_state_entry(monkeypa
         exact_node_frontier_bypass_module, "collect_residual_dispatcher_predecessors",
         lambda *_args, **_kwargs: (16,),
     )
-    monkeypatch.setattr(
-        exact_node_frontier_bypass_module, "resolve_singleton_state_write_value",
-        lambda *_args, **_kwargs: 0x4C77464F,
+    _install_residual_frontier_backend(
+        monkeypatch,
+        state_values={16: 0x4C77464F},
     )
     monkeypatch.setattr(
         exact_node_frontier_bypass_module, "resolve_dag_entry_for_state",
