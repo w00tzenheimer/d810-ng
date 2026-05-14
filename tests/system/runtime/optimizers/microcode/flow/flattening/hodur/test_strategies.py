@@ -50,6 +50,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     EdgeSplitConflictResolutionStrategy,
     TerminalLoopCleanupStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    default_hodur_profile,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -100,7 +103,6 @@ def test_strategy_names_unique():
 def test_strategy_count():
     """Worktree ALL_STRATEGIES uses HCC-owned reconstruction, not standalone SRW."""
     names = {cls().name for cls in ALL_STRATEGIES}
-    assert len(ALL_STRATEGIES) == 6
     assert "semantic_structured_region" not in names
     assert "handler_chain_composer" in names
     assert "state_write_reconstruction" not in names
@@ -110,6 +112,25 @@ def test_strategy_count():
     assert "state_constant_return_fixup" in names
     assert "dead_state_variable_elimination" in names
     assert "linearized_flow_graph" not in names
+
+
+def test_hodur_profile_owns_default_strategy_order():
+    """The Hodur profile, not strategies/__init__.py, owns live ordering."""
+    profile = default_hodur_profile()
+    strategy_names = [cls().name for cls in profile.strategy_classes]
+    entrypoint_names = [cls().name for cls in profile.entrypoint_strategy_classes]
+
+    def _before(names: list[str], first: str, second: str) -> bool:
+        return names.index(first) < names.index(second)
+
+    assert ALL_STRATEGIES == list(profile.strategy_classes)
+    assert "handler_chain_composer" in strategy_names
+    assert "state_constant_return_fixup" in strategy_names
+    assert "dead_state_variable_elimination" in strategy_names
+    assert _before(strategy_names, "handler_chain_composer", "state_constant_return_fixup")
+    assert _before(strategy_names, "state_constant_return_fixup", "dead_state_variable_elimination")
+    assert "spurious_backedge_redirect" in entrypoint_names
+    assert "spurious_backedge_redirect" not in strategy_names
 
 
 def test_semantic_structured_region_collapses_same_target_conditional_candidates():

@@ -38,8 +38,8 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    ALL_STRATEGIES,
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    default_hodur_profile,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
@@ -143,7 +143,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.max_state_constants = int(max_state_constants)
         self._fact_runtime: object | None = fact_runtime
         selected_strategy_classes = (
-            list(strategy_classes) if strategy_classes is not None else ALL_STRATEGIES
+            list(strategy_classes)
+            if strategy_classes is not None
+            else list(default_hodur_profile().strategy_classes)
         )
         self._strategies = [
             cls()
