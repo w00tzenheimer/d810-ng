@@ -2265,9 +2265,14 @@ def _load_planner_sites_from_fact_view(fact_view):
     for obs in getattr(fact_view, "active_observations", ()) or ():
         if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
             continue
-        payload = getattr(obs, "payload", None) or {}
+        payload = dict(getattr(obs, "payload", None) or {})
         if not isinstance(payload, dict):
             continue
+        source_block = getattr(obs, "source_block", None)
+        if source_block is not None:
+            payload.setdefault("source_block", source_block)
+            payload.setdefault("block_serial", source_block)
+            payload.setdefault("destination_block", source_block)
         source_ea = getattr(obs, "source_ea", None)
         source_ea_hex = (
             f"0x{int(source_ea) & ((1 << 64) - 1):016x}"

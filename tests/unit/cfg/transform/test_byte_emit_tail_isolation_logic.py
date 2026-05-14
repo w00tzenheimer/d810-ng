@@ -864,6 +864,39 @@ def test_bridge_plan_row_identity_mode_uses_live_serials():
     assert mapped.state_write_block == 180
 
 
+def test_load_planner_sites_from_fact_view_uses_observation_source_block():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _load_planner_sites_from_fact_view,
+    )
+    from d810.recon.facts.model import FactObservation, ValidatedFactView
+
+    obs = FactObservation(
+        fact_id="terminal-byte-2",
+        kind="TerminalByteEmitterFact",
+        semantic_key="terminal:2",
+        maturity="MMAT_GLBOPT1",
+        phase="post_bundle_stabilize",
+        confidence=0.9,
+        source_block=118,
+        source_ea=0x180015005,
+        payload={
+            "byte_index": 2,
+            "corridor_role": "terminal_tail",
+            "emitter_role": "memory_store",
+            "source_byte_expression": "xdu.8([ds.2:(%var_190.8+#2.8)].1)",
+            "destination_buffer_expression": "[ds.2:%var_178]",
+        },
+    )
+
+    sites = _load_planner_sites_from_fact_view(
+        ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,))
+    )
+
+    assert len(sites) == 1
+    assert sites[0].byte_index == 2
+    assert sites[0].block_serial == 118
+
+
 def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():
     from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
         _bridge_plan_row_to_live_mba,
