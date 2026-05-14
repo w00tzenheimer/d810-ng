@@ -66,7 +66,6 @@ BLOCK_MERGE_CASES = [
         must_change=True,
         check_stats=True,
         expected_rules=["BlockMerger"],
-        skip="Known gap: BlockMerger path for tigress_minmaxarray still unchanged",
     ),
 ]
 
