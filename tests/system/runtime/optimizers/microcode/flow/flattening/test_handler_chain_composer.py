@@ -21,6 +21,8 @@ hand-built ``LinearizedStateDag``.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 try:
@@ -34,6 +36,9 @@ pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 if IDA_AVAILABLE:
     from d810.cfg.graph_modification import InsertBlock
     from d810.cfg.state_dag_key import StateDagNodeKey
+    from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+        handler_chain_composer as hcc_module,
+    )
     from d810.recon.flow.linearized_state_dag import (
         LinearizedStateDag,
         SemanticEdgeKind,
@@ -163,12 +168,17 @@ class _StubSnapshot:
         state_machine: _StubStateMachine | None,
         discovery: _StubDiscovery | None,
         detector: object | None = None,
+        flow_graph: object | None = None,
+        bst_result: object | None = None,
+        bst_dispatcher_serial: int = 2,
     ) -> None:
         self.mba = mba
         self.state_machine = state_machine
         self.discovery = discovery
         self.detector = detector
-        self.flow_graph = None
+        self.flow_graph = flow_graph
+        self.bst_result = bst_result
+        self.bst_dispatcher_serial = bst_dispatcher_serial
 
 
 # ---- DAG factory ----
@@ -619,6 +629,120 @@ def _make_raw_region_info(
         candidate=candidate,
         composed_candidate=composed,
     )
+
+
+class TestStateWriteReconstructionTopologyBackend:
+    """Backend boundary for HCC's live state-DAG rebuild."""
+
+    def test_state_write_reconstruction_uses_projected_topology_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _StopAfterDag(Exception):
+            pass
+
+        class _FakeProjectedTopologyBackend:
+            def __init__(self, dag: LinearizedStateDag) -> None:
+                self.dag = dag
+                self.calls: list[tuple[object, object, dict]] = []
+
+            def build_projected_mba(self, flow_graph: object) -> object:
+                raise AssertionError("HCC should not request projected MBA")
+
+            def build_live_dag(
+                self,
+                current_flow_graph: object,
+                transition_result: object,
+                **kwargs: object,
+            ) -> LinearizedStateDag:
+                self.calls.append(
+                    (current_flow_graph, transition_result, kwargs)
+                )
+                corrected = kwargs.get("corrected_dag_out")
+                if corrected is not None:
+                    corrected.append(self.dag)
+                return self.dag
+
+        n0 = _make_dag_node_v2(10, 0xAAA0)
+        n1 = _make_dag_node_v2(11, 0xAAA1)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x100,
+            pre_header_serial=None,
+            initial_state=0xAAA0,
+            bst_node_blocks=(),
+            nodes=(n0, n1),
+            edges=(_make_dag_edge(n0, n1),),
+        )
+        backend = _FakeProjectedTopologyBackend(dag)
+        strategy = HandlerChainComposerStrategy()
+        strategy.HANDLER_CHAIN_COMPOSER_ENABLED = True
+        strategy._projected_topology_backend = backend
+
+        def stop_after_backend(
+            flow_graph: object,
+            state_var_stkoff: int | None,
+        ) -> object:
+            assert state_var_stkoff == 0x100
+            raise _StopAfterDag
+
+        monkeypatch.setattr(
+            hcc_module,
+            "run_snapshot_constant_fixpoint",
+            stop_after_backend,
+        )
+        monkeypatch.setattr(
+            hcc_module,
+            "log_chain_coverage",
+            lambda *args, **kwargs: None,
+        )
+
+        flow_graph = SimpleNamespace(
+            blocks={
+                10: SimpleNamespace(nsucc=1, succs=(11,)),
+                11: SimpleNamespace(nsucc=0, succs=()),
+            }
+        )
+        state_var = _StubMop(t=ida_hexrays.mop_S, stkoff=0x100)
+        sm = SimpleNamespace(
+            handlers={0xAAA0: _StubHandler(10)},
+            transitions=(),
+            assignment_map={},
+            initial_state=0xAAA0,
+            state_var=state_var,
+        )
+        bst_result = SimpleNamespace(
+            pre_header_serial=None,
+            handler_range_map={},
+            bst_node_blocks={2},
+            diagnostics=(),
+            dispatcher=None,
+        )
+        snapshot = _StubSnapshot(
+            _StubMba({}),
+            sm,
+            discovery=None,
+            flow_graph=flow_graph,
+            bst_result=bst_result,
+            bst_dispatcher_serial=2,
+        )
+
+        with pytest.raises(_StopAfterDag):
+            strategy._run_swr_orchestration(snapshot)
+
+        assert len(backend.calls) == 1
+        live_flow_graph, transition_result, kwargs = backend.calls[0]
+        assert live_flow_graph is flow_graph
+        assert transition_result.strategy_name == "handler_chain_composer"
+        assert kwargs["dispatcher_entry_serial"] == 2
+        assert kwargs["state_var_stkoff"] == 0x100
+        assert kwargs["initial_state"] == 0xAAA0
+        assert kwargs["handler_range_map"] == {}
+        assert kwargs["bst_node_blocks"] == (2,)
+        assert kwargs["diagnostics"] == ()
+        assert kwargs["dispatcher"] is None
+        assert kwargs["mba"] is snapshot.mba
+        assert kwargs["prefer_local_corridors"] is True
 
 
 class TestFindR1ToSuppress:

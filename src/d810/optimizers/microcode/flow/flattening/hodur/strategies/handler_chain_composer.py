@@ -137,6 +137,10 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PlannerContextContribution,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
@@ -181,7 +185,6 @@ from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     SemanticEdgeKind,
     StateDagNode,
-    build_live_linearized_state_dag_from_graph,
     detect_side_effect_corridors,
 )
 from d810.recon.flow.narrow_branch_local_discovery import (
@@ -243,6 +246,9 @@ _HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
 _USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
 _DEFINITION_RESCUE_BACKEND: DefinitionRescueBackend = (
     HexRaysDefinitionRescueBackend()
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
 )
 
 
@@ -2001,6 +2007,9 @@ class HandlerChainComposerStrategy:
         # body.  Stashed alongside ``_last_raw_region_table``.
         self._last_state_var_stkoff_for_call_barrier: int | None = None
         self._last_local_facts_for_call_barrier: DagLocalFacts | None = None
+        self._projected_topology_backend: ProjectedTopologyBackend = (
+            _PROJECTED_TOPOLOGY_BACKEND
+        )
         # Read-only diagnostic tracer; (re)constructed at the top of plan().
         self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
 
@@ -2817,7 +2826,7 @@ class HandlerChainComposerStrategy:
             strategy_name=self.name,
         )
         _corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             flow_graph,
             transition_result,
             dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
