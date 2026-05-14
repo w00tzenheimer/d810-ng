@@ -2131,6 +2131,101 @@ class TestHandlerChainMaterializationCaptureBackend:
             (mba, 10, 0x100, frozenset()),
         ]
 
+    def test_refined_call_shape_uses_materialization_capture_backend(
+        self,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError(
+                    "call-shape refinement should use capture backend"
+                )
+
+        class _FakeLiveTopologyBackend:
+            def block_exists(self, mba: object, serial: int) -> bool:
+                raise AssertionError("unexpected block-exists probe")
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                raise AssertionError("unexpected predecessor probe")
+
+        class _FakeMaterializationCaptureBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int, int | None]] = []
+
+            def capture_block_composable_instructions(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                state_var_stkoff: int | None = None,
+                byte_evidence_eas: frozenset[int] = frozenset(),
+            ) -> (
+                hcc_capture_backend_module.HandlerChainBlockCaptureResult
+            ):
+                assert byte_evidence_eas == frozenset()
+                self.seen.append((mba, block_serial, state_var_stkoff))
+                return (
+                    hcc_capture_backend_module.HandlerChainBlockCaptureResult(
+                        kind="composable",
+                    )
+                )
+
+            def block_contains_byte_evidence(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                byte_evidence_eas: frozenset[int],
+            ) -> bool:
+                raise AssertionError("unexpected byte-evidence probe")
+
+            def collect_stkvar_reads_in_block(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                skip_jcond_tail: bool = True,
+            ) -> frozenset[tuple[int, int]] | None:
+                raise AssertionError("unexpected read probe")
+
+        mba = _MbaWithoutMblocks()
+        capture_backend = _FakeMaterializationCaptureBackend()
+
+        assert _refine_opaque_call_shape(
+            base_shape="OTHER",
+            region_nodes=(
+                _make_dag_node_v2(10, 0x10),
+                _make_dag_node_v2(20, 0x20),
+            ),
+            opaque_call_anchor=(20, 0x2000, False),
+            dag=SimpleNamespace(edges=()),
+            local_facts=None,
+            mba=mba,
+            live_topology_backend=_FakeLiveTopologyBackend(),
+            materialization_capture_backend=capture_backend,
+            state_var_stkoff=0x100,
+        ) == "CHAINED_CALL_ANCHOR"
+        assert capture_backend.seen == [(mba, 10, 0x100)]
+
 
 class TestFindR1ToSuppress:
     """Surgical R1 suppression helper.

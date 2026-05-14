@@ -978,6 +978,9 @@ def _refine_opaque_call_shape(
     local_facts: DagLocalFacts | None,
     mba: object | None,
     live_topology_backend: HandlerChainLiveTopologyBackend,
+    materialization_capture_backend: (
+        HandlerChainMaterializationCaptureBackend | None
+    ) = None,
     state_var_stkoff: int | None = None,
 ) -> str:
     """Return ONE refined shape label for an opaque-call anchor.
@@ -998,6 +1001,11 @@ def _refine_opaque_call_shape(
     if opaque_call_anchor is None:
         return "OTHER"
     anchor_serial = int(opaque_call_anchor[0])
+    capture_backend = (
+        materialization_capture_backend
+        if materialization_capture_backend is not None
+        else _MATERIALIZATION_CAPTURE_BACKEND
+    )
 
     # CHAINED_CALL_ANCHOR: handler is the LAST node of a multi-node region
     # whose preceding nodes are all "composable" (no forbidden opcodes).
@@ -1010,16 +1018,11 @@ def _refine_opaque_call_shape(
             all_pre_composable = True
             for node in region_nodes[:-1]:
                 node_serial = int(node.entry_anchor)
-                node_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, node_serial,
-                )
-                if node_blk is None:
-                    all_pre_composable = False
-                    break
                 cap = (
-                    HandlerChainComposerStrategy
-                    ._capture_block_composable_instructions_v2(
-                        node_blk, state_var_stkoff=state_var_stkoff,
+                    capture_backend.capture_block_composable_instructions(
+                        mba,
+                        node_serial,
+                        state_var_stkoff=state_var_stkoff,
                     )
                 )
                 if cap.kind != "composable":
@@ -5247,23 +5250,27 @@ class HandlerChainComposerStrategy:
         # time, but we re-verify under the live mblock to guard against
         # post-classification drift.  Pre-anchor MUST NOT contain a
         # call (asserted again at the Phase C audit downstream).
-        pre_blk = self._safe_get_mblock(mba, pre_anchor_serial)
-        if pre_blk is None:
-            logger.info(
-                "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
-                " head_state=0x%08X reason=chained_pre_anchor_dead"
-                " pre_anchor=blk[%d]",
-                anchor_serial, head_state, pre_anchor_serial,
-            )
-            return None
         try:
-            cap_result = self._capture_block_composable_instructions_v2(
-                pre_blk, state_var_stkoff=state_var_stkoff,
+            cap_result = (
+                self._materialization_capture_backend
+                .capture_block_composable_instructions(
+                    mba,
+                    pre_anchor_serial,
+                    state_var_stkoff=state_var_stkoff,
+                )
             )
         except Exception:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_pre_anchor_capture_raised"
+                " pre_anchor=blk[%d]",
+                anchor_serial, head_state, pre_anchor_serial,
+            )
+            return None
+        if cap_result.kind == "missing_block":
+            logger.info(
+                "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
+                " head_state=0x%08X reason=chained_pre_anchor_dead"
                 " pre_anchor=blk[%d]",
                 anchor_serial, head_state, pre_anchor_serial,
             )
@@ -5449,27 +5456,30 @@ class HandlerChainComposerStrategy:
         guarded_source_skip_redirect_info: tuple[int, int] | None = None
         if bst_only_override_applied:
             try:
-                bypass_blk = self._safe_get_mblock(mba, splice_source)
-                if bypass_blk is not None:
-                    bypass_cap = self._capture_block_composable_instructions_v2(
-                        bypass_blk, state_var_stkoff=state_var_stkoff,
+                bypass_cap = (
+                    self._materialization_capture_backend
+                    .capture_block_composable_instructions(
+                        mba,
+                        splice_source,
+                        state_var_stkoff=state_var_stkoff,
                     )
-                    if bypass_cap.kind == "composable":
-                        bypass_body = tuple(bypass_cap.snapshots or ())
-                        body = bypass_body + body
-                        logger.info(
-                            "HCC_CHAINED_BST_ONLY_BODY_EXTENDED"
-                            " bypass_handler=blk[%d] bypass_ninsns=%d"
-                            " new_total_ninsns=%d",
-                            splice_source, len(bypass_body), len(body),
-                        )
-                    else:
-                        logger.info(
-                            "HCC_CHAINED_BST_ONLY_BODY_NOT_EXTENDED"
-                            " bypass_handler=blk[%d] kind=%s -- defs may"
-                            " be missing; call may still be DCE'd",
-                            splice_source, bypass_cap.kind,
-                        )
+                )
+                if bypass_cap.kind == "composable":
+                    bypass_body = tuple(bypass_cap.snapshots or ())
+                    body = bypass_body + body
+                    logger.info(
+                        "HCC_CHAINED_BST_ONLY_BODY_EXTENDED"
+                        " bypass_handler=blk[%d] bypass_ninsns=%d"
+                        " new_total_ninsns=%d",
+                        splice_source, len(bypass_body), len(body),
+                    )
+                elif bypass_cap.kind != "missing_block":
+                    logger.info(
+                        "HCC_CHAINED_BST_ONLY_BODY_NOT_EXTENDED"
+                        " bypass_handler=blk[%d] kind=%s -- defs may"
+                        " be missing; call may still be DCE'd",
+                        splice_source, bypass_cap.kind,
+                    )
             except Exception:
                 logger.debug(
                     "HCC_CHAINED_BST_ONLY_BODY_EXTENDED: capture raised",
@@ -6250,12 +6260,14 @@ class HandlerChainComposerStrategy:
                     continue
                 if writer_serial in prepended_writers:
                     continue
-                writer_blk = self._safe_get_mblock(mba, writer_serial)
-                if writer_blk is None:
-                    continue
                 try:
-                    cap = self._capture_block_composable_instructions_v2(
-                        writer_blk, state_var_stkoff=state_var_stkoff,
+                    cap = (
+                        self._materialization_capture_backend
+                        .capture_block_composable_instructions(
+                            mba,
+                            writer_serial,
+                            state_var_stkoff=state_var_stkoff,
+                        )
                     )
                 except Exception:
                     continue
@@ -7247,12 +7259,14 @@ class HandlerChainComposerStrategy:
             opaque_call_shape: str | None = None
             for node in region_nodes:
                 anchor_serial = int(node.entry_anchor)
-                anchor_blk = self._safe_get_mblock(mba, anchor_serial)
-                if anchor_blk is None:
-                    continue
                 try:
-                    cap_result = self._capture_block_composable_instructions_v2(
-                        anchor_blk, state_var_stkoff=state_var_stkoff,
+                    cap_result = (
+                        self._materialization_capture_backend
+                        .capture_block_composable_instructions(
+                            mba,
+                            anchor_serial,
+                            state_var_stkoff=state_var_stkoff,
+                        )
                     )
                 except Exception:  # pragma: no cover - diagnostic
                     continue
@@ -7297,6 +7311,9 @@ class HandlerChainComposerStrategy:
                         local_facts=local_facts,
                         mba=mba,
                         live_topology_backend=self._live_topology_backend,
+                        materialization_capture_backend=(
+                            self._materialization_capture_backend
+                        ),
                         state_var_stkoff=state_var_stkoff,
                     )
                 except Exception:  # pragma: no cover - diagnostic only
