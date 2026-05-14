@@ -138,13 +138,45 @@ def test_lfg_handoff_resolution_backend_delegates_to_recon_helpers(monkeypatch):
     backend = handoff_backend_module.HodurLinearizedFlowGraphHandoffResolutionBackend()
     seen = {}
 
-    def fake_effective_target(*args, **kwargs):
-        seen["effective"] = (args, kwargs)
-        return "effective-target"
+    def fake_effective_target(
+        dag,
+        edge,
+        *,
+        bst_node_blocks,
+        state_var_stkoff,
+        dispatcher_lookup,
+        dispatcher,
+        mba,
+    ):
+        seen["effective"] = (
+            dag,
+            edge,
+            bst_node_blocks,
+            state_var_stkoff,
+            dispatcher_lookup,
+            dispatcher,
+            mba,
+        )
+        return 205
 
-    def fake_tail_target(*args, **kwargs):
-        seen["tail"] = (args, kwargs)
-        return "tail-target"
+    def fake_tail_target(
+        dag,
+        *,
+        source_block,
+        bst_node_blocks,
+        dispatcher,
+        predecessor_hints,
+        require_predecessor_match,
+    ):
+        seen["tail"] = (
+            dag,
+            source_block,
+            bst_node_blocks,
+            dispatcher,
+            predecessor_hints,
+            require_predecessor_match,
+        )
+        return (None, 20)
 
     monkeypatch.setattr(
         handoff_backend_module,
@@ -157,38 +189,71 @@ def test_lfg_handoff_resolution_backend_delegates_to_recon_helpers(monkeypatch):
         fake_tail_target,
     )
 
-    assert (
-        backend.resolve_effective_target_entry("dag", "edge", flag=True)
-        == "effective-target"
-    )
-    assert (
-        backend.resolve_projected_path_tail_target(
-            "dag",
-            source_block=10,
-            bst_node_blocks={2},
+    effective_response = backend.resolve_effective_target_entry(
+        handoff_backend_module.EffectiveTargetEntryRequest(
+            dag="dag",
+            edge="edge",
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
         )
-        == "tail-target"
+    )
+    tail_response = backend.resolve_projected_path_tail_target(
+        handoff_backend_module.ProjectedPathTailTargetRequest(
+            dag="dag",
+            source_block=10,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
+        )
+    )
+
+    assert effective_response == handoff_backend_module.EffectiveTargetEntryResponse(
+        target_entry=205
+    )
+    assert tail_response == handoff_backend_module.ProjectedPathTailTargetResponse(
+        target=(None, 20)
     )
     assert seen == {
-        "effective": (("dag", "edge"), {"flag": True}),
-        "tail": (
-            ("dag",),
-            {"source_block": 10, "bst_node_blocks": {2}},
-        ),
+        "effective": ("dag", "edge", {2}, 0x7BC, "lookup", "dispatcher", "mba"),
+        "tail": ("dag", 10, {2}, "dispatcher", (9,), True),
     }
 
 
 def test_lfg_target_resolution_hooks_use_handoff_backend(monkeypatch):
-    class _FakeHandoffResolutionBackend:
-        def resolve_effective_target_entry(self, *args, **kwargs):
-            assert args == ("dag", "edge")
-            assert kwargs == {"flag": True}
-            return "effective-target"
+    seen = {}
 
-        def resolve_projected_path_tail_target(self, *args, **kwargs):
-            assert args == ("dag",)
-            assert kwargs == {"source_block": 10, "bst_node_blocks": {2}}
-            return "tail-target"
+    class _FakeHandoffResolutionBackend:
+        def resolve_effective_target_entry(self, request):
+            seen["effective"] = request
+            return handoff_backend_module.EffectiveTargetEntryResponse(
+                target_entry=205
+            )
+
+        def resolve_projected_path_tail_target(self, request):
+            seen["tail"] = request
+            return handoff_backend_module.ProjectedPathTailTargetResponse(
+                target=(None, 20)
+            )
+
+        def resolve_immediate_handoff_target(self, request):
+            seen["immediate"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(17, 20))
+
+        def resolve_projected_snapshot_handoff_target(self, request):
+            seen["snapshot"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(18, 20))
+
+        def resolve_assignment_map_handoff_target(self, request):
+            seen["assignment"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(19, 20))
+
+        def resolve_synthesized_handoff_target(self, request):
+            seen["synthesized"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(21, 20))
 
     monkeypatch.setattr(
         lfg_module.LinearizedFlowGraphStrategy,
@@ -200,18 +265,123 @@ def test_lfg_target_resolution_hooks_use_handoff_backend(monkeypatch):
         lfg_module.LinearizedFlowGraphStrategy._resolve_effective_target_entry(
             "dag",
             "edge",
-            flag=True,
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
         )
-        == "effective-target"
+        == 205
     )
     assert (
         lfg_module.LinearizedFlowGraphStrategy._resolve_projected_path_tail_target(
             "dag",
             source_block=10,
-            bst_node_blocks={2},
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
         )
-        == "tail-target"
+        == (None, 20)
     )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_immediate_handoff_target(
+            "dag",
+            "mba",
+            11,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+        )
+        == (17, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_projected_snapshot_handoff_target(
+            "dag",
+            "flow-graph",
+            12,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        )
+        == (18, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_assignment_map_handoff_target(
+            "dag",
+            "state-machine",
+            13,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        )
+        == (19, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_synthesized_handoff_target(
+            "dag",
+            "mba",
+            14,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            via_pred=8,
+        )
+        == (21, 20)
+    )
+
+    assert seen == {
+        "effective": handoff_backend_module.EffectiveTargetEntryRequest(
+            dag="dag",
+            edge="edge",
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
+        ),
+        "tail": handoff_backend_module.ProjectedPathTailTargetRequest(
+            dag="dag",
+            source_block=10,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
+        ),
+        "immediate": handoff_backend_module.ImmediateHandoffTargetRequest(
+            dag="dag",
+            mba="mba",
+            block_serial=11,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+        ),
+        "snapshot": handoff_backend_module.ProjectedSnapshotHandoffTargetRequest(
+            dag="dag",
+            flow_graph="flow-graph",
+            block_serial=12,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        ),
+        "assignment": handoff_backend_module.AssignmentMapHandoffTargetRequest(
+            dag="dag",
+            state_machine="state-machine",
+            block_serial=13,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        ),
+        "synthesized": handoff_backend_module.SynthesizedHandoffTargetRequest(
+            dag="dag",
+            mba="mba",
+            block_serial=14,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            via_pred=8,
+        ),
+    }
 
 
 def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):

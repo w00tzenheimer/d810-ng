@@ -68,7 +68,7 @@ from d810.cfg.residual_dispatcher_handoff_emission import (
 )
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING, AbstractSet
 
 from d810.cfg.modification_builder import (
     ModificationBuilder,
@@ -85,8 +85,14 @@ from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties i
     HodurLiveMicrocodePropertiesBackend,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_backend import (
+    AssignmentMapHandoffTargetRequest,
     DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND,
+    EffectiveTargetEntryRequest,
+    ImmediateHandoffTargetRequest,
     LinearizedFlowGraphHandoffResolutionBackend,
+    ProjectedPathTailTargetRequest,
+    ProjectedSnapshotHandoffTargetRequest,
+    SynthesizedHandoffTargetRequest,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
@@ -1314,55 +1320,150 @@ class LinearizedFlowGraphStrategy:
     _resolve_cover_fallback_entry_for_state = staticmethod(
         resolve_cover_fallback_entry_for_state
     )
+
     @classmethod
-    def _resolve_projected_path_tail_target(cls, *args, **kwargs):
-        return (
-            cls._handoff_resolution_backend.resolve_projected_path_tail_target(
-                *args,
-                **kwargs,
+    def _resolve_projected_path_tail_target(
+        cls,
+        dag: object,
+        *,
+        source_block: int,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None = None,
+        predecessor_hints: tuple[int, ...] | None = None,
+        require_predecessor_match: bool = False,
+    ) -> tuple[int | None, int] | None:
+        response = cls._handoff_resolution_backend.resolve_projected_path_tail_target(
+            ProjectedPathTailTargetRequest(
+                dag=dag,
+                source_block=source_block,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+                predecessor_hints=predecessor_hints,
+                require_predecessor_match=require_predecessor_match,
             )
         )
+        return response.target
 
     @classmethod
-    def _resolve_immediate_handoff_target(cls, *args, **kwargs):
-        return cls._handoff_resolution_backend.resolve_immediate_handoff_target(
-            *args,
-            **kwargs,
+    def _resolve_immediate_handoff_target(
+        cls,
+        dag: object,
+        mba: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher_lookup: object | None,
+        dispatcher: object | None = None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_immediate_handoff_target(
+            ImmediateHandoffTargetRequest(
+                dag=dag,
+                mba=mba,
+                block_serial=block_serial,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+            )
         )
+        return response.target
 
     @classmethod
-    def _resolve_projected_snapshot_handoff_target(cls, *args, **kwargs):
-        return (
+    def _resolve_projected_snapshot_handoff_target(
+        cls,
+        dag: object,
+        flow_graph: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+    ) -> tuple[int, int] | None:
+        response = (
             cls._handoff_resolution_backend.resolve_projected_snapshot_handoff_target(
-                *args,
-                **kwargs,
+                ProjectedSnapshotHandoffTargetRequest(
+                    dag=dag,
+                    flow_graph=flow_graph,
+                    block_serial=block_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    bst_node_blocks=bst_node_blocks,
+                    dispatcher=dispatcher,
+                )
             )
         )
+        return response.target
 
     @classmethod
-    def _resolve_assignment_map_handoff_target(cls, *args, **kwargs):
-        return (
-            cls._handoff_resolution_backend.resolve_assignment_map_handoff_target(
-                *args,
-                **kwargs,
+    def _resolve_assignment_map_handoff_target(
+        cls,
+        dag: object,
+        state_machine: object | None,
+        block_serial: int,
+        *,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_assignment_map_handoff_target(
+            AssignmentMapHandoffTargetRequest(
+                dag=dag,
+                state_machine=state_machine,
+                block_serial=block_serial,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
             )
         )
+        return response.target
 
     @classmethod
-    def _resolve_synthesized_handoff_target(cls, *args, **kwargs):
-        return (
-            cls._handoff_resolution_backend.resolve_synthesized_handoff_target(
-                *args,
-                **kwargs,
+    def _resolve_synthesized_handoff_target(
+        cls,
+        dag: object,
+        mba: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+        via_pred: int | None = None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_synthesized_handoff_target(
+            SynthesizedHandoffTargetRequest(
+                dag=dag,
+                mba=mba,
+                block_serial=block_serial,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+                via_pred=via_pred,
             )
         )
+        return response.target
 
     @classmethod
-    def _resolve_effective_target_entry(cls, *args, **kwargs):
-        return cls._handoff_resolution_backend.resolve_effective_target_entry(
-            *args,
-            **kwargs,
+    def _resolve_effective_target_entry(
+        cls,
+        dag: object,
+        edge: object,
+        *,
+        bst_node_blocks: AbstractSet[int],
+        state_var_stkoff: int | None,
+        dispatcher_lookup: object | None,
+        dispatcher: object | None,
+        mba: object,
+    ) -> int | None:
+        response = cls._handoff_resolution_backend.resolve_effective_target_entry(
+            EffectiveTargetEntryRequest(
+                dag=dag,
+                edge=edge,
+                bst_node_blocks=bst_node_blocks,
+                state_var_stkoff=state_var_stkoff,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+                mba=mba,
+            )
         )
+        return response.target_entry
 
     @classmethod
     def _emit_residual_branch_anchor_handoff(
