@@ -38,6 +38,7 @@ from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import RedirectGoto
 from d810.core.logging import getLogger
+from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import (
     UseSite,
     find_all_uses_of_stkvar,
@@ -70,6 +71,30 @@ class SeveranceViolation:
     var_size: int
     use_block: int
     use_ea: int
+
+
+class UseDefSafetyBackend(Protocol):
+    """Backend boundary for live use-def redirect safety checks."""
+
+    def redirect_use_def_violations(
+        self,
+        mod: RedirectGoto,
+        live_function: object,
+        pre_cfg: FlowGraph,
+    ) -> tuple[SeveranceViolation, ...]:
+        """Return live use-def violations that would be caused by ``mod``."""
+
+
+class HexRaysUseDefSafetyBackend:
+    """Use Hex-Rays live microcode to answer redirect use-def safety queries."""
+
+    def redirect_use_def_violations(
+        self,
+        mod: RedirectGoto,
+        live_function: object,
+        pre_cfg: FlowGraph,
+    ) -> tuple[SeveranceViolation, ...]:
+        return check_redirect_severs_use_def(mod, live_function, pre_cfg)
 
 
 def _collect_stkvar_defs_in_block(
@@ -178,6 +203,8 @@ def check_redirect_severs_use_def(
 
 
 __all__ = [
+    "HexRaysUseDefSafetyBackend",
     "SeveranceViolation",
+    "UseDefSafetyBackend",
     "check_redirect_severs_use_def",
 ]
