@@ -185,7 +185,8 @@ def test_load_hints_returns_none_when_absent() -> None:
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
 
 
-def test_fact_lifecycle_capture_disabled_by_default() -> None:
+def test_fact_lifecycle_capture_can_be_disabled() -> None:
+    configure_settings(fact_lifecycle=False)
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     summary = rt.capture_maturity_facts(
