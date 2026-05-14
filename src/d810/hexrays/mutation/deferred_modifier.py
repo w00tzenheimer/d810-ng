@@ -5378,9 +5378,10 @@ class DeferredGraphModifier:
                 expected_conditional_serial is not None
                 and new_cond_blk.serial != expected_conditional_serial
             ):
+                self._serial_remap[int(expected_conditional_serial)] = int(new_cond_blk.serial)
                 logger.warning(
                     "create_conditional_redirect: created conditional blk[%d], expected blk[%d]; "
-                    "continuing with actual serial",
+                    "continuing with actual serial and recording remap",
                     new_cond_blk.serial,
                     expected_conditional_serial,
                 )
@@ -5388,12 +5389,25 @@ class DeferredGraphModifier:
                 expected_fallthrough_serial is not None
                 and nop_blk.serial != expected_fallthrough_serial
             ):
+                self._serial_remap[int(expected_fallthrough_serial)] = int(nop_blk.serial)
                 logger.warning(
                     "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]; "
-                    "continuing with actual serial",
+                    "continuing with actual serial and recording remap",
                     nop_blk.serial,
                     expected_fallthrough_serial,
                 )
+            resolved_conditional_target_serial = self._resolve_serial(conditional_target_serial)
+            resolved_fallthrough_target_serial = self._resolve_serial(fallthrough_target_serial)
+            if (
+                resolved_conditional_target_serial is None
+                or resolved_fallthrough_target_serial is None
+            ):
+                logger.warning(
+                    "create_conditional_redirect: unable to resolve targets jcc=%s fallthrough=%s",
+                    conditional_target_serial,
+                    fallthrough_target_serial,
+                )
+                return False
 
             logger.debug(
                 "Duplicated conditional block %d -> %d (with NOP fallthrough %d)",
@@ -5407,8 +5421,8 @@ class DeferredGraphModifier:
                     ref_blk,
                     new_cond_blk,
                     nop_blk,
-                    mba.get_mblock(conditional_target_serial),
-                    mba.get_mblock(fallthrough_target_serial),
+                    mba.get_mblock(resolved_conditional_target_serial),
+                    mba.get_mblock(resolved_fallthrough_target_serial),
                 ),
             )
 
@@ -5426,8 +5440,8 @@ class DeferredGraphModifier:
                         ref_blk,
                         new_cond_blk,
                         nop_blk,
-                        mba.get_mblock(conditional_target_serial),
-                        mba.get_mblock(fallthrough_target_serial),
+                        mba.get_mblock(resolved_conditional_target_serial),
+                        mba.get_mblock(resolved_fallthrough_target_serial),
                     ),
                 )
 
@@ -5435,17 +5449,17 @@ class DeferredGraphModifier:
             # Change the conditional jump's target operand to point to the
             # desired conditional_target_serial
             if not change_2way_block_conditional_successor(
-                new_cond_blk, conditional_target_serial, verify=False
+                new_cond_blk, resolved_conditional_target_serial, verify=False
             ):
                 logger.warning(
                     "Failed to wire conditional target %d -> %d",
-                    new_cond_blk.serial, conditional_target_serial
+                    new_cond_blk.serial, resolved_conditional_target_serial
                 )
                 return False
 
             logger.debug(
                 "Wired conditional target: %d -> %d (jcc taken)",
-                new_cond_blk.serial, conditional_target_serial
+                new_cond_blk.serial, resolved_conditional_target_serial
             )
             _trace_conditional_redirect_step(
                 "after_change_2way",
@@ -5455,8 +5469,8 @@ class DeferredGraphModifier:
                     ref_blk,
                     new_cond_blk,
                     nop_blk,
-                    mba.get_mblock(conditional_target_serial),
-                    mba.get_mblock(fallthrough_target_serial),
+                    mba.get_mblock(resolved_conditional_target_serial),
+                    mba.get_mblock(resolved_fallthrough_target_serial),
                 ),
             )
 
@@ -5464,16 +5478,20 @@ class DeferredGraphModifier:
             # The NOP block was already created by duplicate_block and is
             # adjacent to new_cond_blk (satisfies BLT_2WAY fallthrough requirement).
             # Now we just redirect its goto to the actual fallthrough_target_serial.
-            if not change_1way_block_successor(nop_blk, fallthrough_target_serial, verify=False):
+            if not change_1way_block_successor(
+                nop_blk,
+                resolved_fallthrough_target_serial,
+                verify=False,
+            ):
                 logger.warning(
                     "Failed to wire NOP fallthrough %d -> %d",
-                    nop_blk.serial, fallthrough_target_serial
+                    nop_blk.serial, resolved_fallthrough_target_serial
                 )
                 return False
 
             logger.debug(
                 "Wired NOP fallthrough: %d -> %d",
-                nop_blk.serial, fallthrough_target_serial
+                nop_blk.serial, resolved_fallthrough_target_serial
             )
             _trace_conditional_redirect_step(
                 "after_helper_rewire",
@@ -5483,8 +5501,8 @@ class DeferredGraphModifier:
                     ref_blk,
                     new_cond_blk,
                     nop_blk,
-                    mba.get_mblock(conditional_target_serial),
-                    mba.get_mblock(fallthrough_target_serial),
+                    mba.get_mblock(resolved_conditional_target_serial),
+                    mba.get_mblock(resolved_fallthrough_target_serial),
                 ),
             )
 
@@ -5502,8 +5520,11 @@ class DeferredGraphModifier:
 
             logger.debug(
                 "Created conditional redirect: %d -> %d (cond) -> jcc:%d / ft:%d (via NOP %d)",
-                source_blk.serial, new_cond_blk.serial,
-                conditional_target_serial, fallthrough_target_serial, nop_blk.serial
+                source_blk.serial,
+                new_cond_blk.serial,
+                resolved_conditional_target_serial,
+                resolved_fallthrough_target_serial,
+                nop_blk.serial,
             )
             _trace_conditional_redirect_step(
                 "after_source_redirect",
@@ -5513,8 +5534,8 @@ class DeferredGraphModifier:
                     ref_blk,
                     new_cond_blk,
                     nop_blk,
-                    mba.get_mblock(conditional_target_serial),
-                    mba.get_mblock(fallthrough_target_serial),
+                    mba.get_mblock(resolved_conditional_target_serial),
+                    mba.get_mblock(resolved_fallthrough_target_serial),
                 ),
             )
 
