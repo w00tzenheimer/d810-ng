@@ -1346,6 +1346,76 @@ class TestHandlerChainLiveTopologyBackend:
         ) == 20
         assert backend.seen == [(mba, 10)]
 
+    def test_chained_splice_source_survival_uses_live_topology_backend(
+        self,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("splice-source survival should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                assert serial == 50
+                return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                    block_exists=True,
+                    npred=2,
+                    predecessors=(10, 11),
+                )
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+        local_facts = SimpleNamespace(
+            owned_blocks_by_entry={10: frozenset({10})},
+            shared_suffix_by_entry={},
+            node_by_any_local_block={},
+        )
+
+        label, detail = strategy._classify_chained_splice_source(
+            mba=mba,
+            splice_source=50,
+            splice_old_target=60,
+            call_anchor_serial=70,
+            outbound_target=80,
+            local_facts=local_facts,
+            prior_modifications=(),
+            bst_node_blocks=frozenset(),
+            dispatcher_serial=2,
+        )
+
+        assert label == "LIVE_SOURCE"
+        assert detail["surviving_preds"] == [10]
+        assert detail["unmapped_preds"] == [11]
+        assert backend.seen == [(mba, 50)]
+
     def test_guarded_source_skip_redirect_uses_backend(self) -> None:
         class _MbaWithoutMblocks:
             def get_mblock(self, serial: int) -> object:
