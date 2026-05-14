@@ -5807,22 +5807,14 @@ class HandlerChainComposerStrategy:
         if local_facts is None:
             return ("ORPHANED_NO_COVER", {"reason": "no_local_facts"})
 
-        try:
-            src_blk = self._safe_get_mblock(mba, splice_source)
-        except Exception:
-            src_blk = None
-        if src_blk is None:
+        source_topology = self._read_live_block_topology(mba, splice_source)
+        if not source_topology.block_exists:
             return ("ORPHANED_NO_COVER", {
                 "reason": "splice_source_dead_in_mba",
             })
-        try:
-            npred = int(src_blk.npred())  # type: ignore[attr-defined]
-            live_preds = tuple(
-                int(src_blk.pred(i))  # type: ignore[attr-defined]
-                for i in range(npred)
-            )
-        except Exception:
-            live_preds = ()
+        live_preds = tuple(
+            int(pred) for pred in (source_topology.predecessors or ())
+        )
 
         if not live_preds:
             return ("ORPHANED_NO_COVER", {
