@@ -17,6 +17,17 @@ class LiveOneWaySuccessorProbe:
     successor: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class LiveBlockTopologyProbe:
+    """Live predecessor/successor facts for one block."""
+
+    block_exists: bool
+    nsucc: int | None = None
+    successors: tuple[int, ...] | None = None
+    npred: int | None = None
+    predecessors: tuple[int, ...] | None = None
+
+
 class HandlerChainLiveTopologyBackend(Protocol):
     """Backend boundary for HCC live block-topology probes."""
 
@@ -29,6 +40,13 @@ class HandlerChainLiveTopologyBackend(Protocol):
         serial: int,
     ) -> LiveOneWaySuccessorProbe:
         """Read live one-way successor facts for ``serial``."""
+
+    def read_block_topology(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveBlockTopologyProbe:
+        """Read live predecessor/successor facts for ``serial``."""
 
     def resolve_first_predecessor(
         self,
@@ -51,6 +69,35 @@ class HexRaysHandlerChainLiveTopologyBackend:
 
     def block_exists(self, mba: object, serial: int) -> bool:
         return self._block(mba, serial) is not None
+
+    def read_block_topology(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveBlockTopologyProbe:
+        block = self._block(mba, int(serial))
+        if block is None:
+            return LiveBlockTopologyProbe(block_exists=False)
+        try:
+            succ_count = int(block.nsucc())  # type: ignore[attr-defined]
+            successors = tuple(
+                int(block.succ(index))  # type: ignore[attr-defined]
+                for index in range(succ_count)
+            )
+            pred_count = int(block.npred())  # type: ignore[attr-defined]
+            predecessors = tuple(
+                int(block.pred(index))  # type: ignore[attr-defined]
+                for index in range(pred_count)
+            )
+        except Exception:
+            return LiveBlockTopologyProbe(block_exists=True)
+        return LiveBlockTopologyProbe(
+            block_exists=True,
+            nsucc=succ_count,
+            successors=successors,
+            npred=pred_count,
+            predecessors=predecessors,
+        )
 
     def read_one_way_successor(
         self,
@@ -145,5 +192,6 @@ __all__ = [
     "DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND",
     "HandlerChainLiveTopologyBackend",
     "HexRaysHandlerChainLiveTopologyBackend",
+    "LiveBlockTopologyProbe",
     "LiveOneWaySuccessorProbe",
 ]

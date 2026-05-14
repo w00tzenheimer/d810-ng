@@ -152,6 +152,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend i
 from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND,
     HandlerChainLiveTopologyBackend,
+    LiveBlockTopologyProbe,
     LiveOneWaySuccessorProbe,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
@@ -6016,8 +6017,8 @@ class HandlerChainComposerStrategy:
             )
             return None
 
-        writer_blk = self._safe_get_mblock(mba, writer_serial)
-        if writer_blk is None:
+        writer_topology = self._read_live_block_topology(mba, writer_serial)
+        if not writer_topology.block_exists:
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
                 " call_anchor=blk[%d] head_state=0x%08X"
@@ -6026,15 +6027,13 @@ class HandlerChainComposerStrategy:
             )
             return None
 
-        try:
-            writer_nsucc = int(writer_blk.nsucc())  # type: ignore[attr-defined]
-            writer_succ = int(writer_blk.succ(0))  # type: ignore[attr-defined]
-            writer_npred = int(writer_blk.npred())  # type: ignore[attr-defined]
-            writer_preds = tuple(
-                int(writer_blk.pred(i))  # type: ignore[attr-defined]
-                for i in range(writer_npred)
-            )
-        except Exception:
+        if (
+            writer_topology.nsucc is None
+            or writer_topology.npred is None
+            or writer_topology.successors is None
+            or writer_topology.predecessors is None
+            or not writer_topology.successors
+        ):
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
                 " call_anchor=blk[%d] head_state=0x%08X"
@@ -6042,6 +6041,11 @@ class HandlerChainComposerStrategy:
                 call_anchor_serial, head_state, writer_serial,
             )
             return None
+
+        writer_nsucc = int(writer_topology.nsucc)
+        writer_succ = int(writer_topology.successors[0])
+        writer_npred = int(writer_topology.npred)
+        writer_preds = tuple(int(pred) for pred in writer_topology.predecessors)
 
         if writer_nsucc != 1:
             logger.info(
@@ -6062,14 +6066,12 @@ class HandlerChainComposerStrategy:
             return None
 
         guard_pred = int(writer_preds[0])
-        guard_blk = self._safe_get_mblock(mba, guard_pred)
-        try:
-            guard_nsucc = (
-                int(guard_blk.nsucc())  # type: ignore[attr-defined]
-                if guard_blk is not None else -1
-            )
-        except Exception:
-            guard_nsucc = -1
+        guard_topology = self._read_live_block_topology(mba, guard_pred)
+        guard_nsucc = (
+            int(guard_topology.nsucc)
+            if guard_topology.block_exists and guard_topology.nsucc is not None
+            else -1
+        )
         if guard_nsucc != 2:
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
@@ -7725,6 +7727,16 @@ class HandlerChainComposerStrategy:
         serial: int,
     ) -> LiveOneWaySuccessorProbe:
         return self._live_topology_backend.read_one_way_successor(
+            mba,
+            int(serial),
+        )
+
+    def _read_live_block_topology(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveBlockTopologyProbe:
+        return self._live_topology_backend.read_block_topology(
             mba,
             int(serial),
         )
