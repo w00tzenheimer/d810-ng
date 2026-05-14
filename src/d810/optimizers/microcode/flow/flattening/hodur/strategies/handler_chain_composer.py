@@ -126,6 +126,7 @@ from d810.cfg.semantic_region_admission import (
 from d810.cfg.state_edge_pair import state_edge_pair
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
+    InsertBlockCallAuditBackend,
 )
 from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
     DefinitionRescueBackend,
@@ -2023,6 +2024,9 @@ class HandlerChainComposerStrategy:
         self._live_topology_backend: HandlerChainLiveTopologyBackend = (
             _LIVE_TOPOLOGY_BACKEND
         )
+        self._insert_block_call_audit_backend: InsertBlockCallAuditBackend = (
+            _HEX_RAYS_CAPTURE_BACKEND
+        )
         # Read-only diagnostic tracer; (re)constructed at the top of plan().
         self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
 
@@ -3571,8 +3575,7 @@ class HandlerChainComposerStrategy:
             ),
         }
 
-    @staticmethod
-    def _assert_no_call_in_insert_blocks(modifications: list) -> None:
+    def _assert_no_call_in_insert_blocks(self, modifications: list) -> None:
         """uee-b7ze Step 2 (Phase C): audit ``InsertBlock`` bodies for calls.
 
         Step 2 must NEVER copy a call instruction into an InsertBlock
@@ -3589,7 +3592,9 @@ class HandlerChainComposerStrategy:
             captured_body = getattr(mod, "captured_body", None)
             if (
                 captured_body is not None
-                and getattr(getattr(captured_body, "summary", None), "contains_call", False)
+                and self._insert_block_call_audit_backend.captured_body_contains_call(
+                    captured_body
+                )
             ):
                 logger.error(
                     "HCC_CALL_BARRIER_INVARIANT_VIOLATION:"
@@ -3601,11 +3606,9 @@ class HandlerChainComposerStrategy:
                     "call leaked into InsertBlock captured body"
                 )
             for insn_snap in mod.instructions:
-                try:
-                    opcode = int(getattr(insn_snap, "opcode", -1))
-                except Exception:
-                    continue
-                if opcode in (ida_hexrays.m_call, ida_hexrays.m_icall):
+                if self._insert_block_call_audit_backend.instruction_snapshot_is_call(
+                    insn_snap
+                ):
                     logger.error(
                         "HCC_CALL_BARRIER_INVARIANT_VIOLATION:"
                         " m_call/m_icall ea=0x%x in InsertBlock body"
