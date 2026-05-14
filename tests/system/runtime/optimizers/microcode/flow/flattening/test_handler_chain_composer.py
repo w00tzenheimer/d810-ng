@@ -663,6 +663,16 @@ class TestStateWriteReconstructionTopologyBackend:
                     corrected.append(self.dag)
                 return self.dag
 
+        class _FakeConstantFixpointBackend:
+            def compute(
+                self,
+                flow_graph: object,
+                state_var_stkoff: int,
+            ) -> object:
+                assert flow_graph is expected_flow_graph
+                assert state_var_stkoff == 0x100
+                raise _StopAfterDag
+
         n0 = _make_dag_node_v2(10, 0xAAA0)
         n1 = _make_dag_node_v2(11, 0xAAA1)
         dag = LinearizedStateDag(
@@ -678,19 +688,7 @@ class TestStateWriteReconstructionTopologyBackend:
         strategy = HandlerChainComposerStrategy()
         strategy.HANDLER_CHAIN_COMPOSER_ENABLED = True
         strategy._projected_topology_backend = backend
-
-        def stop_after_backend(
-            flow_graph: object,
-            state_var_stkoff: int | None,
-        ) -> object:
-            assert state_var_stkoff == 0x100
-            raise _StopAfterDag
-
-        monkeypatch.setattr(
-            hcc_module,
-            "run_snapshot_constant_fixpoint",
-            stop_after_backend,
-        )
+        strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
         monkeypatch.setattr(
             hcc_module,
             "log_chain_coverage",
@@ -703,6 +701,7 @@ class TestStateWriteReconstructionTopologyBackend:
                 11: SimpleNamespace(nsucc=0, succs=()),
             }
         )
+        expected_flow_graph = flow_graph
         state_var = _StubMop(t=ida_hexrays.mop_S, stkoff=0x100)
         sm = SimpleNamespace(
             handlers={0xAAA0: _StubHandler(10)},

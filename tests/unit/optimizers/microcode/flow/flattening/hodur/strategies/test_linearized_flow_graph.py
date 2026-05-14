@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto, ZeroStateWrite
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    constant_fixpoint_backend as constant_backend_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur import (
     projected_topology_backend as topology_backend_module,
@@ -58,6 +63,60 @@ def _empty_resolved_round_summary(dag: object) -> SimpleNamespace:
         terminal_skipped=0,
         unknown_skipped=0,
     )
+
+
+def test_constant_fixpoint_backend_delegates_to_recon_helper(monkeypatch):
+    backend = constant_backend_module.HodurConstantFixpointBackend()
+    flow_graph = object()
+    seen = {}
+
+    def fake_constant_fixpoint(received_flow_graph, received_stkoff):
+        seen["flow_graph"] = received_flow_graph
+        seen["stkoff"] = received_stkoff
+        return "constant-result"
+
+    monkeypatch.setattr(
+        constant_backend_module,
+        "run_snapshot_constant_fixpoint",
+        fake_constant_fixpoint,
+    )
+
+    assert backend.compute(flow_graph, 0x7BC) == "constant-result"
+    assert seen == {"flow_graph": flow_graph, "stkoff": 0x7BC}
+
+
+def test_lfg_structured_region_uses_constant_fixpoint_backend(monkeypatch):
+    class _StopAfterConstantFixpoint(Exception):
+        pass
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph: object, state_var_stkoff: int) -> object:
+            assert flow_graph is expected_flow_graph
+            assert state_var_stkoff == 0x7BC
+            raise _StopAfterConstantFixpoint
+
+    expected_flow_graph = object()
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_constant_fixpoint_backend",
+        _FakeConstantFixpointBackend(),
+    )
+
+    with pytest.raises(_StopAfterConstantFixpoint):
+        lfg_module.LinearizedFlowGraphStrategy._emit_structured_region_reconstruction(
+            region=SimpleNamespace(internal_state_edges=()),
+            dag=SimpleNamespace(bst_node_blocks=(), nodes=(), edges=()),
+            semantic_reference_program=None,
+            structured_regions=(),
+            flow_graph=expected_flow_graph,
+            state=SimpleNamespace(),
+            state_var_stkoff=0x7BC,
+            dispatcher_serial=2,
+            dispatcher=None,
+            snapshot=SimpleNamespace(
+                discovery=SimpleNamespace(constant_fixpoint=None)
+            ),
+        )
 
 
 def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):

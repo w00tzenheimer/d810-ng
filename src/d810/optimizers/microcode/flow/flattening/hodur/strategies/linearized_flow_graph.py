@@ -78,6 +78,10 @@ from d810.cfg.modification_builder import (
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties import (
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
     HodurLiveMicrocodePropertiesBackend,
@@ -218,7 +222,6 @@ from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.state_machine_analysis import (
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
-    run_snapshot_constant_fixpoint,
 )
 from d810.cfg.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
@@ -265,6 +268,9 @@ _LIVE_MICROCODE_PROPERTIES: HodurLiveMicrocodePropertiesBackend = (
 )
 _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 
@@ -1212,6 +1218,9 @@ class LinearizedFlowGraphStrategy:
     _projected_topology_backend: ProjectedTopologyBackend = (
         _PROJECTED_TOPOLOGY_BACKEND
     )
+    _constant_fixpoint_backend: ConstantFixpointBackend = (
+        _CONSTANT_FIXPOINT_BACKEND
+    )
 
     @staticmethod
     def _resolve_state_var_stkoff(
@@ -1737,7 +1746,6 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         snapshot: object | None = None,
     ) -> LinearizedFlowGraphStructuredRegionResult:
-        del cls
         if state_var_stkoff is None:
             return LinearizedFlowGraphStructuredRegionResult(
                 accepted=False,
@@ -1752,12 +1760,12 @@ class LinearizedFlowGraphStrategy:
         # pass-entry flow_graph + state_var_stkoff; post-round CFG changes
         # don't alter state-constant propagation). Prefer the canonical
         # pass-entry value from snapshot.discovery when available, avoiding
-        # one run_snapshot_constant_fixpoint() call per region per round.
+        # one backend constant-fixpoint compute per region per round.
         ctx = getattr(snapshot, "discovery", None) if snapshot is not None else None
         constant_result = (
             ctx.constant_fixpoint
             if ctx is not None and ctx.constant_fixpoint is not None
-            else run_snapshot_constant_fixpoint(
+            else cls._constant_fixpoint_backend.compute(
                 flow_graph,
                 int(state_var_stkoff),
             )
@@ -2318,7 +2326,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
         )
         corrected_dag = corrected_dag_out[0] if corrected_dag_out else dag
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             int(state_var_stkoff),
         )

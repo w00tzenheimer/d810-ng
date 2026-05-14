@@ -886,6 +886,12 @@ def test_state_write_reconstruction_uses_projected_topology_backend(monkeypatch)
                 corrected.append(self.dag)
             return self.dag
 
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph_arg: object, state_var_stkoff: int):
+            assert flow_graph_arg is flow_graph
+            assert state_var_stkoff == 0x3C
+            raise _StopAfterBackend
+
     flow_graph = FlowGraph(
         blocks={
             2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (), (), 0, 0x2000, ()),
@@ -908,17 +914,7 @@ def test_state_write_reconstruction_uses_projected_topology_backend(monkeypatch)
     backend = _FakeProjectedTopologyBackend(dag)
     strategy = StateWriteReconstructionStrategy()
     strategy._projected_topology_backend = backend
-
-    def stop_after_backend(flow_graph_arg: object, state_var_stkoff: int):
-        assert flow_graph_arg is flow_graph
-        assert state_var_stkoff == 0x3C
-        raise _StopAfterBackend
-
-    monkeypatch.setattr(
-        reconstruction_module,
-        "run_snapshot_constant_fixpoint",
-        stop_after_backend,
-    )
+    strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
     monkeypatch.setattr(
         reconstruction_module,
         "log_chain_coverage",
