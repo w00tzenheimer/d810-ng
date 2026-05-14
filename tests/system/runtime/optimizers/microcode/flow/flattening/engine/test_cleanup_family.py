@@ -38,6 +38,17 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
+    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
+    BadWhileLoopAnalysis,
+    BadWhileLoopConditionalRedirect,
+    BadWhileLoopFollowUp,
+    BadWhileLoopGotoConversion,
+    BadWhileLoopGotoRedirect,
+    extract_bad_while_loop_edits,
+    extract_bad_while_loop_follow_up,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
@@ -84,6 +95,12 @@ def _cleanup_flow_graph() -> FlowGraph:
             30: _block(30, (31, 32), (29, 31), block_type=4),
             31: _block(31, (30,), (30,), start_ea=0x401031),
             32: _block(32, (), (30,), block_type=2),
+            40: _block(40, (41,), (), start_ea=0x401040),
+            41: _block(41, (42, 43), (40, 44), block_type=4),
+            42: _block(42, (), (41,), block_type=2),
+            43: _block(43, (), (41,), block_type=2),
+            44: _block(44, (41, 45), (), block_type=4, start_ea=0x401044),
+            45: _block(45, (), (44,), block_type=2),
         },
         entry_serial=0,
         func_ea=0x401000,
@@ -122,7 +139,7 @@ def _fake_mba() -> SimpleNamespace:
     )
 
 
-def test_simple_cleanup_family_registers_first_pilot_strategies_only() -> None:
+def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
     empty_graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
     family = SimpleFlatteningCleanupFamily(
         cfg_translator=_FakeTranslator(empty_graph)
@@ -132,6 +149,7 @@ def test_simple_cleanup_family_registers_first_pilot_strategies_only() -> None:
     assert [strategy.name for strategy in family.strategies] == [
         "fake_jump",
         "single_iteration",
+        "bad_while_loop",
     ]
 
 
@@ -141,6 +159,26 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         loop_header=30,
         pred_block=29,
         new_target=31,
+    )
+    bad_while_loop_edit = BadWhileLoopGotoRedirect(
+        dispatcher_entry=41,
+        from_serial=40,
+        new_target=42,
+    )
+    unsafe_bad_while_loop_edit = BadWhileLoopConditionalRedirect(
+        dispatcher_entry=41,
+        source_serial=40,
+        ref_block=44,
+        conditional_target=42,
+        fallthrough_target=43,
+    )
+    bad_while_loop_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=44,
+        category="create_conditional_redirect",
+        reason="conditional_exit_with_loopback",
+        target_serial=42,
+        fallthrough_target=45,
     )
     calls: dict[str, object] = {}
 
@@ -152,6 +190,13 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         calls["single_iteration"] = (mba, kwargs)
         return (single_iteration_fix,)
 
+    def _collect_bad_while_loop(mba, **kwargs):
+        calls["bad_while_loop"] = (mba, kwargs)
+        return BadWhileLoopAnalysis(
+            edits=(bad_while_loop_edit, unsafe_bad_while_loop_edit),
+            follow_up=(bad_while_loop_follow_up,),
+        )
+
     monkeypatch.setattr(
         backend_module,
         "collect_live_fake_jump_fixes",
@@ -162,6 +207,11 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         "collect_live_single_iteration_fixes",
         _collect_single_iteration,
     )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_bad_while_loop_analysis",
+        _collect_bad_while_loop,
+    )
 
     backend = LiveSimpleFlatteningCleanupBackend()
     mba = _fake_mba()
@@ -169,11 +219,15 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
 
     assert detection.fake_jump_fixes == (fake_jump_fix,)
     assert detection.single_iteration_fixes == (single_iteration_fix,)
+    assert detection.bad_while_loop_edits == (bad_while_loop_edit,)
+    assert detection.bad_while_loop_deferred_edits == (unsafe_bad_while_loop_edit,)
+    assert detection.bad_while_loop_follow_up == (bad_while_loop_follow_up,)
     assert detection.collection_errors == ()
     assert calls["fake_jump"][0] is mba
     assert calls["fake_jump"][1]["max_nb_block"] == 100
     assert calls["fake_jump"][1]["max_path"] == 100
     assert calls["single_iteration"][0] is mba
+    assert calls["bad_while_loop"][0] is mba
 
 
 def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
@@ -182,10 +236,34 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         SingleIterationPredFix(loop_header=30, pred_block=29, new_target=31),
         SingleIterationPredFix(loop_header=30, pred_block=31, new_target=32),
     )
+    bad_while_loop_edits = (
+        BadWhileLoopGotoRedirect(
+            dispatcher_entry=41,
+            from_serial=40,
+            new_target=42,
+        ),
+        BadWhileLoopGotoConversion(
+            dispatcher_entry=41,
+            block_serial=44,
+            goto_target=43,
+        ),
+    )
+    bad_while_loop_follow_up = (
+        BadWhileLoopFollowUp(
+            dispatcher_entry=41,
+            from_serial=44,
+            category="create_conditional_redirect",
+            reason="conditional_exit_with_loopback",
+            target_serial=42,
+            fallthrough_target=45,
+        ),
+    )
     backend = _FakeBackend(
         SimpleFlatteningCleanupDetection(
             fake_jump_fixes=(fake_jump_fix,),
             single_iteration_fixes=single_iteration_fixes,
+            bad_while_loop_edits=bad_while_loop_edits,
+            bad_while_loop_follow_up=bad_while_loop_follow_up,
             maturity=ida_hexrays.MMAT_GLBOPT1,
             func_ea=0x401000,
         )
@@ -203,6 +281,10 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert detection.detected is True
     assert extract_fake_jump_fixes(snapshot.flow_graph) == (fake_jump_fix,)
     assert extract_single_iteration_fixes(snapshot.flow_graph) == single_iteration_fixes
+    assert extract_bad_while_loop_edits(snapshot.flow_graph) == bad_while_loop_edits
+    assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (
+        bad_while_loop_follow_up
+    )
     assert snapshot.state_machine is None
     assert snapshot.state_summary == StateModelSummary(
         state_constants=frozenset(),
@@ -212,13 +294,56 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
 
     metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
     assert isinstance(metadata, SimpleFlatteningCleanupMetadata)
-    assert metadata.strategy_names == ("fake_jump", "single_iteration")
+    assert metadata.strategy_names == (
+        "fake_jump",
+        "single_iteration",
+        "bad_while_loop",
+    )
     assert metadata.legacy_rule_names == LEGACY_CLEANUP_RULE_NAMES
     assert metadata.collected_fake_jump_fixes == 1
     assert metadata.selected_fake_jump_fixes == 1
     assert metadata.collected_single_iteration_fixes == 2
     assert metadata.selected_single_iteration_fixes == 2
+    assert metadata.collected_bad_while_loop_edits == 2
+    assert metadata.selected_bad_while_loop_edits == 2
+    assert metadata.deferred_bad_while_loop_edits == 0
+    assert metadata.bad_while_loop_follow_up == 1
     assert metadata.planning_ready is True
+
+
+def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
+    unsafe_edit = BadWhileLoopConditionalRedirect(
+        dispatcher_entry=41,
+        source_serial=40,
+        ref_block=44,
+        conditional_target=42,
+        fallthrough_target=43,
+    )
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            bad_while_loop_deferred_edits=(unsafe_edit,),
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
+    )
+    family = SimpleFlatteningCleanupFamily(
+        backend=backend,
+        cfg_translator=_FakeTranslator(_cleanup_flow_graph())
+    )
+
+    detection = family.detect(_fake_mba())
+    snapshot = family.build_snapshot(_fake_mba(), detection)
+
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+    assert detection.detected is False
+    assert detection.diagnostic_only is True
+    assert extract_bad_while_loop_edits(snapshot.flow_graph) == ()
+    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == []
+    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] == []
+    assert metadata.collected_bad_while_loop_edits == 1
+    assert metadata.selected_bad_while_loop_edits == 0
+    assert metadata.deferred_bad_while_loop_edits == 1
+    assert metadata.planning_ready is False
 
 
 def test_simple_cleanup_family_records_backend_errors() -> None:
@@ -244,13 +369,15 @@ def test_simple_cleanup_family_records_backend_errors() -> None:
     assert metadata.planning_ready is False
     assert snapshot.flow_graph.metadata[FAKE_JUMP_FIXES_METADATA_KEY] == {}
     assert snapshot.flow_graph.metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] == {}
+    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == []
+    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] == []
 
 
 def test_cleanup_unflattener_uses_shared_runtime(monkeypatch) -> None:
     mba = _fake_mba()
     metadata = SimpleFlatteningCleanupMetadata(
         family_name="simple_flattening_cleanup",
-        strategy_names=("fake_jump", "single_iteration"),
+        strategy_names=("fake_jump", "single_iteration", "bad_while_loop"),
         legacy_rule_names=LEGACY_CLEANUP_RULE_NAMES,
         maturity=ida_hexrays.MMAT_GLBOPT1,
         func_ea=0x401000,
