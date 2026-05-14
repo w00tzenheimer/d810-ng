@@ -705,7 +705,9 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
     assert calls == [dm.ModificationType.INSN_NOP]
 
 
-def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
+def test_create_conditional_redirect_records_serial_drift_remap_and_continues(monkeypatch, request):
+    import logging
+
     mba = _FakeMBA()
     source = _FakeBlock(5)
     ref = _FakeBlock(6)
@@ -713,6 +715,8 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
     mba.qty = len(mba.blocks)
 
     modifier = dm.DeferredGraphModifier(mba)
+    modifier._serial_remap[10] = 13
+    modifier._serial_remap[11] = 14
 
     monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
     monkeypatch.setattr(
@@ -721,22 +725,46 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
         lambda *_a, **_k: (_FakeBlock(7), _FakeBlock(8)),
     )
 
+    records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _ListHandler(level=logging.WARNING)
+    dm.logger.addHandler(handler)
+    request.addfinalizer(lambda: dm.logger.removeHandler(handler))
+
     cond_calls = {"count": 0}
     ft_calls = {"count": 0}
     src_calls = {"count": 0}
+    cond_targets: list[int] = []
+    ft_targets: list[int] = []
+    src_targets: list[int] = []
+
+    def _change_2way(_blk, new_target, *_a, **_k):
+        cond_calls["count"] += 1
+        cond_targets.append(new_target)
+        return True
+
+    def _change_1way(blk, new_target, *_a, **_k):
+        if blk.serial == 8:
+            ft_calls["count"] += 1
+            ft_targets.append(new_target)
+        else:
+            src_calls["count"] += 1
+            src_targets.append(new_target)
+        return True
+
     monkeypatch.setattr(
         dm,
         "change_2way_block_conditional_successor",
-        lambda *_a, **_k: cond_calls.__setitem__("count", cond_calls["count"] + 1) or True,
+        _change_2way,
     )
     monkeypatch.setattr(
         dm,
         "change_1way_block_successor",
-        lambda blk, *_a, **_k: (
-            ft_calls.__setitem__("count", ft_calls["count"] + 1)
-            if blk.serial == 8
-            else src_calls.__setitem__("count", src_calls["count"] + 1)
-        ) or True,
+        _change_1way,
     )
 
     ok = modifier._apply_create_conditional_redirect(
@@ -745,13 +773,27 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
         conditional_target_serial=10,
         fallthrough_target_serial=11,
         expected_conditional_serial=9,
-        expected_fallthrough_serial=8,
+        expected_fallthrough_serial=12,
     )
 
-    assert ok is False
-    assert cond_calls["count"] == 0
-    assert ft_calls["count"] == 0
-    assert src_calls["count"] == 0
+    assert ok is True
+    assert cond_calls["count"] == 1
+    assert ft_calls["count"] == 1
+    assert src_calls["count"] == 1
+    assert cond_targets == [13]
+    assert ft_targets == [14]
+    assert src_targets == [7]
+    assert modifier._serial_remap[9] == 7
+    assert modifier._serial_remap[12] == 8
+    messages = [record.getMessage() for record in records]
+    assert any(
+        "created conditional blk[7], expected blk[9]" in message
+        for message in messages
+    )
+    assert any(
+        "created fallthrough blk[8], expected blk[12]" in message
+        for message in messages
+    )
 
 
 def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
