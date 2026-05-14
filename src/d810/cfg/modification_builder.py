@@ -37,6 +37,10 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.state_write_cleanup import (
+    StateWriteCleanupRequest,
+    state_write_cleanup_to_graph_modification,
+)
 
 
 def snapshot_block_nsucc_map(snapshot: object) -> dict[int, int]:
@@ -236,6 +240,12 @@ class ModificationBuilder:
 
     def zero_state_write(self, source_block: int, instruction_ea: int) -> ZeroStateWrite:
         return ZeroStateWrite(block_serial=source_block, insn_ea=instruction_ea)
+
+    def state_write_cleanup(
+        self,
+        request: StateWriteCleanupRequest,
+    ) -> GraphModification:
+        return state_write_cleanup_to_graph_modification(request)
 
     def promote_operand_to_scalar(
         self,

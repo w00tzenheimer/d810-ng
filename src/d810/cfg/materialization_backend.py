@@ -12,6 +12,7 @@ from d810.cfg.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
+from d810.cfg.state_write_cleanup import StateWriteCleanupRequest
 from d810.core.typing import TYPE_CHECKING, Mapping, Protocol
 
 if TYPE_CHECKING:
@@ -53,10 +54,31 @@ class MaterializationBackend(Protocol):
         """Materialize an instruction NOP rewrite."""
         ...
 
+    def classify_trivial_tail_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        """Classify a local state-write tail cleanup without exposing IR."""
+        ...
+
+    def classify_matching_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        """Classify a single matching constant state-write cleanup."""
+        ...
+
 
 __all__ = [
     "BackendInstructionRef",
     "CapturedBlockBody",
     "CapturedBlockBodySummary",
     "MaterializationBackend",
+    "StateWriteCleanupRequest",
 ]
