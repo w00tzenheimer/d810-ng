@@ -18,6 +18,7 @@ from d810.cfg.state_write_cleanup import (
     StateWriteCleanupAction,
     StateWriteCleanupRequest,
 )
+from d810.cfg.state_write_evidence import StateConstantWriteEvidence
 from d810.core.logging import getLogger
 from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
 from d810.hexrays.mutation.insn_snapshot_materializer import (
@@ -449,6 +450,161 @@ class HexRaysInstructionCaptureBackend:
     ) -> set[tuple[int, int]]:
         return _collect_stkvar_reads_in_block(blk, skip_jcond_tail=skip_jcond_tail)
 
+    def collect_unresolved_stkvar_reads(
+        self,
+        snapshots: tuple[InsnSnapshot, ...],
+        *,
+        state_variable: object | None,
+    ) -> set[int]:
+        """Return top-level stack reads not defined earlier in ``snapshots``."""
+        state_var_stkoff = _state_variable_stkoff(state_variable)
+        written: set[int] = set()
+        needed: set[int] = set()
+        for snap in tuple(snapshots):
+            for slot in (getattr(snap, "l", None), getattr(snap, "r", None)):
+                if slot is None:
+                    continue
+                try:
+                    slot_t = int(getattr(slot, "t", -1))
+                except Exception:
+                    slot_t = -1
+                if slot_t != ida_hexrays.mop_S:
+                    continue
+                stkoff = _mop_stkoff(slot)
+                if stkoff is not None and int(stkoff) not in written:
+                    needed.add(int(stkoff))
+
+            d = getattr(snap, "d", None)
+            if d is None:
+                continue
+            try:
+                d_t = int(getattr(d, "t", -1))
+            except Exception:
+                d_t = -1
+            if d_t == ida_hexrays.mop_S:
+                d_off = _mop_stkoff(d)
+                if d_off is not None:
+                    written.add(int(d_off))
+
+        if state_var_stkoff is not None:
+            needed.discard(int(state_var_stkoff))
+        return needed - written
+
+    def find_unique_const_writer_for_stkoff(
+        self,
+        mba: object,
+        target_stkoff: int,
+        *,
+        state_variable: object | None,
+    ) -> int | None:
+        """Return the unique block that writes a constant to ``target_stkoff``."""
+        state_var_stkoff = _state_variable_stkoff(state_variable)
+        if (
+            state_var_stkoff is not None
+            and int(target_stkoff) == int(state_var_stkoff)
+        ):
+            return None
+        try:
+            qty = int(getattr(mba, "qty", 0))
+        except Exception:
+            return None
+
+        writers: list[int] = []
+        for serial in range(qty):
+            try:
+                blk = mba.get_mblock(serial)  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            cur = getattr(blk, "head", None)
+            while cur is not None:
+                try:
+                    opcode = int(cur.opcode)
+                except Exception:
+                    opcode = -1
+                if opcode == ida_hexrays.m_mov and _is_state_var_dest(
+                    getattr(cur, "d", None),
+                    int(target_stkoff),
+                ):
+                    if _const_mop_value(getattr(cur, "l", None)) is not None:
+                        writers.append(int(serial))
+                        if len(writers) > 1:
+                            return None
+                        break
+                cur = getattr(cur, "next", None)
+
+        if len(writers) == 1:
+            return writers[0]
+        return None
+
+    def collect_state_constant_writes(
+        self,
+        mba: object,
+        *,
+        state_variable: object | None,
+    ) -> tuple[StateConstantWriteEvidence, ...]:
+        """Collect constant writes to the dispatcher state variable."""
+        state_var_stkoff = _state_variable_stkoff(state_variable)
+        if state_var_stkoff is None:
+            return ()
+        try:
+            qty = int(getattr(mba, "qty", 0))
+        except Exception:
+            return ()
+
+        writes: list[StateConstantWriteEvidence] = []
+        for serial in range(qty):
+            try:
+                blk = mba.get_mblock(serial)  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            cur = getattr(blk, "head", None)
+            while cur is not None:
+                try:
+                    opcode = int(cur.opcode)
+                except Exception:
+                    opcode = -1
+                if opcode == ida_hexrays.m_mov and _is_state_var_dest(
+                    getattr(cur, "d", None),
+                    state_var_stkoff,
+                ):
+                    value = _const_mop_value(getattr(cur, "l", None))
+                    if value is not None:
+                        try:
+                            insn_ea = int(getattr(cur, "ea", 0) or 0)
+                        except Exception:
+                            insn_ea = 0
+                        writes.append(
+                            StateConstantWriteEvidence(
+                                block_serial=int(serial),
+                                insn_ea=insn_ea,
+                                state_value=int(value),
+                            )
+                        )
+                cur = getattr(cur, "next", None)
+        return tuple(writes)
+
+    def block_contains_call(self, mba: object, block_serial: int) -> bool:
+        """Return whether the live block contains a call-like instruction."""
+        try:
+            blk = mba.get_mblock(int(block_serial))  # type: ignore[attr-defined]
+        except Exception:
+            return False
+        if blk is None:
+            return False
+        cur = getattr(blk, "head", None)
+        while cur is not None:
+            try:
+                if int(cur.opcode) in _CALL_FORBIDDEN:
+                    return True
+            except Exception:
+                return False
+            cur = getattr(cur, "next", None)
+        return False
+
     def block_has_non_state_payload(
         self,
         mba: object,
@@ -495,7 +651,7 @@ def _mop_stkoff(mop: object) -> int | None:
         try:
             return int(stkoff)
         except Exception:
-            return None
+            pass
     s = getattr(mop, "s", None)
     if s is None:
         return None
@@ -532,16 +688,17 @@ def _const_mop_value(mop: object) -> int | None:
             return None
     except Exception:
         return None
-    value = getattr(mop, "value", None)
-    if value is None:
-        nnn = getattr(mop, "nnn", None)
-        value = getattr(nnn, "value", None)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
+    candidates = [getattr(mop, "value", None)]
+    nnn = getattr(mop, "nnn", None)
+    candidates.append(getattr(nnn, "value", None))
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+    return None
 
 
 def _find_live_def_insn(
