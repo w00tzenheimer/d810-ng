@@ -39,6 +39,9 @@ if IDA_AVAILABLE:
     from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
         handler_chain_composer as hcc_module,
     )
+    from d810.optimizers.microcode.flow.flattening.hodur import (
+        handler_chain_live_topology_backend as hcc_topology_backend_module,
+    )
     from d810.recon.flow.linearized_state_dag import (
         LinearizedStateDag,
         SemanticEdgeKind,
@@ -742,6 +745,78 @@ class TestStateWriteReconstructionTopologyBackend:
         assert kwargs["dispatcher"] is None
         assert kwargs["mba"] is snapshot.mba
         assert kwargs["prefer_local_corridors"] is True
+
+
+class TestHandlerChainLiveTopologyBackend:
+    def test_resolves_first_predecessor_from_live_topology(self) -> None:
+        backend = (
+            hcc_topology_backend_module.HexRaysHandlerChainLiveTopologyBackend()
+        )
+        first = _StubBlock(10, succs=(), preds=(20, 30, 40))
+        one_way_pred = _StubBlock(20, succs=(10,), preds=())
+        conditional_pred = _StubBlock(30, succs=(99, 10), preds=())
+        conditional_pred.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_jcnd,
+            d=SimpleNamespace(b=10),
+        )
+        wrong_conditional_pred = _StubBlock(40, succs=(99, 88), preds=())
+        wrong_conditional_pred.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_jcnd,
+            d=SimpleNamespace(b=88),
+        )
+        mba = _StubMba(
+            {
+                10: first,
+                20: one_way_pred,
+                30: conditional_pred,
+                40: wrong_conditional_pred,
+            }
+        )
+
+        assert (
+            backend.resolve_first_predecessor(
+                mba,
+                first_anchor=10,
+                region_anchors={20},
+            )
+            == 30
+        )
+
+    def test_composer_delegates_first_pred_probe_to_backend(self) -> None:
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int, frozenset[int]]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                assert serial == 10
+                return True
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                self.seen.append((mba, first_anchor, frozenset(region_anchors)))
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = object()
+        region_node = _make_dag_node(10, 0x10)
+
+        assert (
+            strategy._compose_region(
+                mba=mba,
+                dag=SimpleNamespace(edges=()),
+                region_nodes=(region_node,),
+                state_var_stkoff=None,
+            )
+            is None
+        )
+        assert backend.seen == [(mba, 10, frozenset({10}))]
 
 
 class TestFindR1ToSuppress:

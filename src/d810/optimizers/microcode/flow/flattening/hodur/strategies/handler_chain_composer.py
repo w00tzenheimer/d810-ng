@@ -149,6 +149,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend i
     ConstantFixpointBackend,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND,
+    HandlerChainLiveTopologyBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
@@ -255,6 +259,9 @@ _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
 )
 _CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
+_LIVE_TOPOLOGY_BACKEND: HandlerChainLiveTopologyBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND
 )
 
 
@@ -1542,7 +1549,7 @@ def _log_region_lowering_candidate(
             "  call_type=%s\n"
             "  call_ea=0x%x\n"
             "  region_handlers=%s\n"
-            "  region_pred_via_resolve_first_pred=%s\n"
+            "  region_pred_via_live_topology=%s\n"
             "  region_succ_via_resolve_region_exit=%s\n"
             "  semantic_pred_source=%s\n"
             "  semantic_pred_eligibility=%s\n"
@@ -2018,6 +2025,9 @@ class HandlerChainComposerStrategy:
         )
         self._constant_fixpoint_backend: ConstantFixpointBackend = (
             _CONSTANT_FIXPOINT_BACKEND
+        )
+        self._live_topology_backend: HandlerChainLiveTopologyBackend = (
+            _LIVE_TOPOLOGY_BACKEND
         )
         # Read-only diagnostic tracer; (re)constructed at the top of plan().
         self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
@@ -7127,8 +7137,8 @@ class HandlerChainComposerStrategy:
         """Build per-region observation records for the pre-compose log pass.
 
         For each raw region, compute every field needed to emit a log line
-        without depending on ``_compose_region``'s success.  ``_resolve_first_pred``
-        and ``_resolve_region_exit`` are best-effort here -- failures
+        without depending on ``_compose_region``'s success.  The live-topology
+        first-pred backend and ``_resolve_region_exit`` are best-effort -- failures
         produce ``None`` fields rather than aborting collection.
 
         Additionally, speculatively run ``_compose_region`` on every
@@ -7154,17 +7164,16 @@ class HandlerChainComposerStrategy:
 
             # Best-effort physical-pred probe.
             old_physical_pred: int | None = None
-            head_blk = self._safe_get_mblock(mba, head_anchor)
-            if head_blk is not None:
-                try:
-                    old_physical_pred = self._resolve_first_pred(
-                        mba=mba,
-                        blk=head_blk,
-                        region_anchors=region_anchors_set,
+            try:
+                old_physical_pred = (
+                    self._live_topology_backend.resolve_first_predecessor(
+                        mba,
                         first_anchor=head_anchor,
+                        region_anchors=region_anchors_set,
                     )
-                except Exception:
-                    old_physical_pred = None
+                )
+            except Exception:
+                old_physical_pred = None
 
             # Best-effort exit probe.
             proposed_exit: int | None = None
@@ -7413,14 +7422,12 @@ class HandlerChainComposerStrategy:
             return None
 
         first_anchor = int(region_nodes[0].entry_anchor)
-        first_blk = self._safe_get_mblock(mba, first_anchor)
-        if first_blk is None:
+        if not self._live_topology_backend.block_exists(mba, first_anchor):
             return None
 
         region_anchors_set = {int(n.entry_anchor) for n in region_nodes}
-        pred_serial = self._resolve_first_pred(
-            mba=mba,
-            blk=first_blk,
+        pred_serial = self._live_topology_backend.resolve_first_predecessor(
+            mba,
             region_anchors=region_anchors_set,
             first_anchor=first_anchor,
         )
@@ -7712,68 +7719,6 @@ class HandlerChainComposerStrategy:
             return mba.get_mblock(serial)  # type: ignore[attr-defined]
         except Exception:
             return None
-
-    @staticmethod
-    def _resolve_first_pred(
-        *,
-        mba: object,
-        blk: object,
-        region_anchors: set[int],
-        first_anchor: int,
-    ) -> int | None:
-        """Pick the splice predecessor for the region's first handler.
-
-        Accepts 1-way preds and 2-way preds whose conditional (taken) arm
-        currently targets the region's first handler. Fallthrough-arm
-        edges and non-conditional 2-way tails are skipped because the
-        downstream backend cannot rewrite them via create-and-redirect
-        without violating physical adjacency invariants.
-        """
-        try:
-            n = int(blk.npred())  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        if n == 0:
-            return None
-        eligible: list[int] = []
-        try:
-            for i in range(n):
-                p = int(blk.pred(i))  # type: ignore[attr-defined]
-                if p in region_anchors:
-                    continue
-                pred_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, p)
-                if pred_blk is None:
-                    continue
-                try:
-                    nsucc = int(pred_blk.nsucc())  # type: ignore[attr-defined]
-                except Exception:
-                    continue
-                if nsucc == 1:
-                    eligible.append(p)
-                    continue
-                if nsucc != 2:
-                    continue
-                # 2-way pred: only allow when the conditional arm
-                # (tail.d.b) currently targets the region's first
-                # handler. The fallthrough arm cannot be safely
-                # redirected via create-and-redirect.
-                tail = getattr(pred_blk, "tail", None)
-                if tail is None:
-                    continue
-                try:
-                    if not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
-                        continue
-                    cond_target = int(tail.d.b)
-                except Exception:
-                    continue
-                if cond_target != int(first_anchor):
-                    continue
-                eligible.append(p)
-        except Exception:
-            return None
-        if not eligible:
-            return None
-        return min(eligible)
 
     def _resolve_region_exit(
         self,
