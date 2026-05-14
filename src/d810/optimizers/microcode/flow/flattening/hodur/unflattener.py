@@ -1088,6 +1088,29 @@ class HodurUnflattener(GenericUnflatteningRule):
                         exc_info=True,
                     )
                     fact_view = None
+            runtime_fact_raw = os.environ.get(
+                "D810_TERMINAL_TAIL_CASCADE_EGRESS_RUNTIME_FACTS", "0"
+            )
+            if str(runtime_fact_raw).lower() in {"1", "true", "yes", "on"}:
+                try:
+                    from d810.recon.flow.runtime_evidence import (
+                        ensure_terminal_byte_fact_view,
+                    )
+
+                    fact_view = ensure_terminal_byte_fact_view(
+                        self.mba,
+                        func_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+                        maturity=int(
+                            getattr(self.mba, "maturity", self.cur_maturity) or 0
+                        ),
+                        fact_view=fact_view,
+                        phase="post_bundle_stabilize",
+                    )
+                except Exception:
+                    unflat_logger.debug(
+                        "terminal_tail_cascade_egress runtime fact collection failed",
+                        exc_info=True,
+                    )
             latest_dag = None
             try:
                 from d810.recon.flow.runtime_evidence import (
