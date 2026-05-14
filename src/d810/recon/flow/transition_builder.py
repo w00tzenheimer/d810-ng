@@ -21,6 +21,8 @@ class StateTransition:
     condition_block: Optional[int] = None
     is_conditional: bool = False
     provenance_chain: List["tuple[int, int]"] = field(default_factory=list)
+    provenance_kind: Optional[str] = None
+    provenance_ea: Optional[int] = None
 
 
 @dataclass
@@ -220,4 +222,3 @@ __all__ = [
     "_get_state_var_stkoff",
     "_convert_bst_to_result",
 ]
-

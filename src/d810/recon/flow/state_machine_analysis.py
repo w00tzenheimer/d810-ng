@@ -302,7 +302,7 @@ class ConditionalTransition:
     target_handler: int | None
     state_write_block: int | None
     state_write_ea: int | None
-    branch_arm: int
+    branch_arm: int | None
     is_terminal_no_write: bool = False
 
 

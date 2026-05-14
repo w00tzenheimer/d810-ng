@@ -532,7 +532,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     monkeypatch.setattr(
         family,
         "_collect_lowering_candidates",
-        lambda _mba, _det, *, flow_graph: (
+        lambda _mba, _det, *, flow_graph, **_kwargs: (
             (RedirectGoto(from_serial=0, old_target=1, new_target=1),),
             ("dispatcher_source_shape_not_lowered",),
             (),
@@ -592,7 +592,7 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
     monkeypatch.setattr(
         family,
         "_collect_lowering_candidates",
-        lambda _mba, _det, *, flow_graph: (
+        lambda _mba, _det, *, flow_graph, **_kwargs: (
             (
                 CreateConditionalRedirect(
                     source_block=0,
@@ -1681,7 +1681,7 @@ class TestEmulatedDispatcherManagedContext:
         assert "goto STATE_000F6A1E;" in artifact["semantic_reference_program"]
         assert "goto STATE_000F6A1F;" in artifact["semantic_reference_program"]
 
-    def test_approov_vm_dispatcher_keeps_loop_recovery_disabled_without_phase_contract(
+    def test_approov_vm_dispatcher_lowers_dynamic_state_write_with_guard(
         self,
         libobfuscated_setup,
         d810_state,
@@ -1698,12 +1698,15 @@ class TestEmulatedDispatcherManagedContext:
         def _wrapped_build_snapshot(self, mba, detection):
             snapshot = original_build_snapshot(self, mba, detection)
             metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+            artifact = extract_emulated_dispatcher_phase_artifact(snapshot.flow_graph)
             if (
                 metadata is not None
                 and metadata.candidate_count >= int(captured.get("candidate_count", -1))
             ):
                 captured["candidate_count"] = metadata.candidate_count
                 captured["snapshot"] = asdict(metadata)
+                if artifact is not None:
+                    captured["phase_artifact"] = asdict(artifact)
             return snapshot
 
         monkeypatch.setattr(
@@ -1733,10 +1736,33 @@ class TestEmulatedDispatcherManagedContext:
             state.stop_d810()
 
         snapshot = captured["snapshot"]
-        assert snapshot["candidate_count"] > 0
+        assert snapshot["candidate_count"] == 3
         assert snapshot["selected_lowering_mode"] == "generic_graph_modifications"
         assert snapshot["loop_recovery_modification_count"] == 0
-        assert snapshot["planning_ready"] is False
+        assert snapshot["planning_ready"] is True
+        assert snapshot["selected_modification_count"] == 3
+        assert snapshot["candidate_kinds"] == (
+            "InsertBlock",
+            "CreateConditionalRedirect",
+            "InsertBlock",
+        )
+        dynamic_record = next(
+            record
+            for record in snapshot["candidate_records"]
+            if record["selection_reason"]
+            == "dynamic_state_write_conditional_redirect"
+        )
+        assert dynamic_record["father_serial"] == 7
+        assert dynamic_record["target_serial"] == 8
+        assert dynamic_record["state_signature"] == (0xF6A20,)
+        assert dynamic_record["selected_modification_summaries"] == (
+            "CreateConditionalRedirect(src=7,ref=4,jcc=8,ft=6,insns=0)",
+        )
+        artifact = captured["phase_artifact"]
+        program = artifact["semantic_reference_program"]
+        f6a1f_block = program.split("STATE_000F6A1F:", 1)[1].split("\n\n", 1)[0]
+        assert "goto STATE_000F6A20;" in f6a1f_block
+        assert "goto STATE_000F6A1F;" not in f6a1f_block
 
     def test_dispatcher_loop_recovery_guard_rejects_returning_fallback_artifact(
         self,
