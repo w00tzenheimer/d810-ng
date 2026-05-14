@@ -40,6 +40,7 @@ __all__ = [
     "collect_exact_conditional_sites",
     "conditional_fork_path_from_source",
     "edge_kind_name",
+    "is_straight_line_handoff",
     "normalize_clean_conditional_fork_arms",
     "ordered_path_first_hop",
     "site_key",
@@ -49,6 +50,11 @@ __all__ = [
 def edge_kind_name(edge: object) -> str:
     kind = getattr(getattr(edge, "kind", None), "name", None)
     return str(kind) if kind is not None else ""
+
+
+def is_straight_line_handoff(edge: object) -> bool:
+    """Return whether an edge is an unconditional semantic transition."""
+    return edge_kind_name(edge) == "TRANSITION"
 
 
 def site_key(edge: object) -> tuple[int, int] | None:
