@@ -24,11 +24,11 @@ Hex-Rays-shaped questions while deciding whether those neutral actions are safe.
 
 | Strategy | Backend-neutral intent already emitted | Live Hex-Rays detail still mixed in | Suggested boundary |
 | --- | --- | --- | --- |
-| `handler_chain_composer.py` | Emits composed `InsertBlock` regions, redirects, duplicate/pred-split rewrites, frontier overrides, and cleanup mods. `CapturedBlockBody` is already an opaque payload. | Still owns live `mba` topology validation, block body capture, call-anchor classification, jcond-tail dropping, use-def vetoes, SCCP/reaching-def rescue, state-var fallback, and many `mblock_t` freshness checks. | Keep HCC policy and ordering in Hodur. Move capture, topology freshness, call-anchor evidence, use-def safety, and def-chain rescue behind explicit Hex-Rays evidence/materialization backends. |
-| `exact_conditional_node.py` | Emits direct reconstruction mods and pred-split edge redirects for hammock-style exact conditional nodes. Analysis is mostly cfg/recon shaped. | Imports `ida_hexrays` for function/maturity gating and reads live `mba` from the snapshot for admission. | Move function identity and maturity checks into a Hodur profile/backend gate. Keep conditional-site analysis and graph modification emission neutral. |
-| `exact_conditional_fork.py` | Emits `RedirectGoto`/pred-split redirects plus state-write cleanup requests for two-arm semantic forks. | Imports `ida_hexrays` for admission, passes live `mba` and `state_var_stkoff` into effective target resolution, and calls the Hex-Rays capture backend for tail state-write cleanup classification. | Use profile gates for maturity/function checks; move effective-target and cleanup classification behind small adapter protocols that return neutral target/cleanup evidence. |
-| `exact_conditional_alias.py` | Emits edge redirect, pred-split, or duplicate-and-redirect mods for alias-equivalent conditional exits. Analysis is mostly cfg-flow shaped. | Imports `ida_hexrays` only for live function/maturity admission. | Move admission into the Hodur profile/backend gate. Keep alias detection and graph modification planning in cfg/Hodur policy. |
-| `exact_node_frontier_bypass.py` | Emits dispatcher frontier bypass redirects and trivial zero-state-write cleanups. The cfg resolver now accepts precomputed backend-neutral effective targets. | Still imports `ida_hexrays` for admission and live `mop_S` state-var checks, resolves singleton state writes from live `mba`, and computes residual effective targets through Hex-Rays-backed handoff resolution. | Move state-var identity, singleton state-write value, and residual effective-target resolution into a residual handoff evidence backend. Hodur should pass neutral values into cfg and decide policy/gates. |
+| `handler_chain_composer.py` | Emits composed `InsertBlock` regions, redirects, duplicate/pred-split rewrites, frontier overrides, and cleanup mods. `CapturedBlockBody` is already an opaque payload. | Partially split: block capture, state-write scans, use-def safety, and reaching-def/SCCP rescue now go through Hex-Rays backends. Remaining live coupling is topology freshness, jcond-tail/topology checks, call-anchor mechanics, state-var fallback, and many `mblock_t` freshness checks. | Keep HCC policy and ordering in Hodur. Continue moving topology freshness, call-anchor evidence, guarded-source checks, and remaining mutation/verify mechanics behind explicit Hex-Rays evidence/materialization backends. |
+| `exact_conditional_node.py` | Emits direct reconstruction mods and pred-split edge redirects for hammock-style exact conditional nodes. Analysis is mostly cfg/recon shaped. | Done for admission: function identity and maturity checks go through `HodurProfileGateBackend`. | Keep conditional-site analysis and graph modification emission neutral. |
+| `exact_conditional_fork.py` | Emits `RedirectGoto`/pred-split redirects plus state-write cleanup requests for two-arm semantic forks. | Done for admission, live effective target resolution, and tail cleanup classification. Remaining live inputs are passed opaquely into `EffectiveTargetEvidenceBackend` and `StateWriteCleanupEvidenceBackend`. | Keep fork policy in Hodur: clean-fork gating, alias exclusion, arm ownership, emission mode, and cleanup acceptance. |
+| `exact_conditional_alias.py` | Emits edge redirect, pred-split, or duplicate-and-redirect mods for alias-equivalent conditional exits. Analysis is mostly cfg-flow shaped. | Done for admission: function identity and maturity checks go through `HodurProfileGateBackend`. | Keep alias detection and graph modification planning in cfg/Hodur policy. |
+| `exact_node_frontier_bypass.py` | Emits dispatcher frontier bypass redirects and trivial zero-state-write cleanups. The cfg resolver accepts precomputed backend-neutral effective targets. | Done for state-var identity, singleton state-write evidence, and residual effective-target evidence via `HexRaysResidualFrontierEvidenceBackend`. | Hodur keeps policy: supported exact entries, owned-source exclusion, supplemental bypass allowance, structured conditional feeder skips, and post-apply cleanup metadata. |
 
 ## Smaller Live-Analysis Inventory
 
@@ -36,17 +36,19 @@ Hex-Rays-shaped questions while deciding whether those neutral actions are safe.
 | --- | --- | --- | --- |
 | `spurious_backedge_redirect.py` | Convert selected spurious backedges to gotos using `ConvertToGoto`. | Walks `mba.get_mblock`, `nsucc`, `succ`, `blk.type`, `blk.head`; parses `insn._print()` output for reads and writes. | Move topology and read/write collection behind live topology and predicate evidence backends. Keep cfg planner consuming plain maps. |
 | `state_constant_return_fixup.py` | NOP leaked dispatcher-state constant writes on return paths using `NopInstructions`. | Finds STOP blocks, return mux shape, feeder blocks, tail instructions, opcodes, operands, stack offsets, and state-variable fallback with `ida_hexrays` constants and live operands. | Move return-path shape detection and cleanup-site classification behind a return cleanup evidence backend. Hodur only decides whether to accept the cleanup sites. |
-| `dead_state_variable_elimination.py` | NOP proven dead dispatcher-state reads using `NopInstructions`. | Finds state-var uses, reaching defs, value ranges, block tail shape, gutted blocks, branch tails, dynamic writes, stack-var operands, constants, and indirect stack definitions using live microcode. | Move use/def/value-range and read cleanup classification behind a dead state-variable evidence backend. Preserve Hodur policy as explicit guards over neutral decisions. |
-| `linearized_flow_graph.py` | Emits `RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `ZeroStateWrite`, `PrivateTerminalSuffix`, and suffix groups from flow graph plans. | Imports `ida_hexrays` for maturity and block type checks, passes live `mba` into use-def safety and projected live DAG helpers, and performs Hex-Rays use-def veto checks during postprocessing. | Move maturity gates, block-type normalization, projected topology views, and redirect use-def safety checks behind backend protocols. Keep graph planning in cfg/recon. |
+| `dead_state_variable_elimination.py` | NOP proven dead dispatcher-state reads using `NopInstructions`. | Done for the primary live-analysis split: use discovery, reaching defs, value ranges, block tail shape, gutted-block checks, dynamic writes, operand/opcode checks, and indirect stack definitions now live behind `HexRaysDeadStateVariableEvidenceBackend`. | Keep Hodur policy and NOP emission in the strategy. Future DSVE work should harden/extend backend evidence objects rather than reintroducing live reads into Hodur. |
+| `linearized_flow_graph.py` | Emits `RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `ZeroStateWrite`, `PrivateTerminalSuffix`, and suffix groups from flow graph plans. | Partially split: maturity/block-type constants are normalized by `HodurLiveMicrocodePropertiesBackend`, and use-def vetoes go through `UseDefSafetyBackend`. Remaining coupling passes live `mba` into effective target and projected live DAG helpers. | Move projected topology views and residual/effective target helpers behind backend protocols. Keep graph planning in cfg/recon. |
 
 ## Primary Strategy Notes
 
 ### Handler Chain Composer
 
-HCC is the main remaining mixed boundary. It has already moved several evidence
-scans into `HexRaysInstructionCaptureBackend`, and `CapturedBlockBody` is the
-right direction: cfg may carry the payload, but only the backend that created it
-may interpret or materialize it.
+HCC is the main remaining mixed boundary. It has moved several evidence scans
+into Hex-Rays backends: `HexRaysInstructionCaptureBackend` owns capture and
+payload evidence, `UseDefSafetyBackend` owns redirect severance checks, and
+`DefinitionRescueBackend` owns reaching-def/SCCP rescue evidence. `CapturedBlockBody`
+is the right direction: cfg may carry the payload, but only the backend that
+created it may interpret or materialize it.
 
 Current intent:
 
@@ -64,8 +66,8 @@ Current live Hex-Rays coupling:
 - Captures composable instruction bodies from live blocks.
 - Classifies calls, indirect calls, forbidden closing opcodes, byte-emitter
   jcond-tail capture, and non-state payload.
-- Runs use-def severance checks before selected redirects.
-- Runs reaching-def and SCCP rescue paths for stranded captured operands.
+- Requests use-def severance checks from `UseDefSafetyBackend`.
+- Requests reaching-def and SCCP rescue evidence from `DefinitionRescueBackend`.
 - Falls back to live `mop_S` state-variable identity in some paths.
 - Keeps policy and live mechanics close together in large candidate emission
   helpers, especially call-anchor, tail-extension, convergence, and walk-back
@@ -78,9 +80,11 @@ Proposed boundary:
   construction.
 - `LiveTopologyBackend` owns live block freshness and predecessor/successor
   checks.
-- `UseDefSafetyBackend` owns redirect severance checks.
-- `DefinitionRescueBackend` owns reaching-def, SCCP, stranded operand, and
-  transitive def-chain capture.
+- `UseDefSafetyBackend` owns redirect severance checks. This is now in place
+  for HCC's direct redirect vetoes and call-barrier outbound checks.
+- `DefinitionRescueBackend` owns reaching-def and SCCP evidence. This is now in
+  place for the byte-evidence rescue path; transitive def-chain capture still
+  lives through `HexRaysInstructionCaptureBackend`.
 - Hodur keeps the candidate policy: which region to compose, which candidate
   wins, which env gate is active, and when a backend decision is trusted enough
   to emit a graph modification.
@@ -108,8 +112,9 @@ Proposed boundary:
 
 ### Exact Conditional Fork
 
-This strategy is mostly neutral in emission, but still has live effective-target
-and cleanup classification mixed into the strategy module.
+This strategy is mostly neutral in emission. Live effective-target and cleanup
+classification now cross through backend protocols instead of direct resolver
+or concrete capture-backend calls.
 
 Current intent:
 
@@ -120,20 +125,18 @@ Current intent:
 
 Current live Hex-Rays coupling:
 
-- Uses `ida_hexrays.MMAT_GLBOPT1` and live function EA for admission.
-- Passes live `mba`, dispatcher lookup, dispatcher model, and state-var stack
-  offset into effective transition target resolution.
-- Calls `HexRaysInstructionCaptureBackend` to classify trivial or matching
-  tail state-write cleanup.
+- Uses `HodurProfileGateBackend` for function/maturity admission.
+- Requests effective transition target evidence from
+  `EffectiveTargetEvidenceBackend`.
+- Requests trivial or matching tail state-write cleanup classification through
+  `StateWriteCleanupEvidenceBackend`.
 
 Proposed boundary:
 
-- Use a profile gate for function/maturity admission.
-- Introduce `EffectiveTargetEvidenceBackend` for fork-arm target resolution.
-  It should return neutral target entries and reason codes.
-- Keep tail state-write cleanup classification behind a formal
-  `StateWriteCleanupEvidenceBackend` protocol instead of importing the concrete
-  Hex-Rays capture backend directly in strategy code.
+- Keep `EffectiveTargetEvidenceBackend` returning neutral target entries and
+  reason codes.
+- Keep tail state-write cleanup classification behind
+  `StateWriteCleanupEvidenceBackend`.
 - Keep fork policy in Hodur: clean-fork gating, alias exclusion, arm ownership,
   emission mode, and cleanup acceptance.
 
@@ -161,10 +164,10 @@ Proposed boundary:
 
 ### Exact Node Frontier Bypass
 
-This strategy already reflects the residual frontier cleanup direction: cfg no
-longer receives live `mba` or `state_var_stkoff` for frontier target resolution.
-The remaining live work sits in Hodur, but should be formalized as adapter
-evidence rather than direct strategy mechanics.
+This strategy now reflects the residual frontier cleanup direction: cfg no
+longer receives live `mba` or `state_var_stkoff` for frontier target resolution,
+and Hodur no longer directly inspects live `mop_S` state variables or calls live
+residual handoff resolvers for singleton/effective targets.
 
 Current intent:
 
@@ -174,19 +177,14 @@ Current intent:
 
 Current live Hex-Rays coupling:
 
-- Uses live function/maturity admission through `ida_hexrays`.
-- Reads the state variable as live `mop_S`.
-- Calls live singleton state-write value resolution for each residual pred.
-- Computes residual effective target entries through Hex-Rays-backed handoff
-  resolution before passing the value into cfg.
+- Uses `HodurProfileGateBackend` for function/maturity admission.
+- Requests state-variable identity, singleton state-write values, and residual
+  effective targets from `HexRaysResidualFrontierEvidenceBackend`.
 
 Proposed boundary:
 
-- `StateVariableIdentityBackend` returns a neutral `StateVariableRef`.
-- `ResidualStateWriteEvidenceBackend` returns the singleton state value written
-  by a residual predecessor.
-- `ResidualEffectiveTargetBackend` returns the already-computed effective entry
-  for cfg to consider.
+- `HexRaysResidualFrontierEvidenceBackend` returns neutral `StateVariableRef`,
+  `ResidualStateWriteEvidence`, and `ResidualEffectiveTargetEvidence` values.
 - Hodur keeps policy: supported exact entries, owned-source exclusion,
   supplemental bypass allowance, structured conditional feeder skips, and
   post-apply cleanup metadata.
@@ -278,16 +276,13 @@ Current intent:
 
 Current live evidence collection:
 
-- Resolves the state variable from live `mop_S` fallback data.
-- Finds all stack-var uses and reaching definitions through evaluator helpers.
-- Runs value-range fixpoint analysis.
-- Reads live block shape to skip two-way branch tails.
-- Walks live instructions to detect gutted blocks.
-- Classifies source and destination operands, constants, stack offsets, and
-  dynamic state writes.
-- Chases indirect stack-var definitions by walking previous live instructions.
+- Done behind `HexRaysDeadStateVariableEvidenceBackend`:
+  state-variable resolution from live `mop_S`, stack-var use discovery,
+  reaching definitions, value-range fixpoint analysis, two-way tail checks,
+  gutted-block detection, operand/opcode/constant classification, dynamic
+  state-write preservation, and indirect stack-var definition chasing.
 
-Proposed boundary:
+Boundary now in place:
 
 - `DeadStateVariableEvidenceBackend` owns live use/def/value-range collection.
 - It returns neutral decisions for each observed use:
@@ -316,18 +311,17 @@ Current intent:
 
 Current live Hex-Rays coupling:
 
-- Checks `mba.maturity` against `ida_hexrays.MMAT_GLBOPT1`.
-- Uses `ida_hexrays.BLT_2WAY` to avoid unsafe dead dispatcher root conversion.
-- Calls live use-def safety helpers to veto redirects.
+- Normalizes maturity and block-type constants through
+  `HodurLiveMicrocodePropertiesBackend`.
+- Calls `UseDefSafetyBackend` to veto redirects.
 - Passes live `mba` into effective target and projected DAG helpers.
 - Builds projected MBA-like views from flow graph snapshots for some analyses.
 
 Proposed boundary:
 
-- `MaturityGateBackend` converts live maturity into a neutral profile gate such
-  as `"global_opt_1"`.
-- `BlockTypeBackend` normalizes live block types into strings or enum values
-  before strategy code sees them.
+- `HodurLiveMicrocodePropertiesBackend` converts live maturity and block types
+  into named policy predicates. This is now in place for the remaining direct
+  `ida_hexrays` constants in LFG.
 - `UseDefSafetyBackend` answers whether a proposed redirect severs a live
   use-def chain.
 - `ProjectedTopologyBackend` provides a neutral block/topology view when a

@@ -240,6 +240,22 @@ def test_block_contains_call_detects_call_opcode() -> None:
     assert backend.block_contains_call(_Mba({3: _Block(call)}), 3)
 
 
+def test_instruction_snapshot_is_call_detects_call_opcode() -> None:
+    backend = HexRaysInstructionCaptureBackend()
+
+    assert backend.instruction_snapshot_is_call(_Insn(ida_hexrays.m_icall))
+    assert not backend.instruction_snapshot_is_call(_Insn(ida_hexrays.m_add))
+
+
+def test_captured_body_contains_call_reads_backend_summary() -> None:
+    backend = HexRaysInstructionCaptureBackend()
+    captured_body = SimpleNamespace(
+        summary=SimpleNamespace(contains_call=True),
+    )
+
+    assert backend.captured_body_contains_call(captured_body)
+
+
 def test_block_contains_call_rejects_non_call_opcode() -> None:
     real = _Insn(ida_hexrays.m_add)
     backend = HexRaysInstructionCaptureBackend()
