@@ -34,7 +34,11 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 
 if IDA_AVAILABLE:
-    from d810.cfg.graph_modification import InsertBlock
+    from d810.cfg.graph_modification import (
+        InsertBlock,
+        RedirectBranch,
+        RedirectGoto,
+    )
     from d810.cfg.state_dag_key import StateDagNodeKey
     from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
         handler_chain_composer as hcc_module,
@@ -556,6 +560,75 @@ class TestInsertBlockCallAuditBoundary:
         ):
             strategy._assert_no_call_in_insert_blocks([mod])
         assert backend.seen_snapshots == [call_snapshot]
+
+
+class TestPayloadIntermediateTopologyBoundary:
+    def test_payload_intermediate_feeder_uses_live_topology_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("payload feeder should use topology backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.seen.append((mba, serial))
+                assert serial == 30
+                return hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                    block_exists=True,
+                    nsucc=1,
+                    successor=40,
+                )
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected block-topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        monkeypatch.setattr(
+            hcc_module,
+            "_block_has_non_state_payload",
+            lambda *args, **kwargs: True,
+        )
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        filtered = strategy._filter_payload_intermediate_redirects(
+            [RedirectBranch(from_serial=10, old_target=30, new_target=50)],
+            mba=mba,
+            dispatcher_serial=2,
+            bst_node_blocks=frozenset(),
+            state_var_stkoff=None,
+        )
+
+        assert filtered == [
+            RedirectGoto(from_serial=30, old_target=40, new_target=50),
+        ]
+        assert backend.seen == [(mba, 30)]
 
 
 # ---------------------------------------------------------------------------
