@@ -1038,6 +1038,131 @@ class TestHandlerChainLiveTopologyBackend:
         assert result == (109, 120, (retained_call_body,))
         assert backend.seen == [(mba, 109), (mba, 108)]
 
+    def test_guarded_source_skip_redirect_uses_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("guarded-source skip should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 109:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        npred=1,
+                        predecessors=(108,),
+                    )
+                if serial == 108:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(109, 121),
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        assert strategy._resolve_guarded_source_skip_redirect(
+            mba=mba,
+            guarded_source=109,
+        ) == (108, 121)
+        assert backend.seen == [(mba, 109), (mba, 108)]
+
+    def test_call_anchor_guard_skip_candidates_use_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("call-anchor guard skip should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 150:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        npred=2,
+                        predecessors=(129, 140),
+                    )
+                if serial == 129:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(150, 131),
+                    )
+                if serial == 140:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=1,
+                        successors=(150,),
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        assert strategy._collect_call_anchor_guard_skip_candidates(
+            mba=mba,
+            call_anchor_serial=150,
+            outbound_target=143,
+        ) == [(129, 131)]
+        assert backend.seen == [(mba, 150), (mba, 129), (mba, 140)]
+
 
 class TestFindR1ToSuppress:
     """Surgical R1 suppression helper.

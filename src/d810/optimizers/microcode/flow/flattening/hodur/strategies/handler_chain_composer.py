@@ -5179,7 +5179,6 @@ class HandlerChainComposerStrategy:
             return None
         ca_live_succ = int(ca_probe.successor)
         block_outgoing_edge = ca_live_succ
-        ca_blk = self._safe_get_mblock(mba, call_anchor_serial)
 
         # Guard 5: DAG-fact ownership lookup -- the call anchor must be
         # owned by exactly one known state per ``DagLocalFacts``.  This
@@ -5471,37 +5470,12 @@ class HandlerChainComposerStrategy:
                             body,
                         ) = retargeted
                         try:
-                            guarded_blk = self._safe_get_mblock(
-                                mba, int(effective_splice_source)
-                            )
-                            guarded_npred = (
-                                int(guarded_blk.npred())  # type: ignore[attr-defined]
-                                if guarded_blk is not None else -1
-                            )
-                            if guarded_npred == 1:
-                                guard_pred = int(
-                                    guarded_blk.pred(0)  # type: ignore[attr-defined]
+                            guarded_source_skip_redirect_info = (
+                                self._resolve_guarded_source_skip_redirect(
+                                    mba=mba,
+                                    guarded_source=int(effective_splice_source),
                                 )
-                                guard_blk = self._safe_get_mblock(mba, guard_pred)
-                                guard_nsucc = (
-                                    int(guard_blk.nsucc())  # type: ignore[attr-defined]
-                                    if guard_blk is not None else -1
-                                )
-                                if guard_nsucc == 2:
-                                    guard_succs = (
-                                        int(guard_blk.succ(0)),  # type: ignore[attr-defined]
-                                        int(guard_blk.succ(1)),  # type: ignore[attr-defined]
-                                    )
-                                    if int(effective_splice_source) in guard_succs:
-                                        old_skip_target = (
-                                            guard_succs[1]
-                                            if guard_succs[0] == int(effective_splice_source)
-                                            else guard_succs[0]
-                                        )
-                                        guarded_source_skip_redirect_info = (
-                                            guard_pred,
-                                            int(old_skip_target),
-                                        )
+                            )
                         except Exception:
                             logger.debug(
                                 "HCC_CHAINED_GUARDED_SOURCE_SKIP_REDIRECT:"
@@ -5594,34 +5568,11 @@ class HandlerChainComposerStrategy:
         # not as another body copy, so the original call block remains an
         # anchor and the false arm preserves the surrounding CFG.
         guard_skip_redirect: RedirectBranch | None = None
-        try:
-            call_anchor_preds = tuple(int(pred) for pred in ca_blk.predset)
-        except Exception:
-            call_anchor_preds = ()
-        guard_preds: list[tuple[int, int]] = []
-        for pred_serial in call_anchor_preds:
-            pred_blk = self._safe_get_mblock(mba, pred_serial)
-            if pred_blk is None:
-                continue
-            try:
-                if int(pred_blk.nsucc()) != 2:  # type: ignore[attr-defined]
-                    continue
-                pred_succs = (
-                    int(pred_blk.succ(0)),  # type: ignore[attr-defined]
-                    int(pred_blk.succ(1)),  # type: ignore[attr-defined]
-                )
-            except Exception:
-                continue
-            if call_anchor_serial not in pred_succs:
-                continue
-            old_skip_target = (
-                pred_succs[1]
-                if pred_succs[0] == call_anchor_serial
-                else pred_succs[0]
-            )
-            if old_skip_target == outbound_target:
-                continue
-            guard_preds.append((pred_serial, old_skip_target))
+        guard_preds = self._collect_call_anchor_guard_skip_candidates(
+            mba=mba,
+            call_anchor_serial=call_anchor_serial,
+            outbound_target=outbound_target,
+        )
         if len(guard_preds) == 1:
             guard_pred, old_skip_target = guard_preds[0]
             # Fact-rooted gate: the chained-skip RedirectBranch attaches
@@ -6111,6 +6062,96 @@ class HandlerChainComposerStrategy:
             len(body), len(stripped_body), int(chunk.target_stkoff),
         )
         return (writer_serial, writer_succ, stripped_body)
+
+    def _resolve_guarded_source_skip_redirect(
+        self,
+        *,
+        mba: object,
+        guarded_source: int,
+    ) -> tuple[int, int] | None:
+        guarded_topology = self._read_live_block_topology(
+            mba,
+            int(guarded_source),
+        )
+        guarded_npred = (
+            int(guarded_topology.npred)
+            if (
+                guarded_topology.block_exists
+                and guarded_topology.npred is not None
+            )
+            else -1
+        )
+        if guarded_npred != 1 or guarded_topology.predecessors is None:
+            return None
+
+        guard_pred = int(guarded_topology.predecessors[0])
+        guard_topology = self._read_live_block_topology(mba, guard_pred)
+        guard_nsucc = (
+            int(guard_topology.nsucc)
+            if guard_topology.block_exists and guard_topology.nsucc is not None
+            else -1
+        )
+        if (
+            guard_nsucc != 2
+            or guard_topology.successors is None
+            or len(guard_topology.successors) != 2
+        ):
+            return None
+
+        guard_succs = tuple(int(succ) for succ in guard_topology.successors)
+        guarded_source = int(guarded_source)
+        if guarded_source not in guard_succs:
+            return None
+        old_skip_target = (
+            guard_succs[1]
+            if guard_succs[0] == guarded_source
+            else guard_succs[0]
+        )
+        return (guard_pred, int(old_skip_target))
+
+    def _collect_call_anchor_guard_skip_candidates(
+        self,
+        *,
+        mba: object,
+        call_anchor_serial: int,
+        outbound_target: int,
+    ) -> list[tuple[int, int]]:
+        call_anchor_topology = self._read_live_block_topology(
+            mba,
+            int(call_anchor_serial),
+        )
+        if (
+            not call_anchor_topology.block_exists
+            or call_anchor_topology.predecessors is None
+        ):
+            return []
+
+        guard_preds: list[tuple[int, int]] = []
+        call_anchor_serial = int(call_anchor_serial)
+        outbound_target = int(outbound_target)
+        for pred_serial in tuple(
+            int(pred) for pred in call_anchor_topology.predecessors
+        ):
+            pred_topology = self._read_live_block_topology(mba, pred_serial)
+            if (
+                not pred_topology.block_exists
+                or pred_topology.nsucc != 2
+                or pred_topology.successors is None
+                or len(pred_topology.successors) != 2
+            ):
+                continue
+            pred_succs = tuple(int(succ) for succ in pred_topology.successors)
+            if call_anchor_serial not in pred_succs:
+                continue
+            old_skip_target = (
+                pred_succs[1]
+                if pred_succs[0] == call_anchor_serial
+                else pred_succs[0]
+            )
+            if old_skip_target == outbound_target:
+                continue
+            guard_preds.append((pred_serial, int(old_skip_target)))
+        return guard_preds
 
     def _walk_back_extend_body(
         self,
