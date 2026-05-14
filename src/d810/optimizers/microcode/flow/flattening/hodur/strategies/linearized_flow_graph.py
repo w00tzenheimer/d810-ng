@@ -13,8 +13,6 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 
-import ida_hexrays
-
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
@@ -79,6 +77,10 @@ from d810.cfg.modification_builder import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties import (
+    DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
+    HodurLiveMicrocodePropertiesBackend,
 )
 from d810.recon.flow.residual_handoff_resolution import (
     has_live_exact_residual_handoff_with_valranges,
@@ -256,6 +258,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
 
 _USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
+_LIVE_MICROCODE_PROPERTIES: HodurLiveMicrocodePropertiesBackend = (
+    DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES
+)
 
 
 def _lfg_bounded_postprocess_enabled() -> bool:
@@ -1250,7 +1255,9 @@ class LinearizedFlowGraphStrategy:
                 continue
             if tuple(getattr(block, "preds", ())) != ():
                 continue
-            if getattr(block, "block_type", None) == ida_hexrays.BLT_2WAY:
+            if _LIVE_MICROCODE_PROPERTIES.is_two_way_block_type(
+                getattr(block, "block_type", None)
+            ):
                 continue
             succs = tuple(getattr(block, "succs", ()))
             if len(succs) != 1:
@@ -2182,7 +2189,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
         mba = getattr(snapshot, "mba", None)
-        if mba is None or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1):
+        if not _LIVE_MICROCODE_PROPERTIES.has_maturity(mba, "global_opt_1"):
             return False
         return super().is_applicable(snapshot)
 
