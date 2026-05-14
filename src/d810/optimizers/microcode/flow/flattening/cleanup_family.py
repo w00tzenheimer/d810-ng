@@ -19,6 +19,15 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     ReachabilityInfo,
     StateModelSummary,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
+    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
+    BadWhileLoopStrategy,
+    extract_bad_while_loop_edits,
+    extract_bad_while_loop_follow_up,
+    serialize_bad_while_loop_edits,
+    serialize_bad_while_loop_follow_up,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpStrategy,
@@ -38,6 +47,7 @@ CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 LEGACY_CLEANUP_RULE_NAMES = (
     "UnflattenerFakeJump",
     "SingleIterationLoopUnflattener",
+    "BadWhileLoop",
 )
 
 __all__ = [
@@ -66,6 +76,10 @@ class SimpleFlatteningCleanupMetadata:
     selected_single_iteration_fixes: int
     planning_ready: bool
     collection_errors: tuple[str, ...] = ()
+    collected_bad_while_loop_edits: int = 0
+    selected_bad_while_loop_edits: int = 0
+    deferred_bad_while_loop_edits: int = 0
+    bad_while_loop_follow_up: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -84,6 +98,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         self._strategies = [
             FakeJumpStrategy(),
             SingleIterationStrategy(),
+            BadWhileLoopStrategy(),
         ]
 
     @property
@@ -135,6 +150,14 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
                 serialize_single_iteration_fixes(detection.single_iteration_fixes)
             )
+        if detection.bad_while_loop_edits:
+            metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
+                serialize_bad_while_loop_edits(detection.bad_while_loop_edits)
+            )
+        if detection.bad_while_loop_follow_up:
+            metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
+                serialize_bad_while_loop_follow_up(detection.bad_while_loop_follow_up)
+            )
 
         graph_with_candidates = FlowGraph(
             blocks=flow_graph.blocks,
@@ -146,12 +169,24 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_single_iteration_fixes = extract_single_iteration_fixes(
             graph_with_candidates
         )
+        selected_bad_while_loop_edits = extract_bad_while_loop_edits(
+            graph_with_candidates
+        )
+        selected_bad_while_loop_follow_up = extract_bad_while_loop_follow_up(
+            graph_with_candidates
+        )
 
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
             selected_fake_jump_fixes
         )
         metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
             serialize_single_iteration_fixes(selected_single_iteration_fixes)
+        )
+        metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
+            serialize_bad_while_loop_edits(selected_bad_while_loop_edits)
+        )
+        metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
+            serialize_bad_while_loop_follow_up(selected_bad_while_loop_follow_up)
         )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
@@ -164,9 +199,20 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             collected_single_iteration_fixes=len(detection.single_iteration_fixes),
             selected_single_iteration_fixes=len(selected_single_iteration_fixes),
             planning_ready=bool(
-                selected_fake_jump_fixes or selected_single_iteration_fixes
+                selected_fake_jump_fixes
+                or selected_single_iteration_fixes
+                or selected_bad_while_loop_edits
             ),
             collection_errors=detection.collection_errors,
+            collected_bad_while_loop_edits=(
+                len(detection.bad_while_loop_edits)
+                + len(detection.bad_while_loop_deferred_edits)
+            ),
+            selected_bad_while_loop_edits=len(selected_bad_while_loop_edits),
+            deferred_bad_while_loop_edits=len(
+                detection.bad_while_loop_deferred_edits
+            ),
+            bad_while_loop_follow_up=len(selected_bad_while_loop_follow_up),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,
