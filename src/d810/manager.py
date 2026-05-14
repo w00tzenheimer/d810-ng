@@ -94,13 +94,13 @@ def maybe_run_tail_distinct(mba: typing.Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
     Thin manager-level re-export of the implementation in
-    :mod:`d810.cfg.transform.byte_emit_tail_isolation_runtime`.  The real
+    :mod:`d810.hexrays.mutation.byte_emit_tail_isolation_runtime`.  The real
     helper lives outside ``d810.manager`` so optimizer call sites can
     import it without crossing the layered-architecture import contract
     (optimizers must not depend on ``d810.ui``, and manager transitively
     imports UI).
     """
-    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+    from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         maybe_run_tail_distinct as _impl,
     )
     _impl(mba)
