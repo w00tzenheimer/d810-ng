@@ -1015,6 +1015,13 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
     builder = ModificationBuilder.from_snapshot(
         SimpleNamespace(flow_graph=flow_graph, mba=SimpleNamespace())
     )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph_arg: object, state_var_stkoff: int):
+            assert flow_graph_arg is flow_graph
+            assert state_var_stkoff == 0x7BC
+            return SimpleNamespace(in_stk_maps={}, in_reg_maps={})
+
     setup = SimpleNamespace(
         builder=builder,
         bst_node_blocks=(2,),
@@ -1031,11 +1038,6 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         exact_conditional_fork_module,
         "collect_residual_dispatcher_predecessors",
         lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        exact_conditional_fork_module,
-        "run_snapshot_constant_fixpoint",
-        lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
     )
 
     def _fake_path_horizon(edge, **kwargs):
@@ -1070,7 +1072,9 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         reachability=SimpleNamespace(entry_serial=15),
     )
 
-    fragment = ExactConditionalForkNodeLoweringStrategy().plan(snapshot)
+    strategy = ExactConditionalForkNodeLoweringStrategy()
+    strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    fragment = strategy.plan(snapshot)
 
     assert fragment is not None
     zeroes = [mod for mod in fragment.modifications if mod.__class__.__name__ == "ZeroStateWrite"]
@@ -1082,6 +1086,13 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
     builder = ModificationBuilder.from_snapshot(
         SimpleNamespace(flow_graph=flow_graph, mba=SimpleNamespace())
     )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph_arg: object, state_var_stkoff: int):
+            assert flow_graph_arg is flow_graph
+            assert state_var_stkoff == 0x7BC
+            return SimpleNamespace(in_stk_maps={}, in_reg_maps={})
+
     setup = SimpleNamespace(
         builder=builder,
         bst_node_blocks=(2,),
@@ -1101,11 +1112,6 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
     )
     monkeypatch.setattr(
         exact_conditional_fork_module,
-        "run_snapshot_constant_fixpoint",
-        lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
-    )
-    monkeypatch.setattr(
-        exact_conditional_fork_module,
         "resolve_transition_path_horizon",
         lambda *args, **kwargs: None,
     )
@@ -1119,7 +1125,9 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
         reachability=SimpleNamespace(entry_serial=15),
     )
 
-    fragment = ExactConditionalForkNodeLoweringStrategy().plan(snapshot)
+    strategy = ExactConditionalForkNodeLoweringStrategy()
+    strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    fragment = strategy.plan(snapshot)
 
     assert fragment is not None
     nops = [mod for mod in fragment.modifications if isinstance(mod, NopInstructions)]

@@ -42,6 +42,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditiona
     _edge_kind_name,
     _site_key,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
 from d810.recon.flow.path_horizon import resolve_transition_path_horizon
 from d810.recon.flow.residual_handoff_discovery import (
     resolve_normalized_alias_entry_for_state,
@@ -54,9 +58,6 @@ from d810.recon.flow.target_entry_resolution import (
     resolve_semantic_reference_entry_for_state,
 )
 from d810.recon.flow.graph_reachability import collect_residual_dispatcher_predecessors
-from d810.recon.flow.state_machine_analysis import (
-    run_snapshot_constant_fixpoint,
-)
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
     StateWriteCleanupEvidenceBackend,
@@ -75,6 +76,9 @@ _STATE_WRITE_CLEANUP_BACKEND: StateWriteCleanupEvidenceBackend = (
 )
 _EFFECTIVE_TARGET_BACKEND: EffectiveTargetEvidenceBackend = (
     HexRaysEffectiveTargetEvidenceBackend()
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 _STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:_fallback)?$")
@@ -763,6 +767,9 @@ def collect_exact_conditional_fork_sites(round_summary, flow_graph) -> tuple[Con
 )
 class ExactConditionalForkNodeLoweringStrategy:
     prerequisites: list[str] = []
+    _constant_fixpoint_backend: ConstantFixpointBackend = (
+        _CONSTANT_FIXPOINT_BACKEND
+    )
 
     @property
     def name(self) -> str:
@@ -839,7 +846,7 @@ class ExactConditionalForkNodeLoweringStrategy:
         owned_edges: set[tuple[int, int]] = set()
         owned_transitions: set[tuple[int, int]] = set()
         accepted_edges: list[tuple[int, int]] = []
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             int(setup.state_var_stkoff),
         )
