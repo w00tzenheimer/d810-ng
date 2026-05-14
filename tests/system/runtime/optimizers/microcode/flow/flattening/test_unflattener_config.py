@@ -78,3 +78,25 @@ class TestUnflattenerConfigureReset:
         )
         assert rule.max_passes == rule.DEFAULT_MAX_PASSES
         assert rule.post_apply_const_prop is False
+
+    def test_cleanup_family_can_replace_legacy_cleanup_rules_opt_in(
+        self,
+        ida_database,
+        d810_state,
+    ):
+        """The cleanup-family pilot is opt-in and leaves legacy configs intact."""
+        with d810_state() as state:
+            known_rule_names = {rule.name for rule in state.known_blk_rules}
+            assert "SimpleFlatteningCleanupUnflattener" in known_rule_names
+            assert "UnflattenerFakeJump" in known_rule_names
+            assert "SingleIterationLoopUnflattener" in known_rule_names
+
+            with state.for_project("example_libobfuscated.json") as ctx:
+                ctx.remove_rule("UnflattenerFakeJump")
+                ctx.remove_rule("SingleIterationLoopUnflattener")
+                ctx.add_rule("SimpleFlatteningCleanupUnflattener")
+
+                active_rule_names = {rule.name for rule in ctx.active_blk_rules}
+                assert "SimpleFlatteningCleanupUnflattener" in active_rule_names
+                assert "UnflattenerFakeJump" not in active_rule_names
+                assert "SingleIterationLoopUnflattener" not in active_rule_names
