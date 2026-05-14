@@ -32,11 +32,23 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
 class _FakeProjectedTopologyBackend:
     def __init__(self) -> None:
         self.projected_mba_calls: list[object] = []
+        self.project_flow_graph_calls: list[tuple[object, object]] = []
         self.live_dag_calls: list[tuple[object, object, dict]] = []
 
     def build_projected_mba(self, flow_graph: object) -> object:
         self.projected_mba_calls.append(flow_graph)
         return SimpleNamespace(projected_from=flow_graph)
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        self.project_flow_graph_calls.append((base_flow_graph, modifications))
+        return SimpleNamespace(
+            projected_base=base_flow_graph,
+            projected_modifications=modifications,
+        )
 
     def build_live_dag(
         self,
@@ -124,11 +136,32 @@ def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):
     flow_graph = object()
     transition_result = object()
     seen_live_dag_kwargs = {}
+    seen_projection = {}
+    compiled_plan = object()
+    projected_flow_graph = object()
 
     monkeypatch.setattr(
         topology_backend_module,
         "build_mba_view_from_flow_graph",
         lambda projected_flow_graph: ("projected-mba", projected_flow_graph),
+    )
+    def fake_compile_patch_plan(modifications, base_flow_graph):
+        seen_projection["compile"] = (modifications, base_flow_graph)
+        return compiled_plan
+
+    def fake_project_post_state(base_flow_graph, patch_plan):
+        seen_projection["project"] = (base_flow_graph, patch_plan)
+        return projected_flow_graph
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "compile_patch_plan",
+        fake_compile_patch_plan,
+    )
+    monkeypatch.setattr(
+        topology_backend_module,
+        "project_post_state",
+        fake_project_post_state,
     )
 
     def fake_build_live_dag(current_flow_graph, received_transition_result, **kwargs):
@@ -142,6 +175,11 @@ def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):
     )
 
     assert backend.build_projected_mba(flow_graph) == ("projected-mba", flow_graph)
+    assert backend.project_flow_graph(flow_graph, ("mod",)) is projected_flow_graph
+    assert seen_projection == {
+        "compile": (("mod",), flow_graph),
+        "project": (flow_graph, compiled_plan),
+    }
 
     dag = backend.build_live_dag(
         flow_graph,
@@ -226,11 +264,15 @@ def test_lfg_planning_callbacks_use_projected_topology_backend(monkeypatch):
     )
 
     projected_mba = callbacks.build_projected_mba(flow_graph)
+    projected_flow_graph = callbacks.project_flow_graph(flow_graph, ("mod",))
     round_summary = callbacks.build_round_summary(flow_graph, projected_mba)
 
     assert projected_mba.projected_from is flow_graph
+    assert projected_flow_graph.projected_base is flow_graph
+    assert projected_flow_graph.projected_modifications == ("mod",)
     assert round_summary.dag.nodes == ()
     assert backend.projected_mba_calls == [flow_graph]
+    assert backend.project_flow_graph_calls == [(flow_graph, ("mod",))]
     assert len(backend.live_dag_calls) == 1
     live_flow_graph, live_transition_result, live_kwargs = backend.live_dag_calls[0]
     assert live_flow_graph is flow_graph

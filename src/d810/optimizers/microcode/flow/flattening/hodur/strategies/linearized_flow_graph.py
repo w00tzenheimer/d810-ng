@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 
-from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
     simulate_edits,
@@ -48,7 +47,6 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     build_linearized_flow_graph_planning_context,
     execute_linearized_flow_graph_planning,
 )
-from d810.cfg.plan import compile_patch_plan
 from d810.cfg.semantic_region_lowering import (
     build_region_contract_fallback_lowering,
     build_region_preferred_direct_lowering,
@@ -1697,10 +1695,7 @@ class LinearizedFlowGraphStrategy:
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
             build_projected_mba=topology_backend.build_projected_mba,
-            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                base_flow_graph,
-                compile_patch_plan(modifications, base_flow_graph),
-            ),
+            project_flow_graph=topology_backend.project_flow_graph,
             resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=self._emit_dag_redirect,
@@ -2228,10 +2223,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
             build_projected_mba=topology_backend.build_projected_mba,
-            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                base_flow_graph,
-                compile_patch_plan(modifications, base_flow_graph),
-            ),
+            project_flow_graph=topology_backend.project_flow_graph,
             resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=lambda **kwargs: False,
@@ -2284,9 +2276,11 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         try:
-            projected_flow_graph = project_post_state(
-                flow_graph,
-                compile_patch_plan(modifications, flow_graph),
+            projected_flow_graph = (
+                self._projected_topology_backend.project_flow_graph(
+                    flow_graph,
+                    modifications,
+                )
             )
         except Exception as exc:
             logger.info(
