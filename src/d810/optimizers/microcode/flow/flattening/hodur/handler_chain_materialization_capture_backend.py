@@ -9,6 +9,7 @@ from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
 )
+from d810.cfg.state_write_evidence import StateConstantWriteEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,23 @@ class HandlerChainMaterializationCaptureBackend(Protocol):
         skip_jcond_tail: bool = True,
     ) -> frozenset[tuple[int, int]] | None:
         """Collect stack-variable reads for a live block body."""
+
+    def block_mentions_text(
+        self,
+        mba: object,
+        block_serial: int,
+        *,
+        needle: str,
+    ) -> bool:
+        """Return whether any live instruction text contains ``needle``."""
+
+    def collect_state_constant_writes(
+        self,
+        mba: object,
+        *,
+        state_variable: object | None,
+    ) -> tuple[StateConstantWriteEvidence, ...]:
+        """Collect constant writes to the dispatcher state variable."""
 
 
 class HexRaysHandlerChainMaterializationCaptureBackend:
@@ -151,6 +169,45 @@ class HexRaysHandlerChainMaterializationCaptureBackend:
                 block,
                 skip_jcond_tail=skip_jcond_tail,
             )
+        )
+
+    def block_mentions_text(
+        self,
+        mba: object,
+        block_serial: int,
+        *,
+        needle: str,
+    ) -> bool:
+        if not needle:
+            return False
+        block = self._block(mba, int(block_serial))
+        if block is None:
+            return False
+        insn = getattr(block, "head", None)
+        while insn is not None:
+            dstr = getattr(insn, "dstr", None)
+            text: str | None = None
+            if callable(dstr):
+                try:
+                    text = dstr()
+                except Exception:
+                    text = None
+            elif isinstance(dstr, str):
+                text = dstr
+            if text and needle in text:
+                return True
+            insn = getattr(insn, "next", None)
+        return False
+
+    def collect_state_constant_writes(
+        self,
+        mba: object,
+        *,
+        state_variable: object | None,
+    ) -> tuple[StateConstantWriteEvidence, ...]:
+        return self._capture_backend.collect_state_constant_writes(
+            mba,
+            state_variable=state_variable,
         )
 
 

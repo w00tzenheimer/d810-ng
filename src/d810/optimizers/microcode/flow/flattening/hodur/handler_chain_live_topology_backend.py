@@ -204,6 +204,36 @@ class HexRaysHandlerChainLiveTopologyBackend:
         return min(eligible)
 
 
+class LiveTopologyRegionEntryBlockView:
+    """Region-entry resolver adapter backed by live topology probes."""
+
+    __slots__ = ("_backend", "_mba")
+
+    def __init__(
+        self,
+        mba: object,
+        backend: HandlerChainLiveTopologyBackend,
+    ) -> None:
+        self._mba = mba
+        self._backend = backend
+
+    def block_exists(self, serial: int) -> bool:
+        return self._backend.block_exists(self._mba, int(serial))
+
+    def nsucc(self, serial: int) -> int | None:
+        probe = self._backend.read_block_topology(self._mba, int(serial))
+        return probe.nsucc if probe.block_exists else None
+
+    def succ(self, serial: int, index: int = 0) -> int | None:
+        probe = self._backend.read_block_topology(self._mba, int(serial))
+        if not probe.block_exists or probe.successors is None:
+            return None
+        try:
+            return int(probe.successors[int(index)])
+        except Exception:
+            return None
+
+
 DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND: HandlerChainLiveTopologyBackend = (
     HexRaysHandlerChainLiveTopologyBackend()
 )
@@ -215,4 +245,5 @@ __all__ = [
     "HexRaysHandlerChainLiveTopologyBackend",
     "LiveBlockTopologyProbe",
     "LiveOneWaySuccessorProbe",
+    "LiveTopologyRegionEntryBlockView",
 ]
