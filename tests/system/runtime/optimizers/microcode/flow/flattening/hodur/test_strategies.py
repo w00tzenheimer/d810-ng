@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
@@ -857,6 +858,92 @@ def _make_reconstruction_snapshot(
         bst_dispatcher_serial=2,
         flow_graph=flow_graph,
     )
+
+
+def test_state_write_reconstruction_uses_projected_topology_backend(monkeypatch):
+    class _StopAfterBackend(Exception):
+        pass
+
+    class _FakeProjectedTopologyBackend:
+        def __init__(self, dag: LinearizedStateDag) -> None:
+            self.dag = dag
+            self.calls: list[tuple[object, object, dict]] = []
+
+        def build_projected_mba(self, flow_graph: object) -> object:
+            raise AssertionError("SWR should not request projected MBA")
+
+        def build_live_dag(
+            self,
+            current_flow_graph: object,
+            transition_result: object,
+            **kwargs,
+        ) -> LinearizedStateDag:
+            self.calls.append(
+                (current_flow_graph, transition_result, kwargs)
+            )
+            corrected = kwargs.get("corrected_dag_out")
+            if corrected is not None:
+                corrected.append(self.dag)
+            return self.dag
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, int(ida_hexrays.BLT_2WAY), (), (), 0, 0x2000, ()),
+            10: BlockSnapshot(10, int(ida_hexrays.BLT_1WAY), (), (), 0, 0x1000, ()),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    source_node = _make_reconstruction_node(10, 0x11111111, 10)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x11111111,
+        bst_node_blocks=(2,),
+        nodes=(source_node,),
+        edges=(),
+        diagnostics=(),
+    )
+    backend = _FakeProjectedTopologyBackend(dag)
+    strategy = StateWriteReconstructionStrategy()
+    strategy._projected_topology_backend = backend
+
+    def stop_after_backend(flow_graph_arg: object, state_var_stkoff: int):
+        assert flow_graph_arg is flow_graph
+        assert state_var_stkoff == 0x3C
+        raise _StopAfterBackend
+
+    monkeypatch.setattr(
+        reconstruction_module,
+        "run_snapshot_constant_fixpoint",
+        stop_after_backend,
+    )
+    monkeypatch.setattr(
+        reconstruction_module,
+        "log_chain_coverage",
+        lambda *args, **kwargs: None,
+    )
+
+    snapshot = _make_reconstruction_snapshot(flow_graph)
+
+    with pytest.raises(_StopAfterBackend):
+        strategy.plan(snapshot)
+
+    assert len(backend.calls) == 1
+    live_flow_graph, transition_result, kwargs = backend.calls[0]
+    assert live_flow_graph is flow_graph
+    assert transition_result.strategy_name == "state_write_reconstruction"
+    assert kwargs["dispatcher_entry_serial"] == 2
+    assert kwargs["state_var_stkoff"] == 0x3C
+    assert kwargs["pre_header_serial"] is None
+    assert kwargs["initial_state"] == 0x11111111
+    assert kwargs["handler_range_map"] == {}
+    assert kwargs["bst_node_blocks"] == (2,)
+    assert kwargs["diagnostics"] == ()
+    assert kwargs["dispatcher"] is None
+    assert kwargs["mba"] is snapshot.mba
+    assert kwargs["prefer_local_corridors"] is True
 
 
 
