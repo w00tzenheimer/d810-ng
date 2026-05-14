@@ -69,7 +69,10 @@ IDENTITY_CALL_SELF_REFERENCE = DeobfuscationCase(
     project="identity_call.json",
     must_change=False,
     check_stats=True,
-    acceptable_patterns=["identity_func(", "sub_18000BF40("],
+    deobfuscated_contains=[
+        "qword_18001D4A0 = (__int64)identity_call_self_reference;",
+        "dword_18001D460 = v3(a1, a2);",
+    ],
 )
 
 
