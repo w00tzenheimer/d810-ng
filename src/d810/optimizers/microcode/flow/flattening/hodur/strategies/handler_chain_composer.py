@@ -156,6 +156,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology
     LiveBlockTopologyProbe,
     LiveOneWaySuccessorProbe,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_topology_walk_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND,
+    HandlerChainTopologyWalkBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
@@ -265,6 +269,9 @@ _CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
 )
 _LIVE_TOPOLOGY_BACKEND: HandlerChainLiveTopologyBackend = (
     DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND
+)
+_TOPOLOGY_WALK_BACKEND: HandlerChainTopologyWalkBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND
 )
 
 
@@ -2039,6 +2046,9 @@ class HandlerChainComposerStrategy:
         )
         self._live_topology_backend: HandlerChainLiveTopologyBackend = (
             _LIVE_TOPOLOGY_BACKEND
+        )
+        self._topology_walk_backend: HandlerChainTopologyWalkBackend = (
+            _TOPOLOGY_WALK_BACKEND
         )
         self._insert_block_call_audit_backend: InsertBlockCallAuditBackend = (
             _HEX_RAYS_CAPTURE_BACKEND
@@ -6677,27 +6687,18 @@ class HandlerChainComposerStrategy:
             picked_via: str | None = None
             # Walk ordered_path right-to-left; pick first block that is
             # not BST/dispatcher and whose live succ(0) is dispatcher.
-            for blk_serial in reversed(ordered_path):
-                if blk_serial == int(dispatcher_serial):
-                    continue
-                if blk_serial in bst_node_blocks:
-                    continue
-                blk = self._safe_get_mblock(mba, blk_serial)
-                if blk is None:
-                    continue
-                try:
-                    nsucc = int(blk.nsucc())
-                    succ0 = int(blk.succ(0)) if nsucc >= 1 else -1
-                except Exception:
-                    nsucc = -1
-                    succ0 = -1
-                if nsucc != 1:
-                    continue
-                if succ0 != int(dispatcher_serial):
-                    continue
-                picked_serial = int(blk_serial)
+            exit_probe = (
+                self._topology_walk_backend
+                .deepest_dispatcher_exit_on_ordered_path(
+                    mba,
+                    ordered_path,
+                    dispatcher_serial=dispatcher_serial,
+                    excluded_blocks=bst_node_blocks,
+                )
+            )
+            if exit_probe.block_serial is not None:
+                picked_serial = int(exit_probe.block_serial)
                 picked_via = "ordered_path_walk"
-                break
             if picked_serial is None and anchor_serial >= 0:
                 # Fallback: use edge.source_anchor.block_serial directly,
                 # but still subject it to the validation pass below.
@@ -6738,8 +6739,8 @@ class HandlerChainComposerStrategy:
         rejections: list[dict] = []
         for c in candidates:
             cs = int(c["serial"])
-            blk = self._safe_get_mblock(mba, cs)
-            if blk is None:
+            candidate_probe = self._read_live_one_way_successor(mba, cs)
+            if not candidate_probe.block_exists:
                 rejections.append({**c, "rej": "block_dead"})
                 continue
             if cs in bst_node_blocks:
@@ -6748,12 +6749,15 @@ class HandlerChainComposerStrategy:
             if cs == int(dispatcher_serial):
                 rejections.append({**c, "rej": "is_dispatcher"})
                 continue
-            try:
-                nsucc = int(blk.nsucc())
-                succ0 = int(blk.succ(0)) if nsucc >= 1 else -1
-            except Exception:
+            if candidate_probe.nsucc is None:
                 rejections.append({**c, "rej": "succ_unreadable"})
                 continue
+            nsucc = int(candidate_probe.nsucc)
+            succ0 = (
+                int(candidate_probe.successor)
+                if candidate_probe.successor is not None
+                else -1
+            )
             if nsucc != 1:
                 rejections.append({**c, "rej": f"nsucc={nsucc}"})
                 continue
@@ -6776,30 +6780,12 @@ class HandlerChainComposerStrategy:
                 rejections.append({**c, "rej": "SEMANTIC_SOURCE_COVERED"})
                 continue
 
-            # Reachability from entry blk[0].  Bounded BFS.
-            try:
-                qty = int(getattr(mba, "qty", 0))
-            except Exception:
-                qty = 0
-            reach: set[int] = set()
-            wl: list[int] = [0] if qty > 0 else []
-            while wl and len(reach) < qty + 4:
-                cur = wl.pop()
-                if cur in reach:
-                    continue
-                reach.add(cur)
-                if cur == cs:
-                    break
-                cur_blk = self._safe_get_mblock(mba, cur)
-                if cur_blk is None:
-                    continue
-                try:
-                    cn = int(cur_blk.nsucc())
-                    for i in range(cn):
-                        wl.append(int(cur_blk.succ(i)))
-                except Exception:
-                    pass
-            if cs not in reach:
+            reachability = self._topology_walk_backend.reachable_from_entry(
+                mba,
+                cs,
+                entry_serial=0,
+            )
+            if not reachability.reachable:
                 rejections.append({**c, "rej": "unreachable_from_entry"})
                 continue
 
