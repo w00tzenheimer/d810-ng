@@ -8,9 +8,12 @@ import os
 import sqlite3
 from unittest.mock import patch
 
+import pytest
+
 from d810.cfg.state_dag_key import StateDagNodeKey
 from d810.core.diag.schema import create_tables
 from d810.core.observability import SnapshotRef
+from d810.core.settings import reset_settings
 from d810.recon.facts.model import (
     FactMapping,
     FactObservation,
@@ -39,6 +42,14 @@ _TEST_SNAP = SnapshotRef(
     maturity="MMAT_GLBOPT1",
     phase="pre_d810",
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("D810_FACT_LIFECYCLE", raising=False)
+    reset_settings()
+    yield
+    reset_settings()
 
 
 @contextlib.contextmanager
@@ -367,13 +378,14 @@ def _make_byte5_fact_view() -> ValidatedFactView:
     )
 
 
-def test_no_op_when_env_disabled() -> None:
+def test_no_op_when_setting_disabled() -> None:
     conn = sqlite3.connect(":memory:")
     create_tables(conn)
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": ""}, clear=False), \
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "0"}, clear=False), \
             _bridge_resolves_to(conn, 1):
+        reset_settings()
         result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     assert result is dag
 

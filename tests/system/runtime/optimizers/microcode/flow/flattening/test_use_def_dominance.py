@@ -165,7 +165,7 @@ def test_severance_violation_dataclass_is_frozen(
     # is a *test-file* concession; the production module follows
     # CORE_INSTRUCTIONS' "no lazy imports" rule for source files.
     pytest.importorskip("ida_hexrays")
-    from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+    from d810.evaluator.hexrays_microcode.use_def_dominance import (
         SeveranceViolation,
     )
 

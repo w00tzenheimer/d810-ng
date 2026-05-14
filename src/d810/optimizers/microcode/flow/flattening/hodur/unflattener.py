@@ -1065,7 +1065,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         #       so byte_emit handlers are still present and reachable.
         # Default-off; only fires when the corresponding env gate is set.
         try:
-            from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+            from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 maybe_run_byte_anchor,
                 maybe_run_tail_distinct,
                 maybe_run_tail_duplicate_convergence,
