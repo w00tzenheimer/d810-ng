@@ -1076,7 +1076,37 @@ class HodurUnflattener(GenericUnflatteningRule):
             unflat_logger.info(
                 "TAIL_SHAPING_HOOK phase=after_post_bundle_stabilize"
             )
-            maybe_run_terminal_tail_cascade_egress_lowering(self.mba)
+            fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+            if fact_view is None and self.flow_context is not None:
+                try:
+                    fact_view = self.flow_context.validated_fact_view(
+                        self.cur_maturity
+                    )
+                except Exception:
+                    unflat_logger.debug(
+                        "terminal_tail_cascade_egress fact view lookup failed",
+                        exc_info=True,
+                    )
+                    fact_view = None
+            latest_dag = None
+            try:
+                from d810.recon.flow.runtime_evidence import (
+                    get_latest_reconstruction_dag,
+                )
+
+                latest_dag = get_latest_reconstruction_dag(
+                    int(getattr(self.mba, "entry_ea", 0) or 0)
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "terminal_tail_cascade_egress DAG lookup failed",
+                    exc_info=True,
+                )
+            maybe_run_terminal_tail_cascade_egress_lowering(
+                self.mba,
+                fact_view=fact_view,
+                dag=latest_dag,
+            )
             maybe_run_tail_distinct(self.mba)
             maybe_run_tail_duplicate_convergence(self.mba)
             maybe_run_tail_state_cascade(self.mba)
