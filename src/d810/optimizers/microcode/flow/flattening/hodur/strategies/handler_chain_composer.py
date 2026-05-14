@@ -127,6 +127,10 @@ from d810.cfg.state_edge_pair import state_edge_pair
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
 )
+from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
+    DefinitionRescueBackend,
+    HexRaysDefinitionRescueBackend,
+)
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     CumulativePlannerView,
     PLANNER_CTX_METADATA_KEY,
@@ -146,12 +150,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_bui
     finalize_reconstruction_fragment,
 )
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
-    check_redirect_severs_use_def,
+    HexRaysUseDefSafetyBackend,
+    UseDefSafetyBackend,
 )
-from d810.evaluator.hexrays_microcode.chains import (
-    find_reaching_defs_for_stkvar,
-)
-from d810.evaluator.hexrays_microcode.sccp import run_sccp
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -239,6 +240,10 @@ logger = logging.getLogger(
     logging.DEBUG,
 )
 _HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
+_USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
+_DEFINITION_RESCUE_BACKEND: DefinitionRescueBackend = (
+    HexRaysDefinitionRescueBackend()
+)
 
 
 def _refresh_cumulative_view_dag_authority(
@@ -3015,7 +3020,7 @@ class HandlerChainComposerStrategy:
                 target_entry_for_log = int(mod.new_target)
 
             try:
-                violations = check_redirect_severs_use_def(
+                violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                     mod,
                     mba,
                     candidate_flow_graph,
@@ -3109,7 +3114,7 @@ class HandlerChainComposerStrategy:
             if target_npred <= 1:
                 return None
             try:
-                violations = check_redirect_severs_use_def(
+                violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                     modification,
                     mba,
                     flow_graph,
@@ -3641,7 +3646,7 @@ class HandlerChainComposerStrategy:
                 and int(mod.from_serial) in severance_veto_sources
             ):
                 try:
-                    violations = check_redirect_severs_use_def(
+                    violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                         mod,
                         mba,
                         flow_graph,
@@ -4888,7 +4893,7 @@ class HandlerChainComposerStrategy:
                     new_target=next_semantic_target,
                 )
                 try:
-                    severed_uses = check_redirect_severs_use_def(
+                    severed_uses = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                         outbound_probe,
                         mba,
                         flow_graph,
@@ -7503,7 +7508,7 @@ class HandlerChainComposerStrategy:
                         if size <= 0:
                             continue
                         try:
-                            defs = find_reaching_defs_for_stkvar(
+                            defs = _DEFINITION_RESCUE_BACKEND.reaching_defs_for_stkvar(
                                 mba, int(pred), int(stkoff), int(size),
                             )
                         except Exception:
@@ -7527,7 +7532,7 @@ class HandlerChainComposerStrategy:
                 if not covered and bst_result is not None and state_var_stkoff is not None:
                     state_var_size = 4
                     try:
-                        state_writers = find_reaching_defs_for_stkvar(
+                        state_writers = _DEFINITION_RESCUE_BACKEND.reaching_defs_for_stkvar(
                             mba,
                             int(first_anchor),
                             int(state_var_stkoff),
@@ -7625,7 +7630,9 @@ class HandlerChainComposerStrategy:
                     if not self._sccp_overlay_attempted:
                         self._sccp_overlay_attempted = True
                         try:
-                            self._sccp_overlay_cache = run_sccp(mba)
+                            self._sccp_overlay_cache = (
+                                _DEFINITION_RESCUE_BACKEND.run_sccp_overlay(mba)
+                            )
                         except Exception as exc:  # pragma: no cover - diagnostic only
                             logger.warning(
                                 "HandlerChainComposer: SCCP overlay raised: %s",
@@ -7635,12 +7642,13 @@ class HandlerChainComposerStrategy:
                     overlay = self._sccp_overlay_cache
                     if overlay:
                         for stkoff, size in stranded:
-                            key = (
-                                ida_hexrays.mop_S,
-                                int(size),
-                                int(stkoff),
+                            sccp_val = (
+                                _DEFINITION_RESCUE_BACKEND.lookup_sccp_stkvar(
+                                    overlay,
+                                    stkoff=int(stkoff),
+                                    size=int(size),
+                                )
                             )
-                            sccp_val = overlay.get(key)
                             sccp_findings.append(
                                 (hex(stkoff), int(size), sccp_val)
                             )
