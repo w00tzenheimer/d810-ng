@@ -272,6 +272,8 @@ class OllvmDispatcherCollector(GenericDispatcherCollector):
         self.max_entropy = self.DEFAULT_MAX_ENTROPY
 
     def configure(self, kwargs):
+        self.min_entropy = self.DEFAULT_MIN_ENTROPY
+        self.max_entropy = self.DEFAULT_MAX_ENTROPY
         super().configure(kwargs)
         if "min_entropy" in kwargs.keys():
             self.min_entropy = kwargs["min_entropy"]

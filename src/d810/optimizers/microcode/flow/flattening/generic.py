@@ -496,6 +496,11 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
         )
 
     def configure(self, kwargs):
+        self.dispatcher_min_internal_block = self.DEFAULT_DISPATCHER_MIN_INTERNAL_BLOCK
+        self.dispatcher_min_exit_block = self.DEFAULT_DISPATCHER_MIN_EXIT_BLOCK
+        self.dispatcher_min_comparison_value = (
+            self.DEFAULT_DISPATCHER_MIN_COMPARISON_VALUE
+        )
         if "min_dispatcher_internal_block" in kwargs.keys():
             self.dispatcher_min_internal_block = kwargs["min_dispatcher_internal_block"]
         if "min_dispatcher_exit_block" in kwargs.keys():
@@ -1061,6 +1066,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         return True
 
     def configure(self, kwargs):
+        self.maturities = list(self.DEFAULT_UNFLATTENING_MATURITIES)
+        self.max_passes = self.DEFAULT_MAX_PASSES
+        self.max_duplication_passes = self.DEFAULT_MAX_DUPLICATION_PASSES
+        self.max_calls_entry_preds = self.DEFAULT_MAX_CALLS_ENTRY_PREDS
+        self.max_calls_exit_blocks = self.DEFAULT_MAX_CALLS_EXIT_BLOCKS
+        self.defer_calls_on_conditional_entry_father = (
+            self.DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER
+        )
+        self.log_calls_layout_signals = self.DEFAULT_LOG_CALLS_LAYOUT_SIGNALS
+        self.min_cfg_edges_required = -1
+        self.per_function_overrides_by_ea = {}
+        self.per_function_overrides_by_name = {}
+        self.pre_unflatten_optimize_local_rounds = (
+            self.DEFAULT_PRE_UNFLATTEN_OPTIMIZE_LOCAL_ROUNDS
+        )
+        self.pre_unflatten_verify = self.DEFAULT_PRE_UNFLATTEN_VERIFY
+        self.post_apply_const_prop = False
         super().configure(kwargs)
         if "max_passes" in self.config.keys():
             self.max_passes = self.config["max_passes"]
