@@ -108,9 +108,6 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.spurious_backedg
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
     TopologicalSortStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
-    BadWhileLoopStrategy,
-)
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FakeJumpStrategy,
 )
@@ -140,7 +137,6 @@ __all__ = [
     "ReturnFrontierCarrierPreserveStrategy",
     "SpuriousBackedgeRedirectStrategy",
     "TopologicalSortStrategy",
-    "BadWhileLoopStrategy",
     "FakeJumpStrategy",
     "SingleIterationStrategy",
     "ALL_STRATEGIES",

@@ -41,13 +41,6 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
-    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
-    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
-    collect_live_bad_while_loop_analysis,
-    serialize_bad_while_loop_edits,
-    serialize_bad_while_loop_follow_up,
-)
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     collect_live_fake_jump_fixes,
@@ -262,7 +255,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
         state_machine = detection.state_machine
         flow_graph = self._cfg_translator.lift(mba)
         flow_graph = self.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
-        flow_graph = self.attach_bad_while_loop_edits_to_flow_graph(mba, flow_graph)
         flow_graph = self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
         dispatcher_cache = DispatcherCache.get_or_create(mba)
         reachability = self.compute_reachability_info(mba)
@@ -858,52 +850,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self._logger.info(
             "Attached %d FakeJump predecessor redirects to FlowGraph metadata",
             len(fixes),
-        )
-        return FlowGraph(
-            blocks=flow_graph.blocks,
-            entry_serial=flow_graph.entry_serial,
-            func_ea=flow_graph.func_ea,
-            metadata=metadata,
-        )
-
-    def attach_bad_while_loop_edits_to_flow_graph(
-        self,
-        mba: ida_hexrays.mba_t,
-        flow_graph: FlowGraph,
-    ) -> FlowGraph:
-        """Attach safe BadWhileLoop edits plus classified follow-up metadata."""
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
-            return flow_graph
-
-        try:
-            analysis = collect_live_bad_while_loop_analysis(
-                mba,
-                logger=self._logger,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception:
-            self._logger.debug(
-                "Failed to collect BadWhileLoop edits for FlowGraph metadata",
-                exc_info=True,
-            )
-            return flow_graph
-
-        if not analysis.edits and not analysis.follow_up:
-            return flow_graph
-
-        metadata = dict(flow_graph.metadata)
-        if analysis.edits:
-            metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = serialize_bad_while_loop_edits(
-                analysis.edits
-            )
-        if analysis.follow_up:
-            metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
-                serialize_bad_while_loop_follow_up(analysis.follow_up)
-            )
-        self._logger.info(
-            "Attached %d safe BadWhileLoop edits and %d follow-up gaps to FlowGraph metadata",
-            len(analysis.edits),
-            len(analysis.follow_up),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,
