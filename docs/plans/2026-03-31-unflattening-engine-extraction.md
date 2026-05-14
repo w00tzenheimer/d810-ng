@@ -1579,15 +1579,16 @@ legacy outcomes into generic graph-modification intents.
 - `DuplicateAndRedirect` in `src/d810/cfg/graph_modification.py`, compiled and
   materialized by `src/d810/cfg/plan.py`
 - `CreateConditionalRedirect` in `src/d810/cfg/graph_modification.py`, with
-  corresponding conditional patch steps in `src/d810/cfg/plan.py`
+  corresponding conditional patch steps in `src/d810/cfg/plan.py`; the
+  `BadWhileLoop` wrapper now emits this for the former
+  `dispatcher_case_triangle_requires_trampoline` follow-up when the source is
+  a 1-way predecessor and the dispatcher case can be cloned directly
 - trampoline materialization in `src/d810/cfg/plan.py` and
   `src/d810/cfg/flow/edit_simulator.py`
 - simple inserted side-effect blocks via `InsertBlock` in
   `src/d810/cfg/graph_modification.py`
 
 **Still missing or immature:**
-- a `recon` / planning layer that converts richer legacy `BadWhileLoop`
-  analysis outcomes into backend-agnostic graph modifications
 - a proven story for replaying copied side effects from live dispatcher
   emulation into stable `InsnSnapshot`-backed mutation plans
 
@@ -1595,7 +1596,8 @@ legacy outcomes into generic graph-modification intents.
 
 Classify each skipped case as:
 - `DuplicateAndRedirect`
-- `CreateConditionalRedirect`
+- `CreateConditionalRedirect` (implemented for one-way dispatcher case
+  triangles)
 - `InsertBlock`
 - intentionally unsupported / retired
 
