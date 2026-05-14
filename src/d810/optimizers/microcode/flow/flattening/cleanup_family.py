@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import ida_hexrays
-
 from d810.cfg.flowgraph import FlowGraph
 from d810.core import getLogger
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
+    LiveSimpleFlatteningCleanupBackend,
+    SimpleFlatteningCleanupBackend,
+    SimpleFlatteningCleanupDetection,
+)
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
 )
@@ -18,17 +21,13 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
-    FakeJumpPredFix,
     FakeJumpStrategy,
-    collect_live_fake_jump_fixes,
     extract_fake_jump_fixes,
     serialize_fake_jump_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SINGLE_ITERATION_FIXES_METADATA_KEY,
-    SingleIterationPredFix,
     SingleIterationStrategy,
-    collect_live_single_iteration_fixes,
     extract_single_iteration_fixes,
     serialize_single_iteration_fixes,
 )
@@ -44,35 +43,12 @@ LEGACY_CLEANUP_RULE_NAMES = (
 __all__ = [
     "CLEANUP_FAMILY_METADATA_KEY",
     "LEGACY_CLEANUP_RULE_NAMES",
+    "LiveSimpleFlatteningCleanupBackend",
+    "SimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupDetection",
     "SimpleFlatteningCleanupFamily",
     "SimpleFlatteningCleanupMetadata",
 ]
-
-
-@dataclass(frozen=True)
-class SimpleFlatteningCleanupDetection:
-    """Live cleanup candidates collected before snapshot construction."""
-
-    fake_jump_fixes: tuple[FakeJumpPredFix, ...] = ()
-    single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
-    collection_errors: tuple[str, ...] = ()
-    maturity: int = 0
-    func_ea: int = 0
-
-    @property
-    def detected(self) -> bool:
-        return bool(self.fake_jump_fixes or self.single_iteration_fixes)
-
-    @property
-    def description(self) -> str:
-        if not self.detected:
-            return "no simple cleanup candidates detected"
-        return (
-            "simple cleanup candidates detected: "
-            f"fake_jump={len(self.fake_jump_fixes)} "
-            f"single_iteration={len(self.single_iteration_fixes)}"
-        )
 
 
 @dataclass(frozen=True)
@@ -98,9 +74,11 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
     def __init__(
         self,
         *,
+        backend: SimpleFlatteningCleanupBackend | None = None,
         cfg_translator: IDAIRTranslator | None = None,
         logger=None,
     ) -> None:
+        self._backend = backend or LiveSimpleFlatteningCleanupBackend()
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._logger = logger or family_logger
         self._strategies = [
@@ -120,47 +98,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         return list(self._strategies)
 
     def detect(self, mba: object) -> SimpleFlatteningCleanupDetection:
-        maturity = int(getattr(mba, "maturity", 0) or 0)
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        errors: list[str] = []
-
-        fake_jump_fixes: tuple[FakeJumpPredFix, ...] = ()
-        try:
-            fake_jump_fixes = collect_live_fake_jump_fixes(
-                mba,
-                logger=self._logger,
-                max_nb_block=100,
-                max_path=100,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception as exc:
-            errors.append(f"fake_jump:{type(exc).__name__}")
-            self._logger.debug(
-                "Failed to collect FakeJump cleanup candidates",
-                exc_info=True,
-            )
-
-        single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
-        try:
-            single_iteration_fixes = collect_live_single_iteration_fixes(
-                mba,
-                logger=self._logger,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception as exc:
-            errors.append(f"single_iteration:{type(exc).__name__}")
-            self._logger.debug(
-                "Failed to collect single-iteration cleanup candidates",
-                exc_info=True,
-            )
-
-        detection = SimpleFlatteningCleanupDetection(
-            fake_jump_fixes=tuple(fake_jump_fixes),
-            single_iteration_fixes=tuple(single_iteration_fixes),
-            collection_errors=tuple(errors),
-            maturity=maturity,
-            func_ea=func_ea,
-        )
+        detection = self._backend.collect(mba, logger=self._logger)
         self._logger.info("Simple cleanup detect: %s", detection.description)
         return detection
 
