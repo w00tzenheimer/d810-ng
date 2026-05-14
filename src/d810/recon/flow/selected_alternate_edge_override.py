@@ -619,7 +619,8 @@ def _run_cascade(diag_db: sqlite3.Connection, snap_id: int) -> None:
     selections, which the override loop will read as "abstain".
     """
     # Behavior bridge: reads selected alternate-edge diagnostics from DB.
-    # Gated (D810_FACT_LIFECYCLE=1) and intentional. The three algorithm
+    # Gated on default-on fact lifecycle evidence; D810_FACT_LIFECYCLE=0
+    # disables this path. The three algorithm
     # modules live in d810.core.diag for now; Phase 4 of the
     # observability-boundary plan moves them into d810.recon.flow, after
     # which this becomes a normal d810.recon.flow.* import. Do NOT route
