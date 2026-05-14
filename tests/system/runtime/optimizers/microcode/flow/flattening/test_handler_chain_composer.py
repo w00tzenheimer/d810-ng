@@ -1820,6 +1820,150 @@ class TestHandlerChainTopologyWalkBackend:
         ]
         assert walk_backend.reachability_seen == [(mba, 90, 0)]
 
+    def test_walks_backward_corridor_from_live_topology(self) -> None:
+        backend = (
+            hcc_topology_walk_backend_module
+            .HexRaysHandlerChainTopologyWalkBackend()
+        )
+        entry = _StubBlock(0, succs=(1,), preds=())
+        entry.type = 0
+        mapped = _StubBlock(1, succs=(50,), preds=(0, 40))
+        mapped.type = 1
+        unmapped = _StubBlock(40, succs=(1,), preds=())
+        unmapped.type = 1
+        splice = _StubBlock(50, succs=(), preds=(1,))
+        splice.type = 2
+        splice.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_goto,
+            d=SimpleNamespace(t=ida_hexrays.mop_b, b=77),
+        )
+        mba = _StubMba({
+            0: entry,
+            1: mapped,
+            40: unmapped,
+            50: splice,
+        })
+
+        result = backend.walk_backward_corridor(
+            mba,
+            50,
+            max_depth=2,
+        )
+
+        assert [block.serial for block in result.blocks] == [50, 1, 0, 40]
+        by_serial = {block.serial: block for block in result.blocks}
+        assert by_serial[50].predecessors == (1,)
+        assert by_serial[50].tail_target == 77
+        assert by_serial[1].predecessors == (0, 40)
+        assert by_serial[40].entry_reachable is False
+
+    def test_corridor_dump_uses_topology_walk_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("corridor dump should use walk backend")
+
+        class _FakeTopologyWalkBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int, int, int]] = []
+
+            def deepest_dispatcher_exit_on_ordered_path(
+                self,
+                mba: object,
+                ordered_path: tuple[int, ...],
+                *,
+                dispatcher_serial: int,
+                excluded_blocks: frozenset[int],
+            ) -> (
+                hcc_topology_walk_backend_module
+                .LiveDispatcherExitOnPathProbe
+            ):
+                raise AssertionError("unexpected ordered-path probe")
+
+            def reachable_from_entry(
+                self,
+                mba: object,
+                target_serial: int,
+                *,
+                entry_serial: int = 0,
+            ) -> hcc_topology_walk_backend_module.LiveReachabilityProbe:
+                raise AssertionError("unexpected reachability probe")
+
+            def walk_backward_corridor(
+                self,
+                mba: object,
+                start_serial: int,
+                *,
+                max_depth: int = 8,
+                entry_serial: int = 0,
+            ) -> hcc_topology_walk_backend_module.LiveCorridorWalkProbe:
+                self.seen.append((
+                    mba,
+                    start_serial,
+                    max_depth,
+                    entry_serial,
+                ))
+                return hcc_topology_walk_backend_module.LiveCorridorWalkProbe(
+                    blocks=(
+                        hcc_topology_walk_backend_module
+                        .LiveCorridorBlockProbe(
+                            serial=50,
+                            depth=0,
+                            block_exists=True,
+                            block_type=2,
+                            predecessors=(10, 99),
+                            successors=(2,),
+                            tail_opcode=ida_hexrays.m_goto,
+                            tail_target=2,
+                            entry_reachable=True,
+                        ),
+                        hcc_topology_walk_backend_module
+                        .LiveCorridorBlockProbe(
+                            serial=10,
+                            depth=1,
+                            block_exists=True,
+                            block_type=1,
+                            predecessors=(0,),
+                            successors=(50,),
+                            entry_reachable=True,
+                        ),
+                        hcc_topology_walk_backend_module
+                        .LiveCorridorBlockProbe(
+                            serial=99,
+                            depth=1,
+                            block_exists=False,
+                        ),
+                    )
+                )
+
+        local_facts = SimpleNamespace(
+            owned_blocks_by_entry={10: frozenset({10})},
+            shared_suffix_by_entry={},
+            node_by_any_local_block={},
+        )
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeTopologyWalkBackend()
+        strategy._topology_walk_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        result = strategy._dump_splice_source_corridor(
+            mba=mba,
+            splice_source=50,
+            local_facts=local_facts,
+            bst_node_blocks=frozenset(),
+            dispatcher_serial=2,
+            max_depth=3,
+        )
+
+        assert backend.seen == [(mba, 50, 3, 0)]
+        assert result["nearest_mapped_pred"] == 10
+        assert result["blocks"][0]["preds"] == [10, 99]
+        assert result["blocks"][1]["kind"] == "REGION_ENTRY"
+        assert result["blocks"][2] == {
+            "serial": 99,
+            "depth": 1,
+            "kind": "DEAD",
+        }
+
 
 class TestHandlerChainMaterializationCaptureBackend:
     def test_captures_block_body_by_serial(self) -> None:
