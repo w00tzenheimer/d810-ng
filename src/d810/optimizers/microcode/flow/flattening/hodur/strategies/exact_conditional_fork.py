@@ -11,7 +11,7 @@ from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
-from d810.cfg.graph_modification import NopInstructions, ZeroStateWrite
+from d810.cfg.graph_modification import GraphModification, ZeroStateWrite
 from d810.cfg.semantic_reference import (
     collect_semantic_entry_by_label,
     collect_semantic_successors_by_state,
@@ -58,11 +58,15 @@ from d810.recon.flow.graph_reachability import collect_residual_dispatcher_prede
 from d810.recon.flow.state_machine_analysis import (
     run_snapshot_constant_fixpoint,
 )
+from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
+    HexRaysInstructionCaptureBackend,
+)
 
 logger = logging.getLogger(
     "D810.hodur.strategy.exact_conditional_fork",
     logging.DEBUG,
 )
+_HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
 
 _STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:_fallback)?$")
 
@@ -322,7 +326,7 @@ def _trivial_tail_state_write_cleanup_modification(
     flow_graph,
     tail_block_serial: int,
     expected_state: int,
-) -> NopInstructions | None:
+) -> GraphModification | None:
     """Remove a trivial local ``state = CONST`` handoff before a redirected goto.
 
     This is the preferred cleanup for leaf fork-arm tails shaped like:
@@ -341,35 +345,14 @@ def _trivial_tail_state_write_cleanup_modification(
     block = flow_graph.get_block(int(tail_block_serial))
     if block is None:
         return None
-    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
-    if len(insns) != 2:
+    request = _HEX_RAYS_CAPTURE_BACKEND.classify_trivial_tail_state_write_cleanup(
+        block,
+        state_variable=int(state_var_stkoff),
+        expected_state=int(expected_state),
+    )
+    if request is None:
         return None
-
-    write_insn, tail_insn = insns
-    if getattr(write_insn, "opcode", None) != ida_hexrays.m_mov:
-        return None
-    if getattr(tail_insn, "opcode", None) != ida_hexrays.m_goto:
-        return None
-
-    dest = getattr(write_insn, "d", None)
-    src = getattr(write_insn, "l", None)
-    if dest is None or src is None:
-        return None
-    if getattr(dest, "t", None) != ida_hexrays.mop_S:
-        return None
-    if getattr(dest, "stkoff", None) != int(state_var_stkoff):
-        return None
-    if getattr(src, "t", None) != ida_hexrays.mop_n:
-        return None
-    value = getattr(src, "value", None)
-    if value is None:
-        return None
-    if (int(value) & 0xFFFFFFFF) != (int(expected_state) & 0xFFFFFFFF):
-        return None
-    insn_ea = int(getattr(write_insn, "ea", 0) or 0)
-    if insn_ea == 0:
-        return None
-    return setup.builder.nop_instruction(int(tail_block_serial), insn_ea)
+    return setup.builder.state_write_cleanup(request)
 
 
 def _fallback_zero_state_write_modification(
@@ -379,7 +362,7 @@ def _fallback_zero_state_write_modification(
     tail_block_serial: int,
     expected_state: int,
     debug_label: str | None = None,
-) -> ZeroStateWrite | None:
+) -> GraphModification | None:
     """Zero a redirected arm's local state write when the tail block proves it directly.
 
     This is narrower than the path-horizon helper above. It only fires when the
@@ -406,62 +389,16 @@ def _fallback_zero_state_write_modification(
                 tail_block_serial,
             )
         return None
-
-    matched_insn_ea: int | None = None
-    state_write_count = 0
-    expected_state = int(expected_state) & 0xFFFFFFFF
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
-            continue
-        dest = getattr(insn, "d", None)
-        src = getattr(insn, "l", None)
-        if dest is None or src is None:
-            continue
-        if getattr(dest, "t", None) != ida_hexrays.mop_S:
-            continue
-        if getattr(dest, "stkoff", None) != int(state_var_stkoff):
-            continue
-        state_write_count += 1
-        if getattr(src, "t", None) != ida_hexrays.mop_n:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (nonconst_state_write blk=%d ea=0x%x src_t=%s)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                    getattr(src, "t", None),
-                )
-            return None
-        value = getattr(src, "value", None)
-        if value is None:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (missing_state_value blk=%d ea=0x%x)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                )
-            return None
-        if (int(value) & 0xFFFFFFFF) != expected_state:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (state_mismatch blk=%d ea=0x%x saw=0x%08X expected=0x%08X)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                    int(value) & 0xFFFFFFFF,
-                    expected_state,
-                )
-            return None
-        matched_insn_ea = int(getattr(insn, "ea", 0) or 0)
-
-    if state_write_count != 1 or matched_insn_ea in (None, 0):
+    request = _HEX_RAYS_CAPTURE_BACKEND.classify_matching_state_write_cleanup(
+        block,
+        state_variable=int(state_var_stkoff),
+        expected_state=int(expected_state),
+    )
+    if request is None:
         if debug_label is not None:
             logger.info(
-                "EXACT CONDITIONAL FORK: %s zero-state fallback skipped (state_write_count=%d matched_ea=%s)",
+                "EXACT CONDITIONAL FORK: %s zero-state fallback skipped (no_matching_state_write)",
                 debug_label,
-                state_write_count,
-                "None" if matched_insn_ea in (None, 0) else hex(int(matched_insn_ea)),
             )
         return None
     if debug_label is not None:
@@ -469,9 +406,9 @@ def _fallback_zero_state_write_modification(
             "EXACT CONDITIONAL FORK: %s zero-state fallback accepted blk=%d ea=0x%x",
             debug_label,
             tail_block_serial,
-            int(matched_insn_ea),
+            int(request.insn_ea),
         )
-    return setup.builder.zero_state_write(int(tail_block_serial), int(matched_insn_ea))
+    return setup.builder.state_write_cleanup(request)
 
 
 def analyze_exact_conditional_fork_sites(

@@ -1959,110 +1959,15 @@ def _capture_transitive_def_chain_body(
     )
 
 
-def _collect_stkvar_reads_from_mop(
-    mop: object,
-    reads: set[tuple[int, int]],
-) -> None:
-    """Recursively collect ``(stkoff, size)`` for every stkvar read in a mop_t.
-
-    Walks ``mop_S`` (direct stack read) and ``mop_d`` (sub-instruction)
-    operands.  Other mop kinds (``mop_n``, ``mop_r``, ``mop_b``, etc.)
-    do not contribute stkvar reads and are ignored.
-
-    Read-only; never mutates the mop_t or its sub-objects.
-    """
-    if mop is None:
-        return
-    try:
-        t = int(mop.t)
-    except Exception:
-        return
-    if t == ida_hexrays.mop_S:
-        s = getattr(mop, "s", None)
-        if s is None:
-            return
-        try:
-            reads.add((int(s.off), int(mop.size)))
-        except Exception:
-            return
-        return
-    if t == ida_hexrays.mop_d:
-        sub = getattr(mop, "d", None)
-        if sub is None:
-            return
-        _collect_stkvar_reads_from_mop(getattr(sub, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "r", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "d", None), reads)
-
-
 def _collect_stkvar_reads_in_block(
     blk: object,
     *,
     skip_jcond_tail: bool = True,
 ) -> set[tuple[int, int]]:
-    """Return the ``(stkoff, size)`` set for every stkvar read in ``blk``.
-
-    Walks the live ``minsn_t`` stream.  Reads come from ``l`` and ``r``
-    operands universally; ``d`` contributes a read only when the opcode is
-    a memory store (``m_stx``, ``m_stm``) or when ``d`` itself is a
-    sub-instruction (``mop_d``).  This rule prevents
-    treating ``mov %src, %var_x.N`` destinations as fake reads.
-
-    With ``skip_jcond_tail`` (default True), a ``jcond`` instruction
-    halts collection -- mirroring the body capture's jcond-at-tail drop
-    so the precondition does not strand on operands whose only read
-    lives in a jcond the InsertBlock will not actually carry.
-    """
-    reads: set[tuple[int, int]] = set()
-    cur = getattr(blk, "head", None)
-    while cur is not None:
-        try:
-            opcode = int(cur.opcode)
-        except Exception:
-            opcode = -1
-        if skip_jcond_tail:
-            try:
-                if ida_hexrays.is_mcode_jcond(opcode):
-                    break
-            except Exception:
-                pass
-        _collect_stkvar_reads_from_mop(getattr(cur, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(cur, "r", None), reads)
-        d = getattr(cur, "d", None)
-        if d is not None:
-            try:
-                d_type = int(d.t)
-            except Exception:
-                d_type = -1
-            # m_stx is the only widely-available memory-store opcode whose
-            # 'd' operand is the source value (a read).  Other store opcodes
-            # (m_st1/m_stm in some SDKs) are covered transparently when their
-            # 'd' is a sub-instruction (mop_d case below).
-            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
-                _collect_stkvar_reads_from_mop(d, reads)
-        cur = getattr(cur, "next", None)
-    return reads
-
-
-def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
-    """Return True if ``insn`` writes a state constant to the state var."""
-    if state_var_stkoff is None:
-        return False
-    try:
-        opcode = int(insn.opcode)
-    except Exception:
-        return False
-    if opcode != ida_hexrays.m_mov:
-        return False
-    dst = getattr(insn, "d", None)
-    if dst is None:
-        return False
-    try:
-        if dst.t != ida_hexrays.mop_S:
-            return False
-        return int(dst.s.off) == int(state_var_stkoff)
-    except Exception:
-        return False
+    return _HEX_RAYS_CAPTURE_BACKEND.collect_stkvar_reads_in_block(
+        blk,
+        skip_jcond_tail=skip_jcond_tail,
+    )
 
 
 def _block_has_non_state_payload(
@@ -2071,27 +1976,11 @@ def _block_has_non_state_payload(
     *,
     state_var_stkoff: int | None,
 ) -> bool:
-    """Return True when a block has real payload beyond state write/goto glue."""
-    try:
-        blk = mba.get_mblock(int(block_serial))
-    except Exception:
-        return False
-    if blk is None:
-        return False
-    insn = getattr(blk, "head", None)
-    while insn is not None:
-        try:
-            opcode = int(insn.opcode)
-        except Exception:
-            return True
-        if opcode in {ida_hexrays.m_nop, ida_hexrays.m_goto}:
-            insn = getattr(insn, "next", None)
-            continue
-        if _is_state_write(insn, state_var_stkoff):
-            insn = getattr(insn, "next", None)
-            continue
-        return True
-    return False
+    return _HEX_RAYS_CAPTURE_BACKEND.block_has_non_state_payload(
+        mba,
+        int(block_serial),
+        state_variable=state_var_stkoff,
+    )
 
 
 # ---------------------------------------------------------------------------
