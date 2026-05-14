@@ -6371,66 +6371,23 @@ class HandlerChainComposerStrategy:
             "nearest_mapped_pred": None,
         }
 
-        # Compute reachable set from entry once for the run.
-        reachable_from_entry: set[int] = set()
-        try:
-            qty = int(getattr(mba, "qty", 0))
-        except Exception:
-            qty = 0
-        worklist: list[int] = [0] if qty > 0 else []
-        while worklist and len(reachable_from_entry) < qty + 4:
-            cur = worklist.pop()
-            if cur in reachable_from_entry:
-                continue
-            reachable_from_entry.add(cur)
-            cur_blk = self._safe_get_mblock(mba, cur)
-            if cur_blk is None:
-                continue
-            try:
-                nsucc = int(cur_blk.nsucc())  # type: ignore[attr-defined]
-                for i in range(nsucc):
-                    worklist.append(int(cur_blk.succ(i)))  # type: ignore[attr-defined]
-            except Exception:
-                continue
-
-        # BFS backward from splice_source.
-        seen: set[int] = set()
-        frontier: list[tuple[int, int]] = [(int(splice_source), 0)]
         nearest_mapped: int | None = None
-        while frontier:
-            block_serial, depth = frontier.pop(0)
-            if block_serial in seen:
-                continue
-            seen.add(block_serial)
-            blk = self._safe_get_mblock(mba, block_serial)
-            if blk is None:
+        corridor = self._topology_walk_backend.walk_backward_corridor(
+            mba,
+            int(splice_source),
+            max_depth=int(max_depth),
+            entry_serial=0,
+        )
+        for block_probe in corridor.blocks:
+            block_serial = int(block_probe.serial)
+            depth = int(block_probe.depth)
+            if not block_probe.block_exists:
                 out["blocks"].append({
                     "serial": block_serial,
                     "depth": depth,
                     "kind": "DEAD",
                 })
                 continue
-            try:
-                blk_type = int(blk.type)
-                npred = int(blk.npred())
-                nsucc = int(blk.nsucc())
-                preds = tuple(int(blk.pred(i)) for i in range(npred))
-                succs = tuple(int(blk.succ(i)) for i in range(nsucc))
-                tail_op = int(blk.tail.opcode) if blk.tail is not None else -1
-                tail_target = (
-                    int(blk.tail.d.b)
-                    if (blk.tail is not None
-                        and getattr(blk.tail, "d", None) is not None
-                        and getattr(blk.tail.d, "t", -1)
-                        == ida_hexrays.mop_b)
-                    else -1
-                )
-            except Exception:
-                blk_type = -1
-                preds = ()
-                succs = ()
-                tail_op = -1
-                tail_target = -1
 
             kind, kind_info = self._classify_corridor_block(
                 block_serial,
@@ -6451,7 +6408,7 @@ class HandlerChainComposerStrategy:
                 nearest_mapped = block_serial
 
             entry_dist = (
-                "REACHABLE" if block_serial in reachable_from_entry
+                "REACHABLE" if block_probe.entry_reachable
                 else "UNREACHABLE"
             )
 
@@ -6460,18 +6417,13 @@ class HandlerChainComposerStrategy:
                 "depth": depth,
                 "kind": kind,
                 "kind_info": kind_info,
-                "type": blk_type,
-                "preds": list(preds),
-                "succs": list(succs),
-                "tail_op": tail_op,
-                "tail_target": tail_target,
+                "type": int(block_probe.block_type),
+                "preds": list(block_probe.predecessors),
+                "succs": list(block_probe.successors),
+                "tail_op": int(block_probe.tail_opcode),
+                "tail_target": int(block_probe.tail_target),
                 "entry_reach": entry_dist,
             })
-
-            if depth < max_depth:
-                for p in preds:
-                    if p not in seen:
-                        frontier.append((p, depth + 1))
 
         out["nearest_mapped_pred"] = nearest_mapped
         return out
