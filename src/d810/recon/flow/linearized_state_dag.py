@@ -4794,6 +4794,42 @@ def build_live_linearized_state_dag_from_graph(
     _sm_blocks = set(report.bst_node_blocks) | handler_entry_blocks
     _bst_root = report.dispatcher_entry_serial if report.dispatcher_entry_serial >= 0 else None
 
+    def _explicit_conditional_transitions_for_row(
+        row: TransitionRow,
+    ) -> tuple[ConditionalTransition, ...]:
+        if row.state_const is None:
+            return ()
+        handler = transition_result.handlers.get(row.state_const)
+        if handler is None:
+            return ()
+        explicit: list[ConditionalTransition] = []
+        for transition in handler.transitions:
+            if not transition.is_conditional:
+                continue
+            if not transition.provenance_chain:
+                continue
+            target_handler = transition_result.handlers.get(transition.to_state)
+            explicit.append(
+                ConditionalTransition(
+                    handler_entry=handler.check_block,
+                    branch_block=(
+                        transition.condition_block
+                        if transition.condition_block is not None
+                        else transition.from_block
+                    ),
+                    target_state=transition.to_state & 0xFFFFFFFF,
+                    target_handler=(
+                        target_handler.check_block
+                        if target_handler is not None
+                        else None
+                    ),
+                    state_write_block=transition.condition_block,
+                    state_write_ea=None,
+                    branch_arm=None,
+                )
+            )
+        return tuple(explicit)
+
     for row in report.rows:
         incoming_state = row.state_const
         if incoming_state is None:
@@ -4861,6 +4897,30 @@ def build_live_linearized_state_dag_from_graph(
                 incoming_state=incoming_state,
             )
         )
+        explicit_conds = _explicit_conditional_transitions_for_row(row)
+        if explicit_conds:
+            seen_cond_keys = {
+                (
+                    cond.target_state,
+                    cond.branch_block,
+                    cond.branch_arm,
+                    cond.is_terminal_no_write,
+                )
+                for cond in conds
+            }
+            merged_conds = list(conds)
+            for cond in explicit_conds:
+                cond_key = (
+                    cond.target_state,
+                    cond.branch_block,
+                    cond.branch_arm,
+                    cond.is_terminal_no_write,
+                )
+                if cond_key in seen_cond_keys:
+                    continue
+                seen_cond_keys.add(cond_key)
+                merged_conds.append(cond)
+            conds = tuple(merged_conds)
         if conds:
             conditional_transitions_by_handler[row.handler_serial] = conds
 
@@ -6259,6 +6319,15 @@ def build_linearized_state_dag_from_graph(
                 terminal_paths_consumed[handler_serial].add(
                     (matched_path.exit_block, tuple(matched_path.ordered_path))
                 )
+            elif cond.branch_arm is None and cond.state_write_block is not None:
+                for path in paths:
+                    if (
+                        path.exit_block == cond.state_write_block
+                        or cond.state_write_block in tuple(path.ordered_path)
+                    ):
+                        terminal_paths_consumed[handler_serial].add(
+                            (path.exit_block, tuple(path.ordered_path))
+                        )
 
     for handler_serial, paths in paths_by_handler.items():
         source_node = primary_node_by_handler.get(handler_serial)

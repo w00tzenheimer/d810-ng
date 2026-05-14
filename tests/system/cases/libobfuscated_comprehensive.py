@@ -370,7 +370,6 @@ APPROOV_CASES = [
         project="default_unflattening_approov.json",  # Requires Approov-specific unflattener
         deobfuscated_not_contains=["switch"],
         must_change=True,
-        skip="Known gap: approov VM dispatcher still unchanged in current harness",
     ),
     DeobfuscationCase(
         function="approov_simple_loop",

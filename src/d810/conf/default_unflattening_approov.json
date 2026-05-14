@@ -909,6 +909,11 @@
         "config": {}
       },
       {
+        "name": "EmulatedDispatcherUnflattener",
+        "is_activated": true,
+        "config": {}
+      },
+      {
         "name": "BadWhileLoop",
         "is_activated":true,
         "config":{
