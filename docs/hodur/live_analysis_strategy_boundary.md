@@ -36,7 +36,7 @@ Hex-Rays-shaped questions while deciding whether those neutral actions are safe.
 | --- | --- | --- | --- |
 | `spurious_backedge_redirect.py` | Convert selected spurious backedges to gotos using `ConvertToGoto`. | Walks `mba.get_mblock`, `nsucc`, `succ`, `blk.type`, `blk.head`; parses `insn._print()` output for reads and writes. | Move topology and read/write collection behind live topology and predicate evidence backends. Keep cfg planner consuming plain maps. |
 | `state_constant_return_fixup.py` | NOP leaked dispatcher-state constant writes on return paths using `NopInstructions`. | Finds STOP blocks, return mux shape, feeder blocks, tail instructions, opcodes, operands, stack offsets, and state-variable fallback with `ida_hexrays` constants and live operands. | Move return-path shape detection and cleanup-site classification behind a return cleanup evidence backend. Hodur only decides whether to accept the cleanup sites. |
-| `dead_state_variable_elimination.py` | NOP proven dead dispatcher-state reads using `NopInstructions`. | Finds state-var uses, reaching defs, value ranges, block tail shape, gutted blocks, branch tails, dynamic writes, stack-var operands, constants, and indirect stack definitions using live microcode. | Move use/def/value-range and read cleanup classification behind a dead state-variable evidence backend. Preserve Hodur policy as explicit guards over neutral decisions. |
+| `dead_state_variable_elimination.py` | NOP proven dead dispatcher-state reads using `NopInstructions`. | Done for the primary live-analysis split: use discovery, reaching defs, value ranges, block tail shape, gutted-block checks, dynamic writes, operand/opcode checks, and indirect stack definitions now live behind `HexRaysDeadStateVariableEvidenceBackend`. | Keep Hodur policy and NOP emission in the strategy. Future DSVE work should harden/extend backend evidence objects rather than reintroducing live reads into Hodur. |
 | `linearized_flow_graph.py` | Emits `RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `ZeroStateWrite`, `PrivateTerminalSuffix`, and suffix groups from flow graph plans. | Imports `ida_hexrays` for maturity and block type checks, passes live `mba` into use-def safety and projected live DAG helpers, and performs Hex-Rays use-def veto checks during postprocessing. | Move maturity gates, block-type normalization, projected topology views, and redirect use-def safety checks behind backend protocols. Keep graph planning in cfg/recon. |
 
 ## Primary Strategy Notes
@@ -278,16 +278,13 @@ Current intent:
 
 Current live evidence collection:
 
-- Resolves the state variable from live `mop_S` fallback data.
-- Finds all stack-var uses and reaching definitions through evaluator helpers.
-- Runs value-range fixpoint analysis.
-- Reads live block shape to skip two-way branch tails.
-- Walks live instructions to detect gutted blocks.
-- Classifies source and destination operands, constants, stack offsets, and
-  dynamic state writes.
-- Chases indirect stack-var definitions by walking previous live instructions.
+- Done behind `HexRaysDeadStateVariableEvidenceBackend`:
+  state-variable resolution from live `mop_S`, stack-var use discovery,
+  reaching definitions, value-range fixpoint analysis, two-way tail checks,
+  gutted-block detection, operand/opcode/constant classification, dynamic
+  state-write preservation, and indirect stack-var definition chasing.
 
-Proposed boundary:
+Boundary now in place:
 
 - `DeadStateVariableEvidenceBackend` owns live use/def/value-range collection.
 - It returns neutral decisions for each observed use:
