@@ -482,8 +482,14 @@ class TestPlanEmission:
         assert isinstance(mod, InsertBlock)
         assert mod.pred_serial == 1
         assert mod.succ_serial == 20
-        # State-writes dropped, m_goto/m_nop dropped: 4 instructions.
-        assert len(mod.instructions) == 4
+        # State-writes dropped, m_goto/m_nop dropped: 4 instructions.  The
+        # current lowering contract carries composed Hex-Rays bodies through the
+        # backend-owned captured_body payload instead of the legacy
+        # InsertBlock.instructions tuple.
+        assert mod.instructions == ()
+        assert mod.captured_body is not None
+        assert mod.captured_body.summary.source_blocks == (10, 11, 12)
+        assert mod.captured_body.summary.instruction_count == 4
         # old_target_serial points at the first handler (region head).
         assert mod.old_target_serial == 10
         assert {10, 11, 12, 1}.issubset(fragment.ownership.blocks)
