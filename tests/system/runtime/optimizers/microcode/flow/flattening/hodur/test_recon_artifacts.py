@@ -35,8 +35,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
 from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
-    _parse_focus_edge_pairs,
-    _resolve_edge_window,
+)
+from d810.cfg.semantic_exact_selection import (
+    parse_focus_edge_pairs,
+    resolve_edge_window,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     SemanticStructuredRegionStrategy,
@@ -300,17 +302,25 @@ def test_semantic_exact_node_bulk_window_defaults(monkeypatch):
     monkeypatch.delenv("D810_EXACT_NODE_EDGE_START", raising=False)
     monkeypatch.delenv("D810_EXACT_NODE_EDGE_STOP", raising=False)
 
-    assert _resolve_edge_window(10) == (0, 10)
+    assert resolve_edge_window(10) == (0, 10)
 
 
 def test_semantic_exact_node_bulk_window_clamps_and_orders(monkeypatch):
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "7")
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "3")
-    assert _resolve_edge_window(10) == (7, 7)
+    assert resolve_edge_window(
+        10,
+        start_value="7",
+        stop_value="3",
+    ) == (7, 7)
 
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "0x2")
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "99")
-    assert _resolve_edge_window(10) == (2, 10)
+    assert resolve_edge_window(
+        10,
+        start_value="0x2",
+        stop_value="99",
+    ) == (2, 10)
 
 
 def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
@@ -339,20 +349,20 @@ def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
     ]
 
 
-def test_parse_focus_edge_pairs_handles_hex_and_decimal():
-    assert _parse_focus_edge_pairs(None) is None
-    assert _parse_focus_edge_pairs("") is None
-    assert _parse_focus_edge_pairs("   ") is None
-    assert _parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
-    assert _parse_focus_edge_pairs(
+def test_parse_focus_edge_pairs_handles_hex_specs():
+    assert parse_focus_edge_pairs(None) is None
+    assert parse_focus_edge_pairs("") is None
+    assert parse_focus_edge_pairs("   ") is None
+    assert parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
+    assert parse_focus_edge_pairs(
         "5d0aebd3,606dc166;606dc166,139f2922"
     ) == (
         (0x5D0AEBD3, 0x606DC166),
         (0x606DC166, 0x139F2922),
     )
-    assert _parse_focus_edge_pairs("0x10,0x20") == ((0x10, 0x20),)
+    assert parse_focus_edge_pairs("0x10,0x20") == ((0x10, 0x20),)
     # Malformed entries are silently skipped; valid ones survive.
-    assert _parse_focus_edge_pairs("garbage;0x10,0x20") == ((0x10, 0x20),)
+    assert parse_focus_edge_pairs("garbage;0x10,0x20") == ((0x10, 0x20),)
 
 
 def test_semantic_exact_node_focus_pairs_constructor_arg(monkeypatch):
