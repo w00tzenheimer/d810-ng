@@ -684,6 +684,7 @@ def _classify_convergence_or_linear(
     dag: LinearizedStateDag,
     local_facts: DagLocalFacts,
     mba: object,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
 ) -> tuple[str, _ConvergencePlan | _TailExtensionPlan | None]:
     """Try ``FUSABLE_TAIL_EXTENSION`` first; on failure fall back.
 
@@ -731,20 +732,20 @@ def _classify_convergence_or_linear(
         ) or "CONFLICT", None
     convergence = int(splice_source)
 
-    convergence_blk = HandlerChainComposerStrategy._safe_get_mblock(
-        mba, convergence,
+    convergence_topology = live_topology_backend.read_block_topology(
+        mba,
+        convergence,
     )
-    if convergence_blk is None:
+    if not convergence_topology.block_exists:
         return _classify_yes_handlers_subclass(
             self_info=self_info, raw_region_table=raw_region_table,
         ) or "CONFLICT", None
 
-    try:
-        npred = int(convergence_blk.npred())  # type: ignore[attr-defined]
-    except Exception:
+    if convergence_topology.npred is None:
         return _classify_yes_handlers_subclass(
             self_info=self_info, raw_region_table=raw_region_table,
         ) or "CONFLICT", None
+    npred = int(convergence_topology.npred)
 
     if npred < 2:
         # Single-pred shape -- defer entirely to the existing classifier.
@@ -771,31 +772,27 @@ def _classify_convergence_or_linear(
     # Rules (3) + (4): every live pred must be inside the owning
     # state's local CFG AND cleanly redirectable.
     incoming: list[_ConvergenceIncomingEdge] = []
-    try:
-        pred_serials = [
-            int(convergence_blk.pred(i))  # type: ignore[attr-defined]
-            for i in range(npred)
-        ]
-    except Exception:
+    if convergence_topology.predecessors is None:
         return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+    pred_serials = tuple(
+        int(pred) for pred in convergence_topology.predecessors
+    )
 
     for p in pred_serials:
         if not _state_node_owns_block(
             local_facts=local_facts, owner=owner, block=p,
         ):
             return "CONVERGENCE_UNSUPPORTED_EXTERNAL_PRED", None
-        pred_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, p)
-        if pred_blk is None:
+        pred_topology = live_topology_backend.read_block_topology(mba, p)
+        if not pred_topology.block_exists:
             return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-        try:
-            pn = int(pred_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if pred_topology.nsucc is None:
             return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+        pn = int(pred_topology.nsucc)
         if pn == 1:
-            try:
-                s0 = int(pred_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if pred_topology.successors is None or not pred_topology.successors:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+            s0 = int(pred_topology.successors[0])
             if s0 != convergence:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
             incoming.append(
@@ -808,15 +805,9 @@ def _classify_convergence_or_linear(
             )
             continue
         if pn == 2:
-            tail = getattr(pred_blk, "tail", None)
-            if tail is None:
+            if pred_topology.conditional_target is None:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-            try:
-                if not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
-                    return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-                cond_target = int(tail.d.b)
-            except Exception:
-                return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+            cond_target = int(pred_topology.conditional_target)
             if cond_target == convergence:
                 incoming.append(
                     _ConvergenceIncomingEdge(
@@ -916,6 +907,7 @@ def _classify_yes_handlers_with_convergence(
         dag=dag,
         local_facts=local_facts,
         mba=mba,
+        live_topology_backend=_LIVE_TOPOLOGY_BACKEND,
     )
     return label
 
@@ -4450,6 +4442,7 @@ class HandlerChainComposerStrategy:
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=self._live_topology_backend,
             )
             if label != "FUSABLE_TAIL_EXTENSION":
                 continue
@@ -6828,6 +6821,7 @@ class HandlerChainComposerStrategy:
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=self._live_topology_backend,
             )
             if label != "FUSABLE_LOCAL_CONVERGENCE":
                 continue

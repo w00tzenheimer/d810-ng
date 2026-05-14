@@ -1145,6 +1145,112 @@ class TestFindR1ToSuppress:
         assert result is None
 
 
+class TestConvergenceLiveTopologyBackend:
+    def test_convergence_classifier_uses_live_topology_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError(
+                    "convergence classifier should use topology backend"
+                )
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 50:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        npred=2,
+                        predecessors=(10, 11),
+                    )
+                if serial == 10:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=1,
+                        successors=(50,),
+                    )
+                if serial == 11:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(99, 50),
+                        conditional_target=50,
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        cover = _make_raw_region_info(
+            head_anchor=50,
+            handler_serials=(50,),
+            composed_handler_serials=(50,),
+            splice_source_block=49,
+            splice_old_target=51,
+            proposed_exit=51,
+        )
+        info = _make_raw_region_info(
+            head_anchor=20,
+            handler_serials=(20,),
+            composed_handler_serials=(20,),
+            splice_source_block=50,
+            splice_old_target=60,
+            proposed_exit=70,
+        )
+        owner = _make_dag_node_v2(50, 0xAAA0)
+        local_facts = SimpleNamespace(
+            node_by_any_local_block={50: owner, 10: owner, 11: owner},
+        )
+        monkeypatch.setattr(
+            hcc_module,
+            "_find_cover_regions",
+            lambda **_kwargs: (cover,),
+        )
+
+        mba = _MbaWithoutMblocks()
+        backend = _FakeLiveTopologyBackend()
+        label, plan = hcc_module._classify_convergence_or_linear(
+            self_info=info,
+            raw_region_table=(cover, info),
+            dag=SimpleNamespace(edges=()),
+            local_facts=local_facts,
+            mba=mba,
+            live_topology_backend=backend,
+        )
+
+        assert label == "FUSABLE_TAIL_EXTENSION"
+        assert isinstance(plan, hcc_module._TailExtensionPlan)
+        assert plan.convergence_block == 50
+        assert plan.splice_old_target == 60
+        assert plan.exit_target == 70
+        assert backend.seen == [(mba, 50), (mba, 10), (mba, 11)]
+
+
 class TestTailExtensionStaleTargetGuard:
     """Stale-target verification at emission time.
 

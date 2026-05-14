@@ -26,6 +26,8 @@ class LiveBlockTopologyProbe:
     successors: tuple[int, ...] | None = None
     npred: int | None = None
     predecessors: tuple[int, ...] | None = None
+    tail_opcode: int | None = None
+    conditional_target: int | None = None
 
 
 class HandlerChainLiveTopologyBackend(Protocol):
@@ -78,25 +80,44 @@ class HexRaysHandlerChainLiveTopologyBackend:
         block = self._block(mba, int(serial))
         if block is None:
             return LiveBlockTopologyProbe(block_exists=False)
+        succ_count: int | None = None
+        successors: tuple[int, ...] | None = None
+        pred_count: int | None = None
+        predecessors: tuple[int, ...] | None = None
+        tail_opcode: int | None = None
+        conditional_target: int | None = None
         try:
             succ_count = int(block.nsucc())  # type: ignore[attr-defined]
             successors = tuple(
                 int(block.succ(index))  # type: ignore[attr-defined]
                 for index in range(succ_count)
             )
+        except Exception:
+            pass
+        try:
             pred_count = int(block.npred())  # type: ignore[attr-defined]
             predecessors = tuple(
                 int(block.pred(index))  # type: ignore[attr-defined]
                 for index in range(pred_count)
             )
         except Exception:
-            return LiveBlockTopologyProbe(block_exists=True)
+            pass
+        tail = getattr(block, "tail", None)
+        if tail is not None:
+            try:
+                tail_opcode = int(tail.opcode)
+                if ida_hexrays.is_mcode_jcond(tail_opcode):
+                    conditional_target = int(tail.d.b)
+            except Exception:
+                conditional_target = None
         return LiveBlockTopologyProbe(
             block_exists=True,
             nsucc=succ_count,
             successors=successors,
             npred=pred_count,
             predecessors=predecessors,
+            tail_opcode=tail_opcode,
+            conditional_target=conditional_target,
         )
 
     def read_one_way_successor(
