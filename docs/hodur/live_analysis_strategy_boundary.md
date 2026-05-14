@@ -37,7 +37,7 @@ Hex-Rays-shaped questions while deciding whether those neutral actions are safe.
 | `spurious_backedge_redirect.py` | Convert selected spurious backedges to gotos using `ConvertToGoto`. | Walks `mba.get_mblock`, `nsucc`, `succ`, `blk.type`, `blk.head`; parses `insn._print()` output for reads and writes. | Move topology and read/write collection behind live topology and predicate evidence backends. Keep cfg planner consuming plain maps. |
 | `state_constant_return_fixup.py` | NOP leaked dispatcher-state constant writes on return paths using `NopInstructions`. | Finds STOP blocks, return mux shape, feeder blocks, tail instructions, opcodes, operands, stack offsets, and state-variable fallback with `ida_hexrays` constants and live operands. | Move return-path shape detection and cleanup-site classification behind a return cleanup evidence backend. Hodur only decides whether to accept the cleanup sites. |
 | `dead_state_variable_elimination.py` | NOP proven dead dispatcher-state reads using `NopInstructions`. | Done for the primary live-analysis split: use discovery, reaching defs, value ranges, block tail shape, gutted-block checks, dynamic writes, operand/opcode checks, and indirect stack definitions now live behind `HexRaysDeadStateVariableEvidenceBackend`. | Keep Hodur policy and NOP emission in the strategy. Future DSVE work should harden/extend backend evidence objects rather than reintroducing live reads into Hodur. |
-| `linearized_flow_graph.py` | Emits `RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `ZeroStateWrite`, `PrivateTerminalSuffix`, and suffix groups from flow graph plans. | Imports `ida_hexrays` for maturity and block type checks, passes live `mba` into use-def safety and projected live DAG helpers, and performs Hex-Rays use-def veto checks during postprocessing. | Move maturity gates, block-type normalization, projected topology views, and redirect use-def safety checks behind backend protocols. Keep graph planning in cfg/recon. |
+| `linearized_flow_graph.py` | Emits `RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `ZeroStateWrite`, `PrivateTerminalSuffix`, and suffix groups from flow graph plans. | Partially split: maturity/block-type constants are normalized by `HodurLiveMicrocodePropertiesBackend`, and use-def vetoes go through `UseDefSafetyBackend`. Remaining coupling passes live `mba` into effective target and projected live DAG helpers. | Move projected topology views and residual/effective target helpers behind backend protocols. Keep graph planning in cfg/recon. |
 
 ## Primary Strategy Notes
 
@@ -311,18 +311,17 @@ Current intent:
 
 Current live Hex-Rays coupling:
 
-- Checks `mba.maturity` against `ida_hexrays.MMAT_GLBOPT1`.
-- Uses `ida_hexrays.BLT_2WAY` to avoid unsafe dead dispatcher root conversion.
-- Calls live use-def safety helpers to veto redirects.
+- Normalizes maturity and block-type constants through
+  `HodurLiveMicrocodePropertiesBackend`.
+- Calls `UseDefSafetyBackend` to veto redirects.
 - Passes live `mba` into effective target and projected DAG helpers.
 - Builds projected MBA-like views from flow graph snapshots for some analyses.
 
 Proposed boundary:
 
-- `MaturityGateBackend` converts live maturity into a neutral profile gate such
-  as `"global_opt_1"`.
-- `BlockTypeBackend` normalizes live block types into strings or enum values
-  before strategy code sees them.
+- `HodurLiveMicrocodePropertiesBackend` converts live maturity and block types
+  into named policy predicates. This is now in place for the remaining direct
+  `ida_hexrays` constants in LFG.
 - `UseDefSafetyBackend` answers whether a proposed redirect severs a live
   use-def chain.
 - `ProjectedTopologyBackend` provides a neutral block/topology view when a

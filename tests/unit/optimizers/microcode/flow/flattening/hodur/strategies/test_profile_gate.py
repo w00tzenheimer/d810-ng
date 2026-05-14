@@ -8,6 +8,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
     AttributeHodurProfileGate,
     accepts_exact_sub7ffd_glbopt1,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties import (
+    AttributeHodurLiveMicrocodeProperties,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     exact_conditional_alias,
     exact_conditional_fork,
@@ -64,6 +67,18 @@ def test_attribute_profile_gate_accepts_named_glbopt1() -> None:
         expected_entry_ea=_SUB7FFD_FUNC_EA,
         required_maturity="MMAT_GLBOPT1",
     )
+
+
+def test_live_microcode_properties_normalizes_maturity_and_block_type() -> None:
+    backend = AttributeHodurLiveMicrocodeProperties(
+        maturity_name_to_int={"global_opt_1": 7},
+        block_type_name_to_int={"two_way": 2},
+    )
+
+    assert backend.has_maturity(SimpleNamespace(maturity=7), "global_opt_1")
+    assert not backend.has_maturity(SimpleNamespace(maturity=6), "global_opt_1")
+    assert backend.is_two_way_block_type(2)
+    assert not backend.is_two_way_block_type(1)
 
 
 @pytest.mark.parametrize(
