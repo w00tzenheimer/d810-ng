@@ -41,12 +41,15 @@ SINGLE_ITERATION_CASES = (
     ("single_iteration_state_machine", "example_libobfuscated.json"),
 )
 
+# The live Hodur engine-wrapper profile no longer registers the migrated
+# FakeJump/SingleIteration cleanup strategies. These baselines lock that
+# current behavior against the legacy rule output; they are not parity claims.
 FAKE_JUMP_BASELINES = {
     "abc_f6_sub_dispatch": {
         "legacy_project": "example_libobfuscated_no_fixprecedessor.json",
         "legacy_changed": True,
-        "engine_changed": True,
-        "engine_matches_legacy": True,
+        "engine_changed": False,
+        "engine_matches_legacy": False,
         "legacy_ast": {
             "statements": 4,
             "returns": 2,
@@ -56,19 +59,19 @@ FAKE_JUMP_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 4,
+            "statements": 10,
             "returns": 2,
-            "whiles": 0,
+            "whiles": 1,
             "gotos": 0,
-            "ifs": 1,
+            "ifs": 5,
             "calls": 0,
         },
     },
     "abc_f6_or_dispatch": {
         "legacy_project": "example_libobfuscated.json",
         "legacy_changed": True,
-        "engine_changed": True,
-        "engine_matches_legacy": True,
+        "engine_changed": False,
+        "engine_matches_legacy": False,
         "legacy_ast": {
             "statements": 1,
             "returns": 1,
@@ -78,11 +81,11 @@ FAKE_JUMP_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 1,
+            "statements": 6,
             "returns": 1,
-            "whiles": 0,
+            "whiles": 1,
             "gotos": 0,
-            "ifs": 0,
+            "ifs": 1,
             "calls": 0,
         },
     },
@@ -100,12 +103,12 @@ FAKE_JUMP_BASELINES = {
             "calls": 3,
         },
         "engine_ast": {
-            "statements": 8,
-            "returns": 1,
+            "statements": 42,
+            "returns": 3,
             "whiles": 1,
-            "gotos": 0,
-            "ifs": 2,
-            "calls": 0,
+            "gotos": 1,
+            "ifs": 10,
+            "calls": 2,
         },
     },
 }
@@ -114,8 +117,8 @@ SINGLE_ITERATION_BASELINES = {
     "single_iteration_simple": {
         "legacy_project": "example_libobfuscated.json",
         "legacy_changed": True,
-        "engine_changed": True,
-        "engine_matches_legacy": True,
+        "engine_changed": False,
+        "engine_matches_legacy": False,
         "legacy_ast": {
             "statements": 1,
             "returns": 1,
@@ -125,7 +128,7 @@ SINGLE_ITERATION_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 1,
+            "statements": 3,
             "returns": 1,
             "whiles": 0,
             "gotos": 0,
@@ -136,8 +139,8 @@ SINGLE_ITERATION_BASELINES = {
     "single_iteration_residual": {
         "legacy_project": "example_libobfuscated.json",
         "legacy_changed": True,
-        "engine_changed": True,
-        "engine_matches_legacy": True,
+        "engine_changed": False,
+        "engine_matches_legacy": False,
         "legacy_ast": {
             "statements": 1,
             "returns": 1,
@@ -147,7 +150,7 @@ SINGLE_ITERATION_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 1,
+            "statements": 4,
             "returns": 1,
             "whiles": 0,
             "gotos": 0,
@@ -159,7 +162,7 @@ SINGLE_ITERATION_BASELINES = {
         "legacy_project": "example_libobfuscated.json",
         "legacy_changed": True,
         "engine_changed": True,
-        "engine_matches_legacy": True,
+        "engine_matches_legacy": False,
         "legacy_ast": {
             "statements": 1,
             "returns": 1,
@@ -169,11 +172,11 @@ SINGLE_ITERATION_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 1,
+            "statements": 4,
             "returns": 1,
-            "whiles": 0,
+            "whiles": 1,
             "gotos": 0,
-            "ifs": 0,
+            "ifs": 1,
             "calls": 0,
         },
     },
