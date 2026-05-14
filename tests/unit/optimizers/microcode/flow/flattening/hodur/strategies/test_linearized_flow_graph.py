@@ -13,6 +13,9 @@ from d810.optimizers.microcode.flow.flattening.hodur import (
     constant_fixpoint_backend as constant_backend_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur import (
+    lfg_handoff_resolution_backend as handoff_backend_module,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
     projected_topology_backend as topology_backend_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
@@ -129,6 +132,86 @@ def test_lfg_structured_region_uses_constant_fixpoint_backend(monkeypatch):
                 discovery=SimpleNamespace(constant_fixpoint=None)
             ),
         )
+
+
+def test_lfg_handoff_resolution_backend_delegates_to_recon_helpers(monkeypatch):
+    backend = handoff_backend_module.HodurLinearizedFlowGraphHandoffResolutionBackend()
+    seen = {}
+
+    def fake_effective_target(*args, **kwargs):
+        seen["effective"] = (args, kwargs)
+        return "effective-target"
+
+    def fake_tail_target(*args, **kwargs):
+        seen["tail"] = (args, kwargs)
+        return "tail-target"
+
+    monkeypatch.setattr(
+        handoff_backend_module,
+        "resolve_effective_target_entry",
+        fake_effective_target,
+    )
+    monkeypatch.setattr(
+        handoff_backend_module,
+        "resolve_projected_path_tail_target",
+        fake_tail_target,
+    )
+
+    assert (
+        backend.resolve_effective_target_entry("dag", "edge", flag=True)
+        == "effective-target"
+    )
+    assert (
+        backend.resolve_projected_path_tail_target(
+            "dag",
+            source_block=10,
+            bst_node_blocks={2},
+        )
+        == "tail-target"
+    )
+    assert seen == {
+        "effective": (("dag", "edge"), {"flag": True}),
+        "tail": (
+            ("dag",),
+            {"source_block": 10, "bst_node_blocks": {2}},
+        ),
+    }
+
+
+def test_lfg_target_resolution_hooks_use_handoff_backend(monkeypatch):
+    class _FakeHandoffResolutionBackend:
+        def resolve_effective_target_entry(self, *args, **kwargs):
+            assert args == ("dag", "edge")
+            assert kwargs == {"flag": True}
+            return "effective-target"
+
+        def resolve_projected_path_tail_target(self, *args, **kwargs):
+            assert args == ("dag",)
+            assert kwargs == {"source_block": 10, "bst_node_blocks": {2}}
+            return "tail-target"
+
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_handoff_resolution_backend",
+        _FakeHandoffResolutionBackend(),
+    )
+
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_effective_target_entry(
+            "dag",
+            "edge",
+            flag=True,
+        )
+        == "effective-target"
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_projected_path_tail_target(
+            "dag",
+            source_block=10,
+            bst_node_blocks={2},
+        )
+        == "tail-target"
+    )
 
 
 def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):
