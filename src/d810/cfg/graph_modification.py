@@ -48,6 +48,7 @@ from d810.core import logging
 
 # Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
+from d810.cfg.materialization_payload import CapturedBlockBody
 
 
 # Construction tracer for graph mods. When
@@ -257,7 +258,8 @@ class InsertBlock:
     """Insert a new block between pred and succ with given instructions.
 
     Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_REDIRECT.
-    Creates a new intermediate block containing the specified instructions
+    Creates a new intermediate block containing either legacy instruction
+    snapshots or a backend-owned captured body
     and redirects pred -> new_block -> succ. By default, the existing edge
     being replaced is assumed to be ``pred -> succ``; callers may override
     that with ``old_target_serial`` when the new block should redirect a
@@ -266,7 +268,8 @@ class InsertBlock:
     Attributes:
         pred_serial: Predecessor block serial (edge source).
         succ_serial: Final successor block serial for the inserted block.
-        instructions: Tuple of instruction snapshots to place in new block.
+        instructions: Legacy tuple of instruction snapshots to place in new block.
+        captured_body: Opaque backend-owned body to place in the new block.
         old_target_serial: Existing successor edge being replaced. When unset,
             defaults to ``succ_serial``.
 
@@ -282,8 +285,9 @@ class InsertBlock:
     """
     pred_serial: int
     succ_serial: int
-    instructions: tuple[InsnSnapshot, ...]
+    instructions: tuple[InsnSnapshot, ...] = ()
     old_target_serial: int | None = None
+    captured_body: CapturedBlockBody | None = None
 
 
 @dataclass(frozen=True)

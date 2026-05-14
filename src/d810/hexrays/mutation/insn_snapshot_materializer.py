@@ -6,11 +6,39 @@ from collections.abc import Sequence
 import ida_hexrays
 
 from d810.cfg.flowgraph import InsnSnapshot
+from d810.cfg.materialization_payload import CapturedBlockBody
 from d810.core.logging import getLogger
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.utils.hexrays_formatters import sanitize_ea
 
 logger = getLogger(__name__)
+
+HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID = "hexrays.insn_snapshot"
+
+
+def insn_snapshots_from_captured_body(body: CapturedBlockBody) -> tuple[InsnSnapshot, ...]:
+    """Return Hex-Rays instruction snapshots from an opaque captured body."""
+    if body.backend_id != HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID:
+        raise TypeError(
+            f"Unsupported captured body backend: {body.backend_id!r}"
+        )
+    payload = body.payload
+    if not isinstance(payload, tuple):
+        raise TypeError(
+            f"Captured body payload must be tuple, got {type(payload).__name__}"
+        )
+    if not all(isinstance(insn, InsnSnapshot) for insn in payload):
+        raise TypeError("Captured body payload contains non-InsnSnapshot entries")
+    return payload
+
+
+def validate_captured_block_body(body: CapturedBlockBody) -> str | None:
+    """Return None when a Hex-Rays captured body is structurally rebuildable."""
+    try:
+        instructions = insn_snapshots_from_captured_body(body)
+    except Exception as exc:
+        return str(exc)
+    return validate_insn_snapshots(instructions)
 
 
 def _iter_insn_snapshot_operands(insn_snapshot: InsnSnapshot) -> tuple[tuple[str, object], ...]:
@@ -376,10 +404,13 @@ def canonicalize_inline_add_in_mba(mba: "ida_hexrays.mba_t") -> int:
 
 
 __all__ = [
+    "HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID",
     "canonicalize_inline_add_in_mba",
     "canonicalize_inline_add_to_stkvar",
+    "insn_snapshots_from_captured_body",
     "instruction_snapshot_safe_ea",
     "mark_all_insns_persistent",
     "materialize_insn_snapshots",
+    "validate_captured_block_body",
     "validate_insn_snapshots",
 ]

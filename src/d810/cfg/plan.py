@@ -53,6 +53,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody
 
 
 @dataclass(frozen=True, order=True)
@@ -87,6 +88,7 @@ class PatchBlockSpec:
     incoming_edge: PatchEdgeRef | None = None
     outgoing_edges: tuple[PatchEdgeRef, ...] = ()
     instructions: tuple[InsnSnapshot, ...] = ()
+    captured_body: CapturedBlockBody | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +249,7 @@ class PatchInsertBlock:
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...]
     old_target_serial: int | None = None
+    captured_body: CapturedBlockBody | None = None
 
     def to_graph_modification(self) -> InsertBlock:
         return InsertBlock(
@@ -254,6 +257,7 @@ class PatchInsertBlock:
             succ_serial=self.succ_serial,
             instructions=self.instructions,
             old_target_serial=self.old_target_serial,
+            captured_body=self.captured_body,
         )
 
 
@@ -755,6 +759,7 @@ def _compile_legacy_block_step(
             succ_serial=succ,
             instructions=insns,
             old_target_serial=old_target,
+            captured_body=captured_body,
         ):
             effective_old_target = succ if old_target is None else old_target
             block_id = allocator.alloc("insert_block")
@@ -764,6 +769,7 @@ def _compile_legacy_block_step(
                 incoming_edge=PatchEdgeRef(source=pred, target=effective_old_target),
                 outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                 instructions=insns,
+                captured_body=captured_body,
             )
             return LegacyBlockOperation(modification=modification, block_id=block_id), spec
 
@@ -986,6 +992,7 @@ def _finalize_step(
                 succ_serial=succ,
                 instructions=insns,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ),
             block_id=block_id,
         ):
@@ -1003,6 +1010,7 @@ def _finalize_step(
                     if old_target is None
                     else relocation_map.rewrite_serial(old_target)
                 ),
+                captured_body=captured_body,
             )
 
         case _PendingDuplicateBlock(
@@ -1330,6 +1338,7 @@ def compile_patch_plan(
                 succ_serial=succ,
                 instructions=insns,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ):
                 effective_old_target = succ if old_target is None else old_target
                 if cfg is None:
@@ -1348,6 +1357,7 @@ def compile_patch_plan(
                             ),
                             outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                             instructions=insns,
+                            captured_body=captured_body,
                         )
                     )
                     raw_steps.append(
