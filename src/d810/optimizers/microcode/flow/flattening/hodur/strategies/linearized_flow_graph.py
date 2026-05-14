@@ -84,6 +84,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties i
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
     HodurLiveMicrocodePropertiesBackend,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_backend import (
+    DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND,
+    LinearizedFlowGraphHandoffResolutionBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
@@ -91,9 +95,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend 
 from d810.recon.flow.residual_handoff_resolution import (
     has_live_exact_residual_handoff_with_valranges,
     is_semantic_handoff_redirect,
-    resolve_effective_target_entry,
     resolve_singleton_state_write_value,
-    resolve_synthesized_handoff_target,
 )
 from d810.recon.flow.graph_reachability import (
     collect_dispatcher_predecessors,
@@ -172,14 +174,10 @@ from d810.recon.flow.residual_alias_discovery import (
 from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
-    resolve_assignment_map_handoff_target,
     resolve_contextual_dag_entry_for_state,
     resolve_cover_fallback_entry_for_state,
     resolve_dag_entry_for_state,
-    resolve_immediate_handoff_target,
     resolve_normalized_alias_entry_for_state,
-    resolve_projected_snapshot_handoff_target,
-    resolve_projected_path_tail_target,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
 )
@@ -269,6 +267,9 @@ _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
 )
 _CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
+_HANDOFF_RESOLUTION_BACKEND: LinearizedFlowGraphHandoffResolutionBackend = (
+    DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND
 )
 
 
@@ -1219,6 +1220,9 @@ class LinearizedFlowGraphStrategy:
     _constant_fixpoint_backend: ConstantFixpointBackend = (
         _CONSTANT_FIXPOINT_BACKEND
     )
+    _handoff_resolution_backend: LinearizedFlowGraphHandoffResolutionBackend = (
+        _HANDOFF_RESOLUTION_BACKEND
+    )
 
     @staticmethod
     def _resolve_state_var_stkoff(
@@ -1310,22 +1314,55 @@ class LinearizedFlowGraphStrategy:
     _resolve_cover_fallback_entry_for_state = staticmethod(
         resolve_cover_fallback_entry_for_state
     )
-    _resolve_projected_path_tail_target = staticmethod(
-        resolve_projected_path_tail_target
-    )
-    _resolve_immediate_handoff_target = staticmethod(
-        resolve_immediate_handoff_target
-    )
-    _resolve_projected_snapshot_handoff_target = staticmethod(
-        resolve_projected_snapshot_handoff_target
-    )
-    _resolve_assignment_map_handoff_target = staticmethod(
-        resolve_assignment_map_handoff_target
-    )
-    _resolve_synthesized_handoff_target = staticmethod(
-        resolve_synthesized_handoff_target
-    )
-    _resolve_effective_target_entry = staticmethod(resolve_effective_target_entry)
+    @classmethod
+    def _resolve_projected_path_tail_target(cls, *args, **kwargs):
+        return (
+            cls._handoff_resolution_backend.resolve_projected_path_tail_target(
+                *args,
+                **kwargs,
+            )
+        )
+
+    @classmethod
+    def _resolve_immediate_handoff_target(cls, *args, **kwargs):
+        return cls._handoff_resolution_backend.resolve_immediate_handoff_target(
+            *args,
+            **kwargs,
+        )
+
+    @classmethod
+    def _resolve_projected_snapshot_handoff_target(cls, *args, **kwargs):
+        return (
+            cls._handoff_resolution_backend.resolve_projected_snapshot_handoff_target(
+                *args,
+                **kwargs,
+            )
+        )
+
+    @classmethod
+    def _resolve_assignment_map_handoff_target(cls, *args, **kwargs):
+        return (
+            cls._handoff_resolution_backend.resolve_assignment_map_handoff_target(
+                *args,
+                **kwargs,
+            )
+        )
+
+    @classmethod
+    def _resolve_synthesized_handoff_target(cls, *args, **kwargs):
+        return (
+            cls._handoff_resolution_backend.resolve_synthesized_handoff_target(
+                *args,
+                **kwargs,
+            )
+        )
+
+    @classmethod
+    def _resolve_effective_target_entry(cls, *args, **kwargs):
+        return cls._handoff_resolution_backend.resolve_effective_target_entry(
+            *args,
+            **kwargs,
+        )
 
     @classmethod
     def _emit_residual_branch_anchor_handoff(
