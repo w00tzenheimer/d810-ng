@@ -215,7 +215,7 @@ Already present on this branch:
 - The sub7FFD structure-recovery baseline on `structure-recovery-pass` is the
   regression gate for this line of work. Engine extraction must not regress its
   dump, oracle, AFTER stats, frontier diagnostics, or gate audit.
-- The first eight post-merge de-specialization/adoption slices landed:
+- The post-merge de-specialization/adoption slices landed:
   - `d810.recon.flow.dag_region_detection.detect_linear_transition_regions()`
     now owns the pure semantic-DAG region walk (`d322b957`).
   - `d810.cfg.semantic_region_entry` now owns semantic region entry
@@ -243,6 +243,12 @@ Already present on this branch:
   - Return-site IDs are family-neutral by default, with Hodur passing an
     explicit `site_id_prefix="hodur"` where compatibility needs stable labels
     (`5ac465b2`).
+  - `d810.optimizers.microcode.flow.flattening.hodur.profile` now owns Hodur
+    strategy ordering/profile defaults instead of
+    `hodur/strategies/__init__.py` (`8771f2a4`, import-cycle fix `4336a7ef`).
+  - `d810.cfg.semantic_exact_selection` now owns backend-neutral exact-edge
+    pair parsing, focus selection, and window selection for exact semantic
+    lowering (`83dc8498`).
   HCC consumes these helpers while keeping family policy, logging, ordering,
   live Hex-Rays microblock walking, and snapshot materialization local.
 
@@ -255,8 +261,8 @@ What remains:
   `engine` based on behavior, not on import churn. The next large
   algorithmic candidates are the remaining semantic exact/fork/alias helpers,
   recon artifact persistence, and the backend materialization boundary.
-- Reframe the Hodur-specific layer as a profile/entrypoint over the generic
-  state-machine unflattening engine. `HodurStrategyFamily` can remain as a
+- Continue thinning the Hodur profile/entrypoint now that strategy ordering
+  moved into `hodur.profile`. `HodurStrategyFamily` can remain as a
   transitional adapter name while behavior is being extracted, but the target
   shape is not "Hodur owns a family"; it is "Hodur profile selects generic
   state-machine strategies."
@@ -361,15 +367,15 @@ Target shape:
 
 Implementation sequence:
 
-1. Introduce a generic profile/config object, for example
-   `StateMachineUnflatteningProfile` or `CFFUnflatteningProfile`, that carries
-   strategy classes, safeguard profile, detector configuration, feature gates,
-   and labels.
+1. ✅ Introduce a Hodur profile/config object carrying strategy classes and
+   current feature gates (`8771f2a4`). Follow-up: generalize the profile type
+   when a second non-Hodur adopter needs the same shape.
 2. Change `HodurStrategyFamily` from "the owner of Hodur strategies" into an
    adapter over that profile. Keep the class name temporarily if a rename would
    create too much churn.
-3. Move the authoritative Hodur strategy list/order out of
-   `hodur/strategies/__init__.py` and into the Hodur profile/entrypoint.
+3. ✅ Move the authoritative Hodur strategy list/order out of
+   `hodur/strategies/__init__.py` and into the Hodur profile/entrypoint
+   (`8771f2a4`, `4336a7ef`).
 4. Keep each strategy implementation in its own module. Do not collapse the
    modules into the entrypoint.
 5. Once the generic profile is exercised by Hodur and at least one non-Hodur
@@ -413,6 +419,8 @@ Completed:
 - Exact conditional site analysis moved to
   `d810.cfg.semantic_conditional_lowering` (`67d65cdb`), with the pure analyzer
   tests migrated to cfg (`ce50f99c`).
+- Exact semantic edge parsing/focus/window selection moved to
+  `d810.cfg.semantic_exact_selection` (`83dc8498`).
 
 Next candidates, in order:
 
@@ -421,10 +429,10 @@ Next candidates, in order:
      `exact_conditional_alias.py`, and `exact_node_frontier_bypass.py`;
    - target: `d810.cfg.semantic_exact_lowering` or
      `d810.cfg.semantic_conditional_lowering`;
-   - note: the pure SESE/hammock classifier and exact conditional site
-     analyzer are already shared; the remaining extraction is candidate/site
-     inventory, fork/alias proof classification, frontier target selection,
-     and backend-neutral lowering decisions;
+   - note: the pure SESE/hammock classifier, exact conditional site analyzer,
+     and exact-edge selection are already shared; the remaining extraction is
+     candidate/site inventory, fork/alias proof classification, frontier target
+     selection, and backend-neutral lowering decisions;
    - keep strategy wrappers, thresholds, and fallback order in Hodur.
 2. Residual dispatcher target resolution and trampoline skipping:
    - current sources: `dispatcher_trampoline_skip.py` and pieces of
