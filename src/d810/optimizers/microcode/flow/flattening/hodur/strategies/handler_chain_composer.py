@@ -4093,8 +4093,8 @@ class HandlerChainComposerStrategy:
             )
         return kept
 
-    @staticmethod
     def _filter_payload_intermediate_redirects(
+        self,
         modifications: list,
         *,
         mba: object,
@@ -4143,12 +4143,16 @@ class HandlerChainComposerStrategy:
             )
             if (old_target, int(mod.new_target)) in goto_pairs:
                 continue
-            try:
-                old_blk = mba.get_mblock(old_target)  # type: ignore[attr-defined]
-                old_nsucc = int(old_blk.nsucc()) if old_blk is not None else 0
-                old_succ = int(old_blk.succ(0)) if old_nsucc == 1 else -1
-            except Exception:
-                old_succ = -1
+            old_probe = self._read_live_one_way_successor(mba, old_target)
+            old_succ = (
+                int(old_probe.successor)
+                if (
+                    old_probe.block_exists
+                    and old_probe.nsucc == 1
+                    and old_probe.successor is not None
+                )
+                else -1
+            )
             if old_succ < 0:
                 logger.info(
                     "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SKIPPED"
