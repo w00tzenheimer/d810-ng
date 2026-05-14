@@ -152,6 +152,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend i
 from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND,
     HandlerChainLiveTopologyBackend,
+    LiveOneWaySuccessorProbe,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
@@ -4530,10 +4531,11 @@ class HandlerChainComposerStrategy:
             #     planned splice_old_target.
             splice_source_block = int(plan.convergence_block)
             splice_old_target_planned = int(plan.splice_old_target)
-            splice_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                mba, splice_source_block,
+            splice_probe = self._read_live_one_way_successor(
+                mba,
+                splice_source_block,
             )
-            if splice_blk is None:
+            if not splice_probe.block_exists:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=splice_source_dead",
@@ -4541,9 +4543,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_nsucc = int(splice_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.nsucc is None:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=splice_source_no_longer_1way",
@@ -4551,6 +4551,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_nsucc = int(splice_probe.nsucc)
             if splice_nsucc != 1:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
@@ -4560,9 +4561,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_succ_live = int(splice_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.successor is None:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=stale_old_target",
@@ -4570,6 +4569,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_succ_live = int(splice_probe.successor)
             if splice_succ_live != splice_old_target_planned:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
@@ -4807,8 +4807,11 @@ class HandlerChainComposerStrategy:
 
             # Atomic guard 1: splice source still 1-way and pointing
             # at the planned old target.
-            splice_blk = self._safe_get_mblock(mba, splice_source)
-            if splice_blk is None:
+            splice_probe = self._read_live_one_way_successor(
+                mba,
+                splice_source,
+            )
+            if not splice_probe.block_exists:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_dead"
@@ -4817,9 +4820,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_nsucc = int(splice_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.nsucc is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_nsucc_unreadable",
@@ -4827,6 +4828,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_nsucc = int(splice_probe.nsucc)
             if splice_nsucc != 1:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -4836,9 +4838,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_live_succ = int(splice_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.successor is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_succ_unreadable",
@@ -4846,6 +4846,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_live_succ = int(splice_probe.successor)
             if splice_live_succ != splice_old_target:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -4859,8 +4860,11 @@ class HandlerChainComposerStrategy:
 
             # Atomic guard 2: handler still 1-way and pointing at the
             # current dispatcher edge.
-            handler_blk = self._safe_get_mblock(mba, anchor_serial)
-            if handler_blk is None:
+            handler_probe = self._read_live_one_way_successor(
+                mba,
+                anchor_serial,
+            )
+            if not handler_probe.block_exists:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_dead",
@@ -4868,9 +4872,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                handler_nsucc = int(handler_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if handler_probe.nsucc is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_nsucc_unreadable",
@@ -4878,6 +4880,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            handler_nsucc = int(handler_probe.nsucc)
             if handler_nsucc != 1:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -4887,9 +4890,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                current_succ = int(handler_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if handler_probe.successor is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_succ_unreadable",
@@ -4897,6 +4898,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            current_succ = int(handler_probe.successor)
 
             # Skip no-op outbound: when the handler already points at
             # the next semantic target, we don't need an outbound
@@ -5104,8 +5106,8 @@ class HandlerChainComposerStrategy:
         # Guard 3: stale-target verification on the splice source.
         # The semantic predecessor must still be 1-way and pointing at
         # ``splice_old_target``.  Mirrors tail-extension's stale guards.
-        src_blk = self._safe_get_mblock(mba, splice_source)
-        if src_blk is None:
+        src_probe = self._read_live_one_way_successor(mba, splice_source)
+        if not src_probe.block_exists:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_dead"
@@ -5113,15 +5115,14 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, splice_source,
             )
             return None
-        try:
-            src_nsucc = int(src_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if src_probe.nsucc is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_nsucc_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        src_nsucc = int(src_probe.nsucc)
         if src_nsucc != 1:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5130,15 +5131,14 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, src_nsucc,
             )
             return None
-        try:
-            src_live_succ = int(src_blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
+        if src_probe.successor is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_succ_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        src_live_succ = int(src_probe.successor)
         if src_live_succ != splice_old_target:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5152,23 +5152,22 @@ class HandlerChainComposerStrategy:
         # Guard 4: stale-target verification on the call anchor's
         # outgoing edge.  Re-derive ``block_outgoing_edge`` from the
         # live mblock (the diagnostic field is captured at log time).
-        ca_blk = self._safe_get_mblock(mba, call_anchor_serial)
-        if ca_blk is None:
+        ca_probe = self._read_live_one_way_successor(mba, call_anchor_serial)
+        if not ca_probe.block_exists:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_dead",
                 anchor_serial, head_state,
             )
             return None
-        try:
-            ca_nsucc = int(ca_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if ca_probe.nsucc is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_nsucc_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        ca_nsucc = int(ca_probe.nsucc)
         if ca_nsucc != 1:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5177,16 +5176,16 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, ca_nsucc,
             )
             return None
-        try:
-            ca_live_succ = int(ca_blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
+        if ca_probe.successor is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_succ_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        ca_live_succ = int(ca_probe.successor)
         block_outgoing_edge = ca_live_succ
+        ca_blk = self._safe_get_mblock(mba, call_anchor_serial)
 
         # Guard 5: DAG-fact ownership lookup -- the call anchor must be
         # owned by exactly one known state per ``DagLocalFacts``.  This
@@ -7719,6 +7718,16 @@ class HandlerChainComposerStrategy:
             return mba.get_mblock(serial)  # type: ignore[attr-defined]
         except Exception:
             return None
+
+    def _read_live_one_way_successor(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveOneWaySuccessorProbe:
+        return self._live_topology_backend.read_one_way_successor(
+            mba,
+            int(serial),
+        )
 
     def _resolve_region_exit(
         self,
