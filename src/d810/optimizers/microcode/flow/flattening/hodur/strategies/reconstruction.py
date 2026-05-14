@@ -591,16 +591,19 @@ class StateWriteReconstructionStrategy:
         override_map = derive_selected_alternate_edge_override_map(
             dag,
             fact_view,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
         dag = apply_selected_alternate_edge_overrides(
             dag,
             fact_view,
             override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
         corrected_dag = apply_selected_alternate_edge_overrides(
             corrected_dag,
             fact_view,
             override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
 
         indexes = build_reconstruction_discovery_indexes(
