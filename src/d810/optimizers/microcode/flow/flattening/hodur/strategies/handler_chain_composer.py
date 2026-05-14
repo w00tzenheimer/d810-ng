@@ -156,6 +156,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology
     LiveBlockTopologyProbe,
     LiveOneWaySuccessorProbe,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_materialization_capture_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND,
+    HandlerChainMaterializationCaptureBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_topology_walk_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND,
     HandlerChainTopologyWalkBackend,
@@ -272,6 +276,9 @@ _LIVE_TOPOLOGY_BACKEND: HandlerChainLiveTopologyBackend = (
 )
 _TOPOLOGY_WALK_BACKEND: HandlerChainTopologyWalkBackend = (
     DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND
+)
+_MATERIALIZATION_CAPTURE_BACKEND: HandlerChainMaterializationCaptureBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND
 )
 
 
@@ -2049,6 +2056,9 @@ class HandlerChainComposerStrategy:
         )
         self._topology_walk_backend: HandlerChainTopologyWalkBackend = (
             _TOPOLOGY_WALK_BACKEND
+        )
+        self._materialization_capture_backend: HandlerChainMaterializationCaptureBackend = (
+            _MATERIALIZATION_CAPTURE_BACKEND
         )
         self._insert_block_call_audit_backend: InsertBlockCallAuditBackend = (
             _HEX_RAYS_CAPTURE_BACKEND
@@ -7494,19 +7504,22 @@ class HandlerChainComposerStrategy:
         state_values: list[int] = []
         for node in region_nodes:
             anchor = int(node.entry_anchor)
-            blk = self._safe_get_mblock(mba, anchor)
-            if blk is None:
+            cap_result = (
+                self._materialization_capture_backend
+                .capture_block_composable_instructions(
+                    mba,
+                    anchor,
+                    state_var_stkoff=state_var_stkoff,
+                    byte_evidence_eas=byte_evidence_eas,
+                )
+            )
+            if cap_result.kind == "missing_block":
                 logger.info(
                     "HandlerChainComposer: region node anchor=%d missing"
                     " in live mba; aborting region",
                     anchor,
                 )
                 return None
-            cap_result = self._capture_block_composable_instructions_v2(
-                blk,
-                state_var_stkoff=state_var_stkoff,
-                byte_evidence_eas=byte_evidence_eas,
-            )
             if cap_result.kind != "composable" or cap_result.body is None:
                 logger.info(
                     "HandlerChainComposer: region node anchor=%d has"
@@ -7534,32 +7547,29 @@ class HandlerChainComposerStrategy:
         if byte_evidence_eas:
             region_has_byte_evidence = False
             for node in region_nodes:
-                probe_blk = self._safe_get_mblock(
-                    mba, int(node.entry_anchor),
-                )
-                if probe_blk is None:
-                    continue
-                probe = getattr(probe_blk, "head", None)
-                while probe is not None:
-                    try:
-                        probe_ea = int(getattr(probe, "ea", 0) or 0)
-                    except Exception:
-                        probe_ea = 0
-                    if probe_ea and probe_ea in byte_evidence_eas:
-                        region_has_byte_evidence = True
-                        break
-                    probe = getattr(probe, "next", None)
-                if region_has_byte_evidence:
+                if (
+                    self._materialization_capture_backend
+                    .block_contains_byte_evidence(
+                        mba,
+                        int(node.entry_anchor),
+                        byte_evidence_eas=byte_evidence_eas,
+                    )
+                ):
+                    region_has_byte_evidence = True
                     break
             if region_has_byte_evidence:
                 all_reads: set[tuple[int, int]] = set()
                 for node in region_nodes:
-                    body_blk = self._safe_get_mblock(
-                        mba, int(node.entry_anchor),
+                    reads = (
+                        self._materialization_capture_backend
+                        .collect_stkvar_reads_in_block(
+                            mba,
+                            int(node.entry_anchor),
+                        )
                     )
-                    if body_blk is None:
+                    if reads is None:
                         continue
-                    all_reads.update(_collect_stkvar_reads_in_block(body_blk))
+                    all_reads.update(reads)
 
                 def _pred_covers_reads(pred: int) -> tuple[bool, list[tuple[int, int]]]:
                     missing: list[tuple[int, int]] = []

@@ -34,6 +34,7 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 
 if IDA_AVAILABLE:
+    from d810.cfg.flowgraph import InsnSnapshot
     from d810.cfg.graph_modification import (
         InsertBlock,
         RedirectBranch,
@@ -45,6 +46,9 @@ if IDA_AVAILABLE:
     )
     from d810.optimizers.microcode.flow.flattening.hodur import (
         handler_chain_live_topology_backend as hcc_topology_backend_module,
+    )
+    from d810.optimizers.microcode.flow.flattening.hodur import (
+        handler_chain_materialization_capture_backend as hcc_capture_backend_module,
     )
     from d810.optimizers.microcode.flow.flattening.hodur import (
         handler_chain_topology_walk_backend as hcc_topology_walk_backend_module,
@@ -1815,6 +1819,173 @@ class TestHandlerChainTopologyWalkBackend:
             (mba, (90, 50), 2, frozenset({50})),
         ]
         assert walk_backend.reachability_seen == [(mba, 90, 0)]
+
+
+class TestHandlerChainMaterializationCaptureBackend:
+    def test_captures_block_body_by_serial(self) -> None:
+        backend = (
+            hcc_capture_backend_module
+            .HexRaysHandlerChainMaterializationCaptureBackend()
+        )
+        mba = _StubMba({
+            10: _StubBlock(
+                10,
+                succs=(20,),
+                preds=(1,),
+                insns=[_stx_insn(0x1000)],
+            ),
+        })
+
+        result = backend.capture_block_composable_instructions(
+            mba,
+            10,
+            state_var_stkoff=0x100,
+        )
+
+        assert result.kind == "composable"
+        assert result.snapshots is not None
+        assert [int(snapshot.ea) for snapshot in result.snapshots] == [
+            0x1000,
+        ]
+        assert result.body is not None
+        assert result.body.summary.source_blocks == (10,)
+        assert backend.capture_block_composable_instructions(
+            mba,
+            99,
+        ) == hcc_capture_backend_module.HandlerChainBlockCaptureResult(
+            kind="missing_block",
+            abort_reason="block_dead",
+        )
+
+    def test_compose_region_uses_materialization_capture_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError(
+                    "compose_region should use materialization backend"
+                )
+
+        class _FakeLiveTopologyBackend:
+            def block_exists(self, mba: object, serial: int) -> bool:
+                assert serial == 10
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                assert first_anchor == 10
+                assert region_anchors == {10}
+                return 1
+
+        class _FakeMaterializationCaptureBackend:
+            def __init__(self) -> None:
+                self.capture_seen: list[
+                    tuple[object, int, int | None, frozenset[int]]
+                ] = []
+
+            def capture_block_composable_instructions(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                state_var_stkoff: int | None = None,
+                byte_evidence_eas: frozenset[int] = frozenset(),
+            ) -> (
+                hcc_capture_backend_module.HandlerChainBlockCaptureResult
+            ):
+                self.capture_seen.append((
+                    mba,
+                    block_serial,
+                    state_var_stkoff,
+                    byte_evidence_eas,
+                ))
+                snapshot = InsnSnapshot(
+                    opcode=ida_hexrays.m_stx,
+                    ea=0x1000,
+                    operands=(),
+                )
+                body = hcc_module._HEX_RAYS_CAPTURE_BACKEND.body_from_snapshots(
+                    (snapshot,),
+                    source_blocks=(block_serial,),
+                    capture_id=f"test:{block_serial}",
+                )
+                return (
+                    hcc_capture_backend_module.HandlerChainBlockCaptureResult(
+                        kind="composable",
+                        snapshots=(snapshot,),
+                        body=body,
+                    )
+                )
+
+            def block_contains_byte_evidence(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                byte_evidence_eas: frozenset[int],
+            ) -> bool:
+                raise AssertionError("unexpected byte-evidence probe")
+
+            def collect_stkvar_reads_in_block(
+                self,
+                mba: object,
+                block_serial: int,
+                *,
+                skip_jcond_tail: bool = True,
+            ) -> frozenset[tuple[int, int]] | None:
+                raise AssertionError("unexpected read probe")
+
+        source = _make_dag_node_v2(10, 0x10)
+        target = _make_dag_node_v2(20, 0x20)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x100,
+            pre_header_serial=None,
+            initial_state=0x10,
+            bst_node_blocks=(),
+            nodes=(source, target),
+            edges=(_make_dag_edge(source, target),),
+        )
+        strategy = HandlerChainComposerStrategy()
+        live_backend = _FakeLiveTopologyBackend()
+        capture_backend = _FakeMaterializationCaptureBackend()
+        strategy._live_topology_backend = live_backend
+        strategy._materialization_capture_backend = capture_backend
+        mba = _MbaWithoutMblocks()
+
+        candidate = strategy._compose_region(
+            mba=mba,
+            dag=dag,
+            region_nodes=(source,),
+            state_var_stkoff=0x100,
+        )
+
+        assert candidate is not None
+        assert candidate.pred_serial == 1
+        assert candidate.succ_serial == 20
+        assert [int(insn.ea) for insn in candidate.composed_instructions] == [
+            0x1000,
+        ]
+        assert capture_backend.capture_seen == [
+            (mba, 10, 0x100, frozenset()),
+        ]
 
 
 class TestFindR1ToSuppress:
