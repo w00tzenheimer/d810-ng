@@ -1,10 +1,6 @@
 """Redirect residual dispatcher feeders into dominating exact-node heads."""
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.residual_target_resolution import (
@@ -56,14 +52,17 @@ from d810.recon.flow.target_entry_resolution import (
 )
 from d810.recon.flow.state_machine_analysis import can_reach_return_snapshot
 from d810.recon.flow.state_machine_analysis import find_last_state_write_site_snapshot
-from d810.recon.flow.residual_handoff_resolution import (
-    resolve_effective_target_entry as resolve_effective_residual_target_entry,
-    resolve_singleton_state_write_value,
+from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+    HexRaysResidualFrontierEvidenceBackend,
+    ResidualFrontierEvidenceBackend,
 )
 
 logger = logging.getLogger(
     "D810.hodur.strategy.exact_node_frontier_bypass",
     logging.DEBUG,
+)
+_RESIDUAL_FRONTIER_EVIDENCE_BACKEND: ResidualFrontierEvidenceBackend = (
+    HexRaysResidualFrontierEvidenceBackend()
 )
 
 
@@ -131,43 +130,6 @@ def _collect_trivial_frontier_zero_state_write_modification(
     return setup.builder.zero_state_write(int(source_block), insn_ea)
 
 
-def _resolve_residual_effective_frontier_target(
-    *,
-    dag: object,
-    pred_serial: int,
-    raw_state: int,
-    dispatcher_model: object | None,
-    bst_blocks: set[int],
-    state_var_stkoff: int | None,
-    mba: object | None,
-) -> int | None:
-    if dispatcher_model is None or state_var_stkoff is None or mba is None:
-        return None
-
-    synthetic_target_entry = supplemental_selected_entry_for_state(
-        dag,
-        int(raw_state) & 0xFFFFFFFF,
-    )
-    synthetic_edge = SimpleNamespace(
-        source_anchor=SimpleNamespace(block_serial=int(pred_serial), branch_arm=None),
-        source_key=SimpleNamespace(state_const=None),
-        target_key=None,
-        target_state=int(raw_state) & 0xFFFFFFFF,
-        target_label=f"STATE_{int(raw_state) & 0xFFFFFFFF:08X}",
-        target_entry_anchor=synthetic_target_entry,
-        ordered_path=(int(pred_serial),),
-    )
-    return resolve_effective_residual_target_entry(
-        dag,
-        synthetic_edge,
-        bst_node_blocks=bst_blocks,
-        state_var_stkoff=int(state_var_stkoff),
-        dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
-        dispatcher=dispatcher_model,
-        mba=mba,
-    )
-
-
 @algorithm_metadata(
     algorithm_id="hodur.exact_node_frontier_bypass",
     family="semantic_exact_node_lowering",
@@ -226,12 +188,12 @@ class ExactNodeFrontierBypassStrategy:
         assert state_machine is not None
         assert mba is not None
 
-        state_var = getattr(state_machine, "state_var", None)
-        if state_var is None or getattr(state_var, "t", None) != ida_hexrays.mop_S:
+        state_variable = _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_state_variable(
+            state_machine=state_machine,
+        )
+        if state_variable is None:
             return None
-        state_var_stkoff = getattr(getattr(state_var, "s", None), "off", None)
-        if state_var_stkoff is None:
-            return None
+        state_var_stkoff = int(state_variable.stkoff)
 
         bst_blocks = {
             int(block)
@@ -292,31 +254,37 @@ class ExactNodeFrontierBypassStrategy:
                 skipped_non_dispatcher_edge += 1
                 continue
 
-            state_value = resolve_singleton_state_write_value(
-                mba,
-                int(pred_serial),
-                state_var_stkoff=int(state_var_stkoff),
+            state_write = (
+                _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_singleton_state_write(
+                    mba,
+                    int(pred_serial),
+                    state_variable=state_variable,
+                )
             )
-            if state_value is None:
+            if state_write is None:
                 skipped_no_state += 1
                 continue
+            state_value = int(state_write.state_value) & 0xFFFFFFFF
             if is_structured_conditional_path_feeder(
                 round_summary.dag,
                 pred_serial=int(pred_serial),
-                state_value=int(state_value) & 0xFFFFFFFF,
+                state_value=state_value,
             ):
                 skipped_structured_conditional_feeder += 1
                 continue
-            raw_state = int(state_value) & 0xFFFFFFFF
-            residual_effective_target = _resolve_residual_effective_frontier_target(
-                dag=round_summary.dag,
-                pred_serial=int(pred_serial),
-                raw_state=raw_state,
-                dispatcher_model=dispatcher_model,
-                bst_blocks=bst_blocks,
-                state_var_stkoff=int(state_var_stkoff),
-                mba=mba,
+            raw_state = state_value
+            residual_effective_evidence = (
+                _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_residual_effective_target(
+                    round_summary.dag,
+                    pred_serial=int(pred_serial),
+                    state_value=raw_state,
+                    dispatcher_model=dispatcher_model,
+                    bst_node_blocks=bst_blocks,
+                    state_variable=state_variable,
+                    mba=mba,
+                )
             )
+            residual_effective_target = residual_effective_evidence.target_entry
             exact_dispatch_target, target_entry = resolve_frontier_target_entry(
                 round_summary.dag,
                 pred_serial=int(pred_serial),

@@ -20,6 +20,7 @@ from d810.cfg.state_write_cleanup import (
 )
 from d810.cfg.state_write_evidence import StateConstantWriteEvidence
 from d810.core.logging import getLogger
+from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID,
@@ -59,6 +60,28 @@ class HexRaysBlockCaptureResult:
     is_indirect: bool | None = None
     pre_call_count: int | None = None
     post_call_count: int | None = None
+
+
+class StateWriteCleanupEvidenceBackend(Protocol):
+    """Backend boundary for state-write cleanup classification."""
+
+    def classify_trivial_tail_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        """Classify ``state = CONST; goto`` tail cleanup from a block snapshot."""
+
+    def classify_matching_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        """Classify a single matching constant state write in a block snapshot."""
 
 
 class HexRaysInstructionCaptureBackend:
@@ -813,4 +836,5 @@ def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
 __all__ = [
     "HexRaysBlockCaptureResult",
     "HexRaysInstructionCaptureBackend",
+    "StateWriteCleanupEvidenceBackend",
 ]

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
+from d810.cfg.state_variable import StateVariableRef
 from d810.core.logging import getLogger
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import (
@@ -20,14 +21,6 @@ from d810.evaluator.hexrays_microcode.valrange_dataflow import (
 )
 
 logger = getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class StateVariableRef:
-    """Neutral dispatcher state-variable identity."""
-
-    stkoff: int
-    width: int = 4
 
 
 @dataclass(frozen=True, slots=True)
