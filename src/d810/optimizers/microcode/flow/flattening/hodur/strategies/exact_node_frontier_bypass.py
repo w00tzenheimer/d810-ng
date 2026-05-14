@@ -16,6 +16,7 @@ from d810.cfg.residual_target_resolution import (
 )
 from d810.cfg.semantic_conditional_lowering import (
     collect_exact_conditional_alias_sites,
+    is_straight_line_handoff,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
@@ -25,7 +26,6 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     _SUB7FFD_FUNC_EA,
-    _is_straight_line_handoff,
     build_semantic_exact_round_summary,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
@@ -252,13 +252,13 @@ class ExactNodeFrontierBypassStrategy:
             round_summary,
             exact_source_blocks=exact_source_blocks,
             bst_blocks=bst_blocks,
-            is_straight_line_handoff_fn=_is_straight_line_handoff,
+            is_straight_line_handoff_fn=is_straight_line_handoff,
             resolve_dag_entry_for_state_fn=resolve_dag_entry_for_state,
         )
         owned_exact_sources = collect_owned_exact_sources(
             round_summary,
             exact_source_blocks=exact_source_blocks,
-            is_straight_line_handoff_fn=_is_straight_line_handoff,
+            is_straight_line_handoff_fn=is_straight_line_handoff,
         )
         terminal_source_owned_blocks = {
             int(block) for block in getattr(round_summary, "terminal_source_owned_blocks", ()) or ()

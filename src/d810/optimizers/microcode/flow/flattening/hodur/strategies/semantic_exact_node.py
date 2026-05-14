@@ -51,6 +51,10 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     adapt_linearized_dag_round_summary,
 )
 from d810.cfg.modification_builder import ModificationBuilder
+from d810.cfg.semantic_conditional_lowering import (
+    edge_kind_name,
+    is_straight_line_handoff,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
@@ -175,22 +179,6 @@ def _parse_focus_edge_pairs(
             continue
         pairs.append((src & 0xFFFFFFFF, dst & 0xFFFFFFFF))
     return tuple(pairs) if pairs else None
-
-
-def _edge_kind_name(edge: object) -> str:
-    kind = getattr(getattr(edge, "kind", None), "name", None)
-    return str(kind) if kind is not None else ""
-
-
-def _is_straight_line_handoff(edge: object) -> bool:
-    """Return True when *edge* is safe for direct exact-edge lowering.
-
-    Straight-line exact lowering is intentionally conservative: it only handles
-    unconditional semantic transitions. Conditional exact nodes are lowered by
-    the dedicated hammock-style strategy instead of being forced through the
-    direct edge emitter.
-    """
-    return _edge_kind_name(edge) == "TRANSITION"
 
 
 def _append_unique_pred_split_source_redirects(
@@ -1078,7 +1066,7 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
         seen_pairs: set[tuple[int, int]] = set()
         for plannable in round_summary.plannable_edges:
             edge = getattr(plannable, "edge", None)
-            if edge is None or not _is_straight_line_handoff(edge):
+            if edge is None or not is_straight_line_handoff(edge):
                 continue
             pair = _edge_pair(edge)
             if pair is None or pair in seen_pairs:
