@@ -2188,6 +2188,102 @@ def _load_planner_sites(
     return sites
 
 
+def _load_planner_blocks_from_mba(mba):
+    """Build planner block views directly from the live MBA."""
+    from d810.cfg.terminal_tail_cascade_egress_planner import TerminalTailBlock
+
+    blocks = {}
+    try:
+        import ida_hexrays
+    except Exception:
+        ida_hexrays = None
+
+    def _opcode_name(opcode: int) -> str:
+        try:
+            if ida_hexrays is not None:
+                name = ida_hexrays.get_mreg_name(int(opcode), 0)
+                if name:
+                    return str(name)
+        except Exception:
+            pass
+        return f"op_{int(opcode)}"
+
+    def _type_name(block_type: int) -> str:
+        if ida_hexrays is None:
+            return f"BLT_{int(block_type)}"
+        names = {
+            int(ida_hexrays.BLT_NONE): "BLT_NONE",
+            int(ida_hexrays.BLT_STOP): "BLT_STOP",
+            int(ida_hexrays.BLT_1WAY): "BLT_1WAY",
+            int(ida_hexrays.BLT_2WAY): "BLT_2WAY",
+            int(ida_hexrays.BLT_NWAY): "BLT_NWAY",
+            int(ida_hexrays.BLT_XTRN): "BLT_XTRN",
+        }
+        return names.get(int(block_type), f"BLT_{int(block_type)}")
+
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        block = mba.get_mblock(serial)
+        if block is None:
+            continue
+        succs = tuple(int(block.succ(i)) for i in range(int(block.nsucc())))
+        preds = tuple(int(block.pred(i)) for i in range(int(block.npred())))
+        opcodes: list[str] = []
+        text: list[str] = []
+        insn = getattr(block, "head", None)
+        while insn is not None:
+            try:
+                opcodes.append(_opcode_name(int(insn.opcode)))
+            except Exception:
+                opcodes.append("")
+            try:
+                text.append(str(insn.dstr() or ""))
+            except Exception:
+                text.append("")
+            insn = getattr(insn, "next", None)
+        blocks[serial] = TerminalTailBlock(
+            serial=serial,
+            succs=succs,
+            preds=preds,
+            type_name=_type_name(int(getattr(block, "type", 0) or 0)),
+            start_ea_hex=f"0x{int(getattr(block, 'start', 0) or 0) & ((1 << 64) - 1):016x}",
+            insn_opcodes=tuple(opcodes),
+            insn_text=tuple(text),
+        )
+    return blocks
+
+
+def _load_planner_sites_from_fact_view(fact_view):
+    """Build planner sites from a ValidatedFactView-like object."""
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        terminal_byte_emit_site_from_payload,
+    )
+
+    if fact_view is None:
+        return []
+    sites: list = []
+    for obs in getattr(fact_view, "active_observations", ()) or ():
+        if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if not isinstance(payload, dict):
+            continue
+        source_ea = getattr(obs, "source_ea", None)
+        source_ea_hex = (
+            f"0x{int(source_ea) & ((1 << 64) - 1):016x}"
+            if source_ea is not None else None
+        )
+        site = terminal_byte_emit_site_from_payload(
+            str(getattr(obs, "fact_id", "")),
+            payload,
+            source_ea_hex=source_ea_hex,
+            confidence=float(getattr(obs, "confidence", 0.0) or 0.0),
+        )
+        if site is not None:
+            sites.append(site)
+    return sites
+
+
 def _resolve_planner_snapshots(
     conn, func_ea_hex: str,
 ) -> tuple[int | None, int | None]:
@@ -2231,7 +2327,7 @@ def _bridge_plan_row_to_live_mba(
     plan_row,
     *,
     diag_conn,
-    snap17_id: int,
+    snap17_id: int | None,
     adapter,
     logger_,
 ) -> tuple[object, str]:
@@ -2264,6 +2360,58 @@ def _bridge_plan_row_to_live_mba(
         )
     if state_write_required:
         fields_to_map.append("state_write_block")
+
+    if diag_conn is None:
+        mapped_serials: dict[str, int | None] = {}
+        for field_name in fields_to_map:
+            serial = getattr(plan_row, field_name, None)
+            if serial is None:
+                return (
+                    None,
+                    f"live_block_not_resolvable:{field_name}:None:planner_serial_none",
+                )
+            serial_i = int(serial)
+            if not _live_block_exists(adapter, serial_i):
+                return (
+                    None,
+                    f"live_block_not_resolvable:{field_name}:{serial_i}:not_in_live_mba",
+                )
+            mapped_serials[field_name] = serial_i
+
+        snap_source = getattr(plan_row, "source_block", None)
+        snap_current = getattr(plan_row, "current_continuation_target", None)
+        if snap_source is None or snap_current is None:
+            return (
+                None,
+                "live_block_not_resolvable:current_continuation_target:None:planner_serial_none",
+            )
+        live_current, current_reason = _map_snap_successor_to_live(
+            diag_conn=None,
+            snapshot_id=None,
+            snap_source_serial=int(snap_source),
+            snap_target_serial=int(snap_current),
+            live_source_serial=int(mapped_serials["source_block"]),
+            adapter=adapter,
+        )
+        if live_current is None:
+            return (None, current_reason)
+        mapped_serials["current_continuation_target"] = int(live_current)
+        if not state_write_required:
+            mapped_serials["state_write_block"] = state_write_serial
+
+        return (
+            dataclasses.replace(
+                plan_row,
+                source_block=mapped_serials["source_block"],
+                current_continuation_target=mapped_serials["current_continuation_target"],
+                intended_target=mapped_serials["intended_target"],
+                state_write_block=mapped_serials["state_write_block"],
+            ),
+            "ok",
+        )
+
+    if snap17_id is None:
+        return (None, "live_block_not_resolvable:snapshot:None")
 
     mapped_serials: dict[str, int | None] = {}
     for field_name in fields_to_map:
@@ -2347,20 +2495,35 @@ def _live_successors(adapter, live_serial: int) -> tuple[int, ...]:
         return ()
 
 
+def _live_block_exists(adapter, live_serial: int) -> bool:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    try:
+        return mba.get_mblock(int(live_serial)) is not None
+    except Exception:
+        return False
+
+
 def _map_snap_successor_to_live(
     *,
     diag_conn,
-    snapshot_id: int,
+    snapshot_id: int | None,
     snap_source_serial: int,
     snap_target_serial: int,
     live_source_serial: int,
     adapter,
 ) -> tuple[int | None, str]:
-    row = diag_conn.execute(
-        "SELECT succs FROM blocks WHERE snapshot_id=? AND serial=?",
-        (int(snapshot_id), int(snap_source_serial)),
-    ).fetchone()
-    snap_succs = _json_int_tuple(row[0]) if row is not None else ()
+    if diag_conn is None:
+        snap_succs = _live_successors(adapter, int(live_source_serial))
+    else:
+        if snapshot_id is None:
+            return (None, "live_block_not_resolvable:snapshot:None")
+        row = diag_conn.execute(
+            "SELECT succs FROM blocks WHERE snapshot_id=? AND serial=?",
+            (int(snapshot_id), int(snap_source_serial)),
+        ).fetchone()
+        snap_succs = _json_int_tuple(row[0]) if row is not None else ()
     live_succs = _live_successors(adapter, int(live_source_serial))
 
     if int(snap_target_serial) in snap_succs:
@@ -2383,11 +2546,20 @@ def _map_snap_successor_to_live(
 def _map_snap_serial_to_live(
     *,
     diag_conn,
-    snapshot_id: int,
+    snapshot_id: int | None,
     snap_serial: int,
     adapter,
     field_name: str,
 ) -> tuple[int | None, str]:
+    if diag_conn is None:
+        if _live_block_exists(adapter, int(snap_serial)):
+            return (int(snap_serial), "ok")
+        return (
+            None,
+            f"live_block_not_resolvable:{field_name}:{snap_serial}:not_in_live_mba",
+        )
+    if snapshot_id is None:
+        return (None, f"live_block_not_resolvable:{field_name}:{snap_serial}:snapshot_none")
     row = diag_conn.execute(
         "SELECT start_ea_i64 FROM blocks WHERE snapshot_id=? AND serial=?",
         (int(snapshot_id), int(snap_serial)),
@@ -2614,9 +2786,13 @@ def _live_block_start_ea(adapter, live_serial: int) -> int | None:
 def _snap_start_ea(
     *,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     snap_serial: int,
 ) -> int | None:
+    if diag_conn is None:
+        return None
+    if target_snap is None:
+        return None
     row = diag_conn.execute(
         "SELECT start_ea_i64 FROM blocks WHERE snapshot_id=? AND serial=?",
         (int(target_snap), int(snap_serial)),
@@ -2629,9 +2805,11 @@ def _snap_start_ea(
 def _snap_instruction_eas(
     *,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     snap_serial: int,
 ) -> tuple[int, ...]:
+    if diag_conn is None or target_snap is None:
+        return ()
     cursor = diag_conn.execute(
         "SELECT ea_i64 FROM instructions "
         "WHERE snapshot_id=? AND block_serial=? ORDER BY insn_index",
@@ -2693,10 +2871,14 @@ def _live_blocks_containing_ea(adapter, eas: Iterable[int]) -> tuple[int, ...]:
 def _snap_serial_for_live_block(
     *,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
     live_serial: int,
 ) -> int | None:
+    if diag_conn is None:
+        return int(live_serial) if _live_block_exists(adapter, int(live_serial)) else None
+    if target_snap is None:
+        return None
     ea = _live_block_start_ea(adapter, int(live_serial))
     if ea is None:
         return None
@@ -2845,6 +3027,140 @@ def _load_dag_semantics(diag_conn) -> _DagSemantics | None:
     )
 
 
+def _dag_state_value_from_node(node) -> int | None:
+    key = getattr(node, "key", None)
+    state_const = getattr(key, "state_const", None)
+    if state_const is None:
+        return None
+    try:
+        return int(state_const) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_dag_semantics_from_dag(dag) -> _DagSemantics | None:
+    """Build DAG semantics from the in-memory LinearizedStateDag."""
+    if dag is None:
+        return None
+
+    states: set[int] = set()
+    adj: dict[int, tuple[int, ...]] = {}
+    temp_adj: dict[int, set[int]] = {}
+    edges: list[_DagEdge] = []
+
+    for node in getattr(dag, "nodes", ()) or ():
+        state = _dag_state_value_from_node(node)
+        if state is not None:
+            states.add(state)
+
+    for edge_id, edge in enumerate(getattr(dag, "edges", ()) or ()):
+        source_key = getattr(edge, "source_key", None)
+        target_key = getattr(edge, "target_key", None)
+        source_state = _parse_state_hex(getattr(source_key, "state_const", None))
+        target_state = _parse_state_hex(getattr(target_key, "state_const", None))
+        if source_state is not None:
+            states.add(source_state)
+        if target_state is not None:
+            states.add(target_state)
+            if source_state is not None:
+                temp_adj.setdefault(source_state, set()).add(target_state)
+
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = (
+            int(getattr(source_anchor, "block_serial"))
+            if source_anchor is not None
+            and getattr(source_anchor, "block_serial", None) is not None
+            else None
+        )
+        source_arm = (
+            int(getattr(source_anchor, "branch_arm"))
+            if source_anchor is not None
+            and getattr(source_anchor, "branch_arm", None) is not None
+            else None
+        )
+        kind = getattr(edge, "kind", "")
+        kind_name = getattr(kind, "name", None)
+        edges.append(
+            _DagEdge(
+                edge_id=int(edge_id),
+                source_state=source_state,
+                target_state=target_state,
+                edge_kind=str(kind_name if kind_name is not None else kind),
+                source_block=source_block,
+                source_arm=source_arm,
+                target_entry=(
+                    int(getattr(edge, "target_entry_anchor"))
+                    if getattr(edge, "target_entry_anchor", None) is not None
+                    else None
+                ),
+                ordered_path=tuple(
+                    int(block)
+                    for block in (getattr(edge, "ordered_path", ()) or ())
+                ),
+            )
+        )
+
+    for state in states:
+        adj[state] = tuple(sorted(temp_adj.get(state, ())))
+
+    sccs = compute_live_cfg_sccs(adj)
+    state_to_scc: dict[int, int] = {}
+    for scc in sccs:
+        for state in scc.blocks:
+            state_to_scc[int(state)] = int(scc.scc_id)
+
+    scc_successors_mut: dict[int, set[int]] = {
+        int(scc.scc_id): set() for scc in sccs
+    }
+    for source, targets in adj.items():
+        source_scc = state_to_scc.get(int(source))
+        if source_scc is None:
+            continue
+        for target in targets:
+            target_scc = state_to_scc.get(int(target))
+            if target_scc is None or target_scc == source_scc:
+                continue
+            scc_successors_mut.setdefault(source_scc, set()).add(target_scc)
+
+    scc_reachable: dict[int, frozenset[int]] = {}
+    for scc_id in scc_successors_mut:
+        seen: set[int] = set()
+        queue: deque[int] = deque([scc_id])
+        while queue:
+            cur = queue.popleft()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            queue.extend(scc_successors_mut.get(cur, ()))
+        scc_reachable[scc_id] = frozenset(seen)
+
+    block_to_sccs_mut: dict[int, set[int]] = {}
+    for node in getattr(dag, "nodes", ()) or ():
+        state = _dag_state_value_from_node(node)
+        if state is None:
+            continue
+        scc_id = state_to_scc.get(state)
+        if scc_id is None:
+            continue
+        for attr in ("owned_blocks", "exclusive_blocks", "shared_suffix_blocks"):
+            for block in getattr(node, attr, ()) or ():
+                block_to_sccs_mut.setdefault(int(block), set()).add(int(scc_id))
+
+    return _DagSemantics(
+        snapshot_id=0,
+        state_to_scc=state_to_scc,
+        scc_reachable=scc_reachable,
+        block_to_sccs={
+            block: frozenset(sccs_) for block, sccs_ in block_to_sccs_mut.items()
+        },
+        scc_successors={
+            scc_id: frozenset(targets)
+            for scc_id, targets in scc_successors_mut.items()
+        },
+        edges=tuple(edges),
+    )
+
+
 def _dag_sccs_for_snap_blocks(
     dag: _DagSemantics | None,
     snap_blocks: Iterable[int],
@@ -2861,7 +3177,7 @@ def _dag_sccs_for_live_blocks(
     *,
     dag: _DagSemantics | None,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
     live_blocks: Iterable[int],
 ) -> frozenset[int]:
@@ -2957,7 +3273,7 @@ def _cfg_scc_is_illegal_from_dag_sources(
     *,
     dag: _DagSemantics | None,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
     source_sccs: frozenset[int],
     cfg_scc: CfgSCC | None,
@@ -3005,7 +3321,7 @@ def _map_terminal_return_frontier(
     *,
     row2,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
 ) -> tuple[int | None, str]:
     if row2 is None:
@@ -3040,7 +3356,7 @@ def _close_terminal_equality_frontiers(
     sites,
     dag: _DagSemantics | None,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
 ) -> tuple[tuple[str, int, int], tuple[str, ...]]:
     """Redirect illegal terminal equality frontiers.
@@ -3248,7 +3564,7 @@ def _select_terminal_tail_entry_live(
     sites,
     rows_by_byte,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
 ) -> tuple[int | None, str]:
     from d810.cfg.terminal_tail_cascade_egress_planner import (
@@ -3269,6 +3585,69 @@ def _select_terminal_tail_entry_live(
         if row is None or getattr(row, "source_block", None) is None:
             return (None, "missing_terminal_tail_entry")
         entry_snap = int(row.source_block)
+
+    if diag_conn is None:
+        if not _live_block_exists(adapter, int(entry_snap)):
+            return (
+                None,
+                "live_block_not_resolvable:terminal_tail_effective_entry:"
+                f"{entry_snap}",
+            )
+        candidate_set: set[int] = {int(entry_snap)}
+        reachable = _live_reachable_from_entry(adapter)
+        candidates = tuple(sorted(candidate_set))
+
+        first_byte = rows_by_byte.get(1)
+        first_byte_live: set[int] = set()
+        if (
+            first_byte is not None
+            and getattr(first_byte, "source_block", None) is not None
+            and _live_block_exists(adapter, int(first_byte.source_block))
+        ):
+            first_byte_live.add(int(first_byte.source_block))
+
+        live_succs = _live_successor_map(adapter)
+        scored: list[tuple[int, int, int]] = []
+        for candidate in candidates:
+            reaches_first = (
+                not first_byte_live
+                or any(
+                    _shortest_live_path(
+                        live_succs,
+                        start=int(candidate),
+                        target=int(first_byte_candidate),
+                        max_depth=16,
+                    )
+                    for first_byte_candidate in first_byte_live
+                )
+            )
+            if not reaches_first:
+                continue
+            distance = 1000 if int(candidate) in reachable else 0
+            if first_byte_live:
+                distances = [
+                    len(path)
+                    for first_byte_candidate in first_byte_live
+                    if (
+                        path := _shortest_live_path(
+                            live_succs,
+                            start=int(candidate),
+                            target=int(first_byte_candidate),
+                            max_depth=16,
+                        )
+                    )
+                ]
+                distance = min(distances) if distances else 999
+            scored.append((distance, int(candidate), int(candidate)))
+
+        if not scored:
+            return (
+                None,
+                "terminal_tail_effective_entry_has_no_live_candidate:"
+                f"{candidates}",
+            )
+        scored.sort()
+        return (int(scored[0][1]), "ok")
 
     candidate_set: set[int] = set()
     start_ea = _snap_start_ea(
@@ -3389,7 +3768,7 @@ def _close_terminal_tail_entry_frontier(
     sites,
     dag: _DagSemantics | None,
     diag_conn,
-    target_snap: int,
+    target_snap: int | None,
     adapter,
 ) -> tuple[tuple[int, int, int], tuple[str, ...]]:
     """Splice a preserved terminal-tail island into live control flow."""
@@ -3499,11 +3878,16 @@ def _close_terminal_tail_entry_frontier(
     return (tuple(applied), tuple(skipped))
 
 
-def maybe_run_terminal_tail_cascade_egress_lowering(mba: Any) -> None:
+def maybe_run_terminal_tail_cascade_egress_lowering(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    dag: Any | None = None,
+) -> None:
     """Default-on fact-backed terminal-tail cascade egress lowering.
 
     This closes the terminal byte tail using planner rows plus two narrow
-    structural refinements observed in the diag DB for sub_7FFD:
+    structural refinements observed for sub_7FFD:
     byte2 enters byte3 through the byte3 entry/guard block, and byte4's
     source-byte loader is on byte3's existing continuation chain before the
     byte4 store/guard block.
@@ -3523,43 +3907,24 @@ def maybe_run_terminal_tail_cascade_egress_lowering(mba: Any) -> None:
         )
         return
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
-
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception(
-            "terminal_tail_cascade_egress: cannot acquire diag DB; skipping"
-        )
-        return
-
-    if diag_conn is None:
+    if fact_view is None:
         logger.warning(
-            "terminal_tail_cascade_egress: diag DB unavailable; skipping"
+            "terminal_tail_cascade_egress: fact view unavailable; skipping"
         )
         return
 
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_snap, target_snap = _resolve_planner_snapshots(diag_conn, func_ea_hex)
-    if fact_snap is None or target_snap is None:
-        logger.warning(
-            "terminal_tail_cascade_egress: missing planner snapshots "
-            "fact_snap=%s target_snap=%s; skipping",
-            fact_snap,
-            target_snap,
-        )
-        return
+    diag_conn = None
+    target_snap: int | None = None
 
     try:
         from d810.cfg.terminal_tail_cascade_egress_planner import (
             TerminalTailCascadeEgressPlanner,
         )
 
-        blocks = _load_planner_blocks(diag_conn, target_snap)
-        sites = _load_planner_sites(diag_conn, fact_snap, func_ea_hex)
+        blocks = _load_planner_blocks_from_mba(mba)
+        sites = _load_planner_sites_from_fact_view(fact_view)
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
-        dag = _load_dag_semantics(diag_conn)
+        dag = _load_dag_semantics_from_dag(dag)
     except Exception:
         logger.exception(
             "terminal_tail_cascade_egress: planner failed; skipping"

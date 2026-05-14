@@ -28,6 +28,8 @@
 #                           filename (e.g. out.txt), not an absolute path; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
+#   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
+#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container.
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
@@ -37,6 +39,8 @@
 #   -o, --out FILE          Redirect stdout+stderr to WORK_DIR/.tmp/FILE; truncated each run. Use a
 #                           relative filename (e.g. dump.txt), not an absolute path; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container (see system/shell/exec above).
+#   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
+#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container.
 #   --                      Remaining args passed to pytest (e.g. --dump-microcode-d810, --dump-terminal-return-valranges, --dump-microcode-maturity MATURITY)
 #
 # Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
@@ -126,6 +130,8 @@ DUMP_PROJECT=""
 DUMP_OUT=""
 MOUNT_LOGS=""
 ENABLE_DEBUG_LOGGING=""
+ENABLE_DIAG_SNAPSHOT=""
+ENABLE_FACT_LIFECYCLE=""
 EXTRA_PYTEST=()
 EXEC_ARGS=()
 
@@ -157,6 +163,14 @@ while [ $# -gt 0 ]; do
       ;;
     --enable-debug-logging)
       ENABLE_DEBUG_LOGGING=1
+      shift
+      ;;
+    --enable-diag-snapshot)
+      ENABLE_DIAG_SNAPSHOT=1
+      shift
+      ;;
+    --enable-fact-lifecycle)
+      ENABLE_FACT_LIFECYCLE=1
       shift
       ;;
     --)
@@ -216,6 +230,12 @@ fi
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
   echo "  debug:    D810_DEBUG_LOGGING=1 (getLogger default level -> DEBUG)"
 fi
+if [ -n "$ENABLE_DIAG_SNAPSHOT" ]; then
+  echo "  diag:     D810_DIAG_SNAPSHOT=1"
+fi
+if [ -n "$ENABLE_FACT_LIFECYCLE" ]; then
+  echo "  facts:    D810_FACT_LIFECYCLE=1"
+fi
 case "$CMD" in
   system) echo "  run:      pytest tests/system -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
   test)   echo "  run:      pytest -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
@@ -236,8 +256,10 @@ ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
 ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}"
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
+[ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"
+[ -n "$ENABLE_FACT_LIFECYCLE" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=1"
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
-  ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1 D810_DIAG_SNAPSHOT=1 D810_FACT_LIFECYCLE=${D810_FACT_LIFECYCLE:-1}"
+  ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1"
 fi
 
 # Forward every set D810_* env var to the container via docker -e flags.
@@ -414,6 +436,6 @@ if [ -n "$ORACLE_DB" ]; then
     echo "WARN: oracle exited non-zero; see $ORACLE_ERR"
   fi
 else
-  echo "oracle skipped: no diag DB present (run with --enable-debug-logging to capture one)"
+  echo "oracle skipped: no diag DB present (run with --enable-diag-snapshot to capture one)"
 fi
 # --- END region oracle hook ---
