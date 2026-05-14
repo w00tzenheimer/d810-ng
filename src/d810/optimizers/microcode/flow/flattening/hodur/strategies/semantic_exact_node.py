@@ -68,6 +68,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
     LinearizedFlowGraphStrategy,
     _prepare_linearized_flow_graph_plan_setup,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
+)
 from d810.recon.flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
@@ -85,9 +89,6 @@ from d810.recon.flow.residual_handoff_discovery import (
     state_has_semantic_support,
     supplemental_selected_entry_for_state,
 )
-from d810.recon.flow.linearized_state_dag import (
-    build_live_linearized_state_dag_from_graph,
-)
 from d810.recon.flow.residual_handoff_resolution import (
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,
@@ -101,6 +102,9 @@ from d810.recon.flow.transition_report import (
 logger = logging.getLogger(
     "D810.hodur.strategy.semantic_exact_node_experiment",
     logging.DEBUG,
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
 )
 
 __all__ = [
@@ -612,7 +616,7 @@ def build_semantic_exact_round_summary(snapshot):
         pre_header_serial=setup.pre_header_serial,
         bst_node_blocks=setup.bst_node_blocks,
         build_round_summary=build_linearized_dag_round_summary,
-        build_live_dag=build_live_linearized_state_dag_from_graph,
+        build_live_dag=_PROJECTED_TOPOLOGY_BACKEND.build_live_dag,
         build_transition_report=build_dispatcher_transition_report_from_graph,
         select_plannable_edges=select_plannable_dag_edges,
     )
