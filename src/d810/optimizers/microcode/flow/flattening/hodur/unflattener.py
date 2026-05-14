@@ -64,9 +64,8 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 from d810.optimizers.microcode.flow.flattening.hodur.family import (
     HodurStrategyFamily,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    EXPERIMENTAL_STRATEGIES,
-    StateWriteReconstructionStrategy,
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    default_hodur_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
@@ -261,13 +260,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # construction, and strategy registration through the shared engine
         # family surface rather than owning those responsibilities directly.
         self._cfg_translator = IDAIRTranslator()
-        enable_standalone_srw = (
-            os.getenv("D810_RECON_ENABLE_STANDALONE_SRW", "").strip() == "1"
-            and os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() != "1"
-        )
-        strategy_classes = [*EXPERIMENTAL_STRATEGIES]
-        if enable_standalone_srw:
-            strategy_classes.append(StateWriteReconstructionStrategy)
+        profile = default_hodur_profile()
         self._family = HodurStrategyFamily(
             cfg_translator=self._cfg_translator,
             disabled_strategy_names={
@@ -284,7 +277,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             #
             # D810_RECON_ENABLE_STANDALONE_SRW=1 → append old SRW strategy.
             # D810_RECON_SKIP_SRW_STRATEGY=1 still force-disables it.
-            strategy_classes=strategy_classes,
+            strategy_classes=list(profile.entrypoint_strategy_classes),
             recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,

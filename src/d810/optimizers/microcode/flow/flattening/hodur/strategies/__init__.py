@@ -44,8 +44,6 @@ Available strategies (in dependency order):
 """
 from __future__ import annotations
 
-import os
-
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
@@ -119,6 +117,11 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    ALL_STRATEGIES,
+    EXPERIMENTAL_STRATEGIES,
+    LEGACY_STRATEGIES,
+)
 
 __all__ = [
     "ValrangeResolutionStrategy",
@@ -149,101 +152,4 @@ __all__ = [
     "ALL_STRATEGIES",
     "EXPERIMENTAL_STRATEGIES",
     "LEGACY_STRATEGIES",
-]
-
-def _filter_strategies(strategies: list[type]) -> list[type]:
-    """Filter strategies via env vars D810_HODUR_ONLY / D810_HODUR_SKIP.
-
-    D810_HODUR_ONLY=Foo,Bar        — only run Foo and Bar
-    D810_HODUR_SKIP=Baz            — skip Baz, run everything else
-    Both can be combined; ONLY is applied first, then SKIP.
-    """
-    only = {n.strip() for n in os.environ.get("D810_HODUR_ONLY", "").split(",") if n.strip()}
-    skip = {n.strip() for n in os.environ.get("D810_HODUR_SKIP", "").split(",") if n.strip()}
-    out = list(strategies)
-    if only:
-        out = [s for s in out if s.__name__ in only]
-    if skip:
-        out = [s for s in out if s.__name__ not in skip]
-    return out
-
-
-# Live pipeline: HCC-owned reconstruction orchestration.
-#
-# HCC absorbs the old SRW-style reconstruction work and owns conflict handling
-# in one fragment.  ``SemanticStructuredRegionStrategy`` remains available for
-# archaeology/regression isolation, but is no longer part of the default live
-# pipeline because it competes with HCC's region absorption.
-_LEGACY_SEMANTIC_REGION_ENABLED = (
-    os.getenv("D810_HODUR_ENABLE_SEMANTIC_STRUCTURED_REGION", "").strip() == "1"
-    or "SemanticStructuredRegionStrategy"
-    in {n.strip() for n in os.environ.get("D810_HODUR_ONLY", "").split(",") if n.strip()}
-)
-
-# ``HandlerChainComposerStrategy`` can still be disabled through its class gate.
-# Standalone ``StateWriteReconstructionStrategy`` remains importable for
-# targeted archaeology/regression tests, but HCC owns the live SWR-style
-# orchestration and conflict handling.
-EXPERIMENTAL_STRATEGIES: list[type] = _filter_strategies([
-    *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
-    HandlerChainComposerStrategy,
-    # Post-HCC trampoline-skip cleanup (gated on
-    # D810_HODUR_ENABLE_TRAMPOLINE_SKIP=1).  is_applicable() returns False
-    # when the gate is off, so this is a no-op by default.
-    DispatcherTrampolineSkipStrategy,
-    # Promote fused load-arith-store induction operands so IDA's MMAT_LVARS
-    # DCE cannot eliminate the increment (default-on; opt-out via
-    # D810_HODUR_DISABLE_COUNTER_HOIST=1).
-    CounterHoistStrategy,
-    # Restore lvar carrier identity at return-frontier writers
-    # classified POINTER_IDENTITY_PROPAGATED.  Default-OFF; opt-in
-    # via D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1.  Must run
-    # AFTER counter_hoist so the protected corridor is fully
-    # established before this strategy reads it.
-    ReturnFrontierCarrierPreserveStrategy,
-    # Smoke-test SCC normalization: redirect SPURIOUS BLT_2WAY back-edges
-    # to forward goto. Default-OFF; opt-in via
-    # D810_HODUR_ENABLE_SPURIOUS_REDIRECT=1.  Composes Pieces 1+2+3a from
-    # ticket uee-32r3.
-    SpuriousBackedgeRedirectStrategy,
-])
-
-_STANDALONE_SRW_ENABLED = (
-    os.getenv("D810_RECON_ENABLE_STANDALONE_SRW", "").strip() == "1"
-    and os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() != "1"
-)
-
-ALL_STRATEGIES: list[type] = _filter_strategies([
-    *([SemanticStructuredRegionStrategy] if _LEGACY_SEMANTIC_REGION_ENABLED else []),
-    HandlerChainComposerStrategy,
-    DispatcherTrampolineSkipStrategy,
-    CounterHoistStrategy,
-    ReturnFrontierCarrierPreserveStrategy,
-    StateConstantReturnFixupStrategy,
-    DeadStateVariableEliminationStrategy,
-    *([StateWriteReconstructionStrategy] if _STANDALONE_SRW_ENABLED else []),
-])
-
-# Legacy pipeline preserved for reference/fallback.
-#
-# Dormant strategies retired pre-Phase-1 of the DAG-as-arbiter epic
-# (uee-jrgq):
-#   * EdgeSplitConflictResolutionStrategy — placeholder, emits no fragment;
-#     symbolic duplicate-block split was never re-enabled
-#   * ConditionalForkFallbackStrategy — explicitly disabled in unflattener
-#     (`disabled_strategy_names`); CONDITIONAL_REDIRECT subsumed by the
-#     SRW conditional-arm path
-#   * InnerMergeDuplicationStrategy — already-commented; tail-duplication
-#     causes IDA structurer goto proliferation
-# Imports kept so the classes remain accessible for manual/experimental
-# use; LEGACY_STRATEGIES below excludes them so they cannot be picked up
-# by automatic legacy-fallback wiring.
-LEGACY_STRATEGIES: list[type] = [
-    ValrangeResolutionStrategy,
-    # EdgeSplitConflictResolutionStrategy,  # dormant — see header above
-    TerminalLoopCleanupStrategy,
-    # ConditionalForkFallbackStrategy,  # dormant — see header above
-    # InnerMergeDuplicationStrategy,  # dormant — see header above
-    StateConstantReturnFixupStrategy,
-    DeadStateVariableEliminationStrategy,
 ]
