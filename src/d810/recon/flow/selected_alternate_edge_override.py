@@ -46,26 +46,23 @@ Strict gates (all required for an override to fire):
 
 Any miss on any gate -> abstain on that edge.  Multiple candidate
 matches -> abstain (do NOT pick "the first").  The legacy diagnostic
-wrapper adds the historical env/snapshot/SQLite gates around the same
-decision.
+wrapper adds the historical settings/snapshot/SQLite gates around the
+same decision.
 """
 from __future__ import annotations
 
 import dataclasses
-import os
 import sqlite3
 from collections import deque
 
 from d810.core import getLogger
+from d810.core.settings import get_settings
 
 logger = getLogger(__name__)
 
 
-_FACT_LIFECYCLE_ENV = "D810_FACT_LIFECYCLE"
-
-
 def _fact_lifecycle_enabled() -> bool:
-    return os.environ.get(_FACT_LIFECYCLE_ENV, "") == "1"
+    return get_settings().fact_lifecycle
 
 
 def _refresh_graph_metadata_after_edge_override(dag):

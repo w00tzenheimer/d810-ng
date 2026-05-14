@@ -77,7 +77,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
     VerificationGate,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
 from d810.optimizers.microcode.flow.flattening.safeguards import (

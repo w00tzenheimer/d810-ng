@@ -7,6 +7,10 @@ from d810.cfg.materialization_backend import (
     CapturedBlockBodySummary,
     MaterializationBackend,
 )
+from d810.cfg.state_write_cleanup import (
+    StateWriteCleanupAction,
+    StateWriteCleanupRequest,
+)
 
 
 class _FakeBackend:
@@ -62,6 +66,38 @@ class _FakeBackend:
     ) -> NopInstructions:
         return NopInstructions(block_serial=block_serial, insn_eas=(insn_ea,))
 
+    def classify_trivial_tail_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        return StateWriteCleanupRequest(
+            action=StateWriteCleanupAction.NOP_INSTRUCTION,
+            block_serial=getattr(block, "serial", -1),
+            insn_ea=0x1004,
+            expected_state=expected_state,
+            observed_state=expected_state,
+            reason="fake",
+        )
+
+    def classify_matching_state_write_cleanup(
+        self,
+        block: object,
+        *,
+        state_variable: object,
+        expected_state: int,
+    ) -> StateWriteCleanupRequest | None:
+        return StateWriteCleanupRequest(
+            action=StateWriteCleanupAction.ZERO_SOURCE,
+            block_serial=getattr(block, "serial", -1),
+            insn_ea=0x1008,
+            expected_state=expected_state,
+            observed_state=expected_state,
+            reason="fake",
+        )
+
 
 def test_captured_block_body_summary_tracks_required_source_eas() -> None:
     payload = CapturedBlockBody(
@@ -96,6 +132,16 @@ def test_materialization_backend_protocol_supports_cfg_mod_output() -> None:
         payload=payload,
     )
     nop = backend.lower_nop_instruction(block_serial=7, insn_ea=0x1004)
+    trivial_cleanup = backend.classify_trivial_tail_state_write_cleanup(
+        type("Block", (), {"serial": 7})(),
+        state_variable="state",
+        expected_state=0x55,
+    )
+    matching_cleanup = backend.classify_matching_state_write_cleanup(
+        type("Block", (), {"serial": 7})(),
+        state_variable="state",
+        expected_state=0x55,
+    )
 
     assert insert == InsertBlock(
         pred_serial=1,
@@ -104,3 +150,7 @@ def test_materialization_backend_protocol_supports_cfg_mod_output() -> None:
         instructions=(),
     )
     assert nop == NopInstructions(block_serial=7, insn_eas=(0x1004,))
+    assert trivial_cleanup is not None
+    assert trivial_cleanup.action == StateWriteCleanupAction.NOP_INSTRUCTION
+    assert matching_cleanup is not None
+    assert matching_cleanup.action == StateWriteCleanupAction.ZERO_SOURCE

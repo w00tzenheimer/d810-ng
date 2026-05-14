@@ -1,8 +1,6 @@
 """Alias-aware lowering for duplicate-arm exact conditional nodes."""
 from __future__ import annotations
 
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.semantic_conditional_lowering import (
@@ -19,6 +17,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     _SUB7FFD_FUNC_EA,
     build_semantic_exact_round_summary,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+    accepts_exact_sub7ffd_glbopt1,
 )
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
@@ -71,10 +72,10 @@ class ExactConditionalAliasNodeLoweringStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot) -> bool:
-        mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
-            return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        if not accepts_exact_sub7ffd_glbopt1(
+            snapshot,
+            expected_entry_ea=_SUB7FFD_FUNC_EA,
+        ):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None

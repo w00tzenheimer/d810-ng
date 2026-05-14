@@ -145,7 +145,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
 from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
 from d810.evaluator.hexrays_microcode.chains import (
@@ -448,69 +448,8 @@ class HandlerChainCandidate:
     """Opaque backend-owned body for materializing the composed instructions."""
 
 
-# Opcodes that abort composition because their effects are hard to
-# preserve in a relocated InsertBlock body.
-_FORBIDDEN_COMPOSITION_OPCODES: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_call,
-        ida_hexrays.m_icall,
-        ida_hexrays.m_ret,
-        ida_hexrays.m_ext,
-        ida_hexrays.m_jtbl,
-        ida_hexrays.m_ijmp,
-    }
-)
-
-
-# uee-b7ze Step 2: refinement of _FORBIDDEN_COMPOSITION_OPCODES into:
-#   - _CLOSING_FORBIDDEN: structurally-positional opcodes that genuinely
-#     close a block (return/branch tables/external/indirect jumps).  These
-#     never become opaque-call anchors.
-#   - _CALL_FORBIDDEN: side-effecting call opcodes.  When a region's
-#     anchor block contains EXACTLY one of these, it is a candidate to
-#     become an "opaque call anchor": the original block stays in the
-#     CFG (calls untouched), and surrounding flow rewires AROUND it.
-_CLOSING_FORBIDDEN: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_ret,
-        ida_hexrays.m_jtbl,
-        ida_hexrays.m_ijmp,
-        ida_hexrays.m_ext,
-    }
-)
-
-_CALL_FORBIDDEN: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_call,
-        ida_hexrays.m_icall,
-    }
-)
-
-
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip() == "1"
-
-
-def _block_contains_call_opcode(mba: object, serial: int) -> bool:
-    """Return whether ``serial`` currently contains an m_call/m_icall."""
-    try:
-        blk = mba.get_mblock(int(serial))  # type: ignore[attr-defined]
-    except Exception:
-        return False
-    if blk is None:
-        return False
-    try:
-        cur = blk.head
-    except Exception:
-        return False
-    while cur is not None:
-        try:
-            if int(cur.opcode) in _CALL_FORBIDDEN:
-                return True
-            cur = cur.next
-        except Exception:
-            return False
-    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1862,86 +1801,6 @@ def _resolve_state_var_stkoff_loose(snapshot: "AnalysisSnapshot") -> int | None:
     return None
 
 
-def _find_live_def_insn(
-    mba: object,
-    region_anchor: int,
-    stkoff: int,
-    size: int,
-) -> object | None:
-    """Return the live ``minsn_t`` that defines ``(stkoff, size)`` reaching
-    ``region_anchor``, or None if no reaching def is recorded.
-
-    Walks IDA's UD chain for ``region_anchor`` and looks up the first
-    def site's instruction in the live MBA.  Read-only.
-    """
-    try:
-        defs = find_reaching_defs_for_stkvar(
-            mba, int(region_anchor), int(stkoff), int(size),
-        )
-    except Exception:
-        return None
-    if not defs:
-        return None
-    for def_site in defs:
-        try:
-            def_blk_serial = int(def_site.block_serial)
-            def_ea = int(def_site.ins_ea)
-        except Exception:
-            continue
-        try:
-            def_blk = mba.get_mblock(def_blk_serial)  # type: ignore[attr-defined]
-        except Exception:
-            continue
-        if def_blk is None:
-            continue
-        cur = getattr(def_blk, "head", None)
-        while cur is not None:
-            try:
-                cur_ea = int(getattr(cur, "ea", 0) or 0)
-            except Exception:
-                cur_ea = 0
-            if cur_ea == def_ea:
-                return cur
-            cur = getattr(cur, "next", None)
-    return None
-
-
-def _capture_transitive_def_chain(
-    mba: object,
-    region_anchor: int,
-    initial_reads: set[tuple[int, int]],
-    *,
-    max_depth: int = 8,
-    max_total: int = 64,
-) -> list["InsnSnapshot"] | None:
-    """Capture a topologically-ordered transitive def chain.
-
-    For each ``(stkoff, size)`` in ``initial_reads``, find a def reaching
-    ``region_anchor`` and recursively materialise the closure: every
-    stkvar read by a captured def is itself captured first.  The
-    returned list is ordered so a stkvar's def appears before any
-    captured instruction that reads it.
-
-    Returns ``None`` when any read cannot be resolved (no reaching def
-    in the live MBA, or recursion exceeds ``max_depth``/``max_total``).
-    Cycle-safe via a ``(stkoff, size)`` visited set; bottoms out
-    naturally when a def reads only constants, registers, or args.
-
-    Designed for prepending to a region's ``composed_instructions``: the
-    new InsertBlock then defines every stkvar it reads locally, so the
-    pred's strand can't cause IDA's def-use analysis to fold the body.
-    """
-    body = _HEX_RAYS_CAPTURE_BACKEND.capture_transitive_def_chain(
-        mba,
-        region_anchor,
-        initial_reads,
-        max_depth=max_depth,
-        max_total=max_total,
-    )
-    if body is None:
-        return None
-    return list(_HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(body))
-
 def _capture_transitive_def_chain_body(
     mba: object,
     region_anchor: int,
@@ -1959,110 +1818,15 @@ def _capture_transitive_def_chain_body(
     )
 
 
-def _collect_stkvar_reads_from_mop(
-    mop: object,
-    reads: set[tuple[int, int]],
-) -> None:
-    """Recursively collect ``(stkoff, size)`` for every stkvar read in a mop_t.
-
-    Walks ``mop_S`` (direct stack read) and ``mop_d`` (sub-instruction)
-    operands.  Other mop kinds (``mop_n``, ``mop_r``, ``mop_b``, etc.)
-    do not contribute stkvar reads and are ignored.
-
-    Read-only; never mutates the mop_t or its sub-objects.
-    """
-    if mop is None:
-        return
-    try:
-        t = int(mop.t)
-    except Exception:
-        return
-    if t == ida_hexrays.mop_S:
-        s = getattr(mop, "s", None)
-        if s is None:
-            return
-        try:
-            reads.add((int(s.off), int(mop.size)))
-        except Exception:
-            return
-        return
-    if t == ida_hexrays.mop_d:
-        sub = getattr(mop, "d", None)
-        if sub is None:
-            return
-        _collect_stkvar_reads_from_mop(getattr(sub, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "r", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "d", None), reads)
-
-
 def _collect_stkvar_reads_in_block(
     blk: object,
     *,
     skip_jcond_tail: bool = True,
 ) -> set[tuple[int, int]]:
-    """Return the ``(stkoff, size)`` set for every stkvar read in ``blk``.
-
-    Walks the live ``minsn_t`` stream.  Reads come from ``l`` and ``r``
-    operands universally; ``d`` contributes a read only when the opcode is
-    a memory store (``m_stx``, ``m_stm``) or when ``d`` itself is a
-    sub-instruction (``mop_d``).  This rule prevents
-    treating ``mov %src, %var_x.N`` destinations as fake reads.
-
-    With ``skip_jcond_tail`` (default True), a ``jcond`` instruction
-    halts collection -- mirroring the body capture's jcond-at-tail drop
-    so the precondition does not strand on operands whose only read
-    lives in a jcond the InsertBlock will not actually carry.
-    """
-    reads: set[tuple[int, int]] = set()
-    cur = getattr(blk, "head", None)
-    while cur is not None:
-        try:
-            opcode = int(cur.opcode)
-        except Exception:
-            opcode = -1
-        if skip_jcond_tail:
-            try:
-                if ida_hexrays.is_mcode_jcond(opcode):
-                    break
-            except Exception:
-                pass
-        _collect_stkvar_reads_from_mop(getattr(cur, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(cur, "r", None), reads)
-        d = getattr(cur, "d", None)
-        if d is not None:
-            try:
-                d_type = int(d.t)
-            except Exception:
-                d_type = -1
-            # m_stx is the only widely-available memory-store opcode whose
-            # 'd' operand is the source value (a read).  Other store opcodes
-            # (m_st1/m_stm in some SDKs) are covered transparently when their
-            # 'd' is a sub-instruction (mop_d case below).
-            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
-                _collect_stkvar_reads_from_mop(d, reads)
-        cur = getattr(cur, "next", None)
-    return reads
-
-
-def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
-    """Return True if ``insn`` writes a state constant to the state var."""
-    if state_var_stkoff is None:
-        return False
-    try:
-        opcode = int(insn.opcode)
-    except Exception:
-        return False
-    if opcode != ida_hexrays.m_mov:
-        return False
-    dst = getattr(insn, "d", None)
-    if dst is None:
-        return False
-    try:
-        if dst.t != ida_hexrays.mop_S:
-            return False
-        return int(dst.s.off) == int(state_var_stkoff)
-    except Exception:
-        return False
+    return _HEX_RAYS_CAPTURE_BACKEND.collect_stkvar_reads_in_block(
+        blk,
+        skip_jcond_tail=skip_jcond_tail,
+    )
 
 
 def _block_has_non_state_payload(
@@ -2071,27 +1835,11 @@ def _block_has_non_state_payload(
     *,
     state_var_stkoff: int | None,
 ) -> bool:
-    """Return True when a block has real payload beyond state write/goto glue."""
-    try:
-        blk = mba.get_mblock(int(block_serial))
-    except Exception:
-        return False
-    if blk is None:
-        return False
-    insn = getattr(blk, "head", None)
-    while insn is not None:
-        try:
-            opcode = int(insn.opcode)
-        except Exception:
-            return True
-        if opcode in {ida_hexrays.m_nop, ida_hexrays.m_goto}:
-            insn = getattr(insn, "next", None)
-            continue
-        if _is_state_write(insn, state_var_stkoff):
-            insn = getattr(insn, "next", None)
-            continue
-        return True
-    return False
+    return _HEX_RAYS_CAPTURE_BACKEND.block_has_non_state_payload(
+        mba,
+        int(block_serial),
+        state_variable=state_var_stkoff,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3306,7 +3054,7 @@ class HandlerChainComposerStrategy:
                 )
                 return None
             violations = real_violations
-            target_has_call = _block_contains_call_opcode(
+            target_has_call = _HEX_RAYS_CAPTURE_BACKEND.block_contains_call(
                 mba,
                 int(target_entry_for_log),
             )
@@ -6171,74 +5919,6 @@ class HandlerChainComposerStrategy:
             **common_detail,
         })
 
-    def _find_unique_const_writer_for_stkoff(
-        self,
-        mba: object,
-        target_stkoff: int,
-        *,
-        state_var_stkoff: int | None = None,
-    ) -> int | None:
-        """Scan all blocks for ``mov #const, %var[stkoff=target]``.
-
-        Return the unique block serial whose body contains a constant
-        m_mov targeting ``target_stkoff``, else ``None``.  Used by the
-        recursive body-extension pass: when an InsertBlock body has
-        an unresolved stkvar read, find the handler that constant-
-        writes that stkvar and prepend its composable body.
-
-        Skips matches on ``state_var_stkoff`` (the state variable
-        itself is filtered by capture and shouldn't be chased).
-        """
-        if (
-            state_var_stkoff is not None
-            and int(target_stkoff) == int(state_var_stkoff)
-        ):
-            return None
-        try:
-            qty = int(getattr(mba, "qty", 0))
-        except Exception:
-            return None
-        writers: list[int] = []
-        for serial in range(qty):
-            blk = self._safe_get_mblock(mba, serial)
-            if blk is None:
-                continue
-            try:
-                cur = blk.head
-            except Exception:
-                continue
-            block_writes_const = False
-            while cur is not None:
-                try:
-                    op = int(cur.opcode)
-                    if op == ida_hexrays.m_mov:
-                        d = cur.d
-                        l = cur.l
-                        if (
-                            d is not None
-                            and int(d.t) == ida_hexrays.mop_S
-                            and int(d.s.off) == int(target_stkoff)
-                            and l is not None
-                            and int(l.t) == ida_hexrays.mop_n
-                        ):
-                            block_writes_const = True
-                            break
-                except Exception:
-                    pass
-                try:
-                    cur = cur.next
-                except Exception:
-                    break
-            if block_writes_const:
-                writers.append(int(serial))
-                if len(writers) > 1:
-                    # Multiple distinct const-writers -> not unique;
-                    # bail early without scanning the rest.
-                    return None
-        if len(writers) == 1:
-            return writers[0]
-        return None
-
     def _try_retarget_to_guarded_walkback_source(
         self,
         *,
@@ -6425,7 +6105,7 @@ class HandlerChainComposerStrategy:
              ``body`` do not WRITE that stkoff.
           2. For each unresolved stkoff, locate the unique block whose
              composable body contains a constant m_mov to that stkoff
-             via :py:meth:`_find_unique_const_writer_for_stkoff`.
+             via the Hex-Rays capture backend.
           3. Capture each such writer's composable body and prepend.
 
         Stops at ``max_depth`` iterations or fixpoint.  Skips writers
@@ -6441,42 +6121,10 @@ class HandlerChainComposerStrategy:
         prepended_writers: set[int] = set()
         prepended_chunks: list[_WalkBackChunk] = []
         for iteration in range(max_depth):
-            # Compute (written, needed) sets across body.
-            written: set[int] = set()
-            needed: set[int] = set()
-            for snap in body:
-                for slot in (
-                    getattr(snap, "l", None),
-                    getattr(snap, "r", None),
-                ):
-                    if slot is None:
-                        continue
-                    try:
-                        slot_t = int(getattr(slot, "t", -1))
-                    except Exception:
-                        slot_t = -1
-                    if slot_t != ida_hexrays.mop_S:
-                        continue
-                    stkoff = getattr(slot, "stkoff", None)
-                    if stkoff is None:
-                        continue
-                    stkoff_int = int(stkoff)
-                    if stkoff_int not in written:
-                        needed.add(stkoff_int)
-                d = getattr(snap, "d", None)
-                if d is None:
-                    continue
-                try:
-                    d_t = int(getattr(d, "t", -1))
-                except Exception:
-                    d_t = -1
-                if d_t == ida_hexrays.mop_S:
-                    d_off = getattr(d, "stkoff", None)
-                    if d_off is not None:
-                        written.add(int(d_off))
-            if state_var_stkoff is not None:
-                needed.discard(int(state_var_stkoff))
-            unresolved = needed - written
+            unresolved = _HEX_RAYS_CAPTURE_BACKEND.collect_unresolved_stkvar_reads(
+                tuple(body),
+                state_variable=state_var_stkoff,
+            )
             if not unresolved:
                 break
             # Find unique writer for each unresolved stkoff and
@@ -6484,9 +6132,12 @@ class HandlerChainComposerStrategy:
             new_prepend: list = []
             iteration_resolved: set[int] = set()
             for target_stkoff in sorted(unresolved):
-                writer_serial = self._find_unique_const_writer_for_stkoff(
-                    mba, int(target_stkoff),
-                    state_var_stkoff=state_var_stkoff,
+                writer_serial = (
+                    _HEX_RAYS_CAPTURE_BACKEND.find_unique_const_writer_for_stkoff(
+                        mba,
+                        int(target_stkoff),
+                        state_variable=state_var_stkoff,
+                    )
                 )
                 if writer_serial is None:
                     continue
@@ -6863,8 +6514,8 @@ class HandlerChainComposerStrategy:
         # every writer in the range -- the DAG abstracts the range
         # into a single node keyed at one state value.  When the DAG
         # path yields zero edges (or too-few) and we have a
-        # ``bst_result``, scan the live MBA for state-var writes
-        # whose constant routes to ``splice_source`` per
+        # ``bst_result``, ask the Hex-Rays evidence adapter for
+        # state-var constant writes whose values route to ``splice_source`` per
         # ``resolve_target_via_bst``.  Each such writer is a
         # candidate semantic predecessor.  The validation pass below
         # is identical to the DAG path.
@@ -6881,73 +6532,30 @@ class HandlerChainComposerStrategy:
             except Exception:
                 _resolve_bst = None
             if _resolve_bst is not None:
-                try:
-                    qty = int(getattr(mba, "qty", 0))
-                except Exception:
-                    qty = 0
-                state_stkoff = int(state_var_stkoff)
-                scanned_writers = 0
-                for serial in range(qty):
-                    blk = self._safe_get_mblock(mba, serial)
-                    if blk is None:
-                        continue
+                state_writes = _HEX_RAYS_CAPTURE_BACKEND.collect_state_constant_writes(
+                    mba,
+                    state_variable=state_var_stkoff,
+                )
+                for write in state_writes:
+                    const_val = int(write.state_value) & 0xFFFFFFFF
                     try:
-                        cur = blk.head
+                        routed_to = _resolve_bst(
+                            bst_result, const_val,
+                        )
                     except Exception:
-                        cur = None
-                    while cur is not None:
-                        try:
-                            opcode = int(cur.opcode)
-                            if opcode != ida_hexrays.m_mov:
-                                cur = cur.next
-                                continue
-                            d = cur.d
-                            l = cur.l
-                            if (
-                                d is None
-                                or int(d.t) != ida_hexrays.mop_S
-                                or l is None
-                                or int(l.t) != ida_hexrays.mop_n
-                            ):
-                                cur = cur.next
-                                continue
-                            try:
-                                d_off = int(d.s.off)
-                            except Exception:
-                                cur = cur.next
-                                continue
-                            if d_off != state_stkoff:
-                                cur = cur.next
-                                continue
-                            try:
-                                const_val = int(l.nnn.value) & 0xFFFFFFFF
-                            except Exception:
-                                cur = cur.next
-                                continue
-                            scanned_writers += 1
-                            try:
-                                routed_to = _resolve_bst(
-                                    bst_result, const_val,
-                                )
-                            except Exception:
-                                routed_to = None
-                            if (
-                                routed_to is not None
-                                and int(routed_to) == int(splice_source)
-                            ):
-                                bst_table_candidates.append({
-                                    "serial": int(serial),
-                                    "via": "bst_table_scan",
-                                    "edge_anchor_serial": -1,
-                                    "ordered_path": [int(serial)],
-                                    "written_state": int(const_val),
-                                })
-                        except Exception:
-                            pass
-                        try:
-                            cur = cur.next
-                        except Exception:
-                            break
+                        routed_to = None
+                    if (
+                        routed_to is not None
+                        and int(routed_to) == int(splice_source)
+                    ):
+                        bst_table_candidates.append({
+                            "serial": int(write.block_serial),
+                            "via": "bst_table_scan",
+                            "edge_anchor_serial": -1,
+                            "ordered_path": [int(write.block_serial)],
+                            "written_state": int(const_val),
+                        })
+                scanned_writers = len(state_writes)
                 info["bst_table_scanned_writers"] = scanned_writers
                 info["bst_table_candidate_count"] = (
                     len(bst_table_candidates)
@@ -8177,8 +7785,8 @@ class HandlerChainComposerStrategy:
     ) -> list[InsnSnapshot] | None:
         """Walk ``blk.head`` and capture composable instructions, or None.
 
-        Legacy interface (preserves prior behavior): treats ANY opcode in
-        ``_FORBIDDEN_COMPOSITION_OPCODES`` (including m_call/m_icall) as a
+        Legacy interface (preserves prior behavior): treats any backend
+        forbidden composition opcode (including m_call/m_icall) as a
         composition refusal.  Phase A's call-barrier candidate
         classification uses :py:meth:`_capture_block_composable_instructions_v2`
         directly to distinguish closing-forbidden vs call-forbidden cases.

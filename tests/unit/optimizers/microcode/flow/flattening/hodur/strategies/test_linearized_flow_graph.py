@@ -16,6 +16,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
     _sanitize_progressive_topology_modifications,
     _match_accepted_region_sites,
     _filter_unsafe_preferred_region_lowering,
+    _filter_lfg_use_def_vetoes,
     _should_defer_transient_internal_region_site,
 )
 
@@ -341,6 +342,68 @@ def test_collect_trivial_redirect_tail_zero_state_write_modifications_skips_nont
     )
 
     assert mods == ()
+
+
+def test_filter_lfg_use_def_vetoes_uses_backend_and_drops_real_violations():
+    first = RedirectGoto(from_serial=16, old_target=2, new_target=66)
+    second = RedirectGoto(from_serial=17, old_target=2, new_target=202)
+    cleanup = ZeroStateWrite(block_serial=17, insn_ea=0x180012EEC)
+
+    class FakeUseDefBackend:
+        def __init__(self):
+            self.calls = []
+
+        def redirect_use_def_violations(self, modification, live_function, pre_cfg):
+            self.calls.append((modification, live_function, pre_cfg))
+            if modification is first:
+                return (SimpleNamespace(var_stkoff=0x40, use_block=81),)
+            if modification is second:
+                return (SimpleNamespace(var_stkoff=0x7BC, use_block=82),)
+            return ()
+
+    backend = FakeUseDefBackend()
+    mba = object()
+    flow_graph = object()
+
+    filtered = _filter_lfg_use_def_vetoes(
+        (first, second, cleanup),
+        enabled=True,
+        mba=mba,
+        flow_graph=flow_graph,
+        state_var_stkoff=0x7BC,
+        backend=backend,
+    )
+
+    assert filtered == (second, cleanup)
+    assert backend.calls == [
+        (first, mba, flow_graph),
+        (second, mba, flow_graph),
+    ]
+
+
+def test_filter_lfg_use_def_vetoes_skips_backend_when_disabled():
+    redirect = RedirectGoto(from_serial=16, old_target=2, new_target=66)
+
+    class FailingBackend:
+        def redirect_use_def_violations(self, modification, live_function, pre_cfg):
+            raise AssertionError("backend should not be called")
+
+    assert _filter_lfg_use_def_vetoes(
+        (redirect,),
+        enabled=False,
+        mba=object(),
+        flow_graph=object(),
+        state_var_stkoff=0x7BC,
+        backend=FailingBackend(),
+    ) == (redirect,)
+    assert _filter_lfg_use_def_vetoes(
+        (redirect,),
+        enabled=True,
+        mba=None,
+        flow_graph=object(),
+        state_var_stkoff=0x7BC,
+        backend=FailingBackend(),
+    ) == (redirect,)
 
 
 def test_filter_unsafe_preferred_region_lowering_rejects_conditional_arm_when_write_horizon_is_later(

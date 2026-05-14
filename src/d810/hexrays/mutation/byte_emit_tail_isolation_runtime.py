@@ -1,8 +1,10 @@
-"""IDA-coupled adapter implementations for byte_emit_tail_isolation.
+"""Hex-Rays adapter implementations for byte_emit_tail_isolation.
 
-Lives in d810.cfg.transform alongside the pure algorithm. This module
-imports IDA SDK; the pure algorithm in
-``byte_emit_tail_isolation.py`` does not.
+This module owns the live ``mba_t``/``mblock_t`` materialization mechanics for
+the backend-neutral planners in :mod:`d810.cfg.transform.byte_emit_tail_isolation`.
+The cfg layer describes what byte-tail CFG shape is wanted; this adapter says
+how Hex-Rays performs the live block copies, rewrites, dirtying, and verifier
+interaction.
 """
 from __future__ import annotations
 
