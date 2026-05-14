@@ -145,6 +145,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_trace
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
@@ -222,7 +226,6 @@ from d810.recon.flow.return_corridor_discovery import (
 from d810.recon.flow.shared_group_bucketing import (
     group_candidates_by_shared_block,
 )
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
@@ -249,6 +252,9 @@ _DEFINITION_RESCUE_BACKEND: DefinitionRescueBackend = (
 )
 _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 
@@ -2010,6 +2016,9 @@ class HandlerChainComposerStrategy:
         self._projected_topology_backend: ProjectedTopologyBackend = (
             _PROJECTED_TOPOLOGY_BACKEND
         )
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
         # Read-only diagnostic tracer; (re)constructed at the top of plan().
         self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
 
@@ -2849,7 +2858,7 @@ class HandlerChainComposerStrategy:
             self._byte_cascade_tracer.seed_dag(dag)
             self._byte_cascade_tracer.seed_corrected_dag(corrected_dag)
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             state_var_stkoff,
         )
