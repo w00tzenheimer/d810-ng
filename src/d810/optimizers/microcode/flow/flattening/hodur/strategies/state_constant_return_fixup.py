@@ -14,19 +14,23 @@ linearizer must already have resolved handler transitions.
 """
 from __future__ import annotations
 
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
 from d810.cfg.state_var_cleanup import collect_state_constants
+from d810.evaluator.hexrays_microcode.return_cleanup_backend import (
+    HexRaysReturnCleanupEvidenceBackend,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
+)
+from d810.recon.flow.exit_transition_discovery import (
+    resolve_state_var_stkoff,
 )
 
 if TYPE_CHECKING:
@@ -38,8 +42,7 @@ logger = logging.getLogger("D810.hodur.strategy.state_const_return_fixup")
 
 __all__ = ["StateConstantReturnFixupStrategy"]
 
-# IDA block type for the function exit (BLT_STOP = 1).
-_BLT_STOP: int = 1
+_RETURN_CLEANUP_BACKEND = HexRaysReturnCleanupEvidenceBackend()
 
 
 class StateConstantReturnFixupStrategy:
@@ -97,16 +100,19 @@ class StateConstantReturnFixupStrategy:
         if not known_consts:
             return None
 
-        # Find the BLT_STOP block (typically the last block in the MBA).
-        stop_serial = self._find_stop_block(mba)
-        if stop_serial is None:
+        state_var_stkoff = resolve_state_var_stkoff(
+            detector=getattr(snapshot, "detector", None),
+            state_var=getattr(getattr(snapshot, "state_machine", None), "state_var", None),
+        )
+        evidence = _RETURN_CLEANUP_BACKEND.collect_return_cleanup_evidence(
+            mba,
+            known_state_constants=known_consts,
+            state_var_stkoff=state_var_stkoff,
+        )
+        if evidence.stop_serial is None:
             logger.info(
                 "StateConstReturnFixup: no BLT_STOP block found"
             )
-            return None
-
-        stop_blk = mba.get_mblock(stop_serial)  # type: ignore[attr-defined]
-        if stop_blk is None:
             return None
 
         builder = ModificationBuilder.from_snapshot(snapshot)
@@ -114,110 +120,49 @@ class StateConstantReturnFixupStrategy:
         owned_blocks: set[int] = set()
         seen_sites: set[tuple[int, int]] = set()
         nop_count = 0
-        state_var_stkoff = self._resolve_state_var_stkoff(snapshot)
-
-        # First, inspect any shared return-mux block that feeds BLT_STOP.
-        # Many leaked constants are staged one block before the stop block
-        # and then funneled through a common `mov return_slot -> rax` mux.
-        npred = stop_blk.npred()
-        for i in range(npred):
-            mux_serial = stop_blk.pred(i)
-            mux_blk = mba.get_mblock(mux_serial)  # type: ignore[attr-defined]
-            if mux_blk is None:
+        for cleanup_site in evidence.sites:
+            site = (int(cleanup_site.block_serial), int(cleanup_site.insn_ea))
+            if site in seen_sites:
                 continue
-            return_slot_stkoff = self._find_return_slot_stkoff(mux_blk)
-            if return_slot_stkoff is None:
-                continue
-
-            mux_npred = mux_blk.npred()
-            for j in range(mux_npred):
-                feeder_serial = mux_blk.pred(j)
-                feeder_blk = mba.get_mblock(feeder_serial)  # type: ignore[attr-defined]
-                if feeder_blk is None:
-                    continue
-                if feeder_blk.nsucc() != 1:
-                    continue
-                if feeder_blk.succ(0) != mux_serial:
-                    continue
-
-                insn = feeder_blk.tail
-                walk_limit = 6
-                walked = 0
-                while insn is not None and walked < walk_limit:
-                    if self._is_synthetic_return_feeder_insn(
-                        insn,
-                        return_slot_stkoff=return_slot_stkoff,
-                        state_var_stkoff=state_var_stkoff,
-                    ):
-                        site = (feeder_serial, insn.ea)
-                        if site not in seen_sites:
-                            modifications.append(
-                                builder.nop_instruction(
-                                    source_block=feeder_serial,
-                                    instruction_ea=insn.ea,
-                                )
-                            )
-                            seen_sites.add(site)
-                            owned_blocks.add(feeder_serial)
-                            nop_count += 1
-                            logger.info(
-                                "StateConstReturnFixup: NOP synthetic return feeder"
-                                " at blk[%d]:0x%x feeding mux blk[%d]",
-                                feeder_serial,
-                                insn.ea,
-                                mux_serial,
-                            )
-                        break
-                    insn = insn.prev
-                    walked += 1
-
-        # Also preserve the original narrow scan of BLT_STOP predecessors.
-        for i in range(npred):
-            pred_serial = stop_blk.pred(i)
-            pred_blk = mba.get_mblock(pred_serial)  # type: ignore[attr-defined]
-            if pred_blk is None:
-                continue
-
-            # Walk backward through instructions in the predecessor block,
-            # looking for m_mov with an immediate state constant source.
-            insn = pred_blk.tail
-            # Limit backward walk to avoid scanning entire large blocks.
-            walk_limit = 8
-            walked = 0
-            while insn is not None and walked < walk_limit:
-                if self._is_state_const_mov(insn, known_consts):
-                    site = (pred_serial, insn.ea)
-                    if site not in seen_sites:
-                        modifications.append(
-                            builder.nop_instruction(
-                                source_block=pred_serial,
-                                instruction_ea=insn.ea,
-                            )
-                        )
-                        seen_sites.add(site)
-                        owned_blocks.add(pred_serial)
-                        nop_count += 1
-                        logger.info(
-                            "StateConstReturnFixup: NOP m_mov #0x%x at"
-                            " blk[%d]:0x%x",
-                            insn.l.nnn.value if (
-                                insn.l is not None
-                                and insn.l.t == ida_hexrays.mop_n
-                            ) else 0,
-                            pred_serial,
-                            insn.ea,
-                        )
-                    # Only remove the LAST state-const write per block to be
-                    # conservative; break after the first match walking backward.
-                    break
-                insn = insn.prev
-                walked += 1
+            modifications.append(
+                builder.nop_instruction(
+                    source_block=cleanup_site.block_serial,
+                    instruction_ea=cleanup_site.insn_ea,
+                )
+            )
+            seen_sites.add(site)
+            owned_blocks.add(cleanup_site.block_serial)
+            nop_count += 1
+            if cleanup_site.reason == "synthetic_return_feeder":
+                logger.info(
+                    "StateConstReturnFixup: NOP synthetic return feeder"
+                    " at blk[%d]:0x%x feeding mux blk[%d]",
+                    cleanup_site.block_serial,
+                    cleanup_site.insn_ea,
+                    cleanup_site.mux_block_serial if cleanup_site.mux_block_serial is not None else -1,
+                )
+            elif cleanup_site.reason == "state_const_mov":
+                logger.info(
+                    "StateConstReturnFixup: NOP m_mov #0x%x at"
+                    " blk[%d]:0x%x",
+                    cleanup_site.observed_state if cleanup_site.observed_state is not None else 0,
+                    cleanup_site.block_serial,
+                    cleanup_site.insn_ea,
+                )
+            else:
+                logger.info(
+                    "StateConstReturnFixup: NOP cleanup site reason=%s"
+                    " at blk[%d]:0x%x",
+                    cleanup_site.reason,
+                    cleanup_site.block_serial,
+                    cleanup_site.insn_ea,
+                )
 
         logger.info(
             "StateConstReturnFixup: %d instructions NOPed across %d"
             " BLT_STOP predecessors",
             nop_count,
-            npred,
+            evidence.stop_pred_count,
         )
 
         if not modifications:
@@ -274,150 +219,3 @@ class StateConstantReturnFixupStrategy:
             Set of integer state constant values.
         """
         return set(collect_state_constants(snapshot.state_constants, snapshot.bst_result))
-
-    @staticmethod
-    def _find_stop_block(mba: object) -> int | None:
-        """Find the BLT_STOP block serial in the MBA.
-
-        Scans from the last block backward (BLT_STOP is typically the last
-        block).
-
-        Args:
-            mba: An ``ida_hexrays.mba_t`` instance.
-
-        Returns:
-            Block serial of BLT_STOP, or ``None`` if not found.
-        """
-        qty = mba.qty  # type: ignore[attr-defined]
-        # BLT_STOP is almost always the last block; scan backward for safety.
-        for i in range(qty - 1, -1, -1):
-            blk = mba.get_mblock(i)  # type: ignore[attr-defined]
-            if blk is not None and int(blk.type) == _BLT_STOP:
-                return i
-        return None
-
-    @staticmethod
-    def _is_state_const_mov(
-        insn: object,
-        known_consts: set[int],
-    ) -> bool:
-        """Check if an instruction is ``m_mov #<state_const>, <dest>``.
-
-        The instruction must be:
-        - Opcode: ``m_mov``
-        - Left (source) operand: ``mop_n`` (immediate) with value in
-          ``known_consts``
-        - Destination: ``mop_r`` (register) or ``mop_S`` (stack variable)
-
-        Args:
-            insn: An ``ida_hexrays.minsn_t`` instruction.
-            known_consts: Set of known dispatcher state constant values.
-
-        Returns:
-            True if the instruction writes a known state constant.
-        """
-        if insn.opcode != ida_hexrays.m_mov:
-            return False
-
-        src = insn.l
-        if src is None or src.t != ida_hexrays.mop_n:
-            return False
-
-        try:
-            val = src.nnn.value
-        except (AttributeError, TypeError):
-            return False
-
-        if val not in known_consts:
-            return False
-
-        # Verify destination is a register or stack variable (return slot).
-        dst = insn.d
-        if dst is None:
-            return False
-        if dst.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
-            return False
-
-        return True
-
-    @staticmethod
-    def _resolve_state_var_stkoff(snapshot: AnalysisSnapshot) -> int | None:
-        """Best-effort state-var stack offset resolution."""
-        detector = getattr(snapshot, "detector", None)
-        if detector is not None:
-            try:
-                from d810.recon.flow.transition_builder import _get_state_var_stkoff
-
-                return _get_state_var_stkoff(detector)
-            except Exception:
-                pass
-        sm = getattr(snapshot, "state_machine", None)
-        if sm is not None and getattr(sm, "state_var", None) is not None:
-            try:
-                sv = sm.state_var
-                if sv.t == ida_hexrays.mop_S:
-                    return sv.s.off
-            except Exception:
-                pass
-        return None
-
-    @staticmethod
-    def _find_return_slot_stkoff(mux_blk: object) -> int | None:
-        """Extract the stack return-slot copied into rax in a return mux block."""
-        insn = getattr(mux_blk, "head", None)
-        walk_limit = 4
-        walked = 0
-        while insn is not None and walked < walk_limit:
-            if (
-                insn.opcode == ida_hexrays.m_mov
-                and insn.l is not None
-                and insn.l.t == ida_hexrays.mop_S
-                and insn.d is not None
-                and insn.d.t == ida_hexrays.mop_r
-            ):
-                try:
-                    return insn.l.s.off
-                except Exception:
-                    return None
-            insn = insn.next
-            walked += 1
-        return None
-
-    @staticmethod
-    def _is_synthetic_return_feeder_insn(
-        insn: object,
-        *,
-        return_slot_stkoff: int,
-        state_var_stkoff: int | None,
-    ) -> bool:
-        """Match feeder writes that leak synthetic constants into the return slot."""
-        dst = getattr(insn, "d", None)
-        if (
-            dst is None
-            or dst.t != ida_hexrays.mop_S
-            or dst.s is None
-            or dst.s.off != return_slot_stkoff
-        ):
-            return False
-
-        src = getattr(insn, "l", None)
-        if insn.opcode == ida_hexrays.m_mov and src is not None and src.t == ida_hexrays.mop_n:
-            return True
-
-        if insn.opcode not in (
-            ida_hexrays.m_mov,
-            ida_hexrays.m_xdu,
-            ida_hexrays.m_xds,
-        ):
-            return False
-
-        if (
-            state_var_stkoff is not None
-            and src is not None
-            and src.t == ida_hexrays.mop_S
-            and src.s is not None
-            and src.s.off == state_var_stkoff
-        ):
-            return True
-
-        return False
