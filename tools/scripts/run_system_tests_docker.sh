@@ -29,7 +29,8 @@
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
-#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container.
+#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container
+#                           (currently the runtime default; use env D810_FACT_LIFECYCLE=0 to disable).
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
 #
 # Options (dump only):
@@ -40,7 +41,8 @@
 #                           relative filename (e.g. dump.txt), not an absolute path; the script prepends .tmp/.
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container (see system/shell/exec above).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
-#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container.
+#   --enable-fact-lifecycle Set D810_FACT_LIFECYCLE=1 inside the container
+#                           (currently the runtime default; use env D810_FACT_LIFECYCLE=0 to disable).
 #   --                      Remaining args passed to pytest (e.g. --dump-microcode-d810, --dump-terminal-return-valranges, --dump-microcode-maturity MATURITY)
 #
 # Options (exec): same as system/shell; then -- COMMAND [ARGS...] to run after SETUP (required).
