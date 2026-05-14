@@ -7813,15 +7813,19 @@ class HandlerChainComposerStrategy:
         if candidates:
             return min(candidates)
 
-        blk = self._safe_get_mblock(mba, int(last_node.entry_anchor))
-        if blk is None:
+        topology = self._read_live_block_topology(
+            mba,
+            int(last_node.entry_anchor),
+        )
+        if (
+            not topology.block_exists
+            or topology.nsucc is None
+            or topology.successors is None
+            or int(topology.nsucc) < 1
+            or not topology.successors
+        ):
             return None
-        try:
-            if int(blk.nsucc()) >= 1:  # type: ignore[attr-defined]
-                return int(blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        return None
+        return int(topology.successors[0])
 
     @staticmethod
     def _capture_block_composable_instructions(

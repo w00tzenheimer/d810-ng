@@ -1283,6 +1283,69 @@ class TestHandlerChainLiveTopologyBackend:
         ) == "ANCHOR_OUT_BRANCH"
         assert backend.seen == [(mba, 10), (mba, 11)]
 
+    def test_region_exit_fallback_uses_live_topology_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("region-exit fallback should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                assert serial == 10
+                return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                    block_exists=True,
+                    nsucc=2,
+                    successors=(20, 21),
+                )
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        last_node = _make_dag_node_v2(10, 0x10)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x100,
+            pre_header_serial=None,
+            initial_state=0x10,
+            bst_node_blocks=(),
+            nodes=(last_node,),
+            edges=(),
+        )
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        assert strategy._resolve_region_exit(
+            mba=mba,
+            dag=dag,
+            last_node=last_node,
+        ) == 20
+        assert backend.seen == [(mba, 10)]
+
     def test_guarded_source_skip_redirect_uses_backend(self) -> None:
         class _MbaWithoutMblocks:
             def get_mblock(self, serial: int) -> object:
