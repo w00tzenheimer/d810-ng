@@ -28,6 +28,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
     _SUB7FFD_FUNC_EA,
     build_semantic_exact_round_summary,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+    accepts_exact_sub7ffd_glbopt1,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     collect_exact_conditional_sites,
 )
@@ -199,10 +202,10 @@ class ExactNodeFrontierBypassStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot) -> bool:
-        mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
-            return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        if not accepts_exact_sub7ffd_glbopt1(
+            snapshot,
+            expected_entry_ea=_SUB7FFD_FUNC_EA,
+        ):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None
