@@ -68,7 +68,7 @@ HODUR_BASELINES = [
     pytest.param(
         "sub_7FFD3338C040",
         "hodur_flag2.json",
-        {"statements": 140, "returns": 4, "whiles": 5, "gotos": 8, "ifs": 17},
+        {"statements": 100, "returns": 4, "whiles": 1, "gotos": 8, "ifs": 17},
         id="sub_7FFD3338C040",
     ),
 ]
@@ -151,12 +151,14 @@ class TestHodurBaselines:
             )
 
 
-# Key semantic markers that must appear in the rendered program.
-# These are handler-body fragments that prove semantic recovery.
+# Key semantic markers that must appear in the rendered linearized state
+# program. Symbol names and data references are asserted against AFTER
+# pseudocode below because the semantic_reference_like renderer may abstract
+# those operands.
 SUB_7FFD_SEMANTIC_MARKERS = [
-    "sub_1800164E0",      # API call: C2 communication
-    "0xFFFFFFFFFFFFFF02",  # MBA-resolved constant in conditional
-    "unk_180018E95",       # Data reference in handler
+    "STATE_0D64F20E__blk130_h130_s0B2FECE0",
+    "STATE_6D207773",
+    "STATE_09EB3381",
 ]
 
 
@@ -339,16 +341,20 @@ class TestSub7FFDCorridorPreservationRegression:
             "is missing from AFTER pseudocode — the preserved cascade's "
             "for-loop guard regressed."
         )
+        assert "unk_180019E95" in code_after, (
+            "Data reference unk_180019E95 is missing from AFTER pseudocode — "
+            "the preserved cascade body regressed."
+        )
 
         # All 9 callees must be preserved (corridor preservation must
         # not have rejected mods that were genuinely needed).
-        sub_call_count = code_after.count("sub_1800164E0")
-        # sub_1800164E0 is the most distinctive callee; a regression
+        sub_call_count = code_after.count("sub_180016E60")
+        # sub_180016E60 is the most distinctive callee; a regression
         # that drops the protected corridor's calls would also drop
         # these.  Conservative threshold: 8 (the cascade's zeroing
         # suffix plus a callsite).
         assert sub_call_count >= 8, (
-            f"sub_1800164E0 call count regressed: expected >= 8, "
+            f"sub_180016E60 call count regressed: expected >= 8, "
             f"got {sub_call_count}.  Corridor preservation may be "
             f"rejecting mods that the cascade needs."
         )

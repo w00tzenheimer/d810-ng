@@ -77,15 +77,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FakeJumpPredFix,
     FakeJumpStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
-    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
-    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
-    BadWhileLoopAnalysis,
-    BadWhileLoopFollowUp,
-    BadWhileLoopGotoConversion,
-    BadWhileLoopGotoRedirect,
-    BadWhileLoopStrategy,
-)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationPredFix,
@@ -886,11 +877,6 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     )
     monkeypatch.setattr(
         family,
-        "attach_bad_while_loop_edits_to_flow_graph",
-        lambda _mba, flow_graph: flow_graph,
-    )
-    monkeypatch.setattr(
-        family,
         "attach_single_iteration_fixes_to_flow_graph",
         lambda _mba, flow_graph: flow_graph,
     )
@@ -1271,84 +1257,6 @@ def test_attach_fake_jump_fixes_skips_cleanup_only_emulated_dispatcher_candidate
 
     assert updated is flow_graph
     assert updated.metadata == {}
-
-
-def test_attach_bad_while_loop_edits_to_flow_graph_metadata(monkeypatch):
-    unflattener = HodurUnflattener()
-    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
-    flow_graph = FlowGraph(
-        blocks={
-            0: BlockSnapshot(0, 1, (1,), (), 0, 0, ()),
-            1: BlockSnapshot(1, 1, (2,), (0,), 0, 0, ()),
-            2: BlockSnapshot(2, 4, (3, 4), (1, 5), 0, 0, ()),
-            3: BlockSnapshot(3, 0, (), (2,), 0, 0, ()),
-            4: BlockSnapshot(4, 0, (), (2,), 0, 0, ()),
-            5: BlockSnapshot(5, 4, (2, 8), (), 0, 0, ()),
-            8: BlockSnapshot(8, 0, (), (5,), 0, 0, ()),
-        },
-        entry_serial=0,
-        func_ea=0x401000,
-    )
-
-    monkeypatch.setattr(
-        hodur_family_module,
-        "collect_live_bad_while_loop_analysis",
-        lambda *_args, **_kwargs: BadWhileLoopAnalysis(
-            edits=(
-                BadWhileLoopGotoRedirect(
-                    dispatcher_entry=2,
-                    from_serial=1,
-                    new_target=3,
-                ),
-                BadWhileLoopGotoConversion(
-                    dispatcher_entry=2,
-                    block_serial=5,
-                    goto_target=4,
-                ),
-            ),
-            follow_up=(
-                BadWhileLoopFollowUp(
-                    dispatcher_entry=2,
-                    from_serial=5,
-                    category="create_conditional_redirect",
-                    reason="conditional_exit_with_loopback",
-                    target_serial=3,
-                    fallthrough_target=8,
-                ),
-            ),
-        ),
-    )
-
-    updated = unflattener._family.attach_bad_while_loop_edits_to_flow_graph(
-        mba, flow_graph
-    )
-
-    assert updated is not flow_graph
-    assert updated.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == [
-        {
-            "kind": "redirect_goto",
-            "dispatcher_entry": 2,
-            "from_serial": 1,
-            "new_target": 3,
-        },
-        {
-            "kind": "convert_to_goto",
-            "dispatcher_entry": 2,
-            "block_serial": 5,
-            "goto_target": 4,
-        },
-    ]
-    assert updated.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] == [
-        {
-            "dispatcher_entry": 2,
-            "from_serial": 5,
-            "category": "create_conditional_redirect",
-            "reason": "conditional_exit_with_loopback",
-            "target_serial": 3,
-            "fallthrough_target": 8,
-        }
-    ]
-    assert flow_graph.metadata == {}
 
 
 def test_attach_single_iteration_fixes_to_flow_graph_metadata(monkeypatch):

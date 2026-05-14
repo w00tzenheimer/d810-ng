@@ -910,6 +910,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
             if (
                 self._pass_pipeline is not None
+                and self.current_maturity is not None
                 and int(self.current_maturity) == int(ida_hexrays.MMAT_GLBOPT1)
                 and self._post_d810_pipeline_last_maturity != int(self.current_maturity)
                 and self._is_loop_carrier_only_pipeline()
