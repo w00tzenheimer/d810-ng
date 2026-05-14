@@ -422,17 +422,6 @@ def test_compile_patch_plan_finalizes_duplicate_block():
 
 
 def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split():
-    cfg = FlowGraph(
-        blocks={
-            2: _block(2, (), (9,)),
-            9: _block(9, (2,), ()),
-            10: _block(10, (11,), ()),
-            11: _block(11, (), (10,)),
-        },
-        entry_serial=9,
-        func_ea=0,
-    )
-
     patch_plan = compile_patch_plan(
         [
             DuplicateBlock(
@@ -441,7 +430,7 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
                 pred_serial=9,
             )
         ],
-        cfg,
+        _cfg(),
     )
 
     assert patch_plan.contains_block_creation
