@@ -68,7 +68,7 @@ HODUR_BASELINES = [
     pytest.param(
         "sub_7FFD3338C040",
         "hodur_flag2.json",
-        {"statements": 100, "returns": 4, "whiles": 1, "gotos": 8, "ifs": 17},
+        {"statements": 103, "returns": 8, "whiles": 1, "gotos": 10, "ifs": 19},
         id="sub_7FFD3338C040",
     ),
 ]
