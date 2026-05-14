@@ -8,6 +8,8 @@ importing the Hex-Rays-shaped helpers directly.
 from __future__ import annotations
 
 from d810.core.typing import Protocol
+from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.plan import compile_patch_plan
 from d810.recon.flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
@@ -19,6 +21,13 @@ class ProjectedTopologyBackend(Protocol):
 
     def build_projected_mba(self, flow_graph: object) -> object:
         """Adapt a projected flow graph into the backend's live-topology view."""
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        """Project graph modifications over ``base_flow_graph``."""
 
     def build_live_dag(
         self,
@@ -45,6 +54,16 @@ class HodurProjectedTopologyBackend:
 
     def build_projected_mba(self, flow_graph: object) -> object:
         return build_mba_view_from_flow_graph(flow_graph)
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        return project_post_state(
+            base_flow_graph,
+            compile_patch_plan(modifications, base_flow_graph),
+        )
 
     def build_live_dag(
         self,
