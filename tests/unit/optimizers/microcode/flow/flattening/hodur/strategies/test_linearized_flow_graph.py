@@ -7,6 +7,9 @@ from d810.cfg.graph_modification import ConvertToGoto, RedirectBranch, RedirectG
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,
 )
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    projected_topology_backend as topology_backend_module,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     _build_narrow_branch_local_region_fallback_candidates,
     _collect_consumed_structured_region_state_edges,
@@ -19,6 +22,163 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
     _filter_lfg_use_def_vetoes,
     _should_defer_transient_internal_region_site,
 )
+
+
+class _FakeProjectedTopologyBackend:
+    def __init__(self) -> None:
+        self.projected_mba_calls: list[object] = []
+        self.live_dag_calls: list[tuple[object, object, dict]] = []
+
+    def build_projected_mba(self, flow_graph: object) -> object:
+        self.projected_mba_calls.append(flow_graph)
+        return SimpleNamespace(projected_from=flow_graph)
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        **kwargs,
+    ) -> object:
+        self.live_dag_calls.append((current_flow_graph, transition_result, kwargs))
+        return SimpleNamespace(nodes=(), edges=())
+
+
+def _empty_resolved_round_summary(dag: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        dag=dag,
+        semantic_reference_program=None,
+        structured_regions=(),
+        plannable_edges=(),
+        report_exit_handlers=frozenset(),
+        report_exit_owned_blocks=frozenset(),
+        terminal_source_keys=frozenset(),
+        terminal_source_handlers=frozenset(),
+        terminal_source_owned_blocks=frozenset(),
+        terminal_protected_blocks=frozenset(),
+        terminal_skipped=0,
+        unknown_skipped=0,
+    )
+
+
+def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):
+    backend = topology_backend_module.HodurProjectedTopologyBackend()
+    flow_graph = object()
+    transition_result = object()
+    seen_live_dag_kwargs = {}
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "build_mba_view_from_flow_graph",
+        lambda projected_flow_graph: ("projected-mba", projected_flow_graph),
+    )
+
+    def fake_build_live_dag(current_flow_graph, received_transition_result, **kwargs):
+        seen_live_dag_kwargs.update(kwargs)
+        return (current_flow_graph, received_transition_result, kwargs)
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "build_live_linearized_state_dag_from_graph",
+        fake_build_live_dag,
+    )
+
+    assert backend.build_projected_mba(flow_graph) == ("projected-mba", flow_graph)
+
+    dag = backend.build_live_dag(
+        flow_graph,
+        transition_result,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x7BC,
+        pre_header_serial=None,
+        initial_state=0x6107F8EC,
+        handler_range_map=None,
+        bst_node_blocks=(9, 2),
+        diagnostics=(),
+        dispatcher=None,
+        mba="mba-view",
+    )
+
+    assert dag[0] is flow_graph
+    assert dag[1] is transition_result
+    assert seen_live_dag_kwargs["handler_range_map"] == {}
+    assert seen_live_dag_kwargs["bst_node_blocks"] == (2, 9)
+    assert seen_live_dag_kwargs["mba"] == "mba-view"
+
+
+def test_lfg_planning_callbacks_use_projected_topology_backend(monkeypatch):
+    backend = _FakeProjectedTopologyBackend()
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_projected_topology_backend",
+        backend,
+    )
+
+    def fake_round_summary(**kwargs):
+        dag = kwargs["build_live_dag"](
+            kwargs["current_flow_graph"],
+            kwargs["transition_result"],
+            dispatcher_entry_serial=kwargs["dispatcher_serial"],
+            state_var_stkoff=kwargs["state_var_stkoff"],
+            pre_header_serial=kwargs["pre_header_serial"],
+            initial_state=kwargs["initial_state"],
+            handler_range_map=kwargs["handler_range_map"],
+            bst_node_blocks=kwargs["bst_node_blocks"],
+            diagnostics=kwargs["diagnostics"],
+            dispatcher=kwargs["dispatcher"],
+            mba=kwargs["mba"],
+            prefer_local_corridors=True,
+        )
+        return _empty_resolved_round_summary(dag)
+
+    monkeypatch.setattr(
+        lfg_module,
+        "build_linearized_dag_round_summary",
+        fake_round_summary,
+    )
+
+    strategy = lfg_module.LinearizedFlowGraphStrategy()
+    snapshot = SimpleNamespace(bst_dispatcher_serial=2, discovery=None)
+    state_machine = SimpleNamespace(initial_state=0x6107F8EC, handlers={})
+    transition_result = SimpleNamespace()
+    flow_graph = SimpleNamespace(blocks={})
+    setup = lfg_module.LinearizedFlowGraphPlanSetup(
+        builder=object(),
+        state_var_stkoff=0x7BC,
+        dispatcher=None,
+        blocked_sources=frozenset(),
+        dispatcher_region=frozenset({2}),
+        bst_node_blocks=frozenset({2}),
+        original_blocks=frozenset(),
+        transition_result=transition_result,
+        pre_header_serial=None,
+        projectable=True,
+        round_limit=3,
+    )
+    callbacks = strategy._build_planning_callbacks(
+        snapshot=snapshot,
+        state_machine=state_machine,
+        bst_result=SimpleNamespace(
+            handler_range_map={},
+            diagnostics=(),
+            dispatcher=None,
+        ),
+        mba=object(),
+        dag_setup=setup,
+    )
+
+    projected_mba = callbacks.build_projected_mba(flow_graph)
+    round_summary = callbacks.build_round_summary(flow_graph, projected_mba)
+
+    assert projected_mba.projected_from is flow_graph
+    assert round_summary.dag.nodes == ()
+    assert backend.projected_mba_calls == [flow_graph]
+    assert len(backend.live_dag_calls) == 1
+    live_flow_graph, live_transition_result, live_kwargs = backend.live_dag_calls[0]
+    assert live_flow_graph is flow_graph
+    assert live_transition_result is transition_result
+    assert live_kwargs["dispatcher_entry_serial"] == 2
+    assert live_kwargs["state_var_stkoff"] == 0x7BC
+    assert live_kwargs["mba"] is projected_mba
 
 
 def test_collect_structured_region_zero_state_write_modifications_emits_path_tail_cleanup(monkeypatch):

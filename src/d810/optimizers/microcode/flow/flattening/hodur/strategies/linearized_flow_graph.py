@@ -82,6 +82,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties i
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
     HodurLiveMicrocodePropertiesBackend,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
+)
 from d810.recon.flow.residual_handoff_resolution import (
     has_live_exact_residual_handoff_with_valranges,
     is_semantic_handoff_redirect,
@@ -209,11 +213,9 @@ from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_repo
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     StateDagEdge,
-    build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.state_machine_analysis import (
-    build_mba_view_from_flow_graph,
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
     run_snapshot_constant_fixpoint,
@@ -260,6 +262,9 @@ logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.
 _USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
 _LIVE_MICROCODE_PROPERTIES: HodurLiveMicrocodePropertiesBackend = (
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
 )
 
 
@@ -1204,6 +1209,9 @@ class LinearizedFlowGraphStrategy:
     _applied: set[tuple[int, int]] = set()  # (func_ea, maturity) already processed
     _last_successful_residual_dispatcher_pred_counts: dict[tuple[int, int], int] = {}
     _same_count_exact_rerun_used: set[tuple[int, int]] = set()
+    _projected_topology_backend: ProjectedTopologyBackend = (
+        _PROJECTED_TOPOLOGY_BACKEND
+    )
 
     @staticmethod
     def _resolve_state_var_stkoff(
@@ -1671,6 +1679,7 @@ class LinearizedFlowGraphStrategy:
         mba,
         dag_setup: LinearizedFlowGraphPlanSetup,
     ):
+        topology_backend = self._projected_topology_backend
         return build_linearized_flow_graph_planning_callbacks(
             snapshot=snapshot,
             state_machine=state_machine,
@@ -1678,7 +1687,7 @@ class LinearizedFlowGraphStrategy:
             mba=mba,
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=topology_backend.build_projected_mba,
             project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
                 base_flow_graph,
                 compile_patch_plan(modifications, base_flow_graph),
@@ -1708,7 +1717,7 @@ class LinearizedFlowGraphStrategy:
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_live_dag=topology_backend.build_live_dag,
             build_transition_report=build_dispatcher_transition_report_from_graph,
             select_plannable_edges=select_plannable_dag_edges,
         )
@@ -2202,6 +2211,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
         mba,
         dag_setup: LinearizedFlowGraphPlanSetup,
     ):
+        topology_backend = self._projected_topology_backend
         return build_linearized_flow_graph_planning_callbacks(
             snapshot=snapshot,
             state_machine=state_machine,
@@ -2209,7 +2219,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             mba=mba,
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=topology_backend.build_projected_mba,
             project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
                 base_flow_graph,
                 compile_patch_plan(modifications, base_flow_graph),
@@ -2239,7 +2249,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_live_dag=topology_backend.build_live_dag,
             build_transition_report=build_dispatcher_transition_report_from_graph,
             select_plannable_edges=select_plannable_dag_edges,
             include_synthetic_exact_regions=False,
@@ -2278,7 +2288,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         try:
-            projected_mba = build_mba_view_from_flow_graph(projected_flow_graph)
+            projected_mba = self._projected_topology_backend.build_projected_mba(
+                projected_flow_graph
+            )
         except Exception as exc:
             logger.info(
                 "LFG DAG: bounded postprocess skipped (projected_mba_failed=%s)",
@@ -2287,7 +2299,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             projected_flow_graph,
             dag_setup.transition_result,
             dispatcher_entry_serial=int(snapshot.bst_dispatcher_serial),
@@ -2343,7 +2355,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             collect_terminal_family_report=collect_terminal_family_report,
             build_reconstruction_candidate=build_reconstruction_candidate,
             resolve_effective_target_entry=self._resolve_effective_target_entry,
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=(
+                self._projected_topology_backend.build_projected_mba
+            ),
             discover_residual_alias_overrides_fn=discover_residual_alias_overrides,
         )
 
@@ -2470,7 +2484,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             mba=mba,
             redirected_blocks=redirected_blocks,
             collect_residual_dispatcher_predecessors=cls._collect_residual_dispatcher_predecessors,
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=(
+                cls._projected_topology_backend.build_projected_mba
+            ),
             collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
             iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
             can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,
