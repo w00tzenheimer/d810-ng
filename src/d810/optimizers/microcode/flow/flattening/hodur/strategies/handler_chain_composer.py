@@ -155,6 +155,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology
     HandlerChainLiveTopologyBackend,
     LiveBlockTopologyProbe,
     LiveOneWaySuccessorProbe,
+    LiveTopologyRegionEntryBlockView,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_materialization_capture_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND,
@@ -538,42 +539,6 @@ class _WalkBackResult:
     prepended_chunks: tuple[_WalkBackChunk, ...]
 
 
-class _MbaRegionEntryBlockView:
-    """Backend adapter for cfg-level semantic-region entry resolution."""
-
-    __slots__ = ("_mba",)
-
-    def __init__(self, mba: object) -> None:
-        self._mba = mba
-
-    def _block(self, serial: int) -> object | None:
-        try:
-            return self._mba.get_mblock(serial)  # type: ignore[attr-defined]
-        except Exception:
-            return None
-
-    def block_exists(self, serial: int) -> bool:
-        return self._block(serial) is not None
-
-    def nsucc(self, serial: int) -> int | None:
-        blk = self._block(serial)
-        if blk is None:
-            return None
-        try:
-            return int(blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
-            return None
-
-    def succ(self, serial: int, index: int = 0) -> int | None:
-        blk = self._block(serial)
-        if blk is None:
-            return None
-        try:
-            return int(blk.succ(index))  # type: ignore[attr-defined]
-        except Exception:
-            return None
-
-
 def _format_blk_list(serials: tuple[int, ...]) -> str:
     """Render ``(1, 2, 3)`` as ``[blk[1], blk[2], blk[3]]``."""
     if not serials:
@@ -907,6 +872,7 @@ def _classify_yes_handlers_with_convergence(
     dag: LinearizedStateDag | None,
     local_facts: DagLocalFacts | None,
     mba: object | None,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
 ) -> str | None:
     """Wrapper that prefers convergence detection when ``dag``/``mba``/
     ``local_facts`` are all provided.  Falls back to the linear-only
@@ -922,7 +888,7 @@ def _classify_yes_handlers_with_convergence(
         dag=dag,
         local_facts=local_facts,
         mba=mba,
-        live_topology_backend=_LIVE_TOPOLOGY_BACKEND,
+        live_topology_backend=live_topology_backend,
     )
     return label
 
@@ -1399,6 +1365,7 @@ def _log_region_lowering_candidate(
     dag: LinearizedStateDag | None = None,
     local_facts: DagLocalFacts | None = None,
     mba: object | None = None,
+    live_topology_backend: HandlerChainLiveTopologyBackend = _LIVE_TOPOLOGY_BACKEND,
 ) -> None:
     """Emit the structured ``REGION_LOWERING_CANDIDATE`` log line.
 
@@ -1460,6 +1427,7 @@ def _log_region_lowering_candidate(
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=live_topology_backend,
             )
         except Exception:  # pragma: no cover - diagnostic only
             yes_handlers_subclass = None
@@ -1524,12 +1492,17 @@ def _log_region_lowering_candidate(
         block_outgoing_edge_label: str = "None"
         if mba is not None:
             try:
-                anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, anchor_serial,
+                anchor_topology = live_topology_backend.read_block_topology(
+                    mba,
+                    int(anchor_serial),
                 )
-                if anchor_blk is not None and int(anchor_blk.nsucc()) >= 1:
+                if (
+                    anchor_topology.block_exists
+                    and anchor_topology.successors is not None
+                    and anchor_topology.successors
+                ):
                     block_outgoing_edge_label = (
-                        f"blk[{int(anchor_blk.succ(0))}]"
+                        f"blk[{int(anchor_topology.successors[0])}]"
                     )
             except Exception:  # pragma: no cover - diagnostic only
                 pass
@@ -1660,6 +1633,7 @@ def _log_region_lowering_summary(
                     dag=dag,
                     local_facts=local_facts,
                     mba=mba,
+                    live_topology_backend=_LIVE_TOPOLOGY_BACKEND,
                 )
             except Exception:  # pragma: no cover - diagnostic only
                 sub = None
@@ -4305,6 +4279,7 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     local_facts=local_facts,
                     mba=mba,
+                    live_topology_backend=self._live_topology_backend,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic only
                 logger.warning(
@@ -5656,29 +5631,14 @@ class HandlerChainComposerStrategy:
                     except Exception:
                         _sites = ()
                     if _sites:
-                        try:
-                            _guard_blk = self._safe_get_mblock(
-                                mba, int(guard_pred)
+                        _is_state_flow = (
+                            self._materialization_capture_backend
+                            .block_mentions_text(
+                                mba,
+                                int(guard_pred),
+                                needle="%var_7BC",
                             )
-                        except Exception:
-                            _guard_blk = None
-                        _is_state_flow = False
-                        if _guard_blk is not None:
-                            _ins = getattr(_guard_blk, "head", None)
-                            while _ins is not None:
-                                _dstr = getattr(_ins, "dstr", None)
-                                _text: str | None = None
-                                if callable(_dstr):
-                                    try:
-                                        _text = _dstr()
-                                    except Exception:
-                                        _text = None
-                                elif isinstance(_dstr, str):
-                                    _text = _dstr
-                                if _text and "%var_7BC" in _text:
-                                    _is_state_flow = True
-                                    break
-                                _ins = getattr(_ins, "next", None)
+                        )
                         if _is_state_flow:
                             try:
                                 terminal_byte_emit_fact_id = (
@@ -6599,9 +6559,12 @@ class HandlerChainComposerStrategy:
             except Exception:
                 _resolve_bst = None
             if _resolve_bst is not None:
-                state_writes = _HEX_RAYS_CAPTURE_BACKEND.collect_state_constant_writes(
-                    mba,
-                    state_variable=state_var_stkoff,
+                state_writes = (
+                    self._materialization_capture_backend
+                    .collect_state_constant_writes(
+                        mba,
+                        state_variable=state_var_stkoff,
+                    )
                 )
                 for write in state_writes:
                     const_val = int(write.state_value) & 0xFFFFFFFF
@@ -7201,7 +7164,10 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     region_head_node=head_node,
                     region_anchors=region_anchors,
-                    block_view=_MbaRegionEntryBlockView(mba),
+                    block_view=LiveTopologyRegionEntryBlockView(
+                        mba,
+                        self._live_topology_backend,
+                    ),
                     transition_kind=SemanticEdgeKind.TRANSITION,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic
