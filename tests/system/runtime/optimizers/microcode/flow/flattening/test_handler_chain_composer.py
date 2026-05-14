@@ -656,6 +656,7 @@ if IDA_AVAILABLE:
         EntryEligibility,
         SemanticEntryCandidate,
         _find_r1_to_suppress,
+        _refine_opaque_call_shape,
         _RawRegionInfo,
         _TailExtensionPlan,
     )
@@ -1145,6 +1146,142 @@ class TestHandlerChainLiveTopologyBackend:
 
         assert result == (109, 120, (retained_call_body,))
         assert backend.seen == [(mba, 109), (mba, 108)]
+
+    def test_simple_call_shape_uses_live_topology_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("call-shape classifier should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.seen.append((mba, serial))
+                return hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                    block_exists=True,
+                    nsucc=1,
+                    successor=20,
+                )
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected block-topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        head = _make_dag_node_v2(10, 0x10)
+        tail = _make_dag_node_v2(20, 0x20)
+        dag = LinearizedStateDag(
+            dispatcher_entry_serial=2,
+            state_var_stkoff=0x100,
+            pre_header_serial=None,
+            initial_state=0x10,
+            bst_node_blocks=(),
+            nodes=(head, tail),
+            edges=(_make_dag_edge(head, tail),),
+        )
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        assert strategy._classify_opaque_call_shape(
+            mba=mba,
+            dag=dag,
+            handler_serial=10,
+            candidate=_make_semantic_candidate(
+                head_state=0x10,
+                head_entry=10,
+            ),
+            region_nodes=(head,),
+        ) == "SIMPLE_1WAY_OUT"
+        assert backend.seen == [(mba, 10)]
+
+    def test_refined_call_shape_uses_live_topology_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("call-shape refinement should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 10:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=1,
+                        successors=(11,),
+                    )
+                if serial == 11:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(20, 21),
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        arm_a = _make_dag_node_v2(20, 0x20)
+        arm_b = _make_dag_node_v2(21, 0x21)
+        local_facts = SimpleNamespace(
+            shared_suffix_by_entry={},
+            node_by_any_local_block={20: arm_a, 21: arm_b},
+        )
+        mba = _MbaWithoutMblocks()
+        backend = _FakeLiveTopologyBackend()
+
+        assert _refine_opaque_call_shape(
+            base_shape="OTHER",
+            region_nodes=(_make_dag_node_v2(10, 0x10),),
+            opaque_call_anchor=(10, 0x1234, False),
+            dag=SimpleNamespace(edges=()),
+            local_facts=local_facts,
+            mba=mba,
+            live_topology_backend=backend,
+        ) == "ANCHOR_OUT_BRANCH"
+        assert backend.seen == [(mba, 10), (mba, 11)]
 
     def test_guarded_source_skip_redirect_uses_backend(self) -> None:
         class _MbaWithoutMblocks:

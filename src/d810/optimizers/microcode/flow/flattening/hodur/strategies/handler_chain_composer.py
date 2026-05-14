@@ -963,6 +963,7 @@ def _refine_opaque_call_shape(
     dag: LinearizedStateDag | None,
     local_facts: DagLocalFacts | None,
     mba: object | None,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
     state_var_stkoff: int | None = None,
 ) -> str:
     """Return ONE refined shape label for an opaque-call anchor.
@@ -1031,17 +1032,28 @@ def _refine_opaque_call_shape(
     # whose conditional arms diverge into different states.
     try:
         if mba is not None:
-            anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
+            anchor_topology = live_topology_backend.read_block_topology(
                 mba, anchor_serial,
             )
-            if anchor_blk is not None and int(anchor_blk.nsucc()) == 1:
-                succ_serial = int(anchor_blk.succ(0))
-                succ_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, succ_serial,
+            if (
+                anchor_topology.block_exists
+                and anchor_topology.nsucc == 1
+                and anchor_topology.successors is not None
+                and len(anchor_topology.successors) == 1
+            ):
+                succ_serial = int(anchor_topology.successors[0])
+                succ_topology = live_topology_backend.read_block_topology(
+                    mba,
+                    succ_serial,
                 )
-                if succ_blk is not None and int(succ_blk.nsucc()) == 2:
-                    arm_a = int(succ_blk.succ(0))
-                    arm_b = int(succ_blk.succ(1))
+                if (
+                    succ_topology.block_exists
+                    and succ_topology.nsucc == 2
+                    and succ_topology.successors is not None
+                    and len(succ_topology.successors) == 2
+                ):
+                    arm_a = int(succ_topology.successors[0])
+                    arm_b = int(succ_topology.successors[1])
                     if arm_a != arm_b and dag is not None:
                         # Confirm the arms map to different DAG nodes
                         # (different downstream states).  Pure local
@@ -1066,10 +1078,14 @@ def _refine_opaque_call_shape(
     # ANCHOR_MULTI_PRED: handler block has npred() > 1 in the live CFG.
     try:
         if mba is not None:
-            anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
+            anchor_topology = live_topology_backend.read_block_topology(
                 mba, anchor_serial,
             )
-            if anchor_blk is not None and int(anchor_blk.npred()) > 1:
+            if (
+                anchor_topology.block_exists
+                and anchor_topology.npred is not None
+                and int(anchor_topology.npred) > 1
+            ):
                 return "ANCHOR_MULTI_PRED"
     except Exception:
         pass
@@ -7340,6 +7356,7 @@ class HandlerChainComposerStrategy:
                         dag=dag,
                         local_facts=local_facts,
                         mba=mba,
+                        live_topology_backend=self._live_topology_backend,
                         state_var_stkoff=state_var_stkoff,
                     )
                 except Exception:  # pragma: no cover - diagnostic only
@@ -7365,8 +7382,8 @@ class HandlerChainComposerStrategy:
             )
         return tuple(infos)
 
-    @staticmethod
     def _classify_opaque_call_shape(
+        self,
         *,
         mba: object,
         dag: LinearizedStateDag,
@@ -7390,15 +7407,11 @@ class HandlerChainComposerStrategy:
         if len(region_nodes) != 1:
             return "OTHER"
         # 2) handler is 1-way.
-        handler_blk = HandlerChainComposerStrategy._safe_get_mblock(
-            mba, handler_serial,
+        handler_probe = self._read_live_one_way_successor(
+            mba,
+            int(handler_serial),
         )
-        if handler_blk is None:
-            return "OTHER"
-        try:
-            if int(handler_blk.nsucc()) != 1:  # type: ignore[attr-defined]
-                return "OTHER"
-        except Exception:
+        if not handler_probe.block_exists or handler_probe.nsucc != 1:
             return "OTHER"
         # 3) sole TRANSITION inbound is UNCONDITIONAL_1WAY.
         if candidate.eligibility is not EntryEligibility.UNCONDITIONAL_1WAY:
