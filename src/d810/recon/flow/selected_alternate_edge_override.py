@@ -438,10 +438,39 @@ def _derive_gated_overrides_from_fact_view(
 def derive_selected_alternate_edge_override_map(
     dag,
     fact_view,
+    *,
+    func_ea: int | None = None,
 ):
     """Return the backend-neutral selected-alternate override map."""
     try:
-        return _derive_gated_overrides_from_fact_view(dag, fact_view)
+        override_map = _derive_gated_overrides_from_fact_view(dag, fact_view)
+        try:
+            from d810.recon.flow.runtime_evidence import (
+                log_runtime_evidence_summary,
+                summarize_fact_view,
+            )
+
+            summary = summarize_fact_view(
+                fact_view,
+                func_ea=int(func_ea or getattr(dag, "func_ea", 0) or 0),
+                phase="selected_alternate_override",
+            )
+            log_runtime_evidence_summary(
+                "RECON_DAG_SELECTED_ALTERNATE_INMEMORY_EVIDENCE",
+                summary,
+            )
+        except Exception:
+            logger.debug(
+                "RECON_DAG_SELECTED_ALTERNATE_INMEMORY_EVIDENCE summary failed",
+                exc_info=True,
+            )
+        logger.info(
+            "RECON_DAG_SELECTED_ALTERNATE_INMEMORY_EVIDENCE "
+            "selected_alternate_overrides=%d keys=%s",
+            len(override_map),
+            list(override_map.keys())[:8],
+        )
+        return override_map
     except Exception:
         logger.warning(
             "RECON_DAG_OVERRIDE_GATING_FAILED source=fact_view",
@@ -564,6 +593,7 @@ def apply_selected_alternate_edge_overrides(
     fact_view,
     *,
     override_map: dict[tuple[str, str, int | None], tuple[str, int | None]] | None = None,
+    func_ea: int | None = None,
 ):
     """Substitute collapsed terminal-tail edges from in-memory fact evidence.
 
@@ -574,7 +604,11 @@ def apply_selected_alternate_edge_overrides(
     gated = (
         override_map
         if override_map is not None
-        else derive_selected_alternate_edge_override_map(dag, fact_view)
+        else derive_selected_alternate_edge_override_map(
+            dag,
+            fact_view,
+            func_ea=func_ea,
+        )
     )
     return _apply_gated_overrides(dag, gated, summary_id="fact_view")
 
