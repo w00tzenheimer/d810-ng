@@ -798,6 +798,37 @@ class TestHandlerChainLiveTopologyBackend:
             successor=None,
         )
 
+    def test_reads_block_topology_from_live_topology(self) -> None:
+        backend = (
+            hcc_topology_backend_module.HexRaysHandlerChainLiveTopologyBackend()
+        )
+        mba = _StubMba(
+            {
+                10: _StubBlock(10, succs=(20, 21), preds=(1, 2)),
+            }
+        )
+
+        assert backend.read_block_topology(
+            mba,
+            10,
+        ) == hcc_topology_backend_module.LiveBlockTopologyProbe(
+            block_exists=True,
+            nsucc=2,
+            successors=(20, 21),
+            npred=2,
+            predecessors=(1, 2),
+        )
+        assert backend.read_block_topology(
+            mba,
+            99,
+        ) == hcc_topology_backend_module.LiveBlockTopologyProbe(
+            block_exists=False,
+            nsucc=None,
+            successors=None,
+            npred=None,
+            predecessors=None,
+        )
+
     def test_resolves_first_predecessor_from_live_topology(self) -> None:
         backend = (
             hcc_topology_backend_module.HexRaysHandlerChainLiveTopologyBackend()
@@ -892,6 +923,13 @@ class TestHandlerChainLiveTopologyBackend:
                     successor=22,
                 )
 
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected block-topology probe")
+
             def resolve_first_predecessor(
                 self,
                 mba: object,
@@ -915,6 +953,90 @@ class TestHandlerChainLiveTopologyBackend:
             successor=22,
         )
         assert backend.seen == [(mba, 10)]
+
+    def test_guarded_source_writer_probe_uses_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("guarded-source probe should use backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("unexpected one-way probe")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                self.seen.append((mba, serial))
+                if serial == 109:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=1,
+                        successors=(120,),
+                        npred=1,
+                        predecessors=(108,),
+                    )
+                if serial == 108:
+                    return hcc_topology_backend_module.LiveBlockTopologyProbe(
+                        block_exists=True,
+                        nsucc=2,
+                        successors=(109, 121),
+                        npred=0,
+                        predecessors=(),
+                    )
+                raise AssertionError(f"unexpected topology probe {serial}")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+        copied_writer = object()
+        retained_call_body = object()
+
+        result = strategy._try_retarget_to_guarded_walkback_source(
+            mba=mba,
+            body=(copied_writer, retained_call_body),
+            walkback_result=hcc_module._WalkBackResult(
+                body=(copied_writer, retained_call_body),
+                prepended_chunks=(
+                    hcc_module._WalkBackChunk(
+                        writer_serial=109,
+                        target_stkoff=0x30,
+                        ninsns=1,
+                    ),
+                ),
+            ),
+            current_splice_source=130,
+            current_old_target=140,
+            call_anchor_serial=150,
+            head_state=0xAAA0,
+            claimed_inbound_sources=set(),
+            bst_node_blocks=frozenset(),
+            dispatcher_serial=2,
+        )
+
+        assert result == (109, 120, (retained_call_body,))
+        assert backend.seen == [(mba, 109), (mba, 108)]
 
 
 class TestFindR1ToSuppress:
