@@ -620,5 +620,6 @@ A second small slice is to wrap `linearized_flow_graph.py` use-def vetoes:
 - Import-linter should confirm cfg and recon do not import Hex-Rays or Hodur.
 - sub7FFD validation should compare dump/oracle/AFTER output against
   `_gitless/baselines/sub7ffd-structure-recovery-pass-2026-05-13`.
-- Run sub7FFD both with and without debug logging when fact lifecycle is enabled,
-  because debug logging must not change live decisions.
+- Run sub7FFD with default fact lifecycle evidence, and separately with
+  `--disable-fact-lifecycle` when intentionally testing the disabled path.
+  Debug logging is not behavior-bearing and must not change live decisions.

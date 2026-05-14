@@ -10,21 +10,23 @@ design.
 The stack is **observability-first**: every layer persists evidence to
 the diag DB and is queryable via the ``d810.diagnostics`` CLI.  The one
 behavior consumer (``selected_alternate_edge_override``) is gated on
-two env vars and remains a no-op when either is unset.
+fact lifecycle evidence, which is enabled by default; set
+``D810_FACT_LIFECYCLE=0`` to disable the evidence path. Debug logging is
+not behavior-bearing and must not be used as a proxy for this setting.
 
 ## Quick reference
 
 | layer | module | persistence table | gate |
 | - | - | - | - |
-| State-write anchor | `recon.facts.collectors.state_write_anchor` | `fact_observations(kind=StateWriteAnchorFact)` + `fact_mappings(status=STATE_CONST_REWRITTEN)` | `D810_FACT_LIFECYCLE=1` |
-| State-transition anchor | `recon.facts.collectors.state_transition_anchor` | `fact_observations(kind=StateTransitionAnchorFact)` | `D810_FACT_LIFECYCLE=1` |
+| State-write anchor | `recon.facts.collectors.state_write_anchor` | `fact_observations(kind=StateWriteAnchorFact)` + `fact_mappings(status=STATE_CONST_REWRITTEN)` | enabled by default; `D810_FACT_LIFECYCLE=0` disables |
+| State-transition anchor | `recon.facts.collectors.state_transition_anchor` | `fact_observations(kind=StateTransitionAnchorFact)` | enabled by default; `D810_FACT_LIFECYCLE=0` disables |
 | Edge classification | `core.diag.edge_diagnostics` | `dag_edge_diagnostics` | none (post-hoc CLI) |
 | BST resolution | `core.diag.bst_resolution` | `state_transition_bst_resolutions` | none (post-hoc CLI; reads `INTERVAL_DISPATCHER_ROWS` from log) |
 | Alternate correlation | `core.diag.alternate_correlation` | `dag_edge_alternate_correlations` | none (post-hoc CLI) |
 | Alternate selection | `core.diag.alternate_selection` | `dag_edge_alternate_selections` | none (post-hoc CLI) |
-| Selected-alternate DAG override (BEHAVIOR) | `recon.flow.selected_alternate_edge_override` | (mutates in-memory `LinearizedStateDag.edges`) | `D810_FACT_LIFECYCLE=1` |
-| Terminal-byte fact guards (BEHAVIOR) | `optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard` and `return_carrier_fact_guard` | (filters CFG modifications during executor) | `D810_FACT_LIFECYCLE=1` |
-| HCC chained-skip terminal-byte gate (BEHAVIOR) | `optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer._emit_chained_call_anchor` | (suppresses guard-skip RedirectBranch emission at point) | `D810_FACT_LIFECYCLE=1` |
+| Selected-alternate DAG override (BEHAVIOR) | `recon.flow.selected_alternate_edge_override` | (mutates in-memory `LinearizedStateDag.edges`) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
+| Terminal-byte fact guards (BEHAVIOR) | `optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard` and `return_carrier_fact_guard` | (filters CFG modifications during executor) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
+| HCC chained-skip terminal-byte gate (BEHAVIOR) | `optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer._emit_chained_call_anchor` | (suppresses guard-skip RedirectBranch emission at point) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
 
 ## Cascade flow
 
@@ -187,7 +189,8 @@ after `snapshot_reconstruction_dag(...)` and BEFORE
 participates in candidate generation.
 
 Strict gates (all must hold for an override to fire):
-- `D810_FACT_LIFECYCLE=1`
+- fact lifecycle evidence is available (default; `D810_FACT_LIFECYCLE=0`
+  disables it)
 - caller passed a non-None `(diag_db, snap_id)` from the snapshot result
 - `dag_edge_diagnostics.classification = 'COLLAPSED_TO_REWRITTEN_TARGET'`
 - exactly ONE `dag_edge_alternate_selections` row with `selected = 1`
@@ -228,7 +231,7 @@ in commits `87bd185c` through `c9d094ea` and the rolled-back
    `early_return_arm_no_later_terminal_tail`.
 
 3. **Recon-DAG override is empirically inert at the pseudocode
-   level.**  When `D810_FACT_LIFECYCLE=1`, the override fires (22
+   level.**  With default fact lifecycle evidence, the override fires (22
    substitutions across 4 strategy passes).  The recon DAG's
    `dag.edges` are mutated.  But the modifications emitted by HCC at
    snap 7 are byte-identical between override-on and override-off
