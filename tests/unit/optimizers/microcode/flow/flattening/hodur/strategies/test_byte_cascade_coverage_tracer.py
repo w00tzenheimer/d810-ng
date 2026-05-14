@@ -16,6 +16,10 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.flowgraph import InsnSnapshot
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
@@ -486,6 +490,30 @@ def test_preservation_insertblock_evidence_matches_by_ea() -> None:
         instructions=(_insn(0x11, 0x18001ABCD), _insn(0x12, 0x18001ABCE)),
     )
     preserved, mechanism = _classify_preservation(rec, [mod])
+    assert preserved is True
+    assert mechanism == "insertblock_evidence"
+
+
+def test_preservation_insertblock_evidence_matches_captured_body_summary() -> None:
+    rec = _record(3, 163, 0x18001ABCD)
+    body = CapturedBlockBody(
+        backend_id="fake",
+        capture_id="fake-body",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(163,),
+            instruction_count=1,
+            source_eas=frozenset({0x18001ABCD}),
+        ),
+        payload=object(),
+    )
+    mod = InsertBlock(
+        pred_serial=10,
+        succ_serial=20,
+        captured_body=body,
+    )
+
+    preserved, mechanism = _classify_preservation(rec, [mod])
+
     assert preserved is True
     assert mechanism == "insertblock_evidence"
 

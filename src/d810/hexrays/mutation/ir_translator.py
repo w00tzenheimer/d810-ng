@@ -50,7 +50,11 @@ from d810.cfg.plan import (
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.hexrays.mutation.insn_snapshot_materializer import validate_insn_snapshots
+from d810.hexrays.mutation.insn_snapshot_materializer import (
+    insn_snapshots_from_captured_body,
+    validate_captured_block_body,
+    validate_insn_snapshots,
+)
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -158,7 +162,10 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
 
 def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
-    reason = validate_insn_snapshots(step.instructions)
+    if step.captured_body is not None:
+        reason = validate_captured_block_body(step.captured_body)
+    else:
+        reason = validate_insn_snapshots(step.instructions)
     if reason is not None:
         return (
             f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
@@ -596,7 +603,10 @@ class IDAIRTranslator:
                 assigned_serial=assigned,
                 instructions=instructions,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ):
+                if captured_body is not None:
+                    instructions = insn_snapshots_from_captured_body(captured_body)
                 modifier.queue_create_and_redirect(
                     source_block_serial=pred,
                     final_target_serial=succ,

@@ -8,10 +8,9 @@ the abstract observability interface; recon never imports the backend.
 Event names follow the past-tense ``<thing>Observed`` convention.
 Emit helpers follow the ``observe_<thing>`` convention.
 
-Read-side queries that drive runtime behaviour go through the
-explicitly-documented behaviour bridge in
-:mod:`d810.recon.flow.selected_alternate_edge_override`, not through
-this module.
+Read-side queries that drive runtime behaviour should consume
+in-memory fact views or runtime evidence directly, not diagnostic
+subscribers or SQLite sinks.
 
 See:
     docs/diag-observability-boundary.md

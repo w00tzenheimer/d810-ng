@@ -7,36 +7,15 @@ small contract a backend adapter can implement while Hex-Rays-specific
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from d810.cfg.materialization_payload import (
+    BackendInstructionRef,
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
+from d810.core.typing import TYPE_CHECKING, Mapping, Protocol
 
-from d810.cfg.graph_modification import GraphModification
-from d810.core.typing import Mapping, Protocol
-
-
-@dataclass(frozen=True, slots=True)
-class BackendInstructionRef:
-    """Stable identity for an instruction captured from a backend block."""
-
-    block_serial: int
-    ea: int
-    opcode_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CapturedInstructionPayload:
-    """Backend-neutral payload captured for later materialization."""
-
-    source_block: int
-    instructions: tuple[BackendInstructionRef, ...]
-
-    @property
-    def source_eas(self) -> frozenset[int]:
-        """Instruction EAs represented by this payload."""
-        return frozenset(int(insn.ea) for insn in self.instructions)
-
-    def contains_all_source_eas(self, required_eas: frozenset[int]) -> bool:
-        """Return whether every required source EA is present in the payload."""
-        return all(int(ea) in self.source_eas for ea in required_eas)
+if TYPE_CHECKING:
+    from d810.cfg.graph_modification import GraphModification
 
 
 class MaterializationBackend(Protocol):
@@ -48,7 +27,7 @@ class MaterializationBackend(Protocol):
         *,
         omit_terminal_control: bool = False,
         required_source_eas: frozenset[int] = frozenset(),
-    ) -> CapturedInstructionPayload | None:
+    ) -> CapturedBlockBody | None:
         """Capture a block payload without exposing backend instruction objects."""
         ...
 
@@ -58,9 +37,9 @@ class MaterializationBackend(Protocol):
         source: int,
         old_target: int,
         target: int,
-        payload: CapturedInstructionPayload,
+        payload: CapturedBlockBody,
         metadata: Mapping[str, object] | None = None,
-    ) -> GraphModification:
+    ) -> "GraphModification":
         """Materialize an insert-block rewrite from a captured payload."""
         ...
 
@@ -70,13 +49,14 @@ class MaterializationBackend(Protocol):
         block_serial: int,
         insn_ea: int,
         metadata: Mapping[str, object] | None = None,
-    ) -> GraphModification:
+    ) -> "GraphModification":
         """Materialize an instruction NOP rewrite."""
         ...
 
 
 __all__ = [
     "BackendInstructionRef",
-    "CapturedInstructionPayload",
+    "CapturedBlockBody",
+    "CapturedBlockBodySummary",
     "MaterializationBackend",
 ]

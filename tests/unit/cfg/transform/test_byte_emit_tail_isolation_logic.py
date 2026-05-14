@@ -757,6 +757,30 @@ class _SilentLogger:
         pass
 
 
+@dataclass
+class _FakeLiveBlock:
+    succs: tuple[int, ...] = ()
+
+    def nsucc(self):
+        return len(self.succs)
+
+    def succ(self, index):
+        return self.succs[int(index)]
+
+
+@dataclass
+class _FakeLiveMba:
+    blocks: dict[int, _FakeLiveBlock] = field(default_factory=dict)
+
+    def get_mblock(self, serial):
+        return self.blocks.get(int(serial))
+
+
+@dataclass
+class _FakeLiveAdapter:
+    _mba: _FakeLiveMba
+
+
 def test_bridge_plan_row_happy_path_maps_all_fields():
     from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
         _bridge_plan_row_to_live_mba,
@@ -799,6 +823,45 @@ def test_bridge_plan_row_happy_path_maps_all_fields():
     assert mapped.early_return_target == 42
     assert mapped.state_update_verdict == "SAFE_TARGET_POST_GUARD"
     assert mapped.state_write_bypassed is True
+
+
+def test_bridge_plan_row_identity_mode_uses_live_serials():
+    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+        _bridge_plan_row_to_live_mba,
+    )
+
+    row = _FakePlanRow(
+        source_block=101,
+        current_continuation_target=102,
+        intended_target=217,
+        state_write_block=180,
+        state_write_bypassed=True,
+    )
+    adapter = _FakeLiveAdapter(
+        _FakeLiveMba(
+            blocks={
+                101: _FakeLiveBlock(succs=(102,)),
+                102: _FakeLiveBlock(),
+                180: _FakeLiveBlock(),
+                217: _FakeLiveBlock(),
+            }
+        )
+    )
+
+    mapped, reason = _bridge_plan_row_to_live_mba(
+        row,
+        diag_conn=None,
+        snap17_id=None,
+        adapter=adapter,
+        logger_=_SilentLogger(),
+    )
+
+    assert reason == "ok"
+    assert mapped is not None
+    assert mapped.source_block == 101
+    assert mapped.current_continuation_target == 102
+    assert mapped.intended_target == 217
+    assert mapped.state_write_block == 180
 
 
 def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():

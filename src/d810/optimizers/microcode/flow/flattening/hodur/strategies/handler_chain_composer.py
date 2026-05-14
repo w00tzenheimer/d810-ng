@@ -101,6 +101,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.cfg.reconstruction_emission import (
@@ -116,10 +117,6 @@ from d810.cfg.semantic_region_entry import (
     SemanticEntryCandidate,
     resolve_semantic_entry_candidate as _resolve_semantic_entry_candidate,
 )
-from d810.cfg.semantic_region_materialization import (
-    InstructionCaptureFacts,
-    decide_instruction_capture,
-)
 from d810.cfg.semantic_region_admission import (
     RawRegionInfo as _RawRegionInfo,
     classify_source_covered_by_other_region as _classify_source_covered_by_other_region,
@@ -127,9 +124,8 @@ from d810.cfg.semantic_region_admission import (
     find_cover_regions as _find_cover_regions,
 )
 from d810.cfg.state_edge_pair import state_edge_pair
-from d810.hexrays.mutation.ir_translator import capture_insn_snapshot
-from d810.hexrays.mutation.insn_snapshot_materializer import (
-    validate_insn_snapshots,
+from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
+    HexRaysInstructionCaptureBackend,
 )
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     CumulativePlannerView,
@@ -242,6 +238,7 @@ logger = logging.getLogger(
     "D810.hodur.strategy.handler_chain_composer",
     logging.DEBUG,
 )
+_HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
 
 
 def _refresh_cumulative_view_dag_authority(
@@ -447,6 +444,9 @@ class HandlerChainCandidate:
     state_values: tuple[int, ...]
     """State constants attached to each handler in the region (informational)."""
 
+    captured_body: CapturedBlockBody | None = None
+    """Opaque backend-owned body for materializing the composed instructions."""
+
 
 # Opcodes that abort composition because their effects are hard to
 # preserve in a relocated InsertBlock body.
@@ -533,6 +533,7 @@ class _CaptureResult:
 
     kind: str
     snapshots: tuple[InsnSnapshot, ...] | None = None
+    body: CapturedBlockBody | None = None
     abort_reason: str | None = None
     call_ea: int | None = None
     is_indirect: bool | None = None
@@ -1930,106 +1931,32 @@ def _capture_transitive_def_chain(
     new InsertBlock then defines every stkvar it reads locally, so the
     pred's strand can't cause IDA's def-use analysis to fold the body.
     """
-    captured: dict[int, "InsnSnapshot"] = {}
-    capture_order: list[int] = []
-    visited: set[tuple[int, int]] = set()
-    in_progress: set[tuple[int, int]] = set()
+    body = _HEX_RAYS_CAPTURE_BACKEND.capture_transitive_def_chain(
+        mba,
+        region_anchor,
+        initial_reads,
+        max_depth=max_depth,
+        max_total=max_total,
+    )
+    if body is None:
+        return None
+    return list(_HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(body))
 
-    def _resolve(stkoff: int, size: int, depth: int) -> bool:
-        key = (int(stkoff), int(size))
-        if key in visited:
-            return True
-        if key in in_progress:
-            # cycle: treat as resolved here; the outer def will be captured
-            return True
-        if depth > max_depth:
-            logger.info(
-                "HCC_DEF_PROBE depth-exceeded anchor=%d stkoff=0x%x size=%d depth=%d",
-                int(region_anchor), int(stkoff), int(size), depth,
-            )
-            return False
-        if len(capture_order) > max_total:
-            logger.info(
-                "HCC_DEF_PROBE max-total-exceeded anchor=%d stkoff=0x%x size=%d captured=%d",
-                int(region_anchor), int(stkoff), int(size), len(capture_order),
-            )
-            return False
-        in_progress.add(key)
-        # diagnostic: report what find_reaching_defs_for_stkvar returns.
-        try:
-            probe_defs = find_reaching_defs_for_stkvar(
-                mba, int(region_anchor), int(stkoff), int(size),
-            )
-        except Exception as exc:
-            probe_defs = None
-            logger.info(
-                "HCC_DEF_PROBE chain-raised anchor=%d stkoff=0x%x size=%d exc=%s",
-                int(region_anchor), int(stkoff), int(size), exc,
-            )
-        if not probe_defs:
-            # No internal def reaches the anchor for this stkvar.  Most
-            # often this means the slot is an argument / register-init
-            # value live throughout the function -- not an error.
-            # Mark visited and succeed without capture: any pred of the
-            # InsertBlock will see the same external slot.
-            logger.info(
-                "HCC_DEF_PROBE no-defs-external anchor=%d stkoff=0x%x size=%d"
-                " (treated as external input, no capture needed)",
-                int(region_anchor), int(stkoff), int(size),
-            )
-            visited.add(key)
-            in_progress.discard(key)
-            return True
-        logger.info(
-            "HCC_DEF_PROBE found anchor=%d stkoff=0x%x size=%d n_defs=%d sites=%s",
-            int(region_anchor), int(stkoff), int(size), len(probe_defs),
-            [(int(d.block_serial), hex(int(d.ins_ea))) for d in probe_defs[:5]],
-        )
-        insn = _find_live_def_insn(mba, region_anchor, stkoff, size)
-        if insn is None:
-            in_progress.discard(key)
-            return False
-        try:
-            def_ea = int(getattr(insn, "ea", 0) or 0)
-            opcode = int(insn.opcode)
-        except Exception:
-            in_progress.discard(key)
-            return False
-        # Walk this def's own stkvar reads (l, r, plus d for stores).
-        sub_reads: set[tuple[int, int]] = set()
-        _collect_stkvar_reads_from_mop(getattr(insn, "l", None), sub_reads)
-        _collect_stkvar_reads_from_mop(getattr(insn, "r", None), sub_reads)
-        d_op = getattr(insn, "d", None)
-        if d_op is not None:
-            try:
-                d_type = int(d_op.t)
-            except Exception:
-                d_type = -1
-            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
-                _collect_stkvar_reads_from_mop(d_op, sub_reads)
-        # Drop this def's own destination (it defines, doesn't read).
-        sub_reads.discard(key)
-        for sub_off, sub_sz in sorted(sub_reads):
-            if not _resolve(sub_off, sub_sz, depth + 1):
-                in_progress.discard(key)
-                return False
-        # All transitive deps resolved -- capture this def.
-        if def_ea not in captured:
-            try:
-                snap = capture_insn_snapshot(insn)
-            except Exception:
-                in_progress.discard(key)
-                return False
-            captured[def_ea] = snap
-            capture_order.append(def_ea)
-        visited.add(key)
-        in_progress.discard(key)
-        return True
-
-    for stkoff, size in sorted(initial_reads):
-        if not _resolve(int(stkoff), int(size), 0):
-            return None
-    return [captured[ea] for ea in capture_order]
+def _capture_transitive_def_chain_body(
+    mba: object,
+    region_anchor: int,
+    initial_reads: set[tuple[int, int]],
+    *,
+    max_depth: int = 8,
+    max_total: int = 64,
+) -> CapturedBlockBody | None:
+    return _HEX_RAYS_CAPTURE_BACKEND.capture_transitive_def_chain(
+        mba,
+        region_anchor,
+        initial_reads,
+        max_depth=max_depth,
+        max_total=max_total,
+    )
 
 
 def _collect_stkvar_reads_from_mop(
@@ -2454,7 +2381,20 @@ class HandlerChainComposerStrategy:
                     candidate.succ_serial,
                 )
                 continue
-            reason = validate_insn_snapshots(candidate.composed_instructions)
+            candidate_body = candidate.captured_body
+            if candidate_body is None:
+                candidate_body = _HEX_RAYS_CAPTURE_BACKEND.body_from_snapshots(
+                    candidate.composed_instructions,
+                    source_blocks=candidate.handler_serials,
+                    capture_id=(
+                        "legacy-candidate:"
+                        + ",".join(str(int(serial)) for serial in candidate.handler_serials)
+                    ),
+                )
+                candidate = replace(candidate, captured_body=candidate_body)
+            reason = (
+                _HEX_RAYS_CAPTURE_BACKEND.validate_body(candidate_body)
+            )
             if reason is not None:
                 logger.warning(
                     "HandlerChainComposer: snapshot validation failed for"
@@ -2568,8 +2508,8 @@ class HandlerChainComposerStrategy:
                 InsertBlock(
                     pred_serial=pred_serial,
                     succ_serial=candidate.succ_serial,
-                    instructions=candidate.composed_instructions,
                     old_target_serial=old_target,
+                    captured_body=candidate.captured_body,
                 )
             )
             region_owned_blocks.update(candidate.handler_serials)
@@ -3156,8 +3096,9 @@ class HandlerChainComposerStrategy:
             int(getattr(mba, "entry_ea", 0) or 0),
             int(getattr(mba, "maturity", 0) or 0),
         )
-        # Snapshot + selected-alternate override BEFORE building
-        # indexes so candidate generation sees the corrected edges.
+        # Snapshot for diagnostics, then apply selected-alternate overrides
+        # from the in-memory fact view so SQLite availability cannot affect
+        # behavior.
         _snapshot_result = snapshot_reconstruction_dag(
             logger,
             dag=dag,
@@ -3165,15 +3106,23 @@ class HandlerChainComposerStrategy:
             strategy_name=self.name,
         )
         from d810.recon.flow.selected_alternate_edge_override import (
-            apply_selected_alternate_edge_overrides_from_diag,
+            apply_selected_alternate_edge_overrides,
+            derive_selected_alternate_edge_override_map,
         )
-        dag = apply_selected_alternate_edge_overrides_from_diag(
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        override_map = derive_selected_alternate_edge_override_map(
             dag,
-            _snapshot_result.snap_ref,
+            fact_view,
         )
-        corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
+        dag = apply_selected_alternate_edge_overrides(
+            dag,
+            fact_view,
+            override_map=override_map,
+        )
+        corrected_dag = apply_selected_alternate_edge_overrides(
             corrected_dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            override_map=override_map,
         )
 
         indexes = build_reconstruction_discovery_indexes(
@@ -3859,6 +3808,20 @@ class HandlerChainComposerStrategy:
         for mod in modifications:
             if not isinstance(mod, InsertBlock):
                 continue
+            captured_body = getattr(mod, "captured_body", None)
+            if (
+                captured_body is not None
+                and getattr(getattr(captured_body, "summary", None), "contains_call", False)
+            ):
+                logger.error(
+                    "HCC_CALL_BARRIER_INVARIANT_VIOLATION:"
+                    " captured InsertBlock body contains call"
+                    " (block_serial=%d)",
+                    int(getattr(mod, "pred_serial", -1)),
+                )
+                raise AssertionError(
+                    "call leaked into InsertBlock captured body"
+                )
             for insn_snap in mod.instructions:
                 try:
                     opcode = int(getattr(insn_snap, "opcode", -1))
@@ -4871,6 +4834,7 @@ class HandlerChainComposerStrategy:
                 succ_serial=int(plan.exit_target),
                 composed_instructions=body,
                 state_values=states,
+                captured_body=info.composed_candidate.captured_body,
             )
 
             per_candidate.append(tail_candidate)
@@ -5778,11 +5742,27 @@ class HandlerChainComposerStrategy:
         # succ = call anchor (preserves the call-bearing block in
         # place), old_target = the existing physical edge being
         # replaced (the dispatcher route).
+        captured_body = _HEX_RAYS_CAPTURE_BACKEND.body_from_snapshots(
+            tuple(body),
+            source_blocks=tuple(
+                sorted(
+                    {
+                        int(pre_anchor_serial),
+                        int(splice_source),
+                        int(effective_splice_source),
+                    }
+                )
+            ),
+            capture_id=(
+                f"chained-call:{int(effective_splice_source)}"
+                f"->{int(call_anchor_serial)}"
+            ),
+        )
         insert_mod = InsertBlock(
             pred_serial=effective_splice_source,
             succ_serial=call_anchor_serial,
-            instructions=body,
             old_target_serial=effective_old_target,
+            captured_body=captured_body,
         )
         emitted: list = [insert_mod]
 
@@ -7281,6 +7261,7 @@ class HandlerChainComposerStrategy:
                         succ_serial=succ_serial,
                         composed_instructions=body,
                         state_values=states,
+                        captured_body=fused_candidate.captured_body,
                     )
                 )
                 claimed.add(
@@ -7833,6 +7814,7 @@ class HandlerChainComposerStrategy:
         # this composition path succeeds.
 
         composed: list[InsnSnapshot] = []
+        composed_bodies: list[CapturedBlockBody] = []
         handler_serials: list[int] = []
         state_values: list[int] = []
         for node in region_nodes:
@@ -7845,19 +7827,21 @@ class HandlerChainComposerStrategy:
                     anchor,
                 )
                 return None
-            insns = self._capture_block_composable_instructions(
+            cap_result = self._capture_block_composable_instructions_v2(
                 blk,
                 state_var_stkoff=state_var_stkoff,
                 byte_evidence_eas=byte_evidence_eas,
             )
-            if insns is None:
+            if cap_result.kind != "composable" or cap_result.body is None:
                 logger.info(
                     "HandlerChainComposer: region node anchor=%d has"
                     " forbidden opcode; aborting region",
                     anchor,
                 )
                 return None
+            insns = list(cap_result.snapshots or ())
             composed.extend(insns)
+            composed_bodies.append(cap_result.body)
             handler_serials.append(anchor)
             state_values.append(0)
 
@@ -7987,10 +7971,13 @@ class HandlerChainComposerStrategy:
                     # regions see chain entries for reads that live in
                     # later handler blocks, not just the first.
                     tail_anchor = int(region_nodes[-1].entry_anchor)
-                    rescue_defs = _capture_transitive_def_chain(
+                    rescue_body = _capture_transitive_def_chain_body(
                         mba, tail_anchor, set(stranded),
                     )
-                    if rescue_defs is not None:
+                    if rescue_body is not None:
+                        rescue_defs = tuple(
+                            _HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(rescue_body)
+                        )
                         logger.info(
                             "HandlerChainComposer: byte-evidence region"
                             " first=%d pred=%d -- def-site chain captured"
@@ -8005,6 +7992,7 @@ class HandlerChainComposerStrategy:
                             [hex(s.ea) for s in rescue_defs],
                         )
                         composed = list(rescue_defs) + composed
+                        composed_bodies.insert(0, rescue_body)
                         covered = True
                         stranded = []
                     else:
@@ -8072,6 +8060,13 @@ class HandlerChainComposerStrategy:
             succ_serial=int(succ_serial),
             composed_instructions=tuple(composed),
             state_values=tuple(state_values),
+            captured_body=_HEX_RAYS_CAPTURE_BACKEND.combine_bodies(
+                tuple(composed_bodies),
+                capture_id=(
+                    "region:"
+                    + ",".join(str(int(serial)) for serial in handler_serials)
+                ),
+            ),
         )
 
     @staticmethod
@@ -8236,128 +8231,25 @@ class HandlerChainComposerStrategy:
         is the materialisation path for byte-emitter handler blocks
         (m_add + m_stx + jcond), whose m_stx would otherwise be lost.
         """
-        block_has_byte_evidence = False
-        if byte_evidence_eas:
-            try:
-                probe = blk.head  # type: ignore[attr-defined]
-            except Exception:
-                probe = None
-            while probe is not None:
-                try:
-                    probe_ea = int(getattr(probe, "ea", 0) or 0)
-                except Exception:
-                    probe_ea = 0
-                if probe_ea and probe_ea in byte_evidence_eas:
-                    block_has_byte_evidence = True
-                    break
-                probe = getattr(probe, "next", None)
-        try:
-            insn = blk.head  # type: ignore[attr-defined]
-        except Exception:
-            return _CaptureResult(
-                kind="closing_abort",
-                abort_reason="blk_head_unreadable",
+        backend_result = (
+            _HEX_RAYS_CAPTURE_BACKEND.capture_block_composable_instructions_v2(
+                blk,
+                state_var_stkoff=state_var_stkoff,
+                byte_evidence_eas=byte_evidence_eas,
             )
-        snapshots: list[InsnSnapshot] = []
-        call_eas: list[tuple[int, bool]] = []  # (ea, is_indirect)
-        pre_call_count = 0
-        post_call_count = 0
-        seen_call = False
-        while insn is not None:
-            try:
-                opcode = int(insn.opcode)
-            except Exception:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="opcode_unreadable",
-                )
-            is_jcond = False
-            jcond_check_failed = False
-            try:
-                is_jcond = bool(ida_hexrays.is_mcode_jcond(opcode))
-            except Exception:
-                jcond_check_failed = True
-            if jcond_check_failed:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="jcond_check_raised",
-                )
-            decision = decide_instruction_capture(
-                InstructionCaptureFacts(
-                    is_goto=(opcode == ida_hexrays.m_goto),
-                    is_nop=(opcode == ida_hexrays.m_nop),
-                    is_closing_forbidden=(opcode in _CLOSING_FORBIDDEN),
-                    is_conditional_jump=is_jcond,
-                    is_call=(opcode in _CALL_FORBIDDEN),
-                    is_state_write=_is_state_write(insn, state_var_stkoff),
-                    is_tail=(getattr(insn, "next", None) is None),
-                    block_has_required_payload_evidence=block_has_byte_evidence,
-                ),
-                opcode=opcode,
-            )
-            if decision.action == "skip":
-                insn = insn.next
-                continue
-            if decision.action == "abort":
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason=decision.abort_reason,
-                )
-            if decision.action == "drop_control_tail":
-                # Byte-emitter handler block with jcond at tail:
-                # drop the jcond from the composable body; the
-                # InsertBlock's pred->succ wiring carries the
-                # DAG-aligned next-state edge.
-                break
-            # Side-effecting calls: record the EA but do not capture a
-            # snapshot for them (the call body stays in the original
-            # block; Phase B never copies it elsewhere).
-            if decision.action == "record_call":
-                try:
-                    call_ea = int(getattr(insn, "ea", 0))
-                except Exception:
-                    call_ea = 0
-                is_indirect = opcode == ida_hexrays.m_icall
-                call_eas.append((call_ea, is_indirect))
-                seen_call = True
-                insn = insn.next
-                continue
-            try:
-                snap = capture_insn_snapshot(insn)
-            except Exception as exc:
-                logger.warning(
-                    "HandlerChainComposer: capture_insn_snapshot failed at"
-                    " ea=0x%x opcode=%d: %s",
-                    int(getattr(insn, "ea", 0)),
-                    opcode,
-                    exc,
-                )
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="capture_snapshot_failed",
-                )
-            snapshots.append(snap)
-            if seen_call:
-                post_call_count += 1
-            else:
-                pre_call_count += 1
-            insn = insn.next
-        if not call_eas:
-            return _CaptureResult(
-                kind="composable",
-                snapshots=tuple(snapshots),
-            )
-        if len(call_eas) > 1:
-            return _CaptureResult(
-                kind="closing_abort",
-                abort_reason=f"multi_call_anchor_count={len(call_eas)}",
-            )
-        call_ea, is_indirect = call_eas[0]
+        )
+        snapshots = (
+            _HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(backend_result.body)
+            if backend_result.body is not None
+            else None
+        )
         return _CaptureResult(
-            kind="opaque_call_anchor",
-            snapshots=None,
-            call_ea=call_ea,
-            is_indirect=is_indirect,
-            pre_call_count=pre_call_count,
-            post_call_count=post_call_count,
+            kind=backend_result.kind,
+            snapshots=snapshots,
+            body=backend_result.body,
+            abort_reason=backend_result.abort_reason,
+            call_ea=backend_result.call_ea,
+            is_indirect=backend_result.is_indirect,
+            pre_call_count=backend_result.pre_call_count,
+            post_call_count=backend_result.post_call_count,
         )

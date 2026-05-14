@@ -268,12 +268,7 @@ def _canonical_mod_sig(mod: object) -> ModSig:
             fingerprint=str(getattr(mod, "patch_kind", "") or ""),
         )
     if cls_name == "InsertBlock":
-        instructions = getattr(mod, "instructions", ()) or ()
-        ea_hexes: list[str] = []
-        for ins in instructions:
-            ea_hex = _format_ea_hex(getattr(ins, "ea", None))
-            if ea_hex is not None:
-                ea_hexes.append(ea_hex)
+        ea_hexes = list(_insertblock_source_ea_hexes(mod))
         fp = ",".join(sorted(set(ea_hexes)))[:120]
         succ = int(getattr(mod, "succ_serial", -1))
         old_target_serial = getattr(mod, "old_target_serial", None)
@@ -310,14 +305,32 @@ def _insertblock_contains_evidence(
 ) -> bool:
     if type(mod).__name__ != "InsertBlock":
         return False
+    for ea_hex in _insertblock_source_ea_hexes(mod):
+        if ea_hex in byte_source_ea_hex_set:
+            return True
+    return False
+
+
+def _insertblock_source_ea_hexes(mod: object) -> tuple[str, ...]:
+    captured_body = getattr(mod, "captured_body", None)
+    if captured_body is not None:
+        summary = getattr(captured_body, "summary", None)
+        source_eas = getattr(summary, "source_eas", frozenset())
+        ea_hexes: list[str] = []
+        for ea in source_eas:
+            ea_hex = _format_ea_hex(ea)
+            if ea_hex is not None:
+                ea_hexes.append(ea_hex)
+        return tuple(ea_hexes)
+
     instructions = getattr(mod, "instructions", ()) or ()
+    ea_hexes = []
     for ins in instructions:
         ea_hex = _format_ea_hex(getattr(ins, "ea", None))
         if ea_hex is None:
             continue
-        if ea_hex in byte_source_ea_hex_set:
-            return True
-    return False
+        ea_hexes.append(ea_hex)
+    return tuple(ea_hexes)
 
 
 def _byte_block_redirected_away(mod: object, block_serial: int | None) -> bool:
