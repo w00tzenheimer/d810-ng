@@ -864,9 +864,27 @@ def _find_real_conditional_redirect_candidate(mba) -> CreateConditionalRedirect 
         if isinstance(mod, CreateConditionalRedirect):
             return mod
 
-    # Current planner output may not include this edit kind for the sampled
-    # function. Keep the backend coverage by synthesizing the same operation
-    # from real MBA topology instead of skipping the runtime mutator path.
+    # Prefer the planner-produced CreateConditionalRedirect above when it is
+    # available: that keeps this test tied to the exact edit the strategy family
+    # intended to emit. The sampled Approov function does not always produce that
+    # edit kind, though. If the strategy changes shape, the old behavior was to
+    # skip this test entirely, which meant the deferred mutator backend could
+    # lose real-MBA coverage without anyone noticing.
+    #
+    # This fallback is deliberately narrower than planner validation. It builds
+    # a structurally valid CreateConditionalRedirect from the live MBA topology:
+    # clone any real 2-way conditional block as the reference block, reuse its
+    # real successors as the conditional/fallthrough targets, then redirect an
+    # unrelated real 1-way goto source block through the newly created
+    # conditional. That exercises the runtime operation that matters here:
+    #
+    #     source -> cloned conditional -> taken target
+    #                              \-> helper fallthrough block -> fallthrough target
+    #
+    # In other words, if this path is used, the test is asserting backend safety
+    # for CreateConditionalRedirect on real IDA microcode. It is not asserting
+    # that the emulated-dispatcher planner discovered a semantically meaningful
+    # conditional redirect for this particular function.
     ref_blk = None
     for serial in range(int(getattr(mba, "qty", 0) or 0)):
         blk = mba.get_mblock(serial)
