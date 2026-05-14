@@ -748,6 +748,56 @@ class TestStateWriteReconstructionTopologyBackend:
 
 
 class TestHandlerChainLiveTopologyBackend:
+    def test_reads_one_way_successor_from_live_topology(self) -> None:
+        backend = (
+            hcc_topology_backend_module.HexRaysHandlerChainLiveTopologyBackend()
+        )
+
+        class _BrokenSuccBlock(_StubBlock):
+            def succ(self, idx: int) -> int:
+                raise RuntimeError("unreadable successor")
+
+        mba = _StubMba(
+            {
+                10: _StubBlock(10, succs=(20,), preds=()),
+                11: _StubBlock(11, succs=(21, 22), preds=()),
+                12: _BrokenSuccBlock(12, succs=(23,), preds=()),
+            }
+        )
+
+        assert backend.read_one_way_successor(
+            mba,
+            10,
+        ) == hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+            block_exists=True,
+            nsucc=1,
+            successor=20,
+        )
+        assert backend.read_one_way_successor(
+            mba,
+            11,
+        ) == hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+            block_exists=True,
+            nsucc=2,
+            successor=None,
+        )
+        assert backend.read_one_way_successor(
+            mba,
+            12,
+        ) == hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+            block_exists=True,
+            nsucc=1,
+            successor=None,
+        )
+        assert backend.read_one_way_successor(
+            mba,
+            99,
+        ) == hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+            block_exists=False,
+            nsucc=None,
+            successor=None,
+        )
+
     def test_resolves_first_predecessor_from_live_topology(self) -> None:
         backend = (
             hcc_topology_backend_module.HexRaysHandlerChainLiveTopologyBackend()
@@ -817,6 +867,54 @@ class TestHandlerChainLiveTopologyBackend:
             is None
         )
         assert backend.seen == [(mba, 10, frozenset({10}))]
+
+    def test_composer_delegates_one_way_successor_probe_to_backend(self) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("HCC should ask live topology backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.seen.append((mba, serial))
+                return hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                    block_exists=True,
+                    nsucc=1,
+                    successor=22,
+                )
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        assert strategy._read_live_one_way_successor(
+            mba,
+            10,
+        ) == hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+            block_exists=True,
+            nsucc=1,
+            successor=22,
+        )
+        assert backend.seen == [(mba, 10)]
 
 
 class TestFindR1ToSuppress:
@@ -1061,6 +1159,92 @@ class TestTailExtensionStaleTargetGuard:
         #   reason=stale_old_target
         # and skip emission.  Verifying the guard *condition* is what
         # this test protects.
+
+    def test_tail_extension_stale_guard_uses_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            def get_mblock(self, serial: int) -> object:
+                raise AssertionError("stale guard should use topology backend")
+
+        class _FakeLiveTopologyBackend:
+            def __init__(self) -> None:
+                self.seen: list[tuple[object, int]] = []
+
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                self.seen.append((mba, serial))
+                return hcc_topology_backend_module.LiveOneWaySuccessorProbe(
+                    block_exists=True,
+                    nsucc=1,
+                    successor=99,
+                )
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        plan = _TailExtensionPlan(
+            convergence_block=50,
+            splice_old_target=60,
+            exit_target=70,
+            owning_state_anchor=50,
+        )
+        cover = _make_raw_region_info(
+            head_anchor=50,
+            handler_serials=(50,),
+            composed_handler_serials=(50,),
+            splice_source_block=49,
+            splice_old_target=51,
+            proposed_exit=51,
+        )
+        info = _make_raw_region_info(
+            head_anchor=20,
+            handler_serials=(20,),
+            composed_handler_serials=(20,),
+            splice_source_block=50,
+            splice_old_target=60,
+            proposed_exit=70,
+        )
+        monkeypatch.setattr(
+            hcc_module,
+            "_classify_convergence_or_linear",
+            lambda **_kwargs: ("FUSABLE_TAIL_EXTENSION", plan),
+        )
+        monkeypatch.setattr(
+            hcc_module,
+            "_find_cover_regions",
+            lambda **_kwargs: (cover,),
+        )
+
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeLiveTopologyBackend()
+        strategy._live_topology_backend = backend
+        mba = _MbaWithoutMblocks()
+
+        candidates, consumed_ids = strategy._apply_fusable_tail_extension(
+            mba=mba,
+            dag=SimpleNamespace(edges=()),
+            local_facts=SimpleNamespace(),
+            raw_region_table=(info,),
+            state_var_stkoff=None,
+        )
+
+        assert candidates == []
+        assert consumed_ids == set()
+        assert backend.seen == [(mba, 50)]
 
     def test_stale_target_rejected_when_splice_source_dead(self) -> None:
         """When the splice source's live mblock is missing, the guard

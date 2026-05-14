@@ -1,9 +1,20 @@
 """Live-topology backend boundary for Hodur handler-chain composition."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import ida_hexrays
 
 from d810.core.typing import AbstractSet, Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class LiveOneWaySuccessorProbe:
+    """Live topology facts for a block expected to have one successor."""
+
+    block_exists: bool
+    nsucc: int | None = None
+    successor: int | None = None
 
 
 class HandlerChainLiveTopologyBackend(Protocol):
@@ -11,6 +22,13 @@ class HandlerChainLiveTopologyBackend(Protocol):
 
     def block_exists(self, mba: object, serial: int) -> bool:
         """Return True when the live MBA still contains ``serial``."""
+
+    def read_one_way_successor(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveOneWaySuccessorProbe:
+        """Read live one-way successor facts for ``serial``."""
 
     def resolve_first_predecessor(
         self,
@@ -33,6 +51,36 @@ class HexRaysHandlerChainLiveTopologyBackend:
 
     def block_exists(self, mba: object, serial: int) -> bool:
         return self._block(mba, serial) is not None
+
+    def read_one_way_successor(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveOneWaySuccessorProbe:
+        block = self._block(mba, int(serial))
+        if block is None:
+            return LiveOneWaySuccessorProbe(block_exists=False)
+        try:
+            succ_count = int(block.nsucc())  # type: ignore[attr-defined]
+        except Exception:
+            return LiveOneWaySuccessorProbe(block_exists=True)
+        if succ_count != 1:
+            return LiveOneWaySuccessorProbe(
+                block_exists=True,
+                nsucc=succ_count,
+            )
+        try:
+            successor = int(block.succ(0))  # type: ignore[attr-defined]
+        except Exception:
+            return LiveOneWaySuccessorProbe(
+                block_exists=True,
+                nsucc=succ_count,
+            )
+        return LiveOneWaySuccessorProbe(
+            block_exists=True,
+            nsucc=succ_count,
+            successor=successor,
+        )
 
     def resolve_first_predecessor(
         self,
@@ -97,4 +145,5 @@ __all__ = [
     "DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND",
     "HandlerChainLiveTopologyBackend",
     "HexRaysHandlerChainLiveTopologyBackend",
+    "LiveOneWaySuccessorProbe",
 ]
