@@ -117,12 +117,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.profile import (
-    ALL_STRATEGIES,
-    EXPERIMENTAL_STRATEGIES,
-    LEGACY_STRATEGIES,
-)
-
 __all__ = [
     "ValrangeResolutionStrategy",
     "EdgeSplitConflictResolutionStrategy",
@@ -153,3 +147,11 @@ __all__ = [
     "EXPERIMENTAL_STRATEGIES",
     "LEGACY_STRATEGIES",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"ALL_STRATEGIES", "EXPERIMENTAL_STRATEGIES", "LEGACY_STRATEGIES"}:
+        from d810.optimizers.microcode.flow.flattening.hodur import profile
+
+        return getattr(profile, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
