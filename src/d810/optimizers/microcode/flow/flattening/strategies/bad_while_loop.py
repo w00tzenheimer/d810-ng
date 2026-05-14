@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
+    CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateAndRedirect,
     GraphModification,
@@ -73,11 +74,23 @@ class BadWhileLoopConditionalDuplicate:
     fallthrough_target: int
 
 
+@dataclass(frozen=True)
+class BadWhileLoopConditionalRedirect:
+    """Clone a dispatcher conditional case after a 1-way predecessor."""
+
+    dispatcher_entry: int
+    source_serial: int
+    ref_block: int
+    conditional_target: int
+    fallthrough_target: int
+
+
 BadWhileLoopEdit = (
     BadWhileLoopGotoRedirect
     | BadWhileLoopGotoConversion
     | BadWhileLoopDuplicateRedirect
     | BadWhileLoopConditionalDuplicate
+    | BadWhileLoopConditionalRedirect
 )
 
 
@@ -187,6 +200,27 @@ def _coerce_bad_while_loop_edits(raw: object) -> tuple[BadWhileLoopEdit, ...]:
                     dispatcher_entry=dispatcher_entry,
                     source_serial=source_serial,
                     pred_serial=pred_serial,
+                    conditional_target=conditional_target,
+                    fallthrough_target=fallthrough_target,
+                )
+            )
+        elif kind == "create_conditional_redirect":
+            source_serial = _coerce_int(item.get("source_serial"))
+            ref_block = _coerce_int(item.get("ref_block"))
+            conditional_target = _coerce_int(item.get("conditional_target"))
+            fallthrough_target = _coerce_int(item.get("fallthrough_target"))
+            if (
+                source_serial is None
+                or ref_block is None
+                or conditional_target is None
+                or fallthrough_target is None
+            ):
+                continue
+            edits.append(
+                BadWhileLoopConditionalRedirect(
+                    dispatcher_entry=dispatcher_entry,
+                    source_serial=source_serial,
+                    ref_block=ref_block,
                     conditional_target=conditional_target,
                     fallthrough_target=fallthrough_target,
                 )
@@ -334,6 +368,39 @@ def _is_valid_bad_while_loop_edit(
             if conditional_target == src or fallthrough_target == src:
                 return False
             return True
+        case BadWhileLoopConditionalRedirect(
+            source_serial=src,
+            ref_block=ref,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ):
+            src_block = cfg.blocks.get(src)
+            ref_block = cfg.blocks.get(ref)
+            conditional_block = cfg.blocks.get(conditional_target)
+            fallthrough_block = cfg.blocks.get(fallthrough_target)
+            if (
+                src_block is None
+                or ref_block is None
+                or conditional_block is None
+                or fallthrough_block is None
+            ):
+                return False
+            if src_block.nsucc != 1:
+                return False
+            if src_block.succs[0] != edit.dispatcher_entry:
+                return False
+            if ref_block.nsucc != 2:
+                return False
+            if {
+                int(conditional_target),
+                int(fallthrough_target),
+            } != set(ref_block.succs):
+                return False
+            if conditional_target == fallthrough_target:
+                return False
+            if src in (ref, conditional_target, fallthrough_target):
+                return False
+            return True
     return False
 
 
@@ -361,6 +428,13 @@ def _normalize_bad_while_loop_edits(
             case BadWhileLoopConditionalDuplicate(source_serial=src, pred_serial=pred):
                 key = ("duplicate_conditional_redirect", src, pred)
                 target_value = (edit.conditional_target, edit.fallthrough_target)
+            case BadWhileLoopConditionalRedirect(source_serial=src):
+                key = ("create_conditional_redirect", src)
+                target_value = (
+                    edit.ref_block,
+                    edit.conditional_target,
+                    edit.fallthrough_target,
+                )
 
         previous = edits_by_key.get(key)
         if previous is None:
@@ -377,8 +451,16 @@ def _normalize_bad_while_loop_edits(
                     previous.per_pred_targets
                     if isinstance(previous, BadWhileLoopDuplicateRedirect)
                     else (
-                        previous.conditional_target,
-                        previous.fallthrough_target,
+                        (
+                            previous.conditional_target,
+                            previous.fallthrough_target,
+                        )
+                        if isinstance(previous, BadWhileLoopConditionalDuplicate)
+                        else (
+                            previous.ref_block,
+                            previous.conditional_target,
+                            previous.fallthrough_target,
+                        )
                     )
                 )
             )
@@ -430,13 +512,24 @@ def _serialize_bad_while_loop_edits(
                     ],
                 }
             )
-        else:
+        elif isinstance(edit, BadWhileLoopConditionalDuplicate):
             serialized.append(
                 {
                     "kind": "duplicate_conditional_redirect",
                     "dispatcher_entry": edit.dispatcher_entry,
                     "source_serial": edit.source_serial,
                     "pred_serial": edit.pred_serial,
+                    "conditional_target": edit.conditional_target,
+                    "fallthrough_target": edit.fallthrough_target,
+                }
+            )
+        else:
+            serialized.append(
+                {
+                    "kind": "create_conditional_redirect",
+                    "dispatcher_entry": edit.dispatcher_entry,
+                    "source_serial": edit.source_serial,
+                    "ref_block": edit.ref_block,
                     "conditional_target": edit.conditional_target,
                     "fallthrough_target": edit.fallthrough_target,
                 }
@@ -527,12 +620,21 @@ def build_bad_while_loop_modifications(
                     per_pred_targets=edit.per_pred_targets,
                 )
             )
-        else:
+        elif isinstance(edit, BadWhileLoopConditionalDuplicate):
             modifications.append(
                 DuplicateBlock(
                     source_block=edit.source_serial,
                     target_block=None,
                     pred_serial=edit.pred_serial,
+                    conditional_target=edit.conditional_target,
+                    fallthrough_target=edit.fallthrough_target,
+                )
+            )
+        else:
+            modifications.append(
+                CreateConditionalRedirect(
+                    source_block=edit.source_serial,
+                    ref_block=edit.ref_block,
                     conditional_target=edit.conditional_target,
                     fallthrough_target=edit.fallthrough_target,
                 )
@@ -639,6 +741,13 @@ def collect_live_bad_while_loop_analysis(
             case BadWhileLoopConditionalDuplicate(source_serial=src, pred_serial=pred):
                 key = ("duplicate_conditional_redirect", src, pred)
                 target_value = (edit.conditional_target, edit.fallthrough_target)
+            case BadWhileLoopConditionalRedirect(source_serial=src):
+                key = ("create_conditional_redirect", src)
+                target_value = (
+                    edit.ref_block,
+                    edit.conditional_target,
+                    edit.fallthrough_target,
+                )
 
         previous = edits_by_key.get(key)
         if previous is None:
@@ -657,8 +766,16 @@ def collect_live_bad_while_loop_analysis(
                     previous.per_pred_targets
                     if isinstance(previous, BadWhileLoopDuplicateRedirect)
                     else (
-                        previous.conditional_target,
-                        previous.fallthrough_target,
+                        (
+                            previous.conditional_target,
+                            previous.fallthrough_target,
+                        )
+                        if isinstance(previous, BadWhileLoopConditionalDuplicate)
+                        else (
+                            previous.ref_block,
+                            previous.conditional_target,
+                            previous.fallthrough_target,
+                        )
                     )
                 )
             )
@@ -1001,6 +1118,20 @@ def collect_live_bad_while_loop_analysis(
                 target_is_conditional
                 and int(target_blk.serial) in dispatcher_direct_successors
             ):
+                if (
+                    father.nsucc() == 1
+                    and int(father.succ(0)) == dispatcher_entry_serial
+                ):
+                    record_edit(
+                        BadWhileLoopConditionalRedirect(
+                            dispatcher_entry=dispatcher_entry_serial,
+                            source_serial=int(father.serial),
+                            ref_block=int(target_blk.serial),
+                            conditional_target=int(target_blk.succ(0)),
+                            fallthrough_target=int(target_blk.succ(1)),
+                        )
+                    )
+                    continue
                 record_follow_up(
                     dispatcher_entry=dispatcher_entry_serial,
                     from_serial=int(father.serial),
@@ -1091,6 +1222,8 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
             blocks.add(mod.source_block)
             if mod.pred_serial is not None:
                 edges.add((mod.pred_serial, mod.source_block))
+        elif isinstance(mod, CreateConditionalRedirect):
+            blocks.add(mod.source_block)
 
     return OwnershipScope(
         blocks=frozenset(blocks),
@@ -1148,6 +1281,7 @@ __all__ = [
     "BAD_WHILE_LOOP_UNSUPPORTED",
     "BadWhileLoopAnalysis",
     "BadWhileLoopConditionalDuplicate",
+    "BadWhileLoopConditionalRedirect",
     "BadWhileLoopDuplicateRedirect",
     "BadWhileLoopEdit",
     "BadWhileLoopFollowUp",
