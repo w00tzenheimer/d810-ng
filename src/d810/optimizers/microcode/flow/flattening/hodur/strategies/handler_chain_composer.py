@@ -3096,8 +3096,9 @@ class HandlerChainComposerStrategy:
             int(getattr(mba, "entry_ea", 0) or 0),
             int(getattr(mba, "maturity", 0) or 0),
         )
-        # Snapshot + selected-alternate override BEFORE building
-        # indexes so candidate generation sees the corrected edges.
+        # Snapshot for diagnostics, then apply selected-alternate overrides
+        # from the in-memory fact view so SQLite availability cannot affect
+        # behavior.
         _snapshot_result = snapshot_reconstruction_dag(
             logger,
             dag=dag,
@@ -3105,15 +3106,23 @@ class HandlerChainComposerStrategy:
             strategy_name=self.name,
         )
         from d810.recon.flow.selected_alternate_edge_override import (
-            apply_selected_alternate_edge_overrides_from_diag,
+            apply_selected_alternate_edge_overrides,
+            derive_selected_alternate_edge_override_map,
         )
-        dag = apply_selected_alternate_edge_overrides_from_diag(
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        override_map = derive_selected_alternate_edge_override_map(
             dag,
-            _snapshot_result.snap_ref,
+            fact_view,
         )
-        corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
+        dag = apply_selected_alternate_edge_overrides(
+            dag,
+            fact_view,
+            override_map=override_map,
+        )
+        corrected_dag = apply_selected_alternate_edge_overrides(
             corrected_dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            override_map=override_map,
         )
 
         indexes = build_reconstruction_discovery_indexes(
