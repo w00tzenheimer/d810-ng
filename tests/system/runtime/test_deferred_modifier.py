@@ -863,6 +863,38 @@ def _find_real_conditional_redirect_candidate(mba) -> CreateConditionalRedirect 
     for mod in snapshot.flow_graph.metadata.get(EMULATED_DISPATCHER_MODIFICATIONS_KEY, ()):
         if isinstance(mod, CreateConditionalRedirect):
             return mod
+
+    # Current planner output may not include this edit kind for the sampled
+    # function. Keep the backend coverage by synthesizing the same operation
+    # from real MBA topology instead of skipping the runtime mutator path.
+    ref_blk = None
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        if blk is None or blk.tail is None:
+            continue
+        if blk.nsucc() != 2 or not ida_hexrays.is_mcode_jcond(blk.tail.opcode):
+            continue
+        ref_blk = blk
+        break
+    if ref_blk is None:
+        return None
+
+    ref_successors = tuple(int(ref_blk.succ(idx)) for idx in range(ref_blk.nsucc()))
+    if len(ref_successors) != 2:
+        return None
+
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        if blk is None or blk.serial == ref_blk.serial or blk.serial == 0:
+            continue
+        if blk.nsucc() != 1 or blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+            continue
+        return CreateConditionalRedirect(
+            source_block=int(blk.serial),
+            ref_block=int(ref_blk.serial),
+            conditional_target=int(ref_successors[0]),
+            fallthrough_target=int(ref_successors[1]),
+        )
     return None
 
 

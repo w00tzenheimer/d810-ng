@@ -636,7 +636,6 @@ OLLVM_CASES = [
             "ArithmeticChain",
             "AndBnot_FactorRule_2",
         ],
-        skip="Known gap: partial deobfuscation, required patterns still missing",
     ),
 ]
 
@@ -761,7 +760,9 @@ RESIZE_BUFFER_CFF_CASES = [
             "FixPredecessorOfConditionalJumpBlock, and Unflattener."
         ),
         project="flatfold.json",
-        obfuscated_contains=["g_resize_opaque_table"],
+        # PE/Mach-O symbol recovery can name the opaque table differently.
+        # Assert stable state constants instead of the source symbol spelling.
+        obfuscated_contains=["0x41698846", "0x7BE4032F"],
         deobfuscated_not_contains=[
             "g_resize_opaque_table",
             "n0x3C837EFA",
