@@ -8,7 +8,11 @@ import ida_hexrays
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening import (
+    cleanup_backend as backend_module,
     unflattener_cleanup_family as shell_module,
+)
+from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
+    LiveSimpleFlatteningCleanupBackend,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_family import (
     CLEANUP_FAMILY_METADATA_KEY,
@@ -94,6 +98,21 @@ class _FakeTranslator:
         return self.flow_graph
 
 
+class _FakeBackend:
+    def __init__(self, detection: SimpleFlatteningCleanupDetection) -> None:
+        self.detection = detection
+        self.calls: list[tuple[object, object | None]] = []
+
+    def collect(
+        self,
+        mba: object,
+        *,
+        logger: object | None = None,
+    ) -> SimpleFlatteningCleanupDetection:
+        self.calls.append((mba, logger))
+        return self.detection
+
+
 def _fake_mba() -> SimpleNamespace:
     return SimpleNamespace(
         maturity=ida_hexrays.MMAT_GLBOPT1,
@@ -116,27 +135,71 @@ def test_simple_cleanup_family_registers_first_pilot_strategies_only() -> None:
     ]
 
 
-def test_simple_cleanup_family_attaches_strategy_metadata(monkeypatch) -> None:
+def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
+    fake_jump_fix = FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10)
+    single_iteration_fix = SingleIterationPredFix(
+        loop_header=30,
+        pred_block=29,
+        new_target=31,
+    )
+    calls: dict[str, object] = {}
+
+    def _collect_fake_jump(mba, **kwargs):
+        calls["fake_jump"] = (mba, kwargs)
+        return (fake_jump_fix,)
+
+    def _collect_single_iteration(mba, **kwargs):
+        calls["single_iteration"] = (mba, kwargs)
+        return (single_iteration_fix,)
+
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_fake_jump_fixes",
+        _collect_fake_jump,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_single_iteration_fixes",
+        _collect_single_iteration,
+    )
+
+    backend = LiveSimpleFlatteningCleanupBackend()
+    mba = _fake_mba()
+    detection = backend.collect(mba, logger=None)
+
+    assert detection.fake_jump_fixes == (fake_jump_fix,)
+    assert detection.single_iteration_fixes == (single_iteration_fix,)
+    assert detection.collection_errors == ()
+    assert calls["fake_jump"][0] is mba
+    assert calls["fake_jump"][1]["max_nb_block"] == 100
+    assert calls["fake_jump"][1]["max_path"] == 100
+    assert calls["single_iteration"][0] is mba
+
+
+def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     fake_jump_fix = FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10)
     single_iteration_fixes = (
         SingleIterationPredFix(loop_header=30, pred_block=29, new_target=31),
         SingleIterationPredFix(loop_header=30, pred_block=31, new_target=32),
     )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.cleanup_family.collect_live_fake_jump_fixes",
-        lambda *args, **kwargs: (fake_jump_fix,),
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.cleanup_family.collect_live_single_iteration_fixes",
-        lambda *args, **kwargs: single_iteration_fixes,
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            fake_jump_fixes=(fake_jump_fix,),
+            single_iteration_fixes=single_iteration_fixes,
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
     )
     family = SimpleFlatteningCleanupFamily(
+        backend=backend,
         cfg_translator=_FakeTranslator(_cleanup_flow_graph())
     )
 
-    detection = family.detect(_fake_mba())
-    snapshot = family.build_snapshot(_fake_mba(), detection)
+    mba = _fake_mba()
+    detection = family.detect(mba)
+    snapshot = family.build_snapshot(mba, detection)
 
+    assert backend.calls and backend.calls[0][0] is mba
     assert detection.detected is True
     assert extract_fake_jump_fixes(snapshot.flow_graph) == (fake_jump_fix,)
     assert extract_single_iteration_fixes(snapshot.flow_graph) == single_iteration_fixes
@@ -158,19 +221,16 @@ def test_simple_cleanup_family_attaches_strategy_metadata(monkeypatch) -> None:
     assert metadata.planning_ready is True
 
 
-def test_simple_cleanup_family_records_collector_errors(monkeypatch) -> None:
-    def _raise_fake_jump(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.cleanup_family.collect_live_fake_jump_fixes",
-        _raise_fake_jump,
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.cleanup_family.collect_live_single_iteration_fixes",
-        lambda *args, **kwargs: (),
+def test_simple_cleanup_family_records_backend_errors() -> None:
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            collection_errors=("fake_jump:RuntimeError",),
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
     )
     family = SimpleFlatteningCleanupFamily(
+        backend=backend,
         cfg_translator=_FakeTranslator(_cleanup_flow_graph())
     )
 
