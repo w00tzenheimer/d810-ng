@@ -84,6 +84,16 @@ class StateWriteCleanupEvidenceBackend(Protocol):
         """Classify a single matching constant state write in a block snapshot."""
 
 
+class InsertBlockCallAuditBackend(Protocol):
+    """Backend boundary for call checks on materialized InsertBlock bodies."""
+
+    def captured_body_contains_call(self, captured_body: object) -> bool:
+        """Return whether a backend-owned captured body contains a call."""
+
+    def instruction_snapshot_is_call(self, instruction_snapshot: object) -> bool:
+        """Return whether a legacy instruction snapshot represents a call."""
+
+
 class HexRaysInstructionCaptureBackend:
     """Capture Hex-Rays instruction bodies behind an opaque cfg payload."""
 
@@ -119,6 +129,22 @@ class HexRaysInstructionCaptureBackend:
 
     def validate_body(self, body: CapturedBlockBody) -> str | None:
         return validate_captured_block_body(body)
+
+    def captured_body_contains_call(self, captured_body: object) -> bool:
+        return bool(
+            getattr(
+                getattr(captured_body, "summary", None),
+                "contains_call",
+                False,
+            )
+        )
+
+    def instruction_snapshot_is_call(self, instruction_snapshot: object) -> bool:
+        try:
+            opcode = int(getattr(instruction_snapshot, "opcode", -1))
+        except Exception:
+            return False
+        return opcode in _CALL_FORBIDDEN
 
     def classify_trivial_tail_state_write_cleanup(
         self,
@@ -621,7 +647,7 @@ class HexRaysInstructionCaptureBackend:
         cur = getattr(blk, "head", None)
         while cur is not None:
             try:
-                if int(cur.opcode) in _CALL_FORBIDDEN:
+                if self.instruction_snapshot_is_call(cur):
                     return True
             except Exception:
                 return False

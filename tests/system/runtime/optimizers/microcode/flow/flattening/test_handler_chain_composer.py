@@ -523,6 +523,41 @@ class TestPlanEmission:
         assert strat.plan(snap) is None
 
 
+class TestInsertBlockCallAuditBoundary:
+    def test_insert_block_call_audit_uses_backend(self) -> None:
+        class _FakeCallAuditBackend:
+            def __init__(self, call_snapshot: object) -> None:
+                self.call_snapshot = call_snapshot
+                self.seen_snapshots: list[object] = []
+
+            def captured_body_contains_call(self, captured_body: object) -> bool:
+                raise AssertionError("unexpected captured-body audit")
+
+            def instruction_snapshot_is_call(
+                self,
+                instruction_snapshot: object,
+            ) -> bool:
+                self.seen_snapshots.append(instruction_snapshot)
+                return instruction_snapshot is self.call_snapshot
+
+        call_snapshot = SimpleNamespace(ea=0x1234)
+        mod = InsertBlock(
+            pred_serial=10,
+            succ_serial=20,
+            instructions=(call_snapshot,),
+        )
+        strategy = HandlerChainComposerStrategy()
+        backend = _FakeCallAuditBackend(call_snapshot)
+        strategy._insert_block_call_audit_backend = backend
+
+        with pytest.raises(
+            AssertionError,
+            match="m_call leaked into InsertBlock instructions",
+        ):
+            strategy._assert_no_call_in_insert_blocks([mod])
+        assert backend.seen_snapshots == [call_snapshot]
+
+
 # ---------------------------------------------------------------------------
 # FUSABLE_TAIL_EXTENSION lock-down tests (uee-tail-extension).
 #
