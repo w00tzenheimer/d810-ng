@@ -189,8 +189,9 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
-    check_redirect_severs_use_def,
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
+    HexRaysUseDefSafetyBackend,
+    UseDefSafetyBackend,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
@@ -254,6 +255,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
 
+_USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
+
 
 def _lfg_bounded_postprocess_enabled() -> bool:
     return os.environ.get("D810_LFG_BOUNDED_POSTPROCESS", "1").strip() != "0"
@@ -261,6 +264,77 @@ def _lfg_bounded_postprocess_enabled() -> bool:
 
 def _lfg_use_def_veto_enabled() -> bool:
     return os.environ.get("D810_HCC_USE_DEF_VETO", "1").strip() != "0"
+
+
+def _filter_lfg_use_def_vetoes(
+    modifications: tuple[object, ...],
+    *,
+    enabled: bool,
+    mba: object | None,
+    flow_graph: FlowGraph,
+    state_var_stkoff: int,
+    backend: UseDefSafetyBackend = _USE_DEF_SAFETY_BACKEND,
+) -> tuple[object, ...]:
+    if not enabled or mba is None:
+        return modifications
+
+    use_def_filtered_modifications = []
+    vetoed_use_def_count = 0
+    for modification in modifications:
+        if not isinstance(modification, RedirectGoto):
+            use_def_filtered_modifications.append(modification)
+            continue
+        try:
+            violations = backend.redirect_use_def_violations(
+                modification,
+                mba,
+                flow_graph,
+            )
+        except Exception:
+            logger.debug(
+                "LFG DAG: bounded postprocess use-def veto check raised for %r",
+                modification,
+                exc_info=True,
+            )
+            use_def_filtered_modifications.append(modification)
+            continue
+        if not violations:
+            use_def_filtered_modifications.append(modification)
+            continue
+        real_violations = tuple(
+            violation
+            for violation in violations
+            if int(violation.var_stkoff) != int(state_var_stkoff)
+        )
+        if not real_violations:
+            use_def_filtered_modifications.append(modification)
+            logger.info(
+                "LFG DAG: bounded postprocess use-def warning ignored"
+                " for %r because only state-variable dispatcher uses"
+                " would be severed",
+                modification,
+            )
+            continue
+        details = "; ".join(
+            f"var_stk[{violation.var_stkoff:#x}]@blk[{violation.use_block}]"
+            for violation in real_violations[:8]
+        )
+        if len(real_violations) > 8:
+            details = f"{details}; ..."
+        logger.warning(
+            "LFG DAG: bounded postprocess use-def vetoed %r orphaned_uses=%d details=%s",
+            modification,
+            len(real_violations),
+            details,
+        )
+        vetoed_use_def_count += 1
+    if vetoed_use_def_count:
+        logger.info(
+            "LFG DAG: bounded postprocess use-def veto filtered %d redirect(s)",
+            vetoed_use_def_count,
+        )
+        return tuple(use_def_filtered_modifications)
+    return modifications
 
 
 def _accepted_region_site_signature(site: object) -> tuple[int, int, int, int, tuple[int, ...]]:
@@ -2308,63 +2382,13 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             )
             appended_modifications = filtered_appended_modifications
 
-        if _lfg_use_def_veto_enabled() and mba is not None:
-            use_def_filtered_modifications = []
-            vetoed_use_def_count = 0
-            for modification in appended_modifications:
-                if not isinstance(modification, RedirectGoto):
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                try:
-                    violations = check_redirect_severs_use_def(
-                        modification,
-                        mba,
-                        flow_graph,
-                    )
-                except Exception:
-                    logger.debug(
-                        "LFG DAG: bounded postprocess use-def veto check raised for %r",
-                        modification,
-                        exc_info=True,
-                    )
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                if not violations:
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                real_violations = tuple(
-                    violation
-                    for violation in violations
-                    if int(violation.var_stkoff) != int(state_var_stkoff)
-                )
-                if not real_violations:
-                    use_def_filtered_modifications.append(modification)
-                    logger.info(
-                        "LFG DAG: bounded postprocess use-def warning ignored"
-                        " for %r because only state-variable dispatcher uses"
-                        " would be severed",
-                        modification,
-                    )
-                    continue
-                details = "; ".join(
-                    f"var_stk[{violation.var_stkoff:#x}]@blk[{violation.use_block}]"
-                    for violation in real_violations[:8]
-                )
-                if len(real_violations) > 8:
-                    details = f"{details}; ..."
-                logger.warning(
-                    "LFG DAG: bounded postprocess use-def vetoed %r orphaned_uses=%d details=%s",
-                    modification,
-                    len(real_violations),
-                    details,
-                )
-                vetoed_use_def_count += 1
-            if vetoed_use_def_count:
-                logger.info(
-                    "LFG DAG: bounded postprocess use-def veto filtered %d redirect(s)",
-                    vetoed_use_def_count,
-                )
-                appended_modifications = tuple(use_def_filtered_modifications)
+        appended_modifications = _filter_lfg_use_def_vetoes(
+            appended_modifications,
+            enabled=_lfg_use_def_veto_enabled(),
+            mba=mba,
+            flow_graph=flow_graph,
+            state_var_stkoff=state_var_stkoff,
+        )
 
         modifications = [
             *modifications[:original_modification_count],
