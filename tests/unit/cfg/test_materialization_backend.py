@@ -3,7 +3,8 @@ from __future__ import annotations
 from d810.cfg.graph_modification import InsertBlock, NopInstructions
 from d810.cfg.materialization_backend import (
     BackendInstructionRef,
-    CapturedInstructionPayload,
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
     MaterializationBackend,
 )
 
@@ -15,16 +16,22 @@ class _FakeBackend:
         *,
         omit_terminal_control: bool = False,
         required_source_eas: frozenset[int] = frozenset(),
-    ) -> CapturedInstructionPayload | None:
-        instructions = (
+    ) -> CapturedBlockBody | None:
+        refs = (
             BackendInstructionRef(block_serial=block_serial, ea=0x1000, opcode_name="m_add"),
             BackendInstructionRef(block_serial=block_serial, ea=0x1004, opcode_name="m_stx"),
         )
         if omit_terminal_control:
-            instructions = instructions[:1]
-        payload = CapturedInstructionPayload(
-            source_block=block_serial,
-            instructions=instructions,
+            refs = refs[:1]
+        payload = CapturedBlockBody(
+            backend_id="fake",
+            capture_id=f"fake:{block_serial}",
+            summary=CapturedBlockBodySummary(
+                source_blocks=(block_serial,),
+                instruction_count=len(refs),
+                source_eas=frozenset(ref.ea for ref in refs),
+            ),
+            payload=refs,
         )
         if not payload.contains_all_source_eas(required_source_eas):
             return None
@@ -36,7 +43,7 @@ class _FakeBackend:
         source: int,
         old_target: int,
         target: int,
-        payload: CapturedInstructionPayload,
+        payload: CapturedBlockBody,
         metadata: dict[str, object] | None = None,
     ) -> InsertBlock:
         return InsertBlock(
@@ -56,10 +63,16 @@ class _FakeBackend:
         return NopInstructions(block_serial=block_serial, insn_eas=(insn_ea,))
 
 
-def test_captured_instruction_payload_tracks_required_source_eas() -> None:
-    payload = CapturedInstructionPayload(
-        source_block=12,
-        instructions=(
+def test_captured_block_body_summary_tracks_required_source_eas() -> None:
+    payload = CapturedBlockBody(
+        backend_id="fake",
+        capture_id="fake:12",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(12,),
+            instruction_count=2,
+            source_eas=frozenset({0x1000, 0x1004}),
+        ),
+        payload=(
             BackendInstructionRef(block_serial=12, ea=0x1000),
             BackendInstructionRef(block_serial=12, ea=0x1004),
         ),

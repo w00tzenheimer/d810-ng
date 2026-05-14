@@ -20,6 +20,10 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
@@ -310,6 +314,41 @@ def test_compile_patch_plan_finalizes_insert_block():
     assert patch_plan.relocation_map.stop_serial_before == 11
     assert patch_plan.relocation_map.stop_serial_after == 12
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_preserves_opaque_insert_block_body():
+    body = CapturedBlockBody(
+        backend_id="fake",
+        capture_id="fake-body",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(10,),
+            instruction_count=1,
+            source_eas=frozenset({0x2000}),
+        ),
+        payload=object(),
+    )
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=10,
+                succ_serial=11,
+                captured_body=body,
+            )
+        ],
+        _cfg(),
+    )
+
+    assert patch_plan.new_blocks[0].captured_body is body
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=11,
+            pred_serial=10,
+            succ_serial=12,
+            instructions=(),
+            captured_body=body,
+        ),
+    )
 
 
 def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
