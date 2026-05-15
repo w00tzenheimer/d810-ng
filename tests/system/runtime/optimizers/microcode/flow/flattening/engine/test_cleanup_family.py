@@ -9,6 +9,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapsh
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateAndRedirect,
+    DuplicateBlock,
     DuplicateReplayAndRedirect,
     InsertBlock,
     RedirectGoto,
@@ -19,6 +20,8 @@ from d810.cfg.materialization_payload import (
 )
 from d810.cfg.plan import (
     LegacyBlockOperation,
+    PatchConditionalRedirect,
+    PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     compile_patch_plan,
@@ -172,6 +175,38 @@ def _conditional_redirect_flow_graph() -> FlowGraph:
             2: _block(2, (12, 99), (1,), block_type=4, start_ea=0x401002),
             3: _block(3, (), (12,), block_type=2, start_ea=0x401003),
             4: _block(4, (), (12,), block_type=2, start_ea=0x401004),
+            12: _block(
+                12,
+                (4, 3),
+                (2,),
+                block_type=4,
+                start_ea=0x40100C,
+                tail_target=3,
+            ),
+            99: _block(99, (), (2,), block_type=2, start_ea=0x401099),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+
+def _conditional_promotion_flow_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1, 8), (), block_type=4, start_ea=0x401000),
+            1: _block(1, (2,), (0,), start_ea=0x401001),
+            2: _block(2, (12, 99), (1, 6), block_type=4, start_ea=0x401002),
+            3: _block(3, (), (12,), block_type=2, start_ea=0x401003),
+            4: _block(4, (), (12, 6), block_type=2, start_ea=0x401004),
+            6: _block(
+                6,
+                (2, 4),
+                (8,),
+                block_type=4,
+                start_ea=0x401006,
+                tail_target=2,
+            ),
+            8: _block(8, (6,), (0,), start_ea=0x401008),
             12: _block(
                 12,
                 (4, 3),
@@ -367,72 +402,17 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert calls["single_iteration"][0] is mba
     assert calls["bad_while_loop"][0] is mba
 
-
-def test_live_cleanup_backend_keeps_conditional_redirect_deferred_with_flag_off(
+def test_live_cleanup_backend_promotes_safe_conditional_cleanup_edits(
     monkeypatch,
 ) -> None:
-    edit = BadWhileLoopConditionalRedirect(
+    conditional_duplicate = BadWhileLoopConditionalDuplicate(
         dispatcher_entry=2,
-        source_serial=1,
-        ref_block=12,
+        source_serial=6,
+        pred_serial=8,
         conditional_target=3,
         fallthrough_target=4,
-        dispatcher_internal_serials=(2,),
-        copied_side_effects_absent=True,
     )
-    proof = bad_while_loop_conditional_redirect_proof(
-        edit,
-        _conditional_redirect_flow_graph(),
-    )
-    assert proof is not None
-    assert proof.state is CleanupProofState.PROVEN
-
-    monkeypatch.delenv(
-        backend_module.BAD_WHILE_LOOP_CONDITIONAL_REDIRECT_FLAG,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_fake_jump_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_single_iteration_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_bad_while_loop_analysis",
-        lambda *_args, **_kwargs: BadWhileLoopAnalysis(
-            edits=(edit,),
-            follow_up=(),
-        ),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_fix_predecessor_branch_arm_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "IDAIRTranslator",
-        lambda: _FakeTranslator(_conditional_redirect_flow_graph()),
-    )
-
-    detection = LiveSimpleFlatteningCleanupBackend().collect(
-        _fake_mba(),
-        logger=None,
-    )
-
-    assert detection.bad_while_loop_edits == ()
-    assert detection.bad_while_loop_deferred_edits == (edit,)
-
-
-def test_live_cleanup_backend_promotes_proven_conditional_redirect_with_flag_on(
-    monkeypatch,
-) -> None:
-    edit = BadWhileLoopConditionalRedirect(
+    conditional_redirect = BadWhileLoopConditionalRedirect(
         dispatcher_entry=2,
         source_serial=1,
         ref_block=12,
@@ -442,66 +422,47 @@ def test_live_cleanup_backend_promotes_proven_conditional_redirect_with_flag_on(
         copied_side_effects_absent=True,
     )
 
-    monkeypatch.setenv(
-        backend_module.BAD_WHILE_LOOP_CONDITIONAL_REDIRECT_FLAG,
-        "1",
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_fake_jump_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_single_iteration_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_bad_while_loop_analysis",
-        lambda *_args, **_kwargs: BadWhileLoopAnalysis(
-            edits=(edit,),
+    def _collect_empty(_mba, **_kwargs):
+        return ()
+
+    def _collect_bad_while_loop(_mba, **_kwargs):
+        return BadWhileLoopAnalysis(
+            edits=(conditional_duplicate, conditional_redirect),
             follow_up=(),
-        ),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "collect_live_fix_predecessor_branch_arm_fixes",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        backend_module,
-        "IDAIRTranslator",
-        lambda: _FakeTranslator(_conditional_redirect_flow_graph()),
-    )
-
-    detection = LiveSimpleFlatteningCleanupBackend().collect(
-        _fake_mba(),
-        logger=None,
-    )
-    assert detection.bad_while_loop_edits == (edit,)
-    assert detection.bad_while_loop_deferred_edits == ()
-
-    family = SimpleFlatteningCleanupFamily(
-        backend=_FakeBackend(detection),
-        cfg_translator=_FakeTranslator(_conditional_redirect_flow_graph()),
-    )
-    snapshot = family.build_snapshot(_fake_mba(), detection)
-    fragment = BadWhileLoopStrategy().plan(snapshot)
-
-    assert fragment is not None
-    assert fragment.modifications == [
-        CreateConditionalRedirect(
-            source_block=1,
-            ref_block=12,
-            conditional_target=3,
-            fallthrough_target=4,
-            old_target_serial=2,
         )
-    ]
+
+    monkeypatch.setattr(backend_module, "collect_live_fake_jump_fixes", _collect_empty)
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_single_iteration_fixes",
+        _collect_empty,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_bad_while_loop_analysis",
+        _collect_bad_while_loop,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "IDAIRTranslator",
+        lambda: _FakeTranslator(_conditional_promotion_flow_graph()),
+    )
+
+    detection = LiveSimpleFlatteningCleanupBackend().collect(_fake_mba(), logger=None)
+
+    assert detection.bad_while_loop_edits == (
+        conditional_duplicate,
+        conditional_redirect,
+    )
+    assert detection.bad_while_loop_deferred_edits == ()
+    assert len(detection.bad_while_loop_conditional_redirect_proofs) == 1
+    proof = detection.bad_while_loop_conditional_redirect_proofs[0]
+    assert proof.defer_reason == "conditional_redirect_promoted"
+    assert proof.verdict is CleanupProofVerdict.SAFE_SHAPE
+    assert detection.detected is True
 
 
-def test_live_cleanup_backend_keeps_negative_conditional_proof_deferred_with_flag_on(
+def test_live_cleanup_backend_keeps_negative_conditional_proof_deferred(
     monkeypatch,
 ) -> None:
     edit = BadWhileLoopConditionalRedirect(
@@ -520,10 +481,6 @@ def test_live_cleanup_backend_keeps_negative_conditional_proof_deferred_with_fla
     assert proof is not None
     assert proof.state is CleanupProofState.UNPROVEN
 
-    monkeypatch.setenv(
-        backend_module.BAD_WHILE_LOOP_CONDITIONAL_REDIRECT_FLAG,
-        "1",
-    )
     monkeypatch.setattr(
         backend_module,
         "collect_live_fake_jump_fixes",
@@ -560,6 +517,11 @@ def test_live_cleanup_backend_keeps_negative_conditional_proof_deferred_with_fla
 
     assert detection.bad_while_loop_edits == ()
     assert detection.bad_while_loop_deferred_edits == (edit,)
+    assert len(detection.bad_while_loop_conditional_redirect_proofs) == 1
+    assert (
+        detection.bad_while_loop_conditional_redirect_proofs[0].defer_reason
+        == "conditional_redirect_not_promoted"
+    )
 
 
 def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
@@ -722,6 +684,76 @@ def test_live_cleanup_backend_promotes_duplicate_group_replay_and_keeps_unsafe_d
     assert detection.bad_while_loop_duplicate_replay_candidates == (replay_candidate,)
     assert detection.bad_while_loop_follow_up == (unsafe_follow_up,)
     assert detection.detected is True
+
+
+def test_simple_cleanup_family_selects_and_plans_conditional_cleanup_edits() -> None:
+    conditional_duplicate = BadWhileLoopConditionalDuplicate(
+        dispatcher_entry=2,
+        source_serial=6,
+        pred_serial=8,
+        conditional_target=3,
+        fallthrough_target=4,
+    )
+    conditional_redirect = BadWhileLoopConditionalRedirect(
+        dispatcher_entry=2,
+        source_serial=1,
+        ref_block=12,
+        conditional_target=3,
+        fallthrough_target=4,
+        dispatcher_internal_serials=(2,),
+        copied_side_effects_absent=True,
+    )
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            bad_while_loop_edits=(conditional_duplicate, conditional_redirect),
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
+    )
+    family = SimpleFlatteningCleanupFamily(
+        backend=backend,
+        cfg_translator=_FakeTranslator(_conditional_promotion_flow_graph()),
+    )
+
+    snapshot = family.build_snapshot(_fake_mba(), family.detect(_fake_mba()))
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+
+    assert metadata.planning_ready is True
+    assert metadata.collected_bad_while_loop_edits == 2
+    assert metadata.selected_bad_while_loop_edits == 2
+    assert metadata.deferred_bad_while_loop_edits == 0
+    assert extract_bad_while_loop_edits(snapshot.flow_graph) == (
+        conditional_duplicate,
+        conditional_redirect,
+    )
+
+    fragment = BadWhileLoopStrategy().plan(snapshot)
+    assert fragment is not None
+    assert DuplicateBlock(
+        source_block=6,
+        target_block=None,
+        pred_serial=8,
+        conditional_target=3,
+        fallthrough_target=4,
+    ) in fragment.modifications
+    assert CreateConditionalRedirect(
+        source_block=1,
+        ref_block=12,
+        conditional_target=3,
+        fallthrough_target=4,
+        old_target_serial=2,
+    ) in fragment.modifications
+
+    patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
+    assert any(isinstance(step, PatchDuplicateBlock) for step in patch_plan.steps)
+    assert any(
+        isinstance(step, PatchConditionalRedirect)
+        for step in patch_plan.steps
+    )
+    assert not any(
+        isinstance(step, LegacyBlockOperation)
+        for step in patch_plan.steps
+    )
 
 
 def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
