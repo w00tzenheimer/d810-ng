@@ -998,13 +998,14 @@ def test_bad_while_loop_strategy_plans_create_conditional_redirect() -> None:
 
     assert fragment is not None
     assert fragment.ownership.blocks == frozenset({1})
-    assert fragment.ownership.edges == frozenset()
+    assert fragment.ownership.edges == frozenset({(1, 2)})
     assert fragment.modifications == [
         CreateConditionalRedirect(
             source_block=1,
             ref_block=12,
             conditional_target=3,
             fallthrough_target=4,
+            old_target_serial=2,
         )
     ]
 
@@ -1135,6 +1136,7 @@ def test_build_bad_while_loop_modifications_emits_expected_shapes() -> None:
             ref_block=12,
             conditional_target=3,
             fallthrough_target=4,
+            old_target_serial=2,
         ),
     ]
 

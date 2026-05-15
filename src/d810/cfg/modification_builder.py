@@ -272,12 +272,14 @@ class ModificationBuilder:
         *,
         fallthrough_target: int,
         ref_block: int | None = None,
+        old_target_serial: int | None = None,
     ) -> CreateConditionalRedirect:
         return CreateConditionalRedirect(
             source_block=source_block,
             ref_block=source_block if ref_block is None else ref_block,
             conditional_target=conditional_target,
             fallthrough_target=fallthrough_target,
+            old_target_serial=old_target_serial,
         )
 
     def edge_redirect(

@@ -231,6 +231,7 @@ class PatchConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    old_target_serial: int | None = None
     instructions: tuple[InsnSnapshot, ...] = ()
 
     def to_graph_modification(self) -> CreateConditionalRedirect:
@@ -239,6 +240,7 @@ class PatchConditionalRedirect:
             ref_block=self.ref_block,
             conditional_target=self.conditional_target,
             fallthrough_target=self.fallthrough_target,
+            old_target_serial=self.old_target_serial,
             instructions=self.instructions,
         )
 
@@ -1464,6 +1466,7 @@ def _finalize_step(
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                old_target_serial=old_target,
                 instructions=instructions,
             ),
             block_id=block_id,
@@ -1484,6 +1487,11 @@ def _finalize_step(
                 ref_block=relocation_map.rewrite_serial(ref),
                 conditional_target=relocation_map.rewrite_serial(conditional),
                 fallthrough_target=relocation_map.rewrite_serial(fallthrough),
+                old_target_serial=(
+                    None
+                    if old_target is None
+                    else relocation_map.rewrite_serial(old_target)
+                ),
                 instructions=_rewrite_instruction_snapshots(instructions, relocation_map),
             )
 
@@ -1888,6 +1896,7 @@ def compile_patch_plan(
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                old_target_serial=_old_target,
             ):
                 if cfg is None:
                     block_id = allocator.alloc("conditional_redirect")

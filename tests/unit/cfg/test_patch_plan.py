@@ -262,6 +262,7 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
                 ref_block=10,
                 conditional_target=14,
                 fallthrough_target=11,
+                old_target_serial=10,
             )
         ],
         _conditional_cfg(),
@@ -281,7 +282,15 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
             ref_block=10,
             conditional_target=16,
             fallthrough_target=11,
+            old_target_serial=10,
         ),
+    )
+    assert patch_plan.steps[0].to_graph_modification() == CreateConditionalRedirect(
+        source_block=9,
+        ref_block=10,
+        conditional_target=16,
+        fallthrough_target=11,
+        old_target_serial=10,
     )
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "conditional_redirect_clone",
