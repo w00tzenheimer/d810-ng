@@ -23,6 +23,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FakeJumpPredFix,
     collect_live_fake_jump_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
+    FixPredecessorBranchArmFix,
+    collect_live_fix_predecessor_branch_arm_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationPredFix,
     collect_live_single_iteration_fixes,
@@ -81,6 +85,7 @@ class SimpleFlatteningCleanupDetection:
     bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
+    fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -91,6 +96,7 @@ class SimpleFlatteningCleanupDetection:
             self.fake_jump_fixes
             or self.single_iteration_fixes
             or self.bad_while_loop_edits
+            or self.fix_predecessor_branch_arm_fixes
         )
 
     @property
@@ -115,7 +121,9 @@ class SimpleFlatteningCleanupDetection:
             "simple cleanup candidates detected: "
             f"fake_jump={len(self.fake_jump_fixes)} "
             f"single_iteration={len(self.single_iteration_fixes)} "
-            f"bad_while_loop={len(self.bad_while_loop_edits)}"
+            f"bad_while_loop={len(self.bad_while_loop_edits)} "
+            f"fix_predecessor_branch_arm="
+            f"{len(self.fix_predecessor_branch_arm_fixes)}"
         )
 
 
@@ -228,12 +236,32 @@ class LiveSimpleFlatteningCleanupBackend:
                     exc_info=True,
                 )
 
+        fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
+        try:
+            fix_predecessor_branch_arm_fixes = (
+                collect_live_fix_predecessor_branch_arm_fixes(
+                    mba,
+                    logger=logger,
+                    allowed_maturities=self.allowed_maturities,
+                )
+            )
+        except Exception as exc:
+            errors.append(f"fix_predecessor_branch_arm:{type(exc).__name__}")
+            if logger is not None:
+                logger.debug(
+                    "Failed to collect FixPredecessor branch-arm cleanup candidates",
+                    exc_info=True,
+                )
+
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
             bad_while_loop_edits=tuple(bad_while_loop_edits),
             bad_while_loop_deferred_edits=tuple(bad_while_loop_deferred_edits),
             bad_while_loop_follow_up=tuple(bad_while_loop_follow_up),
+            fix_predecessor_branch_arm_fixes=tuple(
+                fix_predecessor_branch_arm_fixes
+            ),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,
