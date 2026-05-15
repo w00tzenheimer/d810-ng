@@ -23,6 +23,12 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
+from d810.cfg.fix_predecessor_planning import (
+    FixPredecessorCloneAsGotoDecision,
+    FixPredecessorOutcome,
+    plan_fix_predecessor_clone_as_goto,
+)
+from d810.cfg.flowgraph import FlowGraph
 from d810.hexrays.mutation.cfg_mutations import (
     make_2way_block_goto)
 from d810.hexrays.mutation.cfg_verify import (
@@ -161,6 +167,31 @@ class PredecessorModification:
     cond_block_serial: int    # The conditional block being analyzed
     target_serial: int        # Target serial to redirect to
     description: str = ""
+
+
+def plan_predecessor_modification_clone_as_goto(
+    cfg: FlowGraph,
+    modification: PredecessorModification,
+) -> FixPredecessorCloneAsGotoDecision:
+    """Project a live FixPredecessor modification into CFG planning intent.
+
+    This adapter is intentionally read-only.  It lets tests and diagnostics
+    compare the legacy queued modification against the backend-neutral
+    clone-as-goto shape before any shared-engine executor path is selected.
+    """
+    outcome = (
+        FixPredecessorOutcome.ALWAYS_TAKEN
+        if modification.mod_type == PredecessorModificationType.ALWAYS_TAKEN
+        else FixPredecessorOutcome.NEVER_TAKEN
+    )
+    return plan_fix_predecessor_clone_as_goto(
+        cfg,
+        pred_serial=modification.pred_serial,
+        conditional_serial=modification.cond_block_serial,
+        selected_target_serial=modification.target_serial,
+        outcome=outcome,
+        description=modification.description,
+    )
 
 
 class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):

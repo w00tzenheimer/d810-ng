@@ -10,6 +10,7 @@ def test_new_graph_modification_types_exported():
     assert "EdgeRedirectViaPredSplit" in gm.__all__
     assert "CreateConditionalRedirect" in gm.__all__
     assert "DuplicateBlock" in gm.__all__
+    assert "CloneConditionalAsGoto" in gm.__all__
 
 
 def test_edge_redirect_via_pred_split_is_frozen():
@@ -40,3 +41,19 @@ def test_duplicate_block_defaults():
     mod = gm.DuplicateBlock(source_block=33, target_block=None)
     assert mod.pred_serial is None
     assert mod.patch_kind == ""
+
+
+def test_clone_conditional_as_goto_fields_and_frozen():
+    mod = gm.CloneConditionalAsGoto(
+        source_block=10,
+        pred_serial=8,
+        goto_target=12,
+        reason="fix predecessor",
+    )
+
+    assert mod.source_block == 10
+    assert mod.pred_serial == 8
+    assert mod.goto_target == 12
+    assert mod.reason == "fix predecessor"
+    with pytest.raises(FrozenInstanceError):
+        mod.goto_target = 99  # type: ignore[misc]

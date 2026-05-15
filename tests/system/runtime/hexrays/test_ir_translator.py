@@ -18,6 +18,7 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
@@ -380,6 +381,26 @@ class _FakeDeferredGraphModifier:
                 fallthrough_target,
                 expected_serial,
                 expected_secondary_serial,
+                description,
+            )
+        )
+
+    def queue_clone_conditional_as_goto(
+        self,
+        *,
+        source_block_serial: int,
+        pred_serial: int,
+        goto_target_serial: int,
+        expected_serial: int | None = None,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "clone_conditional_as_goto",
+                source_block_serial,
+                pred_serial,
+                goto_target_serial,
+                expected_serial,
                 description,
             )
         )
@@ -894,6 +915,47 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
         assert created[0].calls[0][1:8] == (45, 44, None, 201, 3, 199, 200)
+
+    def test_lower_applies_clone_conditional_as_goto_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                CloneConditionalAsGoto(
+                    source_block=45,
+                    pred_serial=44,
+                    goto_target=2,
+                    reason="fix predecessor simple case",
+                )
+            ],
+            _conditional_duplicate_cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "clone_conditional_as_goto"
+        assert created[0].calls[0][1:5] == (45, 44, 2, 199)
+        assert "fix predecessor simple case" in created[0].calls[0][5]
 
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,
