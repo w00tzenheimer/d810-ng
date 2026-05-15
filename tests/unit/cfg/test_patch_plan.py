@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -27,6 +29,7 @@ from d810.cfg.materialization_payload import (
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
+    PatchCloneConditionalAsGoto,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -517,6 +520,121 @@ def test_compile_patch_plan_finalizes_conditional_duplicate_block():
         "duplicate_block_fallthrough",
     ]
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_clone_conditional_as_goto():
+    modification = CloneConditionalAsGoto(
+        source_block=10,
+        pred_serial=8,
+        goto_target=11,
+        reason="fix predecessor simple case",
+    )
+
+    patch_plan = compile_patch_plan([modification], _conditional_duplicate_cfg())
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchCloneConditionalAsGoto(
+            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
+            assigned_serial=13,
+            source_serial=10,
+            pred_serial=8,
+            goto_target=11,
+            source_successors=(11, 12),
+            conditional_target=11,
+            fallthrough_target=12,
+            reason="fix predecessor simple case",
+        ),
+    )
+    assert patch_plan.new_blocks == (
+        PatchBlockSpec(
+            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
+            kind="clone_conditional_as_goto",
+            template_block=10,
+            incoming_edge=PatchEdgeRef(source=8, target=10),
+            outgoing_edges=(
+                PatchEdgeRef(
+                    source=VirtualBlockId(
+                        namespace="clone_conditional_as_goto",
+                        ordinal=0,
+                    ),
+                    target=11,
+                ),
+            ),
+        ),
+    )
+    assert patch_plan.legacy_block_operations == ()
+    assert patch_plan.as_graph_modifications() == [modification]
+
+
+def test_clone_conditional_as_goto_projects_clone_and_pred_redirect_only():
+    patch_plan = compile_patch_plan(
+        [
+            CloneConditionalAsGoto(
+                source_block=10,
+                pred_serial=8,
+                goto_target=11,
+            )
+        ],
+        _conditional_duplicate_cfg(),
+    )
+
+    projected = project_post_state(_conditional_duplicate_cfg(), patch_plan)
+
+    assert projected.get_block(8).succs == (13,)
+    assert projected.get_block(10).succs == (11, 12)
+    assert projected.get_block(13).succs == (11,)
+    assert projected.get_block(13).tail_opcode is not None
+
+
+def test_compile_patch_plan_rejects_clone_conditional_as_goto_without_cfg():
+    with pytest.raises(ValueError, match="requires FlowGraph context"):
+        compile_patch_plan(
+            [
+                CloneConditionalAsGoto(
+                    source_block=10,
+                    pred_serial=8,
+                    goto_target=11,
+                )
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("cfg", "modification", "match"),
+    (
+        (
+            _conditional_duplicate_cfg(),
+            CloneConditionalAsGoto(source_block=12, pred_serial=8, goto_target=11),
+            "does not target source",
+        ),
+        (
+            _conditional_duplicate_cfg(),
+            CloneConditionalAsGoto(source_block=10, pred_serial=8, goto_target=13),
+            "not one of conditional arms",
+        ),
+        (
+            FlowGraph(
+                blocks={
+                    8: _block(8, (11,), ()),
+                    11: _block(11, (), (8,)),
+                    12: _block(12, (), ()),
+                },
+                entry_serial=8,
+                func_ea=0,
+            ),
+            CloneConditionalAsGoto(source_block=11, pred_serial=8, goto_target=12),
+            "expected 2",
+        ),
+    ),
+)
+def test_compile_patch_plan_rejects_invalid_clone_conditional_as_goto_shapes(
+    cfg: FlowGraph,
+    modification: CloneConditionalAsGoto,
+    match: str,
+):
+    with pytest.raises(ValueError, match=match):
+        compile_patch_plan([modification], cfg)
 
 
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():
