@@ -29,11 +29,14 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     StateModelSummary,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
     BadWhileLoopStrategy,
+    extract_bad_while_loop_dependency_diagnostics,
     extract_bad_while_loop_edits,
     extract_bad_while_loop_follow_up,
+    serialize_bad_while_loop_dependency_diagnostics,
     serialize_bad_while_loop_edits,
     serialize_bad_while_loop_follow_up,
 )
@@ -102,6 +105,7 @@ class SimpleFlatteningCleanupMetadata:
     selected_bad_while_loop_duplicate_replay_candidates: int = 0
     collected_bad_while_loop_conditional_redirect_proofs: int = 0
     selected_bad_while_loop_conditional_redirect_proofs: int = 0
+    bad_while_loop_dependency_diagnostics: int = 0
     collected_fix_predecessor_branch_arm_fixes: int = 0
     selected_fix_predecessor_branch_arm_fixes: int = 0
 
@@ -197,6 +201,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
                 serialize_bad_while_loop_follow_up(detection.bad_while_loop_follow_up)
             )
+        if detection.bad_while_loop_dependency_diagnostics:
+            metadata[BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY] = (
+                serialize_bad_while_loop_dependency_diagnostics(
+                    detection.bad_while_loop_dependency_diagnostics
+                )
+            )
         if detection.fix_predecessor_branch_arm_fixes:
             metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] = (
                 serialize_fix_predecessor_branch_arm_fixes(
@@ -228,6 +238,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         selected_bad_while_loop_follow_up = extract_bad_while_loop_follow_up(
             graph_with_candidates
+        )
+        selected_bad_while_loop_dependency_diagnostics = (
+            extract_bad_while_loop_dependency_diagnostics(graph_with_candidates)
         )
         candidate_branch_arm_fixes = extract_fix_predecessor_branch_arm_fixes(
             graph_with_candidates
@@ -266,6 +279,11 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
             serialize_bad_while_loop_follow_up(selected_bad_while_loop_follow_up)
+        )
+        metadata[BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY] = (
+            serialize_bad_while_loop_dependency_diagnostics(
+                selected_bad_while_loop_dependency_diagnostics
+            )
         )
         metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] = (
             serialize_fix_predecessor_branch_arm_fixes(candidate_branch_arm_fixes)
@@ -315,6 +333,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
             selected_bad_while_loop_conditional_redirect_proofs=len(
                 selected_bad_while_loop_conditional_redirect_proofs
+            ),
+            bad_while_loop_dependency_diagnostics=len(
+                selected_bad_while_loop_dependency_diagnostics
             ),
             collected_fix_predecessor_branch_arm_fixes=len(
                 detection.fix_predecessor_branch_arm_fixes

@@ -105,6 +105,10 @@ class SimpleFlatteningCleanupUnflattener(GenericUnflatteningRule):
                     len(detection.bad_while_loop_follow_up)
                     if detection is not None else 0
                 ),
+                "bad_while_loop_dependency_diagnostics": (
+                    len(detection.bad_while_loop_dependency_diagnostics)
+                    if detection is not None else 0
+                ),
                 "collection_errors": (
                     detection.collection_errors if detection is not None else ()
                 ),
