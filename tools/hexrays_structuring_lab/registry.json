@@ -838,6 +838,174 @@
         "outcome_class": "bad_topology_collapse",
         "classification": "validated unique-continuation source still compiles into a shared-guard topology and renders as a staged loop nest with five whiles and only two returns; topology-only continuations do not preserve the terminal-tail cascade"
       }
+    },
+    {
+      "id": "badwhile_direct_triangle_case",
+      "status": "compiled_cfg_validated",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_badwhile_direct_triangle_case_asm",
+      "binary": "hexrays_structuring_lab.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "badwhileloop",
+        "dispatcher-case",
+        "triangle",
+        "direct-edge",
+        "lane-d"
+      ],
+      "question": "Does a direct father-to-conditional-case triangle compile into the risky BadWhileLoop dispatcher-case topology?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_direct_triangle_case.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "shape": "father -> dispatcher -> case_cond and father -> case_cond",
+          "edge_predicates": [
+            "father has direct successors dispatcher and case_cond",
+            "dispatcher has case_cond as a direct successor",
+            "case_cond has BLT_2WAY type with nsucc == 2",
+            "case_cond direct predecessors include father and dispatcher",
+            "father -> case_cond is a direct edge with no one-way trampoline"
+          ]
+        }
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "direct father -> case_cond edge",
+        "dispatcher -> case_cond edge",
+        "case_cond BLT_2WAY conditional block",
+        "absence of one-way trampoline on the father -> case_cond edge"
+      ],
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/badwhile_direct_triangle_case.json"
+    },
+    {
+      "id": "badwhile_trampoline_triangle_case",
+      "status": "compiled_cfg_validated",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_badwhile_trampoline_triangle_case_asm",
+      "binary": "hexrays_structuring_lab.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "badwhileloop",
+        "dispatcher-case",
+        "triangle",
+        "trampoline",
+        "lane-d"
+      ],
+      "question": "Does a minimal one-way trampoline separate father from a conditional dispatcher case in the compiled CFG?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_trampoline_triangle_case.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "shape": "father -> tri_trampoline -> case_cond and father -> dispatcher -> case_cond",
+          "edge_predicates": [
+            "father has direct successors dispatcher and tri_trampoline",
+            "tri_trampoline has nsucc == 1 and reaches case_cond",
+            "tri_trampoline is minimal/goto-like",
+            "dispatcher has case_cond as a direct successor",
+            "case_cond has BLT_2WAY type with nsucc == 2",
+            "case_cond does not list father as a direct predecessor"
+          ]
+        }
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "father -> tri_trampoline -> case_cond path",
+        "trampoline BLT_1WAY nsucc == 1",
+        "dispatcher -> case_cond edge",
+        "case_cond predecessor list excluding father"
+      ],
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/badwhile_trampoline_triangle_case.json"
+    },
+    {
+      "id": "badwhile_duplicate_group_triangle",
+      "status": "compiled_cfg_validated",
+      "fixture_kind": "c_with_compiled_cfg_validation",
+      "function": "hexrays_lab_badwhile_duplicate_group_triangle_asm",
+      "binary": "hexrays_structuring_lab.dll",
+      "project": "default_instruction_only.json",
+      "compiler_flags": [
+        "-O0"
+      ],
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "env": {
+        "D810_CAPTURE_POST_MATURITY": "GLBOPT1"
+      },
+      "extra_pytest": [
+        "--dump-microcode-d810"
+      ],
+      "tags": [
+        "c-fixture",
+        "cfg-validation-required",
+        "badwhileloop",
+        "duplicate-group",
+        "dispatcher-case",
+        "triangle",
+        "direct-edge",
+        "lane-d"
+      ],
+      "question": "Can a duplicate-group shared block compile with per-pred direct edges into the same risky conditional dispatcher case?",
+      "cfg_validation": {
+        "status": "passed",
+        "compiler_flags": [
+          "-O0"
+        ],
+        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_duplicate_group_triangle.json",
+        "expected": {
+          "accepted_maturity": "MMAT_LOCOPT",
+          "shape": "pred_a/pred_b -> shared -> dispatcher -> case_cond with direct pred_a/pred_b -> case_cond edges",
+          "edge_predicates": [
+            "shared has exactly two direct predecessors",
+            "pred_a and pred_b both have direct successors shared and case_cond",
+            "shared has dispatcher as its only direct successor",
+            "dispatcher has case_cond as a direct successor",
+            "case_cond has BLT_2WAY type with nsucc == 2",
+            "case_cond direct predecessors include pred_a, pred_b, and dispatcher"
+          ]
+        }
+      },
+      "expected_evidence": [
+        "compiled CFG validation report",
+        "pred_a -> shared and pred_b -> shared edges",
+        "shared -> dispatcher edge",
+        "pred_a/pred_b direct edges to case_cond",
+        "case_cond BLT_2WAY conditional block"
+      ],
+      "observation_artifact": "tools/hexrays_structuring_lab/observations/badwhile_duplicate_group_triangle.json"
     }
   ]
 }
