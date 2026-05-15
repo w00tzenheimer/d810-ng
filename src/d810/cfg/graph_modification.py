@@ -277,6 +277,41 @@ class CloneConditionalAsGoto:
 
 
 @dataclass(frozen=True)
+class CloneConditionalAsGotoFromBranchArm:
+    """Clone a 2-way conditional block as a goto for one branch arm of a 2-way predecessor.
+
+    Sibling of :class:`CloneConditionalAsGoto` for the case where the
+    predecessor is itself a 2-way conditional whose explicit branch arm
+    targets ``source_block``.  The legacy FixPredecessor live rule already
+    redirects this shape via ``change_2way_block_conditional_successor``;
+    this primitive captures the same intent as a backend-neutral graph
+    modification so the engine path can execute it without going through
+    the legacy clone+redirect helper.
+
+    Steps mirror ``CloneConditionalAsGoto``:
+
+    1. clone ``source_block``
+    2. clear inherited clone predecessors
+    3. convert the clone to a goto targeting ``goto_target``
+    4. redirect the specified arm of ``pred_serial`` from ``source_block``
+       to the clone
+
+    ``pred_arm`` is ``1`` when the explicit conditional arm of the predecessor
+    points at ``source_block``, and ``0`` when the fallthrough arm does.  The
+    legacy live rule only redirects ``arm == 1`` (the conditional arm); for
+    ``arm == 0`` the legacy path bails out and orphans the clone.  Callers
+    that need to preserve that exact bail behaviour should plan only the
+    ``arm == 1`` records.
+    """
+
+    source_block: int
+    pred_serial: int
+    pred_arm: int
+    goto_target: int
+    reason: str = "fix_predecessor_clone_as_goto_from_branch_arm"
+
+
+@dataclass(frozen=True)
 class InsertBlock:
     """Insert a new block between pred and succ with given instructions.
 
@@ -604,6 +639,7 @@ GraphModification = Union[
     CreateConditionalRedirect,
     DuplicateBlock,
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
     PhaseCycleLowering,
     InsertBlock,
@@ -626,6 +662,7 @@ __all__ = [
     "CreateConditionalRedirect",
     "DuplicateBlock",
     "CloneConditionalAsGoto",
+    "CloneConditionalAsGotoFromBranchArm",
     "DuplicateAndRedirect",
     "PhaseCycleLowering",
     "InsertBlock",

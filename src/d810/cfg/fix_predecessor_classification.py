@@ -15,11 +15,13 @@ from enum import Enum
 
 from d810.cfg.fix_predecessor_planning import (
     FixPredecessorCloneAsGotoDecision,
+    FixPredecessorCloneAsGotoFromBranchArmDecision,
     FixPredecessorOutcome,
     FixPredecessorRejectReason,
     infer_conditional_target,
     infer_fallthrough_target,
     plan_fix_predecessor_clone_as_goto,
+    plan_fix_predecessor_clone_from_branch_arm,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.core.typing import Optional
@@ -77,9 +79,15 @@ class FixPredecessorClassification:
     * ``conditional_has_body_side_effects`` — whether the cond block
       contains non-tail side effects (calls, stores).
     * ``matches_clone_conditional_as_goto`` — ``True`` iff the existing
-      planner admits this shape.
-    * ``planner_rejection`` — the planner's rejection reason when not
-      admitted.
+      one-way ``CloneConditionalAsGoto`` planner admits this shape.
+    * ``matches_clone_conditional_as_goto_from_branch_arm`` — ``True`` iff
+      the sibling 2-way branch-arm planner admits this shape.  Mutually
+      exclusive with the one-way flag because the two planners require
+      disjoint predecessor topologies.
+    * ``planner_rejection`` — the rejection reason from the structural
+      planner for the predecessor shape (one-way planner for one-way preds,
+      branch-arm planner for two-way preds).  ``None`` when admitted by
+      whichever planner is appropriate.
     * ``bucket`` — the assigned classification bucket.
     """
 
@@ -97,6 +105,7 @@ class FixPredecessorClassification:
     direct_redirect_equivalent: bool
     conditional_has_body_side_effects: bool
     matches_clone_conditional_as_goto: bool
+    matches_clone_conditional_as_goto_from_branch_arm: bool
     planner_rejection: Optional[FixPredecessorRejectReason]
     bucket: FixPredecessorBucket
     description: str = ""
@@ -240,6 +249,15 @@ def classify_predecessor_modification(
         outcome=outcome,
         description=description,
     )
+    branch_arm_decision = plan_fix_predecessor_clone_from_branch_arm(
+        cfg,
+        pred_serial=pred_serial,
+        conditional_serial=conditional_serial,
+        selected_target_serial=selected_target_serial,
+        outcome=outcome,
+        side_effect_blocks=side_effect_blocks,
+        description=description,
+    )
 
     predecessor_topology = _infer_predecessor_topology(pred_block)
     predecessor_arm = _resolve_predecessor_arm(pred_block, conditional_serial)
@@ -257,8 +275,19 @@ def classify_predecessor_modification(
     )
     conditional_has_body_side_effects = conditional_serial in side_effect_blocks
 
+    # ``planner_rejection`` reports the structural planner that's
+    # appropriate for the predecessor topology — the one-way planner for
+    # one-way preds and the 2-way branch-arm planner for 2-way preds.  This
+    # keeps the field useful as a "why was this not admitted" signal
+    # regardless of which sibling primitive is the natural fit.
+    if predecessor_topology == PredecessorTopology.TWO_WAY:
+        active_decision: FixPredecessorCloneAsGotoDecision | FixPredecessorCloneAsGotoFromBranchArmDecision = (
+            branch_arm_decision
+        )
+    else:
+        active_decision = decision
     planner_rejection: Optional[FixPredecessorRejectReason] = (
-        None if decision.accepted else decision.rejection_reason
+        None if active_decision.accepted else active_decision.rejection_reason
     )
 
     bucket = _select_bucket(
@@ -287,6 +316,7 @@ def classify_predecessor_modification(
         direct_redirect_equivalent=direct_redirect_equivalent,
         conditional_has_body_side_effects=conditional_has_body_side_effects,
         matches_clone_conditional_as_goto=decision.accepted,
+        matches_clone_conditional_as_goto_from_branch_arm=branch_arm_decision.accepted,
         planner_rejection=planner_rejection,
         bucket=bucket,
         description=description,
@@ -359,6 +389,8 @@ def format_classification_report(
                 f"clone_required={example.clone_required} "
                 f"direct_eq={example.direct_redirect_equivalent} "
                 f"side_effects={example.conditional_has_body_side_effects} "
+                f"matches_one_way={example.matches_clone_conditional_as_goto} "
+                f"matches_arm={example.matches_clone_conditional_as_goto_from_branch_arm} "
                 f"planner={rejection}"
             )
     return "\n".join(lines)
