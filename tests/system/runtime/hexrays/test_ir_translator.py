@@ -335,6 +335,7 @@ class _FakeDeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        old_target_serial: int | None = None,
         instructions_to_copy: tuple[object, ...] | list[object] | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
@@ -347,6 +348,7 @@ class _FakeDeferredGraphModifier:
                 ref_blk_serial,
                 conditional_target_serial,
                 fallthrough_target_serial,
+                old_target_serial,
                 tuple(instructions_to_copy or ()),
                 expected_conditional_serial,
                 expected_fallthrough_serial,
@@ -792,6 +794,7 @@ class TestIDAIntegration:
                     ref_block=45,
                     conditional_target=199,
                     fallthrough_target=2,
+                    old_target_serial=45,
                     instructions=instructions,
                 )
             ],
@@ -803,7 +806,16 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_conditional"
-        assert created[0].calls[0][1:8] == (44, 45, 201, 2, instructions, 199, 200)
+        assert created[0].calls[0][1:9] == (
+            44,
+            45,
+            201,
+            2,
+            45,
+            instructions,
+            199,
+            200,
+        )
 
     def test_lower_applies_insert_block_patch_plan(
         self,

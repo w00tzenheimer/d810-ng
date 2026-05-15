@@ -614,6 +614,7 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=conditional_target,
                 fallthrough_target=fallthrough_target,
+                old_target_serial=old_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
                 instructions=instructions,
@@ -623,6 +624,7 @@ class IDAIRTranslator:
                     ref_blk_serial=ref,
                     conditional_target_serial=conditional_target,
                     fallthrough_target_serial=fallthrough_target,
+                    old_target_serial=old_target,
                     instructions_to_copy=instructions,
                     expected_conditional_serial=assigned,
                     expected_fallthrough_serial=fallthrough_serial,
@@ -840,6 +842,7 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=cond_target,
                 fallthrough_target=fallthrough_target,
+                old_target_serial=old_target,
                 instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
@@ -847,6 +850,7 @@ class IDAIRTranslator:
                     ref_blk_serial=ref,
                     conditional_target_serial=cond_target,
                     fallthrough_target_serial=fallthrough_target,
+                    old_target_serial=old_target,
                     instructions_to_copy=instructions,
                     description=(
                         f"create conditional redirect src={src} ref={ref} "
