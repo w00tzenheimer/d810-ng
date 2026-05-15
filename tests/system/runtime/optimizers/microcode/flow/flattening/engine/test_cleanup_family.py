@@ -240,6 +240,7 @@ def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
         "fake_jump",
         "single_iteration",
         "bad_while_loop",
+        "fix_predecessor_branch_arm",
     ]
 
 
@@ -578,6 +579,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         "fake_jump",
         "single_iteration",
         "bad_while_loop",
+        "fix_predecessor_branch_arm",
     )
     assert metadata.legacy_rule_names == LEGACY_CLEANUP_RULE_NAMES
     assert metadata.collected_fake_jump_fixes == 1

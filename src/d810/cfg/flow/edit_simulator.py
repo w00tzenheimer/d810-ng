@@ -24,6 +24,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -681,6 +682,25 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 simulated.append(
                     SimulatedEdit(
                         kind="clone_conditional_as_goto",
+                        source=src,
+                        old_target=src,
+                        new_target=target,
+                        via_pred=pred,
+                        created_serial=assigned,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case PatchCloneConditionalAsGotoFromBranchArm(
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=target,
+                assigned_serial=assigned,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="clone_conditional_as_goto_from_branch_arm",
                         source=src,
                         old_target=src,
                         new_target=target,
