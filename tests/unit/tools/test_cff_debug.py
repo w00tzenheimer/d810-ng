@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import cff_debug
+from tools import d810cli
 
 
 def _log_dir(repo_root: Path, worktree: str) -> Path:
@@ -26,7 +26,7 @@ def test_latest_db_ignores_zero_byte_sqlite_placeholders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cff_debug, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
     log_dir = _log_dir(tmp_path, "wt")
     good = log_dir / "good.diag.sqlite3"
     good.write_bytes(b"sqlite data")
@@ -37,23 +37,23 @@ def test_latest_db_ignores_zero_byte_sqlite_placeholders(
     good.touch()
     empty.touch()
 
-    assert cff_debug.latest_db("wt") == good
+    assert d810cli.latest_db("wt") == good
 
 
 def test_latest_db_errors_when_only_empty_sqlite_placeholders_exist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cff_debug, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
     log_dir = _log_dir(tmp_path, "wt")
     (log_dir / "empty.diag.sqlite3").write_bytes(b"")
 
     with pytest.raises(SystemExit):
-        cff_debug.latest_db("wt")
+        d810cli.latest_db("wt")
 
 
 def _make_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(cff_debug, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
     wt = tmp_path / ".worktrees" / "wt"
     (wt / "src").mkdir(parents=True)
     return wt
@@ -86,9 +86,9 @@ def test_after_stats_appends_stats_after_success(
         return 0
 
     monkeypatch.setattr(subprocess, "call", fake_call)
-    monkeypatch.setattr(cff_debug, "cmd_stats", fake_stats)
+    monkeypatch.setattr(d810cli, "cmd_stats", fake_stats)
 
-    rc = cff_debug.cmd_after(
+    rc = d810cli.cmd_after(
         argparse.Namespace(
             worktree="wt",
             dump=str(dump),
@@ -119,9 +119,9 @@ def test_after_stats_does_not_run_when_after_renderer_fails(
     def fail_stats(args: argparse.Namespace) -> int:
         raise AssertionError("stats should not run after dump-after failure")
 
-    monkeypatch.setattr(cff_debug, "cmd_stats", fail_stats)
+    monkeypatch.setattr(d810cli, "cmd_stats", fail_stats)
 
-    rc = cff_debug.cmd_after(
+    rc = d810cli.cmd_after(
         argparse.Namespace(
             worktree="wt",
             dump=str(dump),

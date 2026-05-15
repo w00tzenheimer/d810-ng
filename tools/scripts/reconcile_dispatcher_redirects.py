@@ -5,7 +5,7 @@ Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics redirect-reconcile``
 with the same argument shape. To use the new command directly:
 
-    ./tools/cff_debug.py reconcile
+    ./tools/d810cli.py reconcile
     PYTHONPATH=src python -m d810.diagnostics redirect-reconcile \\
         --db DB --log LOG --snap-id N \\
         [--state-var-stkoff HEX] [--min-dispatcher-preds N] [--show-edges]

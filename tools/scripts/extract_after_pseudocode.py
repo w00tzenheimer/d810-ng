@@ -6,7 +6,7 @@ This file forwards to ``python -m d810.diagnostics dump-after`` with the
 same argument shape (positional dump file, ``-n/--line-numbers`` flag).
 To use the new command directly:
 
-    ./tools/cff_debug.py after [--dump DUMP] [-n]
+    ./tools/d810cli.py after [--dump DUMP] [-n]
     PYTHONPATH=src python -m d810.diagnostics dump-after DUMP [-n]
 
 The pure marker parser now lives in ``src/d810/diagnostics/dump_after.py``

@@ -5,7 +5,7 @@ Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics gate-audit`` with the
 same argument shape. To use the new command directly:
 
-    ./tools/cff_debug.py gates
+    ./tools/d810cli.py gates
     PYTHONPATH=src python -m d810.diagnostics gate-audit [LOG_PATH] [--strict] [--json]
 
 The full implementation now lives in ``src/d810/diagnostics/gate_audit.py``

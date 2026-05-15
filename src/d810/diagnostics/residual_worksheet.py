@@ -9,7 +9,7 @@ The worksheet is intentionally read-only. It correlates:
 - optional residual-handoff log lines from a text dump or log file
 
 Exposed as the ``residual-worksheet`` subcommand of
-``python -m d810.diagnostics``. Distinct from ``cff_debug.py residuals``
+``python -m d810.diagnostics``. Distinct from ``d810cli.py residuals``
 (which is a text-only grep over the AFTER pseudocode).
 """
 from __future__ import annotations

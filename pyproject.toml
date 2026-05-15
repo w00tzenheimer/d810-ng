@@ -48,7 +48,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["-m", "not profile"]
+addopts = ["-m", "not profile and not pseudocode_dump and not manual"]
 markers = [
     "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
     "requires_ida: Tests that require IDA Pro to run",
@@ -57,6 +57,8 @@ markers = [
     "hexrays: Tests that require Hex-Rays decompiler",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
     "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
+    "pseudocode_dump: manual utility tests for before/after pseudocode dumping",
+    "manual: manual utility tests that are opt-in for local diagnostics",
 ]
 
 # Coverage configuration

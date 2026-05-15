@@ -5,7 +5,7 @@ Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics region-diff`` with the
 same argument shape. To use the new command directly:
 
-    ./tools/cff_debug.py oracle
+    ./tools/d810cli.py oracle
     PYTHONPATH=src python -m d810.diagnostics region-diff --db DB [--snap17 N --snap18 M] [--persist] [--microblocks] [--output PATH]
 
 The REF comparison + DCE diagnosis logic now lives in

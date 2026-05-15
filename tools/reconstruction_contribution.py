@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 SCRIPT_PATH = pathlib.Path(__file__).resolve()
 # Harness lives at <worktree_root>/tools/reconstruction_contribution.py; the
 # worktree is <main_repo>/.worktrees/<name>. Walk up to find the main repo so
-# the docker script is invoked the same way cff_debug.py invokes it.
+# the docker script is invoked the same way d810cli.py invokes it.
 WORKTREE_ROOT = SCRIPT_PATH.parents[1]
 WORKTREE_NAME = WORKTREE_ROOT.name
 if WORKTREE_ROOT.parent.name == ".worktrees":

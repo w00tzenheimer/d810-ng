@@ -111,7 +111,7 @@ def test_return_family_ledger_stub_fails_with_replacement_message() -> None:
     )
     assert result.returncode == 2
     assert "[deprecated]" in result.stderr
-    assert "cff_debug.py returns" in result.stderr
+    assert "d810cli.py returns" in result.stderr
     assert "d810.diagnostics return-ledger" in result.stderr
 
 
@@ -156,11 +156,11 @@ def test_residual_dispatcher_worksheet_stub_contains_no_legacy_implementation() 
     assert "build_residual_dispatcher_worksheet" not in text
 
 
-def test_inspect_hodur_dump_sh_forwards_to_cff_debug_inspect(
+def test_inspect_hodur_dump_sh_forwards_to_d810cli_inspect(
     tmp_path: Path,
 ) -> None:
     """The bash stub must accept a positional dump file and forward to
-    `./tools/cff_debug.py inspect --dump <file>`."""
+    `./tools/d810cli.py inspect --dump <file>`."""
     if shutil.which("bash") is None:
         pytest.skip("bash not available")
     dump = tmp_path / "tiny.txt"
@@ -177,7 +177,7 @@ def test_inspect_hodur_dump_sh_forwards_to_cff_debug_inspect(
     # minimal dump (every probe just prints "(none)" if no match).
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert "[deprecated]" in result.stderr
-    assert "cff_debug.py inspect" in result.stderr
+    assert "d810cli.py inspect" in result.stderr
     # The forwarded command emits banner lines for each probe.
     assert "=== Gate Failures ===" in result.stdout
 

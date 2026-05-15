@@ -6,11 +6,9 @@ as DeobfuscationCase dataclasses in tests/system/cases/libobfuscated_comprehensi
 Coverage Goal: 100% coverage of src/d810/optimizers/microcode package
 
 Test Organization:
-- TestCoreDeobfuscation: Core tests that must always pass
 - TestUnflatteningRules: Control flow unflattening patterns
 - TestInstructionRules: MBA and constant folding patterns
 - TestExceptionPaths: Edge cases and exception paths
-- TestSmoke: Quick smoke tests for CI
 
 Override binary via environment variable:
     D810_TEST_BINARY=libobfuscated.dll pytest tests/system/e2e/test_libdeobfuscated_dsl.py
@@ -25,9 +23,6 @@ import idaapi
 
 from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import (
-    ALL_CASES,
-    CORE_CASES,
-    SMOKE_CASES,
     UNFLATTENING_CASES,
     INSTRUCTION_CASES,
     EXCEPTION_PATH_CASES,
@@ -44,7 +39,6 @@ from tests.system.cases.libobfuscated_comprehensive import (
     UNWRAP_LOOPS_CASES,
     WHILE_SWITCH_CASES,
     RESIZE_BUFFER_CFF_CASES,
-    TOTAL_FUNCTION_COUNT,
 )
 
 
@@ -62,40 +56,6 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
-
-
-class TestCoreDeobfuscation:
-    """Core deobfuscation tests that must always pass.
-
-    These test the most important and well-established patterns:
-    - MBA simplification (XOR, OR, AND, NEG)
-    - Tigress unflattening
-    - OLLVM unflattening
-    - Hodur unflattening
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", CORE_CASES, ids=lambda c: c.test_id)
-    def test_core_deobfuscation(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """Core deobfuscation patterns that must work."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
 
 
 class TestMBASimplification:
@@ -466,69 +426,6 @@ class TestResizeBufferCFF:
         load_expected_stats,
     ):
         """Buffer resize with OLLVM CFF patterns."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
-
-
-class TestSmoke:
-    """Quick smoke tests for CI validation.
-
-    Uses minimal subset of cases for fast feedback.
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", SMOKE_CASES, ids=lambda c: c.test_id)
-    def test_smoke(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """Quick smoke tests."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
-
-
-class TestAllCases:
-    """Run all test cases for comprehensive coverage.
-
-    Total cases: {TOTAL_FUNCTION_COUNT}
-
-    Use this for full coverage testing:
-        pytest tests/system/e2e/test_libdeobfuscated_dsl.py::TestAllCases -v --cov=src/d810/optimizers/microcode
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
-    def test_all(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """All deobfuscation patterns."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,
