@@ -65,7 +65,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_bui
     finalize_reconstruction_fragment,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
-    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    HodurProjectedTopologyBackend,
     ProjectedTopologyBackend,
 )
 from d810.recon.flow.linearized_dag_round_discovery import (
@@ -77,6 +77,7 @@ from d810.recon.flow.linearized_state_dag import (
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderOrderStrategy,
+    build_live_linearized_state_dag_from_graph,
     build_linearized_state_program,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
@@ -156,8 +157,47 @@ logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
 )
+
+
+class _StrategyProjectedTopologyBackend(HodurProjectedTopologyBackend):
+    """Strategy-local seam for tests that monkeypatch the historical builder."""
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        *,
+        dispatcher_entry_serial: int,
+        state_var_stkoff: int | None,
+        pre_header_serial: int | None,
+        initial_state: int | None,
+        handler_range_map: dict | None,
+        bst_node_blocks: tuple[int, ...],
+        diagnostics: tuple[object, ...],
+        dispatcher: object | None,
+        mba: object | None,
+        prefer_local_corridors: bool = True,
+        corrected_dag_out: list[object] | None = None,
+    ) -> object:
+        return build_live_linearized_state_dag_from_graph(
+            current_flow_graph,
+            transition_result,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+            pre_header_serial=pre_header_serial,
+            initial_state=initial_state,
+            handler_range_map=handler_range_map or {},
+            bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+            diagnostics=tuple(diagnostics or ()),
+            dispatcher=dispatcher,
+            mba=mba,
+            prefer_local_corridors=prefer_local_corridors,
+            corrected_dag_out=corrected_dag_out,
+        )
+
+
 _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
-    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+    _StrategyProjectedTopologyBackend()
 )
 _CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
