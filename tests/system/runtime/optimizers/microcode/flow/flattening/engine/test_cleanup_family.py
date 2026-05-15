@@ -67,6 +67,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
     BAD_WHILE_LOOP_INSERT_BLOCK,
@@ -78,6 +79,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import 
     BadWhileLoopGotoConversion,
     BadWhileLoopGotoRedirect,
     BadWhileLoopStrategy,
+    extract_bad_while_loop_dependency_diagnostics,
     extract_bad_while_loop_edits,
     extract_bad_while_loop_follow_up,
 )
@@ -395,6 +397,21 @@ def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
         reason="duplicate_group_copied_side_effects",
         target_serial=42,
     )
+    dependency_diagnostic = {
+        "dispatcher_entry": 41,
+        "source_serial": 40,
+        "target_serial": 42,
+        "category": BAD_WHILE_LOOP_INSERT_BLOCK,
+        "reason": "copied_side_effects_not_dependency_safe",
+        "raw_instruction_count": 1,
+        "dependency_safe_instruction_count": 0,
+        "source_liveins": [],
+        "source_defs": [],
+        "copied_instructions": [],
+        "missing_uses": [],
+        "final_bucket": "mixed_unknown",
+        "bucket_reason": "test diagnostic",
+    }
     calls: dict[str, object] = {}
 
     def _collect_empty(_mba, **_kwargs):
@@ -406,6 +423,7 @@ def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
             edits=(),
             follow_up=(direct_follow_up, unsafe_follow_up, duplicate_group_follow_up),
             replay_candidates=(replay_candidate,),
+            dependency_diagnostics=(dependency_diagnostic,),
         )
 
     monkeypatch.setattr(backend_module, "collect_live_fake_jump_fixes", _collect_empty)
@@ -431,6 +449,9 @@ def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
     assert detection.bad_while_loop_follow_up == (
         unsafe_follow_up,
         duplicate_group_follow_up,
+    )
+    assert detection.bad_while_loop_dependency_diagnostics == (
+        dependency_diagnostic,
     )
     assert detection.detected is True
     assert "side_effect_capture" in calls["bad_while_loop"][1]
@@ -739,6 +760,48 @@ def test_simple_cleanup_family_selects_and_plans_duplicate_group_replay() -> Non
         isinstance(step, LegacyBlockOperation)
         for step in patch_plan.steps
     )
+
+
+def test_simple_cleanup_family_carries_dependency_diagnostics_without_planning() -> None:
+    diagnostic = {
+        "dispatcher_entry": 41,
+        "source_serial": 40,
+        "target_serial": 42,
+        "category": BAD_WHILE_LOOP_INSERT_BLOCK,
+        "reason": "copied_side_effects_not_dependency_safe",
+        "raw_instruction_count": 1,
+        "dependency_safe_instruction_count": 0,
+        "source_liveins": [],
+        "source_defs": [],
+        "copied_instructions": [],
+        "missing_uses": [],
+        "final_bucket": "memory_or_alias_unknown",
+        "bucket_reason": "test diagnostic",
+    }
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            bad_while_loop_dependency_diagnostics=(diagnostic,),
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
+    )
+    family = SimpleFlatteningCleanupFamily(
+        backend=backend,
+        cfg_translator=_FakeTranslator(_cleanup_flow_graph()),
+    )
+
+    snapshot = family.build_snapshot(_fake_mba(), family.detect(_fake_mba()))
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+
+    assert metadata.planning_ready is False
+    assert metadata.bad_while_loop_dependency_diagnostics == 1
+    assert snapshot.flow_graph.metadata[
+        BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY
+    ] == [diagnostic]
+    assert extract_bad_while_loop_dependency_diagnostics(snapshot.flow_graph) == (
+        diagnostic,
+    )
+    assert BadWhileLoopStrategy().plan(snapshot) is None
 
 
 def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:

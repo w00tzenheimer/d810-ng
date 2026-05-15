@@ -26,6 +26,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import 
     BAD_WHILE_LOOP_INSERT_BLOCK,
     BadWhileLoopEdit,
     BadWhileLoopConditionalRedirect,
+    BadWhileLoopDependencyDiagnostic,
     BadWhileLoopDuplicateRedirect,
     BadWhileLoopFollowUp,
     BadWhileLoopGotoConversion,
@@ -160,6 +161,9 @@ class SimpleFlatteningCleanupDetection:
     ] = ()
     bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
+    bad_while_loop_dependency_diagnostics: tuple[
+        BadWhileLoopDependencyDiagnostic, ...
+    ] = ()
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
@@ -180,7 +184,11 @@ class SimpleFlatteningCleanupDetection:
     def diagnostic_only(self) -> bool:
         return (
             not self.detected
-            and bool(self.bad_while_loop_deferred_edits or self.bad_while_loop_follow_up)
+            and bool(
+                self.bad_while_loop_deferred_edits
+                or self.bad_while_loop_follow_up
+                or self.bad_while_loop_dependency_diagnostics
+            )
         )
 
     @property
@@ -192,6 +200,8 @@ class SimpleFlatteningCleanupDetection:
                     "bad_while_loop_deferred="
                     f"{len(self.bad_while_loop_deferred_edits)} "
                     f"bad_while_loop_follow_up={len(self.bad_while_loop_follow_up)} "
+                    "bad_while_loop_dependency_diagnostics="
+                    f"{len(self.bad_while_loop_dependency_diagnostics)} "
                     "bad_while_loop_conditional_redirect_proofs="
                     f"{len(self.bad_while_loop_conditional_redirect_proofs)}"
                 )
@@ -290,6 +300,9 @@ class LiveSimpleFlatteningCleanupBackend:
         ] = ()
         bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
         bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
+        bad_while_loop_dependency_diagnostics: tuple[
+            BadWhileLoopDependencyDiagnostic, ...
+        ] = ()
         try:
             bad_while_loop_analysis = collect_live_bad_while_loop_analysis(
                 mba,
@@ -303,6 +316,9 @@ class LiveSimpleFlatteningCleanupBackend:
             )
             bad_while_loop_all_duplicate_replay_candidates = tuple(
                 bad_while_loop_analysis.duplicate_replay_candidates
+            )
+            bad_while_loop_dependency_diagnostics = tuple(
+                bad_while_loop_analysis.dependency_diagnostics
             )
             bad_while_loop_validation_graph = _validation_graph_for_bad_while_loop(
                 mba,
@@ -439,6 +455,9 @@ class LiveSimpleFlatteningCleanupBackend:
             ),
             bad_while_loop_deferred_edits=tuple(bad_while_loop_deferred_edits),
             bad_while_loop_follow_up=tuple(bad_while_loop_follow_up),
+            bad_while_loop_dependency_diagnostics=tuple(
+                bad_while_loop_dependency_diagnostics
+            ),
             fix_predecessor_branch_arm_fixes=tuple(
                 fix_predecessor_branch_arm_fixes
             ),
