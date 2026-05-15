@@ -1,0 +1,238 @@
+{
+  "binary": "hexrays_structuring_lab.dll",
+  "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+  "case_id": "badwhile_duplicate_group_triangle",
+  "cfg_validation": {
+    "accepted_maturity": "MMAT_LOCOPT",
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 13,
+      "MMAT_LOCOPT": 13,
+      "MMAT_PREOPTIMIZED": 13
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        9,
+        9,
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        43
+      ],
+      "0x1b": [
+        55
+      ],
+      "0x1d": [
+        9,
+        4,
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        43
+      ],
+      "0x36": [
+        21,
+        4,
+        4,
+        33,
+        31,
+        29,
+        9,
+        4
+      ],
+      "0x43": [
+        35,
+        30,
+        33,
+        31,
+        29,
+        44
+      ],
+      "0x49": [
+        35,
+        30,
+        13,
+        33,
+        31,
+        29,
+        9,
+        4,
+        55
+      ],
+      "0x54": [
+        9,
+        4,
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        44
+      ],
+      "0x6d": [
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        44
+      ],
+      "0x80": [
+        21,
+        4,
+        4,
+        33,
+        31,
+        29,
+        9,
+        4,
+        55
+      ],
+      "0x8d": [
+        4,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        4
+      ],
+      "0x96": [
+        4
+      ]
+    },
+    "case_cond_instruction_opcodes": [
+      9,
+      35,
+      30,
+      33,
+      31,
+      29,
+      44
+    ],
+    "case_cond_npred": 3,
+    "case_cond_nsucc": 2,
+    "case_cond_pred_relative_start_eas": [
+      "0x1d",
+      "0x43",
+      "0x54"
+    ],
+    "case_cond_relative_start_ea": "0x6d",
+    "case_cond_serial": 8,
+    "case_cond_succ_relative_start_eas": [
+      "0x80",
+      "0x8d"
+    ],
+    "case_cond_type": "BLT_2WAY",
+    "dispatcher_instruction_opcodes": [
+      35,
+      30,
+      33,
+      31,
+      29,
+      44
+    ],
+    "dispatcher_npred": 1,
+    "dispatcher_nsucc": 2,
+    "dispatcher_pred_relative_start_eas": [
+      "0x36"
+    ],
+    "dispatcher_relative_start_ea": "0x43",
+    "dispatcher_serial": 5,
+    "dispatcher_succ_relative_start_eas": [
+      "0x49",
+      "0x6d"
+    ],
+    "dispatcher_type": "BLT_2WAY",
+    "duplicate_pred_relative_start_eas": [
+      "0x1d",
+      "0x54"
+    ],
+    "pred_a_instruction_opcodes": [
+      9,
+      4,
+      9,
+      4,
+      4,
+      33,
+      31,
+      4,
+      43
+    ],
+    "pred_a_npred": 1,
+    "pred_a_nsucc": 2,
+    "pred_a_pred_relative_start_eas": [
+      "0x0"
+    ],
+    "pred_a_relative_start_ea": "0x1d",
+    "pred_a_serial": 3,
+    "pred_a_succ_relative_start_eas": [
+      "0x36",
+      "0x6d"
+    ],
+    "pred_a_type": "BLT_2WAY",
+    "pred_b_instruction_opcodes": [
+      9,
+      4,
+      9,
+      4,
+      4,
+      33,
+      31,
+      4,
+      44
+    ],
+    "pred_b_npred": 1,
+    "pred_b_nsucc": 2,
+    "pred_b_pred_relative_start_eas": [
+      "0x1b"
+    ],
+    "pred_b_relative_start_ea": "0x54",
+    "pred_b_serial": 7,
+    "pred_b_succ_relative_start_eas": [
+      "0x6d",
+      "0x36"
+    ],
+    "pred_b_type": "BLT_2WAY",
+    "shared_instruction_opcodes": [
+      21,
+      4,
+      4,
+      33,
+      31,
+      29,
+      9,
+      4
+    ],
+    "shared_npred": 2,
+    "shared_nsucc": 1,
+    "shared_pred_relative_start_eas": [
+      "0x1d",
+      "0x54"
+    ],
+    "shared_relative_start_ea": "0x36",
+    "shared_serial": 4,
+    "shared_succ_relative_start_eas": [
+      "0x43"
+    ],
+    "shared_type": "BLT_1WAY",
+    "status": "passed"
+  },
+  "commands": {
+    "dump": "python3 -m tools.hexrays_structuring_lab command badwhile_duplicate_group_triangle",
+    "validate_cfg": "python3 -m tools.hexrays_structuring_lab validate-cfg badwhile_duplicate_group_triangle"
+  },
+  "compiler_flags": [
+    "-O0"
+  ],
+  "schema_version": 1,
+  "status": "compiled_cfg_validated"
+}
