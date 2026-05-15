@@ -23,6 +23,7 @@ These frozen types map to DeferredGraphModifier modification types:
 - CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
 - DuplicateBlock     -> (future use, backend currently warns/skips)
 - DuplicateAndRedirect -> (multi-pred duplication, maps to N x BLOCK_DUPLICATE_AND_REDIRECT)
+- CloneConditionalAsGoto -> CLONE_CONDITIONAL_AS_GOTO
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
 - NopInstructions    -> BLOCK_NOP_INSNS
@@ -251,6 +252,28 @@ class DuplicateBlock:
     patch_kind: str = ""
     conditional_target: int | None = None
     fallthrough_target: int | None = None
+
+
+@dataclass(frozen=True)
+class CloneConditionalAsGoto:
+    """Clone a 2-way conditional block as a 1-way goto for one predecessor.
+
+    This models the legacy FixPredecessor apply shape exactly:
+
+    1. clone ``source_block``
+    2. clear inherited clone predecessors
+    3. convert the clone to a goto targeting ``goto_target``
+    4. redirect ``pred_serial`` from ``source_block`` to the clone
+
+    It is intentionally distinct from ``RedirectGoto`` and ``DuplicateBlock``.
+    The source conditional block remains conditional, while only the selected
+    predecessor is redirected through the clone.
+    """
+
+    source_block: int
+    pred_serial: int
+    goto_target: int
+    reason: str = "fix_predecessor_clone_as_goto"
 
 
 @dataclass(frozen=True)
@@ -580,6 +603,7 @@ GraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
+    CloneConditionalAsGoto,
     DuplicateAndRedirect,
     PhaseCycleLowering,
     InsertBlock,
@@ -601,6 +625,7 @@ __all__ = [
     "EdgeRedirectViaPredSplit",
     "CreateConditionalRedirect",
     "DuplicateBlock",
+    "CloneConditionalAsGoto",
     "DuplicateAndRedirect",
     "PhaseCycleLowering",
     "InsertBlock",

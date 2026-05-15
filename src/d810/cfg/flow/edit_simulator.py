@@ -9,6 +9,7 @@ import ida_hexrays
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -21,6 +22,7 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.plan import (
     LegacyBlockOperation,
+    PatchCloneConditionalAsGoto,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -74,7 +76,7 @@ class SimulatedEdit:
         new_target: Block serial of the new target.
     """
 
-    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto", "edge_split_redirect"
+    kind: str  # "goto_redirect", "conditional_redirect", "convert_to_goto", "edge_split_redirect", ...
     source: int
     old_target: int
     new_target: int | None
@@ -139,6 +141,7 @@ def _block_type_for_projected_shape(
     ):
         return _BLT_2WAY
     if kind.endswith("fallthrough") or kind in {
+        "clone_conditional_as_goto",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -178,6 +181,7 @@ def _tail_opcode_for_projected_block(
             return int(template_block.tail_opcode)
         return _M_JCND
     if kind.endswith("fallthrough") or kind in {
+        "clone_conditional_as_goto",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -483,6 +487,21 @@ def graph_modifications_to_simulated_edits(
                     )
                 )
 
+            case CloneConditionalAsGoto(
+                source_block=src,
+                pred_serial=pred,
+                goto_target=target,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="clone_conditional_as_goto",
+                        source=src,
+                        old_target=src,
+                        new_target=target,
+                        via_pred=pred,
+                    )
+                )
+
             case RemoveEdge(from_serial=src, to_serial=dst):
                 simulated.append(
                     SimulatedEdit(
@@ -632,6 +651,25 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         fallthrough_target=fallthrough_target,
                         created_serial=assigned,
                         secondary_created_serial=fallthrough_serial,
+                        stop_serial_before=stop_serial_before,
+                        stop_serial_after=stop_serial_after,
+                    )
+                )
+
+            case PatchCloneConditionalAsGoto(
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=target,
+                assigned_serial=assigned,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="clone_conditional_as_goto",
+                        source=src,
+                        old_target=src,
+                        new_target=target,
+                        via_pred=pred,
+                        created_serial=assigned,
                         stop_serial_before=stop_serial_before,
                         stop_serial_after=stop_serial_after,
                     )
@@ -935,9 +973,9 @@ def simulate_edits(
             # Replace ALL successors with single new_target
             result[edit.source] = [edit.new_target]
 
-        elif edit.kind == "edge_split_redirect":
+        elif edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
             if edit.via_pred is not None:
-                # Model IDA's edge-split: clone source block, rewire via_pred.
+                # Model pred-scoped clone edits: clone source block, rewire via_pred.
                 # 1. Create virtual clone node with [new_target] as successor.
                 clone_serial = edit.created_serial
                 if clone_serial is None:

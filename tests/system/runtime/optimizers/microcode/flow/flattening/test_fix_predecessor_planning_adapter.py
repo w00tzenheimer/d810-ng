@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from d810.cfg.fix_predecessor_planning import FixPredecessorOutcome
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.graph_modification import CloneConditionalAsGoto
 from d810.optimizers.microcode.flow.flattening.fix_pred_cond_jump_block import (
     PredecessorModification,
     PredecessorModificationType,
@@ -71,7 +72,13 @@ def test_live_predecessor_modification_projects_to_clone_as_goto_candidate() -> 
     assert decision.accepted
     assert decision.candidate is not None
     assert decision.candidate.outcome == FixPredecessorOutcome.ALWAYS_TAKEN
-    assert decision.candidate.lowering_status == "diagnostic_only"
+    assert decision.candidate.lowering_status == "planned_modification_available"
+    assert decision.candidate.to_graph_modification() == CloneConditionalAsGoto(
+        source_block=10,
+        pred_serial=8,
+        goto_target=12,
+        reason="pred 8 always takes jump in block 10",
+    )
     assert decision.candidate.intent.operation_sequence == (
         "clone_conditional_block",
         "clear_clone_predecessors",

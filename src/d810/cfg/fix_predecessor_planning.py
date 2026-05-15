@@ -1,11 +1,11 @@
-"""Diagnostic CFG planning for FixPredecessor clone-as-goto rewrites.
+"""CFG planning for FixPredecessor clone-as-goto rewrites.
 
 This module intentionally stops at a backend-neutral candidate model.  The
 legacy live rule applies the rewrite by cloning a conditional block, converting
 the clone to a one-way goto, and redirecting one predecessor to that clone.
-None of the existing shared graph primitives exactly represent that operation
-today, so this helper records the shape without pretending it is a plain
-``RedirectGoto``.
+This helper admits that shape and emits the dedicated
+``CloneConditionalAsGoto`` graph primitive.  Callers still have to opt into
+the planned path explicitly; the legacy live rule remains the default.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.graph_modification import CloneConditionalAsGoto
 
 
 class FixPredecessorOutcome(str, Enum):
@@ -56,7 +57,7 @@ class FixPredecessorCloneAsGotoIntent:
 
 @dataclass(frozen=True)
 class FixPredecessorCloneAsGotoCandidate:
-    """Admitted diagnostic candidate for the FixPredecessor rewrite."""
+    """Admitted candidate for the FixPredecessor rewrite."""
 
     pred_serial: int
     conditional_serial: int
@@ -67,7 +68,7 @@ class FixPredecessorCloneAsGotoCandidate:
     source_successors: tuple[int, int]
     pred_successors: tuple[int, ...]
     description: str = ""
-    lowering_status: str = "diagnostic_only"
+    lowering_status: str = "planned_modification_available"
 
     @property
     def intent(self) -> FixPredecessorCloneAsGotoIntent:
@@ -77,6 +78,15 @@ class FixPredecessorCloneAsGotoCandidate:
             clone_goto_target_serial=self.selected_target_serial,
             redirect_pred_serial=self.pred_serial,
             redirect_old_target_serial=self.conditional_serial,
+        )
+
+    def to_graph_modification(self) -> CloneConditionalAsGoto:
+        """Return the executable backend-neutral graph primitive."""
+        return CloneConditionalAsGoto(
+            source_block=self.conditional_serial,
+            pred_serial=self.pred_serial,
+            goto_target=self.selected_target_serial,
+            reason=self.description or "fix_predecessor_clone_as_goto",
         )
 
 
@@ -172,7 +182,8 @@ def plan_fix_predecessor_clone_as_goto(
     * selected target is exactly the taken or fallthrough arm implied by
       ``outcome``
 
-    The result is diagnostic-only until a dedicated executor lowering exists.
+    The result is executable through the dedicated graph primitive, but callers
+    must still opt into that path explicitly.
     """
     pred_block = cfg.get_block(pred_serial)
     conditional_block = cfg.get_block(conditional_serial)

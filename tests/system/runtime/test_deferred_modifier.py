@@ -15,6 +15,12 @@ from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block as fix_pred
+from d810.optimizers.microcode.flow.flattening.fix_pred_cond_jump_block import (
+    FixPredecessorOfConditionalJumpBlock,
+    PredecessorModification,
+    PredecessorModificationType,
+)
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
     EmulatedDispatcherStrategyFamily,
@@ -837,6 +843,161 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
 
     assert ok is True
     assert modifier._serial_remap[225] == 223
+
+
+def _clone_as_goto_fixture():
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    fallthrough = _FakeBlock(20)
+    target = _FakeBlock(30)
+    clone = _FakeBlock(7)
+
+    source.type = ida_hexrays.BLT_2WAY
+    source.succset = _FakeEdgeSet([20, 30])
+    source.predset = _FakeEdgeSet([6])
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    source.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    source.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    pred.succset = _FakeEdgeSet([5])
+    pred.nsucc = lambda: 1  # type: ignore[assignment]
+    pred.succ = lambda _idx: 5  # type: ignore[assignment]
+
+    clone.type = ida_hexrays.BLT_2WAY
+    clone.succset = _FakeEdgeSet([20, 30])
+    clone.predset = _FakeEdgeSet([6, 9])
+    clone.nsucc = lambda: 2  # type: ignore[assignment]
+    clone.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    clone.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    mba.blocks = {
+        5: source,
+        6: pred,
+        7: clone,
+        20: fallthrough,
+        30: target,
+    }
+    mba.qty = 31
+
+    return mba, source, pred, clone
+
+
+def test_clone_conditional_as_goto_records_serial_drift_remap_and_replays_shape(
+    monkeypatch,
+):
+    mba, source, pred, clone = _clone_as_goto_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+    trace: list[tuple] = []
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+
+    def _convert(blk, target, **_kwargs):
+        trace.append(("convert", blk.serial, target))
+        return True
+
+    def _redirect(blk, new_target, **_kwargs):
+        trace.append(("redirect", blk.serial, blk.succ(0), new_target))
+        return True
+
+    monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _redirect)
+
+    ok = modifier._apply_clone_conditional_as_goto(
+        source_blk=source,
+        pred_serial=pred.serial,
+        goto_target_serial=30,
+        expected_serial=9,
+    )
+
+    assert ok is True
+    assert modifier._serial_remap[9] == 7
+    assert list(clone.predset) == []
+    assert trace == [
+        ("convert", 7, 30),
+        ("redirect", 6, 5, 7),
+    ]
+
+
+def test_clone_conditional_as_goto_planned_path_matches_legacy_live_sequence(
+    monkeypatch,
+):
+    legacy_mba, legacy_source, _legacy_pred, legacy_clone = _clone_as_goto_fixture()
+    planned_mba, planned_source, _planned_pred, planned_clone = _clone_as_goto_fixture()
+
+    legacy_trace: list[tuple] = []
+    planned_trace: list[tuple] = []
+
+    def _legacy_copy_block(_source, _insert_before):
+        legacy_trace.append(("clone", _source.serial))
+        legacy_mba.blocks[legacy_clone.serial] = legacy_clone
+        return legacy_clone
+
+    legacy_mba.copy_block = _legacy_copy_block  # type: ignore[attr-defined]
+
+    def _legacy_convert(blk, target, **_kwargs):
+        legacy_trace.append(("convert", blk.serial, target))
+        return True
+
+    def _legacy_redirect(blk, old_target, new_target, **_kwargs):
+        legacy_trace.append(("redirect", blk.serial, old_target, new_target))
+        return True
+
+    monkeypatch.setattr(fix_pred, "make_2way_block_goto", _legacy_convert)
+    monkeypatch.setattr(fix_pred, "update_blk_successor", _legacy_redirect)
+
+    rule = FixPredecessorOfConditionalJumpBlock()
+    rule.mba = legacy_mba
+    legacy_ok = rule._apply_single_modification(
+        PredecessorModification(
+            mod_type=PredecessorModificationType.ALWAYS_TAKEN,
+            pred_serial=6,
+            cond_block_serial=5,
+            target_serial=30,
+            description="parity",
+        ),
+        legacy_source,
+    )
+
+    def _planned_copy(_mba, source_blk, _insert_before):
+        planned_trace.append(("clone", source_blk.serial))
+        return planned_clone
+
+    def _planned_convert(blk, target, **_kwargs):
+        planned_trace.append(("convert", blk.serial, target))
+        return True
+
+    def _planned_redirect(blk, new_target, **_kwargs):
+        planned_trace.append(("redirect", blk.serial, blk.succ(0), new_target))
+        return True
+
+    monkeypatch.setattr(dm, "copy_block_keep", _planned_copy)
+    monkeypatch.setattr(dm, "make_2way_block_goto", _planned_convert)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _planned_redirect)
+
+    modifier = dm.DeferredGraphModifier(planned_mba)
+    planned_ok = modifier._apply_clone_conditional_as_goto(
+        source_blk=planned_source,
+        pred_serial=6,
+        goto_target_serial=30,
+        expected_serial=7,
+    )
+
+    assert legacy_ok is True
+    assert planned_ok is True
+    assert planned_trace == legacy_trace == [
+        ("clone", 5),
+        ("convert", 7, 30),
+        ("redirect", 6, 5, 7),
+    ]
 
 
 @dataclass

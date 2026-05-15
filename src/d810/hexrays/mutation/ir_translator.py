@@ -13,6 +13,7 @@ from d810.core.typing import TYPE_CHECKING, Callable
 from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgContract
 
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     GraphModification,
     RedirectGoto,
     RedirectBranch,
@@ -30,6 +31,7 @@ from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
+    PatchCloneConditionalAsGoto,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -438,7 +440,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -645,6 +647,24 @@ class IDAIRTranslator:
                     ),
                 )
 
+            case PatchCloneConditionalAsGoto(
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=target,
+                assigned_serial=assigned,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto pred={pred} src={src} "
+                        f"target={target} via {assigned}: {reason}"
+                    ),
+                )
+
             case PatchPrivateTerminalSuffix(
                 anchor_serial=anchor,
                 shared_entry_serial=shared_entry,
@@ -770,6 +790,22 @@ class IDAIRTranslator:
                     description=(
                         f"duplicate block src={src} pred={pred} target={target} "
                         f"cond={conditional_target} ft={fallthrough_target}"
+                    ),
+                )
+
+            case CloneConditionalAsGoto(
+                source_block=src,
+                pred_serial=pred,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    goto_target_serial=target,
+                    description=(
+                        f"clone conditional as goto pred={pred} src={src} "
+                        f"target={target}: {reason}"
                     ),
                 )
 
