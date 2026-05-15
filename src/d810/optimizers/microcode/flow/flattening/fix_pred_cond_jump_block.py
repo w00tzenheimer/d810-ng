@@ -30,8 +30,10 @@ from d810.cfg.fix_predecessor_classification import (
 )
 from d810.cfg.fix_predecessor_planning import (
     FixPredecessorCloneAsGotoDecision,
+    FixPredecessorCloneAsGotoFromBranchArmDecision,
     FixPredecessorOutcome,
     plan_fix_predecessor_clone_as_goto,
+    plan_fix_predecessor_clone_from_branch_arm,
 )
 from d810.cfg.flowgraph import FlowGraph
 from d810.hexrays.mutation.cfg_mutations import (
@@ -269,6 +271,16 @@ def _snapshot_cfg_for_classification(
     )
 
 
+def _modification_outcome(
+    modification: PredecessorModification,
+) -> FixPredecessorOutcome:
+    return (
+        FixPredecessorOutcome.ALWAYS_TAKEN
+        if modification.mod_type == PredecessorModificationType.ALWAYS_TAKEN
+        else FixPredecessorOutcome.NEVER_TAKEN
+    )
+
+
 def plan_predecessor_modification_clone_as_goto(
     cfg: FlowGraph,
     modification: PredecessorModification,
@@ -277,19 +289,40 @@ def plan_predecessor_modification_clone_as_goto(
 
     This adapter is intentionally read-only.  It lets tests and diagnostics
     compare the legacy queued modification against the backend-neutral
-    clone-as-goto shape before any shared-engine executor path is selected.
+    one-way clone-as-goto shape before any shared-engine executor path is
+    selected.  Use :func:`plan_predecessor_modification_clone_from_branch_arm`
+    for the 2-way predecessor branch-arm sibling shape.
     """
-    outcome = (
-        FixPredecessorOutcome.ALWAYS_TAKEN
-        if modification.mod_type == PredecessorModificationType.ALWAYS_TAKEN
-        else FixPredecessorOutcome.NEVER_TAKEN
-    )
     return plan_fix_predecessor_clone_as_goto(
         cfg,
         pred_serial=modification.pred_serial,
         conditional_serial=modification.cond_block_serial,
         selected_target_serial=modification.target_serial,
-        outcome=outcome,
+        outcome=_modification_outcome(modification),
+        description=modification.description,
+    )
+
+
+def plan_predecessor_modification_clone_from_branch_arm(
+    cfg: FlowGraph,
+    modification: PredecessorModification,
+    *,
+    side_effect_blocks: frozenset[int] = frozenset(),
+) -> FixPredecessorCloneAsGotoFromBranchArmDecision:
+    """Project a live FixPredecessor modification into the 2-way arm shape.
+
+    Read-only sibling of
+    :func:`plan_predecessor_modification_clone_as_goto`.  Returns the
+    branch-arm planner's decision for parity comparisons against the legacy
+    live rule's ``change_2way_block_conditional_successor`` path.
+    """
+    return plan_fix_predecessor_clone_from_branch_arm(
+        cfg,
+        pred_serial=modification.pred_serial,
+        conditional_serial=modification.cond_block_serial,
+        selected_target_serial=modification.target_serial,
+        outcome=_modification_outcome(modification),
+        side_effect_blocks=side_effect_blocks,
         description=modification.description,
     )
 
@@ -1011,7 +1044,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     "fix_pred bucket: %s pred=%d cond=%d target=%d "
                     "outcome=%s pred_topology=%s arm=%s "
                     "cond_succs=%d cond_preds=%d target_preds=%d "
-                    "side_effects=%s planner=%s",
+                    "side_effects=%s matches_one_way=%s matches_arm=%s "
+                    "planner=%s",
                     classification.bucket.value,
                     classification.selected_predecessor,
                     classification.target_conditional_block,
@@ -1023,6 +1057,8 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     classification.conditional_target_predecessor_count,
                     classification.selected_target_predecessor_count,
                     classification.conditional_has_body_side_effects,
+                    classification.matches_clone_conditional_as_goto,
+                    classification.matches_clone_conditional_as_goto_from_branch_arm,
                     rejection,
                 )
 

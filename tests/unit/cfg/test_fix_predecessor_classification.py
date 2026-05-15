@@ -113,9 +113,10 @@ def test_two_way_predecessor_with_explicit_branch_target_arm_known() -> None:
     assert classification.predecessor_topology is PredecessorTopology.TWO_WAY
     assert classification.predecessor_arm == 1  # explicit branch arm
     assert classification.matches_clone_conditional_as_goto is False
-    assert classification.planner_rejection is (
-        FixPredecessorRejectReason.PRED_NOT_SIMPLE_ONEWAY
-    )
+    # The branch-arm sibling planner admits this shape — that is the whole
+    # point of the d81-4zm8 migration.
+    assert classification.matches_clone_conditional_as_goto_from_branch_arm is True
+    assert classification.planner_rejection is None
 
 
 def test_two_way_predecessor_with_explicit_fallthrough_arm_known() -> None:
