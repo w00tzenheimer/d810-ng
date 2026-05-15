@@ -36,6 +36,7 @@ class ExecutionPolicy(str, Enum):
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateAndRedirect,
@@ -312,6 +313,41 @@ class PatchCloneConditionalAsGoto:
 
 
 @dataclass(frozen=True)
+class PatchCloneConditionalAsGotoFromBranchArm:
+    """Finalized clone-conditional-as-goto-from-branch-arm materialization step.
+
+    Sibling of :class:`PatchCloneConditionalAsGoto` for the case where the
+    predecessor is itself a 2-way conditional whose ``pred_arm`` reaches the
+    cloned source.  Only ``pred_arm == 1`` (explicit branch arm) is supported
+    by the engine path today; ``pred_arm == 0`` records stay in legacy
+    fallback because no tested fallthrough-rewrite helper exists.
+    """
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    source_serial: int
+    pred_serial: int
+    pred_arm: int
+    goto_target: int
+    source_successors: tuple[int, int]
+    pred_successors: tuple[int, int]
+    pred_branch_target_serial: int
+    pred_fallthrough_target_serial: int
+    conditional_target: int
+    fallthrough_target: int
+    reason: str = "fix_predecessor_clone_as_goto_from_branch_arm"
+
+    def to_graph_modification(self) -> CloneConditionalAsGotoFromBranchArm:
+        return CloneConditionalAsGotoFromBranchArm(
+            source_block=self.source_serial,
+            pred_serial=self.pred_serial,
+            pred_arm=self.pred_arm,
+            goto_target=self.goto_target,
+            reason=self.reason,
+        )
+
+
+@dataclass(frozen=True)
 class PatchPrivateTerminalSuffix:
     """Finalized materialization of a private terminal suffix chain for one anchor.
 
@@ -400,6 +436,7 @@ BlockCreatingGraphModification = Union[
     CreateConditionalRedirect,
     DuplicateBlock,
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
@@ -437,6 +474,7 @@ PatchOperation = Union[
     PatchInsertBlock,
     PatchDuplicateBlock,
     PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
     PatchDirectTerminalLoweringGroup,
@@ -541,6 +579,18 @@ class _PendingCloneConditionalAsGoto:
 
 
 @dataclass(frozen=True)
+class _PendingCloneConditionalAsGotoFromBranchArm:
+    modification: CloneConditionalAsGotoFromBranchArm
+    block_id: VirtualBlockId
+    source_successors: tuple[int, int]
+    pred_successors: tuple[int, int]
+    pred_branch_target_serial: int
+    pred_fallthrough_target_serial: int
+    conditional_target: int
+    fallthrough_target: int
+
+
+@dataclass(frozen=True)
 class _PendingPrivateTerminalSuffix:
     modification: PrivateTerminalSuffix
     clone_block_ids: tuple[VirtualBlockId, ...]
@@ -571,6 +621,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             CreateConditionalRedirect,
             DuplicateBlock,
             CloneConditionalAsGoto,
+            CloneConditionalAsGotoFromBranchArm,
             DuplicateAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
@@ -876,6 +927,144 @@ def _compile_clone_conditional_as_goto_step(
     )
 
 
+def _compile_clone_conditional_as_goto_from_branch_arm_step(
+    modification: CloneConditionalAsGotoFromBranchArm,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingCloneConditionalAsGotoFromBranchArm, PatchBlockSpec]:
+    """Compile the 2-way-pred branch-arm clone-as-goto shape into PatchPlan IR.
+
+    Mirrors :func:`_compile_clone_conditional_as_goto_step` but validates a
+    2-way predecessor and threads ``pred_arm`` + pred-side arm targets so the
+    backend translator can pick ``change_2way_block_conditional_successor``
+    instead of ``change_1way_block_successor``.  Only ``pred_arm == 1`` is
+    supported by the engine path today (mirrors planner constraint
+    PRED_FALLTHROUGH_ARM_NOT_SUPPORTED).
+    """
+    source_block = cfg.get_block(modification.source_block)
+    pred_block = cfg.get_block(modification.pred_serial)
+    target_block = cfg.get_block(modification.goto_target)
+    if source_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source block {modification.source_block} not found"
+        )
+    if pred_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor block {modification.pred_serial} not found"
+        )
+    if target_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm goto target {modification.goto_target} not found"
+        )
+    if pred_block.nsucc != 2:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            f"has {pred_block.nsucc} successors; expected 2"
+        )
+    if modification.source_block not in pred_block.succs:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            f"successors {pred_block.succs} do not include source {modification.source_block}"
+        )
+    if modification.pred_arm not in (0, 1):
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm must be 0 or 1, "
+            f"got {modification.pred_arm}"
+        )
+    pred_branch_target = _infer_conditional_target(pred_block)
+    if pred_branch_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            "has no explicit branch arm"
+        )
+    pred_fallthrough_target = _infer_fallthrough_target(
+        pred_block, conditional_target=pred_branch_target
+    )
+    if pred_fallthrough_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            "arms collapse to a single target"
+        )
+    if modification.pred_arm == 1 and modification.source_block != pred_branch_target:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm=1 but pred branch target is "
+            f"{pred_branch_target}, not source {modification.source_block}"
+        )
+    if modification.pred_arm == 0 and modification.source_block != pred_fallthrough_target:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm=0 but pred fallthrough is "
+            f"{pred_fallthrough_target}, not source {modification.source_block}"
+        )
+
+    if source_block.nsucc != 2:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            f"has {source_block.nsucc} successors; expected 2"
+        )
+    conditional_target = _infer_conditional_target(source_block)
+    if conditional_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            "has no explicit conditional target"
+        )
+    if conditional_target not in source_block.succs:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm conditional target {conditional_target} "
+            f"is not in source successors {source_block.succs}"
+        )
+    fallthrough_target = _infer_fallthrough_target(
+        source_block,
+        conditional_target=conditional_target,
+    )
+    if fallthrough_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            f"has ambiguous fallthrough successors {source_block.succs}"
+        )
+    if modification.goto_target == modification.source_block:
+        raise ValueError(
+            "CloneConditionalAsGotoFromBranchArm target would self-loop to source"
+        )
+    if modification.goto_target not in {conditional_target, fallthrough_target}:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm target {modification.goto_target} is not "
+            f"one of conditional arms {conditional_target}, {fallthrough_target}"
+        )
+
+    block_id = allocator.alloc("clone_conditional_as_goto_from_branch_arm")
+    spec = PatchBlockSpec(
+        block_id=block_id,
+        kind="clone_conditional_as_goto_from_branch_arm",
+        template_block=modification.source_block,
+        incoming_edge=PatchEdgeRef(
+            source=modification.pred_serial,
+            target=modification.source_block,
+        ),
+        outgoing_edges=(
+            PatchEdgeRef(source=block_id, target=modification.goto_target),
+        ),
+    )
+    return (
+        _PendingCloneConditionalAsGotoFromBranchArm(
+            modification=modification,
+            block_id=block_id,
+            source_successors=(
+                int(source_block.succs[0]),
+                int(source_block.succs[1]),
+            ),
+            pred_successors=(
+                int(pred_block.succs[0]),
+                int(pred_block.succs[1]),
+            ),
+            pred_branch_target_serial=int(pred_branch_target),
+            pred_fallthrough_target_serial=int(pred_fallthrough_target),
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ),
+        spec,
+    )
+
+
 def _compile_legacy_block_step(
     modification: BlockCreatingGraphModification,
     allocator: _VirtualIdAllocator,
@@ -1039,7 +1228,7 @@ def _compile_duplicate_block_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingCloneConditionalAsGoto | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1230,6 +1419,51 @@ def _finalize_step(
                 source_successors=tuple(
                     relocation_map.rewrite_serial(serial)
                     for serial in source_successors
+                ),
+                conditional_target=relocation_map.rewrite_serial(conditional_target),
+                fallthrough_target=relocation_map.rewrite_serial(fallthrough_target),
+                reason=reason,
+            )
+
+        case _PendingCloneConditionalAsGotoFromBranchArm(
+            modification=CloneConditionalAsGotoFromBranchArm(
+                source_block=src,
+                pred_serial=pred,
+                pred_arm=pred_arm,
+                goto_target=target,
+                reason=reason,
+            ),
+            block_id=block_id,
+            source_successors=source_successors,
+            pred_successors=pred_successors,
+            pred_branch_target_serial=pred_branch_target,
+            pred_fallthrough_target_serial=pred_fallthrough_target,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            return PatchCloneConditionalAsGotoFromBranchArm(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                source_serial=src,
+                pred_serial=pred,
+                pred_arm=pred_arm,
+                goto_target=relocation_map.rewrite_serial(target),
+                source_successors=tuple(
+                    relocation_map.rewrite_serial(serial)
+                    for serial in source_successors
+                ),
+                pred_successors=tuple(
+                    relocation_map.rewrite_serial(serial)
+                    for serial in pred_successors
+                ),
+                pred_branch_target_serial=relocation_map.rewrite_serial(
+                    pred_branch_target
+                ),
+                pred_fallthrough_target_serial=relocation_map.rewrite_serial(
+                    pred_fallthrough_target
                 ),
                 conditional_target=relocation_map.rewrite_serial(conditional_target),
                 fallthrough_target=relocation_map.rewrite_serial(fallthrough_target),
@@ -1568,6 +1802,22 @@ def compile_patch_plan(
                     modification,
                     cfg,
                     allocator,
+                )
+                raw_steps.append(pending_step)
+                new_blocks.append(clone_spec)
+
+            case CloneConditionalAsGotoFromBranchArm():
+                if cfg is None:
+                    raise ValueError(
+                        "compile_patch_plan requires FlowGraph context for "
+                        "CloneConditionalAsGotoFromBranchArm"
+                    )
+                pending_step, clone_spec = (
+                    _compile_clone_conditional_as_goto_from_branch_arm_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
                 )
                 raw_steps.append(pending_step)
                 new_blocks.append(clone_spec)
