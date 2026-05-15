@@ -649,6 +649,7 @@ def build_bad_while_loop_modifications(
                     ref_block=edit.ref_block,
                     conditional_target=edit.conditional_target,
                     fallthrough_target=edit.fallthrough_target,
+                    old_target_serial=edit.dispatcher_entry,
                 )
             )
         else:
@@ -1353,6 +1354,8 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
                 edges.add((mod.pred_serial, mod.source_block))
         elif isinstance(mod, CreateConditionalRedirect):
             blocks.add(mod.source_block)
+            if mod.old_target_serial is not None:
+                edges.add((mod.source_block, mod.old_target_serial))
         elif isinstance(mod, InsertBlock):
             blocks.add(mod.pred_serial)
             old_target = (

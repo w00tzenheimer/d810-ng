@@ -802,6 +802,37 @@ def test_create_conditional_redirect_records_serial_drift_remap_and_continues(mo
     )
 
 
+def test_create_conditional_redirect_rejects_stale_source_edge_before_cloning(
+    monkeypatch,
+):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    source.succset = _FakeEdgeSet([9])
+    source.succ = lambda _idx: 9
+    mba.blocks.update({5: source})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+    duplicate_calls = {"count": 0}
+
+    def _duplicate_block(*_args, **_kwargs):
+        duplicate_calls["count"] += 1
+        return (_FakeBlock(7), _FakeBlock(8))
+
+    monkeypatch.setattr(dm, "duplicate_block", _duplicate_block)
+
+    ok = modifier._apply_create_conditional_redirect(
+        source_blk=source,
+        ref_blk_serial=6,
+        conditional_target_serial=10,
+        fallthrough_target_serial=11,
+        old_target_serial=6,
+    )
+
+    assert ok is False
+    assert duplicate_calls["count"] == 0
+
+
 def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
     mba = _FakeMBA()
     source = _FakeBlock(5)

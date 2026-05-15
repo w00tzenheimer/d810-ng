@@ -31,6 +31,14 @@ class CleanupProofVerdict(str, Enum):
     PROOF_GAP = "proof_gap"
 
 
+class CleanupProofState(str, Enum):
+    """First-class proof state used by runtime cleanup promotion."""
+
+    PROVEN = "proven"
+    UNPROVEN = "unproven"
+    REJECTED = "rejected"
+
+
 class CleanupExitShape(str, Enum):
     """Topology shape proven by a legacy cleanup oracle."""
 
@@ -92,6 +100,27 @@ class CleanupConditionalRedirectProof:
     dispatcher_execution_dependency_absent: bool
     projected_dispatcher_cycle_free: bool | None
     verdict: CleanupProofVerdict
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CleanupConditionalRedirectPromotionProof:
+    """Runtime proof object for BadWhileLoop conditional redirect promotion.
+
+    This object is built from live legacy evidence and the current CFG. It is
+    not serialized diagnostic metadata; callers must require ``state=PROVEN``
+    before lowering the rewrite.
+    """
+
+    source_rule: str
+    dispatcher_entry: int
+    source_serial: int
+    ref_block: int
+    conditional_target: int
+    fallthrough_target: int
+    old_target_serial: int
+    dispatcher_internal_serials: tuple[int, ...]
+    state: CleanupProofState
     reasons: tuple[str, ...]
 
 
@@ -533,6 +562,44 @@ def explain_bad_while_loop_conditional_redirect(
         projected_dispatcher_cycle_free=projected_cycle_free,
         verdict=verdict,
         reasons=tuple(reasons),
+    )
+
+
+def bad_while_loop_conditional_redirect_proof(
+    legacy_edit: object,
+    cfg: FlowGraph,
+) -> CleanupConditionalRedirectPromotionProof | None:
+    """Build first-class live proof for conditional redirect promotion.
+
+    The proof is computed from the current CFG and the live BadWhileLoop edit.
+    It deliberately does not read serialized diagnostic proof metadata.
+    """
+    diagnostic = explain_bad_while_loop_conditional_redirect(
+        legacy_edit,
+        cfg,
+        defer_reason="conditional_redirect_promotion_proof",
+    )
+    if diagnostic is None:
+        return None
+
+    if diagnostic.verdict is CleanupProofVerdict.SAFE_SHAPE:
+        state = CleanupProofState.PROVEN
+    elif diagnostic.verdict is CleanupProofVerdict.PROOF_GAP:
+        state = CleanupProofState.UNPROVEN
+    else:
+        state = CleanupProofState.REJECTED
+
+    return CleanupConditionalRedirectPromotionProof(
+        source_rule=diagnostic.source_rule,
+        dispatcher_entry=diagnostic.dispatcher_entry,
+        source_serial=diagnostic.source_serial,
+        ref_block=diagnostic.ref_block,
+        conditional_target=diagnostic.conditional_target,
+        fallthrough_target=diagnostic.fallthrough_target,
+        old_target_serial=diagnostic.dispatcher_entry,
+        dispatcher_internal_serials=diagnostic.dispatcher_internal_serials,
+        state=state,
+        reasons=diagnostic.reasons,
     )
 
 
@@ -1032,16 +1099,19 @@ __all__ = [
     "CLEANUP_DUPLICATE_REPLAY_METADATA_KEY",
     "CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY",
     "CleanupConditionalRedirectProof",
+    "CleanupConditionalRedirectPromotionProof",
     "CleanupDuplicateGroupReplayCandidate",
     "CleanupExitShape",
     "CleanupObservedBlockShape",
     "CleanupPerPredReplay",
+    "CleanupProofState",
     "CleanupProofVerdict",
     "CleanupRewriteIntent",
     "CleanupSideEffectReplayCandidate",
     "DispatcherCleanupCandidate",
     "bad_while_loop_duplicate_candidate",
     "bad_while_loop_duplicate_group_replay_candidate",
+    "bad_while_loop_conditional_redirect_proof",
     "bad_while_loop_side_effect_replay_candidate",
     "build_dispatcher_cleanup_modification",
     "explain_bad_while_loop_conditional_redirect",
