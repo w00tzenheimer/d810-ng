@@ -47,6 +47,7 @@ from d810.cfg.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
 )
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -99,6 +100,7 @@ from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_s
 def _preflight_priority(mod: GraphModification) -> int:
     """Mirror DeferredGraphModifier apply priority for topology simulation."""
     from d810.cfg.graph_modification import (
+        CloneConditionalAsGoto,
         ConvertToGoto,
         CreateConditionalRedirect,
         EdgeRedirectViaPredSplit,
@@ -108,7 +110,7 @@ def _preflight_priority(mod: GraphModification) -> int:
     )
 
     match mod:
-        case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock():
+        case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock() | CloneConditionalAsGoto():
             return 5
         case EdgeRedirectViaPredSplit(clone_until=clone_until):
             return 12 if clone_until is not None else 8
@@ -122,7 +124,7 @@ def _preflight_priority(mod: GraphModification) -> int:
 
 def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
     match edit.kind:
-        case "create_conditional_redirect" | "duplicate_block":
+        case "create_conditional_redirect" | "duplicate_block" | "clone_conditional_as_goto":
             return 5
         case "edge_split_redirect":
             return 12 if edit.clone_until is not None else 8
@@ -1092,6 +1094,10 @@ class TransactionalExecutor:
                     if src == pre_header_serial:
                         continue
                     redirect_modifications.append(mod)
+                case CloneConditionalAsGoto(source_block=src):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
 
         if not redirect_modifications:
             return original_modifications, 0
@@ -1169,7 +1175,7 @@ class TransactionalExecutor:
 
             edits_to_remove: set[int] = set()
             for idx, (_, edit) in enumerate(current_pairs):
-                if edit.kind != "edge_split_redirect":
+                if edit.kind not in {"edge_split_redirect", "clone_conditional_as_goto"}:
                     continue
                 if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
                     edits_to_remove.add(idx)
@@ -1199,7 +1205,7 @@ class TransactionalExecutor:
     ) -> set[int]:
         seeds: set[int] = set()
         for clone_serial, edit in clone_origins.items():
-            if edit.kind == "edge_split_redirect":
+            if edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
                 if edit.source in terminal_exits or edit.via_pred in terminal_exits:
                     seeds.add(clone_serial)
             elif edit.kind == "create_conditional_redirect":
@@ -1224,7 +1230,7 @@ class TransactionalExecutor:
             }:
                 if edit.source in terminal_exits:
                     targets.add(edit.new_target)
-            elif edit.kind == "edge_split_redirect":
+            elif edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
                 if edit.source in terminal_exits or edit.via_pred in terminal_exits:
                     targets.add(edit.new_target)
             elif edit.kind == "create_conditional_redirect":

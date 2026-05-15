@@ -173,11 +173,11 @@ def plan_predecessor_modification_clone_as_goto(
     cfg: FlowGraph,
     modification: PredecessorModification,
 ) -> FixPredecessorCloneAsGotoDecision:
-    """Project a live FixPredecessor modification into diagnostic CFG intent.
+    """Project a live FixPredecessor modification into CFG planning intent.
 
     This adapter is intentionally read-only.  It lets tests and diagnostics
     compare the legacy queued modification against the backend-neutral
-    clone-as-goto shape before any shared-engine executor lowering is enabled.
+    clone-as-goto shape before any shared-engine executor path is selected.
     """
     outcome = (
         FixPredecessorOutcome.ALWAYS_TAKEN

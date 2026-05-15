@@ -8,6 +8,7 @@ from d810.cfg.fix_predecessor_planning import (
     plan_fix_predecessor_clone_as_goto,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.graph_modification import CloneConditionalAsGoto
 
 
 class _BlockRef:
@@ -73,7 +74,7 @@ def test_admits_simple_predecessor_clone_as_goto_candidate() -> None:
     assert decision.accepted
     assert decision.candidate is not None
     candidate = decision.candidate
-    assert candidate.lowering_status == "diagnostic_only"
+    assert candidate.lowering_status == "planned_modification_available"
     assert candidate.pred_serial == 8
     assert candidate.conditional_serial == 10
     assert candidate.selected_target_serial == 12
@@ -89,6 +90,12 @@ def test_admits_simple_predecessor_clone_as_goto_candidate() -> None:
         "clear_clone_predecessors",
         "convert_clone_to_goto",
         "redirect_predecessor_to_clone",
+    )
+    assert candidate.to_graph_modification() == CloneConditionalAsGoto(
+        source_block=10,
+        pred_serial=8,
+        goto_target=12,
+        reason="pred 8 always takes jump in block 10",
     )
 
 
