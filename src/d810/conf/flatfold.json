@@ -1169,8 +1169,13 @@
       }
     },
     {
-      "name": "FixPredecessorOfConditionalJumpBlock",
+      "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "FixPredecessorOfConditionalJumpBlock",
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }

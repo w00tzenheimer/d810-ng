@@ -38,6 +38,7 @@ from tests.system.cases.libobfuscated_comprehensive import (
     TIGRESS_CASES,
     UNWRAP_LOOPS_CASES,
     WHILE_SWITCH_CASES,
+    HARDENED_OLLVM_COND_CHAIN_CASES,
     RESIZE_BUFFER_CFF_CASES,
 )
 
@@ -369,6 +370,38 @@ class TestLoopPatterns:
         )
 
 
+class TestHardenedConditionalChains:
+    """Tests for hardened OLLVM conditional-chain state machines.
+
+    These cases use table-backed state constants and binary-search dispatch, so
+    they are owned by the whole-dispatcher reconstruction path rather than the
+    predecessor-local conditional-jump fixup.
+    """
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", HARDENED_OLLVM_COND_CHAIN_CASES, ids=lambda c: c.test_id)
+    def test_hardened_conditional_chains(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """Hardened conditional-chain dispatcher patterns."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
 class TestExceptionPaths:
     """Tests for exception and edge case handling.
 
@@ -409,7 +442,7 @@ class TestResizeBufferCFF:
     - OLLVM Control-Flow Flattening (CFF) with nested while(1) loops
     - Opaque constant table with MBA expressions
     - FoldReadonlyDataRule with fold_writable_constants
-    - FixPredecessorOfConditionalJumpBlock for conditional chain dispatch
+    - active whole-dispatcher unflattening for conditional chain dispatch
     """
 
     binary_name = _get_default_binary()

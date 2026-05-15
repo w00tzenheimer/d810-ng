@@ -70,8 +70,8 @@ FAKE_JUMP_BASELINES = {
     "abc_f6_or_dispatch": {
         "legacy_project": "example_libobfuscated.json",
         "legacy_changed": True,
-        "engine_changed": False,
-        "engine_matches_legacy": False,
+        "engine_changed": True,
+        "engine_matches_legacy": True,
         "legacy_ast": {
             "statements": 1,
             "returns": 1,
@@ -81,11 +81,11 @@ FAKE_JUMP_BASELINES = {
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 6,
+            "statements": 1,
             "returns": 1,
-            "whiles": 1,
+            "whiles": 0,
             "gotos": 0,
-            "ifs": 1,
+            "ifs": 0,
             "calls": 0,
         },
     },

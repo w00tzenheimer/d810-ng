@@ -325,6 +325,15 @@ ABC_XOR_CASES = [
         description="XOR-based flattened control flow dispatcher",
         project="example_libobfuscated.json",
         must_change=True,
+        deobfuscated_contains=[
+            "return (unsigned int)(2 * (a1 + 0x2A));",
+            "return 0xFFFFFFFE * (a1 + 0x2A);",
+        ],
+        deobfuscated_not_contains=[
+            "while ( 1 )",
+            "return result;",
+            "0xFFFFFFAC",
+        ],
     ),
     DeobfuscationCase(
         function="abc_or_dispatch",
@@ -724,13 +733,29 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         # Use state-machine constants instead of symbol names to remain backend-stable
         # across PE/Mach-O naming differences.
         obfuscated_contains=["0x1000", "0x6000"],
-        # After deobfuscation, table references should be resolved away
+        # After deobfuscation, table references should be resolved away and the
+        # output should match IDA's collapsed equivalent of the manual
+        # unflattening.  Depending on the decompile path, IDA may print the
+        # return with or without an explicit unsigned cast; both forms are
+        # equivalent for the recovered unsigned-int expression.
+        deobfuscated_contains=[
+            "dword_18001D440 = 3 * a1 + 7;",
+        ],
         deobfuscated_not_contains=["g_opaque_table"],
-        # The underlying computation is: result = input * 3 + 7
-        acceptable_patterns=["* 3", "+ 7", "3 *"],
+        acceptable_patterns=[
+            "return 3 * a1 + 7;",
+            "return (unsigned int)(3 * a1 + 7);",
+        ],
         must_change=True,
-        # Uses FixPredecessorOfConditionalJumpBlock from example_libobfuscated.json
-        required_rules=["FixPredecessorOfConditionalJumpBlock"],
+        # FixPredecessor intentionally stays disabled for this terminal
+        # conditional-chain shape: predecessor-local rewrites can erase the
+        # final return.  The active owner is the whole-chain emulated
+        # dispatcher lowerer, which folds the table-driven state constants and
+        # materializes the payload corridor as one unit.  Keep this outcome
+        # based because current block-rule stats do not reliably report the
+        # emulated-dispatcher owner even when the lowerer applies.
+        required_rules=[],
+        expected_rules=[],
     ),
     DeobfuscationCase(
         function="sub_7FFC1EB47830",

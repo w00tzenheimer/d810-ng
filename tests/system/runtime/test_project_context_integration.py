@@ -55,14 +55,13 @@ class TestProjectContextIntegration:
                 )
                 state.stop_d810()
 
-            # Now decompile WITHOUT FixPredecessorOfConditionalJumpBlock
+            # Now decompile WITHOUT an active block rule.
             with state.for_project("example_libobfuscated.json") as ctx:
-                # Remove the problematic rule
-                ctx.remove_rule("FixPredecessorOfConditionalJumpBlock")
+                ctx.remove_rule("ForwardConstantPropagationRule")
 
                 # Verify the rule was removed
                 blk_rule_names = [r.name for r in ctx.active_blk_rules]
-                assert "FixPredecessorOfConditionalJumpBlock" not in blk_rule_names
+                assert "ForwardConstantPropagationRule" not in blk_rule_names
 
                 state.start_d810()
                 decompiled_without_rule = idaapi.decompile(
@@ -76,9 +75,9 @@ class TestProjectContextIntegration:
 
         # The outputs should be different (removing a rule changes behavior)
         # Note: We're not asserting which one is "better" - just that they differ
-        print(f"\n--- WITH FixPredecessorOfConditionalJumpBlock ---")
+        print(f"\n--- WITH ForwardConstantPropagationRule ---")
         print(text_with_rule[:500])
-        print(f"\n--- WITHOUT FixPredecessorOfConditionalJumpBlock ---")
+        print(f"\n--- WITHOUT ForwardConstantPropagationRule ---")
         print(text_without_rule[:500])
 
     def test_context_restores_rules(
@@ -93,8 +92,10 @@ class TestProjectContextIntegration:
             with state.for_project("example_libobfuscated.json") as ctx:
                 original_blk_count = len(ctx.active_blk_rules)
 
-                # Remove a rule
-                ctx.remove_rule("FixPredecessorOfConditionalJumpBlock")
+                # Remove an active rule.  FixPredecessor is intentionally
+                # disabled in this project profile, so it is not suitable for
+                # a count-based context-manager assertion.
+                ctx.remove_rule("ForwardConstantPropagationRule")
                 assert len(ctx.active_blk_rules) < original_blk_count
 
             # After context exits, rules should be restored
@@ -115,7 +116,7 @@ class TestProjectContextIntegration:
                 original_count = len(ctx.active_blk_rules)
 
                 # Chain multiple removals
-                ctx.remove_rule("FixPredecessorOfConditionalJumpBlock") \
+                ctx.remove_rule("UnflattenerFakeJump") \
                    .remove_rule("ForwardConstantPropagationRule")
 
                 # Should have removed 2 rules

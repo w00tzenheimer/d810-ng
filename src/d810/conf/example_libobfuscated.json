@@ -968,7 +968,7 @@
     },
     {
       "name": "FixPredecessorOfConditionalJumpBlock",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {
@@ -1002,6 +1002,11 @@
           }
         }
       }
+    },
+    {
+      "name": "EmulatedDispatcherUnflattener",
+      "is_activated": true,
+      "config": {}
     },
     {
       "name": "UnflattenerFakeJump",

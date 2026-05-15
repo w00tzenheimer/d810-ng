@@ -650,24 +650,21 @@ class TestIntegrationOpaqueTableFolding:
             fired_rules = state.stats.get_fired_rule_names()
             print(f"\n  Fired rules: {fired_rules}")
 
-            # =========================================================================
-            # CORRECTED BEHAVIOR (after fixing exit path issue):
-            #   void __fastcall hardened_cond_chain_simple(unsigned int a1)
-            #   {
-            #       dword_180015448 = 3 * a1 + 7;  // g_side_effect
-            #   }
+            # This test is primarily about writable opaque-table folding, but it
+            # also guards the terminal conditional-chain regression that used to
+            # hide behind a weak assertion set.  The accepted final form is IDA's
+            # collapsed equivalent of the manual unflattening:
             #
-            # WHAT d810 DOES CORRECTLY:
-            # 1. Eliminates opaque table references (g_opaque_table, dword_* lookups)
-            # 2. Eliminates state constants (0x1000, 0x2000, 0x4000, 0x5000, 0x6000, 0x7000)
-            # 3. Recovers correct computation (3 * a1 + 7)
-            # 4. Runtime harness may still retain a terminal while(1) wrapper
-            #    even when state constants and opaque-table transitions are gone.
+            #   v3 = a1;
+            #   v3 *= 3;
+            #   v3 += 7;
+            #   dword_18001D440 = v3;
+            #   return v3;
             #
-            # REMAINING LIMITATIONS:
-            # - Function signature: 'void ()' instead of expected return type
-            #   (this is IDA's doing, not d810's fault - the function doesn't return)
-            # =========================================================================
+            # Different decompile paths may print the return as either
+            # `return 3 * a1 + 7;` or `return (unsigned int)(3 * a1 + 7);`.
+            # Both are equivalent for the recovered unsigned-int expression, so
+            # assert the semantic shape instead of one renderer spelling.
 
             # Verify opaque table references eliminated
             assert "g_opaque_table" not in code, \
@@ -679,14 +676,19 @@ class TestIntegrationOpaqueTableFolding:
                 assert const not in code, \
                     f"State constant {const} should be eliminated"
 
-            # Verify computation recovered (3 * a1 + 7) or at least 3 * a1
-            assert "3 * a1" in code or "a1 * 3" in code, \
-                "Expected computation with parameter (3 * a1)"
+            code_lines = {line.strip() for line in code.splitlines()}
+            assert "dword_18001D440 = 3 * a1 + 7;" in code_lines, \
+                "Expected collapsed side-effect assignment: dword_18001D440 = 3 * a1 + 7"
+            assert (
+                "return 3 * a1 + 7;" in code_lines
+                or "return (unsigned int)(3 * a1 + 7);" in code_lines
+            ), "Expected collapsed return of the recovered expression"
 
-            # Verify side effect variable assignment present
-            # Note: The variable name will be IDA-generated (dword_*), not "g_side_effect"
-            assert " = " in code, \
-                "Expected side effect assignment"
+            assert "while" not in code.lower(), \
+                "Expected conditional-chain dispatcher to be fully removed"
+
+            assert "while ( 1 )\n        ;" not in code, \
+                "Unexpected terminal infinite loop after opaque-table folding"
 
             # Verify decompilation didn't crash and produced something
             assert len(code.strip()) > 0, \

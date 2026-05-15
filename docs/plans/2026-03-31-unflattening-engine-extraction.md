@@ -230,10 +230,14 @@ Current tree audit against the revised execution order:
   `cfg/materialization_backend.py`, and `InsertBlock.captured_body` exists in
   `cfg/graph_modification.py`. Remaining live-analysis leakage is tracked in
   `docs/hodur/live_analysis_strategy_boundary.md`.
-- **E3/P2 non-state-machine adoption:** partial. FakeJump, SingleIteration,
-  BadWhileLoop, and EmulatedDispatcher engine paths exist. BadWhileLoop now
-  plans more than the old safe subset, including duplicate/conditional redirect
-  graph modifications, but copied side-effect replay remains a follow-up.
+- **E3/P2 non-state-machine adoption:** partial and now explicitly a
+  strangler migration. FakeJump, SingleIteration, BadWhileLoop, and
+  EmulatedDispatcher engine paths exist. The cleanup-family path uses legacy
+  cleanup rules as the oracle/source of cases, but newly supported shapes must
+  move through neutral evidence, `cfg` graph modifications, engine planning,
+  and Hex-Rays backend mutation. BadWhileLoop duplicate cleanup now has a
+  neutral evidence bridge; copied side-effect replay and riskier conditional
+  shapes remain follow-ups.
 - **E4 legacy retirement:** not ready. Legacy paths are intentionally kept, and
   migration tests lock current behavior without claiming full parity.
 - **E5 extension contract:** open. There is no `engine/EXTENSION_GUIDE.md` yet;
@@ -255,6 +259,17 @@ Already present on this branch:
   Hodur no longer attaches the migrated cleanup families implicitly
   (`e265dd39`), so their parity is now evaluated as standalone engine
   adoption work rather than as hidden Hodur post-processing.
+- `d810.optimizers.microcode.flow.flattening.cleanup_evidence` is the first
+  neutral-evidence bridge for legacy cleanup migration. It maps the safe
+  `BadWhileLoopDuplicateRedirect` shape into a backend-neutral
+  `DispatcherCleanupCandidate` / `CleanupExitShape` /
+  `CleanupRewriteIntent`, then lowers it to `DuplicateAndRedirect` through the
+  shared cfg/engine/Hex-Rays mutation pipeline (`b0baaf50e`).
+- `FixPredecessorOfConditionalJumpBlock` is a parallel E3 cleanup-migration
+  lane. The committed slices add a read-only classifier/corpus inventory and
+  backend-neutral `CloneConditionalAsGoto` planning; the two-way branch-arm
+  extension is being handled as a narrow, regression-gated follow-up. Legacy
+  FixPredecessor remains the oracle/source of cases until parity is proven.
 - Production imports of generic engine objects have been paid down from Hodur
   compatibility shims to canonical `flattening.engine.*` imports
   (`4408d059`). Compatibility modules still exist for tests, backcompat, and
@@ -590,6 +605,20 @@ Goal: the shared engine is proven by more than the state-machine unflattener.
   and add or complete an engine-family equivalent.
 - Prefer examples that use different detection evidence from Hodur so the
   family boundary is exercised rather than merely copied.
+
+Cleanup-family migration rule:
+
+- Use legacy cleanup rules as an oracle/source of cases, not as the endpoint.
+- Newly supported cleanup shapes must be represented as neutral evidence and
+  backend-neutral rewrite intent, then lowered through `cfg.GraphModification`,
+  `PatchPlan`, the engine executor, and Hex-Rays mutation backends.
+- Do not add new direct Hex-Rays mutation, block cloning, NOP, copy, split,
+  verify, or rewrite mechanics inside strategy code for migrated shapes.
+- Legacy live rules may remain for unsupported buckets and parity comparison.
+  Retire each bucket only after a focused parity gate proves the new path.
+- BadWhileLoop and FixPredecessor are the active examples of this strangler
+  pattern: legacy classifies the case, `cleanup_evidence`/`cfg` records the
+  neutral proof, and the engine/Hex-Rays backend performs the mutation.
 
 After the state-machine unflattener is reduced to profile/policy plus backend
 adapters, the next architecture phase is to prove the engine is not secretly
@@ -1574,6 +1603,34 @@ transformations are impossible in the modern architecture, but that the richer
 `BadWhileLoop` cases are not yet re-expressed through the shared `cfg` /
 `recon` / mutation-planning path.
 
+The current migration strategy is a strangler migration:
+
+- Legacy `BadWhileLoop` remains the oracle/source of observed cases.
+- The new cleanup-family path is the real implementation target.
+- Supported shapes are admitted only after they have neutral evidence and a
+  backend-neutral rewrite intent.
+- Strategy/family code should plan; mutation should happen through
+  `GraphModification`, `PatchPlan`, and the Hex-Rays mutation backend.
+- Unsupported buckets remain explicit follow-ups rather than being retrofitted
+  with ad hoc live mutation.
+
+Current state of this track:
+
+- `BadWhileLoopGotoRedirect` and `BadWhileLoopGotoConversion` are already safe
+  modeled edits.
+- `BadWhileLoopDuplicateRedirect` now has a neutral cleanup-evidence bridge and
+  lowers through `DuplicateAndRedirect`.
+- `BadWhileLoopConditionalDuplicate` and `BadWhileLoopConditionalRedirect`
+  remain modeled but deferred until structural proof and parity gates justify
+  enabling them.
+- `copied_side_effects` / `duplicate_group_copied_side_effects` remain a
+  materialization-boundary follow-up and should use captured payloads rather
+  than live `minsn_t` objects in strategy metadata.
+- `FixPredecessorOfConditionalJumpBlock` follows the same pattern: legacy is
+  the oracle, new supported shapes go through `cfg` planning and Hex-Rays
+  backend lowering, and each widened shape needs Hodur/sub7FFD no-regression
+  when it affects shared fixtures.
+
 ### Task 2.1: BadWhileLoop as a strategy
 
 **Files:**
@@ -1685,15 +1742,22 @@ Follow the same pattern as Task 2.1 for `unflattener_single_iteration.py`.
 ### Task 2.4: Re-express Remaining BadWhileLoop Parity via cfg/recon/mutation
 
 **Why this follow-up exists:** the current `BadWhileLoop` wrapper
-intentionally keeps only the already-resolvable subset that can be expressed as
-`RedirectGoto` or `ConvertToGoto` without replaying complex live mutations
-during analysis. The wider transformation space mostly still exists in the
-modern architecture. What is missing is the planning layer that turns richer
-legacy outcomes into generic graph-modification intents.
+intentionally keeps only shapes that can be represented safely through the
+shared engine path. The endpoint is not "make legacy BadWhileLoop smarter"; the
+endpoint is to use legacy BadWhileLoop as a case oracle while moving each
+supported shape into neutral cleanup evidence, `cfg` graph modifications,
+engine planning, and Hex-Rays backend mutation.
+
+The wider transformation space mostly still exists in the modern architecture.
+What is missing for each remaining bucket is proof that the legacy outcome can
+be expressed as a generic graph-modification intent without reintroducing live
+CFG surgery inside strategy code.
 
 **Already supported by the modern architecture:**
 - `DuplicateAndRedirect` in `src/d810/cfg/graph_modification.py`, compiled and
-  materialized by `src/d810/cfg/plan.py`
+  materialized by `src/d810/cfg/plan.py`. The safe
+  `BadWhileLoopDuplicateRedirect` path now routes through neutral cleanup
+  evidence before lowering to this primitive.
 - `CreateConditionalRedirect` in `src/d810/cfg/graph_modification.py`, with
   corresponding conditional patch steps in `src/d810/cfg/plan.py`. A previous
   attempt to promote the former
@@ -1714,6 +1778,9 @@ legacy outcomes into generic graph-modification intents.
   may provide the right `CapturedBlockBody` carrier for this, but it should be
   integrated as a backend boundary first rather than used directly from
   BadWhile analysis.
+- structural proof for the conditional duplicate/conditional redirect cases.
+  These edit classes are modeled, but they should remain deferred until an
+  explainer/parity gate proves the shape and target are safe.
 
 - [ ] **Step 1: Audit every currently skipped legacy `BadWhileLoop` path**
 
@@ -1724,10 +1791,20 @@ Classify each skipped case as:
 - `InsertBlock`
 - intentionally unsupported / retired
 
+- [x] **Step 1a: Add neutral evidence for the first safe duplicate case**
+
+`cleanup_evidence.py` now maps the safe legacy `BadWhileLoopDuplicateRedirect`
+shape into neutral evidence and lowers it to `DuplicateAndRedirect`. This is
+the model for future buckets: legacy observes the case, neutral evidence records
+the proof, and the shared cfg/engine/Hex-Rays pipeline performs the mutation.
+
 - [ ] **Step 2: Add a richer `BadWhileLoop` planning layer**
 
 Convert legacy analysis outcomes into generic `GraphModification` intents
-instead of doing ad hoc live CFG mutation during analysis.
+instead of doing ad hoc live CFG mutation during analysis. Do this one bucket
+at a time. Do not promote `BadWhileLoopConditionalRedirect` or
+`BadWhileLoopConditionalDuplicate` merely because the dataclasses already
+exist; require structural proof and parity.
 
 - [ ] **Step 3: Decide the copied-side-effect replay contract**
 
