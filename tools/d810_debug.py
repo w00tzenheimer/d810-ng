@@ -66,7 +66,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from d810.core.typing import Any, Iterable, Optional, List, Tuple
-from d810.testing.capture_db import (
+from d810.diagnostics.pseudocode_capture import (
     FUNCTION_TO_DSL_TESTS,
     OVERLAPPING_FUNCTIONS,
     capture_one_function,
@@ -458,7 +458,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
                 continue
             code_after = after.get_pseudocode()
 
-            from d810.testing.capture_db import pseudocode_to_string
+            from d810.diagnostics.pseudocode_capture import pseudocode_to_string
 
             before_s = pseudocode_to_string(code_before)
             after_s = pseudocode_to_string(code_after)

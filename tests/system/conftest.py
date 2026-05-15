@@ -1434,6 +1434,10 @@ def pytest_configure(config):
         "markers",
         "pseudocode_dump: manual utility tests for before/after pseudocode dumping",
     )
+    config.addinivalue_line(
+        "markers",
+        "manual: manual utility tests that are opt-in for local diagnostics",
+    )
     # Register the test capture plugin if --capture-to-db is enabled
     if config.getoption("--capture-to-db"):
         from tests.system.runtime.test_capture import CapturePlugin

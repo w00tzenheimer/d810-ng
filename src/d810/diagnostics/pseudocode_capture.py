@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 from d810.core.typing import Any, Callable, Iterable, Mapping, Optional
@@ -14,6 +15,21 @@ from d810.core.typing import Any, Callable, Iterable, Mapping, Optional
 # Default capture DB location can be overridden via D810_CAPTURE_DB.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CAPTURE_DB_NAME = ".d810_capture.db"
+BEFORE_MARKER = "--- BEFORE ---"
+AFTER_MARKER = "--- AFTER ---"
+STATS_MARKER_PREFIX = "=== STATS:"
+
+
+@dataclass(frozen=True)
+class ParsedPseudocodeDump:
+    function_name: str
+    function_address: str | None
+    code_before: str
+    code_after: str
+    code_changed: bool
+    rules_fired: tuple[str, ...]
+    project_config: str | None
+    binary_name: str | None
 
 
 def resolve_capture_db_path(db_arg: str | os.PathLike[str] | None = None) -> Path:
@@ -196,6 +212,259 @@ def side_by_side_diff(before: str, after: str, width: int = 60) -> str:
     return "\n".join(result)
 
 
+def _is_section_rule(raw: str) -> bool:
+    stripped = raw.strip()
+    return stripped.startswith("RULES_FIRED")
+
+
+def _is_separator(raw: str) -> bool:
+    stripped = raw.strip()
+    return len(stripped) >= 20 and set(stripped) == {"="}
+
+
+def _extract_section(
+    lines: list[str],
+    marker: str,
+    *,
+    stop_at_markers: tuple[str, ...],
+) -> str:
+    start: int | None = None
+    end: int | None = None
+    for index, raw in enumerate(lines):
+        if raw.strip() == marker:
+            start = index + 1
+            end = None
+            continue
+        if start is None:
+            continue
+        stripped = raw.strip()
+        if stripped in stop_at_markers:
+            end = index
+            break
+        if raw.startswith(STATS_MARKER_PREFIX) or _is_separator(raw):
+            end = index
+            break
+    if start is None:
+        raise ValueError(f"missing pseudocode section marker: {marker!r}")
+    if end is None:
+        end = len(lines)
+    return "\n".join(lines[start:end]).strip("\n")
+
+
+def _parse_capture_metadata(lines: list[str]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for raw in lines:
+        if raw.startswith("FUNCTION:"):
+            value = raw.removeprefix("FUNCTION:").strip()
+            match = re.match(r"(?P<name>.+?)(?:\s+@\s+(?P<ea>0x[0-9A-Fa-f]+))?$", value)
+            if match:
+                metadata["function_name"] = match.group("name").strip()
+                if match.group("ea"):
+                    metadata["function_address"] = match.group("ea")
+        elif raw.startswith("BINARY:"):
+            metadata["binary_name"] = raw.removeprefix("BINARY:").strip()
+        elif raw.startswith("PROJECT:"):
+            project = raw.removeprefix("PROJECT:").strip()
+            metadata["project_config"] = "" if project == "<none>" else project
+        elif raw.startswith("CODE_CHANGED:"):
+            metadata["code_changed"] = raw.removeprefix("CODE_CHANGED:").strip()
+    return metadata
+
+
+def _parse_rules_fired(lines: list[str]) -> list[str]:
+    rules: list[str] = []
+    in_rules = False
+    for raw in lines:
+        stripped = raw.strip()
+        if _is_section_rule(raw):
+            in_rules = "<none>" not in raw
+            continue
+        if not in_rules:
+            continue
+        if not raw.startswith("  ") or stripped.startswith(("-", "=")):
+            in_rules = False
+            continue
+        if not stripped or stripped == "<none>":
+            continue
+        rules.append(re.sub(r"\s+\[[^]]+\]$", "", stripped))
+    return rules
+
+
+def _parse_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "changed"}
+
+
+def parse_capture_dump(
+    text: str,
+    *,
+    function_name: str | None = None,
+    project_config: str | None = None,
+    binary_name: str | None = None,
+) -> ParsedPseudocodeDump:
+    """Parse a Docker pseudocode dump into DB-ready capture fields.
+
+    The dump format is produced by
+    ``tests/system/e2e/test_dump_function_pseudocode.py`` and contains
+    metadata lines followed by ``--- BEFORE ---`` and ``--- AFTER ---``
+    pseudocode sections. The parser stays text-only so it can run in normal
+    unit tests without IDA or Docker.
+    """
+    lines = text.splitlines()
+    metadata = _parse_capture_metadata(lines)
+    code_before = _extract_section(
+        lines,
+        BEFORE_MARKER,
+        stop_at_markers=(AFTER_MARKER,),
+    )
+    code_after = _extract_section(
+        lines,
+        AFTER_MARKER,
+        stop_at_markers=(BEFORE_MARKER,),
+    )
+    parsed_function = function_name or metadata.get("function_name")
+    if not parsed_function:
+        raise ValueError("capture dump has no FUNCTION line and no function override")
+    changed_default = code_before != code_after
+    return ParsedPseudocodeDump(
+        function_name=parsed_function,
+        function_address=metadata.get("function_address"),
+        code_before=code_before,
+        code_after=code_after,
+        code_changed=_parse_bool(metadata.get("code_changed"), default=changed_default),
+        rules_fired=tuple(_parse_rules_fired(lines)),
+        project_config=(
+            project_config
+            if project_config is not None
+            else metadata.get("project_config") or None
+        ),
+        binary_name=(
+            binary_name
+            if binary_name is not None
+            else metadata.get("binary_name") or None
+        ),
+    )
+
+
+def insert_capture_row(
+    conn: sqlite3.Connection,
+    *,
+    function_name: str,
+    function_address: str | None,
+    code_before: str,
+    code_after: str,
+    code_changed: bool | None = None,
+    rules_fired: Iterable[str] = (),
+    project_config: str | None,
+    binary_name: str | None,
+) -> Mapping[str, Any]:
+    """Insert one parsed before/after pseudocode capture row."""
+    rules_fired_list = list(rules_fired)
+    changed = code_before != code_after if code_changed is None else code_changed
+    conn.execute(
+        """
+        INSERT INTO pseudocode_capture
+        (function_name, function_address, code_before, code_after, code_changed,
+         rules_fired, project_config, binary_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            function_name,
+            function_address,
+            code_before,
+            code_after,
+            changed,
+            json.dumps(rules_fired_list),
+            project_config,
+            binary_name,
+        ),
+    )
+    conn.commit()
+    return {
+        "function_name": function_name,
+        "function_address": function_address,
+        "code_before": code_before,
+        "code_after": code_after,
+        "code_changed": changed,
+        "rules_fired": rules_fired_list,
+        "project_config": project_config,
+        "binary_name": binary_name,
+    }
+
+
+def capture_dump_text_to_db(
+    conn: sqlite3.Connection,
+    text: str,
+    *,
+    function_name: str | None = None,
+    project_config: str | None = None,
+    binary_name: str | None = None,
+) -> Mapping[str, Any]:
+    """Parse dump text and insert its pseudocode capture into ``conn``."""
+    parsed = parse_capture_dump(
+        text,
+        function_name=function_name,
+        project_config=project_config,
+        binary_name=binary_name,
+    )
+    return insert_capture_row(
+        conn,
+        function_name=parsed.function_name,
+        function_address=parsed.function_address,
+        code_before=parsed.code_before,
+        code_after=parsed.code_after,
+        code_changed=parsed.code_changed,
+        rules_fired=parsed.rules_fired,
+        project_config=parsed.project_config,
+        binary_name=parsed.binary_name,
+    )
+
+
+def capture_dump_file_to_db(
+    *,
+    dump_path: Path | str,
+    db_path: Path | str,
+    function_name: str | None = None,
+    project_config: str | None = None,
+    binary_name: str | None = None,
+) -> Mapping[str, Any]:
+    """Parse a dump file and append one row to the capture DB."""
+    dump = Path(dump_path)
+    conn = init_capture_db(db_path)
+    try:
+        row = capture_dump_text_to_db(
+            conn,
+            dump.read_text(errors="replace"),
+            function_name=function_name,
+            project_config=project_config,
+            binary_name=binary_name,
+        )
+    finally:
+        conn.close()
+    return {**row, "db_path": str(db_path), "dump_path": str(dump)}
+
+
+def render_capture_summary(row: Mapping[str, Any]) -> str:
+    """Render a concise human summary for a captured pseudocode row."""
+    rules = row.get("rules_fired") or []
+    if isinstance(rules, str):
+        try:
+            rules = json.loads(rules)
+        except json.JSONDecodeError:
+            rules = [rules]
+    rule_text = ", ".join(str(rule) for rule in rules) if rules else "<none>"
+    return "\n".join(
+        [
+            f"FUNCTION={row.get('function_name')}",
+            f"PROJECT={row.get('project_config') or '<none>'}",
+            f"BINARY={row.get('binary_name') or '<unknown>'}",
+            f"CODE_CHANGED={bool(row.get('code_changed'))}",
+            f"RULES_FIRED={rule_text}",
+        ]
+    )
+
+
 def capture_one_function(
     *,
     state: Any,
@@ -302,69 +571,67 @@ OVERLAPPING_FUNCTIONS: list[tuple[str, Optional[str]]] = [
 # Mapping from function name to DSL test classes, used by summary/diff views.
 FUNCTION_TO_DSL_TESTS: dict[str, list[str]] = {
     "test_chained_add": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestSmoke",
-        "TestAllCases",
     ],
     "test_cst_simplification": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestAllCases",
     ],
     "test_opaque_predicate": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestAllCases",
     ],
     "test_xor": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestSmoke",
-        "TestAllCases",
     ],
     "test_or": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestSmoke",
-        "TestAllCases",
     ],
     "test_and": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestAllCases",
     ],
     "test_neg": [
-        "TestCoreDeobfuscation",
         "TestMBASimplification",
-        "TestAllCases",
     ],
     "tigress_minmaxarray": [
-        "TestCoreDeobfuscation",
         "TestTigressPatterns",
-        "TestAllCases",
     ],
     "unwrap_loops": [
         "TestLoopPatterns",
-        "TestAllCases",
     ],
     "unwrap_loops_2": [
         "TestLoopPatterns",
-        "TestAllCases",
     ],
     "unwrap_loops_3": [
         "TestLoopPatterns",
-        "TestAllCases",
     ],
     "while_switch_flattened": [
-        "TestCoreDeobfuscation",
         "TestLoopPatterns",
-        "TestAllCases",
     ],
     "test_function_ollvm_fla_bcf_sub": [
-        "TestCoreDeobfuscation",
         "TestOLLVMPatterns",
-        "TestAllCases",
     ],
 }
 
+
+__all__ = [
+    "AFTER_MARKER",
+    "BEFORE_MARKER",
+    "DEFAULT_CAPTURE_DB_NAME",
+    "FUNCTION_TO_DSL_TESTS",
+    "OVERLAPPING_FUNCTIONS",
+    "ParsedPseudocodeDump",
+    "STATS_MARKER_PREFIX",
+    "capture_dump_file_to_db",
+    "capture_dump_text_to_db",
+    "capture_one_function",
+    "get_default_binary_name",
+    "get_func_ea",
+    "init_capture_db",
+    "insert_capture_row",
+    "parse_capture_dump",
+    "pseudocode_to_string",
+    "render_capture_summary",
+    "resolve_capture_db_path",
+    "side_by_side_diff",
+    "strip_colors",
+    "unified_diff",
+]
