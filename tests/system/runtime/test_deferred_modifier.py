@@ -845,6 +845,33 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
     assert modifier._serial_remap[225] == 223
 
 
+def test_duplicate_replay_queue_records_single_composite_modification():
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    body = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
+
+    modifier.queue_duplicate_replay_and_redirect(
+        source_block_serial=5,
+        dispatcher_entry_serial=2,
+        per_pred_replays=(
+            (8, 3, 20, None, body),
+            (9, 4, 21, 22, body),
+        ),
+        description="duplicate replay test",
+    )
+
+    assert len(modifier.modifications) == 1
+    queued = modifier.modifications[0]
+    assert queued.mod_type == dm.ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT
+    assert queued.block_serial == 5
+    assert queued.new_target == 2
+    assert queued.replay_entries == (
+        (8, 3, 20, None, body),
+        (9, 4, 21, 22, body),
+    )
+    assert modifier.coalesce() == 0
+
+
 def _clone_as_goto_fixture():
     mba = _FakeMBA()
     source = _FakeBlock(5)

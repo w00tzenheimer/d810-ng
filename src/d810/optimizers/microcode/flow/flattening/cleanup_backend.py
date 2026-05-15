@@ -13,8 +13,10 @@ from d810.cfg.materialization_payload import (
 )
 from d810.core.typing import Protocol
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
     bad_while_loop_duplicate_candidate,
+    validate_duplicate_group_replay_candidate,
     validate_side_effect_replay_candidate,
     validate_dispatcher_cleanup_candidate,
 )
@@ -108,11 +110,16 @@ def _validation_graph_for_bad_while_loop(
     mba: object,
     edits: tuple[BadWhileLoopEdit, ...],
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...],
+    duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...],
     *,
     logger: object | None = None,
 ) -> FlowGraph | None:
-    if not replay_candidates and not any(
-        isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits
+    if (
+        not replay_candidates
+        and not duplicate_replay_candidates
+        and not any(
+            isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits
+        )
     ):
         return None
     try:
@@ -134,6 +141,9 @@ class SimpleFlatteningCleanupDetection:
     single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
     bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
+    bad_while_loop_duplicate_replay_candidates: tuple[
+        CleanupDuplicateGroupReplayCandidate, ...
+    ] = ()
     bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
     collection_errors: tuple[str, ...] = ()
@@ -147,6 +157,7 @@ class SimpleFlatteningCleanupDetection:
             or self.single_iteration_fixes
             or self.bad_while_loop_edits
             or self.bad_while_loop_replay_candidates
+            or self.bad_while_loop_duplicate_replay_candidates
         )
 
     @property
@@ -173,6 +184,8 @@ class SimpleFlatteningCleanupDetection:
             f"single_iteration={len(self.single_iteration_fixes)} "
             f"bad_while_loop={len(self.bad_while_loop_edits)} "
             f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
+            f" bad_while_loop_duplicate_replay="
+            f"{len(self.bad_while_loop_duplicate_replay_candidates)}"
         )
 
 
@@ -247,6 +260,9 @@ class LiveSimpleFlatteningCleanupBackend:
 
         bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
         bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
+        bad_while_loop_duplicate_replay_candidates: tuple[
+            CleanupDuplicateGroupReplayCandidate, ...
+        ] = ()
         bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
         bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
         try:
@@ -260,10 +276,14 @@ class LiveSimpleFlatteningCleanupBackend:
             bad_while_loop_all_replay_candidates = tuple(
                 bad_while_loop_analysis.replay_candidates
             )
+            bad_while_loop_all_duplicate_replay_candidates = tuple(
+                bad_while_loop_analysis.duplicate_replay_candidates
+            )
             bad_while_loop_validation_graph = _validation_graph_for_bad_while_loop(
                 mba,
                 bad_while_loop_all_edits,
                 bad_while_loop_all_replay_candidates,
+                bad_while_loop_all_duplicate_replay_candidates,
                 logger=logger,
             )
             bad_while_loop_edits = tuple(
@@ -283,6 +303,15 @@ class LiveSimpleFlatteningCleanupBackend:
                     candidate,
                 )
             )
+            bad_while_loop_duplicate_replay_candidates = tuple(
+                candidate
+                for candidate in bad_while_loop_all_duplicate_replay_candidates
+                if bad_while_loop_validation_graph is not None
+                and validate_duplicate_group_replay_candidate(
+                    bad_while_loop_validation_graph,
+                    candidate,
+                )
+            )
             promoted_replay = {
                 (
                     candidate.dispatcher_entry,
@@ -290,6 +319,13 @@ class LiveSimpleFlatteningCleanupBackend:
                     candidate.target_serial,
                 )
                 for candidate in bad_while_loop_replay_candidates
+            }
+            promoted_duplicate_replay = {
+                (
+                    candidate.dispatcher_entry,
+                    candidate.source_serial,
+                )
+                for candidate in bad_while_loop_duplicate_replay_candidates
             }
             bad_while_loop_deferred_edits = tuple(
                 edit
@@ -312,6 +348,14 @@ class LiveSimpleFlatteningCleanupBackend:
                     )
                     in promoted_replay
                 )
+                and not (
+                    item.reason == "duplicate_group_copied_side_effects"
+                    and (
+                        item.dispatcher_entry,
+                        item.from_serial,
+                    )
+                    in promoted_duplicate_replay
+                )
             )
         except Exception as exc:
             errors.append(f"bad_while_loop:{type(exc).__name__}")
@@ -327,6 +371,9 @@ class LiveSimpleFlatteningCleanupBackend:
             bad_while_loop_edits=tuple(bad_while_loop_edits),
             bad_while_loop_replay_candidates=tuple(
                 bad_while_loop_replay_candidates
+            ),
+            bad_while_loop_duplicate_replay_candidates=tuple(
+                bad_while_loop_duplicate_replay_candidates
             ),
             bad_while_loop_deferred_edits=tuple(bad_while_loop_deferred_edits),
             bad_while_loop_follow_up=tuple(bad_while_loop_follow_up),

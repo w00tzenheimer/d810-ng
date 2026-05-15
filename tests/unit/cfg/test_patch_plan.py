@@ -15,6 +15,8 @@ from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -33,6 +35,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchEdgeRef,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
@@ -129,6 +132,36 @@ def _conditional_duplicate_cfg() -> FlowGraph:
         },
         entry_serial=8,
         func_ea=0,
+    )
+
+
+def _duplicate_replay_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            2: _block(2, (3, 4), (10,),),
+            3: _block(3, (), (2,)),
+            4: _block(4, (), (2,)),
+            8: _block(8, (10,), ()),
+            9: _block(9, (10,), ()),
+            10: _block(10, (2,), (8, 9)),
+            20: _block(20, (), ()),
+        },
+        entry_serial=8,
+        func_ea=0,
+    )
+
+
+def _captured_body(source_serial: int = 10) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    return CapturedBlockBody(
+        backend_id="fake",
+        capture_id=f"fake-body:{source_serial}",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(source_serial,),
+            instruction_count=len(instructions),
+            source_eas=frozenset({0x2000}),
+        ),
+        payload=instructions,
     )
 
 
@@ -454,6 +487,74 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
     )
     assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> None:
+    left_body = _captured_body()
+    right_body = _captured_body()
+    modification = DuplicateReplayAndRedirect(
+        source_serial=10,
+        dispatcher_entry=2,
+        per_pred_replays=(
+            DuplicateReplayEntry(
+                pred_serial=8,
+                target_serial=3,
+                captured_body=left_body,
+            ),
+            DuplicateReplayEntry(
+                pred_serial=9,
+                target_serial=4,
+                captured_body=right_body,
+            ),
+        ),
+    )
+
+    patch_plan = compile_patch_plan([modification], _duplicate_replay_cfg())
+
+    assert patch_plan.contains_block_creation
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchDuplicateReplayAndRedirect)
+    assert [
+        (
+            row.pred_serial,
+            row.target_serial,
+            row.replay_serial,
+            row.clone_serial,
+        )
+        for row in step.per_pred_replays
+    ] == [(8, 3, 20, None), (9, 4, 21, 22)]
+    assert [spec.kind for spec in patch_plan.new_blocks] == [
+        "duplicate_replay_insert",
+        "duplicate_replay_insert",
+        "duplicate_replay_clone",
+    ]
+    assert patch_plan.legacy_block_operations == ()
+    assert patch_plan.as_graph_modifications() == [modification]
+
+
+def test_compile_patch_plan_rejects_invalid_duplicate_replay_shapes() -> None:
+    with pytest.raises(ValueError, match="predecessor 11 not found"):
+        compile_patch_plan(
+            [
+                DuplicateReplayAndRedirect(
+                    source_serial=10,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        DuplicateReplayEntry(
+                            pred_serial=8,
+                            target_serial=3,
+                            captured_body=_captured_body(),
+                        ),
+                        DuplicateReplayEntry(
+                            pred_serial=11,
+                            target_serial=4,
+                            captured_body=_captured_body(),
+                        ),
+                    ),
+                )
+            ],
+            _duplicate_replay_cfg(),
+        )
 
 
 def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():

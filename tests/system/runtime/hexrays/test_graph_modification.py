@@ -16,6 +16,8 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -25,6 +27,7 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
 )
 from d810.cfg.flowgraph import InsnSnapshot
+from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 
@@ -145,6 +148,33 @@ def test_duplicate_block_construction():
     assert mod.target_block == 11
     assert mod.pred_serial == 7
     assert mod.patch_kind == "jump_taken"
+
+
+def test_duplicate_replay_and_redirect_construction():
+    """Test duplicate-group replay construction and field access."""
+    body = CapturedBlockBody(
+        backend_id="fake",
+        capture_id="body",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(9,),
+            instruction_count=1,
+            source_eas=frozenset({0x1000}),
+        ),
+        payload=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+    )
+    mod = DuplicateReplayAndRedirect(
+        source_serial=9,
+        dispatcher_entry=2,
+        per_pred_replays=(
+            DuplicateReplayEntry(pred_serial=7, target_serial=11, captured_body=body),
+            DuplicateReplayEntry(pred_serial=8, target_serial=12, captured_body=body),
+        ),
+    )
+
+    assert mod.source_serial == 9
+    assert mod.dispatcher_entry == 2
+    assert [row.pred_serial for row in mod.per_pred_replays] == [7, 8]
+    assert mod.per_pred_replays[0].captured_body is body
 
 
 def test_clone_conditional_as_goto_construction():

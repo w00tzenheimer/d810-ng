@@ -418,6 +418,7 @@ class ModificationType(Enum):
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
+    BLOCK_DUPLICATE_REPLAY_AND_REDIRECT = auto()  # Per-pred duplicate + replay insert + redirect
     CLONE_CONDITIONAL_AS_GOTO = auto()  # Clone 2-way conditional, convert clone to goto, redirect predecessor
     CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM = auto()  # 2-way predecessor branch-arm sibling of CLONE_CONDITIONAL_AS_GOTO
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
@@ -788,6 +789,9 @@ class GraphModification:
     sites: tuple | None = None
     # For BLOCK_DUPLICATE_AND_REDIRECT: also redirect the original block's successor
     original_redirect_target: int | None = None
+    # For BLOCK_DUPLICATE_REPLAY_AND_REDIRECT:
+    # (pred, target, expected_replay_serial, expected_clone_serial, instructions)
+    replay_entries: tuple | None = None
     # For REORDER_BLOCKS: ordered block serials to copy in DFS order
     dfs_block_order: tuple[int, ...] | None = None
     # For REORDER_BLOCKS: pre-computed old_serial -> new_serial mapping from PatchPlan
@@ -1484,6 +1488,46 @@ class DeferredGraphModifier:
                 self._mod_payload(self.modifications[-1]),
             )
 
+    def queue_duplicate_replay_and_redirect(
+        self,
+        *,
+        source_block_serial: int,
+        dispatcher_entry_serial: int,
+        per_pred_replays: tuple,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue atomic duplicate-group replay materialization.
+
+        Each row is ``(pred, target, replay_serial, clone_serial, instructions)``.
+        The first row keeps the original source block and has ``clone_serial`` as
+        ``None``; later rows clone the shared source before routing through their
+        replay block.
+        """
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT,
+            block_serial=source_block_serial,
+            new_target=dispatcher_entry_serial,
+            replay_entries=per_pred_replays,
+            priority=5,
+            rule_priority=rule_priority,
+            description=description or (
+                f"duplicate replay src={source_block_serial} "
+                f"dispatcher={dispatcher_entry_serial} rows={len(per_pred_replays)}"
+            ),
+        ))
+        logger.debug(
+            "Queued duplicate_replay_and_redirect: src=%d dispatcher=%d rows=%d",
+            source_block_serial,
+            dispatcher_entry_serial,
+            len(per_pred_replays),
+        )
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
+
     def queue_clone_conditional_as_goto(
         self,
         *,
@@ -2064,6 +2108,12 @@ class DeferredGraphModifier:
                     mod.expected_serial,
                     mod.expected_secondary_serial,
                 )
+            elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT:
+                replay_key = tuple(
+                    (row[0], row[1], row[2], row[3])
+                    for row in (mod.replay_entries or ())
+                )
+                key = (mod.mod_type, mod.block_serial, mod.new_target, replay_key)
             elif mod.mod_type in (
                 ModificationType.CLONE_CONDITIONAL_AS_GOTO,
                 ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
@@ -2176,6 +2226,7 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
+            ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT,
             ModificationType.EDGE_SPLIT_TRAMPOLINE,
             ModificationType.EDGE_REMOVE,
         }
@@ -2186,8 +2237,9 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_REDIRECT: 4,
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 6,
-            ModificationType.EDGE_SPLIT_TRAMPOLINE: 7,
-            ModificationType.EDGE_REMOVE: 8,
+            ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT: 7,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE: 8,
+            ModificationType.EDGE_REMOVE: 9,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -4839,6 +4891,13 @@ class DeferredGraphModifier:
                 original_redirect_target=mod.original_redirect_target,
             )
 
+        elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT:
+            return self._apply_duplicate_replay_and_redirect(
+                source_blk=blk,
+                dispatcher_entry_serial=mod.new_target,
+                replay_entries=mod.replay_entries or (),
+            )
+
         elif mod.mod_type == ModificationType.CLONE_CONDITIONAL_AS_GOTO:
             return self._apply_clone_conditional_as_goto(
                 source_blk=blk,
@@ -5988,6 +6047,223 @@ class DeferredGraphModifier:
                 source_blk.serial,
                 pred_serial,
                 target_serial,
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _apply_duplicate_replay_and_redirect(
+        self,
+        *,
+        source_blk: ida_hexrays.mblock_t,
+        dispatcher_entry_serial: int | None,
+        replay_entries: tuple,
+    ) -> bool:
+        """Apply duplicate-group replay as one source-owned operation.
+
+        Direct replay ``InsertBlock`` cannot model this shape: the shared source
+        has multiple predecessors that need distinct targets, and replaying from
+        the predecessor edge would skip the shared source body.  This operation
+        creates replay blocks first, duplicates the source for all but the kept
+        predecessor, then redirects the original source to the first replay.
+        """
+        if dispatcher_entry_serial is None or len(replay_entries) < 2:
+            return False
+        if source_blk.nsucc() != 1 or int(source_blk.succ(0)) != int(dispatcher_entry_serial):
+            logger.warning(
+                "duplicate_replay: source blk[%d] is not one-way to dispatcher %s",
+                source_blk.serial,
+                dispatcher_entry_serial,
+            )
+            return False
+
+        seen_preds: set[int] = set()
+        normalized_entries: list[tuple[int, int, int, int | None, tuple]] = []
+        for row in replay_entries:
+            if not isinstance(row, tuple) or len(row) != 5:
+                logger.warning("duplicate_replay: malformed replay row %r", row)
+                return False
+            pred_serial, target_serial, replay_serial, clone_serial, instructions = row
+            if pred_serial in seen_preds:
+                logger.warning("duplicate_replay: duplicate predecessor %s", pred_serial)
+                return False
+            seen_preds.add(int(pred_serial))
+            pred_blk = self.mba.get_mblock(int(pred_serial))
+            target_blk = self.mba.get_mblock(int(target_serial))
+            if pred_blk is None or target_blk is None:
+                logger.warning(
+                    "duplicate_replay: missing pred/target pred=%s target=%s",
+                    pred_serial,
+                    target_serial,
+                )
+                return False
+            if pred_blk.nsucc() != 1 or int(pred_blk.succ(0)) != int(source_blk.serial):
+                logger.warning(
+                    "duplicate_replay: pred blk[%d] is not one-way to source blk[%d]",
+                    int(pred_serial),
+                    source_blk.serial,
+                )
+                return False
+            prepared_instructions = tuple(
+                _prepare_block_creation_instructions(self.mba, instructions)
+            )
+            if not prepared_instructions:
+                logger.warning(
+                    "duplicate_replay: empty replay body for pred blk[%d]",
+                    int(pred_serial),
+                )
+                return False
+            normalized_entries.append(
+                (
+                    int(pred_serial),
+                    int(target_serial),
+                    int(replay_serial),
+                    None if clone_serial is None else int(clone_serial),
+                    prepared_instructions,
+                )
+            )
+
+        if seen_preds != {int(pred) for pred in list(source_blk.predset)}:
+            logger.warning(
+                "duplicate_replay: replay rows do not cover source preds rows=%s preds=%s",
+                sorted(seen_preds),
+                sorted(int(pred) for pred in list(source_blk.predset)),
+            )
+            return False
+
+        created_replays: dict[int, int] = {}
+
+        def _create_replay_block(
+            *,
+            pred_serial: int,
+            target_serial: int,
+            expected_serial: int,
+            instructions: tuple,
+        ) -> int | None:
+            old_stop_serial = self.mba.qty - 1
+            old_stop_pred_serials = [
+                serial
+                for serial in range(self.mba.qty)
+                if (blk := self.mba.get_mblock(serial)) is not None
+                and blk.nsucc() == 1
+                and blk.succ(0) == old_stop_serial
+            ]
+            replay_blk = create_standalone_block(
+                source_blk,
+                instructions,
+                target_serial=target_serial,
+                is_0_way=False,
+                verify=False,
+            )
+            if expected_serial is not None and replay_blk.serial != expected_serial:
+                self._serial_remap[int(expected_serial)] = int(replay_blk.serial)
+                logger.info(
+                    "duplicate_replay: replay blk drift pred=%d expected=%d actual=%d",
+                    pred_serial,
+                    expected_serial,
+                    replay_blk.serial,
+                )
+            new_stop_serial = self.mba.qty - 1
+            for stop_pred_serial in old_stop_pred_serials:
+                stop_pred_blk = self.mba.get_mblock(stop_pred_serial)
+                if stop_pred_blk is None or stop_pred_blk.serial == replay_blk.serial:
+                    continue
+                if stop_pred_blk.nsucc() != 1 or stop_pred_blk.succ(0) != replay_blk.serial:
+                    continue
+                if not change_1way_block_successor(
+                    stop_pred_blk,
+                    new_stop_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "duplicate_replay: failed to relocate stop predecessor blk[%d]",
+                        stop_pred_serial,
+                    )
+                    return None
+            safe_ea = self.mba.entry_ea
+            cur = replay_blk.head
+            while cur is not None:
+                cur.ea = safe_ea
+                cur = cur.next
+            created_replays[pred_serial] = int(replay_blk.serial)
+            return int(replay_blk.serial)
+
+        try:
+            for (
+                pred_serial,
+                target_serial,
+                replay_serial,
+                _clone_serial,
+                instructions,
+            ) in normalized_entries:
+                replay_blk_serial = _create_replay_block(
+                    pred_serial=pred_serial,
+                    target_serial=target_serial,
+                    expected_serial=replay_serial,
+                    instructions=instructions,
+                )
+                if replay_blk_serial is None:
+                    return False
+
+            for (
+                pred_serial,
+                _target_serial,
+                _replay_serial,
+                clone_serial,
+                _instructions,
+            ) in normalized_entries[1:]:
+                if clone_serial is None:
+                    logger.warning(
+                        "duplicate_replay: missing clone serial for pred blk[%d]",
+                        pred_serial,
+                    )
+                    return False
+                replay_blk_serial = created_replays[pred_serial]
+                if not self._apply_duplicate_block_and_redirect(
+                    source_blk=source_blk,
+                    pred_serial=pred_serial,
+                    target_serial=replay_blk_serial,
+                    expected_serial=clone_serial,
+                ):
+                    return False
+
+            keep_pred = normalized_entries[0][0]
+            keep_replay = created_replays[keep_pred]
+            if source_blk.nsucc() != 1 or int(source_blk.succ(0)) != int(dispatcher_entry_serial):
+                logger.warning(
+                    "duplicate_replay: source blk[%d] no longer targets dispatcher %s",
+                    source_blk.serial,
+                    dispatcher_entry_serial,
+                )
+                return False
+            remaining_preds = {int(pred) for pred in list(source_blk.predset)}
+            if remaining_preds != {keep_pred}:
+                logger.warning(
+                    "duplicate_replay: source blk[%d] remaining preds %s, expected [%d]",
+                    source_blk.serial,
+                    sorted(remaining_preds),
+                    keep_pred,
+                )
+                return False
+            if not change_1way_block_successor(source_blk, keep_replay, verify=False):
+                logger.warning(
+                    "duplicate_replay: failed to redirect original blk[%d] -> replay blk[%d]",
+                    source_blk.serial,
+                    keep_replay,
+                )
+                return False
+            self.mba.mark_chains_dirty()
+            logger.debug(
+                "duplicate_replay: source=%d rows=%d applied",
+                source_blk.serial,
+                len(normalized_entries),
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "Exception in duplicate_replay for src=%d: %s",
+                source_blk.serial,
                 exc,
             )
             import traceback

@@ -20,6 +20,8 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
     CreateConditionalRedirect,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -29,6 +31,7 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     ExecutionPolicy,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
@@ -36,6 +39,7 @@ from d810.cfg.plan import (
     PatchRedirectGoto,
     compile_patch_plan,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 
@@ -100,6 +104,21 @@ def _conditional_duplicate_cfg() -> FlowGraph:
         },
         entry_serial=44,
         func_ea=0,
+    )
+
+
+def _captured_body(source_serial: int = 45) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
+    return CapturedBlockBody(
+        backend_id="hexrays.insn_snapshot",
+        capture_id=f"translator-test:{source_serial}",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(source_serial,),
+            instruction_count=len(instructions),
+            source_eas=frozenset(),
+            contains_call=False,
+        ),
+        payload=instructions,
     )
 
 
@@ -381,6 +400,34 @@ class _FakeDeferredGraphModifier:
                 fallthrough_target,
                 expected_serial,
                 expected_secondary_serial,
+                description,
+            )
+        )
+
+    def queue_duplicate_replay_and_redirect(
+        self,
+        *,
+        source_block_serial: int,
+        dispatcher_entry_serial: int,
+        per_pred_replays: tuple,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "duplicate_replay",
+                source_block_serial,
+                dispatcher_entry_serial,
+                tuple(
+                    (
+                        pred,
+                        target,
+                        replay_serial,
+                        clone_serial,
+                        len(instructions),
+                    )
+                    for pred, target, replay_serial, clone_serial, instructions
+                    in per_pred_replays
+                ),
                 description,
             )
         )
@@ -835,6 +882,61 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
         assert created[0].calls[0][1:8] == (45, 44, 200, None, None, 199, None)
+
+    def test_lower_applies_duplicate_replay_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateReplayAndRedirect(
+                    source_serial=45,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        DuplicateReplayEntry(
+                            pred_serial=44,
+                            target_serial=199,
+                            captured_body=_captured_body(45),
+                        ),
+                        DuplicateReplayEntry(
+                            pred_serial=122,
+                            target_serial=199,
+                            captured_body=_captured_body(45),
+                        ),
+                    ),
+                )
+            ],
+            _cfg(),
+        )
+
+        assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "duplicate_replay"
+        assert created[0].calls[0][1:3] == (45, 2)
+        assert created[0].calls[0][3] == (
+            (44, 202, 199, None, 1),
+            (122, 202, 200, 201, 1),
+        )
 
     def test_lower_applies_conditional_duplicate_block_patch_plan(
         self,
