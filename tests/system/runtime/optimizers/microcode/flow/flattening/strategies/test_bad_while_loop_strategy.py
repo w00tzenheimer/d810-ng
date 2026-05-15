@@ -5,13 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateAndRedirect,
+    InsertBlock,
     RedirectGoto,
+)
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
+from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    bad_while_loop_side_effect_replay_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
@@ -59,6 +68,21 @@ def _block(
         start_ea=serial if start_ea is None else start_ea,
         insn_snapshots=(),
         tail_opcode=tail_opcode,
+    )
+
+
+def _captured_body(source_serial: int = 5) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    return CapturedBlockBody(
+        backend_id="hexrays.insn_snapshot",
+        capture_id=f"bad-while-loop-test:{source_serial}",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(source_serial,),
+            instruction_count=len(instructions),
+            source_eas=frozenset({0x2000}),
+            contains_call=False,
+        ),
+        payload=instructions,
     )
 
 
@@ -353,6 +377,106 @@ def test_collect_live_bad_while_loop_analysis_records_missing_emulation_target(
     )
 
 
+def test_collect_live_bad_while_loop_analysis_captures_direct_side_effect_replay(
+    monkeypatch,
+) -> None:
+    from d810.evaluator.hexrays_microcode import tracker as tracker_module
+    from d810.optimizers.microcode.flow.flattening import (
+        unflattener_badwhile_loop as legacy_module,
+    )
+
+    side_effect_insn = SimpleNamespace(opcode=0x77)
+    father = SimpleNamespace(
+        serial=5,
+        tail=SimpleNamespace(opcode=0x100),
+        nsucc=lambda: 1,
+        succ=lambda _idx: 2,
+    )
+    dispatcher_entry_blk = SimpleNamespace(
+        serial=2,
+        predset=[5],
+        nsucc=lambda: 0,
+        succ=lambda _idx: (_ for _ in ()).throw(IndexError),
+    )
+    target_blk = SimpleNamespace(
+        serial=7,
+        tail=None,
+        nsucc=lambda: 0,
+    )
+    dispatcher_info = SimpleNamespace(
+        entry_block=SimpleNamespace(
+            blk=dispatcher_entry_blk,
+            use_before_def_list=(),
+        ),
+        dispatcher_internal_blocks=[SimpleNamespace(serial=2)],
+        emulate_dispatcher_with_father_history=lambda *_args, **_kwargs: (
+            target_blk,
+            (side_effect_insn,),
+        ),
+    )
+
+    class FakeBadWhileLoop:
+        def __init__(self) -> None:
+            self.dispatcher_list = [dispatcher_info]
+            self.mba = None
+
+        def retrieve_all_dispatchers(self) -> None:
+            return None
+
+        def get_dispatcher_father_histories(self, *_args, **_kwargs):
+            return ("history",)
+
+        def check_if_histories_are_resolved(self, histories) -> bool:
+            return bool(histories)
+
+        def _filter_dependency_safe_copies(self, _father, copied_side_effects):
+            return tuple(copied_side_effects)
+
+    captured: list[tuple[int, tuple[object, ...]]] = []
+
+    def _capture(source_serial: int, instructions):
+        captured.append((source_serial, tuple(instructions)))
+        return _captured_body(source_serial)
+
+    mba = SimpleNamespace(
+        maturity=1,
+        get_mblock=lambda serial: father if serial == 5 else None,
+    )
+
+    monkeypatch.setattr(legacy_module, "BadWhileLoop", FakeBadWhileLoop)
+    monkeypatch.setattr(
+        tracker_module,
+        "get_all_possibles_values",
+        lambda *_args, **_kwargs: ((0x1234,),),
+    )
+    monkeypatch.setattr(
+        tracker_module,
+        "check_if_all_values_are_found",
+        lambda *_args, **_kwargs: True,
+    )
+
+    analysis = collect_live_bad_while_loop_analysis(
+        mba,
+        allowed_maturities=(1,),
+        side_effect_capture=_capture,
+    )
+
+    assert captured == [(5, (side_effect_insn,))]
+    assert analysis.replay_candidates
+    assert analysis.replay_candidates[0].source_serial == 5
+    assert analysis.replay_candidates[0].target_serial == 7
+    assert analysis.replay_candidates[0].captured_body.payload == _captured_body(5).payload
+    assert analysis.follow_up == (
+        BadWhileLoopFollowUp(
+            dispatcher_entry=2,
+            from_serial=5,
+            category=BAD_WHILE_LOOP_INSERT_BLOCK,
+            reason="copied_side_effects",
+            target_serial=7,
+        ),
+    )
+
+
 def test_collect_live_bad_while_loop_analysis_builds_conditional_redirect(
     monkeypatch,
 ) -> None:
@@ -633,6 +757,47 @@ def test_bad_while_loop_strategy_plans_duplicate_and_redirect() -> None:
         DuplicateAndRedirect(
             source_serial=5,
             per_pred_targets=((8, 3), (9, 4)),
+        )
+    ]
+
+
+def test_bad_while_loop_strategy_plans_side_effect_replay_candidate() -> None:
+    replay_candidate = bad_while_loop_side_effect_replay_candidate(
+        dispatcher_entry=2,
+        source_serial=1,
+        target_serial=3,
+        captured_body=_captured_body(source_serial=1),
+        dispatcher_internal_serials=(2,),
+    )
+    assert replay_candidate is not None
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x1000),
+            1: _block(1, (2,), (0,), start_ea=0x1001),
+            2: _block(2, (3, 4), (1,), block_type=4),
+            3: _block(3, (), (2,), block_type=2),
+            4: _block(4, (), (2,), block_type=2),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+        metadata={
+            CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY: (replay_candidate,),
+        },
+    )
+
+    fragment = BadWhileLoopStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.ownership.blocks == frozenset({1})
+    assert fragment.ownership.edges == frozenset({(1, 2)})
+    assert fragment.modifications == [
+        InsertBlock(
+            pred_serial=1,
+            succ_serial=3,
+            old_target_serial=2,
+            captured_body=replay_candidate.captured_body,
         )
     ]
 

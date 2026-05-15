@@ -5,15 +5,24 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import DuplicateAndRedirect, RedirectGoto
-from d810.cfg.plan import LegacyBlockOperation, compile_patch_plan
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.graph_modification import DuplicateAndRedirect, InsertBlock, RedirectGoto
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
+from d810.cfg.plan import LegacyBlockOperation, PatchInsertBlock, compile_patch_plan
 from d810.optimizers.microcode.flow.flattening import (
     cleanup_backend as backend_module,
     unflattener_cleanup_family as shell_module,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
     LiveSimpleFlatteningCleanupBackend,
+)
+from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    bad_while_loop_side_effect_replay_candidate,
+    extract_side_effect_replay_candidates,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_family import (
     CLEANUP_FAMILY_METADATA_KEY,
@@ -42,6 +51,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
+    BAD_WHILE_LOOP_INSERT_BLOCK,
     BadWhileLoopAnalysis,
     BadWhileLoopConditionalDuplicate,
     BadWhileLoopConditionalRedirect,
@@ -115,6 +125,21 @@ def _cleanup_flow_graph() -> FlowGraph:
         },
         entry_serial=0,
         func_ea=0x401000,
+    )
+
+
+def _side_effect_body() -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x401077, operands=()),)
+    return CapturedBlockBody(
+        backend_id="hexrays.insn_snapshot",
+        capture_id="cleanup-family-test",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(40,),
+            instruction_count=len(instructions),
+            source_eas=frozenset({0x401077}),
+            contains_call=False,
+        ),
+        payload=instructions,
     )
 
 
@@ -276,6 +301,79 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert calls["bad_while_loop"][0] is mba
 
 
+def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
+    monkeypatch,
+) -> None:
+    replay_candidate = bad_while_loop_side_effect_replay_candidate(
+        dispatcher_entry=41,
+        source_serial=40,
+        target_serial=42,
+        captured_body=_side_effect_body(),
+        dispatcher_internal_serials=(41,),
+    )
+    assert replay_candidate is not None
+    direct_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=40,
+        category=BAD_WHILE_LOOP_INSERT_BLOCK,
+        reason="copied_side_effects",
+        target_serial=42,
+    )
+    unsafe_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=40,
+        category=BAD_WHILE_LOOP_INSERT_BLOCK,
+        reason="copied_side_effects_not_dependency_safe",
+        target_serial=42,
+    )
+    duplicate_group_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=50,
+        category=BAD_WHILE_LOOP_INSERT_BLOCK,
+        reason="duplicate_group_copied_side_effects",
+        target_serial=42,
+    )
+    calls: dict[str, object] = {}
+
+    def _collect_empty(_mba, **_kwargs):
+        return ()
+
+    def _collect_bad_while_loop(mba, **kwargs):
+        calls["bad_while_loop"] = (mba, kwargs)
+        return BadWhileLoopAnalysis(
+            edits=(),
+            follow_up=(direct_follow_up, unsafe_follow_up, duplicate_group_follow_up),
+            replay_candidates=(replay_candidate,),
+        )
+
+    monkeypatch.setattr(backend_module, "collect_live_fake_jump_fixes", _collect_empty)
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_single_iteration_fixes",
+        _collect_empty,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_bad_while_loop_analysis",
+        _collect_bad_while_loop,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "IDAIRTranslator",
+        lambda: _FakeTranslator(_cleanup_flow_graph()),
+    )
+
+    detection = LiveSimpleFlatteningCleanupBackend().collect(_fake_mba(), logger=None)
+
+    assert detection.bad_while_loop_replay_candidates == (replay_candidate,)
+    assert detection.bad_while_loop_follow_up == (
+        unsafe_follow_up,
+        duplicate_group_follow_up,
+    )
+    assert detection.detected is True
+    assert "side_effect_capture" in calls["bad_while_loop"][1]
+
+
 def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     fake_jump_fix = FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10)
     single_iteration_fixes = (
@@ -376,6 +474,69 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
             source_serial=50,
             per_pred_targets=((51, 42), (52, 43)),
         )
+        for step in patch_plan.steps
+    )
+
+
+def test_simple_cleanup_family_selects_and_plans_direct_side_effect_replay() -> None:
+    replay_candidate = bad_while_loop_side_effect_replay_candidate(
+        dispatcher_entry=41,
+        source_serial=40,
+        target_serial=42,
+        captured_body=_side_effect_body(),
+        dispatcher_internal_serials=(41,),
+    )
+    assert replay_candidate is not None
+    unsafe_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=40,
+        category=BAD_WHILE_LOOP_INSERT_BLOCK,
+        reason="copied_side_effects_not_dependency_safe",
+        target_serial=42,
+    )
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            bad_while_loop_replay_candidates=(replay_candidate,),
+            bad_while_loop_follow_up=(unsafe_follow_up,),
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            func_ea=0x401000,
+        )
+    )
+    flow_graph = _cleanup_flow_graph()
+    family = SimpleFlatteningCleanupFamily(
+        backend=backend,
+        cfg_translator=_FakeTranslator(flow_graph),
+    )
+
+    snapshot = family.build_snapshot(_fake_mba(), family.detect(_fake_mba()))
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+
+    assert metadata.planning_ready is True
+    assert metadata.collected_bad_while_loop_replay_candidates == 1
+    assert metadata.selected_bad_while_loop_replay_candidates == 1
+    assert extract_side_effect_replay_candidates(snapshot.flow_graph) == (
+        replay_candidate,
+    )
+    assert snapshot.flow_graph.metadata[CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY] == (
+        replay_candidate,
+    )
+    assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (unsafe_follow_up,)
+
+    fragment = BadWhileLoopStrategy().plan(snapshot)
+    assert fragment is not None
+    assert fragment.modifications == [
+        InsertBlock(
+            pred_serial=40,
+            succ_serial=42,
+            old_target_serial=41,
+            captured_body=replay_candidate.captured_body,
+        )
+    ]
+
+    patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
+    assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
+    assert not any(
+        isinstance(step, LegacyBlockOperation)
         for step in patch_plan.steps
     )
 

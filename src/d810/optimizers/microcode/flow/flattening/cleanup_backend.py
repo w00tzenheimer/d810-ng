@@ -1,17 +1,25 @@
 """Backend boundary for live non-Hodur cleanup candidate collection."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import ida_hexrays
 
 from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.core.typing import Protocol
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CleanupSideEffectReplayCandidate,
     bad_while_loop_duplicate_candidate,
+    validate_side_effect_replay_candidate,
     validate_dispatcher_cleanup_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BAD_WHILE_LOOP_INSERT_BLOCK,
     BadWhileLoopEdit,
     BadWhileLoopDuplicateRedirect,
     BadWhileLoopFollowUp,
@@ -27,7 +35,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationPredFix,
     collect_live_single_iteration_fixes,
 )
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.mutation.insn_snapshot_materializer import (
+    HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID,
+)
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator, capture_insn_snapshot
 
 __all__ = [
     "LiveSimpleFlatteningCleanupBackend",
@@ -53,13 +64,56 @@ def _is_plannable_bad_while_loop_edit(
     return False
 
 
-def _validation_graph_for_bad_while_loop_edits(
+def _capture_bad_while_loop_side_effect_body(
+    source_serial: int,
+    instructions: Sequence[object],
+) -> CapturedBlockBody | None:
+    snapshots = tuple(capture_insn_snapshot(insn) for insn in instructions)
+    if not snapshots:
+        return None
+    call_opcodes = {
+        opcode
+        for opcode in (
+            getattr(ida_hexrays, "m_call", -1),
+            getattr(ida_hexrays, "m_icall", -1),
+        )
+        if int(opcode) >= 0
+    }
+    source_eas = frozenset(
+        int(snapshot.ea) for snapshot in snapshots if int(snapshot.ea) > 0
+    )
+    capture_id = "bad_while_loop:{source}:{count}:{eas}".format(
+        source=int(source_serial),
+        count=len(snapshots),
+        eas=",".join(f"{ea:x}" for ea in sorted(source_eas)),
+    )
+    return CapturedBlockBody(
+        backend_id=HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID,
+        capture_id=capture_id,
+        summary=CapturedBlockBodySummary(
+            source_blocks=(int(source_serial),),
+            instruction_count=len(snapshots),
+            source_eas=source_eas,
+            contains_call=any(snapshot.opcode in call_opcodes for snapshot in snapshots),
+        ),
+        payload=snapshots,
+        metadata={
+            "source_rule": "BadWhileLoop",
+            "source_serial": int(source_serial),
+        },
+    )
+
+
+def _validation_graph_for_bad_while_loop(
     mba: object,
     edits: tuple[BadWhileLoopEdit, ...],
+    replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...],
     *,
     logger: object | None = None,
 ) -> FlowGraph | None:
-    if not any(isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits):
+    if not replay_candidates and not any(
+        isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits
+    ):
         return None
     try:
         return IDAIRTranslator().lift(mba)
@@ -79,6 +133,7 @@ class SimpleFlatteningCleanupDetection:
     fake_jump_fixes: tuple[FakeJumpPredFix, ...] = ()
     single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
     bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
+    bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
     collection_errors: tuple[str, ...] = ()
@@ -91,6 +146,7 @@ class SimpleFlatteningCleanupDetection:
             self.fake_jump_fixes
             or self.single_iteration_fixes
             or self.bad_while_loop_edits
+            or self.bad_while_loop_replay_candidates
         )
 
     @property
@@ -115,7 +171,8 @@ class SimpleFlatteningCleanupDetection:
             "simple cleanup candidates detected: "
             f"fake_jump={len(self.fake_jump_fixes)} "
             f"single_iteration={len(self.single_iteration_fixes)} "
-            f"bad_while_loop={len(self.bad_while_loop_edits)}"
+            f"bad_while_loop={len(self.bad_while_loop_edits)} "
+            f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
         )
 
 
@@ -189,6 +246,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
+        bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
         bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
         bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
         try:
@@ -196,11 +254,16 @@ class LiveSimpleFlatteningCleanupBackend:
                 mba,
                 logger=logger,
                 allowed_maturities=self.allowed_maturities,
+                side_effect_capture=_capture_bad_while_loop_side_effect_body,
             )
             bad_while_loop_all_edits = tuple(bad_while_loop_analysis.edits)
-            bad_while_loop_validation_graph = _validation_graph_for_bad_while_loop_edits(
+            bad_while_loop_all_replay_candidates = tuple(
+                bad_while_loop_analysis.replay_candidates
+            )
+            bad_while_loop_validation_graph = _validation_graph_for_bad_while_loop(
                 mba,
                 bad_while_loop_all_edits,
+                bad_while_loop_all_replay_candidates,
                 logger=logger,
             )
             bad_while_loop_edits = tuple(
@@ -211,6 +274,23 @@ class LiveSimpleFlatteningCleanupBackend:
                     bad_while_loop_validation_graph,
                 )
             )
+            bad_while_loop_replay_candidates = tuple(
+                candidate
+                for candidate in bad_while_loop_all_replay_candidates
+                if bad_while_loop_validation_graph is not None
+                and validate_side_effect_replay_candidate(
+                    bad_while_loop_validation_graph,
+                    candidate,
+                )
+            )
+            promoted_replay = {
+                (
+                    candidate.dispatcher_entry,
+                    candidate.source_serial,
+                    candidate.target_serial,
+                )
+                for candidate in bad_while_loop_replay_candidates
+            }
             bad_while_loop_deferred_edits = tuple(
                 edit
                 for edit in bad_while_loop_all_edits
@@ -219,7 +299,20 @@ class LiveSimpleFlatteningCleanupBackend:
                     bad_while_loop_validation_graph,
                 )
             )
-            bad_while_loop_follow_up = tuple(bad_while_loop_analysis.follow_up)
+            bad_while_loop_follow_up = tuple(
+                item
+                for item in bad_while_loop_analysis.follow_up
+                if not (
+                    item.category == BAD_WHILE_LOOP_INSERT_BLOCK
+                    and item.reason == "copied_side_effects"
+                    and (
+                        item.dispatcher_entry,
+                        item.from_serial,
+                        item.target_serial,
+                    )
+                    in promoted_replay
+                )
+            )
         except Exception as exc:
             errors.append(f"bad_while_loop:{type(exc).__name__}")
             if logger is not None:
@@ -232,6 +325,9 @@ class LiveSimpleFlatteningCleanupBackend:
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
             bad_while_loop_edits=tuple(bad_while_loop_edits),
+            bad_while_loop_replay_candidates=tuple(
+                bad_while_loop_replay_candidates
+            ),
             bad_while_loop_deferred_edits=tuple(bad_while_loop_deferred_edits),
             bad_while_loop_follow_up=tuple(bad_while_loop_follow_up),
             collection_errors=tuple(errors),
