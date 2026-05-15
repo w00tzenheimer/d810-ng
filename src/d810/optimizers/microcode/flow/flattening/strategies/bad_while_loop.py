@@ -36,6 +36,13 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop_dependency_diagnostics import (
+    BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
+    BadWhileLoopDependencyDiagnostic,
+    build_bad_while_loop_dependency_diagnostic,
+    extract_bad_while_loop_dependency_diagnostics,
+    serialize_bad_while_loop_dependency_diagnostics,
+)
 
 if TYPE_CHECKING:
     from d810.cfg.materialization_payload import CapturedBlockBody
@@ -664,6 +671,7 @@ class BadWhileLoopAnalysis:
     follow_up: tuple[BadWhileLoopFollowUp, ...]
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...] = ()
+    dependency_diagnostics: tuple[BadWhileLoopDependencyDiagnostic, ...] = ()
 
 
 def collect_live_bad_while_loop_analysis(
@@ -714,6 +722,7 @@ def collect_live_bad_while_loop_analysis(
     follow_up: list[BadWhileLoopFollowUp] = []
     replay_candidates: list[CleanupSideEffectReplayCandidate] = []
     duplicate_replay_candidates: list[CleanupDuplicateGroupReplayCandidate] = []
+    dependency_diagnostics: list[BadWhileLoopDependencyDiagnostic] = []
     seen_follow_up: set[tuple[object, ...]] = set()
 
     def record_follow_up(
@@ -747,6 +756,41 @@ def collect_live_bad_while_loop_analysis(
         follow_up.append(item)
         if logger is not None:
             logger.info("Collected BadWhileLoop follow-up: %s", item)
+
+    def record_dependency_diagnostic(
+        *,
+        source_blk: object,
+        dispatcher_entry: int,
+        source_serial: int,
+        target_serial: int | None,
+        category: str,
+        reason: str,
+        copied_instructions: Sequence[object],
+        dependency_safe_copies: Sequence[object],
+    ) -> None:
+        try:
+            diagnostic = build_bad_while_loop_dependency_diagnostic(
+                mba=mba,
+                rule=rule,
+                source_blk=source_blk,
+                dispatcher_entry=dispatcher_entry,
+                source_serial=source_serial,
+                target_serial=target_serial,
+                category=category,
+                reason=reason,
+                copied_instructions=copied_instructions,
+                dependency_safe_copies=dependency_safe_copies,
+            )
+        except Exception:
+            if logger is not None:
+                logger.debug(
+                    "Failed to collect BadWhileLoop dependency diagnostic",
+                    exc_info=True,
+                )
+            return
+        dependency_diagnostics.append(diagnostic)
+        if logger is not None:
+            logger.info("Collected BadWhileLoop dependency diagnostic: %s", diagnostic)
 
     def record_edit(edit: BadWhileLoopEdit) -> None:
         match edit:
@@ -883,6 +927,18 @@ def collect_live_bad_while_loop_analysis(
                     copied_side_effects,
                 )
                 if not dependency_safe_copies:
+                    record_dependency_diagnostic(
+                        source_blk=source_block,
+                        dispatcher_entry=dispatcher_entry_serial,
+                        source_serial=source_serial,
+                        target_serial=int(target_blk.serial),
+                        category=BAD_WHILE_LOOP_DUPLICATE_AND_REDIRECT,
+                        reason=(
+                            "duplicate_group_copied_side_effects_not_dependency_safe"
+                        ),
+                        copied_instructions=tuple(copied_side_effects),
+                        dependency_safe_copies=tuple(dependency_safe_copies),
+                    )
                     return (
                         None,
                         source_serial,
@@ -1123,6 +1179,17 @@ def collect_live_bad_while_loop_analysis(
                     father,
                     copied_side_effects,
                 )
+                if not dependency_safe_copies:
+                    record_dependency_diagnostic(
+                        source_blk=father,
+                        dispatcher_entry=dispatcher_entry_serial,
+                        source_serial=int(father.serial),
+                        target_serial=int(target_blk.serial),
+                        category=BAD_WHILE_LOOP_INSERT_BLOCK,
+                        reason="copied_side_effects_not_dependency_safe",
+                        copied_instructions=tuple(copied_side_effects),
+                        dependency_safe_copies=tuple(dependency_safe_copies),
+                    )
                 if dependency_safe_copies and side_effect_capture is not None:
                     captured_body: CapturedBlockBody | None = None
                     try:
@@ -1298,6 +1365,7 @@ def collect_live_bad_while_loop_analysis(
         follow_up=tuple(follow_up),
         replay_candidates=tuple(replay_candidates),
         duplicate_replay_candidates=tuple(duplicate_replay_candidates),
+        dependency_diagnostics=tuple(dependency_diagnostics),
     )
 
 
@@ -1430,6 +1498,7 @@ class BadWhileLoopStrategy:
 
 
 __all__ = [
+    "BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY",
     "BAD_WHILE_LOOP_EDITS_METADATA_KEY",
     "BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY",
     "BAD_WHILE_LOOP_CREATE_CONDITIONAL_REDIRECT",
@@ -1439,6 +1508,7 @@ __all__ = [
     "BadWhileLoopAnalysis",
     "BadWhileLoopConditionalDuplicate",
     "BadWhileLoopConditionalRedirect",
+    "BadWhileLoopDependencyDiagnostic",
     "BadWhileLoopDuplicateRedirect",
     "BadWhileLoopEdit",
     "BadWhileLoopFollowUp",
@@ -1449,8 +1519,10 @@ __all__ = [
     "collect_live_bad_while_loop_analysis",
     "collect_live_bad_while_loop_edits",
     "collect_live_bad_while_loop_follow_up",
+    "extract_bad_while_loop_dependency_diagnostics",
     "extract_bad_while_loop_edits",
     "extract_bad_while_loop_follow_up",
+    "serialize_bad_while_loop_dependency_diagnostics",
     "serialize_bad_while_loop_edits",
     "serialize_bad_while_loop_follow_up",
 ]
