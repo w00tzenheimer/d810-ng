@@ -23,6 +23,7 @@ These frozen types map to DeferredGraphModifier modification types:
 - CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
 - DuplicateBlock     -> (future use, backend currently warns/skips)
 - DuplicateAndRedirect -> (multi-pred duplication, maps to N x BLOCK_DUPLICATE_AND_REDIRECT)
+- DuplicateReplayAndRedirect -> duplicate per predecessor, replay captured body, redirect
 - CloneConditionalAsGoto -> CLONE_CONDITIONAL_AS_GOTO
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
@@ -572,6 +573,36 @@ class DuplicateAndRedirect:
 
 
 @dataclass(frozen=True)
+class DuplicateReplayEntry:
+    """Per-predecessor replay placement for a shared-source duplicate group."""
+
+    pred_serial: int
+    target_serial: int
+    captured_body: CapturedBlockBody
+
+
+@dataclass(frozen=True)
+class DuplicateReplayAndRedirect:
+    """Duplicate a shared source and replay copied side effects per predecessor.
+
+    This is intentionally separate from ``InsertBlock`` and
+    ``DuplicateAndRedirect``.  A duplicate-group copied-side-effect path has
+    topology ``pred_i -> shared_source -> dispatcher`` and must become
+    ``pred_i -> source/clone_i -> replay_insert_i -> target_i``.
+    ``InsertBlock(shared_source -> target)`` cannot express distinct
+    per-predecessor targets; ``InsertBlock(pred_i -> target)`` would skip the
+    shared source body; ``DuplicateBlock`` preserves that body but has no replay
+    payload; and ``DuplicateAndRedirect`` carries no replay payload and still has
+    legacy lowering.  This primitive keeps the composite rewrite atomic at the
+    neutral graph layer.
+    """
+
+    source_serial: int
+    dispatcher_entry: int
+    per_pred_replays: tuple[DuplicateReplayEntry, ...]
+
+
+@dataclass(frozen=True)
 class PhaseCycleLowering:
     """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
 
@@ -641,6 +672,7 @@ GraphModification = Union[
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
+    DuplicateReplayAndRedirect,
     PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
@@ -664,6 +696,8 @@ __all__ = [
     "CloneConditionalAsGoto",
     "CloneConditionalAsGotoFromBranchArm",
     "DuplicateAndRedirect",
+    "DuplicateReplayEntry",
+    "DuplicateReplayAndRedirect",
     "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",

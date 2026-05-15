@@ -10,17 +10,23 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateAndRedirect,
+    DuplicateReplayAndRedirect,
     GraphModification,
     InsertBlock,
     RedirectGoto,
 )
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    CleanupDuplicateGroupReplayCandidate,
+    CleanupPerPredReplay,
     CleanupSideEffectReplayCandidate,
     bad_while_loop_duplicate_candidate,
+    bad_while_loop_duplicate_group_replay_candidate,
     bad_while_loop_side_effect_replay_candidate,
     build_dispatcher_cleanup_modification,
+    extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
     validate_dispatcher_cleanup_candidate,
 )
@@ -637,6 +643,7 @@ class BadWhileLoopAnalysis:
     edits: tuple[BadWhileLoopEdit, ...]
     follow_up: tuple[BadWhileLoopFollowUp, ...]
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
+    duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...] = ()
 
 
 def collect_live_bad_while_loop_analysis(
@@ -686,6 +693,7 @@ def collect_live_bad_while_loop_analysis(
     conflicts: set[tuple[object, ...]] = set()
     follow_up: list[BadWhileLoopFollowUp] = []
     replay_candidates: list[CleanupSideEffectReplayCandidate] = []
+    duplicate_replay_candidates: list[CleanupDuplicateGroupReplayCandidate] = []
     seen_follow_up: set[tuple[object, ...]] = set()
 
     def record_follow_up(
@@ -808,6 +816,10 @@ def collect_live_bad_while_loop_analysis(
             return None, source_serial, "shared_block_has_single_predecessor", None
 
         per_pred_resolved_targets: dict[int, int] = {}
+        per_pred_replays: list[CleanupPerPredReplay] = []
+        saw_copied_side_effects = False
+        saw_plain_target = False
+        first_replay_target: int | None = None
         for pred_serial in ordered_preds:
             group_histories = pred_dict.get(pred_serial, ())
             if not group_histories or not rule.check_if_histories_are_resolved(group_histories):
@@ -838,20 +850,63 @@ def collect_live_bad_while_loop_analysis(
                 if ins is not None and ins.opcode not in CONTROL_FLOW_OPCODES
             ]
             if copied_side_effects:
+                # Duplicate-group replay cannot be reconstructed from the
+                # serialized follow-up row: that row only records one target and
+                # no instruction payload. Capture every dependency-safe body
+                # here while the legacy oracle still exposes copied
+                # instructions and per-predecessor histories.
+                saw_copied_side_effects = True
+                if first_replay_target is None:
+                    first_replay_target = int(target_blk.serial)
                 dependency_safe_copies = rule._filter_dependency_safe_copies(
                     source_block,
                     copied_side_effects,
                 )
-                return (
-                    None,
-                    source_serial,
-                    (
-                        "duplicate_group_copied_side_effects"
-                        if dependency_safe_copies
-                        else "duplicate_group_copied_side_effects_not_dependency_safe"
-                    ),
-                    int(target_blk.serial),
+                if not dependency_safe_copies:
+                    return (
+                        None,
+                        source_serial,
+                        "duplicate_group_copied_side_effects_not_dependency_safe",
+                        int(target_blk.serial),
+                    )
+                if side_effect_capture is None:
+                    return (
+                        None,
+                        source_serial,
+                        "duplicate_group_copied_side_effects",
+                        int(target_blk.serial),
+                    )
+                captured_body: CapturedBlockBody | None = None
+                try:
+                    captured_body = side_effect_capture(
+                        source_serial,
+                        tuple(dependency_safe_copies),
+                    )
+                except Exception:
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to capture BadWhileLoop duplicate-group replay body",
+                            exc_info=True,
+                        )
+                if captured_body is None:
+                    return (
+                        None,
+                        source_serial,
+                        "duplicate_group_copied_side_effects",
+                        int(target_blk.serial),
+                    )
+                per_pred_replays.append(
+                    CleanupPerPredReplay(
+                        pred_serial=int(pred_serial),
+                        target_serial=int(target_blk.serial),
+                        captured_body=captured_body,
+                    )
                 )
+                per_pred_resolved_targets[pred_serial] = int(target_blk.serial)
+                continue
+
+            if saw_copied_side_effects:
+                saw_plain_target = True
 
             target_is_conditional = (
                 target_blk.nsucc() == 2
@@ -870,6 +925,35 @@ def collect_live_bad_while_loop_analysis(
                 )
 
             per_pred_resolved_targets[pred_serial] = int(target_blk.serial)
+
+        if saw_copied_side_effects:
+            if saw_plain_target or len(per_pred_replays) != len(ordered_preds):
+                return (
+                    None,
+                    source_serial,
+                    "duplicate_group_copied_side_effects",
+                    first_replay_target,
+                )
+            replay_candidate = bad_while_loop_duplicate_group_replay_candidate(
+                dispatcher_entry=dispatcher_entry_serial,
+                source_serial=source_serial,
+                per_pred_replays=tuple(per_pred_replays),
+                dispatcher_internal_serials=tuple(dispatcher_serials),
+            )
+            if replay_candidate is None:
+                return (
+                    None,
+                    source_serial,
+                    "duplicate_group_copied_side_effects",
+                    first_replay_target,
+                )
+            duplicate_replay_candidates.append(replay_candidate)
+            return (
+                None,
+                source_serial,
+                "duplicate_group_copied_side_effects",
+                first_replay_target,
+            )
 
         unique_targets = set(per_pred_resolved_targets.values())
         if len(unique_targets) == 1:
@@ -1189,6 +1273,7 @@ def collect_live_bad_while_loop_analysis(
         edits=tuple(edits_by_key.values()),
         follow_up=tuple(follow_up),
         replay_candidates=tuple(replay_candidates),
+        duplicate_replay_candidates=tuple(duplicate_replay_candidates),
     )
 
 
@@ -1234,6 +1319,10 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
             blocks.add(mod.source_serial)
             for pred_serial, _target_serial in mod.per_pred_targets:
                 edges.add((pred_serial, mod.source_serial))
+        elif isinstance(mod, DuplicateReplayAndRedirect):
+            blocks.add(mod.source_serial)
+            for replay in mod.per_pred_replays:
+                edges.add((replay.pred_serial, mod.source_serial))
         elif isinstance(mod, DuplicateBlock):
             blocks.add(mod.source_block)
             if mod.pred_serial is not None:
@@ -1266,18 +1355,26 @@ class BadWhileLoopStrategy:
         return bool(
             extract_bad_while_loop_edits(snapshot.flow_graph)
             or extract_side_effect_replay_candidates(snapshot.flow_graph)
+            or extract_duplicate_group_replay_candidates(snapshot.flow_graph)
         )
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         edits = extract_bad_while_loop_edits(snapshot.flow_graph)
         replay_candidates = extract_side_effect_replay_candidates(snapshot.flow_graph)
-        if not edits and not replay_candidates:
+        duplicate_replay_candidates = extract_duplicate_group_replay_candidates(
+            snapshot.flow_graph
+        )
+        if not edits and not replay_candidates and not duplicate_replay_candidates:
             return None
 
         modifications = build_bad_while_loop_modifications(edits)
         modifications.extend(
             build_dispatcher_cleanup_modification(candidate)
             for candidate in replay_candidates
+        )
+        modifications.extend(
+            build_dispatcher_cleanup_modification(candidate)
+            for candidate in duplicate_replay_candidates
         )
         if not modifications:
             return None
@@ -1299,6 +1396,9 @@ class BadWhileLoopStrategy:
                     edits
                 ),
                 CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY: tuple(replay_candidates),
+                CLEANUP_DUPLICATE_REPLAY_METADATA_KEY: tuple(
+                    duplicate_replay_candidates
+                ),
                 "safeguard_min_required": 1,
             },
             modifications=list(modifications),

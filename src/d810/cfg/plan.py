@@ -40,6 +40,8 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateAndRedirect,
     DuplicateBlock,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -289,6 +291,42 @@ class PatchDuplicateBlock:
 
 
 @dataclass(frozen=True)
+class PatchDuplicateReplayEntry:
+    """Finalized per-predecessor clone/replay route."""
+
+    pred_serial: int
+    target_serial: int
+    replay_block_id: VirtualBlockId
+    replay_serial: int
+    captured_body: CapturedBlockBody
+    clone_block_id: VirtualBlockId | None = None
+    clone_serial: int | None = None
+
+
+@dataclass(frozen=True)
+class PatchDuplicateReplayAndRedirect:
+    """Finalized duplicate-group replay materialization step."""
+
+    source_serial: int
+    dispatcher_entry: int
+    per_pred_replays: tuple[PatchDuplicateReplayEntry, ...]
+
+    def to_graph_modification(self) -> DuplicateReplayAndRedirect:
+        return DuplicateReplayAndRedirect(
+            source_serial=self.source_serial,
+            dispatcher_entry=self.dispatcher_entry,
+            per_pred_replays=tuple(
+                DuplicateReplayEntry(
+                    pred_serial=entry.pred_serial,
+                    target_serial=entry.target_serial,
+                    captured_body=entry.captured_body,
+                )
+                for entry in self.per_pred_replays
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class PatchCloneConditionalAsGoto:
     """Finalized clone-conditional-as-goto materialization step."""
 
@@ -401,6 +439,7 @@ BlockCreatingGraphModification = Union[
     DuplicateBlock,
     CloneConditionalAsGoto,
     DuplicateAndRedirect,
+    DuplicateReplayAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
@@ -436,6 +475,7 @@ PatchOperation = Union[
     PatchConditionalRedirect,
     PatchInsertBlock,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchCloneConditionalAsGoto,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
@@ -532,6 +572,13 @@ class _PendingDuplicateBlock:
 
 
 @dataclass(frozen=True)
+class _PendingDuplicateReplayAndRedirect:
+    modification: DuplicateReplayAndRedirect
+    replay_block_ids: tuple[VirtualBlockId, ...]
+    clone_block_ids: tuple[VirtualBlockId | None, ...]
+
+
+@dataclass(frozen=True)
 class _PendingCloneConditionalAsGoto:
     modification: CloneConditionalAsGoto
     block_id: VirtualBlockId
@@ -572,6 +619,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             DuplicateBlock,
             CloneConditionalAsGoto,
             DuplicateAndRedirect,
+            DuplicateReplayAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
             PrivateTerminalSuffixGroup,
@@ -1038,8 +1086,128 @@ def _compile_duplicate_block_step(
     )
 
 
+def _compile_duplicate_replay_and_redirect_step(
+    modification: DuplicateReplayAndRedirect,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingDuplicateReplayAndRedirect, tuple[PatchBlockSpec, ...]]:
+    source_block = cfg.get_block(modification.source_serial)
+    dispatcher_block = cfg.get_block(modification.dispatcher_entry)
+    if source_block is None:
+        raise ValueError(
+            f"DuplicateReplayAndRedirect source {modification.source_serial} not found"
+        )
+    if dispatcher_block is None:
+        raise ValueError(
+            f"DuplicateReplayAndRedirect dispatcher {modification.dispatcher_entry} not found"
+        )
+    if source_block.nsucc != 1 or source_block.succs[0] != modification.dispatcher_entry:
+        raise ValueError(
+            "DuplicateReplayAndRedirect requires source to be one-way to dispatcher"
+        )
+    if len(modification.per_pred_replays) < 2:
+        raise ValueError("DuplicateReplayAndRedirect requires at least two predecessors")
+
+    source_preds = set(source_block.preds)
+    seen_preds: set[int] = set()
+    replay_ids: list[VirtualBlockId] = []
+    clone_ids: list[VirtualBlockId | None] = []
+    for index, entry in enumerate(modification.per_pred_replays):
+        if entry.pred_serial in seen_preds:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect duplicate predecessor {entry.pred_serial}"
+            )
+        seen_preds.add(entry.pred_serial)
+
+        pred_block = cfg.get_block(entry.pred_serial)
+        target_block = cfg.get_block(entry.target_serial)
+        if pred_block is None:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect predecessor {entry.pred_serial} not found"
+            )
+        if target_block is None:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect target {entry.target_serial} not found"
+            )
+        if pred_block.nsucc != 1 or pred_block.succs[0] != modification.source_serial:
+            raise ValueError(
+                "DuplicateReplayAndRedirect requires every predecessor to be one-way to source"
+            )
+        if entry.target_serial in {
+            modification.source_serial,
+            modification.dispatcher_entry,
+        }:
+            raise ValueError("DuplicateReplayAndRedirect target loops through cleanup source")
+        if target_block.nsucc > 1:
+            raise ValueError("DuplicateReplayAndRedirect target requires trampoline")
+        if (
+            entry.captured_body.instruction_count <= 0
+            or entry.captured_body.summary.contains_call
+        ):
+            raise ValueError(
+                "DuplicateReplayAndRedirect requires nonempty no-call replay bodies"
+            )
+
+        replay_ids.append(allocator.alloc("duplicate_replay_insert"))
+        clone_ids.append(None if index == 0 else allocator.alloc("duplicate_replay_clone"))
+
+    if seen_preds != source_preds:
+        raise ValueError("DuplicateReplayAndRedirect must cover every source predecessor")
+
+    specs: list[PatchBlockSpec] = []
+    for entry, replay_id, clone_id in zip(
+        modification.per_pred_replays,
+        replay_ids,
+        clone_ids,
+    ):
+        replay_source: PatchBlockRef = (
+            modification.source_serial if clone_id is None else clone_id
+        )
+        specs.append(
+            PatchBlockSpec(
+                block_id=replay_id,
+                kind="duplicate_replay_insert",
+                incoming_edge=PatchEdgeRef(
+                    source=replay_source,
+                    target=modification.dispatcher_entry,
+                ),
+                outgoing_edges=(PatchEdgeRef(source=replay_id, target=entry.target_serial),),
+                captured_body=entry.captured_body,
+            )
+        )
+
+    for entry, replay_id, clone_id in zip(
+        modification.per_pred_replays,
+        replay_ids,
+        clone_ids,
+    ):
+        if clone_id is None:
+            continue
+        specs.append(
+            PatchBlockSpec(
+                block_id=clone_id,
+                kind="duplicate_replay_clone",
+                template_block=modification.source_serial,
+                incoming_edge=PatchEdgeRef(
+                    source=entry.pred_serial,
+                    target=modification.source_serial,
+                ),
+                outgoing_edges=(PatchEdgeRef(source=clone_id, target=replay_id),),
+            )
+        )
+
+    return (
+        _PendingDuplicateReplayAndRedirect(
+            modification=modification,
+            replay_block_ids=tuple(replay_ids),
+            clone_block_ids=tuple(clone_ids),
+        ),
+        tuple(specs),
+    )
+
+
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingCloneConditionalAsGoto | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1204,6 +1372,46 @@ def _finalize_step(
                 ),
                 fallthrough_block_id=fallthrough_block_id,
                 fallthrough_serial=fallthrough_serial,
+            )
+
+        case _PendingDuplicateReplayAndRedirect(
+            modification=DuplicateReplayAndRedirect(
+                source_serial=source,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=per_pred_replays,
+            ),
+            replay_block_ids=replay_ids,
+            clone_block_ids=clone_ids,
+        ):
+            finalized_replays: list[PatchDuplicateReplayEntry] = []
+            for entry, replay_id, clone_id in zip(
+                per_pred_replays,
+                replay_ids,
+                clone_ids,
+            ):
+                replay_serial = relocation_map.assigned_serial_for(replay_id)
+                if replay_serial is None:
+                    raise ValueError(f"Missing assigned serial for {replay_id}")
+                clone_serial = None
+                if clone_id is not None:
+                    clone_serial = relocation_map.assigned_serial_for(clone_id)
+                    if clone_serial is None:
+                        raise ValueError(f"Missing assigned serial for {clone_id}")
+                finalized_replays.append(
+                    PatchDuplicateReplayEntry(
+                        pred_serial=entry.pred_serial,
+                        target_serial=relocation_map.rewrite_serial(entry.target_serial),
+                        replay_block_id=replay_id,
+                        replay_serial=replay_serial,
+                        captured_body=entry.captured_body,
+                        clone_block_id=clone_id,
+                        clone_serial=clone_serial,
+                    )
+                )
+            return PatchDuplicateReplayAndRedirect(
+                source_serial=source,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=tuple(finalized_replays),
             )
 
         case _PendingCloneConditionalAsGoto(
@@ -1558,6 +1766,20 @@ def compile_patch_plan(
                         raw_steps.append(pending_step)
                         new_blocks.extend(duplicate_specs)
 
+            case DuplicateReplayAndRedirect():
+                if cfg is None:
+                    raise ValueError(
+                        "compile_patch_plan requires FlowGraph context for "
+                        "DuplicateReplayAndRedirect"
+                    )
+                pending_step, replay_specs = _compile_duplicate_replay_and_redirect_step(
+                    modification,
+                    cfg,
+                    allocator,
+                )
+                raw_steps.append(pending_step)
+                new_blocks.extend(replay_specs)
+
             case CloneConditionalAsGoto():
                 if cfg is None:
                     raise ValueError(
@@ -1762,6 +1984,8 @@ __all__ = [
     "PatchConditionalRedirect",
     "PatchInsertBlock",
     "PatchDuplicateBlock",
+    "PatchDuplicateReplayEntry",
+    "PatchDuplicateReplayAndRedirect",
     "PatchCloneConditionalAsGoto",
     "PatchPrivateTerminalSuffix",
     "PatchPrivateTerminalSuffixGroup",

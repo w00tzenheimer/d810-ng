@@ -23,6 +23,7 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateAndRedirect,
     DuplicateBlock,
+    DuplicateReplayAndRedirect,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
@@ -36,6 +37,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -205,6 +207,32 @@ def _unsupported_duplicate_block_reason(step: PatchDuplicateBlock) -> str | None
             return (
                 f"PatchDuplicateBlock(source={step.source_serial}) "
                 "missing duplicated conditional target"
+            )
+    return None
+
+
+def _unsupported_duplicate_replay_reason(
+    step: PatchDuplicateReplayAndRedirect,
+) -> str | None:
+    if len(step.per_pred_replays) < 2:
+        return (
+            f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+            "requires at least two predecessor replay rows"
+        )
+    seen_preds: set[int] = set()
+    for entry in step.per_pred_replays:
+        if entry.pred_serial in seen_preds:
+            return (
+                f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+                f"duplicates predecessor {entry.pred_serial}"
+            )
+        seen_preds.add(entry.pred_serial)
+        reason = validate_captured_block_body(entry.captured_body)
+        if reason is not None:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                f"cannot rebuild replay body: {reason}"
             )
     return None
 
@@ -461,6 +489,10 @@ class IDAIRTranslator:
                     reason = _unsupported_duplicate_block_reason(duplicate_step)
                     if reason is not None:
                         reasons.append(reason)
+                case PatchDuplicateReplayAndRedirect() as replay_step:
+                    reason = _unsupported_duplicate_replay_reason(replay_step)
+                    if reason is not None:
+                        reasons.append(reason)
                 case PatchRemoveEdge():
                     continue
                 case LegacyBlockOperation(modification=CreateConditionalRedirect()):
@@ -645,6 +677,32 @@ class IDAIRTranslator:
                         f"duplicate block src={src} pred={pred} "
                         f"target={target} cond={conditional_target} "
                         f"ft={fallthrough_target} via {assigned}"
+                    ),
+                )
+
+            case PatchDuplicateReplayAndRedirect(
+                source_serial=src,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=per_pred_replays,
+            ):
+                replay_entries = []
+                for entry in per_pred_replays:
+                    replay_entries.append(
+                        (
+                            entry.pred_serial,
+                            entry.target_serial,
+                            entry.replay_serial,
+                            entry.clone_serial,
+                            tuple(insn_snapshots_from_captured_body(entry.captured_body)),
+                        )
+                    )
+                modifier.queue_duplicate_replay_and_redirect(
+                    source_block_serial=src,
+                    dispatcher_entry_serial=dispatcher,
+                    per_pred_replays=tuple(replay_entries),
+                    description=(
+                        f"duplicate replay source={src} dispatcher={dispatcher} "
+                        f"rows={len(replay_entries)}"
                     ),
                 )
 
