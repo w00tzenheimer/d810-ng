@@ -370,8 +370,20 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         self._modifier: Optional[DeferredGraphModifier] = None
         # Diagnostic-only classification records.  Populated per optimize()
         # pass *before* modifications are applied so the topology reflects
-        # the pre-modification CFG.  Never read by the apply path.
+        # the pre-modification CFG.  Read by the apply path to opt admitted
+        # branch-arm shapes into the engine path.
         self._classifications: list[FixPredecessorClassification] = []
+        # Per-modification classification lookup, keyed by ``id(mod)``.
+        # Reset on every optimize() call alongside _pending_modifications so
+        # stale entries from earlier passes are never read.
+        self._classifications_by_mod_id: dict[int, FixPredecessorClassification] = {}
+        # Diagnostic counters for the engine-path migration: number of
+        # ``CloneConditionalAsGotoFromBranchArm`` emissions admitted by the
+        # planner and the subset that the engine path successfully applied.
+        # Reset on maturity change.
+        self._branch_arm_engine_admissions: int = 0
+        self._branch_arm_engine_applied: int = 0
+        self._branch_arm_engine_failures: int = 0
         # Set when safe_verify fails -- prevents further processing on a
         # corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
@@ -795,8 +807,12 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     f"{self.cur_maturity_pass}_{cond_block_serial}_after_pred_fix"
                 )
 
-        # Clear pending modifications after applying
+        # Clear pending modifications after applying.  The per-mod
+        # classification lookup is keyed by ``id(mod)``; since the pending
+        # mods are about to be discarded, the id keys would become dangling
+        # so the lookup table must be cleared in the same step.
         self._pending_modifications.clear()
+        self._classifications_by_mod_id.clear()
 
         if unflat_logger.info_on:
             unflat_logger.info(
@@ -892,6 +908,68 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         self.mba.mark_chains_dirty()
         return cloned
 
+    def _try_apply_branch_arm_engine_path(
+        self,
+        mod: PredecessorModification,
+        cond_blk: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Apply a modification through the engine path if admitted.
+
+        Returns ``True`` on success (caller should NOT run the legacy path),
+        ``False`` if the engine path is not eligible OR if it failed and the
+        caller should fall back to the legacy clone + ``update_blk_successor``
+        sequence.  Increments diagnostic counters either way.
+        """
+        if self._modifier is None:
+            return False
+        classification = self._classifications_by_mod_id.get(id(mod))
+        if classification is None:
+            return False
+        if not classification.matches_clone_conditional_as_goto_from_branch_arm:
+            return False
+
+        try:
+            engine_ok = (
+                self._modifier._apply_clone_conditional_as_goto_from_branch_arm(
+                    source_blk=cond_blk,
+                    pred_serial=mod.pred_serial,
+                    goto_target_serial=mod.target_serial,
+                )
+            )
+        except Exception as exc:
+            self._branch_arm_engine_failures += 1
+            unflat_logger.warning(
+                "fix_pred engine path raised for pred=%d cond=%d target=%d: %s; "
+                "falling back to legacy",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+                exc,
+            )
+            return False
+
+        if not engine_ok:
+            self._branch_arm_engine_failures += 1
+            unflat_logger.warning(
+                "fix_pred engine path declined pred=%d cond=%d target=%d at "
+                "apply-time; falling back to legacy",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+            )
+            return False
+
+        self._branch_arm_engine_applied += 1
+        if unflat_logger.debug_on:
+            unflat_logger.debug(
+                "fix_pred engine path applied: "
+                "clone_conditional_as_goto_from_branch_arm pred=%d cond=%d target=%d",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+            )
+        return True
+
     def _apply_single_modification(
         self,
         mod: PredecessorModification,
@@ -930,6 +1008,18 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 mod.mod_type.name, mod.pred_serial,
                 mod.cond_block_serial, mod.target_serial
             )
+
+        # Engine path: when the branch-arm planner admits this shape, emit
+        # CloneConditionalAsGotoFromBranchArm via the deferred modifier so
+        # the migration is observable through the typed primitive instead of
+        # untyped clone + update_blk_successor.  For ``pred_arm == 1`` the
+        # net mutation is identical to the legacy path
+        # (``change_2way_block_conditional_successor`` is the shared low-level
+        # helper).  Falls back to legacy on engine-path failure as defense in
+        # depth; ``arm == 0`` cases are not admitted by the planner so they
+        # never enter this branch.
+        if self._try_apply_branch_arm_engine_path(mod, cond_blk):
+            return True
 
         try:
             new_jmp_block = None
@@ -1034,6 +1124,9 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 continue
 
             self._classifications.append(classification)
+            self._classifications_by_mod_id[id(mod)] = classification
+            if classification.matches_clone_conditional_as_goto_from_branch_arm:
+                self._branch_arm_engine_admissions += 1
             if unflat_logger.debug_on:
                 rejection = (
                     classification.planner_rejection.value
@@ -1159,6 +1252,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             self._state_var_repr_cache.clear()  # Clear cache on maturity change
             self._verify_failed = False  # Reset on maturity change
             self._classifications.clear()  # Reset diagnostic records
+            self._classifications_by_mod_id.clear()
+            self._branch_arm_engine_admissions = 0
+            self._branch_arm_engine_applied = 0
+            self._branch_arm_engine_failures = 0
 
         if self.cur_maturity not in self.maturities:
             # Gate: maturity filter — normal operation, not a bypass.

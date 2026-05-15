@@ -43,6 +43,13 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     extract_fake_jump_fixes,
     serialize_fake_jump_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
+    FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY,
+    FixPredecessorBranchArmStrategy,
+    build_fix_predecessor_branch_arm_modifications,
+    extract_fix_predecessor_branch_arm_fixes,
+    serialize_fix_predecessor_branch_arm_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationStrategy,
@@ -95,6 +102,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_bad_while_loop_duplicate_replay_candidates: int = 0
     collected_bad_while_loop_conditional_redirect_proofs: int = 0
     selected_bad_while_loop_conditional_redirect_proofs: int = 0
+    collected_fix_predecessor_branch_arm_fixes: int = 0
+    selected_fix_predecessor_branch_arm_fixes: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -114,6 +123,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             FakeJumpStrategy(),
             SingleIterationStrategy(),
             BadWhileLoopStrategy(),
+            FixPredecessorBranchArmStrategy(),
         ]
 
     @property
@@ -187,6 +197,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
                 serialize_bad_while_loop_follow_up(detection.bad_while_loop_follow_up)
             )
+        if detection.fix_predecessor_branch_arm_fixes:
+            metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] = (
+                serialize_fix_predecessor_branch_arm_fixes(
+                    detection.fix_predecessor_branch_arm_fixes
+                )
+            )
 
         graph_with_candidates = FlowGraph(
             blocks=flow_graph.blocks,
@@ -213,6 +229,20 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_bad_while_loop_follow_up = extract_bad_while_loop_follow_up(
             graph_with_candidates
         )
+        candidate_branch_arm_fixes = extract_fix_predecessor_branch_arm_fixes(
+            graph_with_candidates
+        )
+        # Pre-validate every branch-arm candidate through the dedicated
+        # planner so the metadata records only the count of fixes the
+        # engine path would emit primitives for.  Rejections (arm=0,
+        # multi-pred target, side effects, etc.) drop here and stay in
+        # legacy fallback.
+        selected_branch_arm_modifications = (
+            build_fix_predecessor_branch_arm_modifications(
+                candidate_branch_arm_fixes,
+                graph_with_candidates,
+            )
+        )
 
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
             selected_fake_jump_fixes
@@ -237,6 +267,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
             serialize_bad_while_loop_follow_up(selected_bad_while_loop_follow_up)
         )
+        metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] = (
+            serialize_fix_predecessor_branch_arm_fixes(candidate_branch_arm_fixes)
+        )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
@@ -253,6 +286,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 or selected_bad_while_loop_edits
                 or selected_bad_while_loop_replay_candidates
                 or selected_bad_while_loop_duplicate_replay_candidates
+                or selected_branch_arm_modifications
             ),
             collection_errors=detection.collection_errors,
             collected_bad_while_loop_edits=(
@@ -281,6 +315,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
             selected_bad_while_loop_conditional_redirect_proofs=len(
                 selected_bad_while_loop_conditional_redirect_proofs
+            ),
+            collected_fix_predecessor_branch_arm_fixes=len(
+                detection.fix_predecessor_branch_arm_fixes
+            ),
+            selected_fix_predecessor_branch_arm_fixes=len(
+                selected_branch_arm_modifications
             ),
         )
         return FlowGraph(
