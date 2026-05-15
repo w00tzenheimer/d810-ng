@@ -12,10 +12,13 @@ from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
     SimpleFlatteningCleanupDetection,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    extract_conditional_redirect_proofs,
     extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
+    serialize_conditional_redirect_proofs,
 )
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
@@ -90,6 +93,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_bad_while_loop_replay_candidates: int = 0
     collected_bad_while_loop_duplicate_replay_candidates: int = 0
     selected_bad_while_loop_duplicate_replay_candidates: int = 0
+    collected_bad_while_loop_conditional_redirect_proofs: int = 0
+    selected_bad_while_loop_conditional_redirect_proofs: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -172,6 +177,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[CLEANUP_DUPLICATE_REPLAY_METADATA_KEY] = tuple(
                 detection.bad_while_loop_duplicate_replay_candidates
             )
+        if detection.bad_while_loop_conditional_redirect_proofs:
+            metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY] = (
+                serialize_conditional_redirect_proofs(
+                    detection.bad_while_loop_conditional_redirect_proofs
+                )
+            )
         if detection.bad_while_loop_follow_up:
             metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
                 serialize_bad_while_loop_follow_up(detection.bad_while_loop_follow_up)
@@ -196,6 +207,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_bad_while_loop_duplicate_replay_candidates = (
             extract_duplicate_group_replay_candidates(graph_with_candidates)
         )
+        selected_bad_while_loop_conditional_redirect_proofs = (
+            extract_conditional_redirect_proofs(graph_with_candidates)
+        )
         selected_bad_while_loop_follow_up = extract_bad_while_loop_follow_up(
             graph_with_candidates
         )
@@ -214,6 +228,11 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         metadata[CLEANUP_DUPLICATE_REPLAY_METADATA_KEY] = tuple(
             selected_bad_while_loop_duplicate_replay_candidates
+        )
+        metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY] = (
+            serialize_conditional_redirect_proofs(
+                selected_bad_while_loop_conditional_redirect_proofs
+            )
         )
         metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
             serialize_bad_while_loop_follow_up(selected_bad_while_loop_follow_up)
@@ -256,6 +275,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
             selected_bad_while_loop_duplicate_replay_candidates=len(
                 selected_bad_while_loop_duplicate_replay_candidates
+            ),
+            collected_bad_while_loop_conditional_redirect_proofs=len(
+                detection.bad_while_loop_conditional_redirect_proofs
+            ),
+            selected_bad_while_loop_conditional_redirect_proofs=len(
+                selected_bad_while_loop_conditional_redirect_proofs
             ),
         )
         return FlowGraph(

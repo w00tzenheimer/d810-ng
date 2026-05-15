@@ -100,6 +100,8 @@ class BadWhileLoopConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    dispatcher_internal_serials: tuple[int, ...] = ()
+    copied_side_effects_absent: bool = False
 
 
 BadWhileLoopEdit = (
@@ -134,6 +136,14 @@ def _coerce_optional_int(value: object) -> int | None:
     if value is None:
         return None
     return _coerce_int(value)
+
+
+def _coerce_int_tuple(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(
+        item for raw_item in value if (item := _coerce_int(raw_item)) is not None
+    )
 
 
 def _coerce_bad_while_loop_edits(raw: object) -> tuple[BadWhileLoopEdit, ...]:
@@ -240,6 +250,12 @@ def _coerce_bad_while_loop_edits(raw: object) -> tuple[BadWhileLoopEdit, ...]:
                     ref_block=ref_block,
                     conditional_target=conditional_target,
                     fallthrough_target=fallthrough_target,
+                    dispatcher_internal_serials=_coerce_int_tuple(
+                        item.get("dispatcher_internal_serials", ()),
+                    ),
+                    copied_side_effects_absent=(
+                        item.get("copied_side_effects_absent") is True
+                    ),
                 )
             )
     return tuple(edits)
@@ -524,6 +540,10 @@ def _serialize_bad_while_loop_edits(
                     "ref_block": edit.ref_block,
                     "conditional_target": edit.conditional_target,
                     "fallthrough_target": edit.fallthrough_target,
+                    "dispatcher_internal_serials": list(
+                        edit.dispatcher_internal_serials,
+                    ),
+                    "copied_side_effects_absent": edit.copied_side_effects_absent,
                 }
             )
         else:
@@ -1228,6 +1248,10 @@ def collect_live_bad_while_loop_analysis(
                             ref_block=int(target_blk.serial),
                             conditional_target=int(target_blk.succ(0)),
                             fallthrough_target=int(target_blk.succ(1)),
+                            dispatcher_internal_serials=tuple(
+                                sorted(dispatcher_serials),
+                            ),
+                            copied_side_effects_absent=True,
                         )
                     )
                     continue

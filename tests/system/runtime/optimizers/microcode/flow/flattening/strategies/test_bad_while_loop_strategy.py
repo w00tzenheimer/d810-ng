@@ -569,6 +569,8 @@ def test_collect_live_bad_while_loop_analysis_builds_conditional_redirect(
             ref_block=12,
             conditional_target=3,
             fallthrough_target=4,
+            dispatcher_internal_serials=(2,),
+            copied_side_effects_absent=True,
         ),
     )
     assert analysis.follow_up == ()
