@@ -169,6 +169,11 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
 def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
     if step.captured_body is not None:
+        if step.captured_body.summary.contains_call:
+            return (
+                f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
+                "cannot replay call-containing captured body"
+            )
         reason = validate_captured_block_body(step.captured_body)
     else:
         reason = validate_insn_snapshots(step.instructions)
@@ -228,6 +233,12 @@ def _unsupported_duplicate_replay_reason(
                 f"duplicates predecessor {entry.pred_serial}"
             )
         seen_preds.add(entry.pred_serial)
+        if entry.captured_body.summary.contains_call:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                "cannot replay call-containing captured body"
+            )
         reason = validate_captured_block_body(entry.captured_body)
         if reason is not None:
             return (
