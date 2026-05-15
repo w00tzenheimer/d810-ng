@@ -3,22 +3,24 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `flattening/engine` the normal execution model for all
-unflattening work, not just Hodur. Hodur remains the proving client because it
-has the hardest live semantics, but the architecture target is broader:
-simple transforms, legacy `generic.py` dispatcher lowering, Hodur, and future
-CFF families should all use the same detect -> snapshot -> plan -> execute
-pipeline and the same `recon` -> `cfg` -> backend materialization boundaries.
+unflattening work, not just the historical Hodur package. The state-machine
+unflattener remains the proving client because it has the hardest live
+semantics, but the architecture target is broader: simple transforms, legacy
+`generic.py` dispatcher lowering, state-machine unflattening, and future CFF
+families should all use the same detect -> snapshot -> plan -> execute pipeline
+and the same `recon` -> `cfg` -> backend materialization boundaries.
 
 **Architecture:** One execution model (detect -> snapshot -> plan -> execute)
 with variable complexity per strategy family. Simple transforms (FakeJump,
 BadWhileLoop) are trivial families or strategies with one-edit plans. Complex
-attacks (Hodur's multi-strategy OLLVM pipeline, emulated dispatcher lowering,
-future Tigress-like families) use the same engine with richer detection,
-snapshot, planning, and validation. Shared analysis belongs in `recon/flow`;
-backend-agnostic graph plans belong in `cfg`; Hex-Rays-specific mutation stays
-behind the existing backend/materialization layer. Hodur should become a
-compatibility/profile entrypoint over the generic state-machine unflattening
-engine, not the family/framework that owns the architecture.
+attacks (the multi-strategy state-machine pipeline, emulated dispatcher
+lowering, future Tigress-like families) use the same engine with richer
+detection, snapshot, planning, and validation. Shared analysis belongs in
+`recon/flow`; backend-agnostic graph plans belong in `cfg`; Hex-Rays-specific
+mutation stays behind the existing backend/materialization layer. `hodur`
+should be treated as the historical package/compatibility entrypoint for the
+state-machine unflattener, not as the family/framework that owns the
+architecture.
 
 **Tech Stack:** Python 3.13, IDA Pro 9+ microcode API, pytest, d810 plugin infrastructure
 
@@ -28,7 +30,7 @@ engine, not the family/framework that owns the architecture.
 
 1. [Research & Reasoning](#research--reasoning)
 2. [Architecture Decision Record](#architecture-decision-record)
-3. [Current Status: 2026-05-13](#current-status-2026-05-13)
+3. [Current Status: 2026-05-14](#current-status-2026-05-14)
 4. [Revised Execution Order](#revised-execution-order)
 5. [Historical Execution Order Correction](#historical-execution-order-correction)
 6. [File Structure](#file-structure)
@@ -171,7 +173,8 @@ recon/
 flattening/
   engine/             UnflatteningStrategy protocol + planner + executor
   profiles/           FUTURE: profile/config objects selecting detectors + strategies
-  hodur/              Hodur compatibility profile/entrypoint (first hard client)
+  state_machine/      FUTURE: generic state-machine unflattening profile
+  hodur/              Compatibility package/entrypoint for the historical name
   tigress_v2/         FUTURE: same shape, consumes shared recon/flow + cfg
   generic.py          LEGACY: gradually adapts to engine (P3)
 ```
@@ -185,16 +188,57 @@ A new contributor:
 6. Writes strategies against `UnflatteningStrategy` protocol
 7. Extends `recon`/`cfg` only when the new behavior is genuinely shared
 
-Hodur should follow the same model. It may keep a compatibility entrypoint
-named `unflattener_hodur.py`, but that entrypoint should select a generic
-state-machine unflattening profile rather than serving as the architectural
-home for strategy algorithms.
+The state-machine unflattener should follow the same model. The repo may keep
+compatibility names such as `hodur/` or `unflattener_hodur.py` while callers are
+migrated, but those entrypoints should select a generic state-machine
+unflattening profile rather than serving as the architectural home for strategy
+algorithms.
 
 ---
 
-## Current Status: 2026-05-13
+## Current Status: 2026-05-14
 
 The architecture has moved beyond the original March P0/P1 plan.
+
+The active naming convention is:
+
+- **state-machine unflattener** for the generic family/profile being extracted;
+- **Hodur** only for the historical package name, compatibility entrypoint, or
+  when referring to commits/files that still carry that name.
+
+Current tree audit against the revised execution order:
+
+- **P0/P1 historical engine extraction:** effectively complete. The engine
+  exports family/runtime/planner/provenance/strategy surfaces from
+  `flattening/engine`, with `CFFStrategyFamily` in `engine/family.py` and
+  shared runtime helpers in `engine/runtime.py`.
+- **E0 baseline gate:** baseline artifacts exist under
+  `_gitless/baselines/sub7ffd-structure-recovery-pass-2026-05-13/`. Run the
+  focused sub7FFD dump/oracle gate for behavior-affecting slices; pure
+  extraction slices may use focused unit/import checks plus an explicit note.
+- **E1 compatibility imports:** complete for production. Remaining imports from
+  `flattening.hodur.strategy/snapshot/planner/executor/provenance/metrics` are
+  tests/compatibility checks or family-local strategy surfaces.
+- **E1.5 state-machine profile:** partial. `HodurUnflatteningProfile` owns
+  strategy order/env filters, and `HodurUnflattener` delegates
+  planning/execution to the shared runtime. Remaining gap:
+  `hodur/family.py` still owns more artifact/fact/cleanup glue than the target
+  state-machine profile shape wants.
+- **E2 HCC extraction:** materially advanced beyond the original plan. The
+  materialization-boundary work is merged: `CapturedBlockBody` lives in
+  `cfg/materialization_payload.py`, `MaterializationBackend` lives in
+  `cfg/materialization_backend.py`, and `InsertBlock.captured_body` exists in
+  `cfg/graph_modification.py`. Remaining live-analysis leakage is tracked in
+  `docs/hodur/live_analysis_strategy_boundary.md`.
+- **E3/P2 non-state-machine adoption:** partial. FakeJump, SingleIteration,
+  BadWhileLoop, and EmulatedDispatcher engine paths exist. BadWhileLoop now
+  plans more than the old safe subset, including duplicate/conditional redirect
+  graph modifications, but copied side-effect replay remains a follow-up.
+- **E4 legacy retirement:** not ready. Legacy paths are intentionally kept, and
+  migration tests lock current behavior without claiming full parity.
+- **E5 extension contract:** open. There is no `engine/EXTENSION_GUIDE.md` yet;
+  `docs/recon/linearized_state_dag.md` is useful background but not a new-family
+  extension guide.
 
 Already present on this branch:
 
@@ -273,20 +317,20 @@ What remains:
   Hodur imports in tests are intentional compatibility checks or
   strategy-specific surfaces that do not yet have a generic extraction target.
 - Continue extracting reusable HCC algorithms into `recon`, `cfg`, and
-  `engine` based on behavior, not on import churn. The remaining large
-  boundary is backend materialization: cfg should carry opaque captured
-  payloads and lowering intent, while Hex-Rays adapters own live instruction
-  capture, copy, validation, and rewrite mechanics.
-- Continue thinning the Hodur profile/entrypoint now that strategy ordering
-  moved into `hodur.profile`. `HodurStrategyFamily` can remain as a
+  `engine` based on behavior, not on import churn. The materialization payload
+  boundary now exists, but HCC still needs cleanup where strategy code mixes
+  policy with live topology checks, call-anchor validation, SCCP/reaching-def
+  rescue, and mutation/verify mechanics.
+- Continue thinning the state-machine profile/entrypoint now that strategy
+  ordering moved into `hodur.profile`. `HodurStrategyFamily` can remain as a
   transitional adapter name while behavior is being extracted, but the target
-  shape is not "Hodur owns a family"; it is "Hodur profile selects generic
-  state-machine strategies."
+  shape is not "Hodur owns a family"; it is "the compatibility Hodur entrypoint
+  selects a generic state-machine unflattening profile."
 - Convert the remaining legacy unflattening families to the engine/family
   model where doing so preserves behavior.
 - Document the extension contract for new unflattening families after the
-  current package boundaries are proven by at least Hodur and one non-Hodur
-  family.
+  current package boundaries are proven by the state-machine unflattener and
+  one non-state-machine family.
 
 This means the plan should not be executed as a file-move/shim project. The
 engine package exists. The active work is now adoption, de-specialization, and
@@ -306,7 +350,7 @@ regression-gated behavior preservation across all unflattening families.
 | ADR-6 | Compatibility re-exports are transitional, not the architecture | Existing Hodur re-exports may remain while old imports are paid down, but new work should import canonical engine/recon/cfg surfaces directly. Do not add new compatibility shims as the endpoint. |
 | ADR-7 | Live behavior defines the extraction boundary | The sub7FFD recovery work showed which algorithms are truly shared: DAG/BST/frontier reasoning belongs in recon/cfg, while Hodur owns family detection and strategy ordering. |
 | ADR-8 | Shared dispatcher IR belongs in recon/flow before engine extraction | `DispatcherHandlerMap` and switch-table analysis proved new dispatcher forms should first land as shared recon artifacts plus Hodur adapters. |
-| ADR-9 | Hodur is a compatibility profile, not the engine family | Extraction succeeds when simple transforms, generic/emulated dispatchers, Hodur, and future profiles share detect -> snapshot -> plan -> execute without importing through Hodur. Hodur should select generic state-machine strategies; it should not remain the organizing abstraction. |
+| ADR-9 | State-machine unflattening is the family; Hodur is the compatibility name | Extraction succeeds when simple transforms, generic/emulated dispatchers, the state-machine unflattener, and future profiles share detect -> snapshot -> plan -> execute without importing through Hodur. The Hodur entrypoint should select generic state-machine strategies; it should not remain the organizing abstraction. |
 | ADR-10 | Do not rebuild the Hodur monolith | `unflattener_hodur.py` may own the compatibility entrypoint, profile defaults, strategy order, env gates, and detector thresholds. It should not absorb `hodur/strategies/*`; strategy wrappers should either shrink, move to generic strategy modules, or disappear when empty. |
 
 ---
@@ -361,19 +405,19 @@ Status:
 - Do not remove compatibility modules until all production consumers are gone
   and tests confirm no external runtime path still needs them.
 
-### E1.5: Reframe Hodur as a profile over the generic engine
+### E1.5: Reframe Hodur as the state-machine compatibility entrypoint
 
-Goal: Hodur stops being the architectural owner of the state-machine
-unflattening pipeline. It becomes a compatibility/profile entrypoint that
+Goal: the state-machine unflattener stops being architecturally identified with
+the Hodur package. Hodur becomes a compatibility/profile entrypoint that
 selects generic engine, recon, cfg, and backend materialization pieces.
 
 Target shape:
 
-- `unflattener_hodur.py` owns the plugin-facing compatibility entrypoint,
-  Hodur profile defaults, detector thresholds, strategy order, env gates, and
-  legacy rule registration.
-- A generic state-machine unflattening family/profile owns the reusable
-  detect -> snapshot -> plan -> execute lifecycle.
+- `unflattener_hodur.py` / `hodur/unflattener.py` owns the plugin-facing
+  compatibility entrypoint, historical profile defaults, detector thresholds,
+  strategy order, env gates, and legacy rule registration.
+- A generic state-machine unflattening family/profile owns the reusable detect
+  -> snapshot -> plan -> execute lifecycle.
 - `hodur/strategies/*` remain small strategy adapters only while they carry
   Hodur-specific policy, logging, ordering hooks, or live Hex-Rays adaptation.
   They should not be merged into `unflattener_hodur.py`.
@@ -383,31 +427,32 @@ Target shape:
 
 Implementation sequence:
 
-1. ✅ Introduce a Hodur profile/config object carrying strategy classes and
-   current feature gates (`8771f2a4`). Follow-up: generalize the profile type
-   when a second non-Hodur adopter needs the same shape.
+1. ✅ Introduce a profile/config object carrying state-machine strategy classes
+   and current feature gates (`8771f2a4`). Follow-up: generalize the profile
+   type when a second non-state-machine adopter needs the same shape.
 2. Change `HodurStrategyFamily` from "the owner of Hodur strategies" into an
-   adapter over that profile. Keep the class name temporarily if a rename would
-   create too much churn. The next slice should inventory what remains in
-   `hodur/family.py` beyond detection/snapshot construction and profile
-   adaptation, then move any generic lifecycle behavior into
+   adapter over the state-machine profile. Keep the class name temporarily if a
+   rename would create too much churn. The next slice should inventory what
+   remains in `hodur/family.py` beyond detection/snapshot construction and
+   profile adaptation, then move any generic lifecycle behavior into
    `flattening.engine`.
 3. ✅ Move the authoritative Hodur strategy list/order out of
-   `hodur/strategies/__init__.py` and into the Hodur profile/entrypoint
+   `hodur/strategies/__init__.py` and into the compatibility profile/entrypoint
    (`8771f2a4`, `4336a7ef`).
 4. Keep each strategy implementation in its own module. Do not collapse the
    modules into the entrypoint.
-5. Once the generic profile is exercised by Hodur and at least one non-Hodur
-   path, rename the transitional Hodur family objects to the generic profile
-   terminology.
+5. Once the generic profile is exercised by the state-machine unflattener and
+   at least one non-state-machine path, rename the transitional Hodur family
+   objects to the generic profile terminology.
 
 Current focus:
 
-- `unflattener_hodur.py` / `hodur/unflattener.py` may remain the
-  plugin-facing compatibility entrypoint while the IDA maturity hooks and
-  snapshot timing are still Hodur-specific.
-- `hodur/profile.py` is the right home for Hodur defaults, feature gates, and
-  strategy ordering.
+- `unflattener_hodur.py` / `hodur/unflattener.py` may remain the plugin-facing
+  compatibility entrypoint while the IDA maturity hooks and snapshot timing are
+  still tied to the historical package.
+- `hodur/profile.py` is the current home for state-machine defaults, feature
+  gates, and strategy ordering. A later rename can move the generic shape to a
+  neutral profile package after a second adopter proves it.
 - `hodur/family.py` should keep detector construction and snapshot adaptation,
   but should not grow new generic planning/execution behavior.
 - `hodur/strategies/*` should remain separate modules. Do not merge them into
@@ -460,24 +505,19 @@ Completed:
   artifact helpers, and semantic reference helpers have all moved out of Hodur
   (`ca01ff46`, `255fb9f0`, `b373123d`, `4fe6b8fe`, `5ac465b2`,
   `8bd42176`, `f634c8da`).
+- Materialization-boundary payload plumbing is now present: cfg owns
+  `CapturedBlockBody`/`MaterializationBackend` abstractions, and
+  `InsertBlock.captured_body` can carry opaque backend-captured payloads.
 
 Next candidates, in order:
 
-1. Backend materialization boundary:
-   - current hotspot: `handler_chain_composer.py` still directly participates
-     in live Hex-Rays body capture, `InsnSnapshot` validation, def-chain
-     capture, and InsertBlock materialization handoff;
-   - comparison worktree:
-     `/Users/mahmoud/src/idapro/d810/.worktrees/hodur-materialization-boundary`
-     has a concrete prototype commit, `87773b9a`, that adds
-     `d810.cfg.materialization_payload.CapturedBlockBody`,
-     `d810.evaluator.hexrays_microcode.instruction_capture_backend.HexRaysInstructionCaptureBackend`,
-     and `InsertBlock.captured_body`;
-   - target shape: cfg carries opaque captured payloads and neutral summaries;
-     the Hex-Rays adapter captures/materializes bodies; HCC decides which body
-     to lower and why;
-   - do not pull this wholesale without rebasing and validating against the
-     current serial-drift and Hodur-cleanup-decoupling commits.
+1. Finish the remaining live-analysis boundary inventory:
+   - `docs/hodur/live_analysis_strategy_boundary.md` now records the completed
+     profile/live-analysis/use-def/return-cleanup slices, but it still needs to
+     become a status document for the remaining leaks;
+   - current known hotspots include DSVE evidence, HCC live topology/call-anchor
+     validation, body-capture policy boundaries, SCCP/reaching-def rescue, and
+     mutation/verify mechanics.
 2. Remaining semantic exact/fork/alias lowering analysis:
    - most shared predicates are already extracted; inventory the remaining
      strategy-local logic in `semantic_exact_node.py`,
@@ -494,22 +534,22 @@ Next candidates, in order:
 
 Recommended next implementer slices:
 
-1. **Materialization boundary integration.**
-   - Rebase the `hodur-materialization-boundary` prototype onto this branch.
-   - Keep `CapturedBlockBody` opaque in cfg; avoid letting cfg inspect
-     Hex-Rays payload internals.
-   - Wire one HCC InsertBlock path through the backend body first, then expand
-     to def-chain and call-anchor capture.
-   - Validation: materialization unit tests, HCC byte-cascade tracer tests,
-     sub7FFD dump/oracle/AFTER diff, and import contracts.
-2. **Hodur profile adapter cleanup.**
+1. **State-machine profile adapter cleanup.**
    - Inventory `hodur/family.py` after profile extraction and move any generic
      lifecycle code to `flattening.engine`.
    - Keep detector construction, snapshot adaptation, feature gates, and
      profile defaults in Hodur.
    - Validation: profile/family ordering tests and sub7FFD gate only if
      ordering or executor configuration changes.
-3. **E3/P2 non-Hodur adoption slice.**
+2. **Remaining live-analysis backend cleanup.**
+   - Start with DSVE if Noether has not already finished it: introduce a real
+     evidence backend rather than a shallow wrapper, and keep NOP/rewrite
+     mechanics behind Hex-Rays mutation.
+   - Continue with HCC live topology/materialization policy leaks only after the
+     DSVE boundary is clear.
+   - Validation: focused DSVE/HCC tests, import contracts, and sub7FFD gate for
+     behavior-affecting slices.
+3. **E3/P2 non-state-machine adoption slice.**
    - Use FakeJump/SingleIteration/BadWhile migration baselines to select one
      standalone parity improvement.
    - Prefer a BadWhile follow-up that can be expressed with existing
@@ -523,7 +563,7 @@ Parallelizable read-only work:
 - **Materialization-boundary comparison.** Compare this branch to
   `.worktrees/hodur-materialization-boundary` and recommend what to port,
   rewrite, or avoid.
-- **Non-Hodur adoption survey.** Inspect P2/P3 families and recommend one
+- **Non-state-machine adoption survey.** Inspect P2/P3 families and recommend one
   behavior-preserving adopter slice with tests.
 
 These three investigations are independent of the E1 test fix and can run in
@@ -540,9 +580,9 @@ Do not extract:
 - dormant `linearized_flow_graph.py` work unless it is deliberately revived
   into the current HCC path.
 
-### E3: Normalize non-Hodur families onto the engine
+### E3: Normalize non-state-machine families onto the engine
 
-Goal: the shared engine is proven by more than Hodur.
+Goal: the shared engine is proven by more than the state-machine unflattener.
 
 - Keep the existing `FakeJump`, `SingleIteration`, `BadWhileLoop`, and
   `EmulatedDispatcherStrategyFamily` paths working.
@@ -550,6 +590,46 @@ Goal: the shared engine is proven by more than Hodur.
   and add or complete an engine-family equivalent.
 - Prefer examples that use different detection evidence from Hodur so the
   family boundary is exercised rather than merely copied.
+
+After the state-machine unflattener is reduced to profile/policy plus backend
+adapters, the next architecture phase is to prove the engine is not secretly
+state-machine-shaped:
+
+1. Freeze the shared engine contract:
+   - `recon`: evidence, DAG/BST/transition facts, return sites;
+   - `cfg`: backend-neutral lowering decisions and graph plans;
+   - `engine`: family runtime, planning, arbitration, provenance, executor;
+   - `hexrays`: materialization backend, mutation, verification.
+2. Pick one non-state-machine adopter. Prefer the legacy/simple path with the
+   best tests and real samples, likely BadWhileLoop/simple CFF cleanup, because
+   it already touches graph planning and has known parity gaps.
+3. Convert that adopter into a normal family:
+   `detect evidence -> build snapshot -> plan generic cfg modifications ->
+   execute through engine`.
+4. Move shared legacy algorithms into `recon`/`cfg` only as they are needed:
+   dispatcher compare-chain recognition, successor/target resolution, copied
+   side-effect replay decisions, conditional redirect planning,
+   duplicate/split/trampoline safety, opaque guard classification, and
+   return/call barrier handling.
+5. Reuse the same backend adapter boundary. New legacy migrations should not
+   introduce direct Hex-Rays mutation, block cloning, NOP, copy, split, verify,
+   or rewrite mechanics inside strategy code.
+6. Unify config/profile loading so `hodur_flag2.json`, generic CFF configs, and
+   simple-transform configs eventually describe families/profiles against the
+   same runtime:
+   `family`, `profile`, enabled strategies, gates, and profile settings.
+7. Replace compatibility shims with real migrations. Temporary adapters are
+   acceptable inside a branch, but the endpoint is migrated or deleted legacy
+   paths, not a permanent compatibility layer.
+8. Promote `d810cli` as the common validation front door for baselines, AFTER
+   stats, oracle diffs, frontier diagnostics, and trace explainers across every
+   family.
+9. Delete legacy paths only after parity. Each removal needs a focused parity
+   test or an explicit abstention contract.
+
+Acceptance for this phase: a second unflattening family can be added or
+migrated without copying state-machine internals and without adding new direct
+Hex-Rays mutation logic.
 
 ### E4: Retire legacy paths only after parity
 
@@ -1817,9 +1897,9 @@ Add to the audit document from Task 4.1.
 
 ## P5: Document Extension Contract
 
-Current note: do this after at least one non-Hodur family path has meaningful
-engine parity. The guide should describe the shared engine/family architecture,
-not Hodur internals.
+Current note: do this after at least one non-state-machine family path has
+meaningful engine parity. The guide should describe the shared engine/family
+architecture, not Hodur internals.
 
 **Risk:** None (documentation only).
 
@@ -1863,9 +1943,9 @@ git commit -m "docs(engine): add extension guide for new CFF strategy families"
 
 ```
 E0 baseline gate  ──→  E1 canonical engine imports
-                 └─→  E1.5 Hodur profile boundary
+                 └─→  E1.5 state-machine profile boundary
                  └─→  E2 reusable HCC algorithm extraction
-                 └─→  E3 non-Hodur family normalization
+                 └─→  E3 non-state-machine family normalization
 
 E1/E1.5/E2/E3  ──→  E4 retire legacy paths after parity
 E1/E1.5/E2/E3  ──→  E5 extension contract
@@ -1873,8 +1953,9 @@ E1/E1.5/E2/E3  ──→  E5 extension contract
 
 E0 is always active. E1, E1.5, E2, and E3 can proceed independently as long as
 each slice preserves the baseline gate. E4 depends on parity evidence. E5
-should be written only after the architecture has at least the Hodur profile
-plus one non-Hodur profile/family exercising the shared engine path.
+should be written only after the architecture has at least the state-machine
+profile plus one non-state-machine profile/family exercising the shared engine
+path.
 
 ## Risk Assessment
 
@@ -1886,7 +1967,7 @@ plus one non-Hodur profile/family exercising the shared engine path.
 | E2 | Medium — HCC helpers mix pure analysis, live CFG probes, and Hex-Rays instruction capture | Extract one responsibility at a time; keep HCC behavior-preserving; require sub7FFD no-regression when lowering behavior can change |
 | E3 | Medium — old generic/simple rules have implicit behavior | Keep old paths until engine parity or explicit abstention is proven |
 | E4 | Medium-high — premature deletion loses fallback behavior | Remove only after parity tests and field samples stop depending on legacy path |
-| E5 | Low — docs only | Write after the architecture is exercised by more than Hodur |
+| E5 | Low — docs only | Write after the architecture is exercised by more than the state-machine unflattener |
 
 ## Success Criteria
 
@@ -1894,14 +1975,14 @@ plus one non-Hodur profile/family exercising the shared engine path.
    `from d810.optimizers.microcode.flow.flattening.engine import UnflatteningStrategy`.
 2. Production code no longer imports engine-generic types through
    `flattening.hodur.*` compatibility modules.
-3. Hodur is represented as a compatibility/profile entrypoint over the generic
-   state-machine unflattening engine, and sub7FFD does not regress against the
-   `structure-recovery-pass` baseline.
-4. At least one non-Hodur family path has meaningful engine parity or a
+3. The historical Hodur entrypoint is represented as a compatibility/profile
+   entrypoint over the generic state-machine unflattening engine, and sub7FFD
+   does not regress against the `structure-recovery-pass` baseline.
+4. At least one non-state-machine family path has meaningful engine parity or a
    documented abstention contract.
 5. Reusable algorithms grown inside Hodur/HCC move to `recon` or `cfg` when
    their responsibility is analysis or backend-agnostic CFG planning.
 6. New unflattening profiles/families can be built from `recon` collectors,
    a generic state-machine profile/family contract, `PlanFragment`,
    `cfg.GraphModification`, and backend materialization without reading Hodur
-   internals.
+   internals or compatibility imports.
