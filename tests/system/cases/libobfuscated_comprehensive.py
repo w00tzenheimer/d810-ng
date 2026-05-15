@@ -371,6 +371,28 @@ APPROOV_CASES = [
         function="approov_multistate",
         description="Approov pattern with multiple state transitions",
         project="example_libobfuscated.json",
+        # The recovered form preserves the real outer reset loop while removing
+        # the artificial state variable, dispatcher constants, and label/goto
+        # control flow.
+        deobfuscated_contains=[
+            "while ( 1 )",
+            "if ( a1 >= 0x64 )",
+            "a1 += a2--;",
+            "while ( a2 > 0 );",
+            "a1 *= 2;",
+            "if ( a1 <= 0x3E8 )",
+            "++dword_18001D318;",
+            "return (unsigned int)a1;",
+        ],
+        deobfuscated_not_contains=[
+            "LABEL_x9BC",
+            "goto LABEL_x9BC",
+            "v5",
+            "0xF6A1E",
+            "0xF6A1F",
+            "0xF6A20",
+            "0xF6A25",
+        ],
         must_change=True,
     ),
     DeobfuscationCase(
