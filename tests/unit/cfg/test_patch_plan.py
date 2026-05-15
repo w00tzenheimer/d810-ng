@@ -13,6 +13,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -30,6 +31,7 @@ from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
     PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -762,3 +764,172 @@ def test_compile_patch_plan_compiles_remove_edge():
     # Round-trip back to GraphModification
     roundtripped = step.to_graph_modification()
     assert roundtripped == RemoveEdge(from_serial=5, to_serial=10)
+
+
+def _branch_arm_clone_cfg() -> FlowGraph:
+    """CFG with a 2-way predecessor whose explicit branch arm targets the cond.
+
+    Mirrors :func:`_conditional_duplicate_cfg` but the predecessor at blk[7]
+    is itself 2-way: ``pred.tail.d.b == 10`` (arm=1) and fallthrough goes to
+    blk[20].  Block 10 is the 2-way conditional with arms 11 (fallthrough)
+    and 12 (explicit branch target). Selected goto target is blk[12].
+    """
+    return FlowGraph(
+        blocks={
+            7: _block(
+                7,
+                (20, 10),
+                (),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1007,
+                        operands=(_BlockRef(10),),
+                        operand_slots=(("d", _BlockRef(10)),),
+                    ),
+                ),
+            ),
+            8: _block(8, (10,), ()),
+            10: _block(
+                10,
+                (11, 12),
+                (7, 8),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(12),),
+                        operand_slots=(("d", _BlockRef(12)),),
+                    ),
+                ),
+            ),
+            11: _block(11, (), (10,)),
+            12: _block(12, (), (10,)),
+            20: _block(20, (), (7,)),
+        },
+        entry_serial=7,
+        func_ea=0,
+    )
+
+
+def test_clone_conditional_as_goto_from_branch_arm_projects_clone_and_arm_redirect():
+    patch_plan = compile_patch_plan(
+        [
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=12,
+            )
+        ],
+        _branch_arm_clone_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.new_blocks[0].kind == "clone_conditional_as_goto_from_branch_arm"
+    assert len(patch_plan.steps) == 1
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchCloneConditionalAsGotoFromBranchArm)
+    assert step.source_serial == 10
+    assert step.pred_serial == 7
+    assert step.pred_arm == 1
+    assert step.goto_target == 12
+    assert step.conditional_target == 12
+    assert step.fallthrough_target == 11
+    assert step.pred_branch_target_serial == 10
+    # Allocator places the clone before existing terminal blocks, which
+    # shifts the original pred_fallthrough (blk[20]) one slot up.  The
+    # relocation map is applied here, so the recorded fallthrough is whatever
+    # serial blk[20] now lives at after the clone slot is reserved.
+    assert step.pred_fallthrough_target_serial >= 20
+    assert step.assigned_serial > 0
+
+    # Post-state projection: pred 7's explicit branch arm now points at the
+    # clone (assigned_serial), clone points at the selected target 12, and
+    # the source conditional 10 retains both arms (still reachable from blk[8]).
+    projected = project_post_state(_branch_arm_clone_cfg(), patch_plan)
+    assert projected.get_block(10).succs == (11, 12)
+    clone = projected.get_block(step.assigned_serial)
+    assert clone is not None
+    assert clone.succs == (12,)
+
+
+def test_compile_patch_plan_rejects_clone_conditional_as_goto_from_branch_arm_without_cfg():
+    with pytest.raises(ValueError, match="requires FlowGraph context"):
+        compile_patch_plan(
+            [
+                CloneConditionalAsGotoFromBranchArm(
+                    source_block=10,
+                    pred_serial=7,
+                    pred_arm=1,
+                    goto_target=12,
+                )
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("modification", "match"),
+    (
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=99,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=12,
+            ),
+            "source block 99 not found",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=8,  # 1-way pred — invalid for branch-arm shape
+                pred_arm=1,
+                goto_target=12,
+            ),
+            "expected 2",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=2,
+                goto_target=12,
+            ),
+            "pred_arm must be 0 or 1",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=0,
+                goto_target=12,
+            ),
+            "pred_arm=0 but pred fallthrough is 20, not source 10",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=10,
+            ),
+            "self-loop to source",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=99,
+            ),
+            "goto target 99 not found",
+        ),
+    ),
+)
+def test_compile_patch_plan_rejects_invalid_branch_arm_clone_shapes(
+    modification: CloneConditionalAsGotoFromBranchArm,
+    match: str,
+):
+    with pytest.raises(ValueError, match=match):
+        compile_patch_plan([modification], _branch_arm_clone_cfg())

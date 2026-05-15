@@ -33,6 +33,7 @@ from d810.cfg.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
     PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
@@ -441,7 +442,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -663,6 +664,26 @@ class IDAIRTranslator:
                     description=(
                         f"clone conditional as goto pred={pred} src={src} "
                         f"target={target} via {assigned}: {reason}"
+                    ),
+                )
+
+            case PatchCloneConditionalAsGotoFromBranchArm(
+                source_serial=src,
+                pred_serial=pred,
+                pred_arm=arm,
+                goto_target=target,
+                assigned_serial=assigned,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto_from_branch_arm(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    pred_arm=arm,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto from arm pred={pred} arm={arm} "
+                        f"src={src} target={target} via {assigned}: {reason}"
                     ),
                 )
 
