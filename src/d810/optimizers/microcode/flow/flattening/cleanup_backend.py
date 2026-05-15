@@ -13,9 +13,11 @@ from d810.cfg.materialization_payload import (
 )
 from d810.core.typing import Protocol
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CleanupConditionalRedirectProof,
     CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
     bad_while_loop_duplicate_candidate,
+    explain_bad_while_loop_conditional_redirect,
     validate_duplicate_group_replay_candidate,
     validate_side_effect_replay_candidate,
     validate_dispatcher_cleanup_candidate,
@@ -23,6 +25,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BAD_WHILE_LOOP_INSERT_BLOCK,
     BadWhileLoopEdit,
+    BadWhileLoopConditionalRedirect,
     BadWhileLoopDuplicateRedirect,
     BadWhileLoopFollowUp,
     BadWhileLoopGotoConversion,
@@ -118,7 +121,11 @@ def _validation_graph_for_bad_while_loop(
         not replay_candidates
         and not duplicate_replay_candidates
         and not any(
-            isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits
+            isinstance(
+                edit,
+                (BadWhileLoopDuplicateRedirect, BadWhileLoopConditionalRedirect),
+            )
+            for edit in edits
         )
     ):
         return None
@@ -143,6 +150,9 @@ class SimpleFlatteningCleanupDetection:
     bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     bad_while_loop_duplicate_replay_candidates: tuple[
         CleanupDuplicateGroupReplayCandidate, ...
+    ] = ()
+    bad_while_loop_conditional_redirect_proofs: tuple[
+        CleanupConditionalRedirectProof, ...
     ] = ()
     bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
@@ -175,7 +185,9 @@ class SimpleFlatteningCleanupDetection:
                     "no plannable simple cleanup candidates detected: "
                     "bad_while_loop_deferred="
                     f"{len(self.bad_while_loop_deferred_edits)} "
-                    f"bad_while_loop_follow_up={len(self.bad_while_loop_follow_up)}"
+                    f"bad_while_loop_follow_up={len(self.bad_while_loop_follow_up)} "
+                    "bad_while_loop_conditional_redirect_proofs="
+                    f"{len(self.bad_while_loop_conditional_redirect_proofs)}"
                 )
             return "no simple cleanup candidates detected"
         return (
@@ -186,6 +198,8 @@ class SimpleFlatteningCleanupDetection:
             f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
             f" bad_while_loop_duplicate_replay="
             f"{len(self.bad_while_loop_duplicate_replay_candidates)}"
+            f" bad_while_loop_conditional_redirect_proofs="
+            f"{len(self.bad_while_loop_conditional_redirect_proofs)}"
         )
 
 
@@ -263,6 +277,9 @@ class LiveSimpleFlatteningCleanupBackend:
         bad_while_loop_duplicate_replay_candidates: tuple[
             CleanupDuplicateGroupReplayCandidate, ...
         ] = ()
+        bad_while_loop_conditional_redirect_proofs: tuple[
+            CleanupConditionalRedirectProof, ...
+        ] = ()
         bad_while_loop_deferred_edits: tuple[BadWhileLoopEdit, ...] = ()
         bad_while_loop_follow_up: tuple[BadWhileLoopFollowUp, ...] = ()
         try:
@@ -312,6 +329,23 @@ class LiveSimpleFlatteningCleanupBackend:
                     candidate,
                 )
             )
+            if bad_while_loop_validation_graph is not None:
+                conditional_redirect_proofs: list[
+                    CleanupConditionalRedirectProof
+                ] = []
+                for edit in bad_while_loop_all_edits:
+                    if not isinstance(edit, BadWhileLoopConditionalRedirect):
+                        continue
+                    proof = explain_bad_while_loop_conditional_redirect(
+                        edit,
+                        bad_while_loop_validation_graph,
+                        defer_reason="conditional_redirect_not_promoted",
+                    )
+                    if proof is not None:
+                        conditional_redirect_proofs.append(proof)
+                bad_while_loop_conditional_redirect_proofs = tuple(
+                    conditional_redirect_proofs
+                )
             promoted_replay = {
                 (
                     candidate.dispatcher_entry,
@@ -374,6 +408,9 @@ class LiveSimpleFlatteningCleanupBackend:
             ),
             bad_while_loop_duplicate_replay_candidates=tuple(
                 bad_while_loop_duplicate_replay_candidates
+            ),
+            bad_while_loop_conditional_redirect_proofs=tuple(
+                bad_while_loop_conditional_redirect_proofs
             ),
             bad_while_loop_deferred_edits=tuple(bad_while_loop_deferred_edits),
             bad_while_loop_follow_up=tuple(bad_while_loop_follow_up),

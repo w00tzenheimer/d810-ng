@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
     DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
@@ -30,11 +30,15 @@ from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
     LiveSimpleFlatteningCleanupBackend,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    CleanupProofVerdict,
     CleanupPerPredReplay,
     bad_while_loop_duplicate_group_replay_candidate,
     bad_while_loop_side_effect_replay_candidate,
+    explain_bad_while_loop_conditional_redirect,
+    extract_conditional_redirect_proofs,
     extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
 )
@@ -99,7 +103,20 @@ def _block(
     *,
     block_type: int = 1,
     start_ea: int | None = None,
+    tail_target: int | None = None,
 ) -> BlockSnapshot:
+    insn_snapshots = ()
+    if tail_target is not None:
+        target_mop = MopSnapshot(t=7, size=4, block_ref=tail_target)
+        insn_snapshots = (
+            InsnSnapshot(
+                opcode=0x200,
+                ea=0x5000 + serial,
+                operands=(target_mop,),
+                operand_slots=(("d", target_mop),),
+                d=target_mop,
+            ),
+        )
     return BlockSnapshot(
         serial=serial,
         block_type=block_type,
@@ -107,7 +124,7 @@ def _block(
         preds=preds,
         flags=0,
         start_ea=serial if start_ea is None else start_ea,
-        insn_snapshots=(),
+        insn_snapshots=insn_snapshots,
     )
 
 
@@ -136,6 +153,29 @@ def _cleanup_flow_graph() -> FlowGraph:
             61: _block(61, (60,), (), start_ea=0x401061),
             62: _block(62, (60,), (), start_ea=0x401062),
             63: _block(63, (60,), (), start_ea=0x401063),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+
+def _conditional_redirect_flow_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x401000),
+            1: _block(1, (2,), (0,), start_ea=0x401001),
+            2: _block(2, (12, 99), (1,), block_type=4, start_ea=0x401002),
+            3: _block(3, (), (12,), block_type=2, start_ea=0x401003),
+            4: _block(4, (), (12,), block_type=2, start_ea=0x401004),
+            12: _block(
+                12,
+                (4, 3),
+                (2,),
+                block_type=4,
+                start_ea=0x40100C,
+                tail_target=3,
+            ),
+            99: _block(99, (), (2,), block_type=2, start_ea=0x401099),
         },
         entry_serial=0,
         func_ea=0x401000,
@@ -306,6 +346,13 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         unsafe_bad_while_loop_conditional_duplicate,
         unsafe_bad_while_loop_conditional_redirect,
     )
+    assert len(detection.bad_while_loop_conditional_redirect_proofs) == 1
+    conditional_proof = detection.bad_while_loop_conditional_redirect_proofs[0]
+    assert conditional_proof.defer_reason == "conditional_redirect_not_promoted"
+    assert conditional_proof.dispatcher_entry == 41
+    assert conditional_proof.source_serial == 40
+    assert conditional_proof.ref_block == 44
+    assert conditional_proof.verdict is CleanupProofVerdict.UNSAFE
     assert detection.bad_while_loop_follow_up == (bad_while_loop_follow_up,)
     assert detection.collection_errors == ()
     assert calls["fake_jump"][0] is mba
@@ -700,6 +747,22 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
         conditional_target=42,
         fallthrough_target=43,
     )
+    proof_edit = BadWhileLoopConditionalRedirect(
+        dispatcher_entry=2,
+        source_serial=1,
+        ref_block=12,
+        conditional_target=3,
+        fallthrough_target=4,
+        dispatcher_internal_serials=(2,),
+        copied_side_effects_absent=True,
+    )
+    conditional_proof = explain_bad_while_loop_conditional_redirect(
+        proof_edit,
+        _conditional_redirect_flow_graph(),
+        defer_reason="conditional_redirect_not_promoted",
+    )
+    assert conditional_proof is not None
+    assert conditional_proof.verdict is CleanupProofVerdict.SAFE_SHAPE
     unsafe_conditional_duplicate = BadWhileLoopConditionalDuplicate(
         dispatcher_entry=41,
         source_serial=44,
@@ -717,6 +780,7 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
     backend = _FakeBackend(
         SimpleFlatteningCleanupDetection(
             bad_while_loop_deferred_edits=(unsafe_edit, unsafe_conditional_duplicate),
+            bad_while_loop_conditional_redirect_proofs=(conditional_proof,),
             bad_while_loop_follow_up=(side_effect_follow_up,),
             maturity=ida_hexrays.MMAT_GLBOPT1,
             func_ea=0x401000,
@@ -739,10 +803,20 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
     )
     assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == []
     assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] != []
+    assert (
+        extract_conditional_redirect_proofs(snapshot.flow_graph)
+        == (conditional_proof,)
+    )
+    assert (
+        snapshot.flow_graph.metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY]
+        != []
+    )
     assert metadata.collected_bad_while_loop_edits == 2
     assert metadata.selected_bad_while_loop_edits == 0
     assert metadata.deferred_bad_while_loop_edits == 2
     assert metadata.bad_while_loop_follow_up == 1
+    assert metadata.collected_bad_while_loop_conditional_redirect_proofs == 1
+    assert metadata.selected_bad_while_loop_conditional_redirect_proofs == 1
     assert metadata.planning_ready is False
 
 
