@@ -10,6 +10,7 @@ import ida_hexrays
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -502,6 +503,21 @@ def graph_modifications_to_simulated_edits(
                     )
                 )
 
+            case CloneConditionalAsGotoFromBranchArm(
+                source_block=src,
+                pred_serial=pred,
+                goto_target=target,
+            ):
+                simulated.append(
+                    SimulatedEdit(
+                        kind="clone_conditional_as_goto_from_branch_arm",
+                        source=src,
+                        old_target=src,
+                        new_target=target,
+                        via_pred=pred,
+                    )
+                )
+
             case RemoveEdge(from_serial=src, to_serial=dst):
                 simulated.append(
                     SimulatedEdit(
@@ -973,7 +989,11 @@ def simulate_edits(
             # Replace ALL successors with single new_target
             result[edit.source] = [edit.new_target]
 
-        elif edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
+        elif edit.kind in {
+            "edge_split_redirect",
+            "clone_conditional_as_goto",
+            "clone_conditional_as_goto_from_branch_arm",
+        }:
             if edit.via_pred is not None:
                 # Model pred-scoped clone edits: clone source block, rewire via_pred.
                 # 1. Create virtual clone node with [new_target] as successor.

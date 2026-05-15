@@ -121,7 +121,15 @@ def test_admits_explicit_branch_arm_when_outcome_matches_target() -> None:
     )
 
 
-def test_admits_fallthrough_arm_when_outcome_matches_target() -> None:
+def test_rejects_fallthrough_arm_until_lowering_supports_it() -> None:
+    """The engine path currently only rewires the explicit-branch arm.
+
+    Rewiring the fallthrough arm of a 2-way predecessor (arm == 0) has no
+    tested low-level helper in the deferred modifier, and the legacy live
+    rule itself bails on that case via ``update_blk_successor`` returning
+    0.  The planner stays strict so arm=0 records keep falling back to the
+    legacy path until a fallthrough-rewrite helper lands.
+    """
     decision = plan_fix_predecessor_clone_from_branch_arm(
         _arm_zero_cfg(),
         pred_serial=7,
@@ -131,11 +139,10 @@ def test_admits_fallthrough_arm_when_outcome_matches_target() -> None:
         description="pred 7 arm=0 never takes jump in block 10",
     )
 
-    assert decision.accepted
-    assert decision.candidate is not None
-    assert decision.candidate.pred_arm == 0
-    assert decision.candidate.selected_target_serial == 11
-    assert decision.candidate.outcome == FixPredecessorOutcome.NEVER_TAKEN
+    assert not decision.accepted
+    assert decision.rejection_reason is (
+        FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED
+    )
 
 
 def test_rejects_one_way_predecessor() -> None:
