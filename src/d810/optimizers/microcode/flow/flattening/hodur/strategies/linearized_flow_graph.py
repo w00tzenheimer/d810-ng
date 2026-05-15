@@ -13,10 +13,14 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 
+import ida_hexrays
+
+from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
     simulate_edits,
 )
+from d810.cfg.plan import compile_patch_plan
 from d810.cfg.dag_redirect_emission import (
     emit_dag_redirect,
 )
@@ -95,7 +99,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_back
     SynthesizedHandoffTargetRequest,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
-    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    HodurProjectedTopologyBackend,
     ProjectedTopologyBackend,
 )
 from d810.recon.flow.residual_handoff_resolution import (
@@ -219,9 +223,11 @@ from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_repo
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     StateDagEdge,
+    build_live_linearized_state_dag_from_graph,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.state_machine_analysis import (
+    build_mba_view_from_flow_graph,
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
 )
@@ -264,12 +270,63 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
 
+
+class _StrategyProjectedTopologyBackend(HodurProjectedTopologyBackend):
+    """Strategy-local seam for tests that patch historical topology helpers."""
+
+    def build_projected_mba(self, flow_graph: object) -> object:
+        return build_mba_view_from_flow_graph(flow_graph)
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        return project_post_state(
+            base_flow_graph,
+            compile_patch_plan(modifications, base_flow_graph),
+        )
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        *,
+        dispatcher_entry_serial: int,
+        state_var_stkoff: int | None,
+        pre_header_serial: int | None,
+        initial_state: int | None,
+        handler_range_map: dict | None,
+        bst_node_blocks: tuple[int, ...],
+        diagnostics: tuple[object, ...],
+        dispatcher: object | None,
+        mba: object | None,
+        prefer_local_corridors: bool = True,
+        corrected_dag_out: list[object] | None = None,
+    ) -> object:
+        return build_live_linearized_state_dag_from_graph(
+            current_flow_graph,
+            transition_result,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+            pre_header_serial=pre_header_serial,
+            initial_state=initial_state,
+            handler_range_map=handler_range_map or {},
+            bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+            diagnostics=tuple(diagnostics or ()),
+            dispatcher=dispatcher,
+            mba=mba,
+            prefer_local_corridors=prefer_local_corridors,
+            corrected_dag_out=corrected_dag_out,
+        )
+
+
 _USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
 _LIVE_MICROCODE_PROPERTIES: HodurLiveMicrocodePropertiesBackend = (
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES
 )
 _PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
-    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+    _StrategyProjectedTopologyBackend()
 )
 _CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
