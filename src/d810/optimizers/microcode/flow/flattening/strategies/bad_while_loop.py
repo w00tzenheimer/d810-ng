@@ -915,6 +915,13 @@ def collect_live_bad_while_loop_analysis(
                         "duplicate_group_copied_side_effects",
                         int(target_blk.serial),
                     )
+                if captured_body.summary.contains_call:
+                    return (
+                        None,
+                        source_serial,
+                        "duplicate_group_copied_side_effects_contains_call",
+                        int(target_blk.serial),
+                    )
                 per_pred_replays.append(
                     CleanupPerPredReplay(
                         pred_serial=int(pred_serial),
@@ -1136,24 +1143,31 @@ def collect_live_bad_while_loop_analysis(
                                 "Failed to capture BadWhileLoop side-effect replay body",
                                 exc_info=True,
                             )
-                    replay_candidate = bad_while_loop_side_effect_replay_candidate(
-                        dispatcher_entry=dispatcher_entry_serial,
-                        source_serial=int(father.serial),
-                        target_serial=int(target_blk.serial),
-                        captured_body=captured_body,
-                        dispatcher_internal_serials=tuple(dispatcher_serials),
-                    )
-                    if replay_candidate is not None:
-                        replay_candidates.append(replay_candidate)
+                    if (
+                        captured_body is not None
+                        and captured_body.summary.contains_call
+                    ):
+                        follow_up_reason = "copied_side_effects_contains_call"
+                    else:
+                        replay_candidate = bad_while_loop_side_effect_replay_candidate(
+                            dispatcher_entry=dispatcher_entry_serial,
+                            source_serial=int(father.serial),
+                            target_serial=int(target_blk.serial),
+                            captured_body=captured_body,
+                            dispatcher_internal_serials=tuple(dispatcher_serials),
+                        )
+                        if replay_candidate is not None:
+                            replay_candidates.append(replay_candidate)
+                        follow_up_reason = "copied_side_effects"
+                elif dependency_safe_copies:
+                    follow_up_reason = "copied_side_effects"
+                else:
+                    follow_up_reason = "copied_side_effects_not_dependency_safe"
                 record_follow_up(
                     dispatcher_entry=dispatcher_entry_serial,
                     from_serial=int(father.serial),
                     category=BAD_WHILE_LOOP_INSERT_BLOCK,
-                    reason=(
-                        "copied_side_effects"
-                        if dependency_safe_copies
-                        else "copied_side_effects_not_dependency_safe"
-                    ),
+                    reason=follow_up_reason,
                     target_serial=int(target_blk.serial),
                 )
                 continue
