@@ -24,7 +24,11 @@ volatile int global_accumulator = 0;
  */
 int abc_xor_dispatch(int input)
 {
-    unsigned int state = 0x12345678;
+    /*
+     * Low byte must satisfy (state ^ 0xDEADBEEF) & 0xFF == 0x00
+     * for the entry case. 0xEF ^ 0xEF == 0.
+     */
+    unsigned int state = 0x123456EF;
     int result = 0;
     int i;
 

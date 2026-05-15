@@ -22,6 +22,9 @@ from d810.evaluator.hexrays_microcode.forward_dataflow import (
     build_constant_entry_state,
     run_forward_fixpoint_on_mba,
 )
+from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    recognize_derived_xor_dispatcher_models,
+)
 from d810.hexrays.ir.mop_utils import (
     _VALID_MOP_SIZES)
 from d810.hexrays.ir.mop_utils import (
@@ -184,6 +187,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(
             default_missing=TOP
         )
+        self._derived_xor_owned_mbas: weakref.WeakKeyDictionary = (
+            weakref.WeakKeyDictionary()
+        )
+        self._derived_xor_owned_functions: set[int] = set()
 
     @typing.override
     def configure(self, kwargs):
@@ -239,6 +246,34 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     self.current_maturity,
                 )
             return 0
+
+        func_ea = self._mba_function_ea(mba)
+        if (
+            self._derived_xor_owned_mbas.get(mba)
+            or (func_ea is not None and func_ea in self._derived_xor_owned_functions)
+        ):
+            logger.info(
+                "Skipping %s for previously recognized derived-XOR dispatcher-owned function",
+                self.__class__.__name__,
+            )
+            self._seen[mba] = (
+                self.current_maturity,
+                self.current_generation,
+            )
+            return 0
+        if recognize_derived_xor_dispatcher_models(mba=mba):
+            self._derived_xor_owned_mbas[mba] = True
+            if func_ea is not None:
+                self._derived_xor_owned_functions.add(func_ea)
+            logger.info(
+                "Skipping %s for derived-XOR dispatcher-owned function",
+                self.__class__.__name__,
+            )
+            self._seen[mba] = (
+                self.current_maturity,
+                self.current_generation,
+            )
+            return 0
         # Gate: skip FCP at MMAT_CALLS for UNKNOWN-dispatcher functions.
         # At this early maturity the dispatcher CFG is unresolved, so FCP
         # sees single-predecessor return blocks and folds dispatcher-state
@@ -277,6 +312,26 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             self.current_generation,
         )  # remember we've run
         return nb_changes
+
+    @staticmethod
+    def _mba_function_ea(mba: ida_hexrays.mba_t) -> typing.Optional[int]:
+        """Return a stable function identity for cross-maturity ownership gates."""
+        for attr_name in ("entry_ea", "maturity_entry_ea"):
+            try:
+                value = int(getattr(mba, attr_name, 0) or 0)
+            except Exception:
+                continue
+            if value not in (0, int(getattr(idaapi, "BADADDR", -1))):
+                return value
+        try:
+            entry_blk = mba.get_mblock(0)
+            if entry_blk is not None:
+                value = int(getattr(entry_blk, "start", 0) or 0)
+                if value not in (0, int(getattr(idaapi, "BADADDR", -1))):
+                    return value
+        except Exception:
+            pass
+        return None
 
     def _run_on_function(self, mba: ida_hexrays.mba_t) -> int:
         """

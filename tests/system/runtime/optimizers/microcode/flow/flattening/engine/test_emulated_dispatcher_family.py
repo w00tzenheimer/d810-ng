@@ -13,6 +13,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     PhaseCycleLowering,
     RedirectGoto,
+    ZeroStateWrite,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import lift as lift_mba
@@ -43,6 +44,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
     EmulatedDispatcherPhaseArtifact,
     EmulatedDispatcherStrategy,
     extract_emulated_dispatcher_candidate_records,
+    extract_emulated_dispatcher_fallback_modifications,
     extract_emulated_dispatcher_metadata,
     extract_emulated_dispatcher_modifications,
     extract_emulated_dispatcher_phase_artifact,
@@ -507,11 +509,11 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
         state_constants=(0xF6A1E, 0xF6A1F),
         collector_dispatchers=(),
         planning_ready=False,
-        planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+        planning_blocker="phase_linear_chain_not_conditional_chain",
         candidate_count=0,
-        rejected_fathers=0,
+        rejected_fathers=1,
         candidate_kinds=(),
-        rejection_reasons=(),
+        rejection_reasons=("phase_linear_chain_not_conditional_chain",),
         selected_lowering_mode="generic_graph_modifications",
     )
 
@@ -2085,7 +2087,7 @@ class TestEmulatedDispatcherManagedContext:
                 return cleaned
 
             def _clustered_execute(snapshot, planned, **kwargs):
-                modifications = extract_emulated_dispatcher_modifications(
+                modifications = extract_emulated_dispatcher_fallback_modifications(
                     snapshot.flow_graph
                 )
                 records = extract_emulated_dispatcher_candidate_records(
@@ -2109,8 +2111,18 @@ class TestEmulatedDispatcherManagedContext:
                     cluster = sorted(grouped[cluster_key], key=lambda item: item.father_serial)
                     anchor = cluster[0]
                     followers = cluster[1:]
-                    anchor_index = anchor.selected_modification_indexes[0]
-                    anchor_mod = modifications[anchor_index]
+                    anchor_mods = tuple(
+                        modifications[index]
+                        for index in anchor.selected_modification_indexes
+                    )
+                    anchor_mod = next(
+                        (
+                            mod
+                            for mod in anchor_mods
+                            if isinstance(mod, (InsertBlock, RedirectGoto))
+                        ),
+                        None,
+                    )
                     instructions = ()
                     if isinstance(anchor_mod, InsertBlock):
                         instructions = anchor_mod.instructions
@@ -2118,8 +2130,22 @@ class TestEmulatedDispatcherManagedContext:
                         instructions = ()
                     else:
                         raise AssertionError(
-                            f"Unexpected clustered modification in experiment: {anchor_mod}"
+                            f"Unexpected clustered modification in experiment: {anchor_mods}"
                         )
+                    for mod in anchor_mods:
+                        if isinstance(mod, ZeroStateWrite):
+                            modifier.queue_zero_state_write(
+                                int(mod.block_serial),
+                                int(mod.insn_ea),
+                                description=(
+                                    f"cluster anchor zero state write "
+                                    f"{mod.block_serial}@{mod.insn_ea:#x}"
+                                ),
+                            )
+                        elif mod is not anchor_mod:
+                            raise AssertionError(
+                                f"Unexpected paired clustered modification in experiment: {mod}"
+                            )
                     cluster_payloads.append(anchor.payload_signature)
                     modifier.queue_create_and_redirect(
                         source_block_serial=int(anchor.father_serial),
@@ -2157,6 +2183,15 @@ class TestEmulatedDispatcherManagedContext:
                             block_serial=int(mod.from_serial),
                             new_target=int(mod.new_target),
                             description=f"standalone redirect {mod.from_serial}->{mod.new_target}",
+                        )
+                    elif isinstance(mod, ZeroStateWrite):
+                        modifier.queue_zero_state_write(
+                            int(mod.block_serial),
+                            int(mod.insn_ea),
+                            description=(
+                                f"standalone zero state write "
+                                f"{mod.block_serial}@{mod.insn_ea:#x}"
+                            ),
                         )
                     else:
                         raise AssertionError(f"Unexpected modification in experiment: {mod}")

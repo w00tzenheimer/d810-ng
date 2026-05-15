@@ -14,6 +14,7 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     GraphModification,
     InsertBlock,
+    ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
     ZeroStateWrite,
@@ -57,7 +58,9 @@ from d810.optimizers.microcode.flow.flattening.unflattener import (
 )
 from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
+    _walk_handler_chain,
     analyze_bst_dispatcher,
+    resolve_via_bst_walk,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.dynamic_state_transition_recovery import (
@@ -324,6 +327,333 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         default_handlers = range_handlers - point_handlers
         return int(record.father_serial) in default_handlers
 
+    def _collect_phase_linear_chain_modifications(
+        self,
+        *,
+        mba: ida_hexrays.mba_t,
+        flow_graph: FlowGraph,
+        detection: EmulatedDispatcherDetection,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
+        """Lower a fully resolved conditional-chain dispatcher as one unit.
+
+        This path covers table-backed conditional chains where the dispatcher
+        cache/recon phase proves the state chain, but the legacy
+        OllvmDispatcherCollector does not produce entries.  The predecessor
+        local FixPredecessor rewrite can remove the terminal return for this
+        shape, so this method emits one whole-chain edit batch instead:
+        redirect the proven payload corridor, neutralize dead BST nodes, and
+        copy/reorder the live payload blocks away from stale dispatcher preds.
+        """
+
+        if detection.dispatcher_shape != "conditional_chain":
+            return (), ("phase_linear_chain_not_conditional_chain",)
+        if phase_artifact is None or phase_context is None:
+            return (), ("phase_linear_chain_missing_artifact",)
+        if phase_artifact.semantic_reference_variant != "semantic_reference_like":
+            return (), ("phase_linear_chain_nonsemantic_reference",)
+        if phase_artifact.pre_header_serial is None:
+            return (), ("phase_linear_chain_missing_pre_header",)
+
+        dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
+        bst_nodes = {int(serial) for serial in phase_artifact.bst_node_blocks}
+        for serial, _lo, _hi in phase_artifact.handler_range_map:
+            blk = mba.get_mblock(int(serial))
+            if (
+                blk is not None
+                and int(blk.nsucc()) == 2
+                and blk.tail is not None
+                and ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+            ):
+                bst_nodes.add(int(serial))
+
+        transition_result = getattr(phase_context, "transition_result", None)
+        transitions_by_state: dict[int, int] = {}
+        conditional_states: set[int] = set()
+        for transition in getattr(transition_result, "transitions", ()) or ():
+            from_state = getattr(transition, "from_state", None)
+            to_state = getattr(transition, "to_state", None)
+            if from_state is None or to_state is None:
+                continue
+            from_state = int(from_state)
+            to_state = int(to_state)
+            if bool(getattr(transition, "is_conditional", False)):
+                conditional_states.add(from_state)
+                continue
+            if from_state in transitions_by_state and transitions_by_state[from_state] != to_state:
+                return (), ("phase_linear_chain_ambiguous_transition",)
+            transitions_by_state[from_state] = to_state
+
+        known_handler_states = {
+            int(state) for _serial, state in phase_artifact.handler_state_map
+        } | set(transitions_by_state)
+        if len(known_handler_states) < 2:
+            return (), ("phase_linear_chain_too_few_handlers",)
+        if conditional_states & known_handler_states:
+            return (), ("phase_linear_chain_has_conditional_handler",)
+        incoming_exact_states = {
+            to_state
+            for to_state in transitions_by_state.values()
+            if to_state in known_handler_states
+        }
+        if phase_artifact.initial_state in known_handler_states:
+            start_state = int(phase_artifact.initial_state)
+        else:
+            candidates = sorted(known_handler_states - incoming_exact_states)
+            if len(candidates) != 1:
+                return (), ("phase_linear_chain_start_state_ambiguous",)
+            start_state = candidates[0]
+
+        bst_result = getattr(phase_context, "bst_result", None)
+        state_var_stkoff = phase_artifact.state_var_stkoff
+        if state_var_stkoff is None:
+            return (), ("phase_linear_chain_missing_state_var",)
+
+        def _resolve_state_target(state: int) -> int | None:
+            target = resolve_via_bst_walk(
+                mba,
+                dispatcher_entry,
+                int(state),
+                bst_nodes,
+            )
+            if target is None and bst_result is not None:
+                dispatcher = getattr(bst_result, "dispatcher", None)
+                if dispatcher is not None:
+                    target = dispatcher.lookup(int(state))
+            if target is None:
+                return None
+            return int(target)
+
+        ordered_states: list[int] = []
+        state_targets: dict[int, int] = {}
+        redirect_sources: dict[int, int] = {}
+        terminal_state: int | None = None
+        terminal_target: int | None = None
+        current_state = start_state
+        seen_states: set[int] = set()
+        while len(ordered_states) <= len(known_handler_states) + 2:
+            if current_state in seen_states:
+                return (), ("phase_linear_chain_cycle",)
+            seen_states.add(current_state)
+            current_target = _resolve_state_target(current_state)
+            if current_target is None:
+                return (), ("phase_linear_chain_state_target_unresolved",)
+            if current_target == dispatcher_entry or current_target in bst_nodes:
+                return (), ("phase_linear_chain_state_target_is_dispatcher",)
+            if current_target not in flow_graph.blocks:
+                return (), ("phase_linear_chain_state_target_missing",)
+
+            walk = _walk_handler_chain(
+                mba=mba,
+                handler_start_serial=current_target,
+                dispatcher_entry_serial=dispatcher_entry,
+                state_var_stkoff=int(state_var_stkoff),
+                chain_visited=set(),
+                state_var_lvar_idx=None,
+            )
+            chain = tuple(int(serial) for serial in walk.get("chain", ()) or ())
+            if not bool(walk.get("back_edge")):
+                terminal_state = current_state
+                terminal_target = current_target
+                break
+
+            next_state = walk.get("next_state")
+            if next_state is None:
+                return (), ("phase_linear_chain_missing_transition",)
+            if not chain:
+                return (), ("phase_linear_chain_empty_handler_chain",)
+            redirect_source = int(chain[-1])
+            if redirect_source not in flow_graph.blocks:
+                return (), ("phase_linear_chain_redirect_source_missing",)
+
+            ordered_states.append(current_state)
+            state_targets[current_state] = current_target
+            redirect_sources[current_state] = redirect_source
+            current_state = int(next_state)
+        else:
+            return (), ("phase_linear_chain_too_deep",)
+
+        if len(ordered_states) < 2:
+            return (), ("phase_linear_chain_too_short",)
+        if terminal_state is None or terminal_target is None:
+            return (), ("phase_linear_chain_missing_terminal_state",)
+
+        def _single_dispatcher_successor(serial: int) -> bool:
+            block = flow_graph.get_block(serial)
+            return block is not None and block.succs == (dispatcher_entry,)
+
+        pre_header = int(phase_artifact.pre_header_serial)
+        if not _single_dispatcher_successor(pre_header):
+            return (), ("phase_linear_chain_pre_header_not_dispatcher_pred",)
+
+        modifications: list[GraphModification] = [
+            RedirectGoto(
+                from_serial=pre_header,
+                old_target=dispatcher_entry,
+                new_target=state_targets[start_state],
+            )
+        ]
+        dispatcher_cleanup_targets = set(bst_nodes)
+        dispatcher_cleanup_targets.add(dispatcher_entry)
+        exit_candidates = sorted(
+            serial for serial, block in flow_graph.blocks.items() if block.nsucc == 0
+        )
+        if not exit_candidates:
+            return (), ("phase_linear_chain_missing_exit_block",)
+        terminal_exit_serial = exit_candidates[-1]
+        for index, state in enumerate(ordered_states):
+            handler = redirect_sources[state]
+            if not _single_dispatcher_successor(handler):
+                return (), ("phase_linear_chain_handler_not_dispatcher_pred",)
+            if index + 1 < len(ordered_states):
+                next_target = state_targets[ordered_states[index + 1]]
+            else:
+                next_target = terminal_target
+            if handler == next_target:
+                return (), ("phase_linear_chain_self_loop",)
+            modifications.append(
+                RedirectGoto(
+                    from_serial=handler,
+                    old_target=dispatcher_entry,
+                    new_target=next_target,
+                )
+            )
+
+        for serial in sorted(dispatcher_cleanup_targets):
+            block = flow_graph.get_block(serial)
+            if block is None or block.nsucc != 2:
+                continue
+            if serial == terminal_exit_serial:
+                continue
+            modifications.append(
+                ConvertToGoto(
+                    block_serial=serial,
+                    goto_target=terminal_exit_serial,
+                )
+            )
+
+        reorder_order: list[int] = []
+        for state in ordered_states:
+            target = state_targets[state]
+            if target not in reorder_order:
+                reorder_order.append(target)
+        if terminal_target not in reorder_order:
+            reorder_order.append(terminal_target)
+
+        modifications.append(
+            ReorderBlocks(
+                dfs_block_order=tuple(reorder_order),
+                non_2way_serials=tuple(reorder_order),
+            )
+        )
+
+        self._logger.info(
+            "Phase linear-chain lowering selected %d edit(s): states=%s terminal=0x%X->blk[%d] reorder=%s cleanup=%s",
+            len(modifications),
+            tuple(f"0x{state:08X}" for state in ordered_states),
+            terminal_state & 0xFFFFFFFF,
+            terminal_target,
+            tuple(reorder_order),
+            tuple(sorted(dispatcher_cleanup_targets)),
+        )
+        return tuple(modifications), ()
+
+    def _collect_derived_xor_dispatcher_modifications(
+        self,
+        *,
+        flow_graph: FlowGraph,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
+        """Lower the ABC XOR dispatcher once recon proves derived-key edges.
+
+        This is deliberately gated on ``derived_xor_dispatch_key`` transition
+        provenance.  The dispatcher state labels are not raw state-variable
+        values for this family; they are the low-byte key produced by
+        ``key = low8(carrier) ^ K``.  Generic state-write lowering therefore
+        cannot safely infer the edge from ``carrier ^= C`` unless recon has
+        first converted those writes into explicit key transitions.
+        """
+
+        if phase_artifact is None or phase_context is None:
+            return (), ("derived_xor_dispatcher_missing_artifact",)
+        if phase_artifact.pre_header_serial is None:
+            return (), ("derived_xor_dispatcher_missing_pre_header",)
+        if phase_artifact.initial_state is None:
+            return (), ("derived_xor_dispatcher_missing_initial_state",)
+
+        transition_result = getattr(phase_context, "transition_result", None)
+        transitions = tuple(getattr(transition_result, "transitions", ()) or ())
+        derived_transitions = tuple(
+            transition
+            for transition in transitions
+            if getattr(transition, "provenance_kind", None)
+            == "derived_xor_dispatch_key"
+        )
+        if not derived_transitions:
+            return (), ("derived_xor_dispatcher_missing_transitions",)
+
+        state_to_handler = {
+            int(state): int(serial)
+            for serial, state in phase_artifact.handler_state_map
+        }
+        if int(phase_artifact.initial_state) not in state_to_handler:
+            return (), ("derived_xor_dispatcher_initial_target_missing",)
+
+        dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
+        modifications: list[GraphModification] = [
+            RedirectGoto(
+                from_serial=int(phase_artifact.pre_header_serial),
+                old_target=dispatcher_entry,
+                new_target=state_to_handler[int(phase_artifact.initial_state)],
+            )
+        ]
+        seen_redirects: set[tuple[int, int]] = {
+            (
+                int(phase_artifact.pre_header_serial),
+                state_to_handler[int(phase_artifact.initial_state)],
+            )
+        }
+
+        for transition in derived_transitions:
+            target_state = getattr(transition, "to_state", None)
+            if target_state is None or int(target_state) not in state_to_handler:
+                return (), ("derived_xor_dispatcher_target_missing",)
+            source = getattr(transition, "condition_block", None)
+            if source is None:
+                source = getattr(transition, "from_block", None)
+            if source is None:
+                return (), ("derived_xor_dispatcher_source_missing",)
+            source = int(source)
+            target = state_to_handler[int(target_state)]
+            block = flow_graph.get_block(source)
+            if block is None:
+                return (), ("derived_xor_dispatcher_source_block_missing",)
+            if block.succs != (dispatcher_entry,):
+                return (), ("derived_xor_dispatcher_source_not_dispatcher_pred",)
+            if source == target:
+                return (), ("derived_xor_dispatcher_self_loop",)
+            key = (source, target)
+            if key in seen_redirects:
+                continue
+            seen_redirects.add(key)
+            modifications.append(
+                RedirectGoto(
+                    from_serial=source,
+                    old_target=dispatcher_entry,
+                    new_target=target,
+                )
+            )
+
+        self._logger.info(
+            "Derived-XOR dispatcher lowering selected %d edit(s): initial=0x%X transitions=%d",
+            len(modifications),
+            int(phase_artifact.initial_state) & 0xFFFFFFFF,
+            len(derived_transitions),
+        )
+        return tuple(modifications), ()
+
     def _compute_scc_memberships(
         self,
         flow_graph: FlowGraph,
@@ -462,6 +792,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and detected_state_var_stkoff is not None
         ):
             state_var_stkoff = detected_state_var_stkoff
+        recovered_initial_state = getattr(transition_result, "initial_state", None)
+        if recovered_initial_state is None:
+            recovered_initial_state = getattr(bst_result, "initial_state", None)
         bst_node_blocks = tuple(sorted(int(serial) for serial in bst_result.bst_node_blocks))
         transition_report = build_dispatcher_transition_report_from_graph(
             flow_graph,
@@ -469,7 +802,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
             pre_header_serial=getattr(bst_result, "pre_header_serial", None),
-            initial_state=getattr(bst_result, "initial_state", None),
+            initial_state=recovered_initial_state,
             handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
             bst_node_blocks=bst_node_blocks,
             diagnostics=(),
@@ -480,7 +813,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
             pre_header_serial=getattr(bst_result, "pre_header_serial", None),
-            initial_state=getattr(bst_result, "initial_state", None),
+            initial_state=recovered_initial_state,
             handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
             bst_node_blocks=bst_node_blocks,
             diagnostics=(),
@@ -501,7 +834,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
             pre_header_serial=getattr(bst_result, "pre_header_serial", None),
-            initial_state=getattr(bst_result, "initial_state", None),
+            initial_state=recovered_initial_state,
             bst_node_blocks=bst_node_blocks,
             handler_state_map=tuple(
                 sorted(
@@ -677,14 +1010,18 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if header_target is None:
             return None
 
-        terminal_states = {
-            int(record.state_signature[0])
+        terminal_records = tuple(
+            record
             for record in candidate_records
             if record.target_serial is not None
             and tuple(int(value) for value in record.state_signature)
             and record.raw_side_effect_count == 0
             and tuple(int(target) for target in record.target_scc)
             == (int(record.target_serial),)
+        )
+        terminal_states = {
+            int(record.state_signature[0])
+            for record in terminal_records
         }
         body_states = tuple(
             sorted(
@@ -773,18 +1110,34 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     old_target=int(phase_artifact.dispatcher_entry_serial),
                     new_target=next_phase_target,
                 ),
+            )
+        )
+        if terminal_records:
+            # The next phase already has a concrete terminal arm.  Preserve it
+            # by sending the terminal state-write block to the real exit rather
+            # than folding that conditional arm into a self-loop.
+            for record in terminal_records:
+                modifications.append(
+                    RedirectGoto(
+                        from_serial=int(record.father_serial),
+                        old_target=int(phase_artifact.dispatcher_entry_serial),
+                        new_target=int(record.target_serial),
+                    )
+                )
+        else:
+            modifications.append(
                 RedirectBranch(
                     from_serial=next_phase_target,
                     old_target=int(phase_artifact.dispatcher_entry_serial),
                     new_target=next_phase_target,
-                ),
+                )
             )
-        )
         self._logger.info(
-            "DispatcherLoopRecovery phase-cycle lowering: header=%s body=%s next_phase=%s mods=%d",
+            "DispatcherLoopRecovery phase-cycle lowering: header=%s body=%s next_phase=%s terminal=%s mods=%d",
             tuple(int(record.father_serial) for record in header_records),
             tuple(int(record.father_serial) for record in body_records),
             tuple(int(record.father_serial) for record in next_phase_records),
+            tuple(int(record.father_serial) for record in terminal_records),
             len(modifications),
         )
         return tuple(modifications)
@@ -1589,6 +1942,39 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             phase_artifact=phase_artifact,
             phase_context=phase_context,
         )
+        if (
+            not fallback_modifications
+            and not fallback_blockers
+            and not detection.collector_dispatchers
+            and mba.maturity >= ida_hexrays.MMAT_GLBOPT1
+        ):
+            phase_modifications, phase_blockers = (
+                self._collect_phase_linear_chain_modifications(
+                    mba=mba,
+                    flow_graph=flow_graph,
+                    detection=detection,
+                    phase_artifact=phase_artifact,
+                    phase_context=phase_context,
+                )
+            )
+            if not phase_modifications:
+                derived_modifications, derived_blockers = (
+                    self._collect_derived_xor_dispatcher_modifications(
+                        flow_graph=flow_graph,
+                        phase_artifact=phase_artifact,
+                        phase_context=phase_context,
+                    )
+                )
+                if derived_modifications and not derived_blockers:
+                    phase_modifications = derived_modifications
+                    phase_blockers = ()
+                elif derived_blockers and not phase_blockers:
+                    phase_blockers = derived_blockers
+            if phase_modifications and not phase_blockers:
+                fallback_modifications = phase_modifications
+                fallback_blockers = ()
+            elif phase_blockers:
+                fallback_blockers = phase_blockers
         loop_recovery_modifications: tuple[GraphModification, ...] = ()
         loop_recovery_blockers: tuple[str, ...] = ()
         if mba.maturity >= ida_hexrays.MMAT_GLBOPT1 and detection.collector_dispatchers:
