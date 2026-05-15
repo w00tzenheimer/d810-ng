@@ -31,12 +31,14 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     ExecutionPolicy,
     PatchDuplicateBlock,
+    PatchDuplicateReplayEntry,
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    VirtualBlockId,
     compile_patch_plan,
 )
 from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
@@ -107,7 +109,11 @@ def _conditional_duplicate_cfg() -> FlowGraph:
     )
 
 
-def _captured_body(source_serial: int = 45) -> CapturedBlockBody:
+def _captured_body(
+    source_serial: int = 45,
+    *,
+    contains_call: bool = False,
+) -> CapturedBlockBody:
     instructions = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
     return CapturedBlockBody(
         backend_id="hexrays.insn_snapshot",
@@ -116,7 +122,7 @@ def _captured_body(source_serial: int = 45) -> CapturedBlockBody:
             source_blocks=(source_serial,),
             instruction_count=len(instructions),
             source_eas=frozenset(),
-            contains_call=False,
+            contains_call=contains_call,
         ),
         payload=instructions,
     )
@@ -938,6 +944,57 @@ class TestIDAIntegration:
             (122, 202, 200, 201, 1),
         )
 
+    def test_lower_rejects_call_captured_duplicate_replay_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = PatchPlan(
+            steps=(
+                PatchDuplicateReplayAndRedirect(
+                    source_serial=45,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        PatchDuplicateReplayEntry(
+                            pred_serial=44,
+                            target_serial=199,
+                            replay_block_id=VirtualBlockId("duplicate_replay", 0),
+                            replay_serial=200,
+                            captured_body=_captured_body(45, contains_call=True),
+                        ),
+                        PatchDuplicateReplayEntry(
+                            pred_serial=122,
+                            target_serial=199,
+                            replay_block_id=VirtualBlockId("duplicate_replay", 1),
+                            replay_serial=201,
+                            captured_body=_captured_body(45),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 0
+        assert created == []
+
     def test_lower_applies_conditional_duplicate_block_patch_plan(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1126,6 +1183,45 @@ class TestIDAIntegration:
             ],
             _cfg(),
         )
+
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+
+        assert count == 0
+        assert created == []
+
+    def test_lower_rejects_call_captured_patch_insert_block_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=199,
+                    captured_body=_captured_body(45, contains_call=True),
+                )
+            ],
+            _cfg(),
+        )
+
+        assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
         count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
 
