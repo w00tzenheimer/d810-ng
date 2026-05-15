@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.fix_predecessor_planning import FixPredecessorOutcome
+from d810.cfg.fix_predecessor_planning import (
+    FixPredecessorOutcome,
+    FixPredecessorRejectReason,
+)
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import CloneConditionalAsGotoFromBranchArm
 from d810.optimizers.microcode.flow.flattening.fix_pred_cond_jump_block import (
@@ -170,27 +173,35 @@ def test_sub_7ffd_arm_known_records_admit_via_branch_arm_planner(
     )
     one_way_decision = plan_predecessor_modification_clone_as_goto(cfg, modification)
 
-    # The branch-arm planner admits every captured sub_7FFD record.
-    assert arm_decision.accepted, (
-        f"branch-arm planner rejected sub_7FFD record {record} "
-        f"with reason {arm_decision.rejection_reason}"
-    )
-    candidate = arm_decision.candidate
-    assert candidate is not None
-    assert candidate.pred_arm == arm
-    assert candidate.pred_serial == pred
-    assert candidate.conditional_serial == cond
-    assert candidate.selected_target_serial == target
-
-    # Mutual exclusion: the one-way planner refuses 2-way preds.
+    # Mutual exclusion: the one-way planner always refuses 2-way preds.
     assert not one_way_decision.accepted
 
-    # Round-trip the candidate through the executable primitive.
-    primitive = candidate.to_graph_modification()
-    assert primitive == CloneConditionalAsGotoFromBranchArm(
-        source_block=cond,
-        pred_serial=pred,
-        pred_arm=arm,
-        goto_target=target,
-        reason=f"sub_7FFD record pred={pred} cond={cond} target={target}",
-    )
+    if arm == 1:
+        # Explicit-branch-arm cases are the supported engine-path shape.
+        assert arm_decision.accepted, (
+            f"branch-arm planner unexpectedly rejected arm=1 sub_7FFD record "
+            f"{record} with reason {arm_decision.rejection_reason}"
+        )
+        candidate = arm_decision.candidate
+        assert candidate is not None
+        assert candidate.pred_arm == 1
+        assert candidate.pred_serial == pred
+        assert candidate.conditional_serial == cond
+        assert candidate.selected_target_serial == target
+        primitive = candidate.to_graph_modification()
+        assert primitive == CloneConditionalAsGotoFromBranchArm(
+            source_block=cond,
+            pred_serial=pred,
+            pred_arm=1,
+            goto_target=target,
+            reason=f"sub_7FFD record pred={pred} cond={cond} target={target}",
+        )
+    else:
+        # Fallthrough-arm cases stay in legacy fallback until a fallthrough
+        # rewrite helper lands.  The planner reports the specific reason so
+        # downstream consumers can distinguish "engine path declines" from
+        # "shape is fundamentally unsupported".
+        assert not arm_decision.accepted
+        assert arm_decision.rejection_reason is (
+            FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED
+        )

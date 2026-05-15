@@ -14,6 +14,7 @@ from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgCon
 
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     GraphModification,
     RedirectGoto,
     RedirectBranch,
@@ -806,6 +807,24 @@ class IDAIRTranslator:
                     description=(
                         f"clone conditional as goto pred={pred} src={src} "
                         f"target={target}: {reason}"
+                    ),
+                )
+
+            case CloneConditionalAsGotoFromBranchArm(
+                source_block=src,
+                pred_serial=pred,
+                pred_arm=arm,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto_from_branch_arm(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    pred_arm=arm,
+                    goto_target_serial=target,
+                    description=(
+                        f"clone conditional as goto from arm pred={pred} "
+                        f"arm={arm} src={src} target={target}: {reason}"
                     ),
                 )
 

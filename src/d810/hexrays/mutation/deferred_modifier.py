@@ -419,6 +419,7 @@ class ModificationType(Enum):
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
     CLONE_CONDITIONAL_AS_GOTO = auto()  # Clone 2-way conditional, convert clone to goto, redirect predecessor
+    CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM = auto()  # 2-way predecessor branch-arm sibling of CLONE_CONDITIONAL_AS_GOTO
     EDGE_REDIRECT_VIA_PRED_SPLIT = auto()  # Clone src block; redirect one predecessor to clone
     EDGE_SPLIT_TRAMPOLINE = auto()  # Materialize standalone trampoline and redirect one predecessor
     EDGE_REMOVE = auto()  # Remove a single edge (2-way→1-way or 1-way→0-way)
@@ -515,6 +516,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: StagedAtomicClassification.ADDITIVE,
     ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: StagedAtomicClassification.ADDITIVE,
     ModificationType.CLONE_CONDITIONAL_AS_GOTO: StagedAtomicClassification.ADDITIVE,
+    ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM: StagedAtomicClassification.ADDITIVE,
     ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT: StagedAtomicClassification.ADDITIVE,
     ModificationType.EDGE_SPLIT_TRAMPOLINE: StagedAtomicClassification.ADDITIVE,
     ModificationType.PRIVATE_TERMINAL_SUFFIX: StagedAtomicClassification.ADDITIVE,
@@ -1525,6 +1527,63 @@ class DeferredGraphModifier:
                 self._mod_payload(self.modifications[-1]),
             )
 
+    def queue_clone_conditional_as_goto_from_branch_arm(
+        self,
+        *,
+        source_block_serial: int,
+        pred_serial: int,
+        pred_arm: int,
+        goto_target_serial: int,
+        expected_serial: int | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue FixPredecessor's 2-way branch-arm clone-as-goto primitive.
+
+        Sibling of :meth:`queue_clone_conditional_as_goto` for the case where
+        the predecessor is a 2-way conditional whose explicit branch arm
+        (``pred_arm == 1``) targets ``source_block_serial``.  The operation
+        clones the source, clears inherited clone predecessors, converts the
+        clone to a one-way goto targeting ``goto_target_serial``, then
+        rewires the predecessor's explicit branch arm to the clone.
+
+        ``pred_arm`` is currently restricted to ``1`` by the engine path —
+        rewiring the fallthrough arm has no tested helper.  See
+        :class:`FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED`.
+        """
+        if pred_arm != 1:
+            raise ValueError(
+                "queue_clone_conditional_as_goto_from_branch_arm currently "
+                f"only supports pred_arm=1, got pred_arm={pred_arm}"
+            )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
+            block_serial=source_block_serial,
+            new_target=goto_target_serial,
+            via_pred=pred_serial,
+            expected_serial=expected_serial,
+            priority=5,
+            rule_priority=rule_priority,
+            description=description or (
+                f"clone conditional as goto from arm src={source_block_serial} "
+                f"pred={pred_serial} arm={pred_arm} target={goto_target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued clone_conditional_as_goto_from_branch_arm: "
+            "src=%d pred=%d arm=%d target=%d expected=%s",
+            source_block_serial,
+            pred_serial,
+            pred_arm,
+            goto_target_serial,
+            expected_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
+
     def queue_edge_redirect(
         self,
         src_block: int,
@@ -2005,7 +2064,10 @@ class DeferredGraphModifier:
                     mod.expected_serial,
                     mod.expected_secondary_serial,
                 )
-            elif mod.mod_type == ModificationType.CLONE_CONDITIONAL_AS_GOTO:
+            elif mod.mod_type in (
+                ModificationType.CLONE_CONDITIONAL_AS_GOTO,
+                ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
+            ):
                 key = (
                     mod.mod_type,
                     mod.block_serial,
@@ -2049,6 +2111,7 @@ class DeferredGraphModifier:
                         ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
                         ModificationType.EDGE_SPLIT_TRAMPOLINE,
                         ModificationType.CLONE_CONDITIONAL_AS_GOTO,
+                        ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
                     ):
                         continue  # Handled by edge-specific conflict pass below
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
@@ -2139,13 +2202,17 @@ class DeferredGraphModifier:
             ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
             ModificationType.EDGE_SPLIT_TRAMPOLINE,
             ModificationType.CLONE_CONDITIONAL_AS_GOTO,
+            ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
         ):
             edge_mods = [m for m in unique_modifications if m.mod_type == edge_type]
             if not edge_mods:
                 continue
             edge_groups: dict[tuple, list[GraphModification]] = {}
             for em in edge_mods:
-                if edge_type == ModificationType.CLONE_CONDITIONAL_AS_GOTO:
+                if edge_type in (
+                    ModificationType.CLONE_CONDITIONAL_AS_GOTO,
+                    ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
+                ):
                     group_key = (em.block_serial, em.block_serial, em.via_pred)
                 else:
                     group_key = (em.src_block, em.old_target, em.via_pred)
@@ -4780,6 +4847,17 @@ class DeferredGraphModifier:
                 expected_serial=mod.expected_serial,
             )
 
+        elif (
+            mod.mod_type
+            == ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM
+        ):
+            return self._apply_clone_conditional_as_goto_from_branch_arm(
+                source_blk=blk,
+                pred_serial=mod.via_pred,
+                goto_target_serial=mod.new_target,
+                expected_serial=mod.expected_serial,
+            )
+
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
             return self._apply_edge_redirect_via_pred_split(
                 blk, mod.old_target, mod.new_target, mod.via_pred, mod.clone_until
@@ -6019,6 +6097,120 @@ class DeferredGraphModifier:
         except Exception as exc:
             logger.error(
                 "Exception in clone_conditional_as_goto for src=%d pred=%s target=%s: %s",
+                source_blk.serial,
+                pred_serial,
+                goto_target_serial,
+                exc,
+            )
+            import traceback
+            logger.error("Traceback: %s", traceback.format_exc())
+            return False
+
+    def _apply_clone_conditional_as_goto_from_branch_arm(
+        self,
+        *,
+        source_blk: ida_hexrays.mblock_t,
+        pred_serial: int | None,
+        goto_target_serial: int | None,
+        expected_serial: int | None = None,
+    ) -> bool:
+        """Clone a 2-way conditional block as a goto and rewire one 2-way predecessor's branch arm.
+
+        Sibling of :meth:`_apply_clone_conditional_as_goto` for the
+        ``two_way_predecessor_arm_known`` shape.  The mechanical difference
+        is the final rewire step: this method uses
+        ``change_2way_block_conditional_successor`` to swap the explicit
+        branch arm of a 2-way predecessor, instead of
+        ``change_1way_block_successor``.
+        """
+        if not self._check_clone_conditional_as_goto_preconditions(
+            source_block_serial=source_blk.serial,
+            pred_serial=pred_serial,
+            goto_target_serial=goto_target_serial,
+            pred_topology="two_way_branch_arm",
+        ):
+            return False
+
+        if pred_serial is None or goto_target_serial is None:
+            return False
+
+        pred_blk = self.mba.get_mblock(pred_serial)
+        if pred_blk is None:  # preconditions already cover this; defensive
+            return False
+
+        try:
+            cloned_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
+            if cloned_blk is None:
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: failed to clone blk[%d]",
+                    source_blk.serial,
+                )
+                return False
+            cloned_blk = self.mba.get_mblock(cloned_blk.serial) or cloned_blk
+
+            for prev_serial in list(cloned_blk.predset):
+                cloned_blk.predset._del(prev_serial)
+            cloned_blk.mark_lists_dirty()
+            self.mba.mark_chains_dirty()
+
+            if expected_serial is not None and cloned_blk.serial != expected_serial:
+                logger.info(
+                    "clone_conditional_as_goto_from_branch_arm: created clone "
+                    "blk[%d], expected blk[%d] (serial drift); recording remap",
+                    cloned_blk.serial,
+                    expected_serial,
+                )
+                self._serial_remap[int(expected_serial)] = int(cloned_blk.serial)
+
+            target_serial = self._resolve_serial(goto_target_serial)
+            if self.mba.get_mblock(target_serial) is None:
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: target blk[%d] "
+                    "missing after clone",
+                    target_serial,
+                )
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                return False
+
+            if not make_2way_block_goto(cloned_blk, int(target_serial), verify=False):
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: failed to convert "
+                    "clone blk[%d] to goto blk[%d]",
+                    cloned_blk.serial,
+                    target_serial,
+                )
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                return False
+
+            if not change_2way_block_conditional_successor(
+                pred_blk,
+                cloned_blk.serial,
+                verify=False,
+                old_target=int(source_blk.serial),
+            ):
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: failed to rewire "
+                    "pred blk[%d] explicit branch arm to clone blk[%d]",
+                    pred_blk.serial,
+                    cloned_blk.serial,
+                )
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                return False
+
+            self.mba.mark_chains_dirty()
+            logger.debug(
+                "clone_conditional_as_goto_from_branch_arm: pred=%d arm=1 -> "
+                "clone=%d -> target=%d (source=%d preserved)",
+                pred_blk.serial,
+                cloned_blk.serial,
+                target_serial,
+                source_blk.serial,
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "Exception in clone_conditional_as_goto_from_branch_arm for "
+                "src=%d pred=%s target=%s: %s",
                 source_blk.serial,
                 pred_serial,
                 goto_target_serial,
@@ -7465,20 +7657,31 @@ class DeferredGraphModifier:
         pre_rejected = 0
 
         for mod in sorted_mods:
-            if mod.mod_type != ModificationType.CLONE_CONDITIONAL_AS_GOTO:
+            if mod.mod_type not in (
+                ModificationType.CLONE_CONDITIONAL_AS_GOTO,
+                ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
+            ):
                 filtered_mods.append(mod)
                 continue
+            pred_topology = (
+                "two_way_branch_arm"
+                if mod.mod_type
+                == ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM
+                else "one_way"
+            )
             if self._check_clone_conditional_as_goto_preconditions(
                 source_block_serial=mod.block_serial,
                 pred_serial=mod.via_pred,
                 goto_target_serial=mod.new_target,
+                pred_topology=pred_topology,
             ):
                 filtered_mods.append(mod)
                 continue
 
             pre_rejected += 1
             logger.warning(
-                "Pre-rejecting clone_conditional_as_goto before live apply: %s",
+                "Pre-rejecting %s before live apply: %s",
+                mod.mod_type.name,
                 mod.description,
             )
 
@@ -7569,8 +7772,16 @@ class DeferredGraphModifier:
         source_block_serial: int | None,
         pred_serial: int | None,
         goto_target_serial: int | None,
+        pred_topology: str = "one_way",
     ) -> bool:
-        """Validate FixPredecessor clone-as-goto topology without mutation."""
+        """Validate FixPredecessor clone-as-goto topology without mutation.
+
+        ``pred_topology`` selects the predecessor-side check.  ``"one_way"``
+        (default) requires ``pred.nsucc() == 1`` and ``pred.succ(0) == source``
+        — the legacy live shape.  ``"two_way_branch_arm"`` instead requires
+        ``pred.nsucc() == 2`` with ``pred.tail.d.b == source`` (the
+        ``two_way_predecessor_arm_known`` engine-path shape).
+        """
         if (
             self.mba is None
             or source_block_serial is None
@@ -7650,18 +7861,52 @@ class DeferredGraphModifier:
             )
             return False
 
-        if pred_blk.nsucc() != 1:
+        if pred_topology == "one_way":
+            if pred_blk.nsucc() != 1:
+                logger.warning(
+                    "clone_conditional_as_goto: pred blk[%d] has nsucc=%d, expected 1",
+                    pred_blk.serial,
+                    pred_blk.nsucc(),
+                )
+                return False
+            if pred_blk.succ(0) != source_blk.serial:
+                logger.warning(
+                    "clone_conditional_as_goto: pred blk[%d] does not target src blk[%d]",
+                    pred_blk.serial,
+                    source_blk.serial,
+                )
+                return False
+        elif pred_topology == "two_way_branch_arm":
+            if pred_blk.nsucc() != 2:
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: pred blk[%d] "
+                    "has nsucc=%d, expected 2",
+                    pred_blk.serial,
+                    pred_blk.nsucc(),
+                )
+                return False
+            if (
+                pred_blk.tail is None
+                or pred_blk.tail.d is None
+                or int(pred_blk.tail.d.b) != int(source_blk.serial)
+            ):
+                actual_d = (
+                    int(pred_blk.tail.d.b)
+                    if pred_blk.tail is not None and pred_blk.tail.d is not None
+                    else None
+                )
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: pred blk[%d] "
+                    "explicit branch arm targets %s, expected source blk[%d]",
+                    pred_blk.serial,
+                    actual_d,
+                    source_blk.serial,
+                )
+                return False
+        else:
             logger.warning(
-                "clone_conditional_as_goto: pred blk[%d] has nsucc=%d, expected 1",
-                pred_blk.serial,
-                pred_blk.nsucc(),
-            )
-            return False
-        if pred_blk.succ(0) != source_blk.serial:
-            logger.warning(
-                "clone_conditional_as_goto: pred blk[%d] does not target src blk[%d]",
-                pred_blk.serial,
-                source_blk.serial,
+                "clone_conditional_as_goto: unknown pred_topology=%r",
+                pred_topology,
             )
             return False
 

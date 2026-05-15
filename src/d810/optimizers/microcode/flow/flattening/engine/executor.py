@@ -48,6 +48,7 @@ from d810.cfg.loop_bound_writer_guard import (
 )
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -101,6 +102,7 @@ def _preflight_priority(mod: GraphModification) -> int:
     """Mirror DeferredGraphModifier apply priority for topology simulation."""
     from d810.cfg.graph_modification import (
         CloneConditionalAsGoto,
+        CloneConditionalAsGotoFromBranchArm,
         ConvertToGoto,
         CreateConditionalRedirect,
         EdgeRedirectViaPredSplit,
@@ -110,7 +112,13 @@ def _preflight_priority(mod: GraphModification) -> int:
     )
 
     match mod:
-        case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock() | CloneConditionalAsGoto():
+        case (
+            InsertBlock()
+            | CreateConditionalRedirect()
+            | DuplicateBlock()
+            | CloneConditionalAsGoto()
+            | CloneConditionalAsGotoFromBranchArm()
+        ):
             return 5
         case EdgeRedirectViaPredSplit(clone_until=clone_until):
             return 12 if clone_until is not None else 8
@@ -1094,7 +1102,10 @@ class TransactionalExecutor:
                     if src == pre_header_serial:
                         continue
                     redirect_modifications.append(mod)
-                case CloneConditionalAsGoto(source_block=src):
+                case (
+                    CloneConditionalAsGoto(source_block=src)
+                    | CloneConditionalAsGotoFromBranchArm(source_block=src)
+                ):
                     if src == pre_header_serial:
                         continue
                     redirect_modifications.append(mod)
