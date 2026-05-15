@@ -1369,6 +1369,7 @@ class DeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        old_target_serial: int | None = None,
         instructions_to_copy: list | tuple | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
@@ -1393,6 +1394,8 @@ class DeferredGraphModifier:
             ref_blk_serial: Block to copy instructions from (should be conditional)
             conditional_target_serial: Target for jcc taken branch
             fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+            old_target_serial: Optional current source successor that must
+                still be present when the queued modification is applied.
             instructions_to_copy: Optional instructions to prepend to the cloned
                 conditional block before its original body executes.
             expected_conditional_serial: Expected final serial for cloned conditional block
@@ -1405,6 +1408,7 @@ class DeferredGraphModifier:
             new_target=ref_blk_serial,  # Reference block to copy from
             conditional_target=conditional_target_serial,
             fallthrough_target=fallthrough_target_serial,
+            old_target=old_target_serial,
             instructions_to_copy=instructions_to_copy,
             expected_conditional_serial=expected_conditional_serial,
             expected_fallthrough_serial=expected_fallthrough_serial,
@@ -2096,7 +2100,8 @@ class DeferredGraphModifier:
                 key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
             elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT:
                 key = (mod.mod_type, mod.block_serial, mod.new_target,
-                       mod.conditional_target, mod.fallthrough_target, mod.target_ref_kind)
+                       mod.conditional_target, mod.fallthrough_target,
+                       mod.old_target, mod.target_ref_kind)
             elif mod.mod_type == ModificationType.BLOCK_DUPLICATE_AND_REDIRECT:
                 key = (
                     mod.mod_type,
@@ -4875,6 +4880,7 @@ class DeferredGraphModifier:
                 mod.conditional_target,
                 mod.fallthrough_target,
                 mod.instructions_to_copy,
+                old_target_serial=mod.old_target,
                 expected_conditional_serial=mod.expected_conditional_serial,
                 expected_fallthrough_serial=mod.expected_fallthrough_serial,
             )
@@ -5509,6 +5515,7 @@ class DeferredGraphModifier:
         fallthrough_target_serial: int,
         instructions_to_copy: list | tuple | None = None,
         *,
+        old_target_serial: int | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
     ) -> bool:
@@ -5531,6 +5538,8 @@ class DeferredGraphModifier:
             ref_blk_serial: Reference block to duplicate (should be conditional)
             conditional_target_serial: Target for conditional jump (jcc taken)
             fallthrough_target_serial: Target for fallthrough (via NOP-goto)
+            old_target_serial: Optional current source successor expected
+                before any cloned block is allocated.
 
         Returns:
             True on success, False on failure
@@ -5548,6 +5557,24 @@ class DeferredGraphModifier:
                 source_blk.nsucc(),
             )
             return False
+        if old_target_serial is not None:
+            current_target_serial = int(source_blk.succ(0))
+            resolved_old_target_serial = self._resolve_serial(old_target_serial)
+            if resolved_old_target_serial is None:
+                logger.warning(
+                    "create_conditional_redirect: unable to resolve old_target=%s for source block %d",
+                    old_target_serial,
+                    source_blk.serial,
+                )
+                return False
+            if current_target_serial != int(resolved_old_target_serial):
+                logger.warning(
+                    "create_conditional_redirect: source block %d targets %d, expected old_target=%d; refusing to create cloned blocks",
+                    source_blk.serial,
+                    current_target_serial,
+                    int(resolved_old_target_serial),
+                )
+                return False
 
         # Get reference block to duplicate
         ref_blk = mba.get_mblock(ref_blk_serial)

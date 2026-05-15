@@ -233,6 +233,7 @@ class CreateConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    old_target_serial: int | None = None
     instructions: tuple[InsnSnapshot, ...] = ()
 
 
