@@ -3,16 +3,24 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import DuplicateAndRedirect
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.graph_modification import DuplicateAndRedirect, InsertBlock
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
+from d810.cfg.plan import PatchInsertBlock, compile_patch_plan
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     BAD_WHILE_LOOP_SOURCE_RULE,
     CleanupExitShape,
     CleanupRewriteIntent,
+    CleanupSideEffectReplayCandidate,
     DispatcherCleanupCandidate,
     bad_while_loop_duplicate_candidate,
+    bad_while_loop_side_effect_replay_candidate,
     build_dispatcher_cleanup_modification,
     validate_dispatcher_cleanup_candidate,
+    validate_side_effect_replay_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BadWhileLoopConditionalRedirect,
@@ -61,6 +69,24 @@ def _duplicate_cfg(
     )
 
 
+def _side_effect_body(
+    *,
+    contains_call: bool = False,
+) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    return CapturedBlockBody(
+        backend_id="hexrays.insn_snapshot",
+        capture_id="test",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(5,),
+            instruction_count=len(instructions),
+            source_eas=frozenset({0x2000}),
+            contains_call=contains_call,
+        ),
+        payload=instructions,
+    )
+
+
 def test_bad_while_loop_duplicate_adapter_builds_neutral_candidate() -> None:
     edit = BadWhileLoopDuplicateRedirect(
         dispatcher_entry=2,
@@ -93,6 +119,63 @@ def test_duplicate_candidate_validates_and_lowers_to_duplicate_and_redirect() ->
     assert build_dispatcher_cleanup_modification(candidate) == DuplicateAndRedirect(
         source_serial=5,
         per_pred_targets=((8, 3), (9, 4)),
+    )
+
+
+def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_insert() -> None:
+    body = _side_effect_body()
+    candidate = bad_while_loop_side_effect_replay_candidate(
+        dispatcher_entry=2,
+        source_serial=5,
+        target_serial=3,
+        captured_body=body,
+        dispatcher_internal_serials=(2,),
+    )
+    assert candidate == CleanupSideEffectReplayCandidate(
+        source_rule=BAD_WHILE_LOOP_SOURCE_RULE,
+        dispatcher_entry=2,
+        source_serial=5,
+        target_serial=3,
+        exit_shape=CleanupExitShape.ONE_WAY_DISPATCHER_PREDECESSOR,
+        rewrite_intent=CleanupRewriteIntent.REPLAY_SIDE_EFFECTS_AND_REDIRECT,
+        captured_body=body,
+        dispatcher_internal_serials=(2,),
+    )
+    assert validate_side_effect_replay_candidate(_duplicate_cfg(), candidate) is True
+
+    modification = build_dispatcher_cleanup_modification(candidate)
+    assert modification == InsertBlock(
+        pred_serial=5,
+        succ_serial=3,
+        old_target_serial=2,
+        captured_body=body,
+    )
+
+    patch_plan = compile_patch_plan([modification], _duplicate_cfg())
+    assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
+    assert not any(step.__class__.__name__ == "LegacyBlockOperation" for step in patch_plan.steps)
+
+
+def test_side_effect_replay_candidate_rejects_calls_and_dispatcher_targets() -> None:
+    assert (
+        bad_while_loop_side_effect_replay_candidate(
+            dispatcher_entry=2,
+            source_serial=5,
+            target_serial=3,
+            captured_body=_side_effect_body(contains_call=True),
+            dispatcher_internal_serials=(2,),
+        )
+        is None
+    )
+    assert (
+        bad_while_loop_side_effect_replay_candidate(
+            dispatcher_entry=2,
+            source_serial=5,
+            target_serial=2,
+            captured_body=_side_effect_body(),
+            dispatcher_internal_serials=(2,),
+        )
+        is None
     )
 
 

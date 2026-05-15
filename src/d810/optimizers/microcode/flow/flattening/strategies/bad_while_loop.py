@@ -1,7 +1,7 @@
 """Shared helpers and engine strategy wrapper for safe BadWhileLoop cleanup."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
@@ -11,12 +11,17 @@ from d810.cfg.graph_modification import (
     DuplicateBlock,
     DuplicateAndRedirect,
     GraphModification,
+    InsertBlock,
     RedirectGoto,
 )
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    CleanupSideEffectReplayCandidate,
     bad_while_loop_duplicate_candidate,
+    bad_while_loop_side_effect_replay_candidate,
     build_dispatcher_cleanup_modification,
+    extract_side_effect_replay_candidates,
     validate_dispatcher_cleanup_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -27,6 +32,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 
 if TYPE_CHECKING:
+    from d810.cfg.materialization_payload import CapturedBlockBody
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
@@ -630,6 +636,7 @@ class BadWhileLoopAnalysis:
 
     edits: tuple[BadWhileLoopEdit, ...]
     follow_up: tuple[BadWhileLoopFollowUp, ...]
+    replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
 
 
 def collect_live_bad_while_loop_analysis(
@@ -637,6 +644,9 @@ def collect_live_bad_while_loop_analysis(
     *,
     logger: object | None = None,
     allowed_maturities: Sequence[int] | None = None,
+    side_effect_capture: (
+        Callable[[int, Sequence[object]], "CapturedBlockBody | None"] | None
+    ) = None,
 ) -> BadWhileLoopAnalysis:
     """Collect safe BadWhileLoop edits plus classified follow-up gaps."""
     if mba is None:
@@ -675,6 +685,7 @@ def collect_live_bad_while_loop_analysis(
     edits_by_key: dict[tuple[object, ...], BadWhileLoopEdit] = {}
     conflicts: set[tuple[object, ...]] = set()
     follow_up: list[BadWhileLoopFollowUp] = []
+    replay_candidates: list[CleanupSideEffectReplayCandidate] = []
     seen_follow_up: set[tuple[object, ...]] = set()
 
     def record_follow_up(
@@ -1008,6 +1019,28 @@ def collect_live_bad_while_loop_analysis(
                     father,
                     copied_side_effects,
                 )
+                if dependency_safe_copies and side_effect_capture is not None:
+                    captured_body: CapturedBlockBody | None = None
+                    try:
+                        captured_body = side_effect_capture(
+                            int(father.serial),
+                            tuple(dependency_safe_copies),
+                        )
+                    except Exception:
+                        if logger is not None:
+                            logger.debug(
+                                "Failed to capture BadWhileLoop side-effect replay body",
+                                exc_info=True,
+                            )
+                    replay_candidate = bad_while_loop_side_effect_replay_candidate(
+                        dispatcher_entry=dispatcher_entry_serial,
+                        source_serial=int(father.serial),
+                        target_serial=int(target_blk.serial),
+                        captured_body=captured_body,
+                        dispatcher_internal_serials=tuple(dispatcher_serials),
+                    )
+                    if replay_candidate is not None:
+                        replay_candidates.append(replay_candidate)
                 record_follow_up(
                     dispatcher_entry=dispatcher_entry_serial,
                     from_serial=int(father.serial),
@@ -1155,6 +1188,7 @@ def collect_live_bad_while_loop_analysis(
     return BadWhileLoopAnalysis(
         edits=tuple(edits_by_key.values()),
         follow_up=tuple(follow_up),
+        replay_candidates=tuple(replay_candidates),
     )
 
 
@@ -1206,6 +1240,14 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
                 edges.add((mod.pred_serial, mod.source_block))
         elif isinstance(mod, CreateConditionalRedirect):
             blocks.add(mod.source_block)
+        elif isinstance(mod, InsertBlock):
+            blocks.add(mod.pred_serial)
+            old_target = (
+                mod.old_target_serial
+                if mod.old_target_serial is not None
+                else mod.succ_serial
+            )
+            edges.add((mod.pred_serial, old_target))
 
     return OwnershipScope(
         blocks=frozenset(blocks),
@@ -1221,14 +1263,22 @@ class BadWhileLoopStrategy:
     family = FAMILY_CLEANUP
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        return bool(extract_bad_while_loop_edits(snapshot.flow_graph))
+        return bool(
+            extract_bad_while_loop_edits(snapshot.flow_graph)
+            or extract_side_effect_replay_candidates(snapshot.flow_graph)
+        )
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         edits = extract_bad_while_loop_edits(snapshot.flow_graph)
-        if not edits:
+        replay_candidates = extract_side_effect_replay_candidates(snapshot.flow_graph)
+        if not edits and not replay_candidates:
             return None
 
         modifications = build_bad_while_loop_modifications(edits)
+        modifications.extend(
+            build_dispatcher_cleanup_modification(candidate)
+            for candidate in replay_candidates
+        )
         if not modifications:
             return None
 
@@ -1248,6 +1298,7 @@ class BadWhileLoopStrategy:
                 BAD_WHILE_LOOP_EDITS_METADATA_KEY: _serialize_bad_while_loop_edits(
                     edits
                 ),
+                CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY: tuple(replay_candidates),
                 "safeguard_min_required": 1,
             },
             modifications=list(modifications),
