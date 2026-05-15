@@ -603,6 +603,85 @@ def bad_while_loop_conditional_redirect_proof(
     )
 
 
+def validate_conditional_duplicate_cleanup_edit(
+    cfg: FlowGraph,
+    legacy_edit: object,
+) -> bool:
+    """Return whether a legacy BadWhileLoop conditional duplicate is plannable."""
+    if type(legacy_edit).__name__ != "BadWhileLoopConditionalDuplicate":
+        return False
+
+    dispatcher_entry = _coerce_int(getattr(legacy_edit, "dispatcher_entry", None))
+    source_serial = _coerce_int(getattr(legacy_edit, "source_serial", None))
+    pred_serial = _coerce_int(getattr(legacy_edit, "pred_serial", None))
+    conditional_target = _coerce_int(
+        getattr(legacy_edit, "conditional_target", None),
+    )
+    fallthrough_target = _coerce_int(
+        getattr(legacy_edit, "fallthrough_target", None),
+    )
+    if (
+        dispatcher_entry is None
+        or source_serial is None
+        or pred_serial is None
+        or conditional_target is None
+        or fallthrough_target is None
+    ):
+        return False
+
+    dispatcher_internal = _coerce_dispatcher_internal(
+        getattr(legacy_edit, "dispatcher_internal_serials", ()),
+    )
+    source_block = cfg.get_block(source_serial)
+    pred_block = cfg.get_block(pred_serial)
+    dispatcher_block = cfg.get_block(dispatcher_entry)
+    conditional_block = cfg.get_block(conditional_target)
+    fallthrough_block = cfg.get_block(fallthrough_target)
+    if (
+        source_block is None
+        or pred_block is None
+        or dispatcher_block is None
+        or conditional_block is None
+        or fallthrough_block is None
+    ):
+        return False
+    if source_serial == cfg.entry_serial:
+        return False
+    if source_block.nsucc != 2 or dispatcher_entry not in source_block.succs:
+        return False
+    if pred_block.nsucc != 1 or pred_block.succs[0] != source_serial:
+        return False
+    if pred_serial not in source_block.preds:
+        return False
+    if conditional_target == fallthrough_target:
+        return False
+    if (
+        conditional_target not in source_block.succs
+        and fallthrough_target not in source_block.succs
+    ):
+        return False
+    forbidden_targets = {
+        source_serial,
+        dispatcher_entry,
+        *dispatcher_internal,
+    }
+    if (
+        conditional_target in forbidden_targets
+        or fallthrough_target in forbidden_targets
+    ):
+        return False
+    return True
+
+
+def validate_conditional_redirect_cleanup_edit(
+    cfg: FlowGraph,
+    legacy_edit: object,
+) -> bool:
+    """Return whether a legacy BadWhileLoop conditional redirect proof promotes."""
+    proof = bad_while_loop_conditional_redirect_proof(legacy_edit, cfg)
+    return proof is not None and proof.state is CleanupProofState.PROVEN
+
+
 def bad_while_loop_duplicate_candidate(
     legacy_edit: object,
 ) -> DispatcherCleanupCandidate | None:
@@ -1119,6 +1198,8 @@ __all__ = [
     "extract_duplicate_group_replay_candidates",
     "extract_side_effect_replay_candidates",
     "serialize_conditional_redirect_proofs",
+    "validate_conditional_duplicate_cleanup_edit",
+    "validate_conditional_redirect_cleanup_edit",
     "validate_dispatcher_cleanup_candidate",
     "validate_duplicate_group_replay_candidate",
     "validate_side_effect_replay_candidate",

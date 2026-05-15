@@ -36,11 +36,14 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     explain_bad_while_loop_conditional_redirect,
     extract_conditional_redirect_proofs,
     serialize_conditional_redirect_proofs,
+    validate_conditional_duplicate_cleanup_edit,
+    validate_conditional_redirect_cleanup_edit,
     validate_duplicate_group_replay_candidate,
     validate_dispatcher_cleanup_candidate,
     validate_side_effect_replay_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+    BadWhileLoopConditionalDuplicate,
     BadWhileLoopConditionalRedirect,
     BadWhileLoopDuplicateRedirect,
 )
@@ -394,6 +397,68 @@ def test_conditional_redirect_explainer_rejects_polarity_and_cleanup_targets() -
     assert proof.verdict is CleanupProofVerdict.UNSAFE
     assert "branch_polarity_mismatch" in proof.reasons
     assert "target_inside_cleanup_or_identical" in proof.reasons
+
+
+def test_conditional_cleanup_validation_accepts_only_safe_shapes() -> None:
+    duplicate = BadWhileLoopConditionalDuplicate(
+        dispatcher_entry=2,
+        source_serial=6,
+        pred_serial=8,
+        conditional_target=3,
+        fallthrough_target=4,
+    )
+    duplicate_cfg = FlowGraph(
+        blocks={
+            2: _block(2, (3, 4), (6,), block_type=4),
+            3: _block(3, (), (2,), block_type=2),
+            4: _block(4, (), (2, 6), block_type=2),
+            6: _block(6, (2, 4), (8,), block_type=4),
+            8: _block(8, (6,), (0,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    assert (
+        validate_conditional_duplicate_cleanup_edit(duplicate_cfg, duplicate)
+        is True
+    )
+    assert (
+        validate_conditional_duplicate_cleanup_edit(
+            FlowGraph(
+                blocks={
+                    **duplicate_cfg.blocks,
+                    8: _block(8, (6, 99), (0,), block_type=4),
+                    99: _block(99, (), (8,), block_type=2),
+                },
+                entry_serial=2,
+                func_ea=0x1000,
+            ),
+            duplicate,
+        )
+        is False
+    )
+
+    redirect = BadWhileLoopConditionalRedirect(
+        dispatcher_entry=2,
+        source_serial=1,
+        ref_block=12,
+        conditional_target=3,
+        fallthrough_target=4,
+        dispatcher_internal_serials=(2,),
+        copied_side_effects_absent=True,
+    )
+    assert validate_conditional_redirect_cleanup_edit(
+        _conditional_redirect_cfg(),
+        redirect,
+    ) is True
+    assert (
+        validate_conditional_redirect_cleanup_edit(
+            _conditional_redirect_cfg(ref_tail_target=4),
+            redirect,
+        )
+        is False
+    )
 
 
 def test_side_effect_replay_candidate_rejects_calls_and_dispatcher_targets() -> None:

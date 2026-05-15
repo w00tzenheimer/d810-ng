@@ -1,7 +1,6 @@
 """Backend boundary for live non-Hodur cleanup candidate collection."""
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -17,10 +16,10 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CleanupConditionalRedirectProof,
     CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
-    CleanupProofState,
-    bad_while_loop_conditional_redirect_proof,
     bad_while_loop_duplicate_candidate,
     explain_bad_while_loop_conditional_redirect,
+    validate_conditional_duplicate_cleanup_edit,
+    validate_conditional_redirect_cleanup_edit,
     validate_duplicate_group_replay_candidate,
     validate_side_effect_replay_candidate,
     validate_dispatcher_cleanup_candidate,
@@ -28,6 +27,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BAD_WHILE_LOOP_INSERT_BLOCK,
     BadWhileLoopEdit,
+    BadWhileLoopConditionalDuplicate,
     BadWhileLoopConditionalRedirect,
     BadWhileLoopDependencyDiagnostic,
     BadWhileLoopDuplicateRedirect,
@@ -60,25 +60,6 @@ __all__ = [
 ]
 
 
-BAD_WHILE_LOOP_CONDITIONAL_REDIRECT_FLAG = (
-    "D810_ENABLE_BAD_WHILE_LOOP_CONDITIONAL_REDIRECT"
-)
-
-
-def _bad_while_loop_conditional_redirect_enabled() -> bool:
-    return os.environ.get(BAD_WHILE_LOOP_CONDITIONAL_REDIRECT_FLAG) == "1"
-
-
-def _has_proven_bad_while_loop_conditional_redirect(
-    edit: BadWhileLoopConditionalRedirect,
-    cfg: FlowGraph | None,
-) -> bool:
-    if cfg is None or not _bad_while_loop_conditional_redirect_enabled():
-        return False
-    proof = bad_while_loop_conditional_redirect_proof(edit, cfg)
-    return proof is not None and proof.state is CleanupProofState.PROVEN
-
-
 def _is_plannable_bad_while_loop_edit(
     edit: BadWhileLoopEdit,
     cfg: FlowGraph | None = None,
@@ -93,8 +74,16 @@ def _is_plannable_bad_while_loop_edit(
             and cfg is not None
             and validate_dispatcher_cleanup_candidate(cfg, candidate)
         )
+    if isinstance(edit, BadWhileLoopConditionalDuplicate):
+        return cfg is not None and validate_conditional_duplicate_cleanup_edit(
+            cfg,
+            edit,
+        )
     if isinstance(edit, BadWhileLoopConditionalRedirect):
-        return _has_proven_bad_while_loop_conditional_redirect(edit, cfg)
+        return cfg is not None and validate_conditional_redirect_cleanup_edit(
+            cfg,
+            edit,
+        )
     return False
 
 
@@ -154,6 +143,7 @@ def _validation_graph_for_bad_while_loop(
                 edit,
                 (BadWhileLoopDuplicateRedirect, BadWhileLoopConditionalRedirect),
             )
+            or isinstance(edit, BadWhileLoopConditionalDuplicate)
             for edit in edits
         )
     ):
@@ -384,10 +374,18 @@ class LiveSimpleFlatteningCleanupBackend:
                 for edit in bad_while_loop_all_edits:
                     if not isinstance(edit, BadWhileLoopConditionalRedirect):
                         continue
+                    conditional_redirect_promoted = _is_plannable_bad_while_loop_edit(
+                        edit,
+                        bad_while_loop_validation_graph,
+                    )
                     proof = explain_bad_while_loop_conditional_redirect(
                         edit,
                         bad_while_loop_validation_graph,
-                        defer_reason="conditional_redirect_not_promoted",
+                        defer_reason=(
+                            "conditional_redirect_promoted"
+                            if conditional_redirect_promoted
+                            else "conditional_redirect_not_promoted"
+                        ),
                     )
                     if proof is not None:
                         conditional_redirect_proofs.append(proof)
