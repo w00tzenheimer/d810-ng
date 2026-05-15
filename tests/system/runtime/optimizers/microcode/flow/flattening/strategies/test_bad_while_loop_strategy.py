@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import (
     ConvertToGoto,
@@ -866,6 +868,14 @@ def test_build_bad_while_loop_modifications_emits_expected_shapes() -> None:
             fallthrough_target=4,
         ),
     ]
+
+
+def test_build_bad_while_loop_modifications_rejects_unknown_edit_shape() -> None:
+    class UnknownBadWhileLoopEdit:
+        pass
+
+    with pytest.raises(TypeError, match="Unsupported BadWhileLoop edit"):
+        build_bad_while_loop_modifications((UnknownBadWhileLoopEdit(),))
 
 
 def test_collect_live_bad_while_loop_analysis_builds_duplicate_and_redirect(

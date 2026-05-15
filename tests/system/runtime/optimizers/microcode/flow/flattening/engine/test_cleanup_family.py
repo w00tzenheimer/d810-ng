@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import DuplicateAndRedirect, RedirectGoto
+from d810.cfg.plan import LegacyBlockOperation, compile_patch_plan
 from d810.optimizers.microcode.flow.flattening import (
     cleanup_backend as backend_module,
     unflattener_cleanup_family as shell_module,
@@ -42,10 +43,13 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import 
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
     BadWhileLoopAnalysis,
+    BadWhileLoopConditionalDuplicate,
     BadWhileLoopConditionalRedirect,
+    BadWhileLoopDuplicateRedirect,
     BadWhileLoopFollowUp,
     BadWhileLoopGotoConversion,
     BadWhileLoopGotoRedirect,
+    BadWhileLoopStrategy,
     extract_bad_while_loop_edits,
     extract_bad_while_loop_follow_up,
 )
@@ -101,6 +105,13 @@ def _cleanup_flow_graph() -> FlowGraph:
             43: _block(43, (), (41,), block_type=2),
             44: _block(44, (41, 45), (), block_type=4, start_ea=0x401044),
             45: _block(45, (), (44,), block_type=2),
+            50: _block(50, (41,), (51, 52), start_ea=0x401050),
+            51: _block(51, (50,), (), start_ea=0x401051),
+            52: _block(52, (50,), (), start_ea=0x401052),
+            60: _block(60, (41,), (61, 62, 63), start_ea=0x401060),
+            61: _block(61, (60,), (), start_ea=0x401061),
+            62: _block(62, (60,), (), start_ea=0x401062),
+            63: _block(63, (60,), (), start_ea=0x401063),
         },
         entry_serial=0,
         func_ea=0x401000,
@@ -165,7 +176,24 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         from_serial=40,
         new_target=42,
     )
-    unsafe_bad_while_loop_edit = BadWhileLoopConditionalRedirect(
+    safe_bad_while_loop_duplicate = BadWhileLoopDuplicateRedirect(
+        dispatcher_entry=41,
+        source_serial=50,
+        per_pred_targets=((51, 42), (52, 43)),
+    )
+    unsafe_bad_while_loop_duplicate = BadWhileLoopDuplicateRedirect(
+        dispatcher_entry=41,
+        source_serial=60,
+        per_pred_targets=((61, 42), (62, 43)),
+    )
+    unsafe_bad_while_loop_conditional_duplicate = BadWhileLoopConditionalDuplicate(
+        dispatcher_entry=41,
+        source_serial=44,
+        pred_serial=40,
+        conditional_target=42,
+        fallthrough_target=43,
+    )
+    unsafe_bad_while_loop_conditional_redirect = BadWhileLoopConditionalRedirect(
         dispatcher_entry=41,
         source_serial=40,
         ref_block=44,
@@ -193,7 +221,13 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     def _collect_bad_while_loop(mba, **kwargs):
         calls["bad_while_loop"] = (mba, kwargs)
         return BadWhileLoopAnalysis(
-            edits=(bad_while_loop_edit, unsafe_bad_while_loop_edit),
+            edits=(
+                bad_while_loop_edit,
+                safe_bad_while_loop_duplicate,
+                unsafe_bad_while_loop_duplicate,
+                unsafe_bad_while_loop_conditional_duplicate,
+                unsafe_bad_while_loop_conditional_redirect,
+            ),
             follow_up=(bad_while_loop_follow_up,),
         )
 
@@ -212,6 +246,11 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
         "collect_live_bad_while_loop_analysis",
         _collect_bad_while_loop,
     )
+    monkeypatch.setattr(
+        backend_module,
+        "IDAIRTranslator",
+        lambda: _FakeTranslator(_cleanup_flow_graph()),
+    )
 
     backend = LiveSimpleFlatteningCleanupBackend()
     mba = _fake_mba()
@@ -219,8 +258,15 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
 
     assert detection.fake_jump_fixes == (fake_jump_fix,)
     assert detection.single_iteration_fixes == (single_iteration_fix,)
-    assert detection.bad_while_loop_edits == (bad_while_loop_edit,)
-    assert detection.bad_while_loop_deferred_edits == (unsafe_bad_while_loop_edit,)
+    assert detection.bad_while_loop_edits == (
+        bad_while_loop_edit,
+        safe_bad_while_loop_duplicate,
+    )
+    assert detection.bad_while_loop_deferred_edits == (
+        unsafe_bad_while_loop_duplicate,
+        unsafe_bad_while_loop_conditional_duplicate,
+        unsafe_bad_while_loop_conditional_redirect,
+    )
     assert detection.bad_while_loop_follow_up == (bad_while_loop_follow_up,)
     assert detection.collection_errors == ()
     assert calls["fake_jump"][0] is mba
@@ -246,6 +292,11 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
             dispatcher_entry=41,
             block_serial=44,
             goto_target=43,
+        ),
+        BadWhileLoopDuplicateRedirect(
+            dispatcher_entry=41,
+            source_serial=50,
+            per_pred_targets=((51, 42), (52, 43)),
         ),
     )
     bad_while_loop_follow_up = (
@@ -304,11 +355,29 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.selected_fake_jump_fixes == 1
     assert metadata.collected_single_iteration_fixes == 2
     assert metadata.selected_single_iteration_fixes == 2
-    assert metadata.collected_bad_while_loop_edits == 2
-    assert metadata.selected_bad_while_loop_edits == 2
+    assert metadata.collected_bad_while_loop_edits == 3
+    assert metadata.selected_bad_while_loop_edits == 3
     assert metadata.deferred_bad_while_loop_edits == 0
     assert metadata.bad_while_loop_follow_up == 1
     assert metadata.planning_ready is True
+
+    fragment = BadWhileLoopStrategy().plan(snapshot)
+    assert fragment is not None
+    assert DuplicateAndRedirect(
+        source_serial=50,
+        per_pred_targets=((51, 42), (52, 43)),
+    ) in fragment.modifications
+
+    patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
+    assert any(
+        isinstance(step, LegacyBlockOperation)
+        and step.modification
+        == DuplicateAndRedirect(
+            source_serial=50,
+            per_pred_targets=((51, 42), (52, 43)),
+        )
+        for step in patch_plan.steps
+    )
 
 
 def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
@@ -319,9 +388,24 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
         conditional_target=42,
         fallthrough_target=43,
     )
+    unsafe_conditional_duplicate = BadWhileLoopConditionalDuplicate(
+        dispatcher_entry=41,
+        source_serial=44,
+        pred_serial=40,
+        conditional_target=42,
+        fallthrough_target=43,
+    )
+    side_effect_follow_up = BadWhileLoopFollowUp(
+        dispatcher_entry=41,
+        from_serial=40,
+        category="insert_block",
+        reason="copied_side_effects",
+        target_serial=42,
+    )
     backend = _FakeBackend(
         SimpleFlatteningCleanupDetection(
-            bad_while_loop_deferred_edits=(unsafe_edit,),
+            bad_while_loop_deferred_edits=(unsafe_edit, unsafe_conditional_duplicate),
+            bad_while_loop_follow_up=(side_effect_follow_up,),
             maturity=ida_hexrays.MMAT_GLBOPT1,
             func_ea=0x401000,
         )
@@ -338,11 +422,15 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
     assert detection.detected is False
     assert detection.diagnostic_only is True
     assert extract_bad_while_loop_edits(snapshot.flow_graph) == ()
+    assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (
+        side_effect_follow_up,
+    )
     assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == []
-    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] == []
-    assert metadata.collected_bad_while_loop_edits == 1
+    assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] != []
+    assert metadata.collected_bad_while_loop_edits == 2
     assert metadata.selected_bad_while_loop_edits == 0
-    assert metadata.deferred_bad_while_loop_edits == 1
+    assert metadata.deferred_bad_while_loop_edits == 2
+    assert metadata.bad_while_loop_follow_up == 1
     assert metadata.planning_ready is False
 
 
