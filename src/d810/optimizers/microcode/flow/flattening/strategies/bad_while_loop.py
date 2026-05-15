@@ -14,6 +14,11 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.core.typing import TYPE_CHECKING
+from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    bad_while_loop_duplicate_candidate,
+    build_dispatcher_cleanup_modification,
+    validate_dispatcher_cleanup_candidate,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
@@ -307,37 +312,12 @@ def _is_valid_bad_while_loop_edit(
             if edit.dispatcher_entry not in src_block.succs:
                 return False
             return True
-        case BadWhileLoopDuplicateRedirect(
-            source_serial=src,
-            per_pred_targets=per_pred_targets,
-        ):
-            src_block = cfg.blocks.get(src)
-            if src_block is None:
-                return False
-            if src_block.nsucc != 1:
-                return False
-            if src_block.succs[0] != edit.dispatcher_entry:
-                return False
-            if len(per_pred_targets) < 2:
-                return False
-
-            seen_preds: set[int] = set()
-            for pred_serial, target_serial in per_pred_targets:
-                if pred_serial in seen_preds:
-                    return False
-                seen_preds.add(pred_serial)
-
-                pred_block = cfg.blocks.get(pred_serial)
-                target_block = cfg.blocks.get(target_serial)
-                if pred_block is None or target_block is None:
-                    return False
-                if pred_block.nsucc != 1:
-                    return False
-                if pred_block.succs[0] != src:
-                    return False
-                if target_serial in (src, edit.dispatcher_entry):
-                    return False
-            return True
+        case BadWhileLoopDuplicateRedirect():
+            candidate = bad_while_loop_duplicate_candidate(edit)
+            return candidate is not None and validate_dispatcher_cleanup_candidate(
+                cfg,
+                candidate,
+            )
         case BadWhileLoopConditionalDuplicate(
             source_serial=src,
             pred_serial=pred_serial,
@@ -523,7 +503,7 @@ def _serialize_bad_while_loop_edits(
                     "fallthrough_target": edit.fallthrough_target,
                 }
             )
-        else:
+        elif isinstance(edit, BadWhileLoopConditionalRedirect):
             serialized.append(
                 {
                     "kind": "create_conditional_redirect",
@@ -534,6 +514,8 @@ def _serialize_bad_while_loop_edits(
                     "fallthrough_target": edit.fallthrough_target,
                 }
             )
+        else:
+            raise TypeError(f"Unsupported BadWhileLoop edit: {type(edit).__name__}")
     return serialized
 
 
@@ -614,12 +596,10 @@ def build_bad_while_loop_modifications(
                 )
             )
         elif isinstance(edit, BadWhileLoopDuplicateRedirect):
-            modifications.append(
-                DuplicateAndRedirect(
-                    source_serial=edit.source_serial,
-                    per_pred_targets=edit.per_pred_targets,
-                )
-            )
+            candidate = bad_while_loop_duplicate_candidate(edit)
+            if candidate is None:
+                raise ValueError("Invalid BadWhileLoop duplicate redirect edit")
+            modifications.append(build_dispatcher_cleanup_modification(candidate))
         elif isinstance(edit, BadWhileLoopConditionalDuplicate):
             modifications.append(
                 DuplicateBlock(
@@ -630,7 +610,7 @@ def build_bad_while_loop_modifications(
                     fallthrough_target=edit.fallthrough_target,
                 )
             )
-        else:
+        elif isinstance(edit, BadWhileLoopConditionalRedirect):
             modifications.append(
                 CreateConditionalRedirect(
                     source_block=edit.source_serial,
@@ -639,6 +619,8 @@ def build_bad_while_loop_modifications(
                     fallthrough_target=edit.fallthrough_target,
                 )
             )
+        else:
+            raise TypeError(f"Unsupported BadWhileLoop edit: {type(edit).__name__}")
     return modifications
 
 

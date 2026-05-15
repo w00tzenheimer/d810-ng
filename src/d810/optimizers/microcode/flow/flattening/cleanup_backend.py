@@ -5,9 +5,15 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
+from d810.cfg.flowgraph import FlowGraph
 from d810.core.typing import Protocol
+from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+    bad_while_loop_duplicate_candidate,
+    validate_dispatcher_cleanup_candidate,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BadWhileLoopEdit,
+    BadWhileLoopDuplicateRedirect,
     BadWhileLoopFollowUp,
     BadWhileLoopGotoConversion,
     BadWhileLoopGotoRedirect,
@@ -21,12 +27,49 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationPredFix,
     collect_live_single_iteration_fixes,
 )
+from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 __all__ = [
     "LiveSimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupDetection",
 ]
+
+
+def _is_plannable_bad_while_loop_edit(
+    edit: BadWhileLoopEdit,
+    cfg: FlowGraph | None = None,
+) -> bool:
+    safe_edit_types = (BadWhileLoopGotoRedirect, BadWhileLoopGotoConversion)
+    if isinstance(edit, safe_edit_types):
+        return True
+    if isinstance(edit, BadWhileLoopDuplicateRedirect):
+        candidate = bad_while_loop_duplicate_candidate(edit)
+        return (
+            candidate is not None
+            and cfg is not None
+            and validate_dispatcher_cleanup_candidate(cfg, candidate)
+        )
+    return False
+
+
+def _validation_graph_for_bad_while_loop_edits(
+    mba: object,
+    edits: tuple[BadWhileLoopEdit, ...],
+    *,
+    logger: object | None = None,
+) -> FlowGraph | None:
+    if not any(isinstance(edit, BadWhileLoopDuplicateRedirect) for edit in edits):
+        return None
+    try:
+        return IDAIRTranslator().lift(mba)
+    except Exception:
+        if logger is not None:
+            logger.debug(
+                "Failed to lift CFG for BadWhileLoop duplicate validation",
+                exc_info=True,
+            )
+        return None
 
 
 @dataclass(frozen=True)
@@ -154,16 +197,27 @@ class LiveSimpleFlatteningCleanupBackend:
                 logger=logger,
                 allowed_maturities=self.allowed_maturities,
             )
-            safe_edit_types = (BadWhileLoopGotoRedirect, BadWhileLoopGotoConversion)
+            bad_while_loop_all_edits = tuple(bad_while_loop_analysis.edits)
+            bad_while_loop_validation_graph = _validation_graph_for_bad_while_loop_edits(
+                mba,
+                bad_while_loop_all_edits,
+                logger=logger,
+            )
             bad_while_loop_edits = tuple(
                 edit
-                for edit in bad_while_loop_analysis.edits
-                if isinstance(edit, safe_edit_types)
+                for edit in bad_while_loop_all_edits
+                if _is_plannable_bad_while_loop_edit(
+                    edit,
+                    bad_while_loop_validation_graph,
+                )
             )
             bad_while_loop_deferred_edits = tuple(
                 edit
-                for edit in bad_while_loop_analysis.edits
-                if not isinstance(edit, safe_edit_types)
+                for edit in bad_while_loop_all_edits
+                if not _is_plannable_bad_while_loop_edit(
+                    edit,
+                    bad_while_loop_validation_graph,
+                )
             )
             bad_while_loop_follow_up = tuple(bad_while_loop_analysis.follow_up)
         except Exception as exc:

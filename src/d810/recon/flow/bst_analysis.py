@@ -1002,6 +1002,59 @@ def _resolve_mop_value_in_block(
     return None
 
 
+def _fetch_idb_value(address: int, size: int) -> int | None:
+    """Read a scalar IDB value without depending on higher hexrays helpers."""
+    readers = {
+        1: getattr(idaapi, "get_byte", None),
+        2: getattr(idaapi, "get_word", None),
+        4: getattr(idaapi, "get_dword", None),
+        8: getattr(idaapi, "get_qword", None),
+    }
+    reader = readers.get(size)
+    if reader is None:
+        return None
+    return int(reader(address))
+
+
+def _segment_is_read_only(addr: int) -> bool:
+    getseg = getattr(idaapi, "getseg", None)
+    if getseg is None:
+        return False
+    seg = getseg(addr)
+    if seg is None:
+        return False
+    read_perm = getattr(idaapi, "SEGPERM_READ", 1)
+    write_perm = getattr(idaapi, "SEGPERM_WRITE", 2)
+    perm = int(getattr(seg, "perm", 0) or 0)
+    return (perm & read_perm) != 0 and (perm & write_perm) == 0
+
+
+def _is_never_written_var(address: int) -> bool:
+    xrefblk_t = getattr(idaapi, "xrefblk_t", None)
+    if xrefblk_t is None:
+        return False
+    ref_finder = xrefblk_t()
+    xref_data = getattr(idaapi, "XREF_DATA", 1)
+    dr_w = getattr(idaapi, "dr_W", None)
+    is_ok = ref_finder.first_to(address, xref_data)
+    while is_ok:
+        if dr_w is not None and ref_finder.type == dr_w:
+            return False
+        is_ok = ref_finder.next_to()
+    return True
+
+
+def _fetch_stable_global_value(addr: int, size: int) -> int | None:
+    if not addr or size not in (1, 2, 4, 8):
+        return None
+    if not (_segment_is_read_only(addr) or _is_never_written_var(addr)):
+        return None
+    value = _fetch_idb_value(addr, size)
+    if value is None:
+        return None
+    return int(value) & ((1 << (size * 8)) - 1)
+
+
 def _resolve_mop_from_maps(
     mop: "idaapi.mop_t",
     stk_map: Dict[int, int],
@@ -1036,6 +1089,7 @@ def _resolve_mop_from_maps(
     mop_r_type = idaapi.mop_r
     mop_l_type = idaapi.mop_l
     mop_d_type = idaapi.mop_d
+    mop_v_type = idaapi.mop_v
 
     result: Optional[int] = None
 
@@ -1068,15 +1122,36 @@ def _resolve_mop_from_maps(
                 result = stk_map.get(off)
             except Exception:
                 pass
+    elif mop_type == mop_v_type:
+        try:
+            addr = int(getattr(mop, "g", 0) or 0)
+            size = int(getattr(mop, "size", 0) or 0)
+            result = _fetch_stable_global_value(addr, size)
+        except Exception:
+            result = None
     elif mop_type == mop_d_type:
         nested = getattr(mop, "d", None)
         if nested is not None:
             op = getattr(nested, "opcode", None)
             l_mop = getattr(nested, "l", None)
             r_mop = getattr(nested, "r", None)
-            lv = _resolve_mop_from_maps(l_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+            lv = _resolve_mop_from_maps(
+                l_mop,
+                stk_map,
+                reg_map,
+                mba,
+                state_var_lvar_idx,
+                diag_lines,
+            )
             if r_mop is not None and getattr(r_mop, "t", None) != 0:
-                rv = _resolve_mop_from_maps(r_mop, stk_map, reg_map, mba, state_var_lvar_idx)
+                rv = _resolve_mop_from_maps(
+                    r_mop,
+                    stk_map,
+                    reg_map,
+                    mba,
+                    state_var_lvar_idx,
+                    diag_lines,
+                )
             else:
                 rv = None
             if lv is not None:
@@ -1086,6 +1161,8 @@ def _resolve_mop_from_maps(
                 m_or = getattr(idaapi, "m_or", 22)
                 m_xor = getattr(idaapi, "m_xor", 31)
                 m_mul = getattr(idaapi, "m_mul", 30)
+                m_xdu = getattr(idaapi, "m_xdu", None)
+                m_xds = getattr(idaapi, "m_xds", None)
                 if rv is not None:
                     if op == m_xor:
                         result = (lv ^ rv) & 0xFFFFFFFF
@@ -1099,6 +1176,21 @@ def _resolve_mop_from_maps(
                         result = (lv | rv) & 0xFFFFFFFF
                     elif op == m_mul:
                         result = (lv * rv) & 0xFFFFFFFF
+                elif m_xdu is not None and op == m_xdu:
+                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or 4)
+                    result = int(lv) & ((1 << (out_size * 8)) - 1)
+                elif m_xds is not None and op == m_xds:
+                    in_size = int(getattr(l_mop, "size", 0) or 4)
+                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or in_size)
+                    sign_bit = 1 << (in_size * 8 - 1)
+                    if int(lv) & sign_bit:
+                        result = int(lv) | (
+                            ((1 << (out_size * 8)) - 1)
+                            ^ ((1 << (in_size * 8)) - 1)
+                        )
+                    else:
+                        result = int(lv)
+                    result &= (1 << (out_size * 8)) - 1
 
     if diag_lines is not None:
         diag_lines.append(
