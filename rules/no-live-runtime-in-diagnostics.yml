@@ -1,0 +1,41 @@
+# Keep diagnostics as post-hoc/query/render modules.
+
+id: no-live-runtime-in-diagnostics
+language: python
+severity: error
+
+files:
+  - "src/d810/diagnostics/**/*.py"
+  - "src/d810/core/diag/**/*.py"
+
+message: |
+  Diagnostics modules must not import live IDA/Hex-Rays or optimizer runtime code.
+
+  Keep d810.diagnostics and d810.core.diag limited to post-hoc parsing,
+  persistence, querying, and rendering. Put live adapters under d810.hexrays.
+
+rule:
+  any:
+    - pattern: import idaapi
+    - pattern: import ida_hexrays
+    - pattern: import idc
+    - pattern: import idautils
+    - pattern: import ida_$MOD
+    - pattern: from idaapi import $$$
+    - pattern: from ida_hexrays import $$$
+    - pattern: from idc import $$$
+    - pattern: from idautils import $$$
+    - pattern: from ida_$MOD import $$$
+    - pattern: import d810.hexrays
+    - pattern: import d810.hexrays.$$$
+    - pattern: from d810.hexrays import $$$
+    - pattern: from d810.hexrays.$$$ import $$$
+    - pattern: import d810.optimizers
+    - pattern: import d810.optimizers.$$$
+    - pattern: from d810.optimizers import $$$
+    - pattern: from d810.optimizers.$$$ import $$$
+
+note: |
+  Live capture, decompile, and runtime optimizer integration belong on the
+  Hex-Rays side. Diagnostics should only consume dumps, SQLite rows, or
+  caller-provided data.

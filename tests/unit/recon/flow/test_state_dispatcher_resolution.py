@@ -6,7 +6,7 @@ import sqlite3
 
 from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import snapshot_state_dispatcher_rows
-from d810.recon.flow.state_dispatcher_resolution import (
+from d810.diagnostics.state_dispatcher_resolution import (
     load_latest_state_dispatcher_map_from_db,
     persist_state_dispatch_resolutions,
     resolve_state_transition_facts_with_dispatcher,
