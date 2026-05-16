@@ -44,6 +44,7 @@ from d810.recon.observability import (
     observe_dag,
     observe_modifications,
     observe_reachability,
+    observe_state_dispatcher_rows,
 )
 
 
@@ -237,6 +238,48 @@ def test_event_without_snapshot_mapping_is_a_noop(fake_conn):
 
     rows = fake_conn.execute("SELECT COUNT(*) FROM dag_nodes").fetchone()
     assert rows[0] == 0
+
+
+def test_state_dispatcher_rows_buffer_until_snapshot(fake_conn):
+    observe_state_dispatcher_rows(
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        dispatcher_entry_block=2,
+        dispatcher_kind="CONDITIONAL_CHAIN",
+        rows=[
+            {
+                "state_const": 0x89407346,
+                "target_block": 3,
+                "compare_block": None,
+                "branch_kind": "handler_state_map",
+                "confidence": 1.0,
+            }
+        ],
+    )
+
+    pre_rows = fake_conn.execute(
+        "SELECT COUNT(*) FROM state_dispatcher_rows"
+    ).fetchone()
+    assert pre_rows[0] == 0
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+
+    row = fake_conn.execute(
+        "SELECT state_const_hex, target_block, compare_block, branch_kind "
+        "FROM state_dispatcher_rows"
+    ).fetchone()
+    assert row == (
+        "0x0000000089407346",
+        3,
+        None,
+        "handler_state_map",
+    )
 
 
 def test_capture_handler_short_circuits_when_no_conn():

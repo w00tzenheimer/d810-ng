@@ -705,6 +705,130 @@ def snapshot_bst_interval_dispatcher_rows(
     conn.commit()
 
 
+def snapshot_state_dispatcher_rows(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+    *,
+    dispatcher_entry_block: int | None = None,
+    dispatcher_kind: str | None = None,
+    maturity: str | None = None,
+) -> None:
+    """Persist exact state-constant dispatcher rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM state_dispatcher_rows WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        state_const = _mapping_value(row, "state_const")
+        target = _mapping_value(row, "target_block")
+        if target is None:
+            target = _mapping_value(row, "target")
+        if state_const is None or target is None:
+            continue
+        try:
+            state_i = (
+                int(state_const, 0)
+                if isinstance(state_const, str) else int(state_const)
+            )
+            target_i = int(target, 0) if isinstance(target, str) else int(target)
+        except (TypeError, ValueError):
+            continue
+        state_hex, state_i64 = _dual(state_i)
+        row_dispatcher_entry = _mapping_value(
+            row, "dispatcher_entry_block", dispatcher_entry_block
+        )
+        row_compare_block = _mapping_value(row, "compare_block")
+        row_kind = _mapping_value(
+            row, "dispatcher_kind",
+            _mapping_value(row, "source", dispatcher_kind),
+        )
+        if hasattr(row_kind, "name"):
+            row_kind = row_kind.name
+        row_branch_kind = _mapping_value(row, "branch_kind")
+        confidence = _mapping_value(row, "confidence", 1.0)
+        payload = {
+            "state_const": state_hex,
+            "target": target_i,
+            "compare_block": row_compare_block,
+            "branch_kind": row_branch_kind,
+            "dispatcher_kind": str(row_kind or dispatcher_kind or "unknown"),
+        }
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            state_hex,
+            state_i64,
+            target_i,
+            (
+                int(row_dispatcher_entry)
+                if row_dispatcher_entry is not None else None
+            ),
+            int(row_compare_block) if row_compare_block is not None else None,
+            str(row_kind or dispatcher_kind or "unknown"),
+            str(row_branch_kind) if row_branch_kind is not None else None,
+            maturity,
+            float(confidence),
+            _json_text(_mapping_value(row, "payload", payload), payload),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_state_transition_dispatch_resolutions(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist generic dispatcher resolution rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM state_transition_dispatch_resolutions WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row in rows:
+        fact_id = _mapping_value(row, "fact_id")
+        source_block = _mapping_value(row, "source_block_serial")
+        source_const_hex = _mapping_value(row, "source_state_const_hex")
+        resolution_kind = _mapping_value(row, "resolution_kind")
+        resolution_reason = _mapping_value(row, "resolution_reason")
+        resolution_maturity = _mapping_value(row, "resolution_maturity")
+        if (
+            fact_id is None
+            or source_block is None
+            or source_const_hex is None
+            or resolution_kind is None
+            or resolution_reason is None
+            or resolution_maturity is None
+        ):
+            continue
+        db_rows.append((
+            int(snapshot_id),
+            str(fact_id),
+            int(source_block),
+            str(source_const_hex),
+            _mapping_value(row, "resolved_next_block_serial"),
+            _mapping_value(row, "resolved_next_state_const_hex"),
+            _mapping_value(row, "resolved_next_state_const_u64"),
+            str(resolution_kind),
+            str(resolution_reason),
+            str(resolution_maturity),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_transition_dispatch_resolutions VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
 def snapshot_watch_transition(
     conn: sqlite3.Connection,
     *,

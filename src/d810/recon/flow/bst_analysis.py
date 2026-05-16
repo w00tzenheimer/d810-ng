@@ -2032,6 +2032,40 @@ def analyze_bst_dispatcher(
             result.handler_state_map = handler_state_map
             result.handler_range_map = handler_range_map
 
+    if result.handler_state_map:
+        try:
+            from d810.recon.observability import observe_state_dispatcher_rows
+
+            state_rows = tuple(
+                {
+                    "state_const": int(state_const),
+                    "target_block": int(handler_serial),
+                    "dispatcher_entry_block": int(dispatcher_entry_serial),
+                    "compare_block": None,
+                    "dispatcher_kind": "CONDITIONAL_CHAIN",
+                    "branch_kind": "handler_state_map",
+                    "confidence": 1.0,
+                }
+                for handler_serial, state_const
+                in sorted(result.handler_state_map.items())
+            )
+            logger.info(
+                "STATE_DISPATCHER_ROWS: emitting %d exact rows",
+                len(state_rows),
+            )
+            observe_state_dispatcher_rows(
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity="MMAT_GLBOPT1",
+                dispatcher_entry_block=int(dispatcher_entry_serial),
+                dispatcher_kind="CONDITIONAL_CHAIN",
+                rows=state_rows,
+            )
+        except Exception:
+            logger.debug(
+                "STATE_DISPATCHER_ROWS structured observation failed",
+                exc_info=True,
+            )
+
     # Diagnostic: compare interval dispatcher against legacy handler_state_map.
     # to_handler_state_map() returns {state_const: handler_serial} (lo -> target),
     # while handler_state_map is {handler_serial: state_const}.
