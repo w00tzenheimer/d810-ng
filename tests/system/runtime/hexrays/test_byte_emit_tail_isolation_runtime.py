@@ -69,6 +69,16 @@ class _SilentLogger:
         pass
 
 
+class _FakeEvidenceProvider:
+    def __init__(self, evidence) -> None:
+        self.evidence = evidence
+        self.seen_mba = None
+
+    def byte_tail_runtime_evidence(self, mba):
+        self.seen_mba = mba
+        return self.evidence
+
+
 @dataclass
 class _FakeLiveBlock:
     succs: tuple[int, ...] = ()
@@ -208,6 +218,157 @@ def test_load_planner_sites_from_fact_view_uses_observation_source_block():
     assert len(sites) == 1
     assert sites[0].byte_index == 2
     assert sites[0].block_serial == 118
+
+
+def test_tail_distinct_uses_provider_fact_view_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+    )
+
+    fact_view = object()
+    mba = object()
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(fact_view=fact_view)
+    )
+    calls = {}
+
+    def fake_isolate_byte_emit_tail(*, byte_index, fact_view, adapter):
+        calls["byte_index"] = byte_index
+        calls["fact_view"] = fact_view
+        calls["adapter"] = adapter
+        return "report"
+
+    def fail_diag_fact_view(*args, **kwargs):
+        raise AssertionError("diag fact view should not be used")
+
+    monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
+    monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fake_isolate_byte_emit_tail)
+    monkeypatch.setattr(runtime, "DiagDbFactView", fail_diag_fact_view)
+
+    runtime.maybe_run_tail_distinct(
+        mba,
+        evidence_provider=provider,
+    )
+
+    assert provider.seen_mba is mba
+    assert calls["byte_index"] == 2
+    assert calls["fact_view"] is fact_view
+    assert isinstance(calls["adapter"], runtime.LiveMbaAdapter)
+
+
+def test_tail_duplicate_convergence_uses_explicit_fact_view_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    fact_view = object()
+    calls = {}
+
+    def fake_duplicate_convergence_for_byte_path(
+        *,
+        byte_index,
+        fact_view,
+        adapter,
+    ):
+        calls["byte_index"] = byte_index
+        calls["fact_view"] = fact_view
+        calls["adapter"] = adapter
+        return "report"
+
+    def fail_diag_fact_view(*args, **kwargs):
+        raise AssertionError("diag fact view should not be used")
+
+    monkeypatch.setenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", "6")
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "duplicate_convergence_for_byte_path",
+        fake_duplicate_convergence_for_byte_path,
+    )
+    monkeypatch.setattr(runtime, "DiagDbFactView", fail_diag_fact_view)
+
+    runtime.maybe_run_tail_duplicate_convergence(
+        object(),
+        fact_view=fact_view,
+    )
+
+    assert calls["byte_index"] == 6
+    assert calls["fact_view"] is fact_view
+    assert isinstance(calls["adapter"], runtime.LiveMbaAdapter)
+
+
+def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypatch):
+    import d810.cfg.terminal_tail_cascade_egress_planner as planner_module
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
+    )
+
+    blocks = {10: object()}
+    sites = [object()]
+    dag = object()
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks=blocks,
+                sites=sites,
+                dag=dag,
+            )
+        )
+    )
+    calls = {}
+
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            calls["blocks"] = planner_blocks
+            calls["sites"] = planner_sites
+
+        def build_plan(self):
+            return type("Plan", (), {"rows": ()})()
+
+    def fail_mba_blocks(mba):
+        raise AssertionError("MBA planner blocks should not be loaded")
+
+    def fail_fact_sites(fact_view):
+        raise AssertionError("fact-view planner sites should not be loaded")
+
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "_load_planner_blocks_from_mba", fail_mba_blocks)
+    monkeypatch.setattr(runtime, "_load_planner_sites_from_fact_view", fail_fact_sites)
+    monkeypatch.setattr(runtime, "_load_dag_semantics_from_dag", lambda value: value)
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: object())
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        lambda **kwargs: "report",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_close_terminal_equality_frontiers",
+        lambda **kwargs: ((), ()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_close_terminal_tail_entry_frontier",
+        lambda **kwargs: ((), ()),
+    )
+
+    mba = object()
+    runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        mba,
+        evidence_provider=provider,
+    )
+
+    assert provider.seen_mba is mba
+    assert calls["blocks"] == blocks
+    assert calls["sites"] == sites
 
 
 def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():
