@@ -49,6 +49,7 @@ from d810.core.diag.snapshot import (
     snapshot_rendered_program,
     snapshot_state_dispatcher_rows,
     snapshot_state_transition_dispatch_resolutions,
+    snapshot_switch_case_transition_facts,
     snapshot_watch_transition,
 )
 from d810.core.observability import (
@@ -78,6 +79,7 @@ from d810.core.observability_events import (
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
     StateTransitionDispatchResolutionsObserved,
+    SwitchCaseTransitionFactsObserved,
     WatchBlockTransitionObserved,
 )
 
@@ -317,6 +319,20 @@ def _handle_state_transition_dispatch_resolutions(
         snap_id,
         ev.rows,
     )
+
+
+def _handle_switch_case_transition_facts(
+    ev: SwitchCaseTransitionFactsObserved,
+) -> None:
+    conn = _conn_for(ev.snapshot)
+    snap_id = _resolve_snapshot_id(ev.snapshot)
+    if conn is None or snap_id is None:
+        return
+    rows = tuple(
+        row.to_diag_row() if hasattr(row, "to_diag_row") else row
+        for row in ev.rows
+    )
+    snapshot_switch_case_transition_facts(conn, snap_id, rows)
 
 
 def _handle_branch_ownership_proofs(ev: BranchOwnershipProofsObserved) -> None:
@@ -588,6 +604,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
         StateTransitionDispatchResolutionsObserved,
         _handle_state_transition_dispatch_resolutions,
     ),
+    (SwitchCaseTransitionFactsObserved, _handle_switch_case_transition_facts),
     (BranchOwnershipProofsObserved, _handle_branch_ownership_proofs),
     (DagObserved, _handle_dag),
     (

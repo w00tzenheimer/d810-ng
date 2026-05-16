@@ -42,6 +42,7 @@ from d810.core.observability_events import (
     RenderedProgramObserved as RenderedProgramObserved,
     StateDispatcherRowsObserved as StateDispatcherRowsObserved,
     StateTransitionDispatchResolutionsObserved as StateTransitionDispatchResolutionsObserved,
+    SwitchCaseTransitionFactsObserved as SwitchCaseTransitionFactsObserved,
 )
 from d810.core.observability_models import (
     DagEdge as DagEdge,
@@ -131,6 +132,17 @@ def observe_state_transition_dispatch_resolutions(
 ) -> None:
     """Publish exact state-dispatcher transition resolution rows."""
     _emit(StateTransitionDispatchResolutionsObserved(
+        snapshot=snapshot,
+        rows=tuple(rows),
+    ))
+
+
+def observe_switch_case_transition_facts(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish switch-table case transition facts."""
+    _emit(SwitchCaseTransitionFactsObserved(
         snapshot=snapshot,
         rows=tuple(rows),
     ))
@@ -264,6 +276,7 @@ def diagnostics_enabled() -> bool:
             ReachabilityObserved,
             StateDispatcherRowsObserved,
             StateTransitionDispatchResolutionsObserved,
+            SwitchCaseTransitionFactsObserved,
             BranchOwnershipProofsObserved,
         )
     )
@@ -285,6 +298,7 @@ __all__ = [
     "RenderedProgramObserved",
     "StateDispatcherRowsObserved",
     "StateTransitionDispatchResolutionsObserved",
+    "SwitchCaseTransitionFactsObserved",
     # Neutral model types (kept here for backward compatibility)
     "DagEdge",
     "DagNode",
@@ -296,6 +310,7 @@ __all__ = [
     "observe_bst_interval_dispatcher",
     "observe_state_dispatcher_rows",
     "observe_state_transition_dispatch_resolutions",
+    "observe_switch_case_transition_facts",
     "observe_branch_ownership_proofs",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
