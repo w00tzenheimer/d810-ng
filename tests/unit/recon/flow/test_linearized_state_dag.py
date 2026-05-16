@@ -4225,10 +4225,6 @@ def _make_shared_suffix_report() -> DispatcherTransitionReport:
     )
 
 
-@pytest.mark.xfail(
-    reason="range-backed node label rendering does not yet propagate state_const for handlers without exact_entry",
-    strict=False,
-)
 def test_range_backed_nodes_keep_shared_suffixes_out_of_entry_targets() -> None:
     flow_graph = _make_shared_suffix_flow_graph()
     transition_result = _make_shared_suffix_transition_result()
@@ -6272,10 +6268,6 @@ def test_live_builder_rejects_self_handoff_candidate_anchor(
     )
     assert outgoing.target_state == 0x00C0C59F
 
-@pytest.mark.xfail(
-    reason="aspirational: alias-folding to exact prelude not yet implemented; introduced in 50d44788 checkpoint",
-    strict=False,
-)
 def test_alias_node_normalizes_to_direct_exact_prelude() -> None:
     flow_graph = FlowGraph(
         blocks={
@@ -7227,10 +7219,6 @@ def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_
     assert incoming.target_entry_anchor == 217
 
 
-@pytest.mark.xfail(
-    reason="aspirational: terminal-alias-to-sibling collapse not yet implemented; introduced in 50d44788 checkpoint",
-    strict=False,
-)
 def test_terminal_alias_node_collapses_to_source_terminal_sibling() -> None:
     flow_graph = FlowGraph(
         blocks={

@@ -627,6 +627,7 @@ def collect_admissible_region_lowering_sites(
         dag=dag,
         dispatcher_blocks=dispatcher_blocks,
     )
+    accepted = _prune_stale_semantic_alias_sites(accepted)
 
     if str(getattr(region, "region_name", "")) == "sub7ffd_10743c4c_branch_region":
         for site in accepted:
@@ -796,10 +797,7 @@ def _merge_region_contract_semantic_successors_by_state(
                     continue
                 if label not in existing_non_region_labels:
                     existing_non_region_labels.append(label)
-            if (
-                not has_lossy_raw_exit_contract
-                and 1 < len(existing_non_region_labels) <= 2
-            ):
+            if 1 < len(existing_non_region_labels) <= 2:
                 merged[source_state] = existing_non_region_labels
                 continue
         # Region-owned sources should use their immediate semantic contract,
@@ -924,6 +922,23 @@ def _augment_region_contract_semantic_successors_by_state(
                         or (int(inferred_state) & 0xFFFFFFFF) in region_states
                     ):
                         continue
+                    if len(existing) > 1:
+                        exit_state_set = {
+                            int(state) & 0xFFFFFFFF for state in region_exit_states
+                        }
+                        existing = [
+                            str(label)
+                            for label in existing
+                            if (
+                                (semantic_state_value_from_label(label) is not None)
+                                and (
+                                    int(semantic_state_value_from_label(label) or 0)
+                                    & 0xFFFFFFFF
+                                )
+                                in exit_state_set
+                            )
+                        ]
+                        augmented[int(source_state) & 0xFFFFFFFF] = existing
                     if inferred_label not in existing:
                         existing.append(str(inferred_label))
                     preferred_labels = []
@@ -1159,7 +1174,11 @@ def _normalize_semantic_alias_targets(
                 and not stale_current_entry_for_label
                 and not stale_successor_for_direct_target
             ):
-                if branch_arm not in (0, 1) and branch_semantic_label_by_arm:
+                if (
+                    branch_arm not in (0, 1)
+                    and branch_semantic_label_by_arm
+                    and len(source_sites) > 1
+                ):
                     matching_arms = [
                         int(arm)
                         for arm, label in branch_semantic_label_by_arm.items()
@@ -1261,6 +1280,47 @@ def _normalize_semantic_alias_targets(
                 continue
             normalized.append(remapped_site)
     return normalized
+
+
+def _prune_stale_semantic_alias_sites(
+    sites: list[SemanticRegionLoweringSite],
+) -> list[SemanticRegionLoweringSite]:
+    grouped: dict[tuple[int, int, int], list[SemanticRegionLoweringSite]] = {}
+    for site in sites:
+        branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
+        grouped.setdefault(
+            (
+                int(site.source_state) & 0xFFFFFFFF,
+                int(site.source_anchor_block),
+                int(branch_arm) if branch_arm in (0, 1) else -1,
+            ),
+            [],
+        ).append(site)
+
+    pruned: list[SemanticRegionLoweringSite] = []
+    for source_sites in grouped.values():
+        if len(source_sites) < 2:
+            pruned.extend(source_sites)
+            continue
+        path_blocks = {
+            int(serial)
+            for site in source_sites
+            for serial in (site.ordered_path or ())
+        }
+        best_site = min(
+            source_sites,
+            key=lambda site: (
+                0 if int(site.target_entry_anchor) in path_blocks else 1,
+                0
+                if site.successor_state_value is not None
+                and (int(site.successor_state_value) & 0xFFFFFFFF)
+                == (int(site.target_state) & 0xFFFFFFFF)
+                else 1,
+                int(site.target_entry_anchor),
+            ),
+        )
+        pruned.append(best_site)
+    return pruned
 
 
 def _clone_edge_with_normalized_target(

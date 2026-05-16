@@ -2585,6 +2585,8 @@ def _format_state_label(
         and range_lo is not None
         and range_hi is not None
     ):
+        if state_const is None:
+            state_const = range_lo
         if state_const is not None:
             return f"[0x{range_lo:08X}..0x{range_hi:08X}] (repr 0x{state_const:08X})"
         return f"[0x{range_lo:08X}..0x{range_hi:08X}]"
@@ -2600,6 +2602,13 @@ def _state_label_for_transition_row(
 ) -> str:
     """Preserve non-raw semantic alias labels carried by transition rows."""
 
+    if node_kind == StateNodeKind.RANGE_BACKED:
+        return _format_state_label(
+            row.state_const,
+            row.state_range_lo,
+            row.state_range_hi,
+            node_kind,
+        )
     if row.state_const is not None and not _is_raw_state_label(row.state_label, row.state_const):
         return row.state_label
     return _format_state_label(
@@ -2955,6 +2964,64 @@ def _compute_alias_label_override(
                 )
             return (node.state_label, candidate_anchor, True)
 
+    prelude_candidate_blocks_by_source: dict[int, tuple[int, ...]] = {}
+    for incoming_edge in incoming_edges:
+        source_snapshot = flow_graph.get_block(incoming_edge.source_anchor.block_serial)
+        if source_snapshot is None:
+            continue
+        candidates: list[int] = []
+        if len(source_snapshot.succs) == 1:
+            candidates.append(int(source_snapshot.succs[0]))
+        for block_serial, block in getattr(flow_graph, "blocks", {}).items():
+            if int(incoming_edge.source_anchor.block_serial) in {
+                int(pred) for pred in getattr(block, "preds", ()) or ()
+            }:
+                candidates.append(int(block_serial))
+        prelude_candidate_blocks_by_source[int(incoming_edge.source_anchor.block_serial)] = tuple(
+            dict.fromkeys(candidates)
+        )
+
+    for incoming_edge in incoming_edges:
+        for prelude_anchor in prelude_candidate_blocks_by_source.get(
+            int(incoming_edge.source_anchor.block_serial),
+            (),
+        ):
+            if prelude_anchor == node.entry_anchor:
+                continue
+            preserves_local_prefix = any(
+                len(edge.ordered_path) > 1
+                and edge.ordered_path[0] == node.entry_anchor
+                and edge.ordered_path[1] == prelude_anchor
+                for edge in outgoing_edges
+            )
+            if preserves_local_prefix:
+                continue
+            exact_preludes = tuple(
+                candidate
+                for candidate in edges_by_source_block.get(prelude_anchor, ())
+                if candidate.kind == SemanticEdgeKind.TRANSITION
+                and candidate.target_state is not None
+                and candidate.target_state in real_handler_states
+            )
+            exact_targets = {
+                candidate.target_state
+                for candidate in exact_preludes
+                if candidate.target_state is not None
+            }
+            if len(exact_targets) != 1:
+                continue
+            exact_target = next(iter(exact_targets))
+            if exact_target is None:
+                continue
+            if state_value in {0x2A5E29F6, 0x6CAA9521}:
+                logger.info(
+                    "DAG alias override prelude collapse state=0x%08X -> fallback=%s anchor=%s",
+                    state_value,
+                    exact_target,
+                    prelude_anchor,
+                )
+            return (f"0x{exact_target:08X}_fallback", prelude_anchor, True)
+
     for incoming_edge in incoming_edges:
         source_snapshot = flow_graph.get_block(incoming_edge.source_anchor.block_serial)
         if source_snapshot is None or len(source_snapshot.succs) != 1:
@@ -3144,6 +3211,13 @@ def _normalize_alias_nodes(
         report,
         transition_result,
     )
+    transition_handler_states = {
+        int(state_const) & 0xFFFFFFFF
+        for state_const in transition_result.handlers
+        if state_const is not None
+    }
+    if transition_result.initial_state is not None:
+        transition_handler_states.add(int(transition_result.initial_state) & 0xFFFFFFFF)
     protected_exact_keys = _protected_exact_point_keys(report)
     incoming_by_state: defaultdict[int, list[StateDagEdge]] = defaultdict(list)
     outgoing_by_state_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
@@ -3163,8 +3237,7 @@ def _normalize_alias_nodes(
         state_value = node.key.state_const
         if (
             state_value is None
-            or state_value in real_handler_states
-            or node.key in protected_exact_keys
+            or state_value in transition_handler_states
         ):
             normalized_nodes.append(node)
             key_updates[node.key] = node
