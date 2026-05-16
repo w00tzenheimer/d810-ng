@@ -1072,6 +1072,10 @@ class HodurUnflattener(GenericUnflatteningRule):
                 maybe_run_tail_state_cascade,
                 maybe_run_terminal_tail_cascade_egress_lowering,
             )
+            from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+                ByteTailRuntimeEvidence,
+                StaticByteTailRuntimeEvidenceProvider,
+            )
 
             unflat_logger.info(
                 "TAIL_SHAPING_HOOK phase=after_post_bundle_stabilize"
@@ -1125,14 +1129,30 @@ class HodurUnflattener(GenericUnflatteningRule):
                     "terminal_tail_cascade_egress DAG lookup failed",
                     exc_info=True,
                 )
+            evidence_provider = StaticByteTailRuntimeEvidenceProvider(
+                ByteTailRuntimeEvidence(fact_view=fact_view, dag=latest_dag)
+            )
             maybe_run_terminal_tail_cascade_egress_lowering(
                 self.mba,
                 fact_view=fact_view,
                 dag=latest_dag,
+                evidence_provider=evidence_provider,
             )
-            maybe_run_tail_distinct(self.mba)
-            maybe_run_tail_duplicate_convergence(self.mba)
-            maybe_run_tail_state_cascade(self.mba)
+            maybe_run_tail_distinct(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
+            maybe_run_tail_duplicate_convergence(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
+            maybe_run_tail_state_cascade(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
             maybe_run_byte_anchor(self.mba)
         except Exception:
             unflat_logger.debug(

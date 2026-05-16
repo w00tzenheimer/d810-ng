@@ -7,11 +7,6 @@ severity: error
 files:
   - "src/d810/hexrays/mutation/**/*.py"
 
-ignores:
-  # Existing legacy diagnostic-coupled runtime. New mutation backends should
-  # emit observability events instead of querying/writing SQLite.
-  - "src/d810/hexrays/mutation/byte_emit_tail_isolation_runtime.py"
-
 message: |
   Hex-Rays mutation modules must not import diagnostic storage APIs directly.
 

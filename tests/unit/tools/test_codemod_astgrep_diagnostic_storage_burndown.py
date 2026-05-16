@@ -113,7 +113,10 @@ def test_render_report_lists_ignores_and_phase_manifest() -> None:
     assert "`src/example.py:1:1`" in report
     assert "`phase2-optimizer-hcc-diagnostic-query`" in report
     assert manifest["rules"][0]["ignores"] == ["src/example.py"]
-    assert manifest["candidate_phases"][1]["automation"] == "manifest-and-audit-only"
+    assert (
+        manifest["candidate_phases"][2]["automation"]
+        == "completed-provider-boundary"
+    )
 
 
 def test_rewrite_imports_cli_dry_run_does_not_write(tmp_path: Path) -> None:

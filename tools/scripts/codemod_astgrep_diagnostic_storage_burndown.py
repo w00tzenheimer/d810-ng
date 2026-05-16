@@ -295,16 +295,14 @@ def candidate_phases() -> list[dict[str, Any]]:
         },
         {
             "phase": "phase3-hexrays-byte-tail-runtime-diagnostic-coupling",
-            "automation": "manifest-and-audit-only",
+            "automation": "completed-provider-boundary",
             "rule": "no-hexrays-mutation-diagnostic-storage-imports",
-            "candidate_files": [
-                "src/d810/hexrays/mutation/byte_emit_tail_isolation_runtime.py"
-            ],
+            "candidate_files": [],
             "notes": [
-                "DiagDbFactView and planner/DAG loaders read SQLite inside "
-                "mutation runtime.",
-                "Behavior is entangled with active diag snapshots; do not codemod "
-                "without a validated adapter boundary.",
+                "byte_emit_tail_isolation_runtime consumes explicit "
+                "in-memory fact/planner/DAG evidence only.",
+                "The Hex-Rays mutation rule has no byte-tail ignore; "
+                "diagnostic storage imports should be treated as regressions.",
             ],
         },
         {
