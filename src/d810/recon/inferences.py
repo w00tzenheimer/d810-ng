@@ -29,9 +29,11 @@ from d810.core.typing import Any
 def unflattening_inference(hints: Any) -> list[RuleDelta]:
     """Infer rule deltas for functions with detected control-flow flattening.
 
-    Confidence-gated: only suppresses scalar constant-propagation rules at
-    >= 0.7 confidence because they can treat flattened dispatcher carriers as
-    ordinary CFG-local constants before the state machine has been recovered.
+    Confidence-gated: only suppresses ``ConstantFolding`` at >= 0.7
+    confidence because constant folding interferes with dispatcher state
+    resolution during unflattening.  ForwardConstantPropagationRule is not
+    suppressed globally; profiles with known pre-recovery FCP hazards disable it
+    explicitly so Approov-style engine-wrapper recovery can still use FCP.
 
     Args:
         hints: ``DeobfuscationHints`` (duck-typed to avoid circular import).
@@ -43,5 +45,4 @@ def unflattening_inference(hints: Any) -> list[RuleDelta]:
     confidence = getattr(hints, "confidence", 0.0)
     if confidence >= 0.7:
         deltas.append(RuleDelta("ConstantFolding", "suppress", {}))
-        deltas.append(RuleDelta("ForwardConstantPropagationRule", "suppress", {}))
     return deltas
