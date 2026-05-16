@@ -283,17 +283,14 @@ def candidate_phases() -> list[dict[str, Any]]:
         },
         {
             "phase": "phase2-optimizer-hcc-diagnostic-query",
-            "automation": "manifest-and-audit-only",
+            "automation": "completed-query-moved",
             "rule": "no-optimizers-diagnostic-storage-imports",
-            "candidate_files": [
-                "src/d810/optimizers/microcode/flow/flattening/hodur/"
-                "strategies/handler_chain_composer.py"
-            ],
+            "candidate_files": [],
             "notes": [
-                "HCC uses a local aliased sqlite3 import in _open_diag_db_readonly().",
-                "The rule currently misses `import sqlite3 as _sqlite3`.",
-                "Move only read-only post-hoc query/reporting to diagnostics; "
-                "keep strategy behavior on in-memory evidence.",
+                "Read-only HCC anchor snapshot SQLite lookup lives in "
+                "d810.diagnostics.hcc_anchor_snapshot_context.",
+                "The optimizer rule has no HCC ignore; new storage imports "
+                "should be treated as regressions.",
             ],
         },
         {
@@ -437,9 +434,12 @@ def render_report(inventories: tuple[RuleInventory, ...]) -> str:
         if "rule" in phase:
             lines.append(f"- Rule: `{phase['rule']}`")
         if "candidate_files" in phase:
-            lines.append("- Candidate files:")
-            for path in phase["candidate_files"]:
-                lines.append(f"  - `{path}`")
+            if phase["candidate_files"]:
+                lines.append("- Candidate files:")
+                for path in phase["candidate_files"]:
+                    lines.append(f"  - `{path}`")
+            else:
+                lines.append("- Candidate files: none")
         if "scope" in phase:
             lines.append("- Import rewrite scope:")
             for module in phase["scope"]:
