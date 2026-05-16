@@ -26,8 +26,11 @@ def _return_carrier_fact(
     fact_id: str,
     *,
     block_serial: int = 93,
+    return_writer_block_serial: int | None = None,
     refs: tuple[str, ...] = ("228", "650"),
 ) -> FactObservation:
+    if return_writer_block_serial is None:
+        return_writer_block_serial = block_serial
     return FactObservation(
         fact_id=fact_id,
         kind="ReturnCarrierFact",
@@ -39,6 +42,7 @@ def _return_carrier_fact(
         payload={
             "return_slot_stkoff": 8,
             "carrier_dst_stkoff": 0x30,
+            "block_serial": return_writer_block_serial,
             "upstream_writer_block_serial": block_serial,
             "upstream_writer_ea": 0x401020,
             "upstream_writer_dest_stkoff": 0x30,
@@ -71,6 +75,70 @@ def test_active_return_carrier_fact_rejects_redirect(monkeypatch) -> None:
     assert len(rejections) == 1
     assert rejections[0].fact_status == "active"
     assert rejections[0].overlap == ("228",)
+
+
+def test_carrier_writer_bypass_requires_explicit_loop_recovery_gate(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset())
+    fact = _return_carrier_fact("return:active")
+    redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [redirect],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered == [redirect]
+    assert rejections == ()
+
+
+def test_carrier_writer_bypass_rejects_loop_recovery_without_const_feed(
+    monkeypatch,
+) -> None:
+    _patch_const_refs(monkeypatch, frozenset())
+    fact = _return_carrier_fact("return:active")
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [RedirectGoto(from_serial=132, old_target=2, new_target=93)],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        reject_carrier_writer_bypass=True,
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].reason == "carrier_writer_bypass"
+    assert rejections[0].fact_status == "active"
+    assert rejections[0].overlap == ()
+    assert rejections[0].const_written == ()
+
+
+def test_carrier_writer_bypass_uses_return_slot_writer_block(monkeypatch) -> None:
+    _patch_const_refs(monkeypatch, frozenset())
+    fact = _return_carrier_fact(
+        "return:active",
+        block_serial=41,
+        return_writer_block_serial=93,
+    )
+    view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
+
+    filtered, rejections = filter_return_carrier_fact_redirects(
+        [RedirectGoto(from_serial=132, old_target=2, new_target=93)],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+        reject_carrier_writer_bypass=True,
+    )
+
+    assert filtered == []
+    assert len(rejections) == 1
+    assert rejections[0].reason == "carrier_writer_bypass"
+    assert rejections[0].fact_status == "active_writer"
+    assert rejections[0].hazard_block == 93
 
 
 def test_identity_lost_fact_without_target_block_is_ignored(monkeypatch) -> None:

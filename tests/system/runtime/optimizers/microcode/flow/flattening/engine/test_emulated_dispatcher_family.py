@@ -520,6 +520,15 @@ def _reg_mop(reg: int, size: int = 8) -> SimpleNamespace:
     return SimpleNamespace(t=ida_hexrays.mop_r, size=size, r=reg)
 
 
+def _num_mop(value: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=size,
+        value=value,
+        nnn=SimpleNamespace(value=value),
+    )
+
+
 def _flow_graph_for_return_carrier_bypass() -> FlowGraph:
     def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
         return BlockSnapshot(
@@ -589,6 +598,127 @@ def test_dispatcher_loop_recovery_rejects_return_slot_writer_bypass(
         modifications=(
             RedirectGoto(from_serial=1, old_target=2, new_target=3),
         ),
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_dispatcher_loop_recovery_rejects_semantic_return_writer_bypass() -> None:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    writer = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_stk_mop(0x10),
+        d=_stk_mop(0x8),
+        ea=0x401050,
+    )
+    mba = _FakeMba({10: _FakeBlock(writer)})
+    flow_graph = FlowGraph(
+        blocks={
+            0: _block(0, (8, 9), ()),
+            3: _block(3, (11,), (5, 8, 9, 10)),
+            5: _block(5, (3,), (10,)),
+            8: _block(8, (3,), (0,)),
+            9: _block(9, (3,), (0,)),
+            10: _block(10, (3,), (8,)),
+            11: _block(11, (), (3, 9)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    phase_context = SimpleNamespace(
+        semantic_reference_program=SimpleNamespace(
+            nodes=(
+                SimpleNamespace(
+                    node_index=0,
+                    handler_serial=11,
+                    entry_anchor=11,
+                ),
+            ),
+            lines=(
+                SimpleNamespace(
+                    node_index=0,
+                    line_kind="return",
+                    text="    return result;",
+                ),
+            ),
+        )
+    )
+
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=9, old_target=3, new_target=11),
+            RedirectGoto(from_serial=10, old_target=3, new_target=5),
+            RedirectGoto(from_serial=8, old_target=3, new_target=10),
+        ),
+        phase_context=phase_context,
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_dispatcher_loop_recovery_rejects_semantic_const_zero_return() -> None:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    const_zero_return = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_num_mop(0),
+        d=_reg_mop(0),
+        ea=0x401060,
+    )
+    mba = _FakeMba({11: _FakeBlock(const_zero_return)})
+    flow_graph = FlowGraph(
+        blocks={
+            0: _block(0, (9,), ()),
+            3: _block(3, (11,), (9,)),
+            9: _block(9, (3,), (0,)),
+            11: _block(11, (), (3, 9)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    phase_context = SimpleNamespace(
+        semantic_reference_program=SimpleNamespace(
+            nodes=(
+                SimpleNamespace(
+                    node_index=0,
+                    handler_serial=11,
+                    entry_anchor=11,
+                ),
+            ),
+            lines=(
+                SimpleNamespace(
+                    node_index=0,
+                    line_kind="return",
+                    text="    return result;",
+                ),
+            ),
+        )
+    )
+
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=9, old_target=3, new_target=11),
+        ),
+        phase_context=phase_context,
     ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
 
 
