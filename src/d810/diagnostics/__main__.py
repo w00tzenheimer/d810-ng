@@ -60,7 +60,7 @@ from d810.recon.flow.bst_resolution import (
     persist_bst_resolutions,
     resolve_state_transition_facts,
 )
-from d810.recon.flow.state_dispatcher_resolution import (
+from d810.diagnostics.state_dispatcher_resolution import (
     load_latest_state_dispatcher_map_from_db,
     persist_state_dispatch_resolutions,
     resolve_state_transition_facts_with_dispatcher,

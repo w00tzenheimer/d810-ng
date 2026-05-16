@@ -1,8 +1,9 @@
 """Switch-table dispatcher analysis.
 
-Extracts handler maps from ``m_jtbl`` switch tables. The IDA-dependent
-``analyze_switch_table_dispatcher()`` walks the MBA; the pure-logic
-``build_handler_map_from_cases()`` constructs the shared IR.
+Extracts exact state-dispatcher rows from ``m_jtbl`` switch tables. The
+IDA-dependent ``analyze_switch_table_dispatcher()`` walks the MBA; the
+pure-logic ``build_state_dispatcher_map_from_cases()`` constructs the shared
+shape-neutral state-machine IR.
 """
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ from dataclasses import dataclass
 
 from d810.core.logging import getLogger
 from d810.recon.flow.dispatcher_detection import DispatcherType
-from d810.recon.flow.dispatcher_handler_map import DispatcherHandlerMap
+from d810.recon.flow.dispatcher_map import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 
 logger = getLogger("D810.recon.switch_table")
 
@@ -19,54 +23,78 @@ logger = getLogger("D810.recon.switch_table")
 class SwitchTableResult:
     """Bundled result from switch-table dispatcher analysis.
 
-    Couples the handler map with the live state variable mop so that
+    Couples the exact dispatcher map with the live state variable mop so that
     consumers don't need a second MBA scan.
     """
 
-    handler_map: DispatcherHandlerMap
+    state_dispatcher_map: StateDispatcherMap
     state_var_mop: object  # ida_hexrays.mop_t
 
 
-def build_handler_map_from_cases(
-    cases: list[tuple[int, int]],
+def build_state_dispatcher_map_from_cases(
+    cases: list[tuple[int | None, int]],
     dispatcher_serial: int,
     dispatcher_blocks: frozenset[int],
     state_var_stkoff: int,
     initial_state: int | None = None,
-) -> DispatcherHandlerMap | None:
-    """Build a DispatcherHandlerMap from (case_value, target_serial) pairs.
+) -> StateDispatcherMap:
+    """Build exact state-dispatcher rows from switch case targets.
 
-    Pure logic -- no IDA dependency.  Self-loop targets (pointing back to a
-    dispatcher block) are skipped.  Aliased targets (multiple case values
-    mapping to the same handler) cause rejection (returns None) because
-    the lossy collapse would drop valid incoming/final states from
-    ``handler_state_map`` and miss transitions.  Full alias support is
-    deferred to Phase 2.
+    Pure logic -- no IDA dependency. Exact case aliases and dispatcher
+    self-loops are preserved in ``StateDispatcherMap.rows``. A default case
+    (``case_value is None``) is represented separately because it is not an
+    exact state-constant row.
     """
-    handler_state_map: dict[int, int] = {}
-    aliases_found: list[tuple[int, int]] = []
+    target_counts: dict[int, int] = {}
     for case_value, target_serial in cases:
-        if target_serial in dispatcher_blocks:
+        if case_value is not None and int(target_serial) not in dispatcher_blocks:
+            target = int(target_serial)
+            target_counts[target] = target_counts.get(target, 0) + 1
+
+    rows: list[StateDispatcherRow] = []
+    default_target: int | None = None
+    default_kind: str | None = None
+    for case_value, target_serial in cases:
+        target = int(target_serial)
+        if case_value is None:
+            default_target = target
+            default_kind = (
+                "dispatcher_default_self_loop"
+                if target in dispatcher_blocks else "dispatcher_default"
+            )
             continue
-        if target_serial not in handler_state_map:
-            handler_state_map[target_serial] = case_value
+        state_const = int(case_value) & 0xFFFFFFFFFFFFFFFF
+        if target in dispatcher_blocks:
+            row_kind = "dispatcher_self_loop"
+            branch_kind = "switch_self_loop"
+        elif target_counts.get(target, 0) > 1:
+            row_kind = "handler_alias"
+            branch_kind = "switch_case_alias"
         else:
-            aliases_found.append((case_value, target_serial))
-    if aliases_found:
-        logger.info(
-            "build_handler_map_from_cases: rejecting switch with %d aliased "
-            "case(s): %s (Phase 2 needed for alias support)",
-            len(aliases_found),
-            [(hex(cv), s) for cv, s in aliases_found],
+            row_kind = "handler"
+            branch_kind = "switch_case"
+        rows.append(
+            StateDispatcherRow(
+                state_const=state_const,
+                target_block=target,
+                dispatcher_block=int(dispatcher_serial),
+                compare_block=int(dispatcher_serial),
+                branch_kind=branch_kind,
+                source=DispatcherType.SWITCH_TABLE,
+                confidence=1.0,
+                row_kind=row_kind,
+            )
         )
-        return None
-    return DispatcherHandlerMap(
-        handler_state_map=handler_state_map,
-        dispatcher_serial=dispatcher_serial,
+    return StateDispatcherMap(
+        rows=tuple(rows),
+        dispatcher_entry_block=int(dispatcher_serial),
         dispatcher_blocks=dispatcher_blocks,
         state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=None,
         source=DispatcherType.SWITCH_TABLE,
         initial_state=initial_state,
+        default_target_block=default_target,
+        default_row_kind=default_kind,
     )
 
 
@@ -149,29 +177,69 @@ def _find_state_var_mop(jtbl_insn: object) -> object | None:
 def _extract_cases_from_mcases(
     mcases_mop: object,
     dispatcher_serial: int,
-) -> list[tuple[int, int]]:
+) -> list[tuple[int | None, int]]:
     """Extract (case_value, target_serial) pairs from an mcases_t operand.
 
-    Default cases (empty value list) are skipped.
+    Default cases are represented as ``(None, target_serial)``.
     """
-    cases: list[tuple[int, int]] = []
+    cases: list[tuple[int | None, int]] = []
     mcases = mcases_mop.c
     for values, target in zip(mcases.values, mcases.targets):
-        if target == dispatcher_serial:
-            continue
         if len(values) == 0:
+            cases.append((None, target))
             continue
-        cases.append((values[0], target))
+        for value in values:
+            cases.append((value, target))
     return cases
 
 
+def _maturity_label(mba: object) -> str:
+    value = getattr(mba, "maturity", None)
+    if value is None:
+        return "unknown"
+    try:
+        import ida_hexrays  # type: ignore[import-untyped]
+
+        for name in dir(ida_hexrays):
+            if (
+                name.startswith("MMAT_")
+                and int(getattr(ida_hexrays, name)) == int(value)
+            ):
+                return name
+    except Exception:
+        pass
+    return str(value)
+
+
+def _observe_state_dispatcher_map(
+    mba: object,
+    dispatch_map: StateDispatcherMap,
+) -> None:
+    try:
+        from d810.recon.observability import observe_state_dispatcher_rows
+
+        observe_state_dispatcher_rows(
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+            maturity=_maturity_label(mba),
+            dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
+            dispatcher_kind=dispatch_map.source.name,
+            rows=dispatch_map.rows,
+        )
+    except Exception:
+        logger.debug(
+            "switch-table state dispatcher observation failed",
+            exc_info=True,
+        )
+
+
 def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
-    """Walk MBA looking for m_jtbl dispatchers and extract handler maps.
+    """Walk MBA looking for m_jtbl dispatchers and extract exact rows.
 
     Scans all blocks for ``m_jtbl`` tail instructions. For the first
     qualifying switch (>= 2 cases after filtering), extracts the case-target
-    mapping, identifies the state variable, and returns both the handler map
-    and the live ``mop_t`` in a single ``SwitchTableResult``.
+    mapping, identifies the state variable, and returns both the exact
+    state-dispatcher map and the live ``mop_t`` in a single
+    ``SwitchTableResult``.
 
     Returns:
         ``SwitchTableResult`` if a switch-table dispatcher was found,
@@ -210,14 +278,14 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
             continue
 
         dispatcher_blocks = frozenset({serial})
-        handler_map = build_handler_map_from_cases(
+        state_dispatcher_map = build_state_dispatcher_map_from_cases(
             cases=cases,
             dispatcher_serial=serial,
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=stkoff,
         )
-        if handler_map is None:
-            continue
+        _observe_state_dispatcher_map(mba, state_dispatcher_map)
+        handler_map = state_dispatcher_map.to_dispatcher_handler_map()
 
         logger.info(
             "Switch-table dispatcher at blk[%d]: %d handlers, stkoff=0x%X",
@@ -225,6 +293,9 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
             len(handler_map.handler_state_map),
             stkoff,
         )
-        return SwitchTableResult(handler_map=handler_map, state_var_mop=state_var_mop)
+        return SwitchTableResult(
+            state_dispatcher_map=state_dispatcher_map,
+            state_var_mop=state_var_mop,
+        )
 
     return None
