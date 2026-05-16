@@ -1937,6 +1937,134 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     assert switch_fact_calls == [(mba, dispatch_map, "tigress_switch")]
 
 
+def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=5,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(
+                serial=2,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(5, 7),
+                preds=(0, 5),
+                flags=0,
+                start_ea=0x401002,
+                insn_snapshots=(),
+            ),
+            5: BlockSnapshot(
+                serial=5,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x401005,
+                insn_snapshots=(),
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(2,),
+                flags=0,
+                start_ea=0x401007,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(dispatcher_entry_serial=2),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact,),
+        ),
+    )
+
+    assert blockers == ()
+    assert modifications == (
+        RedirectGoto(from_serial=5, old_target=2, new_target=7),
+    )
+
+
+def test_tigress_switch_transition_facts_reject_shared_source() -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=5,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(
+                serial=2,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(5, 7),
+                preds=(5,),
+                flags=0,
+                start_ea=0x401002,
+                insn_snapshots=(),
+            ),
+            5: BlockSnapshot(
+                serial=5,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(0, 1),
+                flags=0,
+                start_ea=0x401005,
+                insn_snapshots=(),
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(2,),
+                flags=0,
+                start_ea=0x401007,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(dispatcher_entry_serial=2),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact,),
+        ),
+    )
+
+    assert modifications == ()
+    assert blockers == ("tigress_switch_transition_source_not_owned",)
+
+
 def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     monkeypatch,
 ) -> None:
