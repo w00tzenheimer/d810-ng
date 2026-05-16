@@ -40,6 +40,16 @@ class ByteTailRuntimeEvidenceProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class StaticByteTailRuntimeEvidenceProvider:
+    """Provider for already-materialized in-memory byte-tail evidence."""
+
+    evidence: ByteTailRuntimeEvidence
+
+    def byte_tail_runtime_evidence(self, mba: Any) -> ByteTailRuntimeEvidence:
+        return self.evidence
+
+
 def normalize_byte_tail_runtime_evidence(
     provider: ByteTailRuntimeEvidenceProvider | None,
     mba: Any,
@@ -59,6 +69,7 @@ def normalize_byte_tail_runtime_evidence(
 __all__ = [
     "ByteTailRuntimeEvidence",
     "ByteTailRuntimeEvidenceProvider",
+    "StaticByteTailRuntimeEvidenceProvider",
     "TerminalTailPlannerEvidence",
     "normalize_byte_tail_runtime_evidence",
 ]
