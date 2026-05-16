@@ -133,6 +133,16 @@ class TestHodurBaselines:
         print(f"  Expected: {expected_stats}")
         print(f"  Actual:   {actual}")
 
+        if func_name == "sub_7FFD3338C040":
+            assert "return 0;" not in code_after, (
+                "sub_7FFD3338C040 return-carrier regression: "
+                "the AFTER pseudocode returns 0 instead of the reference constant"
+            )
+            assert "return 0x5644FD01B1049C4BLL;" in code_after, (
+                "sub_7FFD3338C040 return-carrier regression: "
+                "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
+            )
+
         # Show per-metric diff for any mismatches
         diffs = {}
         for metric in expected_stats:

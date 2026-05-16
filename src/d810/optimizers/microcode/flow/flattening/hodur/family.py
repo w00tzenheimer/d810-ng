@@ -305,8 +305,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 bst_result = None
 
         if bst_result is None and self._switch_table_map is not None:
-            bst_result = self._switch_table_map.to_bst_result()
-            bst_dispatcher_serial = self._switch_table_map.dispatcher_serial
+            switch_handler_map = self._switch_table_map.to_dispatcher_handler_map()
+            bst_result = switch_handler_map.to_bst_result()
+            bst_dispatcher_serial = self._switch_table_map.dispatcher_entry_block
             self._logger.debug(
                 "Using synthetic BST from switch-table analysis: %d handlers, dispatcher=blk[%d]",
                 len(bst_result.handler_state_map),
@@ -990,7 +991,8 @@ class HodurStrategyFamily(CFFStrategyFamily):
         if result is None:
             return None
 
-        handler_map = result.handler_map
+        state_dispatcher_map = result.state_dispatcher_map
+        handler_map = state_dispatcher_map.to_dispatcher_handler_map()
         state_var_mop = result.state_var_mop
 
         self._logger.info(
@@ -1050,6 +1052,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
             len(state_machine.transitions),
         )
 
-        self._switch_table_map = handler_map
+        self._switch_table_map = state_dispatcher_map
         self._state_machine = state_machine
         return state_machine

@@ -36,6 +36,9 @@ from d810.recon.flow.return_frontier_carrier_facts import (
     detect_return_frontier_carrier_facts,
 )
 from d810.recon.flow.transition_builder import TransitionResult
+from d810.recon.flow.transition_trust import (
+    transition_is_trusted_for_explicit_conditional_bridge,
+)
 from d810.recon.flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
@@ -47,7 +50,7 @@ from d810.recon.flow.transition_report import (
 
 logger = logging.getLogger("D810.recon.flow.linearized_state_dag", logging.INFO)
 
-_SUPPLEMENTAL_ANCHOR_DEBUG_STATES = frozenset({0x00C0C59F, 0x0B2FECE0, 0x4C77464F})
+_SUPPLEMENTAL_ANCHOR_DEBUG_STATES = frozenset({0x00C0C59F, 0x0B2FECE0, 0x4C77464F, 0x790A1FEB})
 _ENTRY_ANCHOR_DEBUG_STATES = frozenset({0x00C0C59F, 0x0B2FECE0, 0x385BBE2D})
 _SUB7FFD_CORRIDOR_DISPATCHER_ANCHOR_STATES = frozenset({0x0B2FECE0, 0x385BBE2D})
 _SUB7FFD_CORRIDOR_DISPATCHER_EXACT_STATES = frozenset()
@@ -1706,6 +1709,42 @@ def _resolve_exact_cover_anchor(
     return int(cover_dispatcher_row.target)
 
 
+def _is_range_backed_only_handoff_anchor(
+    state_value: int,
+    anchor: int,
+    report: DispatcherTransitionReport,
+    dispatcher: IntervalDispatcher | None,
+) -> bool:
+    """Return true when a handoff anchor is only shared interval evidence.
+
+    Stable BST handoff promotion is allowed to claim an anchor only when the
+    target block is owned by the supplemental state.  A block that appears only
+    through ``handler_range_map`` is a shared interval/fallback body: it may be
+    the correct control-flow corridor for many state values, but it is not safe
+    to rewrite as if it were an exact semantic handler for this state.  Exact
+    dispatcher rows remain acceptable because they identify a concrete
+    state-to-target binding.
+    """
+
+    masked = int(state_value) & 0xFFFFFFFF
+    anchor_serial = int(anchor)
+    if anchor_serial in report.handler_state_map:
+        return False
+    if anchor_serial not in report.handler_range_map:
+        return False
+
+    row = dispatcher.lookup_row(masked) if dispatcher is not None else None
+    if (
+        row is not None
+        and int(row.target) == anchor_serial
+        and int(row.lo) == masked
+        and int(row.hi) == (masked + 1)
+    ):
+        return False
+
+    return True
+
+
 def _find_exact_cover_row(
     state_value: int,
     report: DispatcherTransitionReport,
@@ -2323,6 +2362,14 @@ def _resolve_sub7ffd_corridor_dispatcher_anchor_override(
     if selected_anchor not in competing_anchors:
         return None
     return dispatcher_anchor
+
+
+def _is_supported_explicit_conditional_transition(
+    transition: object,
+) -> bool:
+    """Return whether recon trust evidence can authorize explicit bridging."""
+
+    return transition_is_trusted_for_explicit_conditional_bridge(transition)
 
 
 def _suppress_bst_extension_alias_edges(
@@ -4321,6 +4368,10 @@ def _discover_supplemental_states(
     supplemental_source_contexts: dict[int, set[tuple[int, int]]] = {}
     terminal_alias_states: set[int] = set()
     terminal_state_cache: dict[int, bool] = {}
+    bst_exit_classification_cache: dict[
+        int, tuple[ExitStateKind | None, int | None]
+    ] = {}
+    bst_handoff_anchor_cache: dict[int, int | None] = {}
     protected_exact_keys = _protected_exact_point_keys(report)
     protected_exact_handlers = {
         int(key.handler_serial) for key in protected_exact_keys
@@ -4374,14 +4425,135 @@ def _discover_supplemental_states(
                 int(report.dispatcher_entry_serial),
                 masked,
             )
+            state_machine_blocks = set(report.bst_node_blocks) | handler_entry_blocks
             if (
                 resolved is not None
-                and resolved not in bst_block_set
+                and resolved not in state_machine_blocks
                 and can_reach_return_snapshot(flow_graph, resolved)
             ):
-                is_terminal = True
+                if mba is not None and state_var_stkoff is not None:
+                    resolved_kind = classify_exit_state(
+                        mba=mba,
+                        final_state=masked,
+                        incoming_state=None,
+                        successor_serial=int(resolved),
+                        state_var_stkoff=int(state_var_stkoff),
+                        bst_node_blocks=bst_block_set,
+                    )
+                    is_terminal = resolved_kind in (
+                        ExitStateKind.TERMINAL,
+                        ExitStateKind.UNCLASSIFIED,
+                    )
+                else:
+                    resolved_kind = None
+                    is_terminal = True
+                if not is_terminal:
+                    logger.info(
+                        "supplemental terminal probe: state 0x%X "
+                        "resolved=blk[%d] kind=%s -> keep state handoff",
+                        masked,
+                        int(resolved),
+                        (
+                            resolved_kind.value
+                            if resolved_kind is not None
+                            else "unclassified"
+                        ),
+                    )
+                else:
+                    logger.info(
+                        "supplemental terminal probe: state 0x%X "
+                        "resolved=blk[%d] kind=%s -> terminal alias",
+                        masked,
+                        int(resolved),
+                        (
+                            resolved_kind.value
+                            if resolved_kind is not None
+                            else "unclassified"
+                        ),
+                    )
         terminal_state_cache[masked] = is_terminal
         return is_terminal
+
+    def classify_supplemental_bst_exit(
+        state_value: int,
+    ) -> tuple[ExitStateKind | None, int | None]:
+        """Classify the BST resolution for a supplemental state value.
+
+        Supplemental states often come from a semantic handler writing a state
+        and re-entering the equality-chain dispatcher. If the dispatcher would
+        resolve that state into a non-row block, the classification of that
+        block determines whether the state is a real local handoff or just a
+        transient corridor that should stay out of this phase.
+        """
+
+        masked = int(state_value) & 0xFFFFFFFF
+        cached = bst_exit_classification_cache.get(masked)
+        if cached is not None:
+            return cached
+
+        result: tuple[ExitStateKind | None, int | None] = (None, None)
+        if bst_block_set and mba is not None and state_var_stkoff is not None:
+            resolved = resolve_exit_via_bst_default_snapshot(
+                flow_graph,
+                int(report.dispatcher_entry_serial),
+                masked,
+            )
+            state_machine_blocks = set(report.bst_node_blocks) | handler_entry_blocks
+            if resolved is not None and resolved not in state_machine_blocks:
+                resolved_kind = classify_exit_state(
+                    mba=mba,
+                    final_state=masked,
+                    incoming_state=None,
+                    successor_serial=int(resolved),
+                    state_var_stkoff=int(state_var_stkoff),
+                    bst_node_blocks=bst_block_set,
+                )
+                result = (resolved_kind, int(resolved))
+
+        bst_exit_classification_cache[masked] = result
+        return result
+
+    def resolve_stable_bst_handoff_anchor(state_value: int) -> int | None:
+        """Return a non-BST handler anchor reached by a supplemental state.
+
+        Some OLLVM equality-chain phases write a state, re-enter the BST, and
+        land on a small semantic handoff block that is not itself an exact
+        dispatcher row.  The path evaluator correctly classifies these as
+        STABLE_HANDOFF instead of terminal aliases; without recording the
+        resolved block as an anchor, however, supplemental row construction can
+        fall back to an unrelated owner family and linearize only one branch.
+        """
+
+        masked = int(state_value) & 0xFFFFFFFF
+        if masked in bst_handoff_anchor_cache:
+            return bst_handoff_anchor_cache[masked]
+        anchor: int | None = None
+        resolved_kind, resolved = classify_supplemental_bst_exit(masked)
+        if resolved_kind == ExitStateKind.STABLE_HANDOFF and resolved is not None:
+            if _is_range_backed_only_handoff_anchor(
+                masked,
+                int(resolved),
+                report,
+                dispatcher,
+            ):
+                logger.info(
+                    "supplemental BST handoff: state 0x%X "
+                    "resolved=blk[%d] kind=%s -> rejected shared range-backed anchor",
+                    masked,
+                    int(resolved),
+                    resolved_kind.value,
+                )
+            else:
+                anchor = int(resolved)
+                logger.info(
+                    "supplemental BST handoff: state 0x%X "
+                    "resolved=blk[%d] kind=%s -> supplemental anchor",
+                    masked,
+                    int(resolved),
+                    resolved_kind.value,
+                )
+        bst_handoff_anchor_cache[masked] = anchor
+        return anchor
 
     if transient_entry_blocks and dispatcher is not None:
         # A state value is transient if the stale exact-match handler
@@ -4466,12 +4638,84 @@ def _discover_supplemental_states(
                 ):
                     terminal_alias_states.add(state_value)
                     logger.info(
-                        "supplemental classification: state 0x%X from handler blk[%d] exit_block=%d matches existing terminal edge and BST terminal resolution → terminal alias",
+                        "supplemental classification: state 0x%X from handler blk[%d] exit_block=%d matches existing terminal edge and BST terminal resolution -> terminal alias",
                         state_value,
                         handler_serial,
                         path.exit_block,
                     )
                     kind = ExitStateKind.TERMINAL
+                if kind == ExitStateKind.UNCLASSIFIED and succ_serial is None:
+                    resolved_kind, resolved = classify_supplemental_bst_exit(
+                        state_value
+                    )
+                    if resolved_kind == ExitStateKind.TRANSIENT_CORRIDOR:
+                        handoff_paths: tuple[HandlerPathResult, ...] = ()
+                        handoff_final_states: set[int] = set()
+                        if resolved is not None:
+                            handoff_paths = tuple(
+                                evaluate_handler_paths(
+                                    mba,
+                                    int(resolved),
+                                    state_value,
+                                    bst_block_set,
+                                    int(state_var_stkoff),
+                                    handler_entry_blocks,
+                                    flow_graph=flow_graph,
+                                    known_handler_states=existing_states,
+                                    bst_root_serial=int(report.dispatcher_entry_serial),
+                                    state_machine_blocks=(
+                                        set(bst_block_set) | handler_entry_blocks
+                                    ),
+                                )
+                            )
+                            handoff_final_states = {
+                                int(handoff_path.final_state) & 0xFFFFFFFF
+                                for handoff_path in handoff_paths
+                                if handoff_path.final_state is not None
+                            }
+                        if handoff_final_states & existing_states:
+                            collapsed_target_anchors.setdefault(
+                                state_value, set()
+                            ).add(int(resolved))
+                            logger.info(
+                                "supplemental classification: state 0x%X from "
+                                "handler blk[%d] exit_block=%d BST-resolves to "
+                                "transient corridor blk[%d] writing known "
+                                "state(s) %s -> supplemental handoff",
+                                state_value,
+                                handler_serial,
+                                path.exit_block,
+                                int(resolved) if resolved is not None else -1,
+                                ", ".join(
+                                    "0x%X" % s
+                                    for s in sorted(
+                                        handoff_final_states & existing_states
+                                    )
+                                ),
+                            )
+                            kind = ExitStateKind.STABLE_HANDOFF
+                        else:
+                            transient_states.add(state_value)
+                            logger.info(
+                                "supplemental classification: state 0x%X from "
+                                "handler blk[%d] exit_block=%d BST-resolves to "
+                                "transient corridor blk[%d] -> transient",
+                                state_value,
+                                handler_serial,
+                                path.exit_block,
+                                int(resolved) if resolved is not None else -1,
+                            )
+                            kind = ExitStateKind.TRANSIENT_CORRIDOR
+                    handoff_anchor = (
+                        resolve_stable_bst_handoff_anchor(state_value)
+                        if kind == ExitStateKind.UNCLASSIFIED
+                        else None
+                    )
+                    if handoff_anchor is not None:
+                        collapsed_target_anchors.setdefault(state_value, set()).add(
+                            handoff_anchor
+                        )
+                        kind = ExitStateKind.STABLE_HANDOFF
                 logger.info(
                     "supplemental classification: state 0x%X from handler blk[%d] "
                     "exit_block=%d succ=%s → %s",
@@ -4804,9 +5048,7 @@ def build_live_linearized_state_dag_from_graph(
             return ()
         explicit: list[ConditionalTransition] = []
         for transition in handler.transitions:
-            if not transition.is_conditional:
-                continue
-            if not transition.provenance_chain:
+            if not _is_supported_explicit_conditional_transition(transition):
                 continue
             target_handler = transition_result.handlers.get(transition.to_state)
             explicit.append(
@@ -5282,6 +5524,14 @@ def build_live_linearized_state_dag_from_graph(
                             bst_block_set,
                             state_var_stkoff,
                             handler_entry_blocks,
+                            flow_graph=flow_graph,
+                            known_handler_states=(
+                                state_constants | existing_states | set(pending_states)
+                            ),
+                            bst_root_serial=_bst_root,
+                            state_machine_blocks=(
+                                set(bst_block_set) | handler_entry_blocks
+                            ),
                         )
                     )
                     if not candidate_paths:
@@ -5325,12 +5575,12 @@ def build_live_linearized_state_dag_from_graph(
                         )
                     )
                     score = (
+                        1 if candidate_anchor in anchor_candidates else 0,
                         len(candidate_normalized_states & (existing_states | set(pending_states))),
                         max(len(path.ordered_path) for path in candidate_paths),
                         sum(1 for path in candidate_paths if path.final_state is not None),
                         len(candidate_normalized_states - existing_states),
                         1 if candidate_anchor == cover_exact_anchor else 0,
-                        1 if candidate_anchor in anchor_candidates else 0,
                         1 if candidate_anchor == cover_anchor else 0,
                         -candidate_anchor,
                     )
@@ -5508,6 +5758,14 @@ def build_live_linearized_state_dag_from_graph(
                             bst_block_set,
                             state_var_stkoff,
                             handler_entry_blocks,
+                            flow_graph=flow_graph,
+                            known_handler_states=(
+                                state_constants | existing_states | set(pending_states)
+                            ),
+                            bst_root_serial=_bst_root,
+                            state_machine_blocks=(
+                                set(bst_block_set) | handler_entry_blocks
+                            ),
                         )
                     )
                     if _is_self_handoff_only_candidate(
@@ -5747,6 +6005,15 @@ def build_live_linearized_state_dag_from_graph(
                         set(report_with_supplemental.bst_node_blocks),
                         state_var_stkoff,
                         handler_entry_blocks,
+                        flow_graph=flow_graph,
+                        known_handler_states=(
+                            state_constants | existing_states | set(pending_states)
+                        ),
+                        bst_root_serial=_bst_root,
+                        state_machine_blocks=(
+                            set(report_with_supplemental.bst_node_blocks)
+                            | handler_entry_blocks
+                        ),
                     )
                 )
                 handler_paths_by_handler[anchor] = paths
