@@ -803,7 +803,8 @@ RESIZE_BUFFER_CFF_CASES = [
             "Buffer resize function with OLLVM CFF. Uses opaque constant table "
             "with complex MBA expressions for state transitions. Tests "
             "FoldReadonlyDataRule with fold_writable_constants, "
-            "FixPredecessorOfConditionalJumpBlock, and Unflattener."
+            "whole-dispatcher unflattening, and suppression of pre-recovery "
+            "scalar constant propagation."
         ),
         project="flatfold.json",
         # PE/Mach-O symbol recovery can name the opaque table differently.
@@ -815,6 +816,14 @@ RESIZE_BUFFER_CFF_CASES = [
             "n0x7BE4032F",
             "0x41698846",
             "0x3E118C46",
+            "MEMORY[0]",
+            "return nullptr",
+        ],
+        deobfuscated_contains=[
+            "sub_1800134C0(a2, a4, 0xA, 0x44);",
+            "*(_BYTE *)(i + v6) = 0;",
+            "*v5 = a4;",
+            "return (unsigned int *)(a2 + 0x10);",
         ],
         acceptable_patterns=[
             "a2 + 16",
@@ -824,9 +833,9 @@ RESIZE_BUFFER_CFF_CASES = [
         ],
         must_change=True,
         check_stats=True,
-        required_rules=["FixPredecessorOfConditionalJumpBlock"],
-        expected_rules=["FixPredecessorOfConditionalJumpBlock", "FoldReadonlyDataRule"],
-        skip="Semantically wrong: incomplete handler resolution (0 transitions) causes variable loss via IDA DCE",
+        required_rules=["Unflattener"],
+        expected_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
+        forbidden_rules=["ForwardConstantPropagationRule"],
     ),
 ]
 

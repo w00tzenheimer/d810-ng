@@ -578,9 +578,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """Merge SCCP-discovered constants into a block's const map.
 
         For each operand used in *blk* that SCCP resolved to a constant,
-        add the constant to *consts* if the variable is not already ``Const``
-        there (i.e. SCCP can only *add* knowledge, never override what the
-        simple GEN/KILL dataflow already found).
+        add the constant to *consts* only when the simple GEN/KILL dataflow has
+        no opinion yet.  ``TOP`` is an explicit overdefined/conflict result
+        from the CFG-aware lattice, so SCCP must not resurrect it to a
+        constant.  Flattened dispatchers often contain shared terminal blocks
+        and partially unreachable aliases; treating SCCP as stronger than the
+        CFG meet can fold an entry initializer into a live carrier.
 
         The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
         operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
@@ -633,6 +636,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         existing = consts.get(name, BOTTOM)
         if isinstance(existing, Const):
             return  # Simple dataflow already found a constant — keep it
+        if existing is TOP:
+            return  # Simple dataflow found a conflict/overdefinition — keep it
         consts[name] = Const(sccp_val, op.size)
 
     # meet delegates to the injected MeetStrategy
@@ -766,13 +771,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             is_shift_amount=(ins.opcode in _SHIFT_OPCODES),
         ):
             changed = True
-        # stx destination address is also an input
-        if (
-            ins.opcode == ida_hexrays.m_stx
-            and ins.d
-            and self._slow_process_operand(ins.d, env)
-        ):
-            changed = True
+        # Do not fold the destination address of m_stx.  The d operand is a
+        # memory address, not a scalar assignment target.  On unresolved
+        # dispatcher CFGs, folding a pointer carrier here can turn a shared
+        # terminal store into MEMORY[0].
         # m_call: args are in ins.d (mop_f); substitute constants into them
         if (
             ins.opcode == ida_hexrays.m_call
@@ -956,13 +958,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             return None
         if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
             return get_stack_var_name(d)
-        if ins.opcode != ida_hexrays.m_stx:
-            return None
-        if d.t == ida_hexrays.mop_S:
-            return get_stack_var_name(d)
-        base, off = extract_base_and_offset(d)
-        if base and (base_name := get_stack_var_name(base)):
-            return f"{base_name}+{off:X}" if off else base_name
         return None
 
     # is instruction a constant store into stack?
@@ -975,11 +970,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}
         ):
             return True
-        if ins.opcode == ida_hexrays.m_stx:
-            if ins.d and ins.d.t == ida_hexrays.mop_S:
-                return True
-            base, _ = extract_base_and_offset(ins.d) if ins.d else (None, 0)
-            return base is not None
         return False
 
     # extract (var,(value,size)) for constant assignment
@@ -992,10 +982,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             var = get_stack_var_name(ins.d)
         elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
             var = get_stack_var_name(ins.d)
-        else:
-            base, off = extract_base_and_offset(ins.d)
-            if base and (base_name := get_stack_var_name(base)):
-                var = f"{base_name}+{off:X}" if off else base_name
         return (var, (value, size)) if var else None
 
 
