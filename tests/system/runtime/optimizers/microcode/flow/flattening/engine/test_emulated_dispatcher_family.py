@@ -856,6 +856,157 @@ def test_ollvm_terminal_payload_backedge_requires_branch_ownership_proof() -> No
     assert rewritten[0].target_entry == 96
 
 
+def test_ollvm_terminal_payload_backedge_consumes_phase_branch_ownership_proofs() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        branch_arm: int | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            source_anchor=SimpleNamespace(
+                block_serial=96,
+                branch_arm=branch_arm,
+            ),
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_arm=1,
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        branch_arm=0,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    proof = BranchOwnershipProof(
+        proof_id="proof-selector-to-payload",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="moptracker_path_constant_non_taken_arm",
+        source_block=96,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="moptracker_branch_ownership",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        branch_ownership_proofs=(proof,),
+        logger=logger,
+    )
+
+    assert len(rewritten) == 1
+    assert rewritten[0].target_entry == 204
+    assert candidate.target_entry == 96
+
+
 def test_ollvm_terminal_payload_backedge_rejects_sibling_branch_proof() -> None:
     def _key(state: int):
         return SimpleNamespace(state_const=state)
@@ -1054,6 +1205,83 @@ def test_branch_ownership_consumer_accepts_branch_arm_identity() -> None:
 
     assert (
         emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is True
+    )
+
+
+def test_branch_ownership_retarget_requires_owned_source_or_split_plan() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(30,),
+                preds=(1, 2),
+                flags=0,
+                start_ea=0x401010,
+                insn_snapshots=(),
+            ),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(30,),
+                preds=(1,),
+                flags=0,
+                start_ea=0x401020,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=1,
+        func_ea=0x401000,
+    )
+
+    shared_direct = SimpleNamespace(
+        emission_mode="direct",
+        horizon_block=10,
+        first_shared_block=None,
+        via_pred=None,
+    )
+    owned_direct = SimpleNamespace(
+        emission_mode="direct",
+        horizon_block=20,
+        first_shared_block=None,
+        via_pred=None,
+    )
+    split_plan = SimpleNamespace(
+        emission_mode="pred_split",
+        horizon_block=20,
+        first_shared_block=10,
+        via_pred=1,
+    )
+
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            shared_direct,
+            flow_graph,
+        )
+        is False
+    )
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            owned_direct,
+            flow_graph,
+        )
+        is True
+    )
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            split_plan,
+            flow_graph,
+        )
         is True
     )
 
