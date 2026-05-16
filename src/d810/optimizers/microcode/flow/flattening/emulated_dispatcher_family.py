@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.core.typing import Protocol
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
