@@ -721,7 +721,7 @@ class D810Manager:
         if int(getattr(mba, "qty", 0) or 0) <= 0:
             return
         try:
-            from d810.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
+            from d810.hexrays.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
 
             lines = probe_byte_emit_dce(mba, byte_emit_eas)
         except Exception:
