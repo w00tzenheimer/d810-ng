@@ -60,6 +60,11 @@ from d810.recon.flow.bst_resolution import (
     persist_bst_resolutions,
     resolve_state_transition_facts,
 )
+from d810.recon.flow.state_dispatcher_resolution import (
+    load_latest_state_dispatcher_map_from_db,
+    persist_state_dispatch_resolutions,
+    resolve_state_transition_facts_with_dispatcher,
+)
 from d810.recon.flow.edge_diagnostics import (
     EdgeDiagnostic,
     classify_dag_edges,
@@ -1637,6 +1642,57 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_dispatch_resolve = sub.add_parser(
+        "state-transition-dispatch-resolutions",
+        parents=[common],
+        help=(
+            "Enrich LOCOPT-pre StateTransitionAnchorFacts with exact "
+            "state-dispatcher rows. Observability-only."
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help=(
+            "LOCOPT-pre snapshot id to enrich (default: pick the "
+            "first snapshot whose label contains MMAT_LOCOPT and "
+            "phase pre_d810)"
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--dispatcher-snap-id",
+        type=int,
+        default=None,
+        help="Snapshot id containing state_dispatcher_rows (default: latest)",
+    )
+    p_dispatch_resolve.add_argument(
+        "--block",
+        type=int,
+        default=None,
+        help="Filter output to one source block",
+    )
+    p_dispatch_resolve.add_argument(
+        "--persist",
+        action="store_true",
+        default=True,
+        help=(
+            "Persist resolutions into "
+            "state_transition_dispatch_resolutions table (default)"
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--no-persist",
+        action="store_false",
+        dest="persist",
+        help="Compute and print resolutions without writing rows",
+    )
+    p_dispatch_resolve.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     p_alt_corr = sub.add_parser(
         "dag-edge-alternate-correlations",
         parents=[common],
@@ -2518,6 +2574,95 @@ def main(argv: list[str] | None = None) -> int:
                 f"\n# {len(filtered)} resolution(s) shown "
                 f"(persisted={args.persist}, "
                 f"intervals={len(intervals)})"
+            )
+    elif args.command == "state-transition-dispatch-resolutions":
+        dispatch_map = load_latest_state_dispatcher_map_from_db(
+            conn,
+            snapshot_id=args.dispatcher_snap_id,
+        )
+        if args.snap_id is not None:
+            locopt_snap = int(args.snap_id)
+        else:
+            row = conn.execute(
+                "SELECT id FROM snapshots "
+                "WHERE label LIKE '%MMAT_LOCOPT%pre_d810%' "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                print(
+                    "no MMAT_LOCOPT pre_d810 snapshot found; "
+                    "pass --snap-id explicitly"
+                )
+                conn.close()
+                return 1
+            locopt_snap = int(row[0])
+        resolutions = resolve_state_transition_facts_with_dispatcher(
+            conn,
+            dispatch_map=dispatch_map,
+            locopt_snapshot_id=locopt_snap,
+        )
+        if args.persist:
+            persist_state_dispatch_resolutions(conn, resolutions)
+        filtered = list(resolutions)
+        if args.block is not None:
+            filtered = [
+                r for r in filtered
+                if r.source_block_serial == int(args.block)
+            ]
+        if args.json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": r.snapshot_id,
+                            "fact_id": r.fact_id,
+                            "source_block_serial": r.source_block_serial,
+                            "source_state_const_hex":
+                                r.source_state_const_hex,
+                            "resolved_next_block_serial":
+                                r.resolved_next_block_serial,
+                            "resolved_next_state_const_hex":
+                                r.resolved_next_state_const_hex,
+                            "resolved_next_state_const_u64":
+                                r.resolved_next_state_const_u64,
+                            "resolution_kind": r.resolution_kind,
+                            "resolution_reason": r.resolution_reason,
+                            "resolution_maturity": r.resolution_maturity,
+                        }
+                        for r in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(
+                "snap\tsource_blk\tsource_const\t"
+                "next_blk\tnext_const\tkind\treason\tmaturity"
+            )
+            for r in filtered:
+                print(
+                    "\t".join(
+                        (
+                            str(r.snapshot_id),
+                            str(r.source_block_serial),
+                            r.source_state_const_hex,
+                            (
+                                str(r.resolved_next_block_serial)
+                                if r.resolved_next_block_serial
+                                is not None else "-"
+                            ),
+                            r.resolved_next_state_const_hex or "-",
+                            r.resolution_kind,
+                            r.resolution_reason,
+                            r.resolution_maturity,
+                        )
+                    )
+                )
+            print(
+                f"\n# {len(filtered)} resolution(s) shown "
+                f"(persisted={args.persist}, "
+                f"rows={len(dispatch_map.rows) if dispatch_map else 0})"
             )
     elif args.command == "dag-edge-alternate-correlations":
         if args.snap_id is not None:
