@@ -28,6 +28,7 @@ from d810.core.observability import (
 # The recon facade re-exports the recon-relevant types so call sites
 # don't have to know where they live.
 from d810.core.observability_events import (
+    BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
     BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
     DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
@@ -40,6 +41,7 @@ from d810.core.observability_events import (
     ReachabilityObserved as ReachabilityObserved,
     RenderedProgramObserved as RenderedProgramObserved,
     StateDispatcherRowsObserved as StateDispatcherRowsObserved,
+    StateTransitionDispatchResolutionsObserved as StateTransitionDispatchResolutionsObserved,
 )
 from d810.core.observability_models import (
     DagEdge as DagEdge,
@@ -119,6 +121,28 @@ def observe_state_dispatcher_rows(
             if dispatcher_entry_block is not None else None
         ),
         dispatcher_kind=str(dispatcher_kind),
+        rows=tuple(rows),
+    ))
+
+
+def observe_state_transition_dispatch_resolutions(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish exact state-dispatcher transition resolution rows."""
+    _emit(StateTransitionDispatchResolutionsObserved(
+        snapshot=snapshot,
+        rows=tuple(rows),
+    ))
+
+
+def observe_branch_ownership_proofs(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish conditional branch ownership proof rows."""
+    _emit(BranchOwnershipProofsObserved(
+        snapshot=snapshot,
         rows=tuple(rows),
     ))
 
@@ -239,6 +263,8 @@ def diagnostics_enabled() -> bool:
             RenderedProgramObserved,
             ReachabilityObserved,
             StateDispatcherRowsObserved,
+            StateTransitionDispatchResolutionsObserved,
+            BranchOwnershipProofsObserved,
         )
     )
 
@@ -246,6 +272,7 @@ def diagnostics_enabled() -> bool:
 __all__ = [
     # Event dataclasses
     "BstIntervalDispatcherObserved",
+    "BranchOwnershipProofsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
@@ -257,6 +284,7 @@ __all__ = [
     "ReachabilityObserved",
     "RenderedProgramObserved",
     "StateDispatcherRowsObserved",
+    "StateTransitionDispatchResolutionsObserved",
     # Neutral model types (kept here for backward compatibility)
     "DagEdge",
     "DagNode",
@@ -267,6 +295,8 @@ __all__ = [
     "observe_dag",
     "observe_bst_interval_dispatcher",
     "observe_state_dispatcher_rows",
+    "observe_state_transition_dispatch_resolutions",
+    "observe_branch_ownership_proofs",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",

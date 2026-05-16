@@ -96,6 +96,22 @@ class StateDispatcherRowsObserved:
 
 
 @dataclass(frozen=True)
+class StateTransitionDispatchResolutionsObserved:
+    """Recon observed transition resolutions through exact dispatcher rows."""
+
+    snapshot: SnapshotRef
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class BranchOwnershipProofsObserved:
+    """Recon observed conditional branch ownership proof rows."""
+
+    snapshot: SnapshotRef
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class DagLocalFactsObserved:
     """Recon observed node-local DAG facts for a LinearizedStateDag.
 
@@ -218,6 +234,23 @@ class CfgProvenanceObserved:
 
 
 @dataclass(frozen=True)
+class CfgProvenanceForLatestSnapshot:
+    """CFG provenance that should attach to the latest function snapshot.
+
+    Most CFG mutation provenance is naturally tied to the next MBA
+    capture, so :class:`CfgProvenanceObserved` buffers until that
+    capture occurs. Recon and planning diagnostics can be late-bound:
+    they may explain why a rewrite was *not* selected, so there may be
+    no subsequent snapshot to flush against. This event lets those
+    diagnostics use the same ``cfg_provenance`` table while explicitly
+    requesting "latest snapshot for this function" attribution.
+    """
+
+    func_ea: int
+    events: tuple[CfgProvenanceObserved, ...]
+
+
+@dataclass(frozen=True)
 class WatchBlockTransitionObserved:
     """DeferredGraphModifier.apply observed a watch-block shape transition."""
 
@@ -257,6 +290,7 @@ __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
     # Recon
+    "BranchOwnershipProofsObserved",
     "BstIntervalDispatcherObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
@@ -270,8 +304,10 @@ __all__ = [
     "ReachabilityObserved",
     "RenderedProgramObserved",
     "StateDispatcherRowsObserved",
+    "StateTransitionDispatchResolutionsObserved",
     # CFG
     "BlockLineageDrainRequested",
+    "CfgProvenanceForLatestSnapshot",
     "CfgProvenanceObserved",
     "WatchBlockTransitionObserved",
 ]

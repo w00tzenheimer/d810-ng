@@ -34,6 +34,7 @@ def test_create_tables_creates_all_expected_tables():
     assert "fact_conflicts" in tables
     assert "state_dispatcher_rows" in tables
     assert "state_transition_dispatch_resolutions" in tables
+    assert "branch_ownership_proofs" in tables
 
 
 def test_create_tables_idempotent():

@@ -34,6 +34,7 @@ import threading
 from d810.core import logging as _d810_logging
 from d810.core.diag import get_diag_db
 from d810.core.diag.snapshot import (
+    snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
     snapshot_dag_frontier_closure_diagnostics,
     snapshot_dag,
@@ -47,6 +48,7 @@ from d810.core.diag.snapshot import (
     snapshot_reachability,
     snapshot_rendered_program,
     snapshot_state_dispatcher_rows,
+    snapshot_state_transition_dispatch_resolutions,
     snapshot_watch_transition,
 )
 from d810.core.observability import (
@@ -58,8 +60,10 @@ from d810.core.observability import (
 )
 from d810.core.observability_events import (
     BlockLineageDrainRequested,
+    BranchOwnershipProofsObserved,
     BstIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,
+    CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved,
     DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved,
@@ -73,6 +77,7 @@ from d810.core.observability_events import (
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
+    StateTransitionDispatchResolutionsObserved,
     WatchBlockTransitionObserved,
 )
 
@@ -300,6 +305,28 @@ def _flush_pending_state_dispatcher_rows(
         )
 
 
+def _handle_state_transition_dispatch_resolutions(
+    ev: StateTransitionDispatchResolutionsObserved,
+) -> None:
+    conn = _conn_for(ev.snapshot)
+    snap_id = _resolve_snapshot_id(ev.snapshot)
+    if conn is None or snap_id is None:
+        return
+    snapshot_state_transition_dispatch_resolutions(
+        conn,
+        snap_id,
+        ev.rows,
+    )
+
+
+def _handle_branch_ownership_proofs(ev: BranchOwnershipProofsObserved) -> None:
+    conn = _conn_for(ev.snapshot)
+    snap_id = _resolve_snapshot_id(ev.snapshot)
+    if conn is None or snap_id is None:
+        return
+    snapshot_branch_ownership_proofs(conn, snap_id, ev.rows)
+
+
 def _handle_dag_local_facts(ev: DagLocalFactsObserved) -> None:
     conn = _conn_for(ev.snapshot)
     snap_id = _resolve_snapshot_id(ev.snapshot)
@@ -459,12 +486,53 @@ def _flush_pending_provenance(conn: sqlite3.Connection, snap_id: int) -> None:
     with _provenance_lock:
         events = list(_pending_provenance)
         _pending_provenance.clear()
+    _insert_cfg_provenance_events(conn, snap_id, events)
+
+
+def _handle_cfg_provenance_latest(
+    ev: CfgProvenanceForLatestSnapshot,
+) -> None:
+    """Persist CFG provenance rows under the latest snapshot for ``func_ea``."""
+    if not ev.events:
+        return
+    try:
+        conn = get_diag_db(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+    row = conn.execute(
+        "SELECT id FROM snapshots WHERE func_ea_hex=? "
+        "ORDER BY id DESC LIMIT 1",
+        (func_hex,),
+    ).fetchone()
+    if row is None:
+        return
+    _insert_cfg_provenance_events(conn, int(row[0]), ev.events)
+
+
+def _insert_cfg_provenance_events(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    events: tuple[CfgProvenanceObserved, ...] | list[CfgProvenanceObserved],
+) -> None:
+    """Insert CFG provenance rows under ``snap_id``."""
     if not events:
         return
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) FROM cfg_provenance "
+            "WHERE snapshot_id=?",
+            (int(snap_id),),
+        ).fetchone()
+        next_seq = (int(row[0]) + 1) if row is not None else 0
+    except Exception:
+        next_seq = 0
     rows = [
         (
             int(snap_id),
-            seq_idx,
+            next_seq + seq_idx,
             ev.pass_name,
             ev.action,
             int(ev.block_serial),
@@ -516,6 +584,11 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (BstIntervalDispatcherObserved, _handle_bst_interval_dispatcher),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
+    (
+        StateTransitionDispatchResolutionsObserved,
+        _handle_state_transition_dispatch_resolutions,
+    ),
+    (BranchOwnershipProofsObserved, _handle_branch_ownership_proofs),
     (DagObserved, _handle_dag),
     (
         DagFrontierClosureDiagnosticsObserved,
@@ -531,6 +604,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (RenderedProgramObserved, _handle_rendered_program),
     (ReachabilityObserved, _handle_reachability),
     (CfgProvenanceObserved, _handle_cfg_provenance),
+    (CfgProvenanceForLatestSnapshot, _handle_cfg_provenance_latest),
     (WatchBlockTransitionObserved, _handle_watch_block_transition),
 )
 
