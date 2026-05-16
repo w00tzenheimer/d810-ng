@@ -196,3 +196,34 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
         )
         == 122
     )
+
+
+def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
+    flow_graph = _SnapshotFlowGraph(
+        {
+            6: _SnapshotBlock(
+                6,
+                (20, 122),
+                opcode=sma.ida_hexrays.m_jnz,
+                cmp_value=0x1000,
+            ),
+            20: _SnapshotBlock(20, (8,)),
+            8: _SnapshotBlock(8, ()),
+            122: _SnapshotBlock(
+                122,
+                (2,),
+                opcode=sma.ida_hexrays.m_mov,
+                cmp_value=0xE581B47B,
+                insn_count=2,
+            ),
+        }
+    )
+
+    assert (
+        sma.resolve_exit_via_bst_default_snapshot(
+            flow_graph,
+            6,
+            0x1000,
+        )
+        == 20
+    )

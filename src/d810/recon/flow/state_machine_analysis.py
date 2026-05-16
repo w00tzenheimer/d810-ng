@@ -885,19 +885,70 @@ def eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
 _BST_CMP_OPCODES: frozenset = frozenset()
 
 
-def _is_trivial_bst_connector_snapshot(block: object) -> bool:
+def _is_bst_comparison_snapshot(
+    block: object | None,
+    *,
+    state_var_ref: tuple[int, int] | None = None,
+    state_var_stkoff: int | None = None,
+) -> bool:
+    """Return whether *block* continues the current BST comparison walk."""
+
+    if block is None or getattr(block, "nsucc", 0) != 2:
+        return False
+    tail = getattr(block, "tail", None)
+    opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
+    if opcode not in _BST_CMP_OPCODES:
+        return False
+    l_mop = getattr(tail, "l", None)
+    r_mop = getattr(tail, "r", None)
+    if l_mop is None or r_mop is None:
+        return False
+    if getattr(r_mop, "t", None) != 2:
+        return False
+    if state_var_ref is not None:
+        if (
+            getattr(l_mop, "t", None),
+            getattr(l_mop, "size", None),
+        ) != state_var_ref:
+            return False
+        if (
+            getattr(l_mop, "t", None) == 3
+            and state_var_stkoff is not None
+            and getattr(l_mop, "stkoff", None) != state_var_stkoff
+        ):
+            return False
+    return True
+
+
+def _is_trivial_bst_connector_snapshot(
+    block: object,
+    flow_graph: FlowGraph,
+    *,
+    state_var_ref: tuple[int, int] | None = None,
+    state_var_stkoff: int | None = None,
+) -> bool:
     """Return whether *block* is only connector glue inside a dispatcher walk."""
 
     if getattr(block, "nsucc", 0) != 1:
         return False
     insns = tuple(getattr(block, "insn_snapshots", ()) or ())
     if not insns:
-        return True
-    if len(insns) != 1:
+        pass
+    elif len(insns) == 1:
+        tail = getattr(block, "tail", None)
+        opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
+        if opcode != getattr(ida_hexrays, "m_goto", None):
+            return False
+    else:
         return False
-    tail = getattr(block, "tail", None)
-    opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
-    return opcode == getattr(ida_hexrays, "m_goto", None)
+    succs = tuple(getattr(block, "succs", ()) or ())
+    if len(succs) != 1:
+        return False
+    return _is_bst_comparison_snapshot(
+        flow_graph.get_block(int(succs[0])),
+        state_var_ref=state_var_ref,
+        state_var_stkoff=state_var_stkoff,
+    )
 
 
 def resolve_exit_via_bst_default_snapshot(
@@ -926,7 +977,12 @@ def resolve_exit_via_bst_default_snapshot(
         if (
             blk_snap is not None
             and current_serial != bst_default_serial
-            and _is_trivial_bst_connector_snapshot(blk_snap)
+            and _is_trivial_bst_connector_snapshot(
+                blk_snap,
+                flow_graph,
+                state_var_ref=state_var_ref,
+                state_var_stkoff=state_var_stkoff_local,
+            )
         ):
             current_serial = int(blk_snap.succs[0])
             continue
