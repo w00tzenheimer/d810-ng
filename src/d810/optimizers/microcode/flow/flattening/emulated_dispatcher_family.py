@@ -955,6 +955,14 @@ def _empty_state_dispatcher_maps(
     return ()
 
 
+def _empty_switch_case_transition_facts(
+    _mba: object,
+    _dispatch_map: StateDispatcherMap,
+    _profile_name: str,
+) -> tuple[object, ...]:
+    return ()
+
+
 def _ollvm_state_dispatcher_maps(
     mba: object,
     analysis: object,
@@ -1006,6 +1014,31 @@ def _tigress_switch_state_dispatcher_maps(
     if result is None:
         return ()
     return (result.state_dispatcher_map,)
+
+
+def _tigress_switch_case_transition_facts(
+    mba: object,
+    dispatch_map: StateDispatcherMap,
+    profile_name: str,
+) -> tuple[object, ...]:
+    try:
+        from d810.recon.flow.switch_case_transition_analysis import (
+            collect_switch_case_transition_facts_from_mba,
+        )
+
+        return tuple(
+            collect_switch_case_transition_facts_from_mba(
+                mba=mba,
+                dispatch_map=dispatch_map,
+                profile_name=profile_name,
+            )
+        )
+    except Exception:
+        family_logger.debug(
+            "switch-table transition fact profile collection failed",
+            exc_info=True,
+        )
+        return ()
 
 
 def _entry_to_pre_header_corridor(
@@ -1910,6 +1943,10 @@ class GenericDispatcherEngineProfile:
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
     ] = _empty_state_dispatcher_maps
+    switch_case_transition_fact_factory: Callable[
+        [object, StateDispatcherMap, str],
+        tuple[object, ...],
+    ] = _empty_switch_case_transition_facts
 
     def configure_resolver(
         self,
@@ -2061,6 +2098,29 @@ class GenericDispatcherEngineProfile:
             )
         )
 
+    def collect_switch_case_transition_facts(
+        self,
+        mba: object,
+        *,
+        state_dispatcher_map: StateDispatcherMap | None,
+    ) -> tuple[object, ...]:
+        """Return switch case transition facts supplied by this profile.
+
+        These are read-only recon diagnostics.  The shared engine carries them
+        with the phase context so Tigress lowering can later consume the same
+        evidence that diagnostics persisted, instead of depending on the
+        legacy switch rule as the live owner.
+        """
+        if state_dispatcher_map is None:
+            return ()
+        return tuple(
+            self.switch_case_transition_fact_factory(
+                mba,
+                state_dispatcher_map,
+                self.name,
+            )
+        )
+
     def select_dynamic_transition(
         self,
         transition_result: object,
@@ -2186,6 +2246,7 @@ def tigress_switch_dispatcher_profile() -> GenericDispatcherEngineProfile:
         lowering_mode="generic_graph_modifications",
         provenance_hints=("switch_table",),
         state_dispatcher_map_factory=_tigress_switch_state_dispatcher_maps,
+        switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
     )
 
 
@@ -4230,6 +4291,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             comment_mode=ProgramCommentMode.MINIMAL,
         )
         semantic_program_text = render_linearized_state_program(semantic_program)
+        switch_case_transition_facts = self._profile.collect_switch_case_transition_facts(
+            mba,
+            state_dispatcher_map=state_dispatcher_map,
+        )
         artifact = EmulatedDispatcherPhaseArtifact(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
@@ -4271,6 +4336,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             dag=dag,
             semantic_reference_program=semantic_program,
             state_dispatcher_map=state_dispatcher_map,
+            switch_case_transition_facts=switch_case_transition_facts,
         )
         return artifact, context
 
@@ -5515,6 +5581,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 observe_dag_local_facts,
                 observe_rendered_program,
                 observe_state_transition_dispatch_resolutions,
+                observe_switch_case_transition_facts,
             )
 
             maturity_name = self._maturity_name(
@@ -5623,6 +5690,20 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                         )
                         for proof in proofs
                     ),
+                )
+            switch_case_transition_facts = tuple(
+                getattr(phase_context, "switch_case_transition_facts", ()) or ()
+            )
+            if switch_case_transition_facts:
+                observe_switch_case_transition_facts(
+                    snap_ref,
+                    switch_case_transition_facts,
+                )
+                self._logger.info(
+                    "SWITCH_CASE_TRANSITION_FACTS: emitted %d rows "
+                    "for profile=%s",
+                    len(switch_case_transition_facts),
+                    self._profile.name,
                 )
             observe_rendered_program(
                 snap_ref,
