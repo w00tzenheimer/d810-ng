@@ -43,12 +43,13 @@ _COMPARE_CHAIN_MIN_CONSTANTS = 4
 _FLOW_PROFILE_MIN_CONFIDENCE = 0.4
 
 # When confidence reaches this level with ollvm_flat, suppress scalar constant
-# propagation rules that can misread dispatcher-carried variables before
-# unflattening reconstructs path ownership.
+# folding that can misread dispatcher-carried variables before unflattening
+# reconstructs path ownership.  Do not suppress ForwardConstantPropagationRule
+# globally: Approov engine-wrapper recovery relies on it.  Profiles with known
+# pre-recovery FCP hazards should disable it explicitly.
 _SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
 _FLATTENING_SUPPRESSED_RULES = (
     "ConstantFolding",
-    "ForwardConstantPropagationRule",
 )
 
 
@@ -183,10 +184,9 @@ class AnalysisPhase:
         if confidence >= _CONF_CLASSIFY_THRESHOLD:
             obfuscation_type: str | None = "ollvm_flat"
             recommended_inferences: tuple[str, ...] = ("unflattening",)
-            # Suppress scalar constant propagation at high confidence. These
-            # rules are path-insensitive over the raw dispatcher CFG, so they
-            # can fold an initializer into a later handler carrier before
-            # unflattening has recovered the state-machine semantics.
+            # Suppress scalar constant folding at high confidence. Profile-
+            # specific configs own narrower FCP hazards so Approov-style
+            # engine-wrapper recovery can still use forward state propagation.
             if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
                 suppress_rules: tuple[str, ...] = _FLATTENING_SUPPRESSED_RULES
             else:

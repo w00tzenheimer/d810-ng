@@ -16,12 +16,12 @@ class TestUnflatteningInference:
             suppress_rules=(),
         )
 
-    def test_high_confidence_suppresses_pre_unflattening_constprop(self) -> None:
+    def test_high_confidence_suppresses_constant_folding(self) -> None:
         hints = self._make_hints(confidence=0.8)
         deltas = unflattening_inference(hints)
         suppressed = {d.rule_name for d in deltas if d.action == "suppress"}
         assert "ConstantFolding" in suppressed
-        assert "ForwardConstantPropagationRule" in suppressed
+        assert "ForwardConstantPropagationRule" not in suppressed
 
     def test_low_confidence_no_deltas(self) -> None:
         hints = self._make_hints(confidence=0.3)
@@ -33,7 +33,7 @@ class TestUnflatteningInference:
         deltas = unflattening_inference(hints)
         suppressed = {d.rule_name for d in deltas if d.action == "suppress"}
         assert "ConstantFolding" in suppressed
-        assert "ForwardConstantPropagationRule" in suppressed
+        assert "ForwardConstantPropagationRule" not in suppressed
 
     def test_just_below_threshold(self) -> None:
         hints = self._make_hints(confidence=0.69)

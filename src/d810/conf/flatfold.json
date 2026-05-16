@@ -1105,7 +1105,7 @@
   "blk_rules": [
     {
       "name": "ForwardConstantPropagationRule",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
