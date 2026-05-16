@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from d810.core.typing import Any, Callable, Iterable, Mapping, Optional
+from d810.core.typing import Any, Iterable, Mapping, Optional
 
 
 # Default capture DB location can be overridden via D810_CAPTURE_DB.
@@ -106,57 +106,6 @@ def get_default_binary_name() -> str:
     if override:
         return override
     return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
-
-
-def get_func_ea(name_or_ea: str) -> int:
-    """
-    Resolve a function effective address from a name or hex EA string.
-
-    Supports:
-    - Named symbols (e.g. "test_xor")
-    - macOS underscore-prefixed names ("test_xor" -> "_test_xor")
-    - Hex addresses like "0x180012B60" (only if idaapi.get_func confirms)
-    """
-    import idaapi
-    import idc
-
-    if not name_or_ea:
-        return idc.get_screen_ea()
-
-    # First try as plain name.
-    ea = idc.get_name_ea_simple(name_or_ea)
-    if ea == idaapi.BADADDR:
-        ea = idc.get_name_ea_simple("_" + name_or_ea)
-
-    # Hex EA form for functions without a named export.
-    if ea == idaapi.BADADDR and isinstance(name_or_ea, str) and name_or_ea.startswith(
-        "0x"
-    ):
-        try:
-            cand = int(name_or_ea, 16)
-        except ValueError:
-            cand = None
-        if cand is not None and idaapi.get_func(cand):
-            ea = cand
-
-    return ea
-
-
-def pseudocode_to_string(pseudocode: Any) -> str:
-    """
-    Convert IDA Hex-Rays pseudocode to a plain string.
-
-    Accepts a cfunc_t.get_pseudocode() result (vector of citem line objects).
-    """
-    # Late import to avoid binding IDA modules when not needed.
-    import idaapi
-
-    lines: list[str] = []
-    for i in range(pseudocode.size()):
-        line = pseudocode[i]
-        # Use tag_remove to drop color/formatting tags.
-        lines.append(idaapi.tag_remove(line.line))
-    return "\n".join(lines)
 
 
 def strip_colors(text: str | None) -> str:
@@ -465,87 +414,6 @@ def render_capture_summary(row: Mapping[str, Any]) -> str:
     )
 
 
-def capture_one_function(
-    *,
-    state: Any,
-    func_name: str,
-    func_ea: int,
-    project_config: str | None,
-    conn: sqlite3.Connection,
-    binary_name: str,
-    pseudo_to_str: Optional[Callable[[Any], str]] = None,
-) -> Mapping[str, Any]:
-    """
-    Capture before/after pseudocode for a single function and write to DB.
-
-    This helper assumes:
-    - The binary is already open in IDA.
-    - Any desired project configuration has been loaded on `state` by the caller.
-    - `state` exposes stop_d810(), start_d810(), and a stats object with:
-        - reset()
-        - get_fired_rule_names()
-    """
-    import idaapi
-
-    if func_ea == idaapi.BADADDR:
-        raise ValueError(f"Function '{func_name}' not found")
-
-    if pseudo_to_str is None:
-        pseudo_to_str = pseudocode_to_string
-
-    # Baseline (no D810).
-    state.stop_d810()
-    cfunc_before = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-    if cfunc_before is None:
-        raise RuntimeError(f"Decompilation failed for '{func_name}' without D810")
-    code_before = pseudo_to_str(cfunc_before.get_pseudocode())
-
-    # With D810 enabled.
-    state.stats.reset()
-    state.start_d810()
-    cfunc_after = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-    if cfunc_after is None:
-        raise RuntimeError(f"Decompilation failed for '{func_name}' with D810")
-    code_after = pseudo_to_str(cfunc_after.get_pseudocode())
-
-    rules_fired: Iterable[str] = getattr(
-        state.stats, "get_fired_rule_names", lambda: []
-    )()
-    rules_fired_list = list(rules_fired)
-    changed = code_before != code_after
-
-    conn.execute(
-        """
-        INSERT INTO pseudocode_capture
-        (function_name, function_address, code_before, code_after, code_changed,
-         rules_fired, project_config, binary_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            func_name,
-            hex(func_ea),
-            code_before,
-            code_after,
-            changed,
-            json.dumps(rules_fired_list),
-            project_config,
-            binary_name,
-        ),
-    )
-    conn.commit()
-
-    return {
-        "function_name": func_name,
-        "function_address": hex(func_ea),
-        "code_before": code_before,
-        "code_after": code_after,
-        "code_changed": changed,
-        "rules_fired": rules_fired_list,
-        "project_config": project_config,
-        "binary_name": binary_name,
-    }
-
-
 # Shared function/test metadata -------------------------------------------------
 
 # Overlapping test functions used by capture scripts and CLI.
@@ -622,13 +490,10 @@ __all__ = [
     "STATS_MARKER_PREFIX",
     "capture_dump_file_to_db",
     "capture_dump_text_to_db",
-    "capture_one_function",
     "get_default_binary_name",
-    "get_func_ea",
     "init_capture_db",
     "insert_capture_row",
     "parse_capture_dump",
-    "pseudocode_to_string",
     "render_capture_summary",
     "resolve_capture_db_path",
     "side_by_side_diff",
