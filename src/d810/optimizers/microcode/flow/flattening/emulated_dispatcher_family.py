@@ -80,6 +80,7 @@ from d810.recon.flow.bst_analysis import (
     resolve_via_bst_walk,
 )
 from d810.recon.flow.branch_ownership import (
+    BranchOwnershipProof,
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
 )
@@ -1363,10 +1364,45 @@ def _state_has_payload_store(
     return False
 
 
-def _edge_has_trusted_nonsemantic_branch_proof(edge: object) -> bool:
+def _collect_phase_branch_ownership_proofs(
+    *,
+    dag: object,
+    dispatch_map: StateDispatcherMap | None,
+    mba: object,
+    profile_name: str,
+    logger: object,
+) -> tuple[BranchOwnershipProof, ...]:
+    """Collect recon branch ownership proofs for planning/diagnostics."""
+
+    proof_refiner = None
+    if str(profile_name).startswith("ollvm"):
+        try:
+            from d810.recon.flow.branch_ownership_oracle import (
+                MopTrackerBranchOwnershipOracle,
+            )
+
+            proof_refiner = MopTrackerBranchOwnershipOracle(mba=mba).refine
+        except Exception:
+            logger.debug(
+                "MopTracker branch ownership oracle unavailable",
+                exc_info=True,
+            )
+    return collect_branch_ownership_proofs(
+        dag=dag,
+        dispatch_map=dispatch_map,
+        proof_refiner=proof_refiner,
+    )
+
+
+def _edge_has_trusted_nonsemantic_branch_proof(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> bool:
     """Return whether recon proved this branch arm is non-semantic."""
 
     proof_candidates = [
+        branch_ownership_proofs,
         getattr(edge, "branch_ownership_proof", None),
         getattr(edge, "branch_ownership_proofs", None),
     ]
@@ -1474,11 +1510,59 @@ def _proof_field_matches(proof_value: object | None, edge_value: object | None) 
         return str(proof_value) == str(edge_value)
 
 
+def _candidate_has_owned_or_split_lowering(
+    candidate: object,
+    flow_graph: FlowGraph,
+) -> bool:
+    """Return whether proof-gated retargeting has a safe CFG edit shape."""
+
+    mode = str(getattr(candidate, "emission_mode", "") or "")
+    horizon = getattr(candidate, "horizon_block", None)
+    if horizon is None:
+        return False
+    try:
+        horizon = int(horizon)
+    except (TypeError, ValueError):
+        return False
+
+    if mode == "pred_split":
+        shared = getattr(candidate, "first_shared_block", None)
+        via_pred = getattr(candidate, "via_pred", None)
+        if shared is None or via_pred is None:
+            return False
+        try:
+            shared = int(shared)
+            via_pred = int(via_pred)
+        except (TypeError, ValueError):
+            return False
+        shared_block = flow_graph.get_block(shared)
+        return (
+            shared_block is not None
+            and via_pred in tuple(int(pred) for pred in getattr(shared_block, "preds", ()) or ())
+        )
+
+    if (
+        getattr(candidate, "first_shared_block", None) is not None
+        or getattr(candidate, "via_pred", None) is not None
+    ):
+        return False
+
+    horizon_block = flow_graph.get_block(horizon)
+    if horizon_block is None or int(getattr(horizon_block, "npred", 0)) > 1:
+        return False
+    if mode == "direct":
+        return int(getattr(horizon_block, "nsucc", 0)) == 1
+    if mode == "conditional_arm":
+        return int(getattr(horizon_block, "nsucc", 0)) == 2
+    return False
+
+
 def _retarget_ollvm_terminal_payload_backedges(
     *,
     dag: object,
     flow_graph: FlowGraph,
     raw_candidates: list,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
     logger: object,
 ) -> list:
     """Send proven opaque terminal payload states to the return frontier.
@@ -1545,11 +1629,17 @@ def _retarget_ollvm_terminal_payload_backedges(
         ):
             rewritten.append(candidate)
             continue
+        if not _candidate_has_owned_or_split_lowering(candidate, flow_graph):
+            rewritten.append(candidate)
+            continue
 
         selector_edges = outgoing_by_state.get(target_state, ())
         if not any(
             _edge_target_state(selector_edge) == source_state
-            and _edge_has_trusted_nonsemantic_branch_proof(selector_edge)
+            and _edge_has_trusted_nonsemantic_branch_proof(
+                selector_edge,
+                branch_ownership_proofs=branch_ownership_proofs,
+            )
             for selector_edge in selector_edges
         ):
             rewritten.append(candidate)
@@ -3600,11 +3690,20 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
             return (), ("phase_reconstruction_no_candidates",)
 
+        branch_ownership_proofs = _collect_phase_branch_ownership_proofs(
+            dag=dag,
+            dispatch_map=phase_context.state_dispatcher_map,
+            mba=mba,
+            profile_name=self._profile.name,
+            logger=self._logger,
+        )
+
         if self._profile.name == "ollvm_state_map":
             raw_candidates = _retarget_ollvm_terminal_payload_backedges(
                 dag=dag,
                 flow_graph=flow_graph,
                 raw_candidates=raw_candidates,
+                branch_ownership_proofs=branch_ownership_proofs,
                 logger=self._logger,
             )
 
@@ -5662,25 +5761,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
 
             observe_dag(snap_ref, dag_nodes, dag_edges)
             observe_dag_local_facts(snap_ref, dag)
-            proof_refiner = None
-            if str(self._profile.name).startswith("ollvm"):
-                try:
-                    from d810.recon.flow.branch_ownership_oracle import (
-                        MopTrackerBranchOwnershipOracle,
-                    )
-
-                    proof_refiner = MopTrackerBranchOwnershipOracle(
-                        mba=mba,
-                    ).refine
-                except Exception:
-                    self._logger.debug(
-                        "MopTracker branch ownership oracle unavailable",
-                        exc_info=True,
-                    )
-            proofs = collect_branch_ownership_proofs(
+            proofs = _collect_phase_branch_ownership_proofs(
                 dag=SimpleNamespace(edges=dag_edge_objects),
                 dispatch_map=phase_context.state_dispatcher_map,
-                proof_refiner=proof_refiner,
+                mba=mba,
+                profile_name=self._profile.name,
+                logger=self._logger,
             )
             if proofs:
                 observe_branch_ownership_proofs(
