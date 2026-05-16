@@ -1103,12 +1103,41 @@ def execute_primary_reconstruction_modifications(
             dispatcher_serial=dispatcher_serial,
             current_state_entry=pt_entry,
         )
-        modifications.extend(pt_plan.modifications)
+        effective_passthrough_modifications: list[object] = []
+        for modification in pt_plan.modifications:
+            veto_reason = None
+            if callable(conditional_redirect_veto):
+                try:
+                    veto_reason = conditional_redirect_veto(
+                        modification=modification,
+                        candidate=candidate,
+                        source_block=getattr(modification, "from_serial", None),
+                        old_target=getattr(modification, "old_target", None),
+                        target_block=getattr(modification, "new_target", None),
+                    )
+                except Exception:
+                    logger.debug(
+                        "RECON EXEC: passthrough redirect veto callback raised",
+                        exc_info=True,
+                    )
+                    veto_reason = None
+            if veto_reason:
+                logger.warning(
+                    "RECON EXEC: passthrough redirect vetoed blk[%s] -> blk[%s]"
+                    " old=blk[%s] reason=%s",
+                    getattr(modification, "from_serial", "?"),
+                    getattr(modification, "new_target", "?"),
+                    getattr(modification, "old_target", "?"),
+                    veto_reason,
+                )
+                continue
+            effective_passthrough_modifications.append(modification)
+        modifications.extend(effective_passthrough_modifications)
         conditional_results.append(
             ConditionalArmExecutionResult(
                 candidate=candidate,
                 redirect_count=len(cond_plan.modifications),
-                passthrough_count=len(pt_plan.modifications),
+                passthrough_count=len(effective_passthrough_modifications),
             )
         )
         if _is_sub7ffd_poll_candidate(candidate):

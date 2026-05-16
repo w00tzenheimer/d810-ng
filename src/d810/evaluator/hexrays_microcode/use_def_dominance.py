@@ -1,13 +1,13 @@
-"""Use-def dominance severance detector (Phase 1 — observer-only).
+"""Use-def dominance severance detector for CFG redirect safety.
 
-This module detects when a proposed ``RedirectGoto`` would sever a
-use-def dominance chain, i.e., move a definition of a stack variable
-out of a position where it dominated its uses.
+This module detects when a proposed ``RedirectGoto`` or ``RedirectBranch``
+would sever a use-def dominance chain, i.e., move a definition of a stack
+variable out of a position where it dominated its uses.
 
-Phase 1 is **observer-only**: callers should log violations but MUST
-NOT use them to drop or refuse modifications. Phase 2 will add the
-refusal mechanism once the detector is shown to fire on the byte-handler
-severance case for ``sub_7FFD3338C040`` (ticket ``uee-b7ze``).
+The first deployment used this as observer-only telemetry.  State-dispatcher
+reconstruction now also uses it as a safety gate before applying redirects that
+would bypass semantic payload blocks.  Callers decide whether a reported
+violation is fatal for their strategy.
 
 Algorithm
 ---------
@@ -36,7 +36,7 @@ import ida_hexrays
 
 from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.core.logging import getLogger
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import (
@@ -78,7 +78,7 @@ class UseDefSafetyBackend(Protocol):
 
     def redirect_use_def_violations(
         self,
-        mod: RedirectGoto,
+        mod: RedirectGoto | RedirectBranch,
         live_function: object,
         pre_cfg: FlowGraph,
     ) -> tuple[SeveranceViolation, ...]:
@@ -90,7 +90,7 @@ class HexRaysUseDefSafetyBackend:
 
     def redirect_use_def_violations(
         self,
-        mod: RedirectGoto,
+        mod: RedirectGoto | RedirectBranch,
         live_function: object,
         pre_cfg: FlowGraph,
     ) -> tuple[SeveranceViolation, ...]:
@@ -130,7 +130,7 @@ def _collect_stkvar_defs_in_block(
 
 
 def _build_post_mod_adjacency(
-    pre_cfg: FlowGraph, mod: RedirectGoto
+    pre_cfg: FlowGraph, mod: RedirectGoto | RedirectBranch
 ) -> dict[int, list[int]]:
     """Return adjacency dict reflecting *mod* applied to *pre_cfg*.
 
@@ -153,7 +153,7 @@ def _build_post_mod_adjacency(
 
 
 def check_redirect_severs_use_def(
-    mod: RedirectGoto,
+    mod: RedirectGoto | RedirectBranch,
     mba: object,
     pre_cfg: FlowGraph,
 ) -> tuple[SeveranceViolation, ...]:

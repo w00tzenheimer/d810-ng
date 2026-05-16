@@ -108,6 +108,16 @@ def _edge_redirect_for_block(
         return None
     block = flow_graph.get_block(int(source_block))
     if block is not None and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2:
+        succs = tuple(int(succ) for succ in getattr(block, "succs", ()))
+        if (
+            int(old_target) in succs
+            and int(target_block) in succs
+            and int(old_target) != int(target_block)
+        ):
+            return ConvertToGoto(
+                block_serial=int(source_block),
+                goto_target=int(target_block),
+            )
         return RedirectBranch(
             from_serial=int(source_block),
             old_target=int(old_target),

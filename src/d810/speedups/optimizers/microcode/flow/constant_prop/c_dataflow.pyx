@@ -175,6 +175,8 @@ cdef inline bint _is_constant_stack_assignment(minsn_t* ins):
         return <bint>False
     if ins.opcode == mcode_t.m_mov and ins.d.t == MOPT.STACK:
         return <bint>True
+    if ins.opcode == mcode_t.m_stx and ins.d.t == MOPT.STACK:
+        return <bint>True
     return <bint>False
 
 # ---------------------------------------------------------------------------
