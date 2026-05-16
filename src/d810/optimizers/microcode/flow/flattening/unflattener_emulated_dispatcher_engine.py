@@ -10,6 +10,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     ollvm_state_dispatcher_map_profile,
+    tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
@@ -59,6 +60,7 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         self._current_tracked_maturity = -1
         self._last_function_ea = -1
         self.max_passes = self.DEFAULT_MAX_PASSES
+        self.diagnostics_only = False
         self._last_detection: EmulatedDispatcherDetection | None = None
         self._last_snapshot = None
         self._last_provenance: PipelineProvenance | None = None
@@ -66,6 +68,7 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
     def configure(self, kwargs):
         super().configure(kwargs)
         profile_name = str(self.config.get("profile", "") or "").strip().lower()
+        self.diagnostics_only = bool(self.config.get("diagnostics_only", False))
         if profile_name in {
             "state_dispatcher_map",
             "state_map",
@@ -74,6 +77,14 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         }:
             self._family = EmulatedDispatcherStrategyFamily(
                 profile=ollvm_state_dispatcher_map_profile()
+            )
+        elif profile_name in {
+            "tigress_switch",
+            "switch_table",
+            "switch_state_map",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=tigress_switch_dispatcher_profile()
             )
         else:
             self._family = EmulatedDispatcherStrategyFamily()
@@ -155,6 +166,13 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             self._last_snapshot,
             fact_view=fact_view,
         )
+        if self.diagnostics_only:
+            unflat_logger.info(
+                "Emulated-dispatcher diagnostics-only profile emitted phase evidence; "
+                "skipping planning and CFG lowering"
+            )
+            self._actual_pass_count += 1
+            return 0
 
         planned = plan_family_pipeline(
             self._last_snapshot,

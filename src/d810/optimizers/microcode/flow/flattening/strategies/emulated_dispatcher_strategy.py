@@ -97,6 +97,7 @@ class EmulatedDispatcherPhaseContext:
     dag: object
     semantic_reference_program: object
     state_dispatcher_map: object | None = None
+    switch_case_transition_facts: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
