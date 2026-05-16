@@ -7,6 +7,7 @@ import idaapi
 import ida_hexrays
 import pytest
 
+import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
@@ -46,6 +47,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
     EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY,
     EMULATED_DISPATCHER_METADATA_KEY,
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
+    EMULATED_DISPATCHER_PHASE_CONTEXT_KEY,
     EmulatedDispatcherCandidateRecord,
     EmulatedDispatcherMetadata,
     EmulatedDispatcherPhaseArtifact,
@@ -1507,6 +1509,40 @@ def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
         assert resolver.check_if_histories_are_resolved(None) is False
 
 
+def test_tigress_switch_profile_collects_live_transition_facts(monkeypatch) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_GLBOPT1)
+    calls = []
+
+    def _collect(*, mba, dispatch_map, profile_name):
+        calls.append((mba, dispatch_map, profile_name))
+        return ("fact",)
+
+    monkeypatch.setattr(
+        switch_case_transition_analysis,
+        "collect_switch_case_transition_facts_from_mba",
+        _collect,
+    )
+
+    profile = tigress_switch_dispatcher_profile()
+    facts = profile.collect_switch_case_transition_facts(
+        mba,
+        state_dispatcher_map=dispatch_map,
+    )
+
+    assert facts == ("fact",)
+    assert calls == [(mba, dispatch_map, "tigress_switch")]
+
+
+def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({"profile": "tigress_switch", "diagnostics_only": True})
+
+    assert rule._family._profile.name == "tigress_switch"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+    assert rule.diagnostics_only is True
+
+
 def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
     dispatcher_info = object()
 
@@ -1576,7 +1612,31 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
-    family = EmulatedDispatcherStrategyFamily()
+    switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    switch_fact_calls = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    def _switch_fact_factory(mba, seen_dispatch_map, profile_name):
+        switch_fact_calls.append((mba, seen_dispatch_map, profile_name))
+        return (switch_fact,)
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="tigress_switch",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            state_dispatcher_map_factory=lambda *_args: (),
+            switch_case_transition_fact_factory=_switch_fact_factory,
+        )
+    )
     mba = SimpleNamespace(
         qty=3,
         maturity=ida_hexrays.MMAT_GLBOPT1,
@@ -1645,6 +1705,83 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     assert artifact.initial_state == 0x10
     assert artifact.handler_state_map == ((5, 0x10), (7, 0x20))
     assert context.state_dispatcher_map is dispatch_map
+    assert context.switch_case_transition_facts == (switch_fact,)
+    assert switch_fact_calls == [(mba, dispatch_map, "tigress_switch")]
+
+
+def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
+    monkeypatch,
+) -> None:
+    switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(nodes=(), edges=()),
+        semantic_reference_program=object(),
+        switch_case_transition_facts=(switch_fact,),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={EMULATED_DISPATCHER_PHASE_CONTEXT_KEY: context},
+    )
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=flow_graph,
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=0,
+            transition_count=0,
+        ),
+    )
+    observed = []
+
+    monkeypatch.setattr(
+        "d810.hexrays.observability.request_capture_mba_snapshot",
+        lambda **_kwargs: "snap",
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag_local_facts",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_rendered_program",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_switch_case_transition_facts",
+        lambda snap, facts: observed.append((snap, tuple(facts))),
+    )
+
+    EmulatedDispatcherStrategyFamily(
+        profile=tigress_switch_dispatcher_profile(),
+    ).observe_phase_diagnostics(
+        snapshot.mba,
+        snapshot,
+    )
+
+    assert observed == [("snap", (switch_fact,))]
 
 
 def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:
