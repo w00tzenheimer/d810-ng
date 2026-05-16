@@ -173,6 +173,23 @@ class _ReturnCarrierBypass:
     writer_ea: int
 
 
+@dataclass(frozen=True)
+class _ReturnSlotWriterCandidate:
+    block_serial: int
+    ins_ea: int
+    dst_stkoff: int
+    src_stkoff: int
+
+
+@dataclass(frozen=True)
+class _LoopReturnCarrierCandidate:
+    stkoff: int
+    size: int
+    source_mop: object
+    write_block: int
+    read_blocks: tuple[int, ...]
+
+
 def _iter_block_insns(block: object):
     insn = getattr(block, "head", None)
     while insn is not None:
@@ -191,13 +208,47 @@ def _stack_slot_from_mop(mop: object | None) -> tuple[int, int] | None:
     return int(slot.off), int(getattr(mop, "size", 0) or 0)
 
 
+def _dstr(obj: object | None) -> str:
+    if obj is None:
+        return ""
+    dstr = getattr(obj, "dstr", None)
+    if callable(dstr):
+        try:
+            return str(dstr())
+        except Exception:
+            return ""
+    return str(dstr or "")
+
+
 def _is_rax_mop(mop: object | None) -> bool:
     if mop is None:
         return False
-    return (
-        int(getattr(mop, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_r)
-        and int(getattr(mop, "r", -1)) == 0
-    )
+    if int(getattr(mop, "t", ida_hexrays.mop_z)) != int(ida_hexrays.mop_r):
+        return False
+    if int(getattr(mop, "r", -1)) == 0:
+        return True
+    return "rax" in _dstr(mop).lower()
+
+
+def _const_mop_value(mop: object | None) -> int | None:
+    if mop is None:
+        return None
+    try:
+        if int(getattr(mop, "t", -1)) != int(ida_hexrays.mop_n):
+            return None
+    except Exception:
+        return None
+    candidates = [getattr(mop, "value", None)]
+    nnn = getattr(mop, "nnn", None)
+    candidates.append(getattr(nnn, "value", None))
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except Exception:
+            continue
+    return None
 
 
 def _collect_return_slot_uses(mba: object) -> tuple[_ReturnSlotUse, ...]:
@@ -212,10 +263,18 @@ def _collect_return_slot_uses(mba: object) -> tuple[_ReturnSlotUse, ...]:
         if block is None:
             continue
         for insn in _iter_block_insns(block):
-            if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
-                continue
-            slot = _stack_slot_from_mop(getattr(insn, "l", None))
-            if slot is None or not _is_rax_mop(getattr(insn, "d", None)):
+            opcode = int(getattr(insn, "opcode", -1))
+            slot = None
+            if opcode == int(ida_hexrays.m_mov):
+                maybe_slot = _stack_slot_from_mop(getattr(insn, "l", None))
+                if maybe_slot is not None and _is_rax_mop(getattr(insn, "d", None)):
+                    slot = maybe_slot
+            elif opcode == int(getattr(ida_hexrays, "m_ret", -2)):
+                for side in ("l", "r", "d"):
+                    slot = _stack_slot_from_mop(getattr(insn, side, None))
+                    if slot is not None:
+                        break
+            if slot is None:
                 continue
             stkoff, size = slot
             if size <= 0:
@@ -229,6 +288,137 @@ def _collect_return_slot_uses(mba: object) -> tuple[_ReturnSlotUse, ...]:
                 )
             )
     return tuple(uses)
+
+
+def _scan_return_slot_defs(
+    mba: object,
+    *,
+    stkoff: int,
+    size: int,
+) -> tuple[object, ...]:
+    defs: list[object] = []
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            block = mba.get_mblock(serial)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if block is None:
+            continue
+        for insn in _iter_block_insns(block):
+            dest = _stack_slot_from_mop(getattr(insn, "d", None))
+            if dest is None:
+                continue
+            dest_stkoff, dest_size = dest
+            if int(dest_stkoff) != int(stkoff) or int(dest_size) != int(size):
+                continue
+            defs.append(
+                SimpleNamespace(
+                    block_serial=int(serial),
+                    ins_ea=int(getattr(insn, "ea", 0) or 0),
+                    ins_opcode=int(getattr(insn, "opcode", -1)),
+                )
+            )
+    return tuple(defs)
+
+
+def _scan_stack_to_stack_return_slot_writers(
+    mba: object,
+    *,
+    candidate_blocks: frozenset[int],
+) -> tuple[_ReturnSlotWriterCandidate, ...]:
+    writers: list[_ReturnSlotWriterCandidate] = []
+    for serial in sorted(candidate_blocks):
+        try:
+            block = mba.get_mblock(serial)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if block is None:
+            continue
+        for insn in _iter_block_insns(block):
+            if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
+                continue
+            src = _stack_slot_from_mop(getattr(insn, "l", None))
+            dst = _stack_slot_from_mop(getattr(insn, "d", None))
+            if src is None or dst is None:
+                continue
+            src_stkoff, _src_size = src
+            dst_stkoff, dst_size = dst
+            if dst_size <= 0 or int(src_stkoff) == int(dst_stkoff):
+                continue
+            writers.append(
+                _ReturnSlotWriterCandidate(
+                    block_serial=int(serial),
+                    ins_ea=int(getattr(insn, "ea", 0) or 0),
+                    dst_stkoff=int(dst_stkoff),
+                    src_stkoff=int(src_stkoff),
+                )
+            )
+    return tuple(writers)
+
+
+def _const_zero_return_writer(
+    mba: object,
+    block_serial: int,
+) -> tuple[int, int] | None:
+    insn = _const_zero_return_writer_insn(mba, block_serial)
+    if insn is None:
+        return None
+    return 0, int(getattr(insn, "ea", 0) or 0)
+
+
+def _const_zero_return_writer_insn(
+    mba: object,
+    block_serial: int,
+) -> object | None:
+    try:
+        block = mba.get_mblock(block_serial)  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    if block is None:
+        return None
+    for insn in _iter_block_insns(block):
+        if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
+            continue
+        if not _is_rax_mop(getattr(insn, "d", None)) and "rax" not in _dstr(
+            insn
+        ).lower():
+            continue
+        if _const_mop_value(getattr(insn, "l", None)) != 0:
+            continue
+        return insn
+    return None
+
+
+def _semantic_return_handler_blocks(phase_context: object | None) -> frozenset[int]:
+    program = getattr(phase_context, "semantic_reference_program", None)
+    if program is None:
+        return frozenset()
+    return_node_indexes = {
+        int(getattr(line, "node_index"))
+        for line in getattr(program, "lines", ()) or ()
+        if getattr(line, "node_index", None) is not None
+        and (
+            str(getattr(line, "line_kind", "")) == "return"
+            or str(getattr(line, "text", "")).strip().startswith("return ")
+        )
+    }
+    if not return_node_indexes:
+        return frozenset()
+    blocks: set[int] = set()
+    for node in getattr(program, "nodes", ()) or ():
+        if int(getattr(node, "node_index", -1)) not in return_node_indexes:
+            continue
+        block = getattr(node, "handler_serial", None)
+        if block is None:
+            block = getattr(node, "entry_anchor", None)
+        if block is None:
+            continue
+        try:
+            blocks.add(int(block))
+        except (TypeError, ValueError):
+            continue
+    return frozenset(blocks)
 
 
 def _post_redirect_adjacency(
@@ -281,6 +471,12 @@ def _nearest_dominating_return_slot_writer(
             exc_info=True,
         )
         return None
+    if not defs:
+        defs = _scan_return_slot_defs(
+            mba,
+            stkoff=int(use.stkoff),
+            size=int(use.size),
+        )
 
     dominating_defs = tuple(
         site
@@ -354,11 +550,281 @@ def _return_carrier_preservation_bypasses(
     return tuple(bypasses)
 
 
+def _semantic_return_carrier_bypasses(
+    *,
+    mba: object,
+    flow_graph: FlowGraph,
+    modifications: tuple[GraphModification, ...],
+    phase_context: object | None,
+) -> tuple[_ReturnCarrierBypass, ...]:
+    return_blocks = _semantic_return_handler_blocks(phase_context)
+    if not return_blocks:
+        return ()
+    redirect_targets = {
+        int(mod.new_target)
+        for mod in modifications
+        if isinstance(mod, (RedirectGoto, RedirectBranch))
+    }
+    direct_return_blocks = return_blocks & redirect_targets
+    if not direct_return_blocks:
+        return ()
+
+    touched_blocks = frozenset(
+        int(block)
+        for mod in modifications
+        if isinstance(mod, (RedirectGoto, RedirectBranch))
+        for block in (mod.from_serial, mod.new_target)
+    )
+    writers = _scan_stack_to_stack_return_slot_writers(
+        mba,
+        candidate_blocks=touched_blocks,
+    )
+
+    post_dom = compute_dom_tree(
+        _post_redirect_adjacency(flow_graph, modifications),
+        entry=int(flow_graph.entry_serial),
+    )
+    bypasses: list[_ReturnCarrierBypass] = []
+    for return_block in sorted(direct_return_blocks):
+        if int(return_block) not in flow_graph.blocks:
+            continue
+        for writer in writers:
+            if int(writer.block_serial) == int(return_block):
+                continue
+            if post_dom.dominates(int(writer.block_serial), int(return_block)):
+                continue
+            bypasses.append(
+                _ReturnCarrierBypass(
+                    return_block=int(return_block),
+                    return_slot_stkoff=int(writer.dst_stkoff),
+                    writer_block=int(writer.block_serial),
+                    writer_ea=int(writer.ins_ea),
+                )
+            )
+        if writers:
+            continue
+        const_zero_writer = _const_zero_return_writer(mba, int(return_block))
+        if const_zero_writer is None:
+            continue
+        slot, ins_ea = const_zero_writer
+        bypasses.append(
+            _ReturnCarrierBypass(
+                return_block=int(return_block),
+                return_slot_stkoff=int(slot),
+                writer_block=int(return_block),
+                writer_ea=int(ins_ea),
+            )
+        )
+    return tuple(bypasses)
+
+
+def _direct_rewrite_blocks(
+    modifications: tuple[GraphModification, ...],
+) -> frozenset[int]:
+    blocks: set[int] = set()
+    for mod in modifications:
+        if not isinstance(mod, (RedirectGoto, RedirectBranch)):
+            continue
+        for attr in ("from_serial", "old_target", "new_target"):
+            value = getattr(mod, attr, None)
+            if value is None:
+                continue
+            try:
+                blocks.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    return frozenset(blocks)
+
+
+def _mop_stack_key(mop: object | None) -> tuple[int, int] | None:
+    slot = _stack_slot_from_mop(mop)
+    if slot is None:
+        return None
+    stkoff, size = slot
+    if size <= 0:
+        return None
+    return int(stkoff), int(size)
+
+
+def _select_loop_return_carrier(
+    *,
+    mba: object,
+    modifications: tuple[GraphModification, ...],
+    state_var_stkoff: int | None,
+) -> _LoopReturnCarrierCandidate | None:
+    """Find the single non-state loop carrier preserved by direct recovery.
+
+    The intended approov_simplified direct lowering has exactly one data
+    carrier that is both tested by the phase header and self-updated by the
+    phase body.  Refuse ambiguous or state-var-only shapes.
+    """
+
+    touched_blocks = _direct_rewrite_blocks(modifications)
+    if not touched_blocks:
+        return None
+
+    state_slot = None if state_var_stkoff is None else int(state_var_stkoff)
+    read_blocks: dict[tuple[int, int], set[int]] = {}
+    self_updates: dict[tuple[int, int], tuple[object, int]] = {}
+    update_opcodes = {
+        int(ida_hexrays.m_add),
+        int(ida_hexrays.m_sub),
+        int(ida_hexrays.m_mul),
+        int(ida_hexrays.m_xor),
+        int(ida_hexrays.m_and),
+        int(ida_hexrays.m_or),
+    }
+
+    for serial in sorted(touched_blocks):
+        try:
+            block = mba.get_mblock(serial)  # type: ignore[attr-defined]
+        except Exception:
+            continue
+        if block is None:
+            continue
+        for insn in _iter_block_insns(block):
+            opcode = int(getattr(insn, "opcode", -1))
+            if opcode in CONTROL_FLOW_OPCODES:
+                for side in ("l", "r"):
+                    key = _mop_stack_key(getattr(insn, side, None))
+                    if key is None or key[0] == state_slot:
+                        continue
+                    read_blocks.setdefault(key, set()).add(int(serial))
+            if opcode not in update_opcodes:
+                continue
+            dest_key = _mop_stack_key(getattr(insn, "d", None))
+            if dest_key is None or dest_key[0] == state_slot:
+                continue
+            for side in ("l", "r"):
+                source_mop = getattr(insn, side, None)
+                if _mop_stack_key(source_mop) == dest_key:
+                    self_updates.setdefault(dest_key, (source_mop, int(serial)))
+                    break
+
+    candidates = tuple(
+        (key, self_updates[key])
+        for key in sorted(set(read_blocks) & set(self_updates))
+    )
+    if len(candidates) != 1:
+        return None
+
+    (stkoff, size), (source_mop, write_block) = candidates[0]
+    return _LoopReturnCarrierCandidate(
+        stkoff=int(stkoff),
+        size=int(size),
+        source_mop=source_mop,
+        write_block=int(write_block),
+        read_blocks=tuple(sorted(read_blocks[(stkoff, size)])),
+    )
+
+
+def _rewrite_return_const_zero_to_carrier(
+    *,
+    mba: object,
+    return_block: int,
+    writer_ea: int,
+    carrier: _LoopReturnCarrierCandidate,
+) -> bool:
+    insn = _const_zero_return_writer_insn(mba, int(return_block))
+    if insn is None:
+        return False
+    if writer_ea and int(getattr(insn, "ea", 0) or 0) != int(writer_ea):
+        return False
+
+    try:
+        saved_dest = ida_hexrays.mop_t()
+        saved_dest.assign(getattr(insn, "d", None))
+
+        source = ida_hexrays.mop_t()
+        source.assign(carrier.source_mop)
+
+        src_size = int(getattr(source, "size", 0) or carrier.size)
+        dst_size = int(getattr(saved_dest, "size", 0) or src_size)
+        insn.opcode = (
+            ida_hexrays.m_xds
+            if dst_size > src_size
+            else ida_hexrays.m_mov
+        )
+        insn.l.assign(source)
+        try:
+            insn.r.erase()
+        except Exception:
+            pass
+        insn.d.assign(saved_dest)
+
+        block = mba.get_mblock(int(return_block))  # type: ignore[attr-defined]
+        if block is not None:
+            try:
+                block.mark_lists_dirty()
+            except Exception:
+                pass
+        try:
+            mba.mark_chains_dirty()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return True
+    except Exception:
+        family_logger.debug(
+            "Return-carrier preservation: failed to rewrite const-zero return",
+            exc_info=True,
+        )
+        return False
+
+
+def _repair_semantic_const_zero_return_carrier(
+    *,
+    mba: object,
+    modifications: tuple[GraphModification, ...],
+    phase_artifact: object | None,
+    bypasses: tuple[_ReturnCarrierBypass, ...],
+) -> bool:
+    const_zero_bypasses = tuple(
+        bypass
+        for bypass in bypasses
+        if int(bypass.return_block) == int(bypass.writer_block)
+        and int(bypass.return_slot_stkoff) == 0
+    )
+    if not const_zero_bypasses or len(const_zero_bypasses) != len(bypasses):
+        return False
+
+    carrier = _select_loop_return_carrier(
+        mba=mba,
+        modifications=modifications,
+        state_var_stkoff=getattr(phase_artifact, "state_var_stkoff", None),
+    )
+    if carrier is None:
+        return False
+
+    for bypass in const_zero_bypasses:
+        if not _rewrite_return_const_zero_to_carrier(
+            mba=mba,
+            return_block=int(bypass.return_block),
+            writer_ea=int(bypass.writer_ea),
+            carrier=carrier,
+        ):
+            return False
+
+    family_logger.info(
+        "DispatcherLoopRecovery preserved return carrier by rewriting "
+        "const-zero return handler(s): carrier_slot=0x%x size=%d "
+        "writer_blk=%d read_blks=%s returns=%s",
+        int(carrier.stkoff),
+        int(carrier.size),
+        int(carrier.write_block),
+        carrier.read_blocks,
+        tuple(int(bypass.return_block) for bypass in const_zero_bypasses),
+    )
+    return True
+
+
 def _return_carrier_preservation_blockers(
     *,
     mba: object,
     flow_graph: FlowGraph,
     modifications: tuple[GraphModification, ...],
+    phase_context: object | None = None,
+    phase_artifact: object | None = None,
+    allow_live_repair: bool = False,
 ) -> tuple[str, ...]:
     bypasses = _return_carrier_preservation_bypasses(
         mba=mba,
@@ -366,6 +832,20 @@ def _return_carrier_preservation_blockers(
         modifications=modifications,
     )
     if not bypasses:
+        bypasses = _semantic_return_carrier_bypasses(
+            mba=mba,
+            flow_graph=flow_graph,
+            modifications=modifications,
+            phase_context=phase_context,
+        )
+    if not bypasses:
+        return ()
+    if allow_live_repair and _repair_semantic_const_zero_return_carrier(
+        mba=mba,
+        modifications=modifications,
+        phase_artifact=phase_artifact,
+        bypasses=bypasses,
+    ):
         return ()
     details = "; ".join(
         (
@@ -3823,6 +4303,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 mba=mba,
                 flow_graph=snapshot_flow_graph,
                 modifications=direct_batch,
+                phase_context=phase_context,
+                phase_artifact=phase_artifact,
+                allow_live_repair=True,
             )
             if return_carrier_blockers:
                 return (), return_carrier_blockers
@@ -4925,6 +5408,14 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_blockers = phase_reconstruction_blockers
         elif not selected_modifications and state_dag_blockers:
             selected_blockers = state_dag_blockers
+        if (
+            loop_recovery_blockers
+            and "dispatcher_loop_recovery_return_carrier_bypass"
+            in loop_recovery_blockers
+        ):
+            selected_modifications = ()
+            selected_lowering_mode = "dispatcher_loop_recovery"
+            selected_blockers = loop_recovery_blockers
         if loop_recovery_modifications and not loop_recovery_blockers:
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"

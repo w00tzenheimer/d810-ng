@@ -401,16 +401,25 @@ class TransactionalExecutor:
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
                 stale_hazard_override_keys=stale_hazard_override_keys,
+                reject_carrier_writer_bypass=(
+                    fragment.strategy_name == "dispatcher_loop_recovery"
+                ),
             )
         )
         if return_carrier_rejections:
+            bypass_rejections = sum(
+                1
+                for rejection in return_carrier_rejections
+                if getattr(rejection, "reason", "") == "carrier_writer_bypass"
+            )
             gate_accounting = gate_accounting.add(
                 GateDecision(
                     gate_name="return_carrier_fact_guard",
                     verdict=GateVerdict.PASSED,
                     reason=(
                         f"rejected {len(return_carrier_rejections)} redirect(s) "
-                        "that would const-feed return-carrier facts"
+                        f"({bypass_rejections} carrier-bypass) "
+                        "that would violate return-carrier facts"
                     ),
                 )
             )
