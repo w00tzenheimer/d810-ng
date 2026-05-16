@@ -16,15 +16,6 @@ ignores:
   - "src/d810/recon/store.py"
   - "src/d810/recon/artifacts.py"
 
-  # Existing diagnostic algorithms that predate the observability split. These
-  # are explicit exceptions; new DB-backed diagnostics should live under
-  # d810.diagnostics instead of adding to this list.
-  - "src/d810/recon/flow/alternate_correlation.py"
-  - "src/d810/recon/flow/alternate_selection.py"
-  - "src/d810/recon/flow/bst_resolution.py"
-  - "src/d810/recon/flow/edge_diagnostics.py"
-  - "src/d810/recon/flow/selected_alternate_edge_override.py"
-
 message: |
   Recon modules must not import diagnostic storage APIs directly.
 

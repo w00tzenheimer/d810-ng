@@ -9,7 +9,7 @@ same argument shape. To use the new command directly:
     PYTHONPATH=src python -m d810.diagnostics region-diff --db DB [--snap17 N --snap18 M] [--persist] [--microblocks] [--output PATH]
 
 The REF comparison + DCE diagnosis logic now lives in
-``src/d810/cfg/region_oracle_cli.py`` and is registered as the
+``src/d810/diagnostics/region_oracle_cli.py`` and is registered as the
 ``region-diff`` subcommand of ``d810.diagnostics``.
 """
 from __future__ import annotations
