@@ -1426,6 +1426,33 @@ def _edge_has_trusted_nonsemantic_branch_proof(
 ) -> bool:
     """Return whether recon proved this branch arm is non-semantic."""
 
+    matched_nonsemantic = False
+    matched_semantic = False
+
+    for proof in _iter_branch_ownership_proofs_for_edge(
+        edge,
+        branch_ownership_proofs=branch_ownership_proofs,
+    ):
+        if (
+            not _branch_ownership_proof_has_rewrite_identity(proof)
+            or not _branch_ownership_proof_matches_edge(proof, edge)
+        ):
+            continue
+        if proof.authorizes_semantic_branch_bridge:
+            matched_semantic = True
+        if proof.authorizes_nonsemantic_branch_rewrite:
+            matched_nonsemantic = True
+
+    return matched_nonsemantic and not matched_semantic
+
+
+def _iter_branch_ownership_proofs_for_edge(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+):
+    """Yield branch ownership proof rows attached to or supplied for ``edge``."""
+
     proof_candidates = [
         branch_ownership_proofs,
         getattr(edge, "branch_ownership_proof", None),
@@ -1450,14 +1477,8 @@ def _edge_has_trusted_nonsemantic_branch_proof(
         candidates = candidate if isinstance(candidate, (list, tuple)) else (candidate,)
         for proof_candidate in candidates:
             proof = branch_ownership_proof_from_any(proof_candidate)
-            if (
-                proof is not None
-                and proof.authorizes_nonsemantic_branch_rewrite
-                and _branch_ownership_proof_has_rewrite_identity(proof)
-                and _branch_ownership_proof_matches_edge(proof, edge)
-            ):
-                return True
-    return False
+            if proof is not None:
+                yield proof
 
 
 def _branch_ownership_proof_has_rewrite_identity(proof: object) -> bool:
