@@ -309,15 +309,14 @@ def candidate_phases() -> list[dict[str, Any]]:
         },
         {
             "phase": "protected-recon-store-review",
-            "automation": "manual-review-only",
+            "automation": "completed-rule-refined",
             "rule": "no-recon-diagnostic-storage-imports",
-            "candidate_files": [
-                "src/d810/recon/store.py",
-                "src/d810/recon/artifacts.py",
-            ],
+            "candidate_files": [],
             "notes": [
-                "Rule comments classify these as recon-local behavior/data stores.",
-                "Do not move unless a separate audit proves diagnostic DB behavior.",
+                "src/d810/recon/store.py and src/d810/recon/artifacts.py are "
+                "recon-local behavior/data stores.",
+                "The recon rule blocks core diag imports, active diag DB access, "
+                "and common diag-table queries without banning generic sqlite3.",
             ],
         },
     ]
