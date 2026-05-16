@@ -161,16 +161,6 @@ cdef inline qstring _get_written_var_name(minsn_t* ins):
 
     if d.t == MOPT.STACK:
         return _stack_var_name(d)
-
-
-    if ins.opcode == mcode_t.m_stx:
-        result = _extract_base_and_offset(d)
-        if result.first != NULL:
-            base_name = _stack_var_name(result.first)
-            if not base_name.empty():
-                if result.second:
-                    base_name.cat_sprnt("+%llX", result.second)
-                return base_name
     return empty
 
 
@@ -185,11 +175,6 @@ cdef inline bint _is_constant_stack_assignment(minsn_t* ins):
         return <bint>False
     if ins.opcode == mcode_t.m_mov and ins.d.t == MOPT.STACK:
         return <bint>True
-    if ins.opcode == mcode_t.m_stx:
-        if ins.d.t == MOPT.STACK:
-            return <bint>True
-        result = _extract_base_and_offset(&ins.d)
-        return result.first != NULL
     return <bint>False
 
 # ---------------------------------------------------------------------------
@@ -352,8 +337,6 @@ cdef bint _rewrite_instruction_c(minsn_t* ins, CppConstMap& consts):
 
     if _cy_process_operand(&ins.l, consts): changed = <bint>True
     if _cy_process_operand(&ins.r, consts): changed = <bint>True
-    if ins.opcode == mcode_t.m_stx and _cy_process_operand(&ins.d, consts):
-        changed = <bint>True
 
     if changed:
         ins.optimize_solo(0)
@@ -537,8 +520,6 @@ cpdef int cy_rewrite_instruction(object ins_py, dict consts_py):
     if _cy_process_operand(&ins.l, consts):
         changed = <bint>True
     if _cy_process_operand(&ins.r, consts):
-        changed = <bint>True
-    if ins.opcode == mcode_t.m_stx and _cy_process_operand(&ins.d, consts):
         changed = <bint>True
     # m_call: args live in ins.d (mop_f); substitute constants into them
     if ins.opcode == mcode_t.m_call and _cy_process_operand(&ins.d, consts):
