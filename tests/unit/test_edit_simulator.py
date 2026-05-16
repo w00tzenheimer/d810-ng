@@ -290,9 +290,8 @@ class TestSimulateEdits:
     def test_duplicate_block_private_target_split_redirects_1way_predecessor(self):
         cfg = FlowGraph(
             blocks={
-                2: _block(2, (), (9,)),
-                9: _block(9, (2,), ()),
-                10: _block(10, (11,), ()),
+                9: _block(9, (10,), ()),
+                10: _block(10, (11,), (9,)),
                 11: _block(11, (), (10,)),
             },
             entry_serial=9,
