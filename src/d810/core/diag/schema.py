@@ -264,6 +264,28 @@ CREATE TABLE IF NOT EXISTS bst_interval_dispatcher_rows (
 CREATE INDEX IF NOT EXISTS idx_bst_interval_dispatcher_rows_target
     ON bst_interval_dispatcher_rows(snapshot_id, target_block);
 
+CREATE TABLE IF NOT EXISTS state_dispatcher_rows (
+    snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index                INTEGER NOT NULL,
+    state_const_hex          TEXT NOT NULL,
+    state_const_i64          INTEGER NOT NULL,
+    target_block             INTEGER NOT NULL,
+    dispatcher_entry_block   INTEGER,
+    compare_block            INTEGER,
+    dispatcher_kind          TEXT NOT NULL,
+    branch_kind              TEXT,
+    maturity                 TEXT,
+    confidence               REAL NOT NULL DEFAULT 1.0,
+    payload_json             TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_state
+    ON state_dispatcher_rows(snapshot_id, state_const_i64);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_target
+    ON state_dispatcher_rows(snapshot_id, target_block);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_kind
+    ON state_dispatcher_rows(snapshot_id, dispatcher_kind);
+
 CREATE TABLE IF NOT EXISTS state_transition_bst_resolutions (
     snapshot_id                       INTEGER NOT NULL REFERENCES snapshots(id),
     fact_id                           TEXT NOT NULL,
@@ -280,6 +302,24 @@ CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_block
     ON state_transition_bst_resolutions(source_block_serial);
 CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_resolved
     ON state_transition_bst_resolutions(bst_resolved_next_state_const_hex);
+
+CREATE TABLE IF NOT EXISTS state_transition_dispatch_resolutions (
+    snapshot_id                         INTEGER NOT NULL REFERENCES snapshots(id),
+    fact_id                             TEXT NOT NULL,
+    source_block_serial                 INTEGER NOT NULL,
+    source_state_const_hex              TEXT NOT NULL,
+    resolved_next_block_serial          INTEGER,
+    resolved_next_state_const_hex       TEXT,
+    resolved_next_state_const_u64       INTEGER,
+    resolution_kind                     TEXT NOT NULL,
+    resolution_reason                   TEXT NOT NULL,
+    resolution_maturity                 TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, fact_id, resolution_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_block
+    ON state_transition_dispatch_resolutions(source_block_serial);
+CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_resolved
+    ON state_transition_dispatch_resolutions(resolved_next_state_const_hex);
 
 -- Correlations between a ``COLLAPSED_TO_REWRITTEN_TARGET`` recon edge
 -- and an alternate already-persisted ``dag_edges`` row whose source

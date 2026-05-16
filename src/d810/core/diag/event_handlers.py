@@ -46,6 +46,7 @@ from d810.core.diag.snapshot import (
     snapshot_modifications,
     snapshot_reachability,
     snapshot_rendered_program,
+    snapshot_state_dispatcher_rows,
     snapshot_watch_transition,
 )
 from d810.core.observability import (
@@ -71,6 +72,7 @@ from d810.core.observability_events import (
     ModificationsObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
+    StateDispatcherRowsObserved,
     WatchBlockTransitionObserved,
 )
 
@@ -96,6 +98,9 @@ _pending_provenance: list[CfgProvenanceObserved] = []
 
 _bst_interval_lock = threading.Lock()
 _pending_bst_intervals: list[BstIntervalDispatcherObserved] = []
+
+_state_dispatcher_lock = threading.Lock()
+_pending_state_dispatcher_rows: list[StateDispatcherRowsObserved] = []
 
 
 def _resolve_snapshot_id(snap: SnapshotRef) -> int | None:
@@ -147,6 +152,7 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     # attribution semantics with the legacy IoC drain.
     _flush_pending_provenance(conn, snap_id)
     _flush_pending_bst_intervals(conn, snap_id, snap.func_ea)
+    _flush_pending_state_dispatcher_rows(conn, snap_id, snap.func_ea)
     # Block-lineage drain is fired by snapshot_mba via
     # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
     # subscriber writes the rows. No explicit invocation here.
@@ -229,6 +235,67 @@ def _flush_pending_bst_intervals(
             int(snap_id),
             ev.rows,
             dispatcher_entry_block=ev.dispatcher_entry_block,
+            maturity=ev.maturity,
+        )
+
+
+def _handle_state_dispatcher_rows(
+    ev: StateDispatcherRowsObserved,
+) -> None:
+    try:
+        conn = get_diag_db(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None or not ev.rows:
+        return
+    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+    row = conn.execute(
+        "SELECT id FROM snapshots WHERE func_ea_hex=? "
+        "ORDER BY id DESC LIMIT 1",
+        (func_hex,),
+    ).fetchone()
+    if row is None:
+        _buffer_state_dispatcher_rows(ev)
+        return
+    snapshot_state_dispatcher_rows(
+        conn,
+        int(row[0]),
+        ev.rows,
+        dispatcher_entry_block=ev.dispatcher_entry_block,
+        dispatcher_kind=ev.dispatcher_kind,
+        maturity=ev.maturity,
+    )
+
+
+def _buffer_state_dispatcher_rows(
+    ev: StateDispatcherRowsObserved,
+) -> None:
+    with _state_dispatcher_lock:
+        _pending_state_dispatcher_rows.append(ev)
+
+
+def _flush_pending_state_dispatcher_rows(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    func_ea: int,
+) -> None:
+    with _state_dispatcher_lock:
+        matching = [
+            ev for ev in _pending_state_dispatcher_rows
+            if int(ev.func_ea) == int(func_ea)
+        ]
+        if matching:
+            _pending_state_dispatcher_rows[:] = [
+                ev for ev in _pending_state_dispatcher_rows
+                if int(ev.func_ea) != int(func_ea)
+            ]
+    for ev in matching:
+        snapshot_state_dispatcher_rows(
+            conn,
+            int(snap_id),
+            ev.rows,
+            dispatcher_entry_block=ev.dispatcher_entry_block,
+            dispatcher_kind=ev.dispatcher_kind,
             maturity=ev.maturity,
         )
 
@@ -448,6 +515,7 @@ def _provenance_extra_json(ev: CfgProvenanceObserved) -> str | None:
 _HANDLERS: tuple[tuple[type, object], ...] = (
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (BstIntervalDispatcherObserved, _handle_bst_interval_dispatcher),
+    (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
     (DagObserved, _handle_dag),
     (
         DagFrontierClosureDiagnosticsObserved,
@@ -507,6 +575,8 @@ def _uninstall_locked() -> None:
         _pending_provenance.clear()
     with _bst_interval_lock:
         _pending_bst_intervals.clear()
+    with _state_dispatcher_lock:
+        _pending_state_dispatcher_rows.clear()
 
 
 def is_installed() -> bool:

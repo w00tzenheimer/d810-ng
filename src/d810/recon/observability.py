@@ -39,6 +39,7 @@ from d810.core.observability_events import (
     ModificationsObserved as ModificationsObserved,
     ReachabilityObserved as ReachabilityObserved,
     RenderedProgramObserved as RenderedProgramObserved,
+    StateDispatcherRowsObserved as StateDispatcherRowsObserved,
 )
 from d810.core.observability_models import (
     DagEdge as DagEdge,
@@ -97,6 +98,27 @@ def observe_bst_interval_dispatcher(
             int(dispatcher_entry_block)
             if dispatcher_entry_block is not None else None
         ),
+        rows=tuple(rows),
+    ))
+
+
+def observe_state_dispatcher_rows(
+    *,
+    func_ea: int,
+    maturity: str,
+    dispatcher_entry_block: int | None,
+    dispatcher_kind: str,
+    rows,
+) -> None:
+    """Publish exact state-dispatcher rows."""
+    _emit(StateDispatcherRowsObserved(
+        func_ea=int(func_ea),
+        maturity=str(maturity),
+        dispatcher_entry_block=(
+            int(dispatcher_entry_block)
+            if dispatcher_entry_block is not None else None
+        ),
+        dispatcher_kind=str(dispatcher_kind),
         rows=tuple(rows),
     ))
 
@@ -216,6 +238,7 @@ def diagnostics_enabled() -> bool:
             ModificationsObserved,
             RenderedProgramObserved,
             ReachabilityObserved,
+            StateDispatcherRowsObserved,
         )
     )
 
@@ -233,6 +256,7 @@ __all__ = [
     "ModificationsObserved",
     "ReachabilityObserved",
     "RenderedProgramObserved",
+    "StateDispatcherRowsObserved",
     # Neutral model types (kept here for backward compatibility)
     "DagEdge",
     "DagNode",
@@ -242,6 +266,7 @@ __all__ = [
     "diagnostics_enabled",
     "observe_dag",
     "observe_bst_interval_dispatcher",
+    "observe_state_dispatcher_rows",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",

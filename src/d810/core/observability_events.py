@@ -85,6 +85,17 @@ class BstIntervalDispatcherObserved:
 
 
 @dataclass(frozen=True)
+class StateDispatcherRowsObserved:
+    """Recon observed exact state-dispatcher rows."""
+
+    func_ea: int
+    maturity: str
+    dispatcher_entry_block: int | None
+    dispatcher_kind: str
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class DagLocalFactsObserved:
     """Recon observed node-local DAG facts for a LinearizedStateDag.
 
@@ -258,6 +269,7 @@ __all__ = [
     "ModificationsObserved",
     "ReachabilityObserved",
     "RenderedProgramObserved",
+    "StateDispatcherRowsObserved",
     # CFG
     "BlockLineageDrainRequested",
     "CfgProvenanceObserved",
