@@ -1209,6 +1209,80 @@ def test_branch_ownership_consumer_accepts_branch_arm_identity() -> None:
     )
 
 
+def test_branch_ownership_consumer_real_branch_proof_vetoes_rewrite() -> None:
+    nonsemantic_proof = BranchOwnershipProof(
+        proof_id="nonsemantic-arm-proof",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture nonsemantic",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    real_branch_proof = BranchOwnershipProof(
+        proof_id="real-branch-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="fixture input-derived",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proofs=(nonsemantic_proof, real_branch_proof),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is False
+    )
+
+
+def test_branch_ownership_consumer_sibling_real_branch_does_not_veto_rewrite() -> None:
+    nonsemantic_proof = BranchOwnershipProof(
+        proof_id="nonsemantic-arm-proof",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture nonsemantic",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    sibling_real_branch_proof = BranchOwnershipProof(
+        proof_id="real-sibling-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="fixture input-derived sibling",
+        source_block=5,
+        branch_arm=0,
+        source_state=0x10,
+        target_state=0x30,
+        oracle_kind="fixture",
+    )
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proofs=(nonsemantic_proof, sibling_real_branch_proof),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is True
+    )
+
+
 def test_branch_ownership_retarget_requires_owned_source_or_split_plan() -> None:
     flow_graph = FlowGraph(
         blocks={
