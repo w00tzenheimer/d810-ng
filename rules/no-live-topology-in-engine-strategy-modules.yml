@@ -1,0 +1,39 @@
+# Engine strategies should consume snapshots/backends, not probe live mba_t.
+
+id: no-live-topology-in-engine-strategy-modules
+language: python
+severity: error
+
+files:
+  - "src/d810/optimizers/microcode/flow/flattening/engine/**/*.py"
+  - "src/d810/optimizers/microcode/flow/flattening/strategies/**/*.py"
+  - "src/d810/optimizers/microcode/flow/flattening/cleanup_backend.py"
+  - "src/d810/optimizers/microcode/flow/flattening/cleanup_family.py"
+
+ignores:
+  # Existing live collectors/guards. New strategy files should use backend
+  # adapters or FlowGraph snapshots instead of adding direct topology probes.
+  - "src/d810/optimizers/microcode/flow/flattening/cleanup_family.py"
+  - "src/d810/optimizers/microcode/flow/flattening/engine/return_carrier_fact_guard.py"
+  - "src/d810/optimizers/microcode/flow/flattening/engine/terminal_byte_emit_fact_guard.py"
+  - "src/d810/optimizers/microcode/flow/flattening/strategies/bad_while_loop.py"
+  - "src/d810/optimizers/microcode/flow/flattening/strategies/fake_jump.py"
+  - "src/d810/optimizers/microcode/flow/flattening/strategies/single_iteration.py"
+
+message: |
+  Engine strategy modules must not probe live MBA topology directly.
+
+  Use FlowGraph snapshots, profile/backend adapters, or collector metadata
+  instead of mba.get_mblock(), npred/nsucc(), succ/pred(), or tail probes.
+
+rule:
+  any:
+    - pattern: $MBA.get_mblock($$$)
+    - pattern: $BLK.npred()
+    - pattern: $BLK.nsucc()
+    - pattern: $BLK.succ($$$)
+    - pattern: $BLK.pred($$$)
+    - pattern: $BLK.tail
+
+note: |
+  This prevents reintroducing live-analysis leaks into generic strategy code.

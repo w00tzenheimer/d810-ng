@@ -1,0 +1,38 @@
+# Keep CFG planning/runtime modules from becoming diagnostic storage/query code.
+#
+# CFG code may emit domain observations through d810.cfg.observability and may
+# keep in-memory provenance buffers. SQLite diagnostic persistence and post-hoc
+# DB query helpers belong in d810.core.diag or d810.diagnostics.
+
+id: no-cfg-diagnostic-storage-imports
+language: python
+severity: error
+
+files:
+  - "src/d810/cfg/**/*.py"
+
+ignores:
+  # Existing region-oracle diagnostic code predates the observability split.
+  # It is an explicit exception; new DB-backed diagnostics should live under
+  # d810.diagnostics instead of adding to this list.
+  - "src/d810/cfg/ref_region_oracle.py"
+  - "src/d810/cfg/region_oracle_cli.py"
+
+message: |
+  CFG modules must not import diagnostic storage APIs directly.
+
+  Use d810.cfg.observability to emit in-memory domain observations.
+  Persist/query SQLite diagnostics from d810.core.diag or d810.diagnostics.
+
+rule:
+  any:
+    - pattern: import sqlite3
+    - pattern: from sqlite3 import $$$
+    - pattern: import d810.core.diag
+    - pattern: import d810.core.diag.$MOD
+    - pattern: from d810.core.diag import $$$
+    - pattern: from d810.core.diag.$MOD import $$$
+
+note: |
+  Runtime behavior must use in-memory recon/cfg evidence, not persisted diag DB
+  rows. Diagnostic DB rows are an observability/query surface only.
