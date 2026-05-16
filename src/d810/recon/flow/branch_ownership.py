@@ -292,6 +292,14 @@ def collect_branch_ownership_proofs(
             trusted = True
             reason = "edge_kind_terminal_return_frontier"
             oracle_kind = "dag_terminal_frontier"
+        elif _target_state_has_terminal_frontier(
+            edge,
+            outgoing_by_source.get(target_state, ()),
+        ):
+            proof_kind = BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+            trusted = True
+            reason = "target_state_terminal_return_frontier"
+            oracle_kind = "dag_terminal_frontier"
         elif _has_equivalent_conditional_arm(
             edge,
             outgoing_by_source.get(source_state, ()),
@@ -416,6 +424,21 @@ def _has_equivalent_conditional_arm(
         if _edge_state(getattr(sibling, "target_key", None)) == target_state:
             equivalent_count += 1
     return equivalent_count > 1
+
+
+def _target_state_has_terminal_frontier(
+    edge: object,
+    target_outgoing: list[object] | tuple[object, ...],
+) -> bool:
+    if _edge_kind_name(edge) != "CONDITIONAL_TRANSITION":
+        return False
+    target_state = _edge_state(getattr(edge, "target_key", None))
+    if target_state is None:
+        return False
+    return any(
+        _edge_kind_name(outgoing) in {"CONDITIONAL_RETURN", "EXIT_ROUTINE"}
+        for outgoing in target_outgoing
+    )
 
 
 def _maybe_int(value: object | None) -> int | None:
