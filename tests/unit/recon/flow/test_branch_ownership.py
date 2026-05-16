@@ -86,6 +86,27 @@ def test_collect_branch_ownership_records_terminal_return_frontier() -> None:
     assert proofs[0].target_entry == 99
 
 
+def test_collect_branch_ownership_marks_edges_to_terminal_states_as_frontiers() -> None:
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(
+            _edge(source=0x10, target=0x20, block=4, arm=1),
+            _edge(
+                source=0x20,
+                target=None,
+                kind="CONDITIONAL_RETURN",
+                block=7,
+                target_entry=99,
+            ),
+        )),
+    )
+
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+    assert proofs[0].trusted is True
+    assert proofs[0].reason == "target_state_terminal_return_frontier"
+    assert proofs[0].authorizes_nonsemantic_branch_rewrite is False
+    assert proofs[1].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+
+
 def test_branch_ownership_proof_coerces_dict_for_consumers() -> None:
     proof = branch_ownership_proof_from_any({
         "proof_id": "p",

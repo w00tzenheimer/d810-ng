@@ -32,16 +32,20 @@ class _FakeMba:
 def _edge(
     *,
     source_state: int = 0x10,
-    target_state: int = 0x20,
+    target_state: int | None = 0x20,
+    kind: str = "CONDITIONAL_TRANSITION",
     source_block: int = 5,
     branch_arm: int = 0,
     target_entry: int | None = 9,
     ordered_path: tuple[int, ...] = (4, 5, 9),
 ):
     return SimpleNamespace(
-        kind=SimpleNamespace(name="CONDITIONAL_TRANSITION"),
+        kind=SimpleNamespace(name=kind),
         source_key=SimpleNamespace(state_const=source_state),
-        target_key=SimpleNamespace(state_const=target_state),
+        target_key=(
+            SimpleNamespace(state_const=target_state)
+            if target_state is not None else None
+        ),
         target_entry_anchor=target_entry,
         source_anchor=SimpleNamespace(
             block_serial=source_block,
@@ -90,6 +94,28 @@ def test_path_constant_predicate_marks_non_taken_arm_as_obfuscation_residue():
     assert residue.branch_arm == 0
     assert residue.evidence["taken_arm"] == 1
     assert taken.proof_kind == BranchOwnershipProofKind.UNRESOLVED
+
+
+def test_path_constant_predicate_does_not_downgrade_terminal_frontier_arm():
+    proofs = _proofs_for(
+        _edge(branch_arm=0, target_state=0x20),
+        _edge(
+            source_state=0x20,
+            target_state=None,
+            kind="CONDITIONAL_RETURN",
+            source_block=7,
+            branch_arm=0,
+        ),
+        result=PredicateOwnershipResult(
+            PredicateOwnershipKind.PATH_CONSTANT,
+            "synthetic_moptracker_constant",
+            taken=True,
+        ),
+    )
+
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+    assert proofs[0].trusted is True
+    assert proofs[0].authorizes_nonsemantic_branch_rewrite is False
 
 
 def test_real_data_dependent_predicate_marks_arm_as_semantic_branch_authority():
