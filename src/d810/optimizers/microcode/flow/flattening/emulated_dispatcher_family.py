@@ -964,6 +964,31 @@ def _empty_switch_case_transition_facts(
     return ()
 
 
+def _switch_fact_transition_kind_name(fact: object) -> str:
+    name = getattr(fact, "transition_kind_name", None)
+    if name is not None:
+        return str(name)
+    kind = getattr(fact, "transition_kind", "")
+    value = getattr(kind, "value", None)
+    if value is not None:
+        return str(value)
+    return str(kind)
+
+
+def _switch_fact_exit_block(fact: object) -> int | None:
+    exit_block = getattr(fact, "exit_block", None)
+    if exit_block is None:
+        payload = getattr(fact, "payload", {}) or {}
+        if isinstance(payload, dict):
+            exit_block = payload.get("exit_block")
+    if exit_block is None:
+        return None
+    try:
+        return int(exit_block)
+    except Exception:
+        return None
+
+
 def _ollvm_state_dispatcher_maps(
     mba: object,
     analysis: object,
@@ -4486,6 +4511,115 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         # yet prove a loop phase strong enough for structural recovery.
         return (), direct_blockers
 
+    def _collect_tigress_switch_transition_modifications(
+        self,
+        *,
+        flow_graph: FlowGraph,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
+        if self._profile.name != "tigress_switch":
+            return (), ("tigress_switch_transition_not_profile",)
+        if phase_artifact is None or phase_context is None:
+            return (), ("tigress_switch_transition_missing_artifact",)
+        dispatch_map = getattr(phase_context, "state_dispatcher_map", None)
+        if not isinstance(dispatch_map, StateDispatcherMap):
+            return (), ("tigress_switch_transition_missing_dispatcher_map",)
+        facts = tuple(getattr(phase_context, "switch_case_transition_facts", ()) or ())
+        if not facts:
+            return (), ("tigress_switch_transition_missing_facts",)
+
+        # Match the legacy switch rule's large-dispatcher caution. This first
+        # behavior slice can still persist exact diagnostics for large switches,
+        # but runtime planning abstains until repeated-pass/profile guards exist.
+        if len(dispatch_map.rows) > 256:
+            return (), ("tigress_switch_transition_large_dispatcher_abstained",)
+
+        dispatcher_entry = int(dispatch_map.dispatcher_entry_block)
+        modifications: list[GraphModification] = []
+        blockers: Counter[str] = Counter()
+        redirects_by_source: dict[int, int] = {}
+
+        def _add_redirect(source: int, target: int) -> None:
+            redirects_by_source[int(source)] = int(target)
+            modifications.append(
+                RedirectGoto(
+                    from_serial=int(source),
+                    old_target=dispatcher_entry,
+                    new_target=int(target),
+                )
+            )
+
+        initial_state = dispatch_map.initial_state
+        if initial_state is not None and phase_artifact.pre_header_serial is not None:
+            initial_target = dispatch_map.resolve_target(int(initial_state))
+            pre_header = int(phase_artifact.pre_header_serial)
+            pre_header_block = flow_graph.get_block(pre_header)
+            if (
+                initial_target is not None
+                and pre_header_block is not None
+                and pre_header_block.succs == (dispatcher_entry,)
+                and int(initial_target) in flow_graph.blocks
+            ):
+                _add_redirect(pre_header, int(initial_target))
+            else:
+                blockers["tigress_switch_transition_initial_redirect_unproven"] += 1
+
+        for fact in facts:
+            fact_kind = _switch_fact_transition_kind_name(fact)
+            if fact_kind != "DIRECT":
+                blockers[f"tigress_switch_transition_fact_{fact_kind.lower()}"] += 1
+                continue
+            next_states = tuple(
+                int(value) for value in getattr(fact, "next_states", ()) or ()
+            )
+            if len(next_states) != 1:
+                blockers["tigress_switch_transition_direct_target_count"] += 1
+                continue
+            target = dispatch_map.resolve_target(next_states[0])
+            if target is None:
+                blockers["tigress_switch_transition_target_unresolved"] += 1
+                continue
+            target = int(target)
+            if target == dispatcher_entry or target not in flow_graph.blocks:
+                blockers["tigress_switch_transition_target_not_handler"] += 1
+                continue
+            source = _switch_fact_exit_block(fact)
+            if source is None:
+                blockers["tigress_switch_transition_missing_exit_block"] += 1
+                continue
+            if source == target:
+                blockers["tigress_switch_transition_self_loop"] += 1
+                continue
+            source_block = flow_graph.get_block(source)
+            if source_block is None:
+                blockers["tigress_switch_transition_source_missing"] += 1
+                continue
+            if source_block.succs != (dispatcher_entry,):
+                blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
+                continue
+            if int(source_block.npred) > 1:
+                blockers["tigress_switch_transition_source_not_owned"] += 1
+                continue
+            previous = redirects_by_source.get(source)
+            if previous is not None and previous != target:
+                blockers["tigress_switch_transition_conflicting_source"] += 1
+                continue
+            if previous is None:
+                _add_redirect(source, target)
+
+        if not modifications:
+            if blockers:
+                return (), tuple(sorted(blockers))
+            return (), ("tigress_switch_transition_no_direct_candidates",)
+        self._logger.info(
+            "Tigress switch transition lowering selected %d direct edit(s); blockers=%s",
+            len(modifications),
+            ", ".join(f"{reason}={count}" for reason, count in blockers.most_common())
+            or "none",
+        )
+        return tuple(modifications), ()
+
     def _collect_phase_redirect_loop_recovery(
         self,
         *,
@@ -5513,6 +5647,21 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     "Phase state-DAG lowering blocked: %s",
                     state_dag_blockers,
                 )
+        switch_transition_modifications: tuple[GraphModification, ...] = ()
+        switch_transition_blockers: tuple[str, ...] = ()
+        if mba.maturity >= ida_hexrays.MMAT_GLBOPT1 and self._profile.name == "tigress_switch":
+            switch_transition_modifications, switch_transition_blockers = (
+                self._collect_tigress_switch_transition_modifications(
+                    flow_graph=flow_graph,
+                    phase_artifact=phase_artifact,
+                    phase_context=phase_context,
+                )
+            )
+            if switch_transition_blockers:
+                self._logger.info(
+                    "Tigress switch transition lowering blocked: %s",
+                    switch_transition_blockers,
+                )
         if (
             not fallback_modifications
             and not fallback_blockers
@@ -5569,10 +5718,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = state_dag_modifications
             selected_lowering_mode = "state_dag_recovery"
             selected_blockers = ()
+        elif switch_transition_modifications and not switch_transition_blockers:
+            selected_modifications = switch_transition_modifications
+            selected_lowering_mode = "tigress_switch_transition_facts"
+            selected_blockers = ()
         elif not selected_modifications and phase_reconstruction_blockers:
             selected_blockers = phase_reconstruction_blockers
         elif not selected_modifications and state_dag_blockers:
             selected_blockers = state_dag_blockers
+        elif not selected_modifications and switch_transition_blockers:
+            selected_blockers = switch_transition_blockers
         if (
             loop_recovery_blockers
             and "dispatcher_loop_recovery_return_carrier_bypass"
