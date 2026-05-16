@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from d810.recon.flow.edge_diagnostics import (
+from d810.diagnostics.edge_diagnostics import (
     classify_dag_edges,
     persist_edge_diagnostics,
 )

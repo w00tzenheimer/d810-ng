@@ -1,11 +1,4 @@
-"""CLI handler for `python -m d810.diagnostics region-diff`.
-
-Lives in d810.cfg because the layered-architecture contract forbids
-d810.core.diag from importing d810.cfg. The diag CLI dispatches here
-via importlib.import_module(...). The handler is injected with the
-core/diag helpers it needs (resolver + persistence) so this module
-does NOT static-import them.
-"""
+"""CLI handler for `python -m d810.diagnostics region-diff`."""
 from __future__ import annotations
 
 import dataclasses
@@ -22,7 +15,6 @@ from d810.cfg.ref_region_oracle import (
     RegionFeature,
     _normalize_func_ea_hex,
     build_d810_evidence,
-    collect_block_views_for_snapshot,
     d810_features,
     diff_features,
     ref_features,
@@ -35,6 +27,7 @@ from d810.cfg.terminal_tail_dce_diagnosis import (
     format_dce_table,
     recommend_overall_action,
 )
+from d810.diagnostics.ref_region_oracle_db import collect_block_views_for_snapshot
 
 
 def register_region_diff_parser(sub, common) -> None:

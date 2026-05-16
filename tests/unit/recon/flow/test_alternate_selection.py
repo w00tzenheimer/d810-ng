@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from d810.recon.flow.alternate_selection import (
+from d810.diagnostics.alternate_selection import (
     persist_alternate_selections,
     select_alternate_edges,
 )
