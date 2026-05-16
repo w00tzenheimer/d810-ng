@@ -35,6 +35,7 @@ from d810.core.diag.snapshot import (
     snapshot_reachability,
     snapshot_state_dispatcher_rows,
     snapshot_state_transition_dispatch_resolutions,
+    snapshot_switch_case_transition_facts,
 )
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
@@ -171,6 +172,52 @@ def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
         "FROM state_transition_dispatch_resolutions"
     ).fetchone()
     assert row == ("fact-1", 20, "resolved_exact_state")
+
+
+def test_snapshot_switch_case_transition_facts_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_switch_case_transition_facts(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "tigress_switch:case=4:conditional",
+                "source_state_hex": "0x0000000000000004",
+                "source_state_i64": 4,
+                "case_entry_block": 104,
+                "transition_kind": "CONDITIONAL",
+                "next_state_a_hex": "0x0000000000000009",
+                "next_state_a_i64": 9,
+                "next_state_b_hex": "0x000000000000000d",
+                "next_state_b_i64": 13,
+                "proof_kind": "REAL_DATA_DEPENDENT",
+                "trusted": 1,
+                "reason": "conditional_case_transition_source_predicate",
+                "payload": {"profile_name": "tigress_switch"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT source_state_hex, transition_kind, next_state_a_hex, "
+        "next_state_b_hex, proof_kind, trusted "
+        "FROM switch_case_transition_facts"
+    ).fetchone()
+    assert row == (
+        "0x0000000000000004",
+        "CONDITIONAL",
+        "0x0000000000000009",
+        "0x000000000000000d",
+        "REAL_DATA_DEPENDENT",
+        1,
+    )
 
 
 def test_snapshot_branch_ownership_proofs_round_trip() -> None:

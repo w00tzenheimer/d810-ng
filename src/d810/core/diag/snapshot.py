@@ -1007,6 +1007,53 @@ def snapshot_state_transition_dispatch_resolutions(
     conn.commit()
 
 
+def snapshot_switch_case_transition_facts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist switch-table case transition facts for a snapshot."""
+    conn.execute(
+        "DELETE FROM switch_case_transition_facts WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        fact_id = _mapping_value(row, "fact_id")
+        transition_kind = _mapping_value(row, "transition_kind")
+        reason = _mapping_value(row, "reason")
+        if fact_id is None or transition_kind is None or reason is None:
+            continue
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            str(fact_id),
+            _mapping_value(row, "source_state_hex"),
+            _mapping_value(row, "source_state_i64"),
+            _mapping_value(row, "case_entry_block"),
+            str(transition_kind),
+            _mapping_value(row, "next_state_a_hex"),
+            _mapping_value(row, "next_state_a_i64"),
+            _mapping_value(row, "next_state_b_hex"),
+            _mapping_value(row, "next_state_b_i64"),
+            _mapping_value(row, "return_value"),
+            _mapping_value(row, "proof_kind"),
+            1 if bool(_mapping_value(row, "trusted", False)) else 0,
+            str(reason),
+            _mapping_value(row, "profile_name"),
+            _mapping_value(row, "dispatcher_entry"),
+            _mapping_value(row, "target_block"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO switch_case_transition_facts VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
 def snapshot_branch_ownership_proofs(
     conn: sqlite3.Connection,
     snapshot_id: int,
