@@ -716,6 +716,11 @@ OLLVM_CASES = [
             "ArithmeticChain",
             "AndBnot_FactorRule_2",
         ],
+        forbidden_rules=[
+            "Unflattener",
+            "UnflattenerSwitchCase",
+            "UnflattenerTigressIndirect",
+        ],
     ),
 ]
 
@@ -735,6 +740,35 @@ TIGRESS_CASES = [
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
         must_change=True,  # Original test: case_count_after < case_count_before
+    ),
+]
+
+TIGRESS_ENGINE_CASES = [
+    DeobfuscationCase(
+        function="tigress_minmaxarray",
+        description=(
+            "Tigress flattened min/max array search through the shared "
+            "state-dispatcher engine profile with legacy switch rules disabled"
+        ),
+        project="default_unflattening_tigress_engine.json",
+        obfuscated_contains=["switch", "case"],
+        deobfuscated_contains=[
+            "for (",
+            "Largest element:",
+            "Smallest element:",
+        ],
+        deobfuscated_not_contains=[
+            "while (",
+            "switch (",
+            "case ",
+        ],
+        required_rules=["EmulatedDispatcherUnflattener"],
+        forbidden_rules=[
+            "Unflattener",
+            "UnflattenerSwitchCase",
+            "UnflattenerTigressIndirect",
+        ],
+        must_change=True,
     ),
 ]
 
