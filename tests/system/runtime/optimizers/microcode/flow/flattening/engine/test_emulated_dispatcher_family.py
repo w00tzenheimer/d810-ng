@@ -1784,6 +1784,105 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     assert observed == [("snap", (switch_fact,))]
 
 
+def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
+    monkeypatch,
+) -> None:
+    class SinglePassDag:
+        def __init__(self, edges):
+            self.nodes = ()
+            self._edges = tuple(edges)
+            self._consumed = False
+
+        @property
+        def edges(self):
+            if self._consumed:
+                return iter(())
+            self._consumed = True
+            return iter(self._edges)
+
+    edge = SimpleNamespace(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=0),
+        target_entry_anchor=9,
+        ordered_path=(5, 9),
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SinglePassDag((edge,)),
+        semantic_reference_program=object(),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={EMULATED_DISPATCHER_PHASE_CONTEXT_KEY: context},
+    )
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=flow_graph,
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=0,
+            transition_count=0,
+        ),
+    )
+    observed = []
+
+    monkeypatch.setattr(
+        "d810.hexrays.observability.request_capture_mba_snapshot",
+        lambda **_kwargs: "snap",
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag_local_facts",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_rendered_program",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_branch_ownership_proofs",
+        lambda snap, proofs: observed.append((snap, tuple(proofs))),
+    )
+
+    EmulatedDispatcherStrategyFamily(
+        profile=ollvm_state_dispatcher_map_profile(),
+    ).observe_phase_diagnostics(
+        snapshot.mba,
+        snapshot,
+    )
+
+    assert observed
+    snap, proofs = observed[0]
+    assert snap == "snap"
+    assert proofs[0]["proof_kind"] == BranchOwnershipProofKind.UNRESOLVED.value
+    assert proofs[0]["source_block"] == 5
+    assert proofs[0]["branch_arm"] == 0
+
+
 def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:
     def _snapshot(serial, succs, preds):
         return BlockSnapshot(
