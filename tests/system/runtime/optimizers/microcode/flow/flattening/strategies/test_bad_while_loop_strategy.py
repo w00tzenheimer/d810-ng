@@ -709,6 +709,149 @@ def test_collect_live_bad_while_loop_analysis_records_direct_dependency_diagnost
     assert copied["missing_uses"][0]["mop"]["stack"]["stkoff"] == 0x7BC
 
 
+def test_collect_live_bad_while_loop_analysis_promotes_stack_dependency_rescue(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    from d810.evaluator.hexrays_microcode import tracker as tracker_module
+    from d810.optimizers.microcode.flow.flattening import (
+        unflattener_badwhile_loop as legacy_module,
+    )
+    from d810.optimizers.microcode.flow.flattening.strategies import (
+        bad_while_loop_dependency_diagnostics as diagnostics_module,
+    )
+
+    missing_stack = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x7BC),
+        dstr=lambda: "stk_7bc.4",
+    )
+    side_effect_insn = SimpleNamespace(
+        opcode=0x77,
+        ea=0x2000,
+        display="mov eax.4, stk_7bc.4",
+    )
+    father = SimpleNamespace(
+        serial=5,
+        tail=SimpleNamespace(opcode=0x111),
+        nsucc=lambda: 1,
+        succ=lambda _idx: 2,
+        predset=[4],
+    )
+    dispatcher_entry_blk = SimpleNamespace(
+        serial=2,
+        predset=[5],
+        nsucc=lambda: 0,
+        succ=lambda _idx: (_ for _ in ()).throw(IndexError),
+    )
+    target_blk = SimpleNamespace(serial=7, tail=None, nsucc=lambda: 0)
+    dispatcher_info = SimpleNamespace(
+        entry_block=SimpleNamespace(
+            blk=dispatcher_entry_blk,
+            use_before_def_list=(),
+        ),
+        dispatcher_internal_blocks=[SimpleNamespace(serial=2)],
+        emulate_dispatcher_with_father_history=lambda *_args, **_kwargs: (
+            target_blk,
+            (side_effect_insn,),
+        ),
+    )
+
+    class FakeBadWhileLoop:
+        def __init__(self) -> None:
+            self.dispatcher_list = [dispatcher_info]
+            self.mba = None
+
+        def retrieve_all_dispatchers(self) -> None:
+            return None
+
+        def get_dispatcher_father_histories(self, *_args, **_kwargs):
+            return ("history",)
+
+        def check_if_histories_are_resolved(self, histories) -> bool:
+            return bool(histories)
+
+        def _filter_dependency_safe_copies(self, *_args, **_kwargs):
+            return ()
+
+        def _collect_block_liveins_and_defs(self, _blk):
+            return (), ()
+
+        def _collect_instruction_uses_defs(self, _insn):
+            return (missing_stack,), ()
+
+    class FakeDefinitionBackend:
+        def reaching_defs_for_stkvar(self, *_args, **_kwargs):
+            return (DefinitionSiteEvidence(block_serial=12, insn_ea=0x4010),)
+
+        def run_sccp_overlay(self, _mba):
+            return {}
+
+        def lookup_sccp_stkvar(self, *_args, **_kwargs):
+            return None
+
+    rescued: list[tuple[object, int, tuple[object, ...], str]] = []
+
+    def _dependency_rescue_capture(mba, source_serial, instructions, diagnostic):
+        rescued.append(
+            (
+                mba,
+                source_serial,
+                tuple(instructions),
+                str(diagnostic.get("final_bucket")),
+            )
+        )
+        return _captured_body(source_serial)
+
+    mba = SimpleNamespace(
+        maturity=1,
+        get_mblock=lambda serial: father if serial == 5 else None,
+    )
+
+    monkeypatch.setattr(legacy_module, "BadWhileLoop", FakeBadWhileLoop)
+    monkeypatch.setattr(
+        diagnostics_module,
+        "HexRaysDefinitionRescueBackend",
+        FakeDefinitionBackend,
+    )
+    monkeypatch.setattr(
+        tracker_module,
+        "get_all_possibles_values",
+        lambda *_args, **_kwargs: ((0x1234,),),
+    )
+    monkeypatch.setattr(
+        tracker_module,
+        "check_if_all_values_are_found",
+        lambda *_args, **_kwargs: True,
+    )
+
+    analysis = collect_live_bad_while_loop_analysis(
+        mba,
+        allowed_maturities=(1,),
+        dependency_rescue_capture=_dependency_rescue_capture,
+    )
+
+    assert rescued == [
+        (mba, 5, (side_effect_insn,), "stack_unique_def_chain_capturable")
+    ]
+    assert len(analysis.replay_candidates) == 1
+    assert analysis.replay_candidates[0].captured_body == _captured_body(5)
+    assert analysis.follow_up == (
+        BadWhileLoopFollowUp(
+            dispatcher_entry=2,
+            from_serial=5,
+            category=BAD_WHILE_LOOP_INSERT_BLOCK,
+            reason="copied_side_effects_not_dependency_safe",
+            target_serial=7,
+        ),
+    )
+    assert analysis.dependency_diagnostics[0]["final_bucket"] == (
+        "stack_unique_def_chain_capturable"
+    )
+
+
 def test_collect_live_bad_while_loop_analysis_builds_conditional_redirect(
     monkeypatch,
 ) -> None:
@@ -1766,7 +1909,7 @@ class _DiagnosticDefinitionBackend:
 
 
 def _dependency_diagnostic_for(
-    missing_mop: object,
+    missing_mop: object | tuple[object, ...],
     *,
     backend: _DiagnosticDefinitionBackend | None = None,
     opcode: int = 0x77,
@@ -1776,7 +1919,9 @@ def _dependency_diagnostic_for(
     insn = SimpleNamespace(opcode=opcode, ea=0x2000, display="copied side effect")
     return build_bad_while_loop_dependency_diagnostic(
         mba=SimpleNamespace(),
-        rule=_DiagnosticRule((missing_mop,)),
+        rule=_DiagnosticRule(
+            missing_mop if isinstance(missing_mop, tuple) else (missing_mop,)
+        ),
         source_blk=source_blk,
         dispatcher_entry=2,
         source_serial=5,
@@ -1873,6 +2018,35 @@ def test_dependency_diagnostic_buckets_memory_alias_unknown() -> None:
 
     assert diagnostic["final_bucket"] == "memory_or_alias_unknown"
     assert diagnostic["missing_uses"][0]["capture_status"] == "alias_unknown"
+
+
+def test_dependency_diagnostic_does_not_mark_mixed_stack_memory_capturable() -> None:
+    import ida_hexrays
+
+    missing_stack = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x7BC),
+        dstr=lambda: "stk_7bc.4",
+    )
+    missing_global = SimpleNamespace(
+        t=ida_hexrays.mop_v,
+        size=4,
+        g=0x401000,
+        dstr=lambda: "global_401000.4",
+    )
+    diagnostic = _dependency_diagnostic_for(
+        (missing_stack, missing_global),
+        backend=_DiagnosticDefinitionBackend(
+            (DefinitionSiteEvidence(block_serial=12, insn_ea=0x4010),),
+        ),
+    )
+
+    assert diagnostic["final_bucket"] == "memory_or_alias_unknown"
+    assert [row["capture_status"] for row in diagnostic["missing_uses"]] == [
+        "capturable",
+        "alias_unknown",
+    ]
 
 
 def test_dependency_diagnostic_buckets_call_or_payload_invalid() -> None:

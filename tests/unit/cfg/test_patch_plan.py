@@ -436,6 +436,35 @@ def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_empty_insert_block_compiles_as_runtime_trampoline():
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=9,
+                old_target_serial=10,
+                succ_serial=11,
+            )
+        ],
+        _conditional_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.new_blocks[0].kind == "insert_block"
+    assert patch_plan.new_blocks[0].instructions == ()
+    assert patch_plan.new_blocks[0].captured_body is None
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=14,
+            pred_serial=9,
+            succ_serial=11,
+            instructions=(),
+            old_target_serial=10,
+        ),
+    )
+    assert patch_plan.legacy_block_operations == ()
+
+
 def test_compile_patch_plan_finalizes_duplicate_block():
     patch_plan = compile_patch_plan(
         [

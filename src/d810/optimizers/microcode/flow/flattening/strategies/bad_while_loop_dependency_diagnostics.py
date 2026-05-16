@@ -264,23 +264,6 @@ def _classify_bucket(
     if saw_call_or_invalid_payload:
         return "call_or_payload_invalid", "copied instruction is call-like or invalid"
 
-    stack_statuses = _capture_statuses(missing_uses, "stack")
-    if stack_statuses:
-        if all(status == "capturable" for status in stack_statuses):
-            return (
-                "stack_unique_def_chain_capturable",
-                "each missing stack use has one reaching definition",
-            )
-        if any(status == "ambiguous_defs" for status in stack_statuses):
-            return (
-                "stack_ambiguous_defs",
-                "at least one missing stack use has multiple reaching definitions",
-            )
-        return (
-            "stack_external_or_no_reaching_def",
-            "missing stack use is external or has no reaching definition",
-        )
-
     missing_kinds = {
         str(row.get("mop", {}).get("kind"))
         for row in missing_uses
@@ -298,6 +281,26 @@ def _classify_bucket(
     }
     if missing_kinds & memory_kinds:
         return "memory_or_alias_unknown", "missing use is memory or alias-sensitive"
+
+    stack_statuses = _capture_statuses(missing_uses, "stack")
+    if stack_statuses:
+        if len(stack_statuses) != len(missing_uses):
+            return "mixed_unknown", "stack rescue mixed with non-stack dependencies"
+        if all(status == "capturable" for status in stack_statuses):
+            return (
+                "stack_unique_def_chain_capturable",
+                "each missing stack use has one reaching definition",
+            )
+        if any(status == "ambiguous_defs" for status in stack_statuses):
+            return (
+                "stack_ambiguous_defs",
+                "at least one missing stack use has multiple reaching definitions",
+            )
+        return (
+            "stack_external_or_no_reaching_def",
+            "missing stack use is external or has no reaching definition",
+        )
+
     if missing_kinds <= {"mop_r"} and missing_kinds:
         predset = getattr(source_blk, "predset", None)
         try:

@@ -14,11 +14,16 @@ from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
+    CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY,
     extract_conditional_redirect_proofs,
     extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
+    extract_trampoline_isolation_candidates,
+    reclassify_bad_while_loop_follow_ups,
     serialize_conditional_redirect_proofs,
+    serialize_follow_up_reclassifications,
 )
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
@@ -103,8 +108,11 @@ class SimpleFlatteningCleanupMetadata:
     selected_bad_while_loop_replay_candidates: int = 0
     collected_bad_while_loop_duplicate_replay_candidates: int = 0
     selected_bad_while_loop_duplicate_replay_candidates: int = 0
+    collected_bad_while_loop_trampoline_isolation_candidates: int = 0
+    selected_bad_while_loop_trampoline_isolation_candidates: int = 0
     collected_bad_while_loop_conditional_redirect_proofs: int = 0
     selected_bad_while_loop_conditional_redirect_proofs: int = 0
+    bad_while_loop_follow_up_reclassifications: int = 0
     bad_while_loop_dependency_diagnostics: int = 0
     collected_fix_predecessor_branch_arm_fixes: int = 0
     selected_fix_predecessor_branch_arm_fixes: int = 0
@@ -191,6 +199,10 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[CLEANUP_DUPLICATE_REPLAY_METADATA_KEY] = tuple(
                 detection.bad_while_loop_duplicate_replay_candidates
             )
+        if detection.bad_while_loop_trampoline_isolation_candidates:
+            metadata[CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY] = tuple(
+                detection.bad_while_loop_trampoline_isolation_candidates
+            )
         if detection.bad_while_loop_conditional_redirect_proofs:
             metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY] = (
                 serialize_conditional_redirect_proofs(
@@ -233,6 +245,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_bad_while_loop_duplicate_replay_candidates = (
             extract_duplicate_group_replay_candidates(graph_with_candidates)
         )
+        selected_bad_while_loop_trampoline_isolation_candidates = (
+            extract_trampoline_isolation_candidates(graph_with_candidates)
+        )
         selected_bad_while_loop_conditional_redirect_proofs = (
             extract_conditional_redirect_proofs(graph_with_candidates)
         )
@@ -241,6 +256,26 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         selected_bad_while_loop_dependency_diagnostics = (
             extract_bad_while_loop_dependency_diagnostics(graph_with_candidates)
+        )
+        selected_bad_while_loop_follow_up_reclassifications = (
+            reclassify_bad_while_loop_follow_ups(
+                selected_bad_while_loop_follow_up,
+                graph_with_candidates,
+                edits=selected_bad_while_loop_edits,
+                replay_candidates=selected_bad_while_loop_replay_candidates,
+                duplicate_replay_candidates=(
+                    selected_bad_while_loop_duplicate_replay_candidates
+                ),
+                trampoline_isolation_candidates=(
+                    selected_bad_while_loop_trampoline_isolation_candidates
+                ),
+                conditional_redirect_proofs=(
+                    selected_bad_while_loop_conditional_redirect_proofs
+                ),
+                dependency_diagnostics=(
+                    selected_bad_while_loop_dependency_diagnostics
+                ),
+            )
         )
         candidate_branch_arm_fixes = extract_fix_predecessor_branch_arm_fixes(
             graph_with_candidates
@@ -272,9 +307,17 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[CLEANUP_DUPLICATE_REPLAY_METADATA_KEY] = tuple(
             selected_bad_while_loop_duplicate_replay_candidates
         )
+        metadata[CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY] = tuple(
+            selected_bad_while_loop_trampoline_isolation_candidates
+        )
         metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY] = (
             serialize_conditional_redirect_proofs(
                 selected_bad_while_loop_conditional_redirect_proofs
+            )
+        )
+        metadata[CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY] = (
+            serialize_follow_up_reclassifications(
+                selected_bad_while_loop_follow_up_reclassifications
             )
         )
         metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
@@ -304,6 +347,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 or selected_bad_while_loop_edits
                 or selected_bad_while_loop_replay_candidates
                 or selected_bad_while_loop_duplicate_replay_candidates
+                or selected_bad_while_loop_trampoline_isolation_candidates
                 or selected_branch_arm_modifications
             ),
             collection_errors=detection.collection_errors,
@@ -328,11 +372,20 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             selected_bad_while_loop_duplicate_replay_candidates=len(
                 selected_bad_while_loop_duplicate_replay_candidates
             ),
+            collected_bad_while_loop_trampoline_isolation_candidates=len(
+                detection.bad_while_loop_trampoline_isolation_candidates
+            ),
+            selected_bad_while_loop_trampoline_isolation_candidates=len(
+                selected_bad_while_loop_trampoline_isolation_candidates
+            ),
             collected_bad_while_loop_conditional_redirect_proofs=len(
                 detection.bad_while_loop_conditional_redirect_proofs
             ),
             selected_bad_while_loop_conditional_redirect_proofs=len(
                 selected_bad_while_loop_conditional_redirect_proofs
+            ),
+            bad_while_loop_follow_up_reclassifications=len(
+                selected_bad_while_loop_follow_up_reclassifications
             ),
             bad_while_loop_dependency_diagnostics=len(
                 selected_bad_while_loop_dependency_diagnostics

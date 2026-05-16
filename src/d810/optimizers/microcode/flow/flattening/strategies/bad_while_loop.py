@@ -19,15 +19,19 @@ from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
+    CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY,
     CleanupDuplicateGroupReplayCandidate,
     CleanupPerPredReplay,
     CleanupSideEffectReplayCandidate,
+    CleanupTrampolineIsolationCandidate,
     bad_while_loop_duplicate_candidate,
     bad_while_loop_duplicate_group_replay_candidate,
     bad_while_loop_side_effect_replay_candidate,
+    bad_while_loop_trampoline_isolation_candidate,
     build_dispatcher_cleanup_modification,
     extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
+    extract_trampoline_isolation_candidates,
     validate_dispatcher_cleanup_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -672,6 +676,9 @@ class BadWhileLoopAnalysis:
     follow_up: tuple[BadWhileLoopFollowUp, ...]
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...] = ()
+    trampoline_isolation_candidates: tuple[
+        CleanupTrampolineIsolationCandidate, ...
+    ] = ()
     dependency_diagnostics: tuple[BadWhileLoopDependencyDiagnostic, ...] = ()
 
 
@@ -682,6 +689,13 @@ def collect_live_bad_while_loop_analysis(
     allowed_maturities: Sequence[int] | None = None,
     side_effect_capture: (
         Callable[[int, Sequence[object]], "CapturedBlockBody | None"] | None
+    ) = None,
+    dependency_rescue_capture: (
+        Callable[
+            [object, int, Sequence[object], Mapping[str, object]],
+            "CapturedBlockBody | None",
+        ]
+        | None
     ) = None,
 ) -> BadWhileLoopAnalysis:
     """Collect safe BadWhileLoop edits plus classified follow-up gaps."""
@@ -723,6 +737,7 @@ def collect_live_bad_while_loop_analysis(
     follow_up: list[BadWhileLoopFollowUp] = []
     replay_candidates: list[CleanupSideEffectReplayCandidate] = []
     duplicate_replay_candidates: list[CleanupDuplicateGroupReplayCandidate] = []
+    trampoline_isolation_candidates: list[CleanupTrampolineIsolationCandidate] = []
     dependency_diagnostics: list[BadWhileLoopDependencyDiagnostic] = []
     seen_follow_up: set[tuple[object, ...]] = set()
 
@@ -768,7 +783,7 @@ def collect_live_bad_while_loop_analysis(
         reason: str,
         copied_instructions: Sequence[object],
         dependency_safe_copies: Sequence[object],
-    ) -> None:
+    ) -> BadWhileLoopDependencyDiagnostic | None:
         try:
             diagnostic = build_bad_while_loop_dependency_diagnostic(
                 mba=mba,
@@ -788,10 +803,11 @@ def collect_live_bad_while_loop_analysis(
                     "Failed to collect BadWhileLoop dependency diagnostic",
                     exc_info=True,
                 )
-            return
+            return None
         dependency_diagnostics.append(diagnostic)
         if logger is not None:
             logger.info("Collected BadWhileLoop dependency diagnostic: %s", diagnostic)
+        return diagnostic
 
     def record_edit(edit: BadWhileLoopEdit) -> None:
         match edit:
@@ -882,9 +898,11 @@ def collect_live_bad_while_loop_analysis(
 
         per_pred_resolved_targets: dict[int, int] = {}
         per_pred_replays: list[CleanupPerPredReplay] = []
+        trampoline_targets: set[int] = set()
         saw_copied_side_effects = False
         saw_plain_target = False
         first_replay_target: int | None = None
+        first_trampoline_target: int | None = None
         for pred_serial in ordered_preds:
             group_histories = pred_dict.get(pred_serial, ())
             if not group_histories or not rule.check_if_histories_are_resolved(group_histories):
@@ -1001,14 +1019,31 @@ def collect_live_bad_while_loop_analysis(
                 target_is_conditional
                 and int(target_blk.serial) in dispatcher_direct_successors
             ):
-                return (
-                    None,
-                    source_serial,
-                    "duplicate_group_requires_trampoline",
-                    int(target_blk.serial),
-                )
+                target_serial = int(target_blk.serial)
+                trampoline_targets.add(target_serial)
+                if first_trampoline_target is None:
+                    first_trampoline_target = target_serial
 
             per_pred_resolved_targets[pred_serial] = int(target_blk.serial)
+
+        if trampoline_targets:
+            unique_targets = set(per_pred_resolved_targets.values())
+            if len(unique_targets) == 1 and unique_targets == trampoline_targets:
+                target_serial = next(iter(unique_targets))
+                trampoline_candidate = bad_while_loop_trampoline_isolation_candidate(
+                    dispatcher_entry=dispatcher_entry_serial,
+                    source_serial=source_serial,
+                    target_serial=target_serial,
+                    dispatcher_internal_serials=tuple(dispatcher_serials),
+                )
+                if trampoline_candidate is not None:
+                    trampoline_isolation_candidates.append(trampoline_candidate)
+            return (
+                None,
+                source_serial,
+                "duplicate_group_requires_trampoline",
+                first_trampoline_target,
+            )
 
         if saw_copied_side_effects:
             if saw_plain_target or len(per_pred_replays) != len(ordered_preds):
@@ -1187,8 +1222,9 @@ def collect_live_bad_while_loop_analysis(
                     father,
                     copied_side_effects,
                 )
+                dependency_diagnostic: BadWhileLoopDependencyDiagnostic | None = None
                 if not dependency_safe_copies:
-                    record_dependency_diagnostic(
+                    dependency_diagnostic = record_dependency_diagnostic(
                         source_blk=father,
                         dispatcher_entry=dispatcher_entry_serial,
                         source_serial=int(father.serial),
@@ -1230,6 +1266,35 @@ def collect_live_bad_while_loop_analysis(
                 elif dependency_safe_copies:
                     follow_up_reason = "copied_side_effects"
                 else:
+                    if (
+                        dependency_rescue_capture is not None
+                        and dependency_diagnostic is not None
+                        and dependency_diagnostic.get("final_bucket")
+                        == "stack_unique_def_chain_capturable"
+                    ):
+                        captured_body = None
+                        try:
+                            captured_body = dependency_rescue_capture(
+                                mba,
+                                int(father.serial),
+                                tuple(copied_side_effects),
+                                dependency_diagnostic,
+                            )
+                        except Exception:
+                            if logger is not None:
+                                logger.debug(
+                                    "Failed to capture BadWhileLoop dependency rescue body",
+                                    exc_info=True,
+                                )
+                        replay_candidate = bad_while_loop_side_effect_replay_candidate(
+                            dispatcher_entry=dispatcher_entry_serial,
+                            source_serial=int(father.serial),
+                            target_serial=int(target_blk.serial),
+                            captured_body=captured_body,
+                            dispatcher_internal_serials=tuple(dispatcher_serials),
+                        )
+                        if replay_candidate is not None:
+                            replay_candidates.append(replay_candidate)
                     follow_up_reason = "copied_side_effects_not_dependency_safe"
                 record_follow_up(
                     dispatcher_entry=dispatcher_entry_serial,
@@ -1380,6 +1445,7 @@ def collect_live_bad_while_loop_analysis(
         follow_up=tuple(follow_up),
         replay_candidates=tuple(replay_candidates),
         duplicate_replay_candidates=tuple(duplicate_replay_candidates),
+        trampoline_isolation_candidates=tuple(trampoline_isolation_candidates),
         dependency_diagnostics=tuple(dependency_diagnostics),
     )
 
@@ -1465,6 +1531,7 @@ class BadWhileLoopStrategy:
             extract_bad_while_loop_edits(snapshot.flow_graph)
             or extract_side_effect_replay_candidates(snapshot.flow_graph)
             or extract_duplicate_group_replay_candidates(snapshot.flow_graph)
+            or extract_trampoline_isolation_candidates(snapshot.flow_graph)
         )
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
@@ -1473,7 +1540,15 @@ class BadWhileLoopStrategy:
         duplicate_replay_candidates = extract_duplicate_group_replay_candidates(
             snapshot.flow_graph
         )
-        if not edits and not replay_candidates and not duplicate_replay_candidates:
+        trampoline_isolation_candidates = extract_trampoline_isolation_candidates(
+            snapshot.flow_graph
+        )
+        if (
+            not edits
+            and not replay_candidates
+            and not duplicate_replay_candidates
+            and not trampoline_isolation_candidates
+        ):
             return None
 
         modifications = build_bad_while_loop_modifications(edits)
@@ -1484,6 +1559,10 @@ class BadWhileLoopStrategy:
         modifications.extend(
             build_dispatcher_cleanup_modification(candidate)
             for candidate in duplicate_replay_candidates
+        )
+        modifications.extend(
+            build_dispatcher_cleanup_modification(candidate)
+            for candidate in trampoline_isolation_candidates
         )
         if not modifications:
             return None
@@ -1507,6 +1586,9 @@ class BadWhileLoopStrategy:
                 CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY: tuple(replay_candidates),
                 CLEANUP_DUPLICATE_REPLAY_METADATA_KEY: tuple(
                     duplicate_replay_candidates
+                ),
+                CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY: tuple(
+                    trampoline_isolation_candidates
                 ),
                 "safeguard_min_required": 1,
             },

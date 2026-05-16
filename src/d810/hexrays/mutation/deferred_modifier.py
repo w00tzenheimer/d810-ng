@@ -404,6 +404,17 @@ def _collect_capture_blocks(*snapshots: dict | None) -> list[int]:
     return sorted(block_serials)
 
 
+def _is_live_block_serial(mba: ida_hexrays.mba_t, serial: int | None) -> bool:
+    """Return whether *serial* is currently addressable in *mba*."""
+    if serial is None:
+        return False
+    try:
+        serial_i = int(serial)
+        return 0 <= serial_i < int(mba.qty)
+    except Exception:
+        return False
+
+
 class ModificationType(Enum):
     """Types of graph modifications that can be queued."""
     BLOCK_GOTO_CHANGE = auto()       # Change goto destination
@@ -5078,8 +5089,13 @@ class DeferredGraphModifier:
             return False
 
         insertion_serial = int(nop_blk.serial)
+        remap = dict(self._serial_remap)
+        for original_serial, live_serial in tuple(remap.items()):
+            if int(live_serial) >= insertion_serial:
+                remap[int(original_serial)] = int(live_serial) + 1
         for serial in range(insertion_serial, old_qty):
-            self._serial_remap[serial] = serial + 1
+            remap.setdefault(serial, serial + 1)
+        self._serial_remap = remap
 
         effective_new_target = self._resolve_serial(int(new_target))
         logger.info(
@@ -5344,7 +5360,11 @@ class DeferredGraphModifier:
             ref_block = mba.get_mblock(tail_serial)
 
         # Get target block to check if it's 0-way
-        target_blk = mba.get_mblock(final_target)
+        target_blk = (
+            mba.get_mblock(final_target)
+            if _is_live_block_serial(mba, final_target)
+            else None
+        )
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
@@ -5356,6 +5376,11 @@ class DeferredGraphModifier:
                 and blk.nsucc() == 1
                 and blk.succ(0) == old_stop_serial
             ]
+            final_target_was_stop = (
+                not actual_is_0_way
+                and _is_live_block_serial(mba, final_target)
+                and int(final_target) == int(old_stop_serial)
+            )
             # Create a standalone block -- ref_block's CFG edges are NOT modified.
             new_block = create_standalone_block(
                 ref_block,
@@ -5373,6 +5398,27 @@ class DeferredGraphModifier:
                     new_block.serial,
                 )
             new_stop_serial = mba.qty - 1
+            new_block_nsucc = getattr(new_block, "nsucc", None)
+            new_block_succ = getattr(new_block, "succ", None)
+            if (
+                final_target_was_stop
+                and callable(new_block_nsucc)
+                and callable(new_block_succ)
+                and new_block_nsucc() == 1
+                and int(new_block_succ(0)) == int(new_block.serial)
+            ):
+                logger.debug(
+                    "create_and_redirect: retargeting blk[%d] self-loop to moved STOP blk[%d]",
+                    new_block.serial,
+                    new_stop_serial,
+                )
+                if not change_1way_block_successor(new_block, new_stop_serial, verify=False):
+                    logger.warning(
+                        "create_and_redirect: failed to retarget blk[%d] to moved STOP blk[%d]",
+                        new_block.serial,
+                        new_stop_serial,
+                    )
+                    return False
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
                 if pred_blk is None or pred_blk.serial == new_block.serial:
@@ -8013,8 +8059,30 @@ class DeferredGraphModifier:
             return False
 
         source_blk = self.mba.get_mblock(source_block_serial)
-        target_blk = self.mba.get_mblock(final_target_serial)
+        target_blk = (
+            self.mba.get_mblock(final_target_serial)
+            if _is_live_block_serial(self.mba, final_target_serial)
+            else None
+        )
         if source_blk is None or target_blk is None:
+            if source_blk is not None and not _is_live_block_serial(
+                self.mba,
+                final_target_serial,
+            ):
+                logger.debug(
+                    "create_and_redirect: allowing future target blk[%s] "
+                    "during pre-reject validation (current qty=%d)",
+                    final_target_serial,
+                    int(getattr(self.mba, "qty", 0) or 0),
+                )
+            else:
+                logger.warning(
+                    "create_and_redirect: missing block src=%s target=%s",
+                    source_block_serial,
+                    final_target_serial,
+                )
+                return False
+        if source_blk is None:
             logger.warning(
                 "create_and_redirect: missing block src=%s target=%s",
                 source_block_serial,
@@ -9380,7 +9448,11 @@ class ImmediateGraphModifier:
             ref_block = mba.get_mblock(tail_serial)
 
         # Get target block to check if it's 0-way
-        target_blk = mba.get_mblock(final_target)
+        target_blk = (
+            mba.get_mblock(final_target)
+            if _is_live_block_serial(mba, final_target)
+            else None
+        )
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
 
         try:
