@@ -321,6 +321,33 @@ CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_block
 CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_resolved
     ON state_transition_dispatch_resolutions(resolved_next_state_const_hex);
 
+CREATE TABLE IF NOT EXISTS switch_case_transition_facts (
+    snapshot_id          INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index            INTEGER NOT NULL,
+    fact_id              TEXT NOT NULL,
+    source_state_hex     TEXT,
+    source_state_i64     INTEGER,
+    case_entry_block     INTEGER,
+    transition_kind      TEXT NOT NULL,
+    next_state_a_hex     TEXT,
+    next_state_a_i64     INTEGER,
+    next_state_b_hex     TEXT,
+    next_state_b_i64     INTEGER,
+    return_value         INTEGER,
+    proof_kind           TEXT,
+    trusted              INTEGER NOT NULL DEFAULT 0,
+    reason               TEXT NOT NULL,
+    profile_name         TEXT,
+    dispatcher_entry     INTEGER,
+    target_block         INTEGER,
+    payload_json         TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_switch_case_transition_facts_source
+    ON switch_case_transition_facts(snapshot_id, source_state_i64);
+CREATE INDEX IF NOT EXISTS idx_switch_case_transition_facts_kind
+    ON switch_case_transition_facts(snapshot_id, transition_kind, trusted);
+
 CREATE TABLE IF NOT EXISTS branch_ownership_proofs (
     snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
     row_index                INTEGER NOT NULL,

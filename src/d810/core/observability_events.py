@@ -104,6 +104,14 @@ class StateTransitionDispatchResolutionsObserved:
 
 
 @dataclass(frozen=True)
+class SwitchCaseTransitionFactsObserved:
+    """Recon observed switch-table case transition facts."""
+
+    snapshot: SnapshotRef
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class BranchOwnershipProofsObserved:
     """Recon observed conditional branch ownership proof rows."""
 
@@ -305,6 +313,7 @@ __all__ = [
     "RenderedProgramObserved",
     "StateDispatcherRowsObserved",
     "StateTransitionDispatchResolutionsObserved",
+    "SwitchCaseTransitionFactsObserved",
     # CFG
     "BlockLineageDrainRequested",
     "CfgProvenanceForLatestSnapshot",

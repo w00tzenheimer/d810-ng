@@ -91,6 +91,7 @@ class UnflattenerSwitchCase(GenericDispatcherUnflatteningRule):
         # Large switch dispatchers can crash Hex-Rays when rewritten repeatedly
         # across maturities. Track functions that already consumed one pass.
         self._large_dispatcher_single_pass_done: set[int] = set()
+        self._transition_diag_emitted: set[tuple[int, int, int]] = set()
 
     def configure(self, kwargs):
         super().configure(kwargs)
@@ -140,3 +141,58 @@ class UnflattenerSwitchCase(GenericDispatcherUnflatteningRule):
     def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
         """Return the class of the dispatcher collector."""
         return TigressSwitchDispatcherCollector
+
+    def retrieve_all_dispatchers(self):
+        super().retrieve_all_dispatchers()
+        self._observe_switch_case_transition_facts()
+
+    def _observe_switch_case_transition_facts(self) -> None:
+        if not self.dispatcher_list:
+            return
+        try:
+            from d810.hexrays.observability import (
+                mba_to_block_snapshots,
+                request_capture_mba_snapshot,
+            )
+            from d810.recon.flow.switch_case_transition_analysis import (
+                collect_switch_case_transition_facts_from_mba,
+            )
+            from d810.recon.flow.switch_table_analysis import (
+                analyze_switch_table_dispatcher,
+            )
+            from d810.recon.observability import observe_switch_case_transition_facts
+
+            result = analyze_switch_table_dispatcher(self.mba)
+            if result is None:
+                return
+            dispatch_map = result.state_dispatcher_map
+            key = (
+                int(getattr(self.mba, "entry_ea", 0) or 0),
+                int(getattr(self.mba, "maturity", 0) or 0),
+                int(dispatch_map.dispatcher_entry_block),
+            )
+            if key in self._transition_diag_emitted:
+                return
+            facts = collect_switch_case_transition_facts_from_mba(
+                mba=self.mba,
+                dispatch_map=dispatch_map,
+                profile_name="tigress_switch",
+            )
+            if not facts:
+                return
+            snap = request_capture_mba_snapshot(
+                blocks=mba_to_block_snapshots(self.mba),
+                label="tigress_switch_case_transition_facts",
+                func_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+                maturity=str(getattr(self.mba, "maturity", "unknown")),
+                phase="unknown",
+            )
+            if snap is None:
+                return
+            observe_switch_case_transition_facts(snap, facts)
+            self._transition_diag_emitted.add(key)
+        except Exception:
+            unflat_logger.debug(
+                "UnflattenerSwitchCase: switch case transition diagnostics failed",
+                exc_info=True,
+            )
