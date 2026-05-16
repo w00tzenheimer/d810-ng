@@ -20,7 +20,9 @@ message: |
 rule:
   any:
     - pattern: import sqlite3
+    - pattern: import sqlite3 as $ALIAS
     - pattern: from sqlite3 import $$$
+    - pattern: from sqlite3 import $NAME as $ALIAS
     - pattern: import d810.core.diag
     - pattern: import d810.core.diag.$MOD
     - pattern: from d810.core.diag import $$$
