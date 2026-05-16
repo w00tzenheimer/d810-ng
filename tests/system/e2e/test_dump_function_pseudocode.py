@@ -327,6 +327,7 @@ class TestDumpFunctionPseudocode:
                 print(_format_stats_block(function_name, stats_before, stats_after))
 
                 # Dump dispatcher tree if available
+                manual_diag_handlers_installed = False
                 try:
 
                     _bst_maturity_name = request.config.getoption(
@@ -344,6 +345,18 @@ class TestDumpFunctionPseudocode:
                     }
                     # Get the MBA from a fresh decompile without d810
                     state.stop_d810()
+                    if os.environ.get("D810_DIAG_SNAPSHOT") == "1":
+                        try:
+                            from d810.core.diag.event_handlers import (
+                                install_diag_event_handlers,
+                                is_installed as diag_handlers_installed,
+                            )
+
+                            if not diag_handlers_installed():
+                                install_diag_event_handlers()
+                                manual_diag_handlers_installed = True
+                        except Exception:
+                            pass
                     if _bst_maturity_name:
                         target_mat = _bst_maturity_map.get(
                             _bst_maturity_name.upper(), ida_hexrays.MMAT_GLBOPT1
@@ -581,6 +594,16 @@ class TestDumpFunctionPseudocode:
                                 print(f"\n[state machine graph failed: {e}]")
                 except Exception as e:
                     print(f"\n[dispatcher tree dump failed: {e}]")
+                finally:
+                    if manual_diag_handlers_installed:
+                        try:
+                            from d810.core.diag.event_handlers import (
+                                uninstall_diag_event_handlers,
+                            )
+
+                            uninstall_diag_event_handlers()
+                        except Exception:
+                            pass
 
                 # --- Diagnostic SQLite snapshot for BST dump MBA ---
                 try:
