@@ -5593,9 +5593,25 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
 
             observe_dag(snap_ref, dag_nodes, dag_edges)
             observe_dag_local_facts(snap_ref, dag)
+            proof_refiner = None
+            if str(self._profile.name).startswith("ollvm"):
+                try:
+                    from d810.recon.flow.branch_ownership_oracle import (
+                        MopTrackerBranchOwnershipOracle,
+                    )
+
+                    proof_refiner = MopTrackerBranchOwnershipOracle(
+                        mba=mba,
+                    ).refine
+                except Exception:
+                    self._logger.debug(
+                        "MopTracker branch ownership oracle unavailable",
+                        exc_info=True,
+                    )
             proofs = collect_branch_ownership_proofs(
                 dag=dag,
                 dispatch_map=phase_context.state_dispatcher_map,
+                proof_refiner=proof_refiner,
             )
             if proofs:
                 observe_branch_ownership_proofs(
