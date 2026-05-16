@@ -28,6 +28,7 @@ from d810.core.observability import (
 # where they live.
 from d810.core.observability_events import (
     BlockLineageDrainRequested as BlockLineageDrainRequested,
+    CfgProvenanceForLatestSnapshot as CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved as CfgProvenanceObserved,
     WatchBlockTransitionObserved as WatchBlockTransitionObserved,
 )
@@ -93,6 +94,71 @@ def observe_cfg_provenance(
     ))
 
 
+def observe_cfg_provenance_latest(
+    *,
+    func_ea: int,
+    pass_name: str,
+    action: str,
+    block_serial: int,
+    target_serial: int | None = None,
+    reason: str = "",
+    extra: dict[str, Any] | None = None,
+    mba: Any | None = None,
+    block_label: str | None = None,
+    target_label: str | None = None,
+    maturity_label: str | None = None,
+) -> None:
+    """Publish CFG provenance against the latest snapshot for ``func_ea``.
+
+    This is the late-binding companion to :func:`observe_cfg_provenance`.
+    It is meant for planning/recon observations, especially abstentions
+    and vetoes, where there may not be a later MBA snapshot to flush a
+    buffered row. The payload shape intentionally matches normal CFG
+    provenance so consumers can query one table.
+    """
+
+    if mba is not None:
+        from d810.cfg.provenance import (
+            _live_block_label,
+            _live_maturity_label,
+            _safe_serial,
+        )
+        block_int = _safe_serial(block_serial)
+        target_int = (
+            _safe_serial(target_serial) if target_serial is not None else None
+        )
+        if block_label is None:
+            block_label = _live_block_label(mba, block_int)
+        if target_label is None and target_int is not None:
+            target_label = _live_block_label(mba, target_int)
+        if maturity_label is None:
+            maturity_label = _live_maturity_label(mba)
+    event = CfgProvenanceObserved(
+        pass_name=str(pass_name),
+        action=str(action),
+        block_serial=int(block_serial),
+        target_serial=(
+            int(target_serial) if target_serial is not None else None
+        ),
+        reason=str(reason),
+        extra=dict(extra or {}),
+        block_label=block_label,
+        target_label=target_label,
+        maturity_label=maturity_label,
+    )
+    # Prefer the explicit late-binding event. Some embedded IDA harnesses
+    # install an older handler set before this event is subscribed; when that
+    # happens, fall back to the already-established next-snapshot event so the
+    # diagnostic is not silently lost.
+    if not _has_subscribers(CfgProvenanceForLatestSnapshot):
+        _emit(event)
+        return
+    _emit(CfgProvenanceForLatestSnapshot(
+        func_ea=int(func_ea),
+        events=(event,),
+    ))
+
+
 def observe_watch_block_transition(
     *,
     func_ea: int,
@@ -131,6 +197,7 @@ def diagnostics_enabled() -> bool:
         _has_subscribers(t)
         for t in (
             CfgProvenanceObserved,
+            CfgProvenanceForLatestSnapshot,
             WatchBlockTransitionObserved,
             BlockLineageDrainRequested,
         )
@@ -150,11 +217,13 @@ from d810.cfg.provenance import (
 __all__ = [
     # Event dataclasses
     "BlockLineageDrainRequested",
+    "CfgProvenanceForLatestSnapshot",
     "CfgProvenanceObserved",
     "WatchBlockTransitionObserved",
     # Emit helpers
     "diagnostics_enabled",
     "observe_cfg_provenance",
+    "observe_cfg_provenance_latest",
     "observe_watch_block_transition",
     # Producer-side helpers (re-exports from d810.cfg.provenance)
     "drain_pending_provenance",

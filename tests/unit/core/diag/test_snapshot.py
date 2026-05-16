@@ -22,6 +22,7 @@ from d810.core.diag.snapshot import (
     _dual,
     _safe_int,
     dag_node_diagnostic_state,
+    snapshot_branch_ownership_proofs,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_fact_conflicts,
@@ -170,6 +171,52 @@ def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
         "FROM state_transition_dispatch_resolutions"
     ).fetchone()
     assert row == ("fact-1", 20, "resolved_exact_state")
+
+
+def test_snapshot_branch_ownership_proofs_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_branch_ownership_proofs(
+        conn,
+        1,
+        [
+            {
+                "proof_id": "branch_ownership:edge=1",
+                "proof_kind": "OBFUSCATION_RESIDUE_ARM",
+                "trusted": True,
+                "reason": "trusted_opaque_branch_provenance",
+                "source_block": 10,
+                "branch_arm": 1,
+                "source_state": 0x10,
+                "target_state": 0x20,
+                "target_entry": 30,
+                "predicate_block": 10,
+                "dispatcher_entry_block": 2,
+                "oracle_kind": "explicit_opaque_provenance",
+                "evidence": {"edge_kind": "CONDITIONAL_TRANSITION"},
+                "payload": {"profile_name": "ollvm_state_map"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT proof_kind, trusted, source_block, source_state_hex, "
+        "target_state_hex, oracle_kind FROM branch_ownership_proofs"
+    ).fetchone()
+    assert row == (
+        "OBFUSCATION_RESIDUE_ARM",
+        1,
+        10,
+        "0x0000000000000010",
+        "0x0000000000000020",
+        "explicit_opaque_provenance",
+    )
 
 
 @pytest.fixture()

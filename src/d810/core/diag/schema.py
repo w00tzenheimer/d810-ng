@@ -321,6 +321,32 @@ CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_block
 CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_resolved
     ON state_transition_dispatch_resolutions(resolved_next_state_const_hex);
 
+CREATE TABLE IF NOT EXISTS branch_ownership_proofs (
+    snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index                INTEGER NOT NULL,
+    proof_id                 TEXT NOT NULL,
+    proof_kind               TEXT NOT NULL,
+    trusted                  INTEGER NOT NULL DEFAULT 0,
+    reason                   TEXT NOT NULL,
+    source_block             INTEGER,
+    branch_arm               INTEGER,
+    source_state_hex         TEXT,
+    source_state_i64         INTEGER,
+    target_state_hex         TEXT,
+    target_state_i64         INTEGER,
+    target_entry             INTEGER,
+    predicate_block          INTEGER,
+    dispatcher_entry_block   INTEGER,
+    oracle_kind              TEXT NOT NULL,
+    evidence_json            TEXT NOT NULL DEFAULT '{}',
+    payload_json             TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_branch_ownership_proofs_kind
+    ON branch_ownership_proofs(snapshot_id, proof_kind, trusted);
+CREATE INDEX IF NOT EXISTS idx_branch_ownership_proofs_source
+    ON branch_ownership_proofs(snapshot_id, source_block, branch_arm);
+
 -- Correlations between a ``COLLAPSED_TO_REWRITTEN_TARGET`` recon edge
 -- and an alternate already-persisted ``dag_edges`` row whose source
 -- state is a RANGE_BACKED sibling whose owned/shared blocks overlap
