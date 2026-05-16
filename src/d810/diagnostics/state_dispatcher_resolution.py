@@ -1,4 +1,4 @@
-"""Generic single-hop resolution over exact state-dispatcher rows."""
+"""Diagnostics-only DB resolution over exact state-dispatcher rows."""
 from __future__ import annotations
 
 import json

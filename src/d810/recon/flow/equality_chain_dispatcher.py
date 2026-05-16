@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.recon.flow.dispatcher_detection import DispatcherType
 from d810.recon.flow.dispatcher_map import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
+
+logger = logging.getLogger("D810.recon.flow.equality_chain_dispatcher", logging.INFO)
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,14 +33,46 @@ def extract_state_dispatcher_map_from_mba(
     if max_depth is None:
         max_depth = max(qty * 2, 1)
 
-    compare_blocks = {
-        int(getattr(blk, "serial", serial))
-        for serial, blk in _iter_blocks(mba, qty)
-        if _is_two_way_block(blk)
-        and _extract_compare(blk) is not None
-        and _jump_and_fallthrough(blk) != (None, None)
-    }
+    compare_blocks: set[int] = set()
+    two_way_count = 0
+    compare_count = 0
+    sample_two_way: list[tuple[int, object, object, object, int | None, tuple[int | None, int | None]]] = []
+    for serial, blk in _iter_blocks(mba, qty):
+        if not _is_two_way_block(blk):
+            continue
+        two_way_count += 1
+        tail = getattr(blk, "tail", None)
+        opcode = getattr(tail, "opcode", getattr(blk, "tail_opcode", None))
+        left = getattr(tail, "l", None)
+        right = getattr(tail, "r", None)
+        extracted = _extract_compare(blk)
+        jump_and_fallthrough = _jump_and_fallthrough(blk)
+        if len(sample_two_way) < 8:
+            sample_two_way.append(
+                (
+                    int(getattr(blk, "serial", serial)),
+                    opcode,
+                    getattr(left, "t", None),
+                    getattr(right, "t", None),
+                    _const_value(right),
+                    jump_and_fallthrough,
+                )
+            )
+        if extracted is None:
+            continue
+        compare_count += 1
+        if jump_and_fallthrough == (None, None):
+            continue
+        compare_blocks.add(int(getattr(blk, "serial", serial)))
     if not compare_blocks:
+        logger.debug(
+            "No equality-chain dispatcher compare blocks found: qty=%d two_way=%d "
+            "compare=%d sample=%s",
+            qty,
+            two_way_count,
+            compare_count,
+            tuple(sample_two_way),
+        )
         return None
 
     if dispatcher_entry_block is None:
@@ -47,12 +82,25 @@ def extract_state_dispatcher_map_from_mba(
         entry = int(dispatcher_entry_block)
         ordered_blocks = _walk_chain(mba, entry, compare_blocks, max_depth)
         if not ordered_blocks:
+            logger.debug(
+                "No equality-chain dispatcher walk from entry blk[%d]; compare_blocks=%s",
+                int(entry),
+                tuple(sorted(compare_blocks))[:32],
+            )
             return None
 
     rows: list[StateDispatcherRow] = []
     seen: dict[int, int] = {}
     state_var: _StateVarIdentity | None = None
+    state_aliases = _state_var_aliases(mba, ordered_blocks)
     dispatcher_blocks: set[int] = set()
+    ordered_dispatcher_blocks = set(int(block) for block in ordered_blocks)
+    logger.debug(
+        "Walking equality-chain dispatcher entry blk[%d]: ordered=%s aliases=%s",
+        int(entry),
+        tuple(ordered_blocks),
+        state_aliases,
+    )
 
     for serial in ordered_blocks:
         blk = _get_block(mba, serial)
@@ -62,9 +110,20 @@ def extract_state_dispatcher_map_from_mba(
         if extracted is None:
             continue
         var, const, opcode = extracted
+        var = _canonical_state_var(var, state_aliases)
         if state_var is None:
             state_var = var
         elif var != state_var:
+            logger.debug(
+                "Rejected equality-chain dispatcher entry blk[%d]: mixed state variable "
+                "at blk[%d] expected=%s actual=%s raw=%s aliases=%s",
+                int(entry),
+                int(serial),
+                state_var,
+                var,
+                extracted[0],
+                state_aliases,
+            )
             return None
 
         jump_target, fallthrough = _jump_and_fallthrough(blk)
@@ -78,11 +137,24 @@ def extract_state_dispatcher_map_from_mba(
             branch_kind = "jnz_fallthrough"
         else:
             continue
-        if int(target) in compare_blocks:
+        # A handler may itself start with a normal semantic conditional
+        # compare. The broad ``compare_blocks`` set includes those blocks too,
+        # so using it here silently drops exact rows such as OLLVM
+        # ``state == K -> handler_that_starts_with_if``. Only suppress rows
+        # whose target is another block in this dispatcher chain.
+        if int(target) in ordered_dispatcher_blocks:
             continue
         existing = seen.get(int(const))
         if existing is not None:
             if existing != int(target):
+                logger.debug(
+                    "Rejected equality-chain dispatcher entry blk[%d]: duplicate "
+                    "state 0x%X targets blk[%d] and blk[%d]",
+                    int(entry),
+                    int(const),
+                    int(existing),
+                    int(target),
+                )
                 return None
             continue
         seen[int(const)] = int(target)
@@ -100,9 +172,15 @@ def extract_state_dispatcher_map_from_mba(
         )
 
     if not rows or state_var is None:
+        logger.debug(
+            "Rejected equality-chain dispatcher entry blk[%d]: rows=%d state_var=%s",
+            int(entry),
+            len(rows),
+            state_var,
+        )
         return None
     dispatcher_blocks.add(int(entry))
-    return StateDispatcherMap(
+    dispatch_map = StateDispatcherMap(
         rows=tuple(rows),
         dispatcher_entry_block=int(entry),
         dispatcher_blocks=frozenset(dispatcher_blocks),
@@ -114,6 +192,41 @@ def extract_state_dispatcher_map_from_mba(
         ),
         source=DispatcherType.CONDITIONAL_CHAIN,
     )
+    _observe_state_dispatcher_map(mba, dispatch_map)
+    return dispatch_map
+
+
+def _observe_state_dispatcher_map(
+    mba: object,
+    dispatch_map: StateDispatcherMap,
+) -> None:
+    """Publish equality-chain rows for the diag DB when observability is on."""
+    try:
+        from d810.recon.observability import observe_state_dispatcher_rows
+
+        observe_state_dispatcher_rows(
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+            maturity=_maturity_name(int(getattr(mba, "maturity", -1) or -1)),
+            dispatcher_entry_block=int(dispatch_map.dispatcher_entry_block),
+            dispatcher_kind=dispatch_map.source.name,
+            rows=dispatch_map.rows,
+        )
+    except Exception:
+        return
+
+
+def _maturity_name(maturity: int) -> str:
+    names = {
+        0: "MMAT_GENERATED",
+        1: "MMAT_PREOPTIMIZED",
+        2: "MMAT_LOCOPT",
+        3: "MMAT_CALLS",
+        4: "MMAT_GLBOPT1",
+        5: "MMAT_GLBOPT2",
+        6: "MMAT_GLBOPT3",
+        7: "MMAT_LVARS",
+    }
+    return names.get(int(maturity), f"MMAT_{int(maturity)}")
 
 
 def _iter_blocks(mba: object, qty: int):
@@ -216,6 +329,61 @@ def _walk_chain(
     return ordered
 
 
+def _state_var_aliases(
+    mba: object,
+    ordered_blocks: list[int],
+) -> dict[_StateVarIdentity, _StateVarIdentity]:
+    aliases: dict[_StateVarIdentity, _StateVarIdentity] = {}
+    for serial in ordered_blocks:
+        blk = _get_block(mba, serial)
+        if blk is None:
+            continue
+        for insn in _iter_block_insns(blk):
+            if not _is_mov(getattr(insn, "opcode", None)):
+                continue
+            dst = _state_var_identity(getattr(insn, "d", None))
+            src = _state_var_identity(getattr(insn, "l", None))
+            if dst is None or src is None or dst == src:
+                continue
+            aliases[dst] = src
+    return aliases
+
+
+def _canonical_state_var(
+    var: _StateVarIdentity,
+    aliases: dict[_StateVarIdentity, _StateVarIdentity],
+) -> _StateVarIdentity:
+    current = var
+    seen: set[_StateVarIdentity] = set()
+    while current in aliases and current not in seen:
+        seen.add(current)
+        current = aliases[current]
+    return current
+
+
+def _iter_block_insns(blk: object):
+    insns = getattr(blk, "insns", None)
+    if insns is not None:
+        try:
+            yield from tuple(insns)
+            return
+        except TypeError:
+            pass
+
+    head = getattr(blk, "head", None)
+    tail = getattr(blk, "tail", None)
+    if head is None:
+        return
+    current = head
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        if current is tail:
+            break
+        current = getattr(current, "next", None)
+
+
 def _extract_compare(
     blk: object,
 ) -> tuple[_StateVarIdentity, int, object] | None:
@@ -273,16 +441,25 @@ def _block_ref(mop: object | None) -> int | None:
 def _const_value(mop: object | None) -> int | None:
     if mop is None or not _is_mop(mop, "mop_n", {2}):
         return None
-    value = getattr(mop, "value", None)
-    if value is None:
-        nnn = getattr(mop, "nnn", None)
-        value = getattr(nnn, "value", None)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    nnn = getattr(mop, "nnn", None)
+    candidates = (
+        getattr(mop, "nnn_value", None),
+        getattr(nnn, "value", None),
+        getattr(mop, "value", None),
+    )
+    for value in candidates:
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                value = None
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _state_var_identity(mop: object | None) -> _StateVarIdentity | None:
@@ -331,6 +508,10 @@ def _is_jz(opcode: object) -> bool:
 
 def _is_jnz(opcode: object) -> bool:
     return _is_opcode(opcode, "m_jnz", fallback_values={25})
+
+
+def _is_mov(opcode: object) -> bool:
+    return _is_opcode(opcode, "m_mov", fallback_values={4})
 
 
 def _is_opcode(
