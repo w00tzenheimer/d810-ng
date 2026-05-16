@@ -1,7 +1,7 @@
 """Thin engine-rule shell for the extracted emulated-dispatcher family."""
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import ida_hexrays
 
@@ -9,6 +9,7 @@ from d810.core import getLogger
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
+    ollvm_state_dispatcher_map_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
@@ -61,6 +62,21 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         self._last_detection: EmulatedDispatcherDetection | None = None
         self._last_snapshot = None
         self._last_provenance: PipelineProvenance | None = None
+
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        profile_name = str(self.config.get("profile", "") or "").strip().lower()
+        if profile_name in {
+            "state_dispatcher_map",
+            "state_map",
+            "recon_state_map",
+            "ollvm_state_map",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=ollvm_state_dispatcher_map_profile()
+            )
+        else:
+            self._family = EmulatedDispatcherStrategyFamily()
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if not super().check_if_rule_should_be_used(blk):
@@ -123,6 +139,22 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
 
         self._last_detection = self._family.detect(self.mba)
         self._last_snapshot = self._family.build_snapshot(self.mba, self._last_detection)
+        fact_view = None
+        if self.flow_context is not None:
+            try:
+                fact_view = self.flow_context.validated_fact_view(self.cur_maturity)
+            except Exception:
+                fact_view = None
+        if fact_view is not None:
+            self._last_snapshot = replace(
+                self._last_snapshot,
+                diagnostic_fact_view=fact_view,
+            )
+        self._family.observe_phase_diagnostics(
+            self.mba,
+            self._last_snapshot,
+            fact_view=fact_view,
+        )
 
         planned = plan_family_pipeline(
             self._last_snapshot,
@@ -161,6 +193,11 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             total_changes=executed.total_changes,
         )
         total_changes = executed.total_changes + cleanup_changes
+        self._family.record_executed_phase_reconstruction(
+            mba=self.mba,
+            snapshot=self._last_snapshot,
+            total_changes=total_changes,
+        )
         if total_changes > 0 and self.max_passes < self.HARD_MAX_PASSES:
             self.max_passes += 1
         self._actual_pass_count += 1

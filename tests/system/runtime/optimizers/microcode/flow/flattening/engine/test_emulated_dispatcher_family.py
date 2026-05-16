@@ -7,16 +7,20 @@ import idaapi
 import ida_hexrays
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     InsertBlock,
     PhaseCycleLowering,
+    ReorderBlocks,
     RedirectGoto,
     ZeroStateWrite,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import lift as lift_mba
+from d810.optimizers.microcode.flow.flattening import (
+    emulated_dispatcher_family as emulated_family_module,
+)
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     DecisionReasonCode,
@@ -34,6 +38,9 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
+    GenericDispatcherEngineProfile,
+    ollvm_state_dispatcher_map_profile,
+    tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
     EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY,
@@ -42,6 +49,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
     EmulatedDispatcherCandidateRecord,
     EmulatedDispatcherMetadata,
     EmulatedDispatcherPhaseArtifact,
+    EmulatedDispatcherPhaseContext,
     EmulatedDispatcherStrategy,
     extract_emulated_dispatcher_candidate_records,
     extract_emulated_dispatcher_fallback_modifications,
@@ -52,6 +60,14 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
 from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine import (
     EmulatedDispatcherUnflattener,
 )
+from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.branch_ownership import (
+    BranchOwnershipProof,
+    BranchOwnershipProofKind,
+)
+from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
+from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.testing.runner import _resolve_test_project_index, get_func_ea
 from tests.system.e2e.test_approov_engine_wrapper_baselines import (
     _apply_engine_wrapper_profile,
@@ -242,6 +258,674 @@ def _flow_graph_with_conditional_shape() -> FlowGraph:
     )
 
 
+def _state_dispatcher_map(
+    *,
+    dispatcher_entry: int = 2,
+) -> StateDispatcherMap:
+    return StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=5,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+            ),
+            StateDispatcherRow(
+                state_const=0x20,
+                target_block=7,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+            ),
+        ),
+        dispatcher_entry_block=dispatcher_entry,
+        dispatcher_blocks=frozenset({dispatcher_entry}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
+        initial_state=0x10,
+    )
+
+
+def test_phase_node_entry_by_state_prefers_exact_dispatcher_map_rows() -> None:
+    def _node(state: int, entry: int):
+        return SimpleNamespace(
+            key=SimpleNamespace(state_const=state),
+            entry_anchor=entry,
+        )
+
+    def _snapshot(serial: int) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_0WAY,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            _node(0x10, 9),
+            _node(0x10, 5),
+            _node(0x30, 11),
+            _node(0x30, 12),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={serial: _snapshot(serial) for serial in (2, 5, 7, 9, 11, 12)},
+        entry_serial=9,
+        func_ea=0x401000,
+    )
+
+    entries = emulated_family_module._phase_node_entry_by_state(
+        dag=dag,
+        phase_context=context,
+        flow_graph=flow_graph,
+    )
+
+    assert entries[0x10] == 5
+    assert entries[0x20] == 7
+    assert entries[0x30] == 11
+
+
+def test_ollvm_terminal_payload_backedge_retargets_to_selector_return_frontier() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        branch_ownership_proof: BranchOwnershipProof | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+            branch_ownership_proof=branch_ownership_proof,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="proof-selector-to-payload",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="trusted_opaque_branch_provenance:ollvm_bcf_opaque_predicate",
+            source_state=selector_state,
+            target_state=payload_state,
+            target_entry=136,
+            oracle_kind="fixture",
+        ),
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert len(rewritten) == 1
+    assert rewritten[0].target_entry == 204
+    assert candidate.target_entry == 96
+
+
+class _FakeInsn:
+    def __init__(self, *, opcode: int, l: object, d: object, ea: int) -> None:
+        self.opcode = opcode
+        self.l = l
+        self.d = d
+        self.ea = ea
+        self.next = None
+
+
+class _FakeBlock:
+    def __init__(self, head: object | None = None) -> None:
+        self.head = head
+
+
+class _FakeMba:
+    def __init__(self, blocks: dict[int, _FakeBlock]) -> None:
+        self._blocks = blocks
+        self.qty = max(blocks) + 1
+
+    def get_mblock(self, serial: int) -> _FakeBlock:
+        return self._blocks[int(serial)]
+
+
+def _stk_mop(stkoff: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=size,
+        s=SimpleNamespace(off=stkoff),
+    )
+
+
+def _reg_mop(reg: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(t=ida_hexrays.mop_r, size=size, r=reg)
+
+
+def _flow_graph_for_return_carrier_bypass() -> FlowGraph:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (3,), (1,)),
+            3: _block(3, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+
+def test_dispatcher_loop_recovery_rejects_return_slot_writer_bypass(
+    monkeypatch,
+) -> None:
+    return_read = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_stk_mop(0x8),
+        d=_reg_mop(0),
+        ea=0x401030,
+    )
+    mba = _FakeMba(
+        {
+            0: _FakeBlock(),
+            1: _FakeBlock(),
+            2: _FakeBlock(),
+            3: _FakeBlock(return_read),
+        }
+    )
+    flow_graph = _flow_graph_for_return_carrier_bypass()
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "find_reaching_defs_for_stkvar",
+        lambda _mba, _blk, _stkoff, _size: (
+            SimpleNamespace(block_serial=0, ins_ea=0x401000),
+            SimpleNamespace(block_serial=2, ins_ea=0x401020),
+        ),
+    )
+
+    bypasses = emulated_family_module._return_carrier_preservation_bypasses(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ),
+    )
+
+    assert len(bypasses) == 1
+    assert bypasses[0].writer_block == 2
+    assert bypasses[0].return_block == 3
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ),
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_ollvm_terminal_payload_backedge_requires_branch_ownership_proof() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(
+            payload_edge,
+            _edge(
+                selector_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=204,
+            ),
+            _edge(
+                return_state,
+                None,
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=204,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert rewritten == [candidate]
+    assert rewritten[0].target_entry == 96
+
+
+def test_ollvm_terminal_payload_backedge_rejects_sibling_branch_proof() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        branch_arm: int | None = None,
+        metadata: dict | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            source_anchor=SimpleNamespace(
+                block_serial=96,
+                branch_arm=branch_arm,
+            ),
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+            metadata=metadata,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    sibling_proof = BranchOwnershipProof(
+        proof_id="proof-selector-to-return",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture sibling proof",
+        source_block=96,
+        branch_arm=0,
+        source_state=selector_state,
+        target_state=return_state,
+        target_entry=204,
+        oracle_kind="fixture",
+    )
+    shared_metadata = {"branch_ownership_proofs": (sibling_proof,)}
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_arm=1,
+        metadata=shared_metadata,
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        branch_arm=0,
+        metadata=shared_metadata,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert rewritten == [candidate]
+    assert rewritten[0].target_entry == 96
+
+
+def test_branch_ownership_consumer_requires_minimum_rewrite_identity() -> None:
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="partial-proof",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="fixture",
+            source_state=0x10,
+            target_state=0x20,
+            oracle_kind="fixture",
+        ),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is False
+    )
+
+
+def test_branch_ownership_consumer_accepts_branch_arm_identity() -> None:
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="arm-proof",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="fixture",
+            source_block=5,
+            branch_arm=1,
+            source_state=0x10,
+            target_state=0x20,
+            oracle_kind="fixture",
+        ),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is True
+    )
+
+
 def _snapshot_operand_signature(mop) -> str:
     if mop is None:
         return "z"
@@ -331,6 +1015,100 @@ def _compute_backedges(flow_graph: FlowGraph) -> tuple[tuple[int, int], ...]:
     if flow_graph.entry_serial in flow_graph.blocks:
         _walk(flow_graph.entry_serial)
     return tuple(sorted(backedges))
+
+
+def test_phase_reconstruction_reorder_blocks_walks_dag_semantic_order() -> None:
+    def _snapshot(serial: int, block_type: int = ida_hexrays.BLT_1WAY) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=block_type,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    def _node(state: int, entry: int, owned: tuple[int, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            key=SimpleNamespace(state_const=state),
+            entry_anchor=entry,
+            owned_blocks=owned,
+            exclusive_blocks=(),
+        )
+
+    def _edge(
+        source_state: int,
+        target_state: int | None,
+        path: tuple[int, ...],
+        *,
+        arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.TRANSITION,
+        target_entry: int | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            kind=kind,
+            source_key=SimpleNamespace(state_const=source_state),
+            target_key=(
+                SimpleNamespace(state_const=target_state)
+                if target_state is not None
+                else None
+            ),
+            target_entry_anchor=target_entry,
+            source_anchor=SimpleNamespace(branch_arm=arm),
+            ordered_path=path,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: _snapshot(2),
+            3: _snapshot(3),
+            10: _snapshot(10),
+            11: _snapshot(11),
+            12: _snapshot(12),
+            13: _snapshot(13, ida_hexrays.BLT_2WAY),
+            20: _snapshot(20),
+            21: _snapshot(21),
+            22: _snapshot(22),
+            30: _snapshot(30),
+            99: _snapshot(99, ida_hexrays.BLT_0WAY),
+            100: _snapshot(100, ida_hexrays.BLT_STOP),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            _node(0x10, 10, (10, 11)),
+            _node(0x20, 20, (20,)),
+            _node(0x30, 30, (30,)),
+        ),
+        edges=(
+            _edge(0x10, 0x20, (10, 11, 12, 20), arm=0, target_entry=20),
+            _edge(0x10, 0x30, (10, 13, 30), arm=1, target_entry=30),
+            _edge(0x20, 0x10, (20, 21, 10), target_entry=10),
+            _edge(
+                0x20,
+                None,
+                (20, 22, 99, 100),
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=100,
+            ),
+        ),
+    )
+
+    reorder = emulated_family_module._phase_reconstruction_reorder_blocks_from_dag(
+        dag=dag,
+        flow_graph=flow_graph,
+        initial_state=0x10,
+        excluded_blocks={2, 3},
+    )
+
+    assert reorder == ReorderBlocks(
+        dfs_block_order=(10, 11, 12, 20, 21, 22, 99, 13, 30),
+        non_2way_serials=(10, 11, 12, 20, 21, 22, 99, 30),
+        two_way_serials=(13,),
+    )
 
 
 def _summarize_cfg_shape(
@@ -467,6 +1245,585 @@ def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_ga
     assert detection.planning_blocker == "dispatcher_cache_detected_but_collector_found_none"
 
 
+def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
+    monkeypatch,
+) -> None:
+    visits = []
+    mba = SimpleNamespace(
+        qty=1,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+        get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+        for_all_topinsns=lambda collector: collector.mark_visited(),
+    )
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants={0x1234},
+        dispatcher_type=SimpleNamespace(name="PROFILE_KIND"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def mark_visited(self):
+            visits.append("visited")
+
+        def get_dispatcher_list(self):
+            return [SimpleNamespace(entry_block=SimpleNamespace(serial=11))]
+
+    class _Resolver:
+        def get_dispatcher_father_histories(self, *_args):
+            return ()
+
+        def check_if_histories_are_resolved(self, _histories):
+            return False
+
+        def _filter_dependency_safe_copies(self, _father, insns):
+            return list(insns)
+
+        def ensure_all_dispatcher_fathers_are_direct(self):
+            return 0
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(
+            lift=lambda _mba: _flow_graph_with_conditional_shape()
+        ),
+        profile=GenericDispatcherEngineProfile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            provenance_hints=("fixture_profile",),
+        ),
+    )
+    detection = family.detect(mba)
+
+    assert visits == ["visited"]
+    assert family.name == "emulated_dispatcher"
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == (11,)
+    assert detection.dispatcher_shape == "profile_kind"
+    assert detection.state_transport == "fixture_transport"
+    assert detection.lowering_mode == "fixture_lowering"
+    assert detection.provenance_hints == ("fixture_profile",)
+
+
+def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    mba = SimpleNamespace(
+        qty=1,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+        get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+        for_all_topinsns=lambda _collector: None,
+    )
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="NONE"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="switch_fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_dispatcher_map_factory=lambda *_args: (dispatch_map,),
+        )
+    )
+    detection = family.detect(mba)
+
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == ()
+    assert detection.analysis_dispatchers == ()
+    assert detection.state_dispatcher_entries == (13,)
+    assert detection.state_dispatcher_maps == (dispatch_map,)
+    assert detection.dispatcher_shape == "switch_table"
+    assert detection.state_constants == (0x10, 0x20)
+    assert detection.state_transport == "state_dispatcher_map"
+
+
+def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
+    for profile in (
+        ollvm_state_dispatcher_map_profile(),
+        tigress_switch_dispatcher_profile(),
+    ):
+        resolver = profile.resolver_factory()
+        assert type(resolver).__name__ == "_NoopDispatcherResolver"
+        assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
+        assert resolver.check_if_histories_are_resolved(None) is False
+
+
+def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 17
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        collector_dispatchers=(dispatcher_info,),
+        analysis_dispatchers=(99,),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 17
+
+
+def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map() -> None:
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 17
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        state_dispatcher_entries=(23,),
+        collector_dispatchers=(dispatcher_info,),
+        analysis_dispatchers=(99,),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 23
+
+
+def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    family = EmulatedDispatcherStrategyFamily()
+    mba = SimpleNamespace(
+        qty=3,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+    )
+    flow_graph = _flow_graph_with_conditional_shape()
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "analyze_bst_dispatcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("BST analysis should not run for map-backed profile")
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_detect_state_var_stkoff",
+        lambda *_args, **_kwargs: (0x3C, None),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "recover_dynamic_state_write_transitions",
+        lambda **kwargs: kwargs["transition_result"],
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(nodes=(), edges=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_linearized_state_program",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            variant_name="semantic_reference_like",
+            lines=(),
+            nodes=(),
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "render_linearized_state_program",
+        lambda _program: "",
+    )
+
+    artifact, context = family._build_phase_artifact(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_maps=(dispatch_map,),
+            state_dispatcher_entries=(2,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            state_constants=(0x10, 0x20),
+        ),
+        flow_graph=flow_graph,
+    )
+
+    assert artifact is not None
+    assert context is not None
+    assert artifact.dispatcher_entry_serial == 2
+    assert artifact.state_var_stkoff == 0x3C
+    assert artifact.initial_state == 0x10
+    assert artifact.handler_state_map == ((5, 0x10), (7, 0x20))
+    assert context.state_dispatcher_map is dispatch_map
+
+
+def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (), (0,)),
+            2: _snapshot(2, (), (5,)),
+            5: _snapshot(5, (2,), (8,)),
+            7: _snapshot(7, (), (2,)),
+            8: _snapshot(8, (5,), (7,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily()
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=5,
+        initial_state=0x10,
+        bst_node_blocks=(2,),
+        handler_state_map=((5, 0x10), (7, 0x20)),
+        semantic_reference_variant="semantic_reference_like",
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(
+            edges=(
+                SimpleNamespace(kind=SemanticEdgeKind.CONDITIONAL_RETURN),
+            ),
+        ),
+        semantic_reference_program=object(),
+    )
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="conditional_chain",
+        state_transport="state_dispatcher_map",
+        lowering_mode="generic_graph_modifications",
+        state_constants=(0x10, 0x20),
+    )
+
+    modifications, blockers = family._collect_phase_reconstruction_modifications(
+        mba=_fake_mba(),
+        flow_graph=flow_graph,
+        detection=detection,
+        phase_artifact=artifact,
+        phase_context=context,
+    )
+
+    assert modifications == ()
+    assert blockers == (
+        "phase_reconstruction_residual_terminal_frontier_not_loop_aware",
+    )
+
+
+def test_emulated_dispatcher_family_uses_injected_resolver_for_lowering() -> None:
+    profile_calls = []
+    histories = (object(),)
+    father = SimpleNamespace(serial=5, nsucc=lambda: 1, succ=lambda _idx: 2)
+    target = SimpleNamespace(serial=9, nsucc=lambda: 0, tail=None, nextb=None)
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def configure_resolver(self, resolver, *, mba, detection):
+            profile_calls.append(("configure", mba.maturity))
+            resolver.mba = mba
+            resolver.cur_maturity = mba.maturity
+            resolver.cur_maturity_pass = 0
+            resolver.dispatcher_list = list(detection.collector_dispatchers)
+            return resolver
+
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("entry_serial",))
+            return 2
+
+        def dispatcher_predecessor_serials(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("predecessors",))
+            return (5,)
+
+        def collect_dispatcher_father_histories(
+            self,
+            resolver,
+            dispatcher_father,
+            seen_dispatcher_info,
+        ):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("histories", dispatcher_father.serial))
+            return histories
+
+        def histories_resolved(self, resolver, seen_histories):
+            profile_calls.append(("resolved", seen_histories is histories))
+            return True
+
+        def resolve_state_values(self, seen_histories, seen_dispatcher_info):
+            assert seen_histories is histories
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("values",))
+            return [[0x1234]]
+
+        def state_values_complete(self, values):
+            profile_calls.append(("complete", values == [[0x1234]]))
+            return True
+
+        def emulate_dispatcher_target(self, seen_dispatcher_info, history):
+            assert seen_dispatcher_info is dispatcher_info
+            assert history is histories[0]
+            profile_calls.append(("emulate",))
+            return target, ()
+
+        def filter_dependency_safe_copies(
+            self,
+            resolver,
+            dispatcher_father,
+            raw_ins_to_copy,
+        ):
+            profile_calls.append(("copies", dispatcher_father.serial, len(raw_ins_to_copy)))
+            return list(raw_ins_to_copy)
+
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+        entry_ea=0x401000,
+        get_mblock=lambda serial: father if serial == 5 else None,
+    )
+
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: _snapshot(2, (), (5,)),
+            5: _snapshot(5, (2,), ()),
+            9: _snapshot(9, (), ()),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            provenance_hints=("fixture_profile",),
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        collector_dispatchers=(dispatcher_info,),
+        collector_dispatcher_entries=(2,),
+        analysis_dispatchers=(2,),
+        dispatcher_shape="profile_kind",
+        state_transport="fixture_transport",
+        lowering_mode="fixture_lowering",
+        provenance_hints=("fixture_profile",),
+        state_constants=(0x1234,),
+    )
+
+    modifications, blockers, records = family._collect_lowering_candidates(
+        mba,
+        detection,
+        flow_graph=flow_graph,
+    )
+
+    assert modifications == (
+        RedirectGoto(from_serial=5, old_target=2, new_target=9),
+    )
+    assert blockers == ()
+    assert records[0].selection_reason == "direct_redirect"
+    assert ("configure", ida_hexrays.MMAT_GLBOPT2) in profile_calls
+    assert ("predecessors",) in profile_calls
+    assert ("histories", 5) in profile_calls
+    assert ("resolved", True) in profile_calls
+    assert ("values",) in profile_calls
+    assert ("complete", True) in profile_calls
+    assert ("emulate",) in profile_calls
+    assert ("copies", 5, 0) in profile_calls
+
+
+def test_emulated_dispatcher_family_dynamic_transition_uses_profile_selector(
+    monkeypatch,
+) -> None:
+    dispatcher_info = object()
+    selected_transition = SimpleNamespace(
+        from_block=5,
+        to_state=0x1234,
+        provenance_kind="profile_specific_state_write",
+    )
+    source_handler = SimpleNamespace(check_block=5, transitions=(selected_transition,))
+    target_handler = SimpleNamespace(check_block=9, transitions=())
+    transition_result = SimpleNamespace(
+        handlers={
+            0x1111: source_handler,
+            0x1234: target_handler,
+        }
+    )
+    profile_calls = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 2
+
+        def select_dynamic_transition(self, seen_transition_result, *, father_serial):
+            assert seen_transition_result is transition_result
+            profile_calls.append(("select", father_serial))
+            return selected_transition, source_handler
+
+        def dynamic_guard_fallthrough(
+            self,
+            seen_transition_result,
+            *,
+            target_state,
+            target_serial,
+            father_serial,
+        ):
+            assert seen_transition_result is transition_result
+            profile_calls.append(("fallthrough", target_state, target_serial, father_serial))
+            return 11
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    monkeypatch.setattr(
+        family,
+        "_find_dispatcher_ref_block_for_state",
+        lambda *_args, **_kwargs: 7,
+    )
+    father = SimpleNamespace(serial=5, nsucc=lambda: 1, succ=lambda _idx: 2)
+    phase_artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x20,
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=transition_result,
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+    )
+
+    result = family._build_dynamic_transition_candidate(
+        mba=object(),
+        dispatcher_father=father,
+        dispatcher_info=dispatcher_info,
+        phase_artifact=phase_artifact,
+        phase_context=phase_context,
+        scc_memberships={},
+    )
+
+    assert result is not None
+    modifications, record = result
+    assert modifications == (
+        CreateConditionalRedirect(
+            source_block=5,
+            ref_block=7,
+            conditional_target=9,
+            fallthrough_target=11,
+        ),
+    )
+    assert record.selection_reason == "dynamic_state_write_conditional_redirect"
+    assert profile_calls == [
+        ("select", 5),
+        ("fallthrough", 0x1234, 9, 5),
+    ]
+
+
 def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata(
     monkeypatch,
 ) -> None:
@@ -509,11 +1866,11 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
         state_constants=(0xF6A1E, 0xF6A1F),
         collector_dispatchers=(),
         planning_ready=False,
-        planning_blocker="phase_linear_chain_not_conditional_chain",
+            planning_blocker="phase_linear_chain_not_supported_dispatcher",
         candidate_count=0,
         rejected_fathers=1,
         candidate_kinds=(),
-        rejection_reasons=("phase_linear_chain_not_conditional_chain",),
+            rejection_reasons=("phase_linear_chain_not_supported_dispatcher",),
         selected_lowering_mode="generic_graph_modifications",
     )
 
@@ -866,8 +2223,9 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "state_transport": "father_history_emulation",
         "lowering_mode": "generic_graph_modifications",
         "provenance_hints": (),
-        "analysis_dispatchers": (7,),
-        "state_constants": (),
+            "analysis_dispatchers": (7,),
+            "state_dispatcher_entries": (),
+            "state_constants": (),
         "collector_dispatchers": (),
         "planning_ready": False,
         "planning_blocker": "dispatcher_cache_detected_but_collector_found_none",
@@ -1670,18 +3028,19 @@ class TestEmulatedDispatcherManagedContext:
         assert handler_state_map[5] == 0xF6A1E
         assert handler_state_map[9] == 0xF6A1F
         assert artifact["dag_node_count"] == 6
-        assert artifact["dag_edge_count"] == 13
+        assert artifact["dag_edge_count"] == 12
         assert artifact["semantic_reference_variant"] == "semantic_reference_like"
         assert artifact["semantic_reference_line_count"] >= 30
         assert artifact["semantic_reference_node_count"] == 6
-        assert "STATE_000F6A1F:" in artifact["semantic_reference_program"]
+        assert "STATE_000F6A1F__" in artifact["semantic_reference_program"]
         assert "STATE_000F6A1E:" in artifact["semantic_reference_program"]
         # The rendered reference program may canonicalize range/anonymous
         # entries to STATE_00000000, but the structured labels retain the
         # recovered state identity. Assert the stable structured contract here.
-        assert "0x000F6A20" in artifact["semantic_state_labels"]
+        assert "0x000F6A26" in artifact["semantic_state_labels"]
+        assert "s000F6A20" in artifact["semantic_reference_program"]
         assert "goto STATE_000F6A1E;" in artifact["semantic_reference_program"]
-        assert "goto STATE_000F6A1F;" in artifact["semantic_reference_program"]
+        assert "goto STATE_000F6A1F__" in artifact["semantic_reference_program"]
 
     def test_approov_vm_dispatcher_lowers_dynamic_state_write_with_guard(
         self,
