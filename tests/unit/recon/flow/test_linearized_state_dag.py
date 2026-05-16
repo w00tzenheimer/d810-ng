@@ -332,6 +332,36 @@ def test_state_label_for_transition_row_preserves_nonraw_semantic_alias() -> Non
     ) == "STATE_474EEEBB"
 
 
+def test_state_label_for_range_transition_row_preserves_nonraw_semantic_alias() -> None:
+    row = TransitionRow(
+        state_const=0x2A5E29F6,
+        state_range_lo=0x2A000000,
+        state_range_hi=0x2AFFFFFF,
+        handler_serial=173,
+        kind=TransitionKind.CONDITIONAL,
+        next_state=None,
+        conditional_states=(0x5FE86821, 0x2E6C61F2),
+        state_label="0x2E6C61F2",
+        transition_label="conditional fallback",
+        chain_preview=(52, 81),
+        path=TransitionPath(
+            handler_serial=173,
+            chain=(52, 81),
+            next_state=None,
+            conditional_states=(0x5FE86821, 0x2E6C61F2),
+            back_edge=False,
+            reaches_exit_block=False,
+            classified_exit=False,
+            unresolved=False,
+        ),
+    )
+
+    assert _state_label_for_transition_row(
+        row,
+        node_kind=StateNodeKind.RANGE_BACKED,
+    ) == "0x2E6C61F2"
+
+
 def test_resolves_supplemental_source_family_alias_to_same_state_exact_entry() -> None:
     exact_key = StateDagNodeKey(handler_serial=66, state_const=0x4C77464F)
     dag = LinearizedStateDag(
@@ -2121,6 +2151,107 @@ def test_alias_label_override_preserves_node_local_prefix_over_prelude_collapse(
                 0x139F2922: (prelude_edge,),
             },
             {0x139F2922, 0x2FBA4611},
+            prefer_local_corridors=False,
+        )
+        is None
+    )
+
+
+def test_alias_label_override_rejects_sibling_prelude_from_branch_source() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            81: BlockSnapshot(81, 0, (82, 83), (), 0, 0, ()),
+            82: BlockSnapshot(82, 0, (), (81,), 0, 0, ()),
+            83: BlockSnapshot(83, 0, (), (81,), 0, 0, ()),
+        },
+        entry_serial=81,
+        func_ea=0x401100,
+    )
+    node = StateDagNode(
+        key=StateDagNodeKey(handler_serial=83, state_const=0x45B18E82),
+        kind=StateNodeKind.EXACT,
+        state_label="0x45B18E82",
+        handler_serial=83,
+        entry_anchor=83,
+        owned_blocks=(83,),
+        exclusive_blocks=(83,),
+        shared_suffix_blocks=(),
+        local_segments=(),
+        local_edges=(),
+    )
+    incoming_edge = StateDagEdge(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=StateDagNodeKey(handler_serial=81, state_const=0x5FE86821),
+        target_key=node.key,
+        target_state=0x45B18E82,
+        target_entry_anchor=83,
+        target_label=node.state_label,
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+            block_serial=81,
+            branch_arm=0,
+        ),
+        ordered_path=(81, 82),
+        last_write_site=None,
+    )
+    outgoing_edge = StateDagEdge(
+        kind=SemanticEdgeKind.UNKNOWN,
+        source_key=node.key,
+        target_key=None,
+        target_state=None,
+        target_entry_anchor=None,
+        target_label="unknown",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.UNCONDITIONAL,
+            block_serial=83,
+        ),
+        ordered_path=(83,),
+        last_write_site=None,
+    )
+    sibling_edge = StateDagEdge(
+        kind=SemanticEdgeKind.TRANSITION,
+        source_key=StateDagNodeKey(handler_serial=83, state_const=0x606DC166),
+        target_key=None,
+        target_state=0x02760C0D,
+        target_entry_anchor=117,
+        target_label="0x02760C0D",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.UNCONDITIONAL,
+            block_serial=83,
+        ),
+        ordered_path=(83,),
+        last_write_site=None,
+    )
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=0,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=None,
+        handler_state_map={117: 0x02760C0D},
+        handler_range_map={},
+        bst_node_blocks=(),
+        rows=(),
+        summary=TransitionSummary(
+            handlers_total=0,
+            known_count=0,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=0,
+        ),
+        diagnostics=(),
+    )
+
+    assert (
+        _compute_alias_label_override(
+            node,
+            (incoming_edge,),
+            (outgoing_edge,),
+            report,
+            flow_graph,
+            {83: (sibling_edge,)},
+            {0x45B18E82: (outgoing_edge,), 0x606DC166: (sibling_edge,)},
+            {0x02760C0D},
             prefer_local_corridors=False,
         )
         is None
