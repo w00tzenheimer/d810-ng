@@ -8,6 +8,7 @@ rows later, but recon owns producing and explaining the proof.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -232,6 +233,10 @@ def collect_branch_ownership_proofs(
     trusted_opaque_provenance_kinds: frozenset[str] = (
         TRUSTED_OPAQUE_PROVENANCE_KINDS
     ),
+    proof_refiner: Callable[
+        [BranchOwnershipProof, object],
+        BranchOwnershipProof | None,
+    ] | None = None,
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect diagnostics-only ownership proofs for conditional DAG edges.
 
@@ -291,37 +296,38 @@ def collect_branch_ownership_proofs(
             reason = "conditional_arms_share_target_state"
             oracle_kind = "dag_edge_equivalence"
 
-        proofs.append(
-            BranchOwnershipProof(
-                proof_id=_proof_id(
-                    edge_index=edge_index,
-                    source_block=source_block,
-                    branch_arm=branch_arm,
-                    source_state=source_state,
-                    target_state=target_state,
-                    target_entry=target_entry,
-                ),
-                proof_kind=proof_kind,
-                trusted=trusted,
-                reason=reason,
+        proof = BranchOwnershipProof(
+            proof_id=_proof_id(
+                edge_index=edge_index,
                 source_block=source_block,
                 branch_arm=branch_arm,
                 source_state=source_state,
                 target_state=target_state,
                 target_entry=target_entry,
-                predicate_block=source_block,
-                dispatcher_entry_block=dispatcher_entry,
-                oracle_kind=oracle_kind,
-                evidence={
-                    "edge_index": edge_index,
-                    "edge_kind": edge_kind,
-                    "provenance_kind": provenance_kind,
-                    "outgoing_count": len(
-                        outgoing_by_source.get(source_state, ())
-                    ),
-                },
-            )
+            ),
+            proof_kind=proof_kind,
+            trusted=trusted,
+            reason=reason,
+            source_block=source_block,
+            branch_arm=branch_arm,
+            source_state=source_state,
+            target_state=target_state,
+            target_entry=target_entry,
+            predicate_block=source_block,
+            dispatcher_entry_block=dispatcher_entry,
+            oracle_kind=oracle_kind,
+            evidence={
+                "edge_index": edge_index,
+                "edge_kind": edge_kind,
+                "provenance_kind": provenance_kind,
+                "outgoing_count": len(
+                    outgoing_by_source.get(source_state, ())
+                ),
+            },
         )
+        if proof_refiner is not None:
+            proof = proof_refiner(proof, edge) or proof
+        proofs.append(proof)
     return tuple(proofs)
 
 
