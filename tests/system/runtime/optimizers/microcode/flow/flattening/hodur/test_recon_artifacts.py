@@ -961,7 +961,7 @@ def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
         assert kwargs["dispatcher_entry_serial"] == 2
         assert kwargs["state_var_stkoff"] == 0x7BC
         assert kwargs["constant_fixpoint"] is constant_fixpoint
-        assert kwargs["dispatcher"] is dispatcher
+        assert kwargs["dispatcher"] is None
         return discovery
 
     monkeypatch.setattr(
@@ -970,16 +970,29 @@ def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
         _fake_build_round_discovery_context,
     )
     family._constant_fixpoint_backend = _FakeConstantFixpointBackend()
-    family._switch_table_map = SimpleNamespace(
-        dispatcher_serial=2,
-        to_bst_result=lambda: SimpleNamespace(
-            handler_state_map={0x10: 2},
-            pre_header_serial=1,
-            handler_range_map={},
-            bst_node_blocks={2},
-            diagnostics=(),
-            dispatcher=dispatcher,
+    from d810.recon.flow.dispatcher_detection import DispatcherType
+    from d810.recon.flow.dispatcher_map import (
+        StateDispatcherMap,
+        StateDispatcherRow,
+    )
+
+    family._switch_table_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=2,
+                dispatcher_block=2,
+                compare_block=2,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+                row_kind="handler",
+            ),
         ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x7BC,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
     )
     mba = SimpleNamespace(
         entry_ea=0x401000,

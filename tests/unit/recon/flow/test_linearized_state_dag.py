@@ -30,6 +30,7 @@ from d810.recon.flow.linearized_state_dag import (
     _resolve_embedded_exact_owner_override,
     _resolve_exact_cover_anchor,
     _resolve_owner_family_fallback,
+    _is_range_backed_only_handoff_anchor,
     _resolve_nonraw_owner_semantic_alias,
     _resolve_nonraw_dispatcher_cover_alias,
     _resolve_semantic_entry_anchor,
@@ -38,6 +39,7 @@ from d810.recon.flow.linearized_state_dag import (
     _select_raw_alias_candidate_anchor,
     _resolve_supplemental_source_family_alias,
     _resolve_sub7ffd_corridor_dispatcher_anchor_override,
+    _is_supported_explicit_conditional_transition,
     _state_label_for_transition_row,
     _should_prefer_family_fallback_over_raw_exact,
     build_live_linearized_state_dag_from_graph,
@@ -56,6 +58,9 @@ from d810.recon.flow.transition_builder import (
     StateTransition,
     TransitionResult,
 )
+from d810.recon.flow.transition_trust import (
+    classify_transition_trust_for_explicit_conditional_bridge,
+)
 from d810.recon.flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
@@ -72,6 +77,55 @@ def render_linearized_state_program(
 ) -> str:
     program = build_linearized_state_program(dag, **kwargs)
     return _render_linearized_state_program(program)
+
+
+def test_explicit_conditional_bridge_requires_dynamic_provenance() -> None:
+    untagged = StateTransition(
+        from_state=0x10,
+        to_state=0x20,
+        from_block=1,
+        condition_block=1,
+        is_conditional=True,
+        provenance_chain=[(1, 2)],
+    )
+    dynamic = StateTransition(
+        from_state=0x10,
+        to_state=0x20,
+        from_block=1,
+        condition_block=1,
+        is_conditional=True,
+        provenance_chain=[(1, 2)],
+        provenance_kind="global_or_state_write",
+    )
+    derived_xor = StateTransition(
+        from_state=0x10,
+        to_state=0x20,
+        from_block=1,
+        condition_block=1,
+        is_conditional=True,
+        provenance_chain=[(1, 2)],
+        provenance_kind="derived_xor_dispatch_key",
+    )
+
+    assert not _is_supported_explicit_conditional_transition(untagged)
+    assert _is_supported_explicit_conditional_transition(dynamic)
+    assert _is_supported_explicit_conditional_transition(derived_xor)
+    untagged_support = (
+        classify_transition_trust_for_explicit_conditional_bridge(untagged)
+    )
+    dynamic_support = (
+        classify_transition_trust_for_explicit_conditional_bridge(dynamic)
+    )
+    derived_support = (
+        classify_transition_trust_for_explicit_conditional_bridge(derived_xor)
+    )
+
+    assert not untagged_support.authorizes_explicit_conditional_bridge
+    assert untagged_support.reason == "unsupported_provenance"
+    assert dynamic_support.authorizes_explicit_conditional_bridge
+    assert dynamic_support.reason == "dynamic_state_write"
+    assert derived_support.authorizes_explicit_conditional_bridge
+    assert derived_support.reason == "derived_dispatch_key"
 
 
 def _make_branch_flow_graph() -> FlowGraph:
@@ -5674,6 +5728,146 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
     assert edge.target_key is None
 
 
+def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
+    monkeypatch,
+) -> None:
+    from d810.recon.flow import linearized_state_dag as dag_mod
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (), (), 0, 0, ()),
+            10: BlockSnapshot(10, 0, (20,), (), 0, 0, ()),
+            20: BlockSnapshot(20, 0, (), (10,), 0, 0, ()),
+            30: BlockSnapshot(30, 0, (), (), 0, 0, ()),
+            99: BlockSnapshot(99, 0, (), (), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x40D090,
+    )
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x1000,
+        handler_state_map={10: 0x1000},
+        handler_range_map={},
+        bst_node_blocks=(0,),
+        rows=(
+            TransitionRow(
+                state_const=0x1000,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=10,
+                kind=TransitionKind.UNKNOWN,
+                next_state=None,
+                conditional_states=(),
+                state_label="State 0x1000",
+                transition_label="unknown",
+                chain_preview=(10, 20),
+                path=TransitionPath(
+                    handler_serial=10,
+                    chain=(10, 20),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=True,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=1,
+            known_count=0,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=1,
+        ),
+        diagnostics=(),
+    )
+    transition_result = TransitionResult(
+        transitions=[],
+        handlers={
+            0x1000: StateHandler(
+                state_value=0x1000,
+                check_block=10,
+                handler_blocks=[10, 20],
+                transitions=[],
+            ),
+        },
+        initial_state=0x1000,
+        pre_header_serial=0,
+        strategy_name="fixture",
+        resolved_count=0,
+    )
+    paths_by_handler = {
+        10: (
+            HandlerPathResult(
+                exit_block=20,
+                final_state=0x2000,
+                state_writes=[(20, 0x2000)],
+                ordered_path=[10, 20],
+            ),
+        ),
+    }
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=0,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x1000,
+        bst_node_blocks=(0,),
+        nodes=(),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.EXIT_ROUTINE,
+                source_key=StateDagNodeKey(99, 0xDEAD),
+                target_key=None,
+                target_state=None,
+                target_entry_anchor=None,
+                target_label="return",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.EXIT_BLOCK,
+                    block_serial=99,
+                ),
+                ordered_path=(99,),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        dag_mod,
+        "resolve_exit_via_bst_default_snapshot",
+        lambda flow_graph, bst_root_serial, state_value: 30
+        if state_value == 0x2000
+        else None,
+    )
+    monkeypatch.setattr(
+        dag_mod,
+        "can_reach_return_snapshot",
+        lambda flow_graph, serial: serial == 30,
+    )
+
+    (
+        supplemental_states,
+        _,
+        source_contexts,
+        _transient_states,
+        terminal_alias_states,
+    ) = dag_mod._discover_supplemental_states(
+        report,
+        transition_result,
+        paths_by_handler,
+        {},
+        dag,
+        flow_graph,
+    )
+
+    assert supplemental_states == {0x2000}
+    assert source_contexts == {0x2000: {(10, 20)}}
+    assert terminal_alias_states == set()
+
+
 def test_state_resolver_prefers_dispatcher_lookup_over_range_map() -> None:
     class FakeDispatcherRow:
         def __init__(self, target: int) -> None:
@@ -5775,6 +5969,82 @@ def test_state_resolver_prefers_dispatcher_lookup_over_range_map() -> None:
     assert edge.target_state == 0x27EEEA11
     assert edge.target_entry_anchor == 24
     assert edge.target_key is None
+
+
+def test_stable_handoff_anchor_rejects_range_backed_only_interval_body() -> None:
+    state = 0x7FDCE054
+    shared_range_handler = 57
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x1000,
+        handler_state_map={10: 0x1000},
+        handler_range_map={shared_range_handler: (0x7D9C16ED, 0xFFFFFFFF)},
+        bst_node_blocks=(2,),
+        rows=(),
+        summary=TransitionSummary(
+            handlers_total=0,
+            known_count=0,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=0,
+        ),
+        diagnostics=(),
+    )
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(
+                lo=0x7D9C16ED,
+                hi=0x100000000,
+                target=shared_range_handler,
+            ),
+        ],
+    )
+
+    assert _is_range_backed_only_handoff_anchor(
+        state,
+        shared_range_handler,
+        report,
+        dispatcher,
+    )
+
+
+def test_stable_handoff_anchor_allows_exact_dispatcher_binding() -> None:
+    state = 0x7FDCE054
+    exact_handler = 57
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x1000,
+        handler_state_map={10: 0x1000},
+        handler_range_map={exact_handler: (0x7D9C16ED, 0xFFFFFFFF)},
+        bst_node_blocks=(2,),
+        rows=(),
+        summary=TransitionSummary(
+            handlers_total=0,
+            known_count=0,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=0,
+        ),
+        diagnostics=(),
+    )
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(lo=state, hi=state + 1, target=exact_handler),
+        ],
+    )
+
+    assert not _is_range_backed_only_handoff_anchor(
+        state,
+        exact_handler,
+        report,
+        dispatcher,
+    )
 
 
 def test_live_builder_rejects_self_handoff_candidate_anchor(
