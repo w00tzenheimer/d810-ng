@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import ida_hexrays
 
@@ -16,6 +16,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CleanupConditionalRedirectProof,
     CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
+    CleanupTrampolineIsolationCandidate,
     bad_while_loop_duplicate_candidate,
     explain_bad_while_loop_conditional_redirect,
     validate_conditional_duplicate_cleanup_edit,
@@ -23,6 +24,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     validate_duplicate_group_replay_candidate,
     validate_side_effect_replay_candidate,
     validate_dispatcher_cleanup_candidate,
+    validate_trampoline_isolation_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
     BAD_WHILE_LOOP_INSERT_BLOCK,
@@ -47,6 +49,9 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationPredFix,
     collect_live_single_iteration_fixes,
+)
+from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
+    HexRaysInstructionCaptureBackend,
 )
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID,
@@ -127,17 +132,104 @@ def _capture_bad_while_loop_side_effect_body(
     )
 
 
+def _capture_bad_while_loop_dependency_rescue_body(
+    mba: object,
+    source_serial: int,
+    instructions: Sequence[object],
+    diagnostic: dict[str, object],
+) -> CapturedBlockBody | None:
+    """Capture the narrow stack-unique def chain before copied side effects."""
+    if diagnostic.get("final_bucket") != "stack_unique_def_chain_capturable":
+        return None
+    initial_reads = _stack_reads_from_dependency_diagnostic(diagnostic)
+    if not initial_reads:
+        return None
+
+    capture_backend = HexRaysInstructionCaptureBackend()
+    def_chain = capture_backend.capture_transitive_def_chain(
+        mba,
+        int(source_serial),
+        initial_reads,
+    )
+    if def_chain is None:
+        return None
+    copied_body = _capture_bad_while_loop_side_effect_body(
+        source_serial,
+        instructions,
+    )
+    if copied_body is None:
+        return None
+    combined = capture_backend.combine_bodies(
+        (def_chain, copied_body),
+        capture_id="bad_while_loop_dependency_rescue:{source}:{count}".format(
+            source=int(source_serial),
+            count=def_chain.instruction_count + copied_body.instruction_count,
+        ),
+    )
+    if combined.summary.contains_call:
+        return None
+    if capture_backend.validate_body(combined) is not None:
+        return None
+    snapshots = capture_backend.snapshots_from_body(combined)
+    if capture_backend.collect_unresolved_stkvar_reads(
+        snapshots,
+        state_variable=None,
+    ):
+        return None
+    return replace(
+        combined,
+        metadata={
+            **(dict(combined.metadata) if combined.metadata is not None else {}),
+            "bad_while_loop_dependency_rescue": True,
+        },
+    )
+
+
+def _stack_reads_from_dependency_diagnostic(
+    diagnostic: dict[str, object],
+) -> set[tuple[int, int]] | None:
+    reads: set[tuple[int, int]] = set()
+    missing_uses = diagnostic.get("missing_uses")
+    if not isinstance(missing_uses, Sequence) or isinstance(
+        missing_uses,
+        (str, bytes, bytearray),
+    ):
+        return None
+    for row in missing_uses:
+        if not isinstance(row, dict):
+            return None
+        if row.get("capture_status") != "capturable":
+            return None
+        mop = row.get("mop")
+        if not isinstance(mop, dict):
+            return None
+        stack = mop.get("stack")
+        if not isinstance(stack, dict):
+            return None
+        try:
+            stkoff = int(stack["stkoff"])
+            size = int(stack["size"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        reads.add((stkoff, size))
+    return reads
+
+
 def _validation_graph_for_bad_while_loop(
     mba: object,
     edits: tuple[BadWhileLoopEdit, ...],
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...],
     duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...],
+    trampoline_isolation_candidates: tuple[
+        CleanupTrampolineIsolationCandidate, ...
+    ],
     *,
     logger: object | None = None,
 ) -> FlowGraph | None:
     if (
         not replay_candidates
         and not duplicate_replay_candidates
+        and not trampoline_isolation_candidates
         and not any(
             isinstance(
                 edit,
@@ -170,6 +262,9 @@ class SimpleFlatteningCleanupDetection:
     bad_while_loop_duplicate_replay_candidates: tuple[
         CleanupDuplicateGroupReplayCandidate, ...
     ] = ()
+    bad_while_loop_trampoline_isolation_candidates: tuple[
+        CleanupTrampolineIsolationCandidate, ...
+    ] = ()
     bad_while_loop_conditional_redirect_proofs: tuple[
         CleanupConditionalRedirectProof, ...
     ] = ()
@@ -191,6 +286,7 @@ class SimpleFlatteningCleanupDetection:
             or self.bad_while_loop_edits
             or self.bad_while_loop_replay_candidates
             or self.bad_while_loop_duplicate_replay_candidates
+            or self.bad_while_loop_trampoline_isolation_candidates
             or self.fix_predecessor_branch_arm_fixes
         )
 
@@ -228,6 +324,8 @@ class SimpleFlatteningCleanupDetection:
             f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
             f" bad_while_loop_duplicate_replay="
             f"{len(self.bad_while_loop_duplicate_replay_candidates)}"
+            f" bad_while_loop_trampoline_isolation="
+            f"{len(self.bad_while_loop_trampoline_isolation_candidates)}"
             f" bad_while_loop_conditional_redirect_proofs="
             f"{len(self.bad_while_loop_conditional_redirect_proofs)}"
             f" fix_predecessor_branch_arm="
@@ -309,6 +407,9 @@ class LiveSimpleFlatteningCleanupBackend:
         bad_while_loop_duplicate_replay_candidates: tuple[
             CleanupDuplicateGroupReplayCandidate, ...
         ] = ()
+        bad_while_loop_trampoline_isolation_candidates: tuple[
+            CleanupTrampolineIsolationCandidate, ...
+        ] = ()
         bad_while_loop_conditional_redirect_proofs: tuple[
             CleanupConditionalRedirectProof, ...
         ] = ()
@@ -323,6 +424,9 @@ class LiveSimpleFlatteningCleanupBackend:
                 logger=logger,
                 allowed_maturities=self.allowed_maturities,
                 side_effect_capture=_capture_bad_while_loop_side_effect_body,
+                dependency_rescue_capture=(
+                    _capture_bad_while_loop_dependency_rescue_body
+                ),
             )
             bad_while_loop_all_edits = tuple(bad_while_loop_analysis.edits)
             bad_while_loop_all_replay_candidates = tuple(
@@ -330,6 +434,9 @@ class LiveSimpleFlatteningCleanupBackend:
             )
             bad_while_loop_all_duplicate_replay_candidates = tuple(
                 bad_while_loop_analysis.duplicate_replay_candidates
+            )
+            bad_while_loop_all_trampoline_isolation_candidates = tuple(
+                bad_while_loop_analysis.trampoline_isolation_candidates
             )
             bad_while_loop_dependency_diagnostics = tuple(
                 bad_while_loop_analysis.dependency_diagnostics
@@ -339,6 +446,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 bad_while_loop_all_edits,
                 bad_while_loop_all_replay_candidates,
                 bad_while_loop_all_duplicate_replay_candidates,
+                bad_while_loop_all_trampoline_isolation_candidates,
                 logger=logger,
             )
             bad_while_loop_edits = tuple(
@@ -363,6 +471,15 @@ class LiveSimpleFlatteningCleanupBackend:
                 for candidate in bad_while_loop_all_duplicate_replay_candidates
                 if bad_while_loop_validation_graph is not None
                 and validate_duplicate_group_replay_candidate(
+                    bad_while_loop_validation_graph,
+                    candidate,
+                )
+            )
+            bad_while_loop_trampoline_isolation_candidates = tuple(
+                candidate
+                for candidate in bad_while_loop_all_trampoline_isolation_candidates
+                if bad_while_loop_validation_graph is not None
+                and validate_trampoline_isolation_candidate(
                     bad_while_loop_validation_graph,
                     candidate,
                 )
@@ -400,12 +517,33 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
                 for candidate in bad_while_loop_replay_candidates
             }
+            promoted_dependency_rescue = {
+                (
+                    candidate.dispatcher_entry,
+                    candidate.source_serial,
+                    candidate.target_serial,
+                )
+                for candidate in bad_while_loop_replay_candidates
+                if isinstance(candidate.captured_body.metadata, dict)
+                and candidate.captured_body.metadata.get(
+                    "bad_while_loop_dependency_rescue"
+                )
+                is True
+            }
             promoted_duplicate_replay = {
                 (
                     candidate.dispatcher_entry,
                     candidate.source_serial,
                 )
                 for candidate in bad_while_loop_duplicate_replay_candidates
+            }
+            promoted_trampoline_isolation = {
+                (
+                    candidate.dispatcher_entry,
+                    candidate.source_serial,
+                    candidate.target_serial,
+                )
+                for candidate in bad_while_loop_trampoline_isolation_candidates
             }
             bad_while_loop_deferred_edits = tuple(
                 edit
@@ -429,12 +567,31 @@ class LiveSimpleFlatteningCleanupBackend:
                     in promoted_replay
                 )
                 and not (
+                    item.category == BAD_WHILE_LOOP_INSERT_BLOCK
+                    and item.reason == "copied_side_effects_not_dependency_safe"
+                    and (
+                        item.dispatcher_entry,
+                        item.from_serial,
+                        item.target_serial,
+                    )
+                    in promoted_dependency_rescue
+                )
+                and not (
                     item.reason == "duplicate_group_copied_side_effects"
                     and (
                         item.dispatcher_entry,
                         item.from_serial,
                     )
                     in promoted_duplicate_replay
+                )
+                and not (
+                    item.reason == "duplicate_group_requires_trampoline"
+                    and (
+                        item.dispatcher_entry,
+                        item.from_serial,
+                        item.target_serial,
+                    )
+                    in promoted_trampoline_isolation
                 )
             )
         except Exception as exc:
@@ -471,6 +628,9 @@ class LiveSimpleFlatteningCleanupBackend:
             ),
             bad_while_loop_duplicate_replay_candidates=tuple(
                 bad_while_loop_duplicate_replay_candidates
+            ),
+            bad_while_loop_trampoline_isolation_candidates=tuple(
+                bad_while_loop_trampoline_isolation_candidates
             ),
             bad_while_loop_conditional_redirect_proofs=tuple(
                 bad_while_loop_conditional_redirect_proofs
