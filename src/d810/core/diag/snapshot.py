@@ -969,7 +969,7 @@ def snapshot_state_transition_dispatch_resolutions(
         "DELETE FROM state_transition_dispatch_resolutions WHERE snapshot_id=?",
         (snapshot_id,),
     )
-    db_rows = []
+    db_rows_by_key = {}
     for row in rows:
         fact_id = _mapping_value(row, "fact_id")
         source_block = _mapping_value(row, "source_block_serial")
@@ -986,7 +986,7 @@ def snapshot_state_transition_dispatch_resolutions(
             or resolution_maturity is None
         ):
             continue
-        db_rows.append((
+        db_row = (
             int(snapshot_id),
             str(fact_id),
             int(source_block),
@@ -997,7 +997,11 @@ def snapshot_state_transition_dispatch_resolutions(
             str(resolution_kind),
             str(resolution_reason),
             str(resolution_maturity),
-        ))
+        )
+        db_rows_by_key[(int(snapshot_id), str(fact_id), str(resolution_kind))] = (
+            db_row
+        )
+    db_rows = tuple(db_rows_by_key.values())
     if db_rows:
         conn.executemany(
             "INSERT INTO state_transition_dispatch_resolutions VALUES "

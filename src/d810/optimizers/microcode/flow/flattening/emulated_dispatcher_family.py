@@ -5569,6 +5569,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         dag = getattr(phase_context, "dag", None)
         if dag is None:
             return
+        dag_node_objects = tuple(getattr(dag, "nodes", ()) or ())
+        dag_edge_objects = tuple(getattr(dag, "edges", ()) or ())
 
         try:
             from d810.hexrays.observability import request_capture_mba_snapshot
@@ -5598,7 +5600,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 return
 
             dag_nodes = []
-            for node in getattr(dag, "nodes", ()) or ():
+            for node in dag_node_objects:
                 diagnostic_state = dag_node_diagnostic_state(node)
                 dag_nodes.append(DagNode(
                     state=diagnostic_state,
@@ -5622,7 +5624,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 ))
 
             dag_edges = []
-            for edge_index, edge in enumerate(getattr(dag, "edges", ()) or ()):
+            for edge_index, edge in enumerate(dag_edge_objects):
                 source_anchor = getattr(edge, "source_anchor", None)
                 target_key = getattr(edge, "target_key", None)
                 dag_edges.append(DagEdge(
@@ -5676,7 +5678,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                         exc_info=True,
                     )
             proofs = collect_branch_ownership_proofs(
-                dag=dag,
+                dag=SimpleNamespace(edges=dag_edge_objects),
                 dispatch_map=phase_context.state_dispatcher_map,
                 proof_refiner=proof_refiner,
             )
@@ -5690,6 +5692,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                         )
                         for proof in proofs
                     ),
+                )
+                proof_counts = Counter(
+                    (proof.proof_kind_name, bool(proof.trusted))
+                    for proof in proofs
+                )
+                self._logger.info(
+                    "BRANCH_OWNERSHIP_PROOFS: emitted %d rows for profile=%s "
+                    "groups=%s",
+                    len(proofs),
+                    self._profile.name,
+                    dict(sorted(proof_counts.items())),
                 )
             switch_case_transition_facts = tuple(
                 getattr(phase_context, "switch_case_transition_facts", ()) or ()

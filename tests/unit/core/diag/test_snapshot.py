@@ -174,6 +174,51 @@ def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
     assert row == ("fact-1", 20, "resolved_exact_state")
 
 
+def test_snapshot_state_transition_dispatch_resolutions_deduplicates_rows() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_transition_dispatch_resolutions(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0x10",
+                "resolved_next_block_serial": 20,
+                "resolved_next_state_const_hex": "0x20",
+                "resolved_next_state_const_u64": 0x20,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "first",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0x10",
+                "resolved_next_block_serial": 21,
+                "resolved_next_state_const_hex": "0x21",
+                "resolved_next_state_const_u64": 0x21,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "latest",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+        ],
+    )
+
+    rows = conn.execute(
+        "SELECT fact_id, resolved_next_block_serial, resolution_reason "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchall()
+    assert rows == [("fact-1", 21, "latest")]
+
+
 def test_snapshot_switch_case_transition_facts_round_trip() -> None:
     conn = sqlite3.connect(":memory:")
     create_tables(conn)

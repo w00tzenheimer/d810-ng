@@ -121,6 +121,11 @@ class BranchOwnershipProof:
         proof kinds that show an arm is nonsemantic may drive mutation that
         removes or bypasses that arm, and downstream consumers must still
         match exact edge identity before applying a rewrite.
+
+        This property is semantic-edge authority, not raw CFG ownership
+        authority.  A consumer that rewrites live/projected CFG must still prove
+        the source block/arm is private to the edge, or lower through a
+        clone/split primitive that makes it private first.
         """
         return bool(self.trusted) and self.proof_kind_name in {
             BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value,
