@@ -12,23 +12,13 @@ files:
   - "src/d810/diagnostics/**/*.py"
   - "src/d810/core/diag/**/*.py"
 
-ignores:
-  # Existing live, non-mutating IDA probe used from manager.py during GLBOPT
-  # byte-DCE investigations. Keep this as the explicit exception; new live
-  # probes should go behind an evaluator/backend boundary instead.
-  - "src/d810/diagnostics/glbopt_dce_probe.py"
-
-  # Pseudocode capture intentionally runs inside IDA when collecting before /
-  # after decompiler output. Its pure DB parsing helpers remain in the same
-  # module for the CLI migration, so keep the whole tool explicit for now.
-  - "src/d810/diagnostics/pseudocode_capture.py"
-
 message: |
   Diagnostics must stay post-hoc and runtime-neutral.
 
   Query persisted diagnostic rows from d810.core.diag / d810.diagnostics, and
-  use pure cfg/recon helpers for explanation. Do not import live IDA/Hex-Rays
-  APIs or optimizer strategy/runtime modules here.
+  use pure cfg/recon helpers for explanation. Live capture, decompile, and
+  runtime optimizer integration belong on the Hex-Rays side. Do not import live
+  IDA/Hex-Rays APIs or optimizer strategy/runtime modules here.
 
 rule:
   any:
@@ -53,4 +43,6 @@ rule:
 
 note: |
   If a diagnostic needs live MBA/Hex-Rays evidence, capture that evidence in an
-  evaluator/backend or observability event first, then query/render it here.
+  evaluator/backend, d810.hexrays adapter, or observability event first, then
+  query/render it here. Diagnostics should only consume dumps, SQLite rows, or
+  caller-provided data.

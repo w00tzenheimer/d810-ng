@@ -69,9 +69,7 @@ from d810.core.typing import Any, Iterable, Optional, List, Tuple
 from d810.diagnostics.pseudocode_capture import (
     FUNCTION_TO_DSL_TESTS,
     OVERLAPPING_FUNCTIONS,
-    capture_one_function,
     get_default_binary_name,
-    get_func_ea,
     init_capture_db,
     resolve_capture_db_path,
     side_by_side_diff,
@@ -189,6 +187,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
     with _open_ida_database(binary_path):
         import idaapi
+        from d810.hexrays.diagnostics.pseudocode_capture import get_func_ea
 
         _ensure_hexrays()
         state = _load_d810_state()
@@ -260,6 +259,7 @@ def cmd_bisect(args: argparse.Namespace) -> None:
 
     with _open_ida_database(binary_path):
         import idaapi
+        from d810.hexrays.diagnostics.pseudocode_capture import get_func_ea
 
         _ensure_hexrays()
         state = _load_d810_state()
@@ -338,6 +338,10 @@ def cmd_capture(args: argparse.Namespace) -> None:
 
     with _open_ida_database(binary_path):
         import idaapi
+        from d810.hexrays.diagnostics.pseudocode_capture import (
+            capture_one_function,
+            get_func_ea,
+        )
 
         _ensure_hexrays()
         state = _load_d810_state()
@@ -406,6 +410,10 @@ def cmd_dump(args: argparse.Namespace) -> None:
     with _open_ida_database(binary_path):
         import idaapi
         import ida_hexrays
+        from d810.hexrays.diagnostics.pseudocode_capture import (
+            get_func_ea,
+            pseudocode_to_string,
+        )
 
         _ensure_hexrays()
         state = _load_d810_state()
@@ -457,8 +465,6 @@ def cmd_dump(args: argparse.Namespace) -> None:
                 print(f"ERROR: Failed to decompile '{func_name}' with D810")
                 continue
             code_after = after.get_pseudocode()
-
-            from d810.diagnostics.pseudocode_capture import pseudocode_to_string
 
             before_s = pseudocode_to_string(code_before)
             after_s = pseudocode_to_string(code_after)
