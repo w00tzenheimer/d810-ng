@@ -3809,14 +3809,6 @@ def test_collect_admissible_region_lowering_sites_remaps_mislabeled_internal_sit
     assert by_source[0x6107F8EC].edge.target_label == "STATE_474EEEBB"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "aspirational: branch-exit synthesis from semantic contract not "
-        "yet implemented; introduced in 88371e2a wip snapshot. Related: "
-        "uee-xipv"
-    ),
-    strict=False,
-)
 def test_collect_admissible_region_lowering_sites_synthesizes_missing_branch_exit_sites_from_semantic_contract():
     region = SimpleNamespace(
         region_name="branch_region",
@@ -4079,14 +4071,6 @@ def test_collect_admissible_region_lowering_sites_infers_semantic_successor_from
     assert sites[0].successor_state_value == 0x474EEEBB
 
 
-@pytest.mark.xfail(
-    reason=(
-        "aspirational: stale-semantic-label de-dup after recanonicalization "
-        "not yet implemented; introduced in 88371e2a wip snapshot. Related: "
-        "uee-xipv"
-    ),
-    strict=False,
-)
 def test_collect_admissible_region_lowering_sites_recanonicalizes_stale_semantic_label_after_child_target_normalization():
     region = SimpleNamespace(
         region_name="branch_region",
