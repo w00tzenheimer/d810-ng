@@ -45,6 +45,10 @@ from d810.cfg.transform.byte_emit_tail_isolation import (
     parse_tail_duplicate_convergence_byte_env,
 )
 from d810.cfg.scc import CfgSCC, compute_live_cfg_sccs
+from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+    ByteTailRuntimeEvidenceProvider,
+    normalize_byte_tail_runtime_evidence,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1942,7 +1946,12 @@ def _is_v190_plus_k(op, byte_index: int) -> bool:
     return False
 
 
-def maybe_run_tail_distinct(mba: Any) -> None:
+def maybe_run_tail_distinct(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
     Default-off.  When ``D810_TAIL_DISTINCT_BYTE`` is set to a valid byte
@@ -1965,25 +1974,31 @@ def maybe_run_tail_distinct(mba: Any) -> None:
     if byte_index is None:
         return  # default-off: no log, no mutation
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
 
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception("tail_distinct: cannot acquire diag DB; skipping")
-        return
+    if fact_view is None:
+        try:
+            from d810.core.observability import get_active_diag_conn as get_diag_db
 
-    if diag_conn is None:
-        logger.warning(
-            "tail_distinct: D810_TAIL_DISTINCT_BYTE=%r set but diag DB "
-            "unavailable; skipping",
-            raw,
-        )
-        return
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            diag_conn = get_diag_db(func_ea)
+        except Exception:
+            logger.exception("tail_distinct: cannot acquire diag DB; skipping")
+            return
 
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+        if diag_conn is None:
+            logger.warning(
+                "tail_distinct: D810_TAIL_DISTINCT_BYTE=%r set but diag DB "
+                "unavailable; skipping",
+                raw,
+            )
+            return
+
+        func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
+        fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+
     adapter = LiveMbaAdapter(mba)
     try:
         report = isolate_byte_emit_tail(
@@ -2001,7 +2016,12 @@ def maybe_run_tail_distinct(mba: Any) -> None:
     logger.info("tail_distinct: %s", report)
 
 
-def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
+def maybe_run_tail_duplicate_convergence(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
     """Env-gated hook: ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE`` probe.
 
     Default-off.  When set to exactly ``"6"`` and
@@ -2034,27 +2054,33 @@ def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
         )
         return
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
 
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception(
-            "tail_duplicate_convergence: cannot acquire diag DB; skipping"
-        )
-        return
+    if fact_view is None:
+        try:
+            from d810.core.observability import get_active_diag_conn as get_diag_db
 
-    if diag_conn is None:
-        logger.warning(
-            "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE="
-            "%r set but diag DB unavailable; skipping",
-            raw,
-        )
-        return
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            diag_conn = get_diag_db(func_ea)
+        except Exception:
+            logger.exception(
+                "tail_duplicate_convergence: cannot acquire diag DB; skipping"
+            )
+            return
 
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+        if diag_conn is None:
+            logger.warning(
+                "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE="
+                "%r set but diag DB unavailable; skipping",
+                raw,
+            )
+            return
+
+        func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
+        fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+
     adapter = LiveMbaAdapter(mba)
     try:
         report = duplicate_convergence_for_byte_path(
@@ -3890,6 +3916,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     *,
     fact_view: Any | None = None,
     dag: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
 ) -> None:
     """Default-on fact-backed terminal-tail cascade egress lowering.
 
@@ -3914,7 +3941,16 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         )
         return
 
-    if fact_view is None:
+    planner_evidence = None
+    if fact_view is None or dag is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        if fact_view is None:
+            fact_view = evidence.fact_view
+        if dag is None:
+            dag = evidence.dag
+        planner_evidence = evidence.terminal_tail_planner
+
+    if fact_view is None and planner_evidence is None:
         logger.warning(
             "terminal_tail_cascade_egress: fact view unavailable; skipping"
         )
@@ -3928,8 +3964,14 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
             TerminalTailCascadeEgressPlanner,
         )
 
-        blocks = _load_planner_blocks_from_mba(mba)
-        sites = _load_planner_sites_from_fact_view(fact_view)
+        if planner_evidence is None:
+            blocks = _load_planner_blocks_from_mba(mba)
+            sites = _load_planner_sites_from_fact_view(fact_view)
+        else:
+            blocks = dict(planner_evidence.blocks)
+            sites = list(planner_evidence.sites)
+            if dag is None:
+                dag = planner_evidence.dag
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
         dag = _load_dag_semantics_from_dag(dag)
     except Exception:
