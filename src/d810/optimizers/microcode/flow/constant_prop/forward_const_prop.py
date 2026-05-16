@@ -578,12 +578,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """Merge SCCP-discovered constants into a block's const map.
 
         For each operand used in *blk* that SCCP resolved to a constant,
-        add the constant to *consts* only when the simple GEN/KILL dataflow has
-        no opinion yet.  ``TOP`` is an explicit overdefined/conflict result
-        from the CFG-aware lattice, so SCCP must not resurrect it to a
-        constant.  Flattened dispatchers often contain shared terminal blocks
-        and partially unreachable aliases; treating SCCP as stronger than the
-        CFG meet can fold an entry initializer into a live carrier.
+        add the constant to *consts* unless simple GEN/KILL already proved a
+        concrete constant.  SCCP is allowed to refine ``TOP`` conflicts because
+        dispatcher recovery often needs the CFG-aware lattice to recover a
+        state carrier after a merge.  Profiles with known pre-recovery carrier
+        hazards disable FCP explicitly instead of weakening this refinement.
 
         The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
         operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
@@ -636,8 +635,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         existing = consts.get(name, BOTTOM)
         if isinstance(existing, Const):
             return  # Simple dataflow already found a constant — keep it
-        if existing is TOP:
-            return  # Simple dataflow found a conflict/overdefinition — keep it
         consts[name] = Const(sccp_val, op.size)
 
     # meet delegates to the injected MeetStrategy
@@ -966,6 +963,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             return False
         if (
             ins.opcode == ida_hexrays.m_mov
+            and ins.d
+            and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}
+        ):
+            return True
+        if (
+            ins.opcode == ida_hexrays.m_stx
             and ins.d
             and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}
         ):

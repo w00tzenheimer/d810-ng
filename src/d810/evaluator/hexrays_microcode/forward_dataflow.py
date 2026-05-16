@@ -490,6 +490,12 @@ def _is_constant_stack_assignment(ins: object) -> bool:
         and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}  # type: ignore[attr-defined]
     ):
         return True
+    if (
+        ins.opcode == ida_hexrays.m_stx  # type: ignore[attr-defined]
+        and ins.d  # type: ignore[attr-defined]
+        and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}  # type: ignore[attr-defined]
+    ):
+        return True
     return False
 
 
