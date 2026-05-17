@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 from d810.core.typing import Callable
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.graph_modification import (
+    DirectTerminalLoweringGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringSite,
+)
 from d810.cfg.plan import compile_patch_plan
 
 
@@ -89,6 +94,7 @@ def build_terminal_family_split_proposals(
     candidates: tuple[TerminalFamilySplitCandidate, ...],
     *,
     projected_flow_graph,
+    excluded_anchors: frozenset[int] = frozenset(),
 ) -> tuple[TerminalFamilySplitProposal, ...]:
     groups_by_suffix: dict[tuple[int, ...], list[tuple[int, TerminalFamilySplitCandidate]]] = {}
     for index, candidate in enumerate(candidates):
@@ -149,7 +155,11 @@ def build_terminal_family_split_proposals(
                     suffix_serials=suffix_serials,
                     projected_flow_graph=projected_flow_graph,
                 )
-                if anchor_serial is None or anchor_serial in selected_anchors:
+                if (
+                    anchor_serial is None
+                    or anchor_serial in selected_anchors
+                    or anchor_serial in excluded_anchors
+                ):
                     continue
                 selected_candidate_indexes.append(int(index))
                 selected_anchors.append(int(anchor_serial))
@@ -167,6 +177,16 @@ def build_terminal_family_split_proposals(
         )
 
     return tuple(proposals)
+
+
+def _direct_lowering_site_anchors(modifications: list[object]) -> frozenset[int]:
+    anchors: set[int] = set()
+    for mod in modifications:
+        if not isinstance(mod, DirectTerminalLoweringGroup):
+            continue
+        for site in mod.sites:
+            anchors.add(int(site.anchor_serial))
+    return frozenset(anchors)
 
 
 def build_terminal_family_split_candidates(
@@ -225,6 +245,96 @@ def build_terminal_family_split_modification(
     )
 
 
+def _signature_fields(entry: object) -> dict[str, object]:
+    if not isinstance(entry, tuple) or len(entry) < 4:
+        return {}
+    fields: dict[str, object] = {}
+    parts = entry[2:]
+    for idx in range(0, len(parts) - 1, 2):
+        key = parts[idx]
+        if isinstance(key, str):
+            fields[key] = parts[idx + 1]
+    return fields
+
+
+def _literal_return_const_from_signature(signature: tuple[object, ...]) -> int | None:
+    if not signature:
+        return None
+    if (
+        len(signature) == 2
+        and signature[0] == "terminal_value_chain"
+        and isinstance(signature[1], tuple)
+    ):
+        value_chain = signature[1]
+        if not value_chain:
+            return None
+        first_entry = value_chain[0]
+    else:
+        first_entry = signature[0]
+    if (
+        isinstance(first_entry, tuple)
+        and len(first_entry) == 2
+        and first_entry[0] == "terminal_value_chain"
+        and isinstance(first_entry[1], tuple)
+    ):
+        value_chain = first_entry[1]
+        if not value_chain:
+            return None
+        first_entry = value_chain[0]
+    fields = _signature_fields(first_entry)
+    src_l = fields.get("src_l")
+    src_r = fields.get("src_r")
+    dst = fields.get("dst")
+    if (
+        isinstance(src_l, tuple)
+        and len(src_l) >= 2
+        and src_l[0] == "const"
+        and isinstance(src_l[1], int)
+        and isinstance(src_r, tuple)
+        and src_r[:1] == ("none",)
+        and isinstance(dst, tuple)
+        and dst[:1] in (("stk",), ("reg",))
+    ):
+        return int(src_l[1])
+    return None
+
+
+def _candidate_literal_return_const(candidate: object) -> int | None:
+    return _literal_return_const_from_signature(
+        tuple(getattr(candidate, "value_family_signature", ()) or ())
+    )
+
+
+def build_terminal_family_direct_const_lowering_modification(
+    *,
+    builder,
+    selected_anchors: tuple[int, ...],
+    selected_candidates: tuple[object, ...],
+    suffix_serials: tuple[int, ...],
+):
+    sites: list[DirectTerminalLoweringSite] = []
+    for anchor, candidate in zip(selected_anchors, selected_candidates):
+        const_value = _candidate_literal_return_const(candidate)
+        if const_value is None:
+            continue
+        sites.append(
+            DirectTerminalLoweringSite(
+                anchor_serial=int(anchor),
+                kind=DirectTerminalLoweringKind.RETURN_CONST,
+                const_value=const_value,
+            )
+        )
+    if not sites:
+        return None
+    return builder.direct_terminal_lowering(
+        sites=sites,
+        shared_entry_serial=int(suffix_serials[0]),
+        return_block_serial=int(suffix_serials[-1]),
+        suffix_serials=tuple(int(serial) for serial in suffix_serials),
+        reason="terminal_family_direct_const_lowering",
+    )
+
+
 def select_terminal_family_split(
     candidates: tuple[TerminalFamilySplitCandidate, ...],
     *,
@@ -239,10 +349,12 @@ def select_terminal_family_split(
         return None
 
     baseline_reachable_count = len(current_reachable)
+    excluded_anchors = _direct_lowering_site_anchors(modifications)
 
     for proposal in build_terminal_family_split_proposals(
         candidates,
         projected_flow_graph=projected_flow_graph,
+        excluded_anchors=excluded_anchors,
     ):
         candidate_mod = build_terminal_family_split_modification(
             builder=builder,
@@ -333,6 +445,7 @@ def plan_terminal_family_splits(
         )
         if selected is None:
             break
+
         modifications.append(selected.modification)
         current_projected_flow_graph = selected.projected_flow_graph
         emitted += 1
@@ -352,6 +465,7 @@ __all__ = [
     "TerminalFamilySplitSelection",
     "build_terminal_family_split_candidates",
     "build_terminal_family_split_modification",
+    "build_terminal_family_direct_const_lowering_modification",
     "build_terminal_family_split_proposals",
     "plan_terminal_family_splits",
     "select_terminal_family_split",

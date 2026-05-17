@@ -13,7 +13,7 @@ if NATIVE_ORACLE_AVAILABLE:
     logger.info("Native CFG oracle available - full parity mode")
 else:
     logger.info("Native CFG oracle unavailable - Python-only parity mode")
-from d810.cfg.contracts.contract import CfgContractViolationError
+from d810.cfg.contracts.contract import CfgContract, CfgContractViolationError
 from d810.hexrays.contracts.insn_invariants import check_all_insn_invariants
 from d810.hexrays.contracts.invariants import (
     block_address_range,
@@ -173,15 +173,7 @@ class IDACfgContract:
         *,
         scope: ContractScope = "focused",
     ) -> list[InvariantViolation]:
-        from d810.cfg.flow.edit_simulator import project_post_state
-
-        projected_cfg = project_post_state(pre_cfg, plan)
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check_projected(
-            projected_cfg,
-            phase="projected",
-            focus_serials=focus,
-        )
+        return CfgContract().check_projected(pre_cfg, plan, scope=scope)
 
     def verify_projected(
         self,
@@ -295,28 +287,8 @@ class IDACfgContract:
         phase: str,
         focus_serials: Iterable[int] | None,
     ) -> list[InvariantViolation]:
-        violations: list[InvariantViolation] = []
-        violations.extend(
-            pred_succ_symmetry(projected_cfg, phase=phase, focus_serials=focus_serials)
+        return CfgContract()._check_projected(
+            projected_cfg,
+            phase=phase,
+            focus_serials=focus_serials,
         )
-        violations.extend(
-            successor_set_matches_tail_semantics(
-                projected_cfg,
-                phase=phase,
-                focus_serials=focus_serials,
-            )
-        )
-        violations.extend(
-            block_type_vs_tail(projected_cfg, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            predecessor_uniqueness(
-                projected_cfg,
-                phase=phase,
-                focus_serials=focus_serials,
-            )
-        )
-        violations.extend(
-            block_serial_range(projected_cfg, phase=phase, focus_serials=focus_serials)
-        )
-        return violations

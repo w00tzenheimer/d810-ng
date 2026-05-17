@@ -51,6 +51,8 @@ from d810.cfg.graph_modification import (
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringGroup,
     DirectTerminalLoweringSite,
     ReorderBlocks,
     RedirectBranch,
@@ -449,7 +451,7 @@ class PatchDirectTerminalLoweringGroup:
     return_block_serial: int
     suffix_serials: tuple[int, ...]
     sites: tuple[DirectTerminalLoweringSite, ...]
-    per_site_clone_assigned_serials: dict[int, tuple[VirtualBlockId, ...]]
+    per_site_clone_assigned_serials: dict[int, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -482,6 +484,7 @@ BlockCreatingGraphModification = Union[
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringGroup,
 ]
 
 
@@ -652,6 +655,12 @@ class _PendingPrivateTerminalSuffixGroup:
 
 
 @dataclass(frozen=True)
+class _PendingDirectTerminalLoweringGroup:
+    modification: DirectTerminalLoweringGroup
+    per_site_clone_block_ids: dict[int, tuple[VirtualBlockId, ...]]
+
+
+@dataclass(frozen=True)
 class _PendingReorderBlocks:
     """Pre-resolution ReorderBlocks with virtual block IDs (not yet concrete serials)."""
     dfs_block_order: tuple[int, ...]
@@ -676,6 +685,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             InsertBlock,
             PrivateTerminalSuffix,
             PrivateTerminalSuffixGroup,
+            DirectTerminalLoweringGroup,
         ),
     )
 
@@ -1398,7 +1408,7 @@ def _compile_duplicate_replay_and_redirect_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingDirectTerminalLoweringGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1735,6 +1745,32 @@ def _finalize_step(
                 anchors=anchors,
                 per_anchor_clone_block_ids=per_anchor_ids,
                 per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
+            )
+
+        case _PendingDirectTerminalLoweringGroup(
+            modification=DirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                sites=sites,
+            ),
+            per_site_clone_block_ids=per_site_ids,
+        ):
+            per_site_assigned: dict[int, tuple[int, ...]] = {}
+            for anchor, clone_ids in per_site_ids.items():
+                assigned: list[int] = []
+                for clone_id in clone_ids:
+                    serial = relocation_map.assigned_serial_for(clone_id)
+                    if serial is None:
+                        raise ValueError(f"Missing assigned serial for {clone_id}")
+                    assigned.append(serial)
+                per_site_assigned[int(anchor)] = tuple(assigned)
+            return PatchDirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                sites=sites,
+                per_site_clone_assigned_serials=per_site_assigned,
             )
 
         case _PendingReorderBlocks(
@@ -2156,6 +2192,69 @@ def compile_patch_plan(
                     _PendingPrivateTerminalSuffixGroup(
                         modification=modification,
                         per_anchor_clone_block_ids=tuple(per_anchor_clone_ids),
+                    )
+                )
+
+            case DirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                suffix_serials=suffix,
+                sites=sites,
+            ):
+                if not suffix:
+                    raise ValueError(
+                        "DirectTerminalLoweringGroup requires non-empty suffix_serials"
+                    )
+                per_site_clone_ids: dict[int, tuple[VirtualBlockId, ...]] = {}
+                for site in sites:
+                    if site.kind is DirectTerminalLoweringKind.RETURN_CONST:
+                        per_site_clone_ids[int(site.anchor_serial)] = ()
+                        continue
+                    clone_sources = tuple(
+                        int(serial) for serial in site.materializer_serials
+                    )
+                    if not clone_sources:
+                        clone_sources = tuple(int(serial) for serial in suffix[:-1])
+                    if not clone_sources:
+                        raise ValueError(
+                            "DirectTerminalLoweringGroup requires materializer "
+                            "blocks or a non-terminal suffix"
+                        )
+                    site_clone_ids: list[VirtualBlockId] = []
+                    for idx, source_serial in enumerate(clone_sources):
+                        clone_id = allocator.alloc(
+                            f"direct_terminal_a{site.anchor_serial}"
+                        )
+                        site_clone_ids.append(clone_id)
+                        if idx < len(clone_sources) - 1:
+                            next_clone_id = VirtualBlockId(
+                                namespace=f"direct_terminal_a{site.anchor_serial}",
+                                ordinal=clone_id.ordinal + 1,
+                            )
+                            outgoing = (
+                                PatchEdgeRef(source=clone_id, target=next_clone_id),
+                            )
+                        else:
+                            outgoing = ()
+                        incoming = None
+                        if idx == 0:
+                            incoming = PatchEdgeRef(
+                                source=int(site.anchor_serial),
+                                target=int(shared_entry),
+                            )
+                        new_blocks.append(
+                            PatchBlockSpec(
+                                block_id=clone_id,
+                                kind="direct_terminal_lowering_clone",
+                                template_block=source_serial,
+                                incoming_edge=incoming,
+                                outgoing_edges=outgoing,
+                            )
+                        )
+                    per_site_clone_ids[int(site.anchor_serial)] = tuple(site_clone_ids)
+                raw_steps.append(
+                    _PendingDirectTerminalLoweringGroup(
+                        modification=modification,
+                        per_site_clone_block_ids=per_site_clone_ids,
                     )
                 )
 
