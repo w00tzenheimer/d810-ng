@@ -340,7 +340,163 @@ def collect_branch_ownership_proofs(
         if proof_refiner is not None:
             proof = proof_refiner(proof, edge) or proof
         proofs.append(proof)
-    return tuple(proofs)
+    return _append_terminal_selector_backedge_residue_proofs(
+        edges=edges,
+        proofs=tuple(proofs),
+    )
+
+
+def _append_terminal_selector_backedge_residue_proofs(
+    *,
+    edges: tuple[object, ...],
+    proofs: tuple[BranchOwnershipProof, ...],
+) -> tuple[BranchOwnershipProof, ...]:
+    """Add proof rows for a narrow opaque terminal-selector backedge.
+
+    A path-constant predicate proves only which arm the obfuscated selector
+    chooses.  It does not prove the chosen arm can be removed.  This helper adds
+    a separate rewrite-authorizing proof only for the stricter terminal pattern:
+
+    - selector -> payload is a trusted opaque selected arm;
+    - payload has a single outgoing transition back to the selector;
+    - selector has a trusted terminal-frontier sibling;
+    - payload is not reached from any other state; and
+    - no same-edge proof marks the arm real data-dependent.
+
+    The CFG consumer still has to prove source ownership or lower through a
+    split/clone plan before mutating the raw graph.
+    """
+
+    outgoing_by_source: dict[int, list[object]] = {}
+    incoming_by_target: dict[int, list[object]] = {}
+    for edge in edges:
+        source_state = _edge_state(getattr(edge, "source_key", None))
+        target_state = _edge_state(getattr(edge, "target_key", None))
+        if source_state is not None:
+            outgoing_by_source.setdefault(source_state, []).append(edge)
+        if target_state is not None:
+            incoming_by_target.setdefault(target_state, []).append(edge)
+
+    added: list[BranchOwnershipProof] = []
+    for proof in proofs:
+        if not _is_opaque_selected_arm_proof(proof):
+            continue
+        source_state = proof.source_state
+        target_state = proof.target_state
+        if source_state is None or target_state is None:
+            continue
+        if any(
+            _same_branch_edge_proof(existing, proof)
+            and existing.authorizes_semantic_branch_bridge
+            for existing in proofs
+        ):
+            continue
+        if any(
+            _same_branch_edge_proof(existing, proof)
+            and existing.authorizes_nonsemantic_branch_rewrite
+            for existing in proofs
+        ):
+            continue
+
+        terminal_frontiers = tuple(
+            existing for existing in proofs
+            if (
+                existing.trusted
+                and existing.source_state == source_state
+                and existing.proof_kind_name
+                == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER.value
+            )
+        )
+        if not terminal_frontiers:
+            continue
+
+        target_outgoing = tuple(outgoing_by_source.get(target_state, ()))
+        if len(target_outgoing) != 1:
+            continue
+        if _edge_state(getattr(target_outgoing[0], "target_key", None)) != source_state:
+            continue
+
+        target_incoming = tuple(incoming_by_target.get(target_state, ()))
+        incoming_sources = {
+            _edge_state(getattr(edge, "source_key", None))
+            for edge in target_incoming
+        }
+        evidence = dict(proof.evidence)
+        evidence.update({
+            "opaque_selected_proof_id": proof.proof_id,
+            "terminal_frontier_proof_ids": tuple(
+                terminal.proof_id for terminal in terminal_frontiers
+            ),
+            "payload_backedge_source_state": int(target_state) & _MASK64,
+            "payload_backedge_target_state": int(source_state) & _MASK64,
+            "payload_incoming_count": len(target_incoming),
+            "payload_outgoing_count": len(target_outgoing),
+        })
+        if incoming_sources != {source_state}:
+            evidence["payload_incoming_source_states"] = tuple(
+                _hex_state(source) for source in sorted(
+                    source for source in incoming_sources if source is not None
+                )
+            )
+            added.append(BranchOwnershipProof(
+                proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
+                proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+                trusted=False,
+                reason="terminal_selector_backedge_payload_not_private",
+                source_block=proof.source_block,
+                branch_arm=proof.branch_arm,
+                source_state=proof.source_state,
+                target_state=proof.target_state,
+                target_entry=proof.target_entry,
+                predicate_block=proof.predicate_block,
+                dispatcher_entry_block=proof.dispatcher_entry_block,
+                oracle_kind="branch_ownership_terminal_selector_backedge",
+                evidence=evidence,
+                payload=dict(proof.payload),
+            ))
+            continue
+
+        added.append(BranchOwnershipProof(
+            proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="opaque_selected_terminal_selector_backedge_residue",
+            source_block=proof.source_block,
+            branch_arm=proof.branch_arm,
+            source_state=proof.source_state,
+            target_state=proof.target_state,
+            target_entry=proof.target_entry,
+            predicate_block=proof.predicate_block,
+            dispatcher_entry_block=proof.dispatcher_entry_block,
+            oracle_kind="branch_ownership_terminal_selector_backedge",
+            evidence=evidence,
+            payload=dict(proof.payload),
+        ))
+
+    if not added:
+        return proofs
+    return (*proofs, *tuple(added))
+
+
+def _is_opaque_selected_arm_proof(proof: BranchOwnershipProof) -> bool:
+    if not proof.trusted:
+        return False
+    return proof.proof_kind_name in {
+        BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE.value,
+        BranchOwnershipProofKind.OPAQUE_ALWAYS_FALSE.value,
+    }
+
+
+def _same_branch_edge_proof(
+    left: BranchOwnershipProof,
+    right: BranchOwnershipProof,
+) -> bool:
+    return (
+        left.source_state == right.source_state
+        and left.target_state == right.target_state
+        and left.branch_arm == right.branch_arm
+        and left.target_entry == right.target_entry
+    )
 
 
 def _proof_id(

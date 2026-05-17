@@ -142,6 +142,143 @@ def test_path_constant_false_predicate_marks_selected_arm_as_opaque_false():
     assert residue.authorizes_nonsemantic_branch_rewrite is True
 
 
+def test_terminal_selector_backedge_adds_separate_residue_proof_for_selected_arm():
+    selector_state = 0x49FD3A3
+    payload_state = 0x2AC056AD
+    return_state = 0xBFF7ACB5
+    proofs = _proofs_for(
+        _edge(
+            source_state=payload_state,
+            target_state=selector_state,
+            kind="TRANSITION",
+            source_block=13,
+            branch_arm=0,
+            target_entry=5,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=payload_state,
+            source_block=5,
+            branch_arm=1,
+            target_entry=13,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=return_state,
+            source_block=5,
+            branch_arm=0,
+            target_entry=21,
+        ),
+        _edge(
+            source_state=return_state,
+            target_state=None,
+            kind="CONDITIONAL_RETURN",
+            source_block=21,
+            branch_arm=0,
+            target_entry=21,
+        ),
+        result=PredicateOwnershipResult(
+            PredicateOwnershipKind.PATH_CONSTANT,
+            "synthetic_moptracker_constant",
+            taken=True,
+        ),
+    )
+
+    selected = [
+        proof for proof in proofs
+        if (
+            proof.source_state == selector_state
+            and proof.target_state == payload_state
+            and proof.branch_arm == 1
+        )
+    ]
+    assert [
+        proof.proof_kind for proof in selected
+    ] == [
+        BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+        BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+    ]
+    assert selected[0].authorizes_nonsemantic_branch_rewrite is False
+    assert selected[1].authorizes_nonsemantic_branch_rewrite is True
+    assert selected[1].reason == "opaque_selected_terminal_selector_backedge_residue"
+    assert (
+        selected[1].evidence["opaque_selected_proof_id"]
+        == selected[0].proof_id
+    )
+
+
+def test_terminal_selector_backedge_requires_payload_private_to_selector():
+    selector_state = 0x49FD3A3
+    payload_state = 0x2AC056AD
+    return_state = 0xBFF7ACB5
+    proofs = _proofs_for(
+        _edge(
+            source_state=payload_state,
+            target_state=selector_state,
+            kind="TRANSITION",
+            source_block=13,
+            branch_arm=0,
+            target_entry=5,
+        ),
+        _edge(
+            source_state=0x1111,
+            target_state=payload_state,
+            kind="TRANSITION",
+            source_block=12,
+            branch_arm=0,
+            target_entry=13,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=payload_state,
+            source_block=5,
+            branch_arm=1,
+            target_entry=13,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=return_state,
+            source_block=5,
+            branch_arm=0,
+            target_entry=21,
+        ),
+        _edge(
+            source_state=return_state,
+            target_state=None,
+            kind="CONDITIONAL_RETURN",
+            source_block=21,
+            branch_arm=0,
+            target_entry=21,
+        ),
+        result=PredicateOwnershipResult(
+            PredicateOwnershipKind.PATH_CONSTANT,
+            "synthetic_moptracker_constant",
+            taken=True,
+        ),
+    )
+
+    selected = [
+        proof for proof in proofs
+        if (
+            proof.source_state == selector_state
+            and proof.target_state == payload_state
+            and proof.branch_arm == 1
+        )
+    ]
+    assert [proof.proof_kind for proof in selected] == [
+        BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+        BranchOwnershipProofKind.UNRESOLVED,
+    ]
+    assert selected[0].authorizes_nonsemantic_branch_rewrite is False
+    assert selected[1].trusted is False
+    assert selected[1].reason == "terminal_selector_backedge_payload_not_private"
+    assert selected[1].authorizes_nonsemantic_branch_rewrite is False
+    assert selected[1].evidence["payload_incoming_source_states"] == (
+        "0x0000000000001111",
+        "0x00000000049fd3a3",
+    )
+
+
 def test_real_data_dependent_predicate_marks_arm_as_semantic_branch_authority():
     proofs = _proofs_for(
         _edge(branch_arm=0),
