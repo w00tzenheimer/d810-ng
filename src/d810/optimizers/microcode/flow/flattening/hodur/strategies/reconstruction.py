@@ -35,6 +35,10 @@ from d810.cfg.reconstruction_modification_planning import (
     plan_passthrough_reconstruction_modifications,
 )
 from d810.cfg.reconstruction_recording import RoundAcceptLedger
+from d810.hexrays.mutation.ir_translator import (
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
@@ -480,6 +484,8 @@ class StateWriteReconstructionStrategy:
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         if not shared_result.accepted_candidates and not shared_result.rejected_candidates:
             return 0
@@ -879,6 +885,8 @@ class StateWriteReconstructionStrategy:
             owned_edges=owned_edges,
             force_clone_shared_blocks=force_clone_primary_shared_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(run)
         primary_probe_rejected_candidates = _collect_rejected_reconstruction_candidates(run)
@@ -999,10 +1007,12 @@ class StateWriteReconstructionStrategy:
                 node_by_key=node_by_key,
                 dispatcher_serial=dispatcher_serial,
                 modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                mba=mba,
-            )
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
+        )
             fallback_accepted_candidates = _collect_accepted_reconstruction_candidates(
                 fallback_run
             )
@@ -1221,6 +1231,8 @@ class StateWriteReconstructionStrategy:
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results

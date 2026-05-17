@@ -63,7 +63,11 @@ from d810.core import logging
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     prove_terminal_returns,
 )
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.mutation.ir_translator import (
+    IDAIRTranslator,
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     GateAccounting,
     GateDecision,
@@ -322,7 +326,12 @@ class TransactionalExecutor:
         except (AttributeError, TypeError, ValueError):
             qty = 0
         for _i in range(qty):
-            _diag = detect_loop_counter_writeback_tail(self.mba, _i)
+            _diag = detect_loop_counter_writeback_tail(
+                self.mba,
+                _i,
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
+            )
             if _diag is not None:
                 writeback_tail_blocks.add(int(_diag.tail_block_serial))
         if writeback_tail_blocks:
@@ -405,6 +414,8 @@ class TransactionalExecutor:
                 reject_carrier_writer_bypass=(
                     fragment.strategy_name == "dispatcher_loop_recovery"
                 ),
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
         )
         if return_carrier_rejections:
@@ -433,6 +444,8 @@ class TransactionalExecutor:
                 dag_frontier_override_keys=(
                     terminal_byte_emit_dag_frontier_overrides
                 ),
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
         )
         if terminal_byte_emit_rejections:

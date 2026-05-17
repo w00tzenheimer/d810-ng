@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.evaluator.hexrays_microcode import dead_state_variable_backend as backend_module
-from d810.evaluator.hexrays_microcode.chains import UseSite
+from d810.evaluator.hexrays_microcode.chains import DefSite, UseSite
 from d810.evaluator.hexrays_microcode.dead_state_variable_backend import (
     HexRaysDeadStateVariableEvidenceBackend,
     StateVariableRef,
@@ -64,6 +64,14 @@ def _stkvar(stkoff: int, *, size: int = 4):
 
 def _reg(*, size: int = 4):
     return SimpleNamespace(t=ida_hexrays.mop_r, size=size)
+
+
+def _num(value: int, *, size: int = 4):
+    return SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=size,
+        nnn=SimpleNamespace(value=value),
+    )
 
 
 def test_resolve_state_variable_returns_neutral_ref() -> None:
@@ -137,3 +145,52 @@ def test_collect_skips_non_state_destination_copy(monkeypatch) -> None:
     assert evidence.sites == ()
     assert len(evidence.skips) == 1
     assert evidence.skips[0].reason == "dest_non_state_stkvar"
+
+
+def test_collect_allows_non_state_destination_copy_when_defs_are_state_constants(
+    monkeypatch,
+) -> None:
+    def_insn = _Insn(
+        ida_hexrays.m_mov,
+        ea=0x18002F00,
+        l=_num(0x11223344),
+        d=_stkvar(0x3C),
+    )
+    use_insn = _Insn(
+        ida_hexrays.m_xdu,
+        ea=0x18003000,
+        l=_stkvar(0x3C),
+        d=_stkvar(0x80, size=8),
+    )
+    mba = _Mba({
+        5: _Block(def_insn),
+        9: _Block(use_insn),
+    })
+    monkeypatch.setattr(
+        backend_module,
+        "find_all_uses_of_stkvar",
+        lambda *_args: [UseSite(9, 0x18003000, ida_hexrays.m_xdu)],
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "find_reaching_defs_for_stkvar",
+        lambda *_args: [DefSite(5, 0x18002F00, ida_hexrays.m_mov)],
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "run_valrange_fixpoint",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("not needed")),
+    )
+
+    evidence = HexRaysDeadStateVariableEvidenceBackend().collect_dead_state_read_cleanup_evidence(
+        mba,
+        state_variable=StateVariableRef(0x3C, 4),
+        known_state_constants={0x11223344},
+    )
+
+    assert evidence.use_site_count == 1
+    assert len(evidence.sites) == 1
+    assert evidence.sites[0].block_serial == 9
+    assert evidence.sites[0].insn_ea == 0x18003000
+    assert evidence.sites[0].opcode_name == "m_xdu"
+    assert evidence.skips == ()

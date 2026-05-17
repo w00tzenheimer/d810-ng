@@ -55,7 +55,7 @@ def _patch_const_refs(monkeypatch, refs: frozenset[str]) -> None:
     monkeypatch.setattr(
         return_carrier_fact_guard,
         "collect_const_var_refs_in_block",
-        lambda _mba, _block_serial: refs,
+        lambda _mba, _block_serial, **_kwargs: refs,
     )
 
 

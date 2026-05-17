@@ -36,8 +36,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.core import logging
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactKind,
+    ReturnFrontierArtifactPriors,
+    ReturnFrontierCarrierClassification,
+)
 
 logger = logging.getLogger(
     "D810.recon.flow.return_frontier_carrier_facts", logging.INFO
@@ -59,8 +70,10 @@ __all__ = [
 # ---------------------------------------------------------------------------
 _MOP_R = 1   # mop_r: register
 _MOP_N = 2   # mop_n: numeric constant
-_MOP_S = 3   # mop_S/mop_str: stkvar reference
-_MOP_L = 7   # mop_l: lvar reference
+_MOP_S = 5   # mop_S/mop_str: stkvar reference
+_MOP_L = 9   # mop_l: lvar reference
+_LEGACY_MOP_S = 3
+_LEGACY_MOP_L = 7
 
 # Opcodes (subset).  We rely on ida_hexrays at runtime for the canonical
 # values; this dict is the fallback used when the import fails (offline
@@ -96,6 +109,41 @@ def _resolve_opcodes() -> dict[str, int]:
     return out
 
 
+def _mop_type(mop: MopSnapshot | None) -> int | None:
+    if mop is None:
+        return None
+    try:
+        return int(mop.t)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_register_mop(mop: MopSnapshot | None) -> bool:
+    return mop is not None and (
+        mop.kind is OperandKind.REGISTER or _mop_type(mop) == _MOP_R
+    )
+
+
+def _is_number_mop(mop: MopSnapshot | None) -> bool:
+    return mop is not None and (
+        mop.kind is OperandKind.NUMBER or _mop_type(mop) == _MOP_N
+    )
+
+
+def _is_stack_mop(mop: MopSnapshot | None) -> bool:
+    return mop is not None and (
+        mop.kind is OperandKind.STACK
+        or _mop_type(mop) in (_MOP_S, _LEGACY_MOP_S)
+    )
+
+
+def _is_lvar_mop(mop: MopSnapshot | None) -> bool:
+    return mop is not None and (
+        mop.kind is OperandKind.LVAR
+        or _mop_type(mop) in (_MOP_L, _LEGACY_MOP_L)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierCarrierFact:
     """Immutable record of a return-frontier writer's carrier identity.
@@ -115,6 +163,11 @@ class ReturnFrontierCarrierFact:
             (writer + immediate predecessors that reference the carrier
             via mop_l/mop_S).  HCC uses this set to reject mods that
             would inject foreign predecessors or rewrite edges inside.
+        classification: Recon carrier classification. The protected
+            non-carrier class means the writer is not a recoverable return
+            carrier, but topology rewrites must preserve it unless a later
+            proof supplies a precise lowering.
+        artifact_kind: Optional protected non-carrier writer shape.
     """
 
     ret_block: int
@@ -123,6 +176,8 @@ class ReturnFrontierCarrierFact:
     carrier_lvar_idx: int | None
     carrier_stkoff: int | None
     writer_path_blocks: frozenset[int]
+    classification: str = ReturnFrontierCarrierClassification.RETURN_CARRIER.value
+    artifact_kind: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,16 +208,13 @@ def _dest_is_return_slot(
     intermediate.  This matches the audit's ``_dest_is_return_slot``.
     """
     dst = insn.d
-    if dst is None:
-        return False
-    t = int(dst.t)
-    if t == _MOP_R:
+    if _is_register_mop(dst):
         return True
-    if t == _MOP_S:
+    if _is_stack_mop(dst):
         if dst.stkoff is None:
             return True  # accept-on-unknown
         return int(dst.stkoff) == int(return_stkoff)
-    if t == _MOP_L:
+    if _is_lvar_mop(dst):
         # Snapshot doesn't expose lvar idx; accept any mop_l dst as a
         # candidate (filtered downstream by carrier capture).
         return True
@@ -184,12 +236,10 @@ def _is_trivial_copy(
     dst = insn.d
     if src is None or dst is None:
         return False
-    st = int(src.t)
-    dt = int(dst.t)
-    if st == _MOP_S and dt == _MOP_R:
+    if _is_stack_mop(src) and _is_register_mop(dst):
         if src.stkoff is None or int(src.stkoff) == int(return_stkoff):
             return True
-    if st == _MOP_R and dt == _MOP_S:
+    if _is_register_mop(src) and _is_stack_mop(dst):
         if dst.stkoff is None or int(dst.stkoff) == int(return_stkoff):
             return True
     return False
@@ -201,6 +251,8 @@ def _find_writer_in_block(
     m_mov: int,
     m_stx: int,
     m_add: int,
+    m_xdu: int,
+    m_xds: int,
     return_stkoff: int,
     skip_trivial_copy: bool = True,
 ) -> InsnSnapshot | None:
@@ -209,7 +261,7 @@ def _find_writer_in_block(
     last: InsnSnapshot | None = None
     for insn in blk.insn_snapshots:
         op = int(insn.opcode)
-        if op not in (m_mov, m_stx, m_add):
+        if op not in (m_mov, m_stx, m_add, m_xdu, m_xds):
             continue
         if not _dest_is_return_slot(insn, return_stkoff=return_stkoff):
             continue
@@ -238,10 +290,9 @@ def _writer_carrier_identity(
     src = writer.l
     if src is None:
         return None, None
-    t = int(src.t)
     carrier_lvar_idx: int | None = None
     carrier_stkoff: int | None = None
-    if t == _MOP_L:
+    if _is_lvar_mop(src):
         # Try several conventional attribute names for the lvar index.
         for attr in ("lvar_idx", "l_idx", "idx", "value"):
             cand = getattr(src, attr, None)
@@ -251,13 +302,56 @@ def _writer_carrier_identity(
                     break
                 except (TypeError, ValueError):
                     continue
-    elif t == _MOP_S:
+    elif _is_stack_mop(src):
         if src.stkoff is not None:
             try:
                 carrier_stkoff = int(src.stkoff)
             except (TypeError, ValueError):
                 carrier_stkoff = None
     return carrier_lvar_idx, carrier_stkoff
+
+
+def _writer_const_value(writer: InsnSnapshot) -> int | None:
+    src = writer.l
+    if src is None:
+        return None
+    if not _is_number_mop(src):
+        return None
+    if src.value is not None:
+        try:
+            return int(src.value)
+        except (TypeError, ValueError):
+            return None
+    nnn = getattr(src, "nnn", None)
+    if nnn is not None:
+        value = getattr(nnn, "value", None)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _writer_is_state_guard_artifact(
+    writer: InsnSnapshot,
+    *,
+    state_var_stkoff: int | None,
+) -> bool:
+    if state_var_stkoff is None:
+        return False
+    src = writer.l
+    dst = writer.d
+    if not _is_stack_mop(src) or not _is_stack_mop(dst):
+        return False
+    if src.stkoff is None or dst.stkoff is None:
+        return False
+    try:
+        src_off = int(src.stkoff)
+        dst_off = int(dst.stkoff)
+    except (TypeError, ValueError):
+        return False
+    return src_off == int(state_var_stkoff) and dst_off != int(state_var_stkoff)
 
 
 def _insn_references_carrier(
@@ -271,11 +365,7 @@ def _insn_references_carrier(
     for mop in (insn.l, insn.r, insn.d):
         if mop is None:
             continue
-        try:
-            t = int(mop.t)
-        except (AttributeError, TypeError):
-            continue
-        if carrier_lvar_idx is not None and t == _MOP_L:
+        if carrier_lvar_idx is not None and _is_lvar_mop(mop):
             for attr in ("lvar_idx", "l_idx", "idx", "value"):
                 cand = getattr(mop, attr, None)
                 if cand is not None:
@@ -284,7 +374,7 @@ def _insn_references_carrier(
                             return True
                     except (TypeError, ValueError):
                         continue
-        if carrier_stkoff is not None and t == _MOP_S:
+        if carrier_stkoff is not None and _is_stack_mop(mop):
             if mop.stkoff is not None:
                 try:
                     if int(mop.stkoff) == int(carrier_stkoff):
@@ -312,6 +402,139 @@ def _block_references_carrier(
     return False
 
 
+def _state_guard_artifact_fact(
+    *,
+    ret_serial: int,
+    writer_serial: int,
+    walk_path: tuple[int, ...],
+    const_value: int | None = None,
+) -> ReturnFrontierCarrierFact:
+    protected = {int(writer_serial)}
+    fact = ReturnFrontierCarrierFact(
+        ret_block=int(ret_serial),
+        writer_block=int(writer_serial),
+        walk_path=tuple(int(s) for s in walk_path),
+        carrier_lvar_idx=None,
+        carrier_stkoff=None,
+        writer_path_blocks=frozenset(protected),
+        classification=(
+            ReturnFrontierCarrierClassification
+            .PROTECTED_NON_CARRIER_RETURN_WRITER.value
+        ),
+        artifact_kind=(
+            ReturnFrontierArtifactKind.KNOWN_IMPOSSIBLE_CONSTANT_RETURN_WRITER.value
+            if const_value is not None
+            else ReturnFrontierArtifactKind.STATE_VARIABLE_RETURN_WRITER.value
+        ),
+    )
+    logger.info(
+        "RETURN_FRONTIER_CARRIER_FACT: ret=blk[%d] "
+        "writer=blk[%d] path=%s classification=%s "
+        "const=%s path_blocks=%s",
+        fact.ret_block,
+        fact.writer_block,
+        list(fact.walk_path),
+        fact.classification,
+        (
+            f"0x{int(const_value) & 0xFFFFFFFFFFFFFFFF:016x}"
+            if const_value is not None
+            else "<state-var>"
+        ),
+        sorted(fact.writer_path_blocks),
+    )
+    return fact
+
+
+def _detect_state_guard_artifact_facts_for_return(
+    flow_graph: FlowGraph,
+    *,
+    ret_serial: int,
+    m_mov: int,
+    m_stx: int,
+    m_add: int,
+    m_xdu: int,
+    m_xds: int,
+    return_stkoff: int,
+    state_var_stkoff: int | None,
+    artifact_priors: ReturnFrontierArtifactPriors,
+    max_depth: int,
+    max_visited: int,
+) -> tuple[ReturnFrontierCarrierFact, ...]:
+    """Find protected non-carrier return writers feeding a shared suffix.
+
+    Normal carrier detection intentionally stops at the first concrete
+    return writer.  Protected non-carrier artifacts are different: they can be
+    one sibling writer among many terminal writers that share a final
+    ``stkvar -> rax`` copy block.  Walk backward through transparent suffix
+    blocks, inspect every concrete return writer at that frontier, and stop at
+    each writer so the scan does not wander through unrelated handler topology.
+    """
+    facts: list[ReturnFrontierCarrierFact] = []
+    visited: set[int] = {int(ret_serial)}
+    frontier: list[tuple[int, int, tuple[int, ...]]] = [
+        (int(ret_serial), 0, (int(ret_serial),))
+    ]
+
+    while frontier:
+        if len(visited) > max_visited:
+            break
+        serial, depth, path = frontier.pop(0)
+        if depth >= max_depth:
+            continue
+        cur_blk = flow_graph.blocks.get(serial)
+        if cur_blk is None:
+            continue
+        for pserial in cur_blk.preds:
+            pserial = int(pserial)
+            if pserial in visited:
+                continue
+            visited.add(pserial)
+            pblk = flow_graph.blocks.get(pserial)
+            if pblk is None:
+                continue
+            new_path = path + (pserial,)
+            writer = _find_writer_in_block(
+                pblk,
+                m_mov=m_mov,
+                m_stx=m_stx,
+                m_add=m_add,
+                m_xdu=m_xdu,
+                m_xds=m_xds,
+                return_stkoff=return_stkoff,
+            )
+            if writer is not None:
+                if _writer_is_state_guard_artifact(
+                    writer,
+                    state_var_stkoff=state_var_stkoff,
+                ):
+                    facts.append(
+                        _state_guard_artifact_fact(
+                            ret_serial=ret_serial,
+                            writer_serial=pserial,
+                            walk_path=new_path,
+                        )
+                    )
+                    continue
+                const_value = _writer_const_value(writer)
+                if (
+                    const_value is not None
+                    and artifact_priors.is_known_impossible_return_constant(
+                        const_value
+                    )
+                ):
+                    facts.append(
+                        _state_guard_artifact_fact(
+                            ret_serial=ret_serial,
+                            writer_serial=pserial,
+                            walk_path=new_path,
+                            const_value=const_value,
+                        )
+                    )
+                continue
+            frontier.append((pserial, depth + 1, new_path))
+    return tuple(facts)
+
+
 # ---------------------------------------------------------------------------
 # Detector
 # ---------------------------------------------------------------------------
@@ -320,7 +543,9 @@ def _block_references_carrier(
 def detect_return_frontier_carrier_facts(
     flow_graph: FlowGraph | None,
     *,
-    return_stkoff_hint: int = 0x7F0,
+    return_stkoff_hint: int | None = None,
+    state_var_stkoff: int | None = None,
+    artifact_priors: ReturnFrontierArtifactPriors | None = None,
     max_depth: int = _DEFAULT_MAX_DEPTH,
     max_visited: int = _DEFAULT_MAX_VISITED,
 ) -> tuple[ReturnFrontierCarrierFact, ...]:
@@ -339,11 +564,14 @@ def detect_return_frontier_carrier_facts(
     """
     if flow_graph is None:
         return ()
+    effective_artifact_priors = artifact_priors or ReturnFrontierArtifactPriors()
     opcodes = _resolve_opcodes()
     m_ret = opcodes["m_ret"]
     m_mov = opcodes["m_mov"]
     m_stx = opcodes["m_stx"]
     m_add = opcodes["m_add"]
+    m_xdu = opcodes["m_xdu"]
+    m_xds = opcodes["m_xds"]
 
     facts: list[ReturnFrontierCarrierFact] = []
 
@@ -352,22 +580,45 @@ def detect_return_frontier_carrier_facts(
         if not _is_return_block(ret_blk, m_ret):
             continue
 
-        # Determine the return slot.  Try to auto-detect the trampoline
-        # ``mov %var_X.8, rax.8`` in the ret block; fall back to hint.
-        return_stkoff = int(return_stkoff_hint)
+        # Determine the return slot from a return-block stack-to-register
+        # move; fall back only to an explicit caller/profile hint.
+        return_stkoff = (
+            int(return_stkoff_hint)
+            if return_stkoff_hint is not None
+            else None
+        )
         for ins in ret_blk.insn_snapshots:
             if int(ins.opcode) != m_mov:
                 continue
             s, d = ins.l, ins.d
             if s is None or d is None:
                 continue
-            try:
-                if int(s.t) == _MOP_S and int(d.t) == _MOP_R:
-                    if s.stkoff is not None:
-                        return_stkoff = int(s.stkoff)
-                        break
-            except (AttributeError, TypeError):
-                continue
+            if _is_stack_mop(s) and _is_register_mop(d):
+                if s.stkoff is not None:
+                    return_stkoff = int(s.stkoff)
+                    break
+        if return_stkoff is None:
+            continue
+
+        artifact_facts = _detect_state_guard_artifact_facts_for_return(
+            flow_graph,
+            ret_serial=ret_serial,
+            m_mov=m_mov,
+            m_stx=m_stx,
+            m_add=m_add,
+            m_xdu=m_xdu,
+            m_xds=m_xds,
+            return_stkoff=return_stkoff,
+            state_var_stkoff=state_var_stkoff,
+            artifact_priors=effective_artifact_priors,
+            max_depth=max_depth,
+            max_visited=max_visited,
+        )
+        artifact_keys = {
+            (fact.ret_block, fact.writer_block, fact.classification)
+            for fact in artifact_facts
+        }
+        facts.extend(artifact_facts)
 
         # Bounded BFS backward to find the writer.
         writer: InsnSnapshot | None = None
@@ -379,6 +630,8 @@ def detect_return_frontier_carrier_facts(
             m_mov=m_mov,
             m_stx=m_stx,
             m_add=m_add,
+            m_xdu=m_xdu,
+            m_xds=m_xds,
             return_stkoff=return_stkoff,
         )
         if local_writer is not None:
@@ -413,6 +666,8 @@ def detect_return_frontier_carrier_facts(
                         m_mov=m_mov,
                         m_stx=m_stx,
                         m_add=m_add,
+                        m_xdu=m_xdu,
+                        m_xds=m_xds,
                         return_stkoff=return_stkoff,
                     )
                     new_path = path + (pserial,)
@@ -435,8 +690,39 @@ def detect_return_frontier_carrier_facts(
         assert writer is not None and writer_serial is not None
 
         # Capture the carrier identity from the writer's source.
+        if _writer_is_state_guard_artifact(
+            writer,
+            state_var_stkoff=state_var_stkoff,
+        ):
+            fact = _state_guard_artifact_fact(
+                ret_serial=ret_serial,
+                writer_serial=writer_serial,
+                walk_path=walk_path,
+            )
+            key = (fact.ret_block, fact.writer_block, fact.classification)
+            if key not in artifact_keys:
+                facts.append(fact)
+            continue
+
         carrier_lvar_idx, carrier_stkoff = _writer_carrier_identity(writer)
         if carrier_lvar_idx is None and carrier_stkoff is None:
+            const_value = _writer_const_value(writer)
+            if (
+                const_value is not None
+                and effective_artifact_priors.is_known_impossible_return_constant(
+                    const_value
+                )
+            ):
+                fact = _state_guard_artifact_fact(
+                    ret_serial=ret_serial,
+                    writer_serial=writer_serial,
+                    walk_path=walk_path,
+                    const_value=const_value,
+                )
+                key = (fact.ret_block, fact.writer_block, fact.classification)
+                if key not in artifact_keys:
+                    facts.append(fact)
+                continue
             # Writer's source is a constant / sub-instruction / something
             # we cannot key on.  Carrier already lost; emit no fact.
             logger.debug(

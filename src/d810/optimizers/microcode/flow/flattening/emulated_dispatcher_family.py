@@ -46,8 +46,12 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 )
 from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-from d810.hexrays.mutation.ir_translator import capture_insn_snapshot
+from d810.hexrays.mutation.ir_translator import (
+    IDAIRTranslator,
+    capture_insn_snapshot,
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
 from d810.hexrays.utils.hexrays_helpers import CONTROL_FLOW_OPCODES
 from d810.cfg.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
@@ -6329,6 +6333,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     else None
                 ),
                 mba=mba,
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
         except Exception:
             self._logger.debug(

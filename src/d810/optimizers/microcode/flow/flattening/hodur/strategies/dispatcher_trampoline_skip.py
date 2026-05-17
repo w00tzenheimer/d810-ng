@@ -31,6 +31,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.cfg.residual_target_resolution import (
@@ -199,7 +200,12 @@ class DispatcherTrampolineSkipStrategy:
             if fact_view is not None:
                 sites = fact_view.return_carrier_sites_for_block(target_serial)
                 if sites:
-                    introduced = collect_const_var_refs_in_block(mba, serial)
+                    introduced = collect_const_var_refs_in_block(
+                        mba,
+                        serial,
+                        insn_kind_classifier=self._hexrays_insn_kind,
+                        operand_kind_classifier=self._hexrays_operand_kind,
+                    )
                     if introduced:
                         for site in sites:
                             fact_refs = frozenset(
@@ -352,6 +358,28 @@ class DispatcherTrampolineSkipStrategy:
                     return None
             insn = insn.prev
             walked += 1
+        return None
+
+    @staticmethod
+    def _hexrays_insn_kind(insn: object) -> InsnKind | None:
+        try:
+            opcode = int(getattr(insn, "opcode"))
+        except (TypeError, ValueError):
+            return None
+        if opcode == int(ida_hexrays.m_mov):
+            return InsnKind.MOV
+        return None
+
+    @staticmethod
+    def _hexrays_operand_kind(mop: object) -> OperandKind | None:
+        try:
+            operand_type = int(getattr(mop, "t"))
+        except (TypeError, ValueError):
+            return None
+        if operand_type == int(ida_hexrays.mop_n):
+            return OperandKind.NUMBER
+        if operand_type == int(ida_hexrays.mop_S):
+            return OperandKind.STACK
         return None
 
     @staticmethod

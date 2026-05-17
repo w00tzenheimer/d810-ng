@@ -38,13 +38,25 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.cfg.graph_modification import (
+    DirectTerminalLoweringGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringSite,
     GraphModification,
+    PrivateTerminalSuffix,
+    PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
+from d810.cfg.loop_bound_writer_guard import (
+    InsnKindClassifier,
+    OperandKindClassifier,
+    collect_const_var_refs_in_block,
+)
 from d810.core import logging
 from d810.core.typing import Any
+from d810.recon.flow.return_frontier_artifacts import (
+    is_protected_non_carrier_return_writer,
+)
 
 logger = logging.getLogger("D810.unflat.hodur.terminal_byte_emit_fact_guard")
 
@@ -100,14 +112,25 @@ def _byte_emit_source_ea(site: Any) -> int | None:
         return None
 
 
-def _is_state_flow_scaffolding(mba: Any, source_block: int) -> tuple[bool, frozenset[str]]:
+def _is_state_flow_scaffolding(
+    mba: Any,
+    source_block: int,
+    *,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
+) -> tuple[bool, frozenset[str]]:
     """Return ``(is_scaffolding, const_writes)`` for ``source_block``.
 
     ``is_scaffolding`` is true iff the source block contains a
     ``m_mov #const, %var_7BC`` write -- the identifying shape of an
     OLLVM state-machine constant write.
     """
-    refs = collect_const_var_refs_in_block(mba, source_block)
+    refs = collect_const_var_refs_in_block(
+        mba,
+        source_block,
+        insn_kind_classifier=insn_kind_classifier,
+        operand_kind_classifier=operand_kind_classifier,
+    )
     return (_STATE_VAR_REF_TOKEN in refs, refs)
 
 
@@ -265,6 +288,21 @@ def _constant_terminal_return_materializer_for_successor(
     return int(unique[0])
 
 
+def _literal_return_const_for_materializer(mba: Any, materializer_block: int) -> int | None:
+    """Return the literal written by a constant-return materializer block."""
+    for insn in _iter_block_insns(mba, materializer_block):
+        if getattr(insn, "opcode", None) != int(ida_hexrays.m_mov):
+            continue
+        const_value = _const_value(getattr(insn, "l", None))
+        if const_value is None:
+            continue
+        dst = getattr(insn, "d", None)
+        if _stkoff(dst) is None and getattr(dst, "t", None) != int(ida_hexrays.mop_r):
+            continue
+        return int(const_value)
+    return None
+
+
 def _replacement_redirect(
     mod: GraphModification,
     *,
@@ -285,6 +323,227 @@ def _replacement_redirect(
     return mod
 
 
+def _private_suffix_for_anchor(
+    modifications: list[GraphModification],
+    *,
+    anchor_serial: int,
+    shared_entry_serial: int,
+) -> tuple[int, tuple[int, ...]] | None:
+    for mod in modifications:
+        if isinstance(mod, PrivateTerminalSuffix):
+            if (
+                int(mod.anchor_serial) == int(anchor_serial)
+                and int(mod.shared_entry_serial) == int(shared_entry_serial)
+            ):
+                return int(mod.return_block_serial), tuple(
+                    int(serial) for serial in mod.suffix_serials
+                )
+        if isinstance(mod, PrivateTerminalSuffixGroup):
+            anchors = {int(anchor) for anchor in mod.anchors}
+            if (
+                int(anchor_serial) in anchors
+                and int(mod.shared_entry_serial) == int(shared_entry_serial)
+            ):
+                return int(mod.return_block_serial), tuple(
+                    int(serial) for serial in mod.suffix_serials
+                )
+    return None
+
+
+def _block_nsucc(block: Any) -> int | None:
+    nsucc = getattr(block, "nsucc", None)
+    if callable(nsucc):
+        try:
+            return int(nsucc())
+        except Exception:
+            return None
+    if nsucc is not None:
+        try:
+            return int(nsucc)
+        except (TypeError, ValueError):
+            return None
+    succset = getattr(block, "succset", None)
+    if succset is not None:
+        try:
+            return len(tuple(succset))
+        except TypeError:
+            return None
+    return None
+
+
+def _block_successors(block: Any) -> tuple[int, ...]:
+    nsucc = _block_nsucc(block)
+    succ = getattr(block, "succ", None)
+    if callable(succ) and nsucc is not None:
+        values: list[int] = []
+        for idx in range(max(0, nsucc)):
+            try:
+                values.append(int(succ(idx)))
+            except Exception:
+                return ()
+        return tuple(values)
+    succset = getattr(block, "succset", None)
+    if succset is not None:
+        try:
+            return tuple(int(serial) for serial in succset)
+        except TypeError:
+            return ()
+    return ()
+
+
+def _live_terminal_suffix_for_entry(
+    mba: Any,
+    *,
+    shared_entry_serial: int,
+) -> tuple[int, tuple[int, ...]] | None:
+    suffix: list[int] = []
+    seen: set[int] = set()
+    current = int(shared_entry_serial)
+    for _ in range(8):
+        if current in seen:
+            return None
+        seen.add(current)
+        try:
+            block = mba.get_mblock(current)
+        except Exception:
+            return None
+        if block is None:
+            return None
+        suffix.append(current)
+        nsucc = _block_nsucc(block)
+        if nsucc == 0:
+            return current, tuple(suffix)
+        if nsucc != 1:
+            return None
+        successors = _block_successors(block)
+        if len(successors) != 1:
+            return None
+        current = successors[0]
+    return None
+
+
+def _direct_lowering_for_private_materializer(
+    modifications: list[GraphModification],
+    *,
+    mba: Any,
+    source_block: int,
+    old_target: int,
+    replacement_target: int,
+) -> DirectTerminalLoweringGroup | None:
+    suffix = _private_suffix_for_anchor(
+        modifications,
+        anchor_serial=int(replacement_target),
+        shared_entry_serial=int(old_target),
+    )
+    if suffix is None:
+        suffix = _live_terminal_suffix_for_entry(
+            mba,
+            shared_entry_serial=int(old_target),
+        )
+    if suffix is None:
+        return None
+    return_block, suffix_serials = suffix
+    const_value = _literal_return_const_for_materializer(mba, int(replacement_target))
+    if const_value is not None:
+        return DirectTerminalLoweringGroup(
+            shared_entry_serial=int(old_target),
+            return_block_serial=int(return_block),
+            suffix_serials=suffix_serials,
+            sites=(
+                DirectTerminalLoweringSite(
+                    anchor_serial=int(source_block),
+                    kind=DirectTerminalLoweringKind.RETURN_CONST,
+                    const_value=int(const_value),
+                ),
+            ),
+            reason="terminal_zero_guard_constant_return",
+        )
+
+    materializer_serials = tuple(
+        dict.fromkeys((int(replacement_target), *tuple(suffix_serials[:-1])))
+    )
+    if not materializer_serials:
+        return None
+    return DirectTerminalLoweringGroup(
+        shared_entry_serial=int(old_target),
+        return_block_serial=int(return_block),
+        suffix_serials=suffix_serials,
+        sites=(
+            DirectTerminalLoweringSite(
+                anchor_serial=int(source_block),
+                kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+                materializer_serials=materializer_serials,
+            ),
+        ),
+        reason="terminal_zero_guard_constant_materializer",
+    )
+
+
+def _direct_lowering_site_anchors(
+    modifications: list[GraphModification],
+) -> set[int]:
+    anchors: set[int] = set()
+    for mod in modifications:
+        if not isinstance(mod, DirectTerminalLoweringGroup):
+            continue
+        for site in mod.sites:
+            anchors.add(int(site.anchor_serial))
+    return anchors
+
+
+def _shared_entry_for_state_guard_fact(fact: Any) -> int | None:
+    try:
+        writer = int(getattr(fact, "writer_block"))
+    except (TypeError, ValueError):
+        return None
+    raw_path = getattr(fact, "walk_path", ()) or ()
+    try:
+        path = tuple(int(serial) for serial in raw_path)
+    except (TypeError, ValueError):
+        return None
+    if len(path) < 2:
+        return None
+    for idx, serial in enumerate(path):
+        if serial == writer:
+            if idx <= 0:
+                return None
+            return int(path[idx - 1])
+    return None
+
+
+def append_state_guard_artifact_direct_lowerings(
+    modifications: list[GraphModification],
+    *,
+    mba: Any,
+    carrier_facts: tuple[Any, ...],
+) -> list[GraphModification]:
+    """Keep state-guard artifact facts observational.
+
+    Protected non-carrier return-frontier facts identify writers that have
+    already lost recoverable carrier identity. Rewriting them through a sibling
+    constant-return suffix can expose unrelated terminal values, so topology
+    stays unchanged until a proof-backed lowering exists for that artifact
+    class.
+    """
+    if not carrier_facts:
+        return modifications
+
+    _ = mba
+    for fact in carrier_facts:
+        if not is_protected_non_carrier_return_writer(fact):
+            continue
+        try:
+            source = int(getattr(fact, "writer_block"))
+        except (TypeError, ValueError):
+            continue
+        logger.info(
+            "PROTECTED_NON_CARRIER_RETURN_WRITER_DIRECT_LOWERING_SKIPPED "
+            "source=blk[%d] reason=observability_only",
+            source,
+        )
+    return modifications
+
+
 def filter_terminal_byte_emit_fact_redirects(
     modifications: list[GraphModification],
     *,
@@ -292,6 +551,8 @@ def filter_terminal_byte_emit_fact_redirects(
     fact_view: Any | None,
     dispatcher_serial: int,
     dag_frontier_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> tuple[list[GraphModification], tuple[TerminalByteEmitFactRejection, ...]]:
     """Reject fact-proven state-flow predecessor injections.
 
@@ -370,7 +631,10 @@ def filter_terminal_byte_emit_fact_redirects(
             rejections.append(rejection)
             if replacement_target is not None:
                 filtered.append(
-                    _replacement_redirect(mod, replacement_target=replacement_target)
+                    _replacement_redirect(
+                        mod,
+                        replacement_target=replacement_target,
+                    )
                 )
                 logger.info(
                     "TERMINAL_ZERO_GUARD_RETURN_REDIRECT_RETARGETED "
@@ -407,7 +671,12 @@ def filter_terminal_byte_emit_fact_redirects(
                 )
             continue
 
-        is_scaffolding, const_refs = _is_state_flow_scaffolding(mba, source)
+        is_scaffolding, const_refs = _is_state_flow_scaffolding(
+            mba,
+            source,
+            insn_kind_classifier=insn_kind_classifier,
+            operand_kind_classifier=operand_kind_classifier,
+        )
         if not is_scaffolding:
             filtered.append(mod)
             continue
@@ -486,5 +755,6 @@ def filter_terminal_byte_emit_fact_redirects(
 
 __all__ = [
     "TerminalByteEmitFactRejection",
+    "append_state_guard_artifact_direct_lowerings",
     "filter_terminal_byte_emit_fact_redirects",
 ]
