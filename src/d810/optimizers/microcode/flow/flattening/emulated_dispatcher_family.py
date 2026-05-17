@@ -19,6 +19,7 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
+    PromoteOperandToScalar,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
@@ -210,6 +211,7 @@ class TerminalSelectorPayloadIncomingEdge:
 
     source_block: int
     branch_arm: int
+    old_target: int
     source_state: int
     target_state: int
     target_entry: int
@@ -229,6 +231,7 @@ class TerminalSelectorPayloadMaterializationCandidate:
 
     selector_source_block: int
     selector_branch_arm: int
+    selector_old_target: int
     selector_state: int
     payload_state: int
     payload_block: int
@@ -248,6 +251,18 @@ class TerminalSelectorPayloadMaterializationCandidate:
     def side_effect_guard_reasons(self) -> tuple[str, ...]:
         return tuple(
             edge.side_effect_guard_reason for edge in self.external_incoming_edges
+        )
+
+    @property
+    def owned_redirect_edges(self) -> tuple[tuple[int, int], ...]:
+        """Raw predecessor edges replaced by this materialization plan."""
+
+        return (
+            (int(self.selector_source_block), int(self.selector_old_target)),
+            *(
+                (int(edge.source_block), int(edge.old_target))
+                for edge in self.external_incoming_edges
+            ),
         )
 
 
@@ -1530,11 +1545,27 @@ def _collect_phase_branch_ownership_proofs(
     proof_refiners = []
     if str(profile_name).startswith("ollvm"):
         try:
+            from d810.recon.facts.collectors import (
+                OllvmSemanticCarrierFactCollector,
+            )
             from d810.recon.flow.branch_ownership_oracle import (
                 MopTrackerBranchOwnershipOracle,
+                OllvmCarrierBranchOwnershipOracle,
                 Z3BranchOwnershipOracle,
             )
 
+            carrier_facts = OllvmSemanticCarrierFactCollector().collect(
+                mba,
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity=int(getattr(mba, "maturity", 0) or 0),
+                phase="pre_d810",
+            )
+            proof_refiners.append(
+                OllvmCarrierBranchOwnershipOracle(
+                    mba=mba,
+                    carrier_facts=carrier_facts,
+                ).refine
+            )
             proof_refiners.append(Z3BranchOwnershipOracle(mba=mba).refine)
             proof_refiners.append(MopTrackerBranchOwnershipOracle(mba=mba).refine)
         except Exception:
@@ -1836,6 +1867,878 @@ def _strict_matching_proofs_for_edge(
     )
 
 
+def _branch_arm_old_target(
+    flow_graph: FlowGraph,
+    source_block: int,
+    branch_arm: int,
+) -> int | None:
+    """Return the live CFG successor for a proof edge's branch arm."""
+
+    block = flow_graph.blocks.get(int(source_block))
+    if block is None:
+        return None
+    successors = tuple(getattr(block, "succs", ()) or ())
+    arm = int(branch_arm)
+    if arm < 0 or arm >= len(successors):
+        return None
+    return int(successors[arm])
+
+
+def _ollvm_canonical_var_token(token: str | None) -> str | None:
+    if token is None:
+        return None
+    token = str(token).strip()
+    if token.startswith("%var_"):
+        suffix = []
+        for char in token[5:]:
+            if char.isalnum():
+                suffix.append(char.upper())
+                continue
+            break
+        return f"%var_{''.join(suffix)}" if suffix else None
+    if token.startswith("v"):
+        suffix = []
+        for char in token[1:]:
+            if char.isdigit():
+                suffix.append(char)
+                continue
+            break
+        return f"v{''.join(suffix)}" if suffix else None
+    return None
+
+
+def _ollvm_var_tokens_from_text(text: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    index = 0
+    while index < len(text):
+        if text.startswith("%var_", index):
+            end = index + 5
+            while end < len(text) and text[end].isalnum():
+                end += 1
+            token = _ollvm_canonical_var_token(text[index:end])
+            if token is not None:
+                tokens.append(token)
+            index = end
+            continue
+        if text[index] == "v" and index + 1 < len(text) and text[index + 1].isdigit():
+            end = index + 1
+            while end < len(text) and text[end].isdigit():
+                end += 1
+            token = _ollvm_canonical_var_token(text[index:end])
+            if token is not None:
+                tokens.append(token)
+            index = end
+            continue
+        index += 1
+    return tuple(tokens)
+
+
+def _ollvm_mop_text(mop: object | None) -> str:
+    if mop is None:
+        return ""
+    dstr = getattr(mop, "dstr", None)
+    if callable(dstr):
+        try:
+            return str(dstr())
+        except Exception:
+            pass
+    return str(mop)
+
+
+def _ollvm_mop_var_token(mop: object | None) -> str | None:
+    tokens = _ollvm_var_tokens_from_text(_ollvm_mop_text(mop))
+    return tokens[0] if tokens else None
+
+
+def _ollvm_insn_text(insn: object | None) -> str:
+    if insn is None:
+        return ""
+    dstr = getattr(insn, "dstr", None)
+    if callable(dstr):
+        try:
+            return str(dstr())
+        except Exception:
+            pass
+    return str(insn)
+
+
+def _ollvm_stx_target_token_from_text(text: str) -> str | None:
+    if ", ds" not in text:
+        return None
+    tail = text.rsplit(", ds", 1)[-1]
+    tokens = _ollvm_var_tokens_from_text(tail)
+    return tokens[-1] if tokens else None
+
+
+def _ollvm_collect_local_alias_tokens(
+    carrier_facts: tuple[object, ...],
+) -> frozenset[str]:
+    """Return fact-backed OLLVM local aliases that can be scalarized."""
+
+    aliases: set[str] = set()
+    for fact in carrier_facts:
+        payload = getattr(fact, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        role = payload.get("role")
+        if role not in {"LOOP_INDEX_CARRIER", "ACCUMULATOR_CARRIER"}:
+            continue
+        token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
+        if token is not None:
+            aliases.add(token)
+        if role == "ACCUMULATOR_CARRIER":
+            aliases.update(
+                alias for alias in (
+                    _ollvm_canonical_var_token(str(raw_alias))
+                    for raw_alias in (
+                        payload.get("multiply_add_same_base_alias_tokens") or ()
+                    )
+                )
+                if alias is not None
+            )
+    return frozenset(sorted(aliases))
+
+
+def _ollvm_rewrite_ldx_alias_to_scalar(insn: object, alias_tokens: frozenset[str]) -> bool:
+    if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_ldx):
+        return False
+    source = getattr(insn, "r", None)
+    dest = getattr(insn, "d", None)
+    token = _ollvm_mop_var_token(source)
+    if token not in alias_tokens or source is None or dest is None:
+        return False
+    try:
+        saved_source = ida_hexrays.mop_t()
+        saved_source.assign(source)
+        saved_dest = ida_hexrays.mop_t()
+        saved_dest.assign(dest)
+        size = int(getattr(saved_dest, "size", 0) or 4)
+        saved_source.size = size
+        insn.opcode = ida_hexrays.m_mov
+        insn.l.assign(saved_source)
+        try:
+            insn.r.erase()
+        except Exception:
+            pass
+        insn.d.assign(saved_dest)
+        return True
+    except Exception:
+        return False
+
+
+def _ollvm_rewrite_stx_alias_to_scalar(insn: object, alias_tokens: frozenset[str]) -> bool:
+    if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_stx):
+        return False
+    target = getattr(insn, "d", None)
+    source = getattr(insn, "l", None)
+    token = _ollvm_mop_var_token(target)
+    if token not in alias_tokens or source is None or target is None:
+        return False
+    # Do not scalarize the output-like double-indirect store target
+    # ``[ds:alias].8``.  That path still needs real output-pointer proof.
+    target_text = _ollvm_mop_text(target)
+    if "[ds" in target_text:
+        return False
+    try:
+        saved_source = ida_hexrays.mop_t()
+        saved_source.assign(source)
+        saved_target = ida_hexrays.mop_t()
+        saved_target.assign(target)
+        size = int(getattr(saved_source, "size", 0) or 4)
+        saved_target.size = size
+        insn.opcode = ida_hexrays.m_mov
+        insn.l.assign(saved_source)
+        try:
+            insn.r.erase()
+        except Exception:
+            pass
+        insn.d.assign(saved_target)
+        return True
+    except Exception:
+        return False
+
+
+def _ollvm_replace_alias_load_mop(
+    mop: object | None,
+    alias_tokens: frozenset[str],
+) -> int:
+    if mop is None:
+        return 0
+    nested = getattr(mop, "d", None)
+    if nested is None:
+        return 0
+
+    changed = 0
+    if int(getattr(nested, "opcode", -1)) == int(ida_hexrays.m_ldx):
+        source = getattr(nested, "r", None)
+        token = _ollvm_mop_var_token(source)
+        if token in alias_tokens and source is not None:
+            try:
+                replacement = ida_hexrays.mop_t()
+                replacement.assign(source)
+                replacement.size = int(getattr(mop, "size", 0) or 4)
+                mop.assign(replacement)
+                return 1
+            except Exception:
+                return 0
+
+    for side in ("l", "r", "d"):
+        changed += _ollvm_replace_alias_load_mop(
+            getattr(nested, side, None),
+            alias_tokens,
+        )
+    return changed
+
+
+def _ollvm_scalarize_alias_accesses_in_insn(
+    insn: object,
+    alias_tokens: frozenset[str],
+) -> int:
+    if insn is None:
+        return 0
+    changed = 0
+    for side in ("l", "r", "d"):
+        # Nested ldx operands are expression operands.  Replace the operand
+        # with the direct scalar alias instead of rewriting the nested
+        # instruction opcode, which Hex-Rays rejects for expression mops.
+        changed += _ollvm_replace_alias_load_mop(
+            getattr(insn, side, None),
+            alias_tokens,
+        )
+    if _ollvm_rewrite_ldx_alias_to_scalar(insn, alias_tokens):
+        return changed + 1
+    if _ollvm_rewrite_stx_alias_to_scalar(insn, alias_tokens):
+        return changed + 1
+    return changed
+
+
+def _ollvm_is_local_alias_setup_move(
+    insn: object,
+    alias_tokens: frozenset[str],
+) -> bool:
+    if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
+        return False
+    dest_token = _ollvm_mop_var_token(getattr(insn, "d", None))
+    if dest_token not in alias_tokens:
+        return False
+    left_text = _ollvm_mop_text(getattr(insn, "l", None))
+    if "&(" in left_text:
+        return True
+    text = _ollvm_insn_text(insn)
+    if "," not in text:
+        return False
+    return "&(" in text.rsplit(",", 1)[0]
+
+
+def _ollvm_nop_insn(insn: object) -> bool:
+    try:
+        insn.opcode = ida_hexrays.m_nop
+        for side in ("l", "r", "d"):
+            mop = getattr(insn, side, None)
+            if mop is None:
+                continue
+            try:
+                mop.erase()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+
+
+def _ollvm_collect_rdx_output_alias_mop(mba: object) -> object | None:
+    output_mop = None
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        insn = getattr(blk, "head", None) if blk is not None else None
+        while insn is not None:
+            if int(getattr(insn, "opcode", -1)) == int(ida_hexrays.m_mov):
+                left_text = _ollvm_mop_text(getattr(insn, "l", None)).lower()
+                if left_text.startswith("rdx.8"):
+                    dest = getattr(insn, "d", None)
+                    if dest is not None:
+                        try:
+                            saved = ida_hexrays.mop_t()
+                            saved.assign(dest)
+                            output_mop = saved
+                        except Exception:
+                            pass
+            insn = getattr(insn, "next", None)
+    return output_mop
+
+
+def _ollvm_fact_specs_by_block_ea(
+    carrier_facts: tuple[object, ...],
+    *,
+    roles: frozenset[str],
+) -> dict[tuple[int, int], str]:
+    specs: dict[tuple[int, int], str] = {}
+    for fact in carrier_facts:
+        payload = getattr(fact, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("role") not in roles:
+            continue
+        token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
+        source_block = payload.get("source_block")
+        instruction_ea = payload.get("instruction_ea")
+        if token is None or source_block is None or instruction_ea is None:
+            continue
+        specs[(int(source_block), int(instruction_ea))] = token
+    return specs
+
+
+def _apply_ollvm_output_alias_repair(
+    mba: object,
+    logger: object,
+    carrier_facts: tuple[object, ...],
+) -> int:
+    if mba is None:
+        return 0
+    output_mop = _ollvm_collect_rdx_output_alias_mop(mba)
+    if output_mop is None:
+        return 0
+    output_store_specs = _ollvm_fact_specs_by_block_ea(
+        carrier_facts,
+        roles=frozenset({
+            "ARG_OUTPUT_STORE_CANDIDATE",
+            "LOCAL_WORKING_STORE_CANDIDATE",
+        }),
+    )
+    if not output_store_specs:
+        return 0
+
+    changed = 0
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        block_changed = 0
+        block_serial = int(getattr(blk, "serial", serial))
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            if int(getattr(insn, "opcode", -1)) == int(ida_hexrays.m_stx):
+                expected_target = output_store_specs.get((
+                    block_serial,
+                    int(getattr(insn, "ea", 0) or 0),
+                ))
+                target = getattr(insn, "d", None)
+                target_token = _ollvm_mop_var_token(target)
+                target_text = _ollvm_mop_text(target)
+                if (
+                    expected_target is not None
+                    and target_token == expected_target
+                    and "[ds" in target_text
+                ):
+                    try:
+                        nested = getattr(target, "d", None)
+                        if (
+                            nested is not None
+                            and int(getattr(nested, "opcode", -1))
+                            == int(ida_hexrays.m_ldx)
+                        ):
+                            nested.r.assign(output_mop)
+                            block_changed += 1
+                    except Exception:
+                        pass
+            insn = getattr(insn, "next", None)
+        if block_changed:
+            changed += block_changed
+            try:
+                blk.mark_lists_dirty()
+            except Exception:
+                pass
+    if changed:
+        try:
+            mba.mark_chains_dirty()
+        except Exception:
+            pass
+        log_info = getattr(logger, "info", None)
+        if callable(log_info):
+            log_info(
+                "OLLVM output alias repair retargeted %d final store target(s) "
+                "to rdx alias from fact-backed stores=%s",
+                int(changed),
+                ",".join(
+                    f"blk[{block}]@0x{ea:x}"
+                    for block, ea in sorted(output_store_specs)
+                ),
+            )
+    return int(changed)
+
+
+def _apply_ollvm_local_alias_mem2reg(
+    mba: object,
+    logger: object,
+    carrier_facts: tuple[object, ...],
+) -> int:
+    if mba is None:
+        return 0
+    alias_tokens = _ollvm_collect_local_alias_tokens(carrier_facts)
+    if not alias_tokens:
+        return 0
+    changed = 0
+    qty = int(getattr(mba, "qty", 0) or 0)
+    setup_moves_removed = 0
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        block_changed = 0
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            if _ollvm_is_local_alias_setup_move(insn, alias_tokens):
+                if _ollvm_nop_insn(insn):
+                    block_changed += 1
+                    setup_moves_removed += 1
+                insn = getattr(insn, "next", None)
+                continue
+            block_changed += _ollvm_scalarize_alias_accesses_in_insn(
+                insn,
+                alias_tokens,
+            )
+            insn = getattr(insn, "next", None)
+        if block_changed:
+            changed += block_changed
+            try:
+                blk.mark_lists_dirty()
+            except Exception:
+                pass
+    if changed:
+        try:
+            mba.mark_chains_dirty()
+        except Exception:
+            pass
+        log_info = getattr(logger, "info", None)
+        if callable(log_info):
+            log_info(
+                "OLLVM local carrier alias mem2reg scalarized %d access(es) "
+                "for aliases=%s removed_setup_moves=%d",
+                int(changed),
+                ",".join(sorted(alias_tokens)),
+                int(setup_moves_removed),
+            )
+    return int(changed)
+
+
+def _copy_mop(mop: object | None) -> object | None:
+    if mop is None:
+        return None
+    try:
+        copied = ida_hexrays.mop_t()
+        copied.assign(mop)
+        return copied
+    except Exception:
+        return None
+
+
+def _collect_ollvm_semantic_carrier_facts(
+    mba: object,
+) -> tuple[object, ...]:
+    """Collect diagnostics facts for OLLVM semantic-carrier consumers."""
+
+    if mba is None:
+        return ()
+    try:
+        from d810.recon.facts.collectors import OllvmSemanticCarrierFactCollector
+    except Exception:
+        return ()
+    return OllvmSemanticCarrierFactCollector().collect(
+        mba,
+        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+        maturity=int(getattr(mba, "maturity", 0) or 0),
+        phase="pre_d810",
+    )
+
+
+def _same_carrier_alias_repair_specs(
+    carrier_facts: tuple[object, ...],
+) -> dict[tuple[int, int], tuple[str, frozenset[str]]]:
+    specs: dict[tuple[int, int], tuple[str, frozenset[str]]] = {}
+    for fact in carrier_facts:
+        payload = getattr(fact, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("role") != "ACCUMULATOR_CARRIER":
+            continue
+        if payload.get("same_carrier_alias_proof") is not True:
+            continue
+        carrier_token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
+        source_block = payload.get("source_block")
+        instruction_ea = payload.get("instruction_ea")
+        alias_tokens = frozenset(
+            token for token in (
+                _ollvm_canonical_var_token(str(alias))
+                for alias in (payload.get("multiply_add_same_base_alias_tokens") or ())
+            )
+            if token is not None
+        )
+        if (
+            carrier_token is None
+            or not alias_tokens
+            or source_block is None
+            or instruction_ea is None
+        ):
+            continue
+        specs[(int(source_block), int(instruction_ea))] = (
+            carrier_token,
+            alias_tokens,
+        )
+    return specs
+
+
+def _apply_ollvm_same_carrier_alias_repairs(
+    mba: object,
+    logger: object,
+    carrier_facts: tuple[object, ...],
+) -> int:
+    """Repair multiply-add operands only when exact carrier facts prove aliasing."""
+
+    if mba is None:
+        return 0
+    specs = _same_carrier_alias_repair_specs(carrier_facts)
+    if not specs:
+        return 0
+    changed = 0
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        block_changed = 0
+        block_serial = int(getattr(blk, "serial", serial))
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            opcode = int(getattr(insn, "opcode", -1))
+            if opcode == int(ida_hexrays.m_add):
+                spec = specs.get((block_serial, int(getattr(insn, "ea", 0) or 0)))
+                if spec is None:
+                    insn = getattr(insn, "next", None)
+                    continue
+                carrier_token, same_base_alias_tokens = spec
+                text = _ollvm_insn_text(insn)
+                right = getattr(insn, "r", None)
+                dest = getattr(insn, "d", None)
+                if (
+                    "#5.4" in text
+                    and carrier_token in _ollvm_var_tokens_from_text(text)
+                    and _ollvm_mop_var_token(right) in same_base_alias_tokens
+                    and _ollvm_mop_var_token(dest) == carrier_token
+                ):
+                    try:
+                        replacement = _copy_mop(dest)
+                        if replacement is not None:
+                            replacement.size = int(getattr(right, "size", 0) or 4)
+                            right.assign(replacement)
+                            block_changed += 1
+                    except Exception:
+                        pass
+
+            insn = getattr(insn, "next", None)
+        if block_changed:
+            changed += block_changed
+            try:
+                blk.mark_lists_dirty()
+            except Exception:
+                pass
+    if changed:
+        try:
+            mba.mark_chains_dirty()
+        except Exception:
+            pass
+        log_info = getattr(logger, "info", None)
+        if callable(log_info):
+            log_info(
+                "OLLVM same-carrier alias repair applied %d fact-backed change(s)",
+                int(changed),
+            )
+    return int(changed)
+
+
+def _ollvm_store_target_is_direct_local(insn: object) -> bool:
+    """True when a late ``m_stx`` target has collapsed to a local operand.
+
+    OLLVM SUB/BCF stores start as explicit indirect writes through local
+    pointer carriers.  After the dispatcher rewrites and GLBOPT folding, Hex-
+    Rays can collapse the address operand itself to a stack/local mop while
+    leaving the opcode as ``m_stx``.  At that point preserving the store as an
+    indirect write is actively harmful: LVARS renders it as a pointer cast of
+    the carrier value instead of a scalar carrier update.
+    """
+
+    target = getattr(insn, "d", None)
+    if target is None:
+        return False
+    target_type = int(getattr(target, "t", -1))
+    if target_type not in {
+        int(getattr(ida_hexrays, "mop_S", -1000)),
+        int(getattr(ida_hexrays, "mop_l", -1001)),
+    }:
+        return False
+    try:
+        text = insn.dstr()
+    except Exception:
+        text = str(insn)
+    tail = text.rsplit(", ds", 1)[-1] if ", ds" in text else text
+    return "[ds" not in tail
+
+
+def _ollvm_semantic_store_fact_specs(
+    carrier_facts: tuple[object, ...],
+) -> frozenset[tuple[int, int]]:
+    specs = _ollvm_fact_specs_by_block_ea(
+        carrier_facts,
+        roles=frozenset({
+            "ACCUMULATOR_CARRIER",
+            "ARG_OUTPUT_STORE_CANDIDATE",
+            "LOCAL_WORKING_STORE_CANDIDATE",
+            "INDIRECT_STORE_CANDIDATE",
+        }),
+    )
+    return frozenset(sorted(specs))
+
+
+def _is_ollvm_semantic_carrier_store(
+    insn: object,
+    *,
+    block_serial: int,
+    semantic_store_specs: frozenset[tuple[int, int]],
+) -> bool:
+    """True for fused OLLVM semantic carrier stores worth scalar promotion.
+
+    OLLVM's SUB/BCF lowering often leaves the real update as a single
+    ``m_stx`` whose value operand is a large ``mop_d`` tree.  Early maturities
+    usually render the target as a ``[ds:carrier]`` store, but after CALLS
+    reconstruction the same carrier can be folded into a direct local target.
+    If left fused, IDA's lvar pass can collapse distinct logical carriers into
+    the same pointer-looking local and render broken self-feeding loops.
+    Hoisting the value expression into a fresh kreg preserves semantics while
+    giving later passes an explicit def-use chain.
+    """
+
+    if insn is None or int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_stx):
+        return False
+    if (
+        int(block_serial),
+        int(getattr(insn, "ea", 0) or 0),
+    ) not in semantic_store_specs:
+        return False
+    value = getattr(insn, "l", None)
+    if value is None or int(getattr(value, "t", -1)) != int(ida_hexrays.mop_d):
+        return False
+    if getattr(value, "d", None) is None:
+        return False
+    return True
+
+
+def _is_ollvm_direct_local_carrier_store(
+    insn: object,
+    *,
+    block_serial: int,
+    semantic_store_specs: frozenset[tuple[int, int]],
+) -> bool:
+    if insn is None or int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_stx):
+        return False
+    if (
+        int(block_serial),
+        int(getattr(insn, "ea", 0) or 0),
+    ) not in semantic_store_specs:
+        return False
+    if not _ollvm_store_target_is_direct_local(insn):
+        return False
+    return True
+
+
+def _scalarize_ollvm_direct_local_carrier_store(
+    insn: object,
+    logger: object,
+    *,
+    block_serial: int,
+    semantic_store_specs: frozenset[tuple[int, int]],
+) -> bool:
+    """Rewrite a late direct-local ``m_stx`` carrier update into ``m_mov``."""
+
+    if not _is_ollvm_direct_local_carrier_store(
+        insn,
+        block_serial=block_serial,
+        semantic_store_specs=semantic_store_specs,
+    ):
+        return False
+    source = getattr(insn, "l", None)
+    dest = getattr(insn, "d", None)
+    if source is None or dest is None:
+        return False
+    try:
+        source_size = int(getattr(source, "size", 0) or 0)
+        if source_size > 0:
+            dest.size = source_size
+        getattr(insn, "r").erase()
+        insn.opcode = ida_hexrays.m_mov
+    except Exception:
+        log_exception = getattr(logger, "exception", None)
+        if callable(log_exception):
+            log_exception(
+                "OLLVM semantic carrier scalarization failed at blk[%d]@0x%x",
+                int(block_serial),
+                int(getattr(insn, "ea", 0) or 0),
+            )
+        return False
+    log_info = getattr(logger, "info", None)
+    if callable(log_info):
+        log_info(
+            "OLLVM semantic carrier scalarized direct-local store "
+            "blk[%d]@0x%x",
+            int(block_serial),
+            int(getattr(insn, "ea", 0) or 0),
+        )
+    return True
+
+
+def _apply_ollvm_semantic_carrier_promotions(
+    mba: object,
+    logger: object,
+    carrier_facts: tuple[object, ...],
+) -> int:
+    """Hoist fused OLLVM carrier stores through the existing scalar primitive."""
+
+    if mba is None:
+        return 0
+    semantic_store_specs = _ollvm_semantic_store_fact_specs(carrier_facts)
+    if not semantic_store_specs:
+        return 0
+    queued: set[tuple[int, int, int]] = set()
+    scalarized = 0
+    try:
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+    except Exception:
+        return 0
+
+    modifier = DeferredGraphModifier(mba)
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            block_serial = int(getattr(blk, "serial", serial))
+            if _scalarize_ollvm_direct_local_carrier_store(
+                insn,
+                logger,
+                block_serial=block_serial,
+                semantic_store_specs=semantic_store_specs,
+            ):
+                scalarized += 1
+                insn = getattr(insn, "next", None)
+                continue
+            if _is_ollvm_semantic_carrier_store(
+                insn,
+                block_serial=block_serial,
+                semantic_store_specs=semantic_store_specs,
+            ):
+                key = (block_serial, int(insn.ea), int(insn.opcode))
+                if key not in queued:
+                    queued.add(key)
+                    modifier.queue_promote_operand_to_scalar(
+                        block_serial,
+                        int(insn.ea),
+                        int(insn.opcode),
+                        "l",
+                        description=(
+                            "ollvm semantic carrier store value promotion "
+                            f"blk[{block_serial}]@0x{int(insn.ea):x}"
+                        ),
+                    )
+            insn = getattr(insn, "next", None)
+
+    if not queued:
+        if scalarized > 0:
+            try:
+                mba.mark_chains_dirty()
+            except Exception:
+                pass
+        return int(scalarized)
+
+    log_info = getattr(logger, "info", None)
+    if callable(log_info):
+        log_info(
+            "OLLVM semantic carrier promotion queued %d fused store value(s)",
+            len(queued),
+        )
+    try:
+        applied = int(modifier.apply())
+    except Exception:
+        log_exception = getattr(logger, "exception", None)
+        if callable(log_exception):
+            log_exception("OLLVM semantic carrier promotion failed")
+        return 0
+    if applied > 0:
+        try:
+            mba.mark_chains_dirty()
+        except Exception:
+            pass
+    return int(applied) + int(scalarized)
+
+
+def _collect_ollvm_semantic_carrier_promotion_modifications(
+    mba: object,
+    carrier_facts: tuple[object, ...],
+) -> tuple[GraphModification, ...]:
+    """Return late scalar-promotion edits for fused OLLVM carrier stores."""
+
+    if mba is None:
+        return ()
+    semantic_store_specs = _ollvm_semantic_store_fact_specs(carrier_facts)
+    if not semantic_store_specs:
+        return ()
+    modifications: list[GraphModification] = []
+    seen: set[tuple[int, int, int]] = set()
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        if blk is None:
+            continue
+        block_serial = int(getattr(blk, "serial", serial))
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            if _is_ollvm_semantic_carrier_store(
+                insn,
+                block_serial=block_serial,
+                semantic_store_specs=semantic_store_specs,
+            ):
+                key = (block_serial, int(insn.ea), int(insn.opcode))
+                if key not in seen:
+                    seen.add(key)
+                    modifications.append(PromoteOperandToScalar(
+                        block_serial=block_serial,
+                        host_ea=int(insn.ea),
+                        host_opcode=int(insn.opcode),
+                        operand_side="l",
+                    ))
+            insn = getattr(insn, "next", None)
+    return tuple(modifications)
+
+
 def _collect_terminal_selector_payload_materialization_candidates(
     *,
     dag: object,
@@ -1873,6 +2776,13 @@ def _collect_terminal_selector_payload_materialization_candidates(
         payload_block = int(proof.target_entry)
         selector_source_block = int(proof.source_block)
         selector_branch_arm = int(proof.branch_arm)
+        selector_old_target = _branch_arm_old_target(
+            flow_graph,
+            selector_source_block,
+            selector_branch_arm,
+        )
+        if selector_old_target is None:
+            continue
 
         selector_edges = tuple(
             edge for edge in outgoing_by_source.get(selector_state, ())
@@ -1942,9 +2852,18 @@ def _collect_terminal_selector_payload_materialization_candidates(
             if not reason:
                 rejected = True
                 break
+            old_target = _branch_arm_old_target(
+                flow_graph,
+                int(veto.source_block),
+                int(veto.branch_arm),
+            )
+            if old_target is None:
+                rejected = True
+                break
             external_incoming.append(TerminalSelectorPayloadIncomingEdge(
                 source_block=int(veto.source_block),
                 branch_arm=int(veto.branch_arm),
+                old_target=int(old_target),
                 source_state=int(veto.source_state),
                 target_state=int(veto.target_state),
                 target_entry=int(veto.target_entry),
@@ -1957,6 +2876,7 @@ def _collect_terminal_selector_payload_materialization_candidates(
         candidates.append(TerminalSelectorPayloadMaterializationCandidate(
             selector_source_block=selector_source_block,
             selector_branch_arm=selector_branch_arm,
+            selector_old_target=int(selector_old_target),
             selector_state=selector_state,
             payload_state=payload_state,
             payload_block=payload_block,
@@ -1979,19 +2899,19 @@ def _terminal_selector_payload_materialization_modifications(
     """Lower a materialization candidate to existing PatchPlan primitives."""
 
     modifications: list[GraphModification] = []
+    modifications.append(InsertBlock(
+        pred_serial=int(candidate.selector_source_block),
+        succ_serial=int(candidate.semantic_continuation),
+        instructions=candidate.side_effect_instructions,
+        old_target_serial=int(candidate.selector_old_target),
+    ))
     for incoming in candidate.external_incoming_edges:
         modifications.append(InsertBlock(
             pred_serial=int(incoming.source_block),
             succ_serial=int(candidate.semantic_continuation),
             instructions=candidate.side_effect_instructions,
-            old_target_serial=int(candidate.payload_block),
+            old_target_serial=int(incoming.old_target),
         ))
-    modifications.append(EdgeRedirectViaPredSplit(
-        src_block=int(candidate.payload_block),
-        old_target=int(candidate.payload_backedge_target),
-        new_target=int(candidate.semantic_continuation),
-        via_pred=int(candidate.selector_source_block),
-    ))
     return tuple(modifications)
 
 
@@ -2001,6 +2921,9 @@ def _compile_terminal_selector_payload_materialization_modifications(
 ) -> tuple[tuple[GraphModification, ...], str | None]:
     """Return validated materialization edits or a blocker reason."""
 
+    if int(candidate.selector_branch_arm) != 1:
+        return (), "terminal_payload_materialization_selector_arm_not_supported"
+
     modifications = _terminal_selector_payload_materialization_modifications(
         candidate
     )
@@ -2009,36 +2932,36 @@ def _compile_terminal_selector_payload_materialization_modifications(
     except Exception:
         return (), "terminal_payload_materialization_patch_plan_failed"
 
-    insert_count = len(candidate.external_incoming_edges)
-    expected_step_count = insert_count + 1
+    expected_step_count = len(candidate.external_incoming_edges) + 1
     if len(patch_plan.steps) != expected_step_count:
         return (), "terminal_payload_materialization_unexpected_patch_plan"
 
     rewritten_continuation = patch_plan.relocation_map.rewrite_serial(
         int(candidate.semantic_continuation)
     )
-    for index, incoming in enumerate(candidate.external_incoming_edges):
+
+    selector_step = patch_plan.steps[0]
+    if not isinstance(selector_step, PatchInsertBlock):
+        return (), "terminal_payload_materialization_missing_selector_insert"
+    if (
+        int(selector_step.pred_serial) != int(candidate.selector_source_block)
+        or int(selector_step.succ_serial) != int(rewritten_continuation)
+        or int(selector_step.old_target_serial or -1) != int(candidate.selector_old_target)
+        or tuple(selector_step.instructions) != tuple(candidate.side_effect_instructions)
+    ):
+        return (), "terminal_payload_materialization_selector_identity_mismatch"
+
+    for index, incoming in enumerate(candidate.external_incoming_edges, start=1):
         step = patch_plan.steps[index]
         if not isinstance(step, PatchInsertBlock):
             return (), "terminal_payload_materialization_missing_insert_block"
         if (
             int(step.pred_serial) != int(incoming.source_block)
             or int(step.succ_serial) != int(rewritten_continuation)
-            or int(step.old_target_serial or -1) != int(candidate.payload_block)
+            or int(step.old_target_serial or -1) != int(incoming.old_target)
             or tuple(step.instructions) != tuple(candidate.side_effect_instructions)
         ):
             return (), "terminal_payload_materialization_insert_identity_mismatch"
-
-    split_step = patch_plan.steps[-1]
-    if not isinstance(split_step, PatchEdgeSplitTrampoline):
-        return (), "terminal_payload_materialization_missing_edge_split"
-    if (
-        int(split_step.source_serial) != int(candidate.payload_block)
-        or int(split_step.via_pred) != int(candidate.selector_source_block)
-        or int(split_step.old_target) != int(candidate.payload_backedge_target)
-        or int(split_step.new_target) != int(rewritten_continuation)
-    ):
-        return (), "terminal_payload_materialization_split_identity_mismatch"
 
     return modifications, None
 
@@ -4444,16 +5367,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     for block in materialization_candidate.side_effect_corridor_blocks
                 )
                 terminal_payload_materialization_owned_edges.update(
-                    (
-                        int(edge.source_block),
-                        int(materialization_candidate.payload_block),
-                    )
-                    for edge in materialization_candidate.external_incoming_edges
+                    materialization_candidate.owned_redirect_edges
                 )
                 terminal_payload_materialization_owned_edges.add((
                     int(materialization_candidate.payload_block),
                     int(materialization_candidate.semantic_continuation),
                 ))
+                self._logger.info(
+                    "OLLVM terminal payload materialization owns raw edges: %s",
+                    tuple(materialization_candidate.owned_redirect_edges),
+                )
                 self._logger.info(
                     "OLLVM terminal payload materialization enabled: "
                     "selector=0x%08X payload=0x%08X edits=%d",
@@ -4591,6 +5514,23 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             candidate = kwargs.get("candidate")
             if modification is None:
                 return None
+            if isinstance(modification, (RedirectGoto, RedirectBranch)):
+                try:
+                    raw_edge = (
+                        int(modification.from_serial),
+                        int(modification.old_target),
+                    )
+                except Exception:
+                    raw_edge = None
+                if raw_edge in terminal_payload_materialization_owned_edges:
+                    self._logger.info(
+                        "Phase reconstruction skipped materialized conditional "
+                        "raw edge blk[%d] old=blk[%d] new=blk[%d]",
+                        int(modification.from_serial),
+                        int(modification.old_target),
+                        int(modification.new_target),
+                    )
+                    return "terminal_payload_materialization_owns_raw_edge"
             source_block = kwargs.get("source_block")
             if source_block is not None:
                 try:
@@ -4608,6 +5548,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             modification: GraphModification,
             candidate: object,
         ) -> str | tuple[GraphModification, ...] | None:
+            if isinstance(modification, (RedirectGoto, RedirectBranch)):
+                raw_edge = (int(modification.from_serial), int(modification.old_target))
+                if raw_edge in terminal_payload_materialization_owned_edges:
+                    self._logger.info(
+                        "Phase reconstruction skipped materialized direct "
+                        "raw edge blk[%d] old=blk[%d] new=blk[%d]",
+                        int(modification.from_serial),
+                        int(modification.old_target),
+                        int(modification.new_target),
+                    )
+                    return "terminal_payload_materialization_owns_raw_edge"
             replacement = _terminal_payload_edge_split_replacement(
                 candidate=candidate,
                 modification=modification,
@@ -4653,7 +5604,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 ),
                 conditional_redirect_veto=(
                     _veto_conditional_redirect
-                    if use_def_policy != "off"
+                    if (
+                        use_def_policy != "off"
+                        or terminal_payload_materialization_owned_edges
+                    )
                     else None
                 ),
                 mba=mba,
@@ -4664,6 +5618,26 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 exc_info=True,
             )
             return (), ("phase_reconstruction_emission_failed",)
+
+        if terminal_payload_materialization_owned_edges:
+            retained_modifications: list[GraphModification] = []
+            for modification in modifications:
+                if isinstance(modification, (RedirectGoto, RedirectBranch)):
+                    raw_edge = (
+                        int(modification.from_serial),
+                        int(modification.old_target),
+                    )
+                    if raw_edge in terminal_payload_materialization_owned_edges:
+                        self._logger.info(
+                            "Phase reconstruction removed materialization-owned "
+                            "redirect blk[%d] old=blk[%d] new=blk[%d]",
+                            int(modification.from_serial),
+                            int(modification.old_target),
+                            int(modification.new_target),
+                        )
+                        continue
+                retained_modifications.append(modification)
+            modifications[:] = retained_modifications
 
         accepted_count = (
             len(getattr(run, "conditional_results", ()) or ())
@@ -4697,6 +5671,41 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     "corridor state writes live: removed %d ZeroStateWrite "
                     "edit(s) because the residual pre-header was not collapsed",
                     zero_state_write_count,
+                )
+
+        if terminal_payload_materialization_modifications:
+            materialized_sources = {
+                int(edge[0])
+                for edge in terminal_payload_materialization_owned_edges
+            }
+            watched_modifications = []
+            for modification in modifications:
+                if isinstance(modification, (RedirectGoto, RedirectBranch)):
+                    source_serial = int(modification.from_serial)
+                    if source_serial in materialized_sources:
+                        watched_modifications.append(
+                            (
+                                type(modification).__name__,
+                                source_serial,
+                                int(modification.old_target),
+                                int(modification.new_target),
+                            )
+                        )
+                elif isinstance(modification, InsertBlock):
+                    source_serial = int(modification.pred_serial)
+                    if source_serial in materialized_sources:
+                        watched_modifications.append(
+                            (
+                                type(modification).__name__,
+                                source_serial,
+                                int(modification.old_target_serial or -1),
+                                int(modification.succ_serial),
+                            )
+                        )
+            if watched_modifications:
+                self._logger.info(
+                    "OLLVM terminal payload materialization source edits: %s",
+                    tuple(watched_modifications),
                 )
 
         if (
@@ -6584,6 +7593,23 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     candidate_records=candidate_records,
                 )
             )
+        semantic_carrier_modifications: tuple[GraphModification, ...] = ()
+        if (
+            mba.maturity >= ida_hexrays.MMAT_GLBOPT1
+            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+        ):
+            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
+            semantic_carrier_modifications = (
+                _collect_ollvm_semantic_carrier_promotion_modifications(
+                    mba,
+                    carrier_facts,
+                )
+            )
+            if semantic_carrier_modifications:
+                self._logger.info(
+                    "OLLVM semantic carrier GLBOPT1 lowering found %d fused store value(s)",
+                    len(semantic_carrier_modifications),
+                )
         selected_modifications = fallback_modifications
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
@@ -6624,6 +7650,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if loop_recovery_modifications and not loop_recovery_blockers:
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"
+            selected_blockers = ()
+        if (
+            semantic_carrier_modifications
+            and not selected_modifications
+        ):
+            selected_modifications = semantic_carrier_modifications
+            selected_lowering_mode = "ollvm_semantic_carrier_hoist"
             selected_blockers = ()
         # Match the safer legacy posture for partially-resolved dispatcher
         # families: observe raw candidates for diagnostics, but do not lower
@@ -6720,9 +7753,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 observe_dag,
                 observe_branch_ownership_proofs,
                 observe_dag_local_facts,
+                observe_fact_observation,
                 observe_rendered_program,
                 observe_state_transition_dispatch_resolutions,
                 observe_switch_case_transition_facts,
+            )
+            from d810.recon.facts.collectors import (
+                OllvmSemanticCarrierFactCollector,
             )
 
             maturity_name = self._maturity_name(
@@ -6844,6 +7881,25 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(switch_case_transition_facts),
                     self._profile.name,
                 )
+            if str(self._profile.name).startswith("ollvm"):
+                carrier_facts = OllvmSemanticCarrierFactCollector().collect(
+                    mba,
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity=int(getattr(mba, "maturity", 0) or 0),
+                    phase="pre_d810",
+                )
+                if carrier_facts:
+                    observe_fact_observation(
+                        snap_ref,
+                        int(getattr(mba, "entry_ea", 0) or 0),
+                        carrier_facts,
+                    )
+                    self._logger.info(
+                        "OLLVM_SEMANTIC_CARRIER_FACTS: emitted %d rows "
+                        "for profile=%s",
+                        len(carrier_facts),
+                        self._profile.name,
+                    )
             observe_rendered_program(
                 snap_ref,
                 phase_context.semantic_reference_program,
@@ -7007,6 +8063,38 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if total_changes <= 0:
             return 0
 
+        semantic_carrier_changes = 0
+        carrier_facts: tuple[object, ...] = ()
+        if (
+            int(getattr(mba, "maturity", -1) or -1) == int(ida_hexrays.MMAT_CALLS)
+            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+        ):
+            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
+            semantic_carrier_changes += _apply_ollvm_output_alias_repair(
+                mba,
+                self._logger,
+                carrier_facts,
+            )
+            semantic_carrier_changes += _apply_ollvm_local_alias_mem2reg(
+                mba,
+                self._logger,
+                carrier_facts,
+            )
+            semantic_carrier_changes += _apply_ollvm_same_carrier_alias_repairs(
+                mba,
+                self._logger,
+                carrier_facts,
+            )
+        if (
+            int(getattr(mba, "maturity", -1) or -1) >= int(ida_hexrays.MMAT_GLBOPT1)
+            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+        ):
+            semantic_carrier_changes = _apply_ollvm_semantic_carrier_promotions(
+                mba,
+                self._logger,
+                _collect_ollvm_semantic_carrier_facts(mba),
+            ) + semantic_carrier_changes
+
         lowered_modifications = ()
         if snapshot.flow_graph is not None:
             lowered_modifications = tuple(
@@ -7024,15 +8112,25 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 "Skipping post-execute deep cleaning for side-effect or conditional redirect rewrites"
             )
             mba.mark_chains_dirty()
+            if semantic_carrier_changes > 0:
+                mba.optimize_local(0)
+                post_opt_carrier_changes = _apply_ollvm_same_carrier_alias_repairs(
+                    mba,
+                    self._logger,
+                    carrier_facts,
+                )
+                if post_opt_carrier_changes > 0:
+                    semantic_carrier_changes += post_opt_carrier_changes
+                    mba.optimize_local(0)
             safe_verify(
                 mba,
                 "verifying EmulatedDispatcherUnflattener.optimize after deferred edge-split apply",
                 logger_func=self._logger.error,
             )
-            return 0
+            return int(semantic_carrier_changes)
 
         nb_clean = mba_deep_cleaning(mba, False)
-        if total_changes + nb_clean > 0:
+        if total_changes + nb_clean + semantic_carrier_changes > 0:
             mba.mark_chains_dirty()
             mba.optimize_local(0)
         safe_verify(
@@ -7040,4 +8138,4 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             "optimizing EmulatedDispatcherUnflattener.optimize",
             logger_func=self._logger.error,
         )
-        return int(nb_clean)
+        return int(nb_clean) + int(semantic_carrier_changes)

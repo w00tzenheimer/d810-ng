@@ -16,6 +16,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    PromoteOperandToScalar,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
@@ -252,6 +253,7 @@ def _coerce_selected_emulated_dispatcher_modifications(
         EdgeRedirectViaPredSplit,
         CreateConditionalRedirect,
         InsertBlock,
+        PromoteOperandToScalar,
         DuplicateBlock,
         DuplicateAndRedirect,
         PrivateTerminalSuffix,
@@ -363,6 +365,8 @@ def _is_valid_emulated_dispatcher_modification(
         )
     if isinstance(mod, ZeroStateWrite):
         return mod.block_serial in cfg.blocks
+    if isinstance(mod, PromoteOperandToScalar):
+        return mod.block_serial in cfg.blocks
     if isinstance(mod, EdgeRedirectViaPredSplit):
         return (
             mod.src_block in cfg.blocks
@@ -448,6 +452,8 @@ def _build_ownership(
                 if old_target is not None:
                     edges.add((pred, succ))
             case ZeroStateWrite(block_serial=serial):
+                blocks.add(serial)
+            case PromoteOperandToScalar(block_serial=serial):
                 blocks.add(serial)
             case EdgeRedirectViaPredSplit(
                 src_block=src,
