@@ -10,11 +10,6 @@ severity: error
 files:
   - "src/d810/optimizers/**/*.py"
 
-ignores:
-  # Existing legacy HCC diagnostic query. Do not add new exceptions here; move
-  # new DB-backed reporting to d810.diagnostics or an observability subscriber.
-  - "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/handler_chain_composer.py"
-
 message: |
   Optimizer modules must not import diagnostic storage APIs directly.
 
@@ -24,7 +19,9 @@ message: |
 rule:
   any:
     - pattern: import sqlite3
+    - pattern: import sqlite3 as $ALIAS
     - pattern: from sqlite3 import $$$
+    - pattern: from sqlite3 import $NAME as $ALIAS
     - pattern: import d810.core.diag
     - pattern: import d810.core.diag.$MOD
     - pattern: from d810.core.diag import $$$

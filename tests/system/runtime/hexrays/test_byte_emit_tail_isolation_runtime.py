@@ -69,6 +69,16 @@ class _SilentLogger:
         pass
 
 
+class _FakeEvidenceProvider:
+    def __init__(self, evidence) -> None:
+        self.evidence = evidence
+        self.seen_mba = None
+
+    def byte_tail_runtime_evidence(self, mba):
+        self.seen_mba = mba
+        return self.evidence
+
+
 @dataclass
 class _FakeLiveBlock:
     succs: tuple[int, ...] = ()
@@ -93,7 +103,7 @@ class _FakeLiveAdapter:
     _mba: _FakeLiveMba
 
 
-def test_bridge_plan_row_happy_path_maps_all_fields():
+def test_bridge_plan_row_rejects_diag_bridge_inputs():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         _bridge_plan_row_to_live_mba,
     )
@@ -126,16 +136,8 @@ def test_bridge_plan_row_happy_path_maps_all_fields():
         logger_=_SilentLogger(),
     )
 
-    assert reason == "ok"
-    assert mapped is not None
-    assert mapped.source_block == 11
-    assert mapped.current_continuation_target == 22
-    assert mapped.intended_target == 33
-    assert mapped.state_write_block == 44
-    assert mapped.byte_index == 5
-    assert mapped.early_return_target == 42
-    assert mapped.state_update_verdict == "SAFE_TARGET_POST_GUARD"
-    assert mapped.state_write_bypassed is True
+    assert mapped is None
+    assert reason == "live_block_not_resolvable:diag_bridge_disabled"
 
 
 def test_bridge_plan_row_identity_mode_uses_live_serials():
@@ -210,6 +212,245 @@ def test_load_planner_sites_from_fact_view_uses_observation_source_block():
     assert sites[0].block_serial == 118
 
 
+def test_tail_distinct_uses_provider_fact_view_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+    )
+
+    fact_view = object()
+    mba = object()
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(fact_view=fact_view)
+    )
+    calls = {}
+
+    def fake_isolate_byte_emit_tail(*, byte_index, fact_view, adapter):
+        calls["byte_index"] = byte_index
+        calls["fact_view"] = fact_view
+        calls["adapter"] = adapter
+        return "report"
+
+    monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
+    monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fake_isolate_byte_emit_tail)
+
+    runtime.maybe_run_tail_distinct(
+        mba,
+        evidence_provider=provider,
+    )
+
+    assert provider.seen_mba is mba
+    assert calls["byte_index"] == 2
+    assert calls["fact_view"] is fact_view
+    assert isinstance(calls["adapter"], runtime.LiveMbaAdapter)
+    assert not hasattr(runtime, "DiagDbFactView")
+
+
+def test_tail_distinct_missing_provider_skips_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    def fail_isolate_byte_emit_tail(**kwargs):
+        raise AssertionError("tail distinct should require explicit evidence")
+
+    monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
+    monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fail_isolate_byte_emit_tail)
+
+    runtime.maybe_run_tail_distinct(object())
+
+    assert not hasattr(runtime, "DiagDbFactView")
+
+
+def test_tail_distinct_accepts_validated_fact_view(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.recon.facts import FactObservation, ValidatedFactView
+
+    view = ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=(
+            FactObservation(
+                fact_id="terminal-byte-2",
+                kind="TerminalByteEmitterFact",
+                semantic_key="terminal:2",
+                maturity="MMAT_GLBOPT1",
+                phase="post_bundle_stabilize",
+                confidence=0.9,
+                source_block=118,
+                source_ea=0x180015005,
+                payload={
+                    "byte_index": 2,
+                    "corridor_role": "terminal_tail",
+                    "block_ea": 0x180015005,
+                    "block_serial": 118,
+                },
+            ),
+        ),
+    )
+    calls = {}
+
+    def fake_isolate_byte_emit_tail(*, byte_index, fact_view, adapter):
+        rows = tuple(fact_view.terminal_byte_emit_facts(byte_index))
+        calls["rows"] = rows
+        return "report"
+
+    monkeypatch.setenv("D810_TAIL_DISTINCT_BYTE", "2")
+    monkeypatch.setattr(runtime, "isolate_byte_emit_tail", fake_isolate_byte_emit_tail)
+
+    runtime.maybe_run_tail_distinct(object(), fact_view=view)
+
+    assert len(calls["rows"]) == 1
+    assert calls["rows"][0].block_serial == 118
+    assert calls["rows"][0].start_ea_hex == "0x0000000180015005"
+
+
+def test_tail_duplicate_convergence_uses_explicit_fact_view_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    fact_view = object()
+    calls = {}
+
+    def fake_duplicate_convergence_for_byte_path(
+        *,
+        byte_index,
+        fact_view,
+        adapter,
+    ):
+        calls["byte_index"] = byte_index
+        calls["fact_view"] = fact_view
+        calls["adapter"] = adapter
+        return "report"
+
+    monkeypatch.setenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", "6")
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "duplicate_convergence_for_byte_path",
+        fake_duplicate_convergence_for_byte_path,
+    )
+
+    runtime.maybe_run_tail_duplicate_convergence(
+        object(),
+        fact_view=fact_view,
+    )
+
+    assert calls["byte_index"] == 6
+    assert calls["fact_view"] is fact_view
+    assert isinstance(calls["adapter"], runtime.LiveMbaAdapter)
+
+
+def test_tail_duplicate_missing_provider_skips_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    def fail_duplicate_convergence_for_byte_path(**kwargs):
+        raise AssertionError("tail duplicate should require explicit evidence")
+
+    monkeypatch.setenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", "6")
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "duplicate_convergence_for_byte_path",
+        fail_duplicate_convergence_for_byte_path,
+    )
+
+    runtime.maybe_run_tail_duplicate_convergence(object())
+
+    assert not hasattr(runtime, "DiagDbFactView")
+
+
+def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypatch):
+    import d810.cfg.terminal_tail_cascade_egress_planner as planner_module
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
+    )
+
+    blocks = {10: object()}
+    sites = [object()]
+    dag = object()
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks=blocks,
+                sites=sites,
+                dag=dag,
+            )
+        )
+    )
+    calls = {}
+
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            calls["blocks"] = planner_blocks
+            calls["sites"] = planner_sites
+
+        def build_plan(self):
+            return type("Plan", (), {"rows": ()})()
+
+    def fail_mba_blocks(mba):
+        raise AssertionError("MBA planner blocks should not be loaded")
+
+    def fail_fact_sites(fact_view):
+        raise AssertionError("fact-view planner sites should not be loaded")
+
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "_load_planner_blocks_from_mba", fail_mba_blocks)
+    monkeypatch.setattr(runtime, "_load_planner_sites_from_fact_view", fail_fact_sites)
+    monkeypatch.setattr(runtime, "_load_dag_semantics_from_dag", lambda value: value)
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: object())
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        lambda **kwargs: "report",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_close_terminal_equality_frontiers",
+        lambda **kwargs: ((), ()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_close_terminal_tail_entry_frontier",
+        lambda **kwargs: ((), ()),
+    )
+
+    mba = object()
+    runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        mba,
+        evidence_provider=provider,
+    )
+
+    assert provider.seen_mba is mba
+    assert calls["blocks"] == blocks
+    assert calls["sites"] == sites
+
+
+def test_tail_state_cascade_missing_provider_skips_without_diag(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    def fail_load_planner_blocks_from_mba(mba):
+        raise AssertionError("tail state cascade should require explicit evidence")
+
+    monkeypatch.setenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", "5:6")
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "_load_planner_blocks_from_mba",
+        fail_load_planner_blocks_from_mba,
+    )
+
+    runtime.maybe_run_tail_state_cascade(object())
+
+    assert not hasattr(runtime, "DiagDbFactView")
+
+
 def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         _bridge_plan_row_to_live_mba,
@@ -238,7 +479,7 @@ def test_bridge_plan_row_rejects_when_source_block_missing_from_snap17():
     )
 
     assert mapped is None
-    assert reason == "live_block_not_resolvable:source_block:101:no_snap17_row"
+    assert reason == "live_block_not_resolvable:diag_bridge_disabled"
 
 
 def test_bridge_plan_row_rejects_when_continuation_ea_not_in_live_mba():
@@ -270,10 +511,7 @@ def test_bridge_plan_row_rejects_when_continuation_ea_not_in_live_mba():
     )
 
     assert mapped is None
-    assert reason == (
-        "live_block_not_resolvable:current_continuation_target:102:"
-        "ea_0x18002000_not_in_live_mba"
-    )
+    assert reason == "live_block_not_resolvable:diag_bridge_disabled"
 
 
 def test_bridge_plan_row_rejects_when_intended_target_ea_missing():
@@ -304,7 +542,7 @@ def test_bridge_plan_row_rejects_when_intended_target_ea_missing():
     )
 
     assert mapped is None
-    assert reason == "live_block_not_resolvable:intended_target:217:no_snap17_row"
+    assert reason == "live_block_not_resolvable:diag_bridge_disabled"
 
 
 def test_bridge_plan_row_skips_state_write_when_not_bypassed():
@@ -338,12 +576,8 @@ def test_bridge_plan_row_skips_state_write_when_not_bypassed():
         logger_=_SilentLogger(),
     )
 
-    assert reason == "ok"
-    assert mapped is not None
-    assert mapped.source_block == 11
-    assert mapped.current_continuation_target == 22
-    assert mapped.intended_target == 33
-    assert mapped.state_write_block == 180
+    assert mapped is None
+    assert reason == "live_block_not_resolvable:diag_bridge_disabled"
 
 
 def test_bridge_plan_row_requires_state_write_when_bypassed():
@@ -433,26 +667,26 @@ def test_select_terminal_tail_entry_live_uses_fact_backed_prep_block():
             confidence=0.8,
         ),
     )
-    conn = _FakeDiagConn(rows_by_serial={
-        130: 0x1800_51C8,
-        143: 0x1800_5FB8,
-    })
-    adapter = _FakeBridgeAdapter(ea_to_live={
-        0x1800_51C8: 80,
-        0x1800_5FB8: 43,
-    })
+    adapter = _FakeLiveAdapter(
+        _FakeLiveMba(
+            blocks={
+                130: _FakeLiveBlock(succs=(143,)),
+                143: _FakeLiveBlock(succs=(144, 145)),
+            }
+        )
+    )
 
     live, reason = _select_terminal_tail_entry_live(
         blocks=blocks,
         sites=sites,
         rows_by_byte={},
-        diag_conn=conn,
-        target_snap=17,
+        diag_conn=None,
+        target_snap=None,
         adapter=adapter,
     )
 
     assert reason == "ok"
-    assert live == 80
+    assert live == 130
 
 
 def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monkeypatch):
@@ -521,14 +755,11 @@ def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monk
 
     @dataclass
     class _Adapter:
-        ea_to_live: dict[int, int]
+        _mba: _FakeLiveMba
         redirects: list[tuple[int, int, int]] = field(default_factory=list)
 
         def find_block_by_ea(self, ea):
-            live = self.ea_to_live.get(int(ea))
-            if live is None:
-                return None
-            return _FakeBlockView(serial=int(live))
+            return None
 
         def redirect_advance_edge(
             self, *, source_serial, old_target_serial, new_target_serial,
@@ -537,7 +768,16 @@ def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monk
                 (int(source_serial), int(old_target_serial), int(new_target_serial))
             )
 
-    adapter = _Adapter(ea_to_live={0x1800_51C8: 130, 0x1800_5F20: 139})
+    adapter = _Adapter(
+        _FakeLiveMba(
+            blocks={
+                130: _FakeLiveBlock(succs=(143,)),
+                139: _FakeLiveBlock(succs=(140, 141)),
+                141: _FakeLiveBlock(succs=(211,)),
+                211: _FakeLiveBlock(),
+            }
+        )
+    )
     monkeypatch.setattr(
         runtime,
         "_live_reachable_from_entry",
@@ -574,10 +814,10 @@ def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monk
         blocks=blocks,
         sites=sites,
         dag=dag,
-        diag_conn=conn,
-        target_snap=17,
-        adapter=adapter,
-    )
+            diag_conn=None,
+            target_snap=None,
+            adapter=adapter,
+        )
 
     assert skipped == ()
     assert applied == ((141, 211, 130),)
