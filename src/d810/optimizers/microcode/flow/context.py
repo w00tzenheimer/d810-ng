@@ -16,6 +16,7 @@ from d810.recon.flow.dispatcher_detection import (
 )
 from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
+from d810.recon.function_priors import FunctionAnalysisPriors
 
 if TYPE_CHECKING:
     from d810.recon.facts.model import FactConsumerRecord, ValidatedFactView
@@ -128,6 +129,9 @@ class FlowMaturityContext:
         self._fact_consumer_callback: (
             Callable[[int, tuple["FactConsumerRecord", ...]], int] | None
         ) = None
+        self._function_priors_provider: (
+            Callable[[int], FunctionAnalysisPriors] | None
+        ) = None
         self._terminal_boundary_blocks: set[int] | None = None
 
     @property
@@ -196,6 +200,24 @@ class FlowMaturityContext:
         if not records or self._fact_consumer_callback is None:
             return 0
         return self._fact_consumer_callback(self.func_ea, records)
+
+    def set_function_priors_provider(
+        self,
+        provider: Callable[[int], FunctionAnalysisPriors] | None,
+    ) -> None:
+        """Attach the project/test supplied function-priors provider."""
+        self._function_priors_provider = provider
+
+    def function_analysis_priors(
+        self,
+        func_ea: int | None = None,
+    ) -> FunctionAnalysisPriors:
+        """Return explicit project/test priors for this function."""
+        if self._function_priors_provider is None:
+            return FunctionAnalysisPriors()
+        return self._function_priors_provider(
+            self.func_ea if func_ea is None else int(func_ea)
+        )
 
     def refresh_mba(self, mba: ida_hexrays.mba_t) -> None:
         self.mba = mba
