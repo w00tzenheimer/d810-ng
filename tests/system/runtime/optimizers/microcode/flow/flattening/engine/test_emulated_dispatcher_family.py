@@ -11,6 +11,7 @@ import d810.recon.flow.switch_case_transition_analysis as switch_case_transition
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
     InsertBlock,
     PhaseCycleLowering,
     ReorderBlocks,
@@ -354,6 +355,8 @@ def test_ollvm_terminal_payload_backedge_retargets_to_selector_return_frontier()
         kind: SemanticEdgeKind,
         *,
         target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
         branch_ownership_proof: BranchOwnershipProof | None = None,
     ):
         return SimpleNamespace(
@@ -361,6 +364,11 @@ def test_ollvm_terminal_payload_backedge_retargets_to_selector_return_frontier()
             target_key=(_key(target) if target is not None else None),
             kind=kind,
             target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
             ordered_path=(target_entry,),
             branch_ownership_proof=branch_ownership_proof,
         )
@@ -485,6 +493,194 @@ def test_ollvm_terminal_payload_backedge_retargets_to_selector_return_frontier()
     assert len(rewritten) == 1
     assert rewritten[0].target_entry == 204
     assert candidate.target_entry == 96
+
+
+def test_ollvm_terminal_payload_backedge_uses_pred_split_for_shared_payload() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        branch_ownership_proof: BranchOwnershipProof | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+            branch_ownership_proof=branch_ownership_proof,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        source_block=98,
+        branch_arm=1,
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="proof-selector-to-payload-split",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="opaque_selected_terminal_selector_backedge_residue",
+            source_block=98,
+            branch_arm=1,
+            source_state=selector_state,
+            target_state=payload_state,
+            target_entry=136,
+            oracle_kind="fixture",
+            evidence={"requires_cfg_split": True},
+        ),
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        source_block=98,
+        branch_arm=0,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(99, 136),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 136),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+    assert rewritten[0].target_entry == 204
+
+    replacement = emulated_family_module._terminal_payload_edge_split_replacement(
+        candidate=rewritten[0],
+        modification=RedirectGoto(from_serial=136, old_target=96, new_target=204),
+        dag=dag,
+        flow_graph=flow_graph,
+        branch_ownership_proofs=(),
+    )
+    assert replacement == (
+        EdgeRedirectViaPredSplit(
+            src_block=136,
+            old_target=96,
+            new_target=204,
+            via_pred=98,
+        ),
+    )
 
 
 class _FakeInsn:
