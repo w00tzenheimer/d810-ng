@@ -7,6 +7,7 @@ import idaapi
 import ida_hexrays
 import pytest
 
+import d810.hexrays.observability as hexrays_observability
 import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
@@ -1750,7 +1751,8 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     observed = []
 
     monkeypatch.setattr(
-        "d810.hexrays.observability.request_capture_mba_snapshot",
+        hexrays_observability,
+        "request_capture_mba_snapshot",
         lambda **_kwargs: "snap",
     )
     monkeypatch.setattr(
@@ -1844,7 +1846,8 @@ def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
     observed = []
 
     monkeypatch.setattr(
-        "d810.hexrays.observability.request_capture_mba_snapshot",
+        hexrays_observability,
+        "request_capture_mba_snapshot",
         lambda **_kwargs: "snap",
     )
     monkeypatch.setattr(
