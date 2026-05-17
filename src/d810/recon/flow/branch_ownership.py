@@ -39,10 +39,11 @@ class BranchOwnershipProofKind(str, Enum):
 
     ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``
         The predicate outcome is proven constant under the relevant path
-        constraints.  The proof describes the predicate, not just the target
-        block shape.  A trusted proof may authorize eliminating or retargeting
-        the non-taken arm.  It does not make either arm a semantic DAG edge by
-        itself.
+        constraints and this row identifies the arm selected by that constant
+        outcome.  This is predicate authority only: it does not prove that the
+        selected arm is semantic, nor that a CFG rewrite may remove it.  The
+        complementary non-selected arm should be represented separately as
+        ``OBFUSCATION_RESIDUE_ARM`` when recon can identify it.
 
     ``EQUIVALENT_STATE_ARMS``
         Both conditional arms resolve to the same semantic state/handler, so
@@ -118,8 +119,8 @@ class BranchOwnershipProof:
 
         This is deliberately narrower than ``trusted``.  A trusted proof can be
         terminal evidence, semantic branch evidence, or diagnostics.  Only
-        proof kinds that show an arm is nonsemantic may drive mutation that
-        removes or bypasses that arm, and downstream consumers must still
+        proof rows that show this exact arm is nonsemantic may drive mutation
+        that removes or bypasses that arm, and downstream consumers must still
         match exact edge identity before applying a rewrite.
 
         This property is semantic-edge authority, not raw CFG ownership
@@ -129,8 +130,6 @@ class BranchOwnershipProof:
         """
         return bool(self.trusted) and self.proof_kind_name in {
             BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM.value,
-            BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE.value,
-            BranchOwnershipProofKind.OPAQUE_ALWAYS_FALSE.value,
         }
 
     @property

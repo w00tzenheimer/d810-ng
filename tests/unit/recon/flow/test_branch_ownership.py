@@ -133,3 +133,15 @@ def test_real_data_dependent_is_semantic_not_rewrite_authority() -> None:
 
     assert proof.authorizes_semantic_branch_bridge is True
     assert proof.authorizes_nonsemantic_branch_rewrite is False
+
+
+def test_opaque_predicate_proof_is_not_rewrite_authority_by_itself() -> None:
+    proof = BranchOwnershipProof(
+        proof_id="opaque",
+        proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+        trusted=True,
+        reason="moptracker_path_constant_taken_arm",
+    )
+
+    assert proof.authorizes_semantic_branch_bridge is False
+    assert proof.authorizes_nonsemantic_branch_rewrite is False
