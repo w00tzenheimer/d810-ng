@@ -24,6 +24,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
@@ -34,6 +35,64 @@ logger = getLogger(__name__)
 # Feature flag: use native predecessor-walk def-search as primary resolution path.
 # Set D810_PATTERN_USE_NATIVE_DEF_SEARCH=0 to disable and fall back to MopTracker only.
 _USE_NATIVE_DEF_SEARCH = os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
+
+_SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
+    ida_hexrays.mop_d,
+    ida_hexrays.mop_f,
+    ida_hexrays.mop_a,
+    ida_hexrays.mop_c,
+    ida_hexrays.mop_p,
+    ida_hexrays.mop_S,
+    ida_hexrays.mop_l,
+    ida_hexrays.mop_str,
+}
+
+
+def _materialize_mop_for_tracking(
+    mop: ida_hexrays.mop_t | MopSnapshot,
+    context: str,
+) -> ida_hexrays.mop_t | None:
+    """Return an owned ``mop_t`` suitable for IDA tracking APIs.
+
+    AST leaves cache ``MopSnapshot`` values to avoid dangling borrowed
+    references.  IDA APIs such as ``append_use_list`` and ``MopTracker`` still
+    require a real SWIG ``mop_t``; passing a snapshot into ``ida_hexrays.mop_t``
+    raises the ``new_mop_t`` overload error seen in debug logs.
+    """
+    if not isinstance(mop, MopSnapshot):
+        return mop
+
+    if (
+        mop.t in _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP
+        and getattr(mop, "owned_mop", None) is None
+    ):
+        logger.debug(
+            "%s: cannot materialize MopSnapshot type %s without owned_mop",
+            context,
+            mop.t,
+        )
+        return None
+
+    try:
+        materialized = mop.to_mop()
+    except Exception as exc:
+        logger.debug(
+            "%s: failed to materialize MopSnapshot type %s: %s",
+            context,
+            mop.t,
+            exc,
+        )
+        return None
+
+    if materialized.t == ida_hexrays.mop_z and mop.t != ida_hexrays.mop_z:
+        logger.debug(
+            "%s: materialized empty mop_t for MopSnapshot type %s",
+            context,
+            mop.t,
+        )
+        return None
+
+    return materialized
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +226,7 @@ def resolve_memory_load_via_store(
 
 
 def find_def_in_block(
-    mop: ida_hexrays.mop_t,
+    mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
     before_ins: ida_hexrays.minsn_t | None,
 ) -> ida_hexrays.minsn_t | None:
@@ -182,15 +241,15 @@ def find_def_in_block(
     Returns:
         The most-recent instruction in the block that writes to *mop*, or None.
     """
+    mop = _materialize_mop_for_tracking(mop, "find_def_in_block")
+    if mop is None:
+        return None
+
     # Build the use-list for mop so we can test against instruction def-lists.
-    # Skip append_use_list when mop is a MopSnapshot (frozen dataclass) -- SWIG
-    # requires a real mop_t, and the call is only bookkeeping.  We fall through
-    # to the backwards walk which uses build_def_list independently.
     ml = ida_hexrays.mlist_t()
-    if not hasattr(mop, 'to_mop'):
-        blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
-        if ml.empty():
-            return None
+    blk.append_use_list(ml, mop, ida_hexrays.MUST_ACCESS)
+    if ml.empty():
+        return None
 
     # Walk backwards from before_ins (or from the tail if before_ins is None).
     cur_ins = before_ins.prev if before_ins is not None else blk.tail
@@ -203,7 +262,7 @@ def find_def_in_block(
 
 
 def resolve_mop_via_predecessors(
-    mop: ida_hexrays.mop_t,
+    mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
 ) -> AstNode | AstLeaf | None:
@@ -222,6 +281,9 @@ def resolve_mop_via_predecessors(
         The AST of the defining instruction, or None if resolution failed.
     """
     _MAX_PRED_DEPTH = 8
+    mop = _materialize_mop_for_tracking(mop, "resolve_mop_via_predecessors")
+    if mop is None:
+        return None
 
     # Fast path: try the current block first.
     def_ins = find_def_in_block(mop, blk, ins)
@@ -288,7 +350,7 @@ def resolve_mop_via_predecessors(
 
 
 def resolve_mop_to_ast(
-    mop: ida_hexrays.mop_t,
+    mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
 ) -> AstNode | AstLeaf | None:
@@ -317,6 +379,10 @@ def resolve_mop_to_ast(
     Returns:
         The AST of the defining instruction's RHS, or None if not found
     """
+    mop = _materialize_mop_for_tracking(mop, "resolve_mop_to_ast")
+    if mop is None:
+        return None
+
     # Handle mop_d with m_ldx - resolve memory loads to their defining stores
     if mop.t == ida_hexrays.mop_d:
         nested = mop.d
@@ -471,7 +537,7 @@ def recursively_resolve_ast(
             is_resolvable = ast_leaf.mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
             # Also check for mop_d with m_ldx (memory loads)
             if not is_resolvable and ast_leaf.mop.t == ida_hexrays.mop_d:
-                nested = ast_leaf.mop.d
+                nested = getattr(ast_leaf.mop, "d", None)
                 if nested is not None and nested.opcode == ida_hexrays.m_ldx:
                     is_resolvable = True
 
