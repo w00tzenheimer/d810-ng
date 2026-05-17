@@ -140,6 +140,8 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert "-l" in argv
     assert "--enable-debug-logging" in argv
     assert "--enable-diag-snapshot" in argv
+    assert "-m" in argv
+    assert "pseudocode_dump" in argv
     assert "--dump-microcode-maturity" in argv
     assert "LOCOPT,CALLS,GLBOPT1" in argv
     assert "--dump-microcode-d810" in argv
@@ -210,6 +212,8 @@ def test_pseudocode_capture_without_dump_uses_default_dump_diagnostics(
 
     assert rc == 0
     assert len(calls) == 1
+    assert "-m" in calls[0]
+    assert "pseudocode_dump" in calls[0]
     assert "--enable-diag-snapshot" not in calls[0]
     assert db.is_file()
 
@@ -245,6 +249,8 @@ def test_trace_uses_default_dump_diagnostics_without_full_diagnostics_attr(
     assert rc == 0
     assert len(calls) == 2
     assert calls[0][:2] == [str(tmp_path / "run_system_tests_docker.sh"), "dump"]
+    assert "-m" in calls[0]
+    assert "pseudocode_dump" in calls[0]
     assert "--enable-diag-snapshot" not in calls[0]
     assert calls[1][1:3] == ["-m", "d810.diagnostics"]
 
