@@ -432,22 +432,35 @@ def _append_terminal_selector_backedge_residue_proofs(
             "payload_incoming_count": len(target_incoming),
             "payload_outgoing_count": len(target_outgoing),
         })
-        external_incoming_sources = {
-            source for source in incoming_sources
-            if source is not None and source != source_state
-        }
-        external_residue_proofs = tuple(
-            existing for existing in proofs
-            if (
-                existing.source_state in external_incoming_sources
-                and existing.target_state == target_state
-                and existing.authorizes_nonsemantic_branch_rewrite
-            )
+        external_incoming_edges = tuple(
+            edge for edge in target_incoming
+            if not _proof_matches_edge_identity(proof, edge)
         )
-        external_residue_sources = {
-            proof.source_state for proof in external_residue_proofs
-        }
-        if None in incoming_sources or external_residue_sources != external_incoming_sources:
+        external_residue_proofs: list[BranchOwnershipProof] = []
+        external_semantic_proofs: list[BranchOwnershipProof] = []
+        unproven_external_edges = 0
+        for incoming_edge in external_incoming_edges:
+            matching_proofs = tuple(
+                existing for existing in proofs
+                if _proof_matches_edge_identity(existing, incoming_edge)
+            )
+            semantic_proofs = tuple(
+                existing for existing in matching_proofs
+                if existing.authorizes_semantic_branch_bridge
+            )
+            if semantic_proofs:
+                external_semantic_proofs.extend(semantic_proofs)
+                continue
+            residue_proofs = tuple(
+                existing for existing in matching_proofs
+                if existing.authorizes_nonsemantic_branch_rewrite
+            )
+            if not residue_proofs:
+                unproven_external_edges += 1
+                continue
+            external_residue_proofs.extend(residue_proofs)
+
+        if None in incoming_sources or external_semantic_proofs or unproven_external_edges:
             evidence["payload_incoming_source_states"] = tuple(
                 _hex_state(source) for source in sorted(
                     source for source in incoming_sources if source is not None
@@ -456,6 +469,10 @@ def _append_terminal_selector_backedge_residue_proofs(
             evidence["external_incoming_residue_proof_ids"] = tuple(
                 proof.proof_id for proof in external_residue_proofs
             )
+            evidence["external_incoming_semantic_proof_ids"] = tuple(
+                proof.proof_id for proof in external_semantic_proofs
+            )
+            evidence["unproven_external_incoming_edges"] = unproven_external_edges
             added.append(BranchOwnershipProof(
                 proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
                 proof_kind=BranchOwnershipProofKind.UNRESOLVED,
@@ -480,8 +497,15 @@ def _append_terminal_selector_backedge_residue_proofs(
             evidence["external_incoming_residue_proof_ids"] = tuple(
                 proof.proof_id for proof in external_residue_proofs
             )
+            external_incoming_sources = {
+                _edge_state(getattr(edge, "source_key", None))
+                for edge in external_incoming_edges
+            }
             evidence["payload_incoming_source_states"] = tuple(
-                _hex_state(source) for source in sorted(external_incoming_sources)
+                _hex_state(source) for source in sorted(
+                    source for source in external_incoming_sources
+                    if source is not None
+                )
             )
         else:
             evidence["payload_private_to_selector"] = True
@@ -527,6 +551,19 @@ def _same_branch_edge_proof(
         and left.target_state == right.target_state
         and left.branch_arm == right.branch_arm
         and left.target_entry == right.target_entry
+    )
+
+
+def _proof_matches_edge_identity(
+    proof: BranchOwnershipProof,
+    edge: object,
+) -> bool:
+    return (
+        proof.source_block == _source_anchor_int(edge, "block_serial")
+        and proof.branch_arm == _source_anchor_int(edge, "branch_arm")
+        and proof.source_state == _edge_state(getattr(edge, "source_key", None))
+        and proof.target_state == _edge_state(getattr(edge, "target_key", None))
+        and proof.target_entry == _maybe_int(getattr(edge, "target_entry_anchor", None))
     )
 
 
