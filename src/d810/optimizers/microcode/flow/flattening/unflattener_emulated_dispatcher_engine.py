@@ -38,6 +38,32 @@ unflat_logger = getLogger("D810.unflat.emulated_dispatcher.engine")
 
 __all__ = ["EmulatedDispatcherUnflattener"]
 
+_MATURITY_NAMES = (
+    "MMAT_GENERATED",
+    "MMAT_PREOPTIMIZED",
+    "MMAT_LOCOPT",
+    "MMAT_CALLS",
+    "MMAT_GLBOPT1",
+    "MMAT_GLBOPT2",
+    "MMAT_GLBOPT3",
+    "MMAT_LVARS",
+)
+
+
+def _maturity_text(maturity: object) -> str:
+    if maturity is None:
+        return "unknown"
+    for name in _MATURITY_NAMES:
+        try:
+            if int(getattr(ida_hexrays, name)) == int(maturity):
+                return name
+        except Exception:
+            continue
+    try:
+        return f"MMAT_{int(maturity)}"
+    except Exception:
+        return str(maturity)
+
 
 class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
     """Planner-visible shell for the extracted emulated-dispatcher family."""
@@ -212,10 +238,11 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             return 0
 
         observation = extract_emulated_dispatcher_metadata(self._last_snapshot.flow_graph)
+        maturity_text = _maturity_text(getattr(self.mba, "maturity", None))
         unflat_logger.debug(
             "Emulated-dispatcher execution start: maturity=%s "
             "selected_mode=%s selected_modifications=%d",
-            getattr(self.mba, "maturity", None),
+            maturity_text,
             observation.selected_lowering_mode if observation is not None else None,
             (
                 int(observation.selected_modification_count)
@@ -237,7 +264,7 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             unflat_logger.exception(
                 "Emulated-dispatcher execution failed before summary: "
                 "maturity=%s selected_mode=%s selected_modifications=%d",
-                getattr(self.mba, "maturity", None),
+                maturity_text,
                 observation.selected_lowering_mode if observation is not None else None,
                 (
                     int(observation.selected_modification_count)
@@ -263,7 +290,7 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             "Emulated-dispatcher execution summary: maturity=%s "
             "selected_mode=%s selected_modifications=%d total_changes=%d "
             "results=%s",
-            getattr(self.mba, "maturity", None),
+            maturity_text,
             observation.selected_lowering_mode if observation is not None else None,
             (
                 int(observation.selected_modification_count)

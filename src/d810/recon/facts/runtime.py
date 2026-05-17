@@ -1287,6 +1287,7 @@ class FactLifecycleRuntime:
                 reason="already-fired",
             )
         self._fired.add(dedupe_key)
+        maturity_text = self._maturity_text(maturity)
 
         observations: list[FactObservation] = []
         mappings: list[FactMapping] = []
@@ -1313,10 +1314,10 @@ class FactLifecycleRuntime:
                 )
             except Exception:
                 logger.exception(
-                    "FactCollector '%s' failed at func=0x%x maturity=%d",
+                    "FactCollector '%s' failed at func=0x%x maturity=%s",
                     collector.name,
                     func_ea,
-                    maturity,
+                    maturity_text,
                 )
 
         derived_mappings: tuple[FactMapping, ...] = ()
@@ -1399,10 +1400,10 @@ class FactLifecycleRuntime:
                 )
             else:
                 logger.warning(
-                    "FACT_LIFECYCLE_DROPPED func=0x%x maturity=%d phase=%s "
+                    "FACT_LIFECYCLE_DROPPED func=0x%x maturity=%s phase=%s "
                     "observations=%d mappings=%d conflicts=%d snapshot=%s callback=%s",
                     func_ea,
-                    maturity,
+                    maturity_text,
                     phase,
                     len(observations),
                     len(mappings),
@@ -1436,10 +1437,10 @@ class FactLifecycleRuntime:
             conflict_count=len(conflicts),
         )
         logger.info(
-            "FACT_LIFECYCLE_CAPTURE func=0x%x maturity=%d phase=%s "
+            "FACT_LIFECYCLE_CAPTURE func=0x%x maturity=%s phase=%s "
             "collectors=%d observations=%d mappings=%d conflicts=%d",
             func_ea,
-            maturity,
+            maturity_text,
             phase,
             summary.collector_count,
             summary.observation_count,
