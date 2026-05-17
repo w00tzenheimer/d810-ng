@@ -62,6 +62,7 @@ from d810.recon.facts.collectors import (
     CallAnchorFactCollector,
     InductionCarrierFactCollector,
     LoopCarrierFactCollector,
+    OllvmSemanticCarrierFactCollector,
     ReturnCarrierFactCollector,
     ReturnFrontierFactCollector,
     StateTransitionAnchorFactCollector,
@@ -872,6 +873,7 @@ class D810Manager:
             )
             self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
             self._recon_runtime.register_fact_collector(LoopCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(OllvmSemanticCarrierFactCollector())
             self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())

@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 
 from d810.core.typing import Callable
 from d810.recon.flow.branch_ownership import (
@@ -17,6 +18,12 @@ from d810.recon.flow.branch_ownership import (
 )
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
+_LOOP_BOUND_RE = re.compile(
+    r"\bset[blge]+\s+\[ds[^\]]*:(?P<token>%var_[0-9A-Fa-f]+|v\d+)"
+    r"\.8[^\]]*\]\.4,\s*#0x64\.4",
+    re.IGNORECASE,
+)
 
 
 class PredicateOwnershipKind(str, Enum):
@@ -221,6 +228,142 @@ class MopTrackerBranchOwnershipOracle:
             max_nb_block=self._max_nb_block,
             max_path=self._max_path,
         )
+
+
+class OllvmCarrierBranchOwnershipOracle:
+    """Classify OLLVM semantic branches from observed carrier facts.
+
+    This oracle is intentionally conservative and read-only.  It upgrades an
+    unresolved conditional edge only when the branch predicate text references a
+    predicate token derived from OLLVM semantic carrier facts:
+
+    * password compare result carriers become real password/input forks;
+    * loop-index bound carriers become real loop-condition forks.
+
+    The resulting proof is ``REAL_DATA_DEPENDENT``.  It may help preserve or
+    bridge semantic control flow, but it never authorizes deleting a branch arm.
+    """
+
+    def __init__(
+        self,
+        *,
+        mba: object | None,
+        carrier_facts: tuple[object, ...] = (),
+    ) -> None:
+        self._mba = mba
+        self._carrier_facts = tuple(carrier_facts or ())
+        self._role_tokens = _carrier_role_tokens(self._carrier_facts)
+        instruction_texts = tuple(_iter_mba_instruction_texts(mba))
+        self._password_predicate_tokens = _derive_data_predicate_tokens(
+            self._role_tokens.get("PASSWORD_COMPARE_RESULT", frozenset()),
+            instruction_texts,
+        )
+        self._loop_predicate_tokens = _derive_loop_predicate_tokens(
+            self._role_tokens.get("LOOP_INDEX_CARRIER", frozenset()),
+            instruction_texts,
+        )
+
+    def refine(
+        self,
+        proof: BranchOwnershipProof,
+        edge: object,
+    ) -> BranchOwnershipProof | None:
+        """Return a semantic branch proof for *edge*, or ``None``."""
+
+        if not _carrier_oracle_may_refine(proof):
+            return None
+        if proof.source_block is None or proof.branch_arm is None:
+            return None
+        if proof.source_state is None or proof.target_state is None:
+            return None
+        if proof.target_entry is None:
+            return None
+        if _edge_kind_name(edge) != "CONDITIONAL_TRANSITION":
+            return None
+
+        block = self._get_block(proof.source_block)
+        if block is None or _block_nsucc(block) != 2:
+            return None
+        tail = getattr(block, "tail", None)
+        if tail is None:
+            return None
+
+        tail_text = _format_insn_text(tail)
+        tail_tokens = frozenset(_tokens(tail_text))
+        if not tail_tokens:
+            return None
+
+        password_matches = tuple(
+            sorted(tail_tokens & self._password_predicate_tokens)
+        )
+        if password_matches:
+            return self._replace_proof(
+                proof,
+                reason="ollvm_carrier_password_compare_predicate",
+                carrier_role="PASSWORD_COMPARE_RESULT",
+                predicate_tokens=password_matches,
+                tail_text=tail_text,
+                edge=edge,
+            )
+
+        loop_matches = tuple(sorted(tail_tokens & self._loop_predicate_tokens))
+        if loop_matches:
+            return self._replace_proof(
+                proof,
+                reason="ollvm_carrier_loop_index_predicate",
+                carrier_role="LOOP_INDEX_CARRIER",
+                predicate_tokens=loop_matches,
+                tail_text=tail_text,
+                edge=edge,
+            )
+
+        return None
+
+    def _replace_proof(
+        self,
+        proof: BranchOwnershipProof,
+        *,
+        reason: str,
+        carrier_role: str,
+        predicate_tokens: tuple[str, ...],
+        tail_text: str,
+        edge: object,
+    ) -> BranchOwnershipProof:
+        evidence = dict(proof.evidence)
+        evidence.update({
+            "predicate_ownership_kind": (
+                PredicateOwnershipKind.REAL_DATA_DEPENDENT.value
+            ),
+            "predicate_ownership_reason": reason,
+            "carrier_role": carrier_role,
+            "predicate_tokens": predicate_tokens,
+            "tail_text": tail_text,
+            "via_pred": _path_predecessor(edge, proof.source_block),
+        })
+        return BranchOwnershipProof(
+            proof_id=proof.proof_id,
+            proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+            trusted=True,
+            reason=reason,
+            source_block=proof.source_block,
+            branch_arm=proof.branch_arm,
+            source_state=proof.source_state,
+            target_state=proof.target_state,
+            target_entry=proof.target_entry,
+            predicate_block=proof.predicate_block,
+            dispatcher_entry_block=proof.dispatcher_entry_block,
+            oracle_kind="ollvm_carrier_branch_ownership",
+            evidence=evidence,
+            payload=dict(proof.payload),
+        )
+
+    def _get_block(self, serial: int) -> object | None:
+        if self._mba is None:
+            return None
+        try:
+            return self._mba.get_mblock(int(serial))
+        except Exception:
+            return None
 
 
 class Z3BranchOwnershipOracle:
@@ -546,6 +689,148 @@ def _resolve_predicate_with_moptracker(
             "right_value": int(right) & _MASK64,
         },
     )
+
+
+def _carrier_role_tokens(
+    facts: tuple[object, ...],
+) -> dict[str, frozenset[str]]:
+    role_tokens: dict[str, set[str]] = {}
+    for fact in facts:
+        payload = _fact_payload(fact)
+        if not payload:
+            continue
+        if str(_fact_kind(fact) or "") != "OllvmSemanticCarrierFact":
+            continue
+        role = str(payload.get("role") or "")
+        token = _canonical_token(payload.get("carrier_token"))
+        if not role or token is None:
+            continue
+        role_tokens.setdefault(role, set()).add(token)
+    return {
+        role: frozenset(sorted(tokens))
+        for role, tokens in role_tokens.items()
+    }
+
+
+def _carrier_oracle_may_refine(proof: BranchOwnershipProof) -> bool:
+    if proof.proof_kind == BranchOwnershipProofKind.UNRESOLVED:
+        return True
+    if proof.proof_kind != BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER:
+        return False
+    return (
+        str(proof.reason) == "target_state_terminal_return_frontier"
+        and str(proof.evidence.get("edge_kind")) == "CONDITIONAL_TRANSITION"
+    )
+
+
+def _fact_kind(fact: object) -> object | None:
+    if isinstance(fact, dict):
+        return fact.get("kind")
+    return getattr(fact, "kind", None)
+
+
+def _fact_payload(fact: object) -> dict[str, object]:
+    if isinstance(fact, dict):
+        payload = fact.get("payload")
+    else:
+        payload = getattr(fact, "payload", None)
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _derive_data_predicate_tokens(
+    seed_tokens: frozenset[str],
+    instruction_texts: tuple[str, ...],
+) -> frozenset[str]:
+    if not seed_tokens:
+        return frozenset()
+
+    derived: set[str] = set(seed_tokens)
+    changed = True
+    while changed:
+        changed = False
+        for text in instruction_texts:
+            text_tokens = tuple(_tokens(text))
+            if not text_tokens or not (set(text_tokens) & derived):
+                continue
+            dst = _dest_token(text)
+            if dst is not None and dst not in derived:
+                derived.add(dst)
+                changed = True
+
+    return frozenset(sorted(derived))
+
+
+def _derive_loop_predicate_tokens(
+    loop_carrier_tokens: frozenset[str],
+    instruction_texts: tuple[str, ...],
+) -> frozenset[str]:
+    if not loop_carrier_tokens:
+        return frozenset()
+
+    predicate_tokens: set[str] = set(loop_carrier_tokens)
+    for text in instruction_texts:
+        match = _LOOP_BOUND_RE.search(text)
+        if match is None:
+            continue
+        carrier = _canonical_token(match.group("token"))
+        if carrier not in loop_carrier_tokens:
+            continue
+        dst = _dest_token(text)
+        if dst is not None:
+            predicate_tokens.add(dst)
+    return frozenset(sorted(predicate_tokens))
+
+
+def _iter_mba_instruction_texts(mba: object | None) -> tuple[str, ...]:
+    if mba is None:
+        return ()
+    try:
+        qty = int(getattr(mba, "qty", 0) or 0)
+    except (TypeError, ValueError):
+        qty = 0
+    texts: list[str] = []
+    for serial in range(max(0, qty)):
+        try:
+            block = mba.get_mblock(int(serial))
+        except Exception:
+            continue
+        if block is None:
+            continue
+        for insn in _iter_block_insns(block):
+            text = _format_insn_text(insn)
+            if text:
+                texts.append(text)
+        tail = getattr(block, "tail", None)
+        if tail is not None:
+            text = _format_insn_text(tail)
+            if text:
+                texts.append(text)
+    return tuple(texts)
+
+
+def _tokens(text: str) -> tuple[str, ...]:
+    return tuple(
+        token for token in (
+            _canonical_token(match.group(0)) for match in _VAR_TOKEN_RE.finditer(text)
+        )
+        if token is not None
+    )
+
+
+def _canonical_token(token: object | None) -> str | None:
+    if token is None:
+        return None
+    text = str(token)
+    if text.startswith("%var_"):
+        return f"%var_{text[5:].upper()}"
+    return text
+
+
+def _dest_token(text: str) -> str | None:
+    tokens = _tokens(text)
+    if not tokens:
+        return None
+    return tokens[-1]
 
 
 def _resolve_mop_value(
@@ -1014,6 +1299,7 @@ def _hex_state(value: int | None) -> str | None:
 __all__ = [
     "BranchTargetIdentity",
     "MopTrackerBranchOwnershipOracle",
+    "OllvmCarrierBranchOwnershipOracle",
     "PredicateOwnershipKind",
     "PredicateOwnershipResult",
     "Z3BranchOwnershipOracle",

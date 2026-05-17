@@ -10,6 +10,7 @@ from d810.recon.flow.branch_ownership import (
 )
 from d810.recon.flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
+    OllvmCarrierBranchOwnershipOracle,
     PredicateOwnershipKind,
     PredicateOwnershipResult,
     Z3BranchOwnershipOracle,
@@ -17,8 +18,9 @@ from d810.recon.flow.branch_ownership_oracle import (
 
 
 class _FakeBlock:
-    def __init__(self, tail: object):
+    def __init__(self, tail: object, head: object | None = None):
         self.tail = tail
+        self.head = head
 
     def nsucc(self) -> int:
         return 2
@@ -130,6 +132,30 @@ def _tail(opcode: str, *, jump_target: int, left: object, right: object | None =
 
 def _insn(opcode: str, *, text: str = ""):
     return SimpleNamespace(opcode=opcode, next=None, text=text)
+
+
+def _chain(*insns: object) -> object | None:
+    for current, nxt in zip(insns, insns[1:]):
+        current.next = nxt
+    return insns[0] if insns else None
+
+
+def _carrier_fact(
+    *,
+    role: str,
+    token: str,
+    block: int,
+    text: str,
+):
+    return SimpleNamespace(
+        kind="OllvmSemanticCarrierFact",
+        payload={
+            "role": role,
+            "carrier_token": token,
+            "source_block": block,
+            "instruction_dstr": text,
+        },
+    )
 
 
 def _proofs_for(
@@ -820,6 +846,181 @@ def test_real_data_dependent_predicate_marks_arm_as_semantic_branch_authority():
     assert proofs[0].trusted is True
     assert proofs[0].authorizes_semantic_branch_bridge is True
     assert proofs[0].authorizes_nonsemantic_branch_rewrite is False
+
+
+def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
+    compare = (
+        "low    call $0x180000000<fast:_QWORD &(%var_98).8,"
+        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, %var_58.4"
+    )
+    derive = "or     %var_58.4, #1.4, %var_18.4"
+    tail = SimpleNamespace(
+        opcode="m_jnz",
+        text="jnz    %var_18.4, #0.4, @9",
+    )
+    mba = _FakeMba({
+        5: _FakeBlock(
+            tail,
+            head=_chain(
+                _insn("m_call", text=compare),
+                _insn("m_or", text=derive),
+            ),
+        ),
+    })
+    oracle = OllvmCarrierBranchOwnershipOracle(
+        mba=mba,
+        carrier_facts=(
+            _carrier_fact(
+                role="PASSWORD_COMPARE_RESULT",
+                token="%var_58",
+                block=5,
+                text=compare,
+            ),
+        ),
+    )
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(
+            _edge(branch_arm=0, target_state=0x20),
+            _edge(branch_arm=1, target_state=0x30),
+        )),
+        proof_refiner=oracle.refine,
+    )
+
+    assert [proof.proof_kind for proof in proofs] == [
+        BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+    ]
+    assert all(proof.trusted for proof in proofs)
+    assert all(proof.authorizes_semantic_branch_bridge for proof in proofs)
+    assert not any(proof.authorizes_nonsemantic_branch_rewrite for proof in proofs)
+    assert proofs[0].reason == "ollvm_carrier_password_compare_predicate"
+    assert proofs[0].evidence["carrier_role"] == "PASSWORD_COMPARE_RESULT"
+    assert proofs[0].evidence["predicate_tokens"] == ("%var_18",)
+
+
+def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
+    bound = "setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1"
+    tail = SimpleNamespace(
+        opcode="m_jz",
+        text="jz     %var_3A1.1, #0.1, @9",
+    )
+    mba = _FakeMba({
+        5: _FakeBlock(
+            tail,
+            head=_chain(_insn("m_setb", text=bound)),
+        ),
+    })
+    oracle = OllvmCarrierBranchOwnershipOracle(
+        mba=mba,
+        carrier_facts=(
+            _carrier_fact(
+                role="LOOP_INDEX_CARRIER",
+                token="%var_398",
+                block=5,
+                text=bound,
+            ),
+        ),
+    )
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(
+            _edge(branch_arm=0, target_state=0x20),
+            _edge(branch_arm=1, target_state=0x30),
+        )),
+        proof_refiner=oracle.refine,
+    )
+
+    assert [proof.proof_kind for proof in proofs] == [
+        BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+    ]
+    assert proofs[0].reason == "ollvm_carrier_loop_index_predicate"
+    assert proofs[0].evidence["carrier_role"] == "LOOP_INDEX_CARRIER"
+    assert proofs[0].evidence["predicate_tokens"] == ("%var_3A1",)
+
+
+def test_ollvm_carrier_oracle_preserves_semantic_branch_to_return_frontier():
+    bound = "setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1"
+    tail = SimpleNamespace(
+        opcode="m_jz",
+        text="jz     %var_3A1.1, #0.1, @9",
+    )
+    mba = _FakeMba({
+        5: _FakeBlock(
+            tail,
+            head=_chain(_insn("m_setb", text=bound)),
+        ),
+    })
+    oracle = OllvmCarrierBranchOwnershipOracle(
+        mba=mba,
+        carrier_facts=(
+            _carrier_fact(
+                role="LOOP_INDEX_CARRIER",
+                token="%var_398",
+                block=5,
+                text=bound,
+            ),
+        ),
+    )
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(
+            _edge(branch_arm=0, target_state=0x20),
+            _edge(
+                source_state=0x20,
+                target_state=None,
+                kind="CONDITIONAL_RETURN",
+                source_block=7,
+                branch_arm=0,
+                target_entry=None,
+            ),
+        )),
+        proof_refiner=oracle.refine,
+    )
+
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT
+    assert proofs[0].reason == "ollvm_carrier_loop_index_predicate"
+    assert proofs[0].authorizes_semantic_branch_bridge is True
+    assert proofs[1].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
+    assert proofs[1].reason == "edge_kind_terminal_return_frontier"
+
+
+def test_ollvm_carrier_oracle_leaves_unrelated_predicate_unresolved():
+    tail = SimpleNamespace(
+        opcode="m_jz",
+        text="jz     %var_DEAD.1, #0.1, @9",
+    )
+    mba = _FakeMba({
+        5: _FakeBlock(
+            tail,
+            head=_chain(
+                _insn(
+                    "m_setb",
+                    text="setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
+                )
+            ),
+        ),
+    })
+    oracle = OllvmCarrierBranchOwnershipOracle(
+        mba=mba,
+        carrier_facts=(
+            _carrier_fact(
+                role="LOOP_INDEX_CARRIER",
+                token="%var_398",
+                block=5,
+                text="setb [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
+            ),
+        ),
+    )
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(_edge(branch_arm=0, target_state=0x20),)),
+        proof_refiner=oracle.refine,
+    )
+
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.UNRESOLVED
+    assert proofs[0].trusted is False
 
 
 def test_incomplete_edge_identity_does_not_create_trusted_rewrite_proof():
