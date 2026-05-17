@@ -1,6 +1,7 @@
 """Tests for the renamed D810 operator CLI and legacy shim."""
 from __future__ import annotations
 
+import argparse
 import os
 import sqlite3
 import subprocess
@@ -8,6 +9,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from tools import d810cli
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -33,6 +36,31 @@ def _run_tool(tool: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _worktree_log_dir(repo_root: Path, worktree: str) -> Path:
+    """Create the d810 log layout under pytest's tempfile-backed tmp_path."""
+    path = (
+        repo_root
+        / ".worktrees"
+        / worktree
+        / ".tmp"
+        / "logs"
+        / "d810_logs"
+    )
+    path.mkdir(parents=True)
+    return path
+
+
+def _make_temp_repo_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Create the minimal repo/worktree shape d810cli expects in tmp_path."""
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    wt = tmp_path / ".worktrees" / "wt"
+    (wt / "src").mkdir(parents=True)
+    return wt
+
+
 @pytest.mark.parametrize("tool", ["d810cli.py", "cff_debug.py"])
 def test_cli_help_works_through_new_name_and_legacy_shim(tool: str) -> None:
     result = _run_tool(tool, "--help")
@@ -52,6 +80,176 @@ def test_after_help_works_through_new_name_and_legacy_shim(tool: str) -> None:
     assert "usage: d810cli after" in result.stdout
     if tool == "cff_debug.py":
         assert "[deprecated]" in result.stderr
+
+
+def test_dump_help_recommends_full_diagnostics_recipe() -> None:
+    result = _run_tool("d810cli.py", "dump", "--help")
+
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert "--full-diagnostics" in result.stdout
+    assert "Unflattening debug recipe" in result.stdout
+    assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout
+    assert "--dump-bst-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
+
+
+def test_dump_full_diagnostics_expands_recon_diag_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+
+    calls: list[tuple[list[str], dict[str, str], str]] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> int:
+        assert env is not None
+        assert cwd is not None
+        calls.append((argv, env, cwd))
+        db = wt / ".tmp" / "logs" / "d810_logs" / "fresh.diag.sqlite3"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"sqlite data")
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_dump(
+        argparse.Namespace(
+            worktree="wt",
+            function="test_function_ollvm_fla_bcf_sub",
+            project="default_unflattening_ollvm.json",
+            prefix="dump",
+            label="ollvm",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            full_diagnostics=True,
+            extra=None,
+        )
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    argv, env, cwd = calls[0]
+    assert cwd == str(tmp_path)
+    assert env["D810_CAPTURE_POST_MATURITY"] == "8"
+    assert argv[:2] == [str(tmp_path / "run_system_tests_docker.sh"), "dump"]
+    assert "-l" in argv
+    assert "--enable-debug-logging" in argv
+    assert "--enable-diag-snapshot" in argv
+    assert "--dump-microcode-maturity" in argv
+    assert "LOCOPT,CALLS,GLBOPT1" in argv
+    assert "--dump-microcode-d810" in argv
+    assert "--dump-terminal-return-valranges" in argv
+    assert "--dump-bst-maturity" in argv
+    assert "CALLS,GLBOPT1,GLBOPT2" in argv
+
+
+def test_latest_db_ignores_zero_byte_sqlite_placeholders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    log_dir = _worktree_log_dir(tmp_path, "wt")
+    good = log_dir / "good.diag.sqlite3"
+    good.write_bytes(b"sqlite data")
+    empty = log_dir / "newer-empty.diag.sqlite3"
+    empty.write_bytes(b"")
+
+    # Make the empty placeholder newer than the valid DB.
+    good.touch()
+    empty.touch()
+
+    assert d810cli.latest_db("wt") == good
+
+
+def test_latest_db_errors_when_only_empty_sqlite_placeholders_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    log_dir = _worktree_log_dir(tmp_path, "wt")
+    (log_dir / "empty.diag.sqlite3").write_bytes(b"")
+
+    with pytest.raises(SystemExit):
+        d810cli.latest_db("wt")
+
+
+def test_after_stats_appends_stats_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    dump = wt / ".tmp" / "dump.txt"
+    dump.parent.mkdir()
+    dump.write_text("--- AFTER ---\nbody\n=== STATS: f ===\nAFTER: lines=1\n")
+
+    subprocess_calls: list[list[str]] = []
+    stats_calls: list[argparse.Namespace] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        subprocess_calls.append(argv)
+        assert env is not None
+        assert str(wt / "src") in env["PYTHONPATH"]
+        return 0
+
+    def fake_stats(args: argparse.Namespace) -> int:
+        stats_calls.append(args)
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+    monkeypatch.setattr(d810cli, "cmd_stats", fake_stats)
+
+    rc = d810cli.cmd_after(
+        argparse.Namespace(
+            worktree="wt",
+            dump=str(dump),
+            line_numbers=True,
+            stats=True,
+        )
+    )
+
+    assert rc == 0
+    assert subprocess_calls
+    assert subprocess_calls[0][-1] == "-n"
+    assert len(stats_calls) == 1
+    assert stats_calls[0].worktree == "wt"
+    assert stats_calls[0].dump == str(dump.resolve())
+
+
+def test_after_stats_does_not_run_when_after_renderer_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    dump = wt / ".tmp" / "dump.txt"
+    dump.parent.mkdir()
+    dump.write_text("--- AFTER ---\nbody\n")
+
+    monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: 7)
+
+    def fail_stats(args: argparse.Namespace) -> int:
+        raise AssertionError("stats should not run after dump-after failure")
+
+    monkeypatch.setattr(d810cli, "cmd_stats", fail_stats)
+
+    rc = d810cli.cmd_after(
+        argparse.Namespace(
+            worktree="wt",
+            dump=str(dump),
+            line_numbers=False,
+            stats=True,
+        )
+    )
+
+    assert rc == 7
 
 
 def test_d810cli_pseudocode_capture_from_existing_dump(tmp_path: Path) -> None:

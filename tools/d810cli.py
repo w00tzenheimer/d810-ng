@@ -51,6 +51,14 @@ DEFAULT_EXTRAS = [
     "--dump-bst-maturity",
     "GLBOPT1",
 ]
+FULL_DIAGNOSTIC_EXTRAS = [
+    "--dump-microcode-maturity",
+    "LOCOPT,CALLS,GLBOPT1",
+    "--dump-microcode-d810",
+    "--dump-terminal-return-valranges",
+    "--dump-bst-maturity",
+    "CALLS,GLBOPT1,GLBOPT2",
+]
 
 DOCKER_RUNNER = TOOLS_SCRIPTS_DIR / "run_system_tests_docker.sh"
 
@@ -186,7 +194,11 @@ def cmd_dump(args: argparse.Namespace) -> int:
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_name = f"{args.prefix}_{args.label}_{ts}.txt"
 
-    extras = args.extra if args.extra else list(DEFAULT_EXTRAS)
+    extras = args.extra if args.extra else (
+        list(FULL_DIAGNOSTIC_EXTRAS)
+        if args.full_diagnostics
+        else list(DEFAULT_EXTRAS)
+    )
 
     argv: list[str] = [
         str(DOCKER_RUNNER),
@@ -199,6 +211,8 @@ def cmd_dump(args: argparse.Namespace) -> int:
     if not args.no_debug_logging:
         argv.append("-l")
         argv.append("--enable-debug-logging")
+    if args.full_diagnostics:
+        argv.append("--enable-diag-snapshot")
     argv.append("--")
     argv.extend(extras)
 
@@ -998,7 +1012,30 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.set_defaults(func=cmd_paths)
 
-    sp = sub.add_parser("dump", help="run the docker pseudocode dump")
+    sp = sub.add_parser(
+        "dump",
+        help="run the docker pseudocode dump",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Unflattening debug recipe:\n"
+            "  When investigating one function, prefer the full diagnostics mode:\n\n"
+            "    d810cli dump -f FUNC_NAME -p JSON_PROJECT_FILE "
+            "--label case_name --full-diagnostics\n\n"
+            "  This truncates the worktree d810.log, enables debug logging and diag\n"
+            "  snapshots, dumps raw and post-D810 microcode around LOCOPT/CALLS/"
+            "GLBOPT1,\n"
+            "  dumps terminal return valranges, and dumps BST diagnostics at "
+            "CALLS/\n"
+            "  GLBOPT1/GLBOPT2. Use the printed DUMP= and DB= paths for follow-up\n"
+            "  commands such as `d810cli after --stats`, `d810cli snap-render`,\n"
+            "  `d810cli residual-worksheet`, `d810cli returns`, and `d810cli db --`.\n\n"
+            "  Equivalent pytest extras:\n"
+            "    --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1 "
+            "--dump-microcode-d810\n"
+            "    --dump-terminal-return-valranges --dump-bst-maturity "
+            "CALLS,GLBOPT1,GLBOPT2"
+        ),
+    )
     _add_worktree(sp)
     sp.add_argument("-f", "--function", default=DEFAULT_FUNCTION)
     sp.add_argument("-p", "--project", default=DEFAULT_PROJECT)
@@ -1010,8 +1047,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)")
     sp.add_argument("--no-debug-logging", action="store_true",
                     help="do not pass -l / --enable-debug-logging to the docker runner")
+    sp.add_argument(
+        "--full-diagnostics",
+        action="store_true",
+        help=(
+            "recommended for unflattening investigations: enable diag snapshots "
+            "and use the full recon/diagnostic microcode, valrange, and BST dump set"
+        ),
+    )
     sp.add_argument("--extra", action="append",
-                    help="extra pytest arg (repeatable); if any provided, replaces defaults")
+                    help="extra pytest arg (repeatable); if any provided, replaces default/full dump extras")
     sp.set_defaults(func=cmd_dump)
 
     pseudocode = sub.add_parser(
