@@ -1873,6 +1873,11 @@ def _replace_or_add_redirect(
             new_target=desired_target,
         )
     elif desired_target in succs:
+        if choice.edge_kind not in {
+            "BST_INTERVAL_PROVEN_FRONTIER",
+            "SAME_DAG_SCC_FRONTIER",
+        }:
+            return None
         mod = InsertBlock(
             pred_serial=source,
             old_target_serial=observed_target,

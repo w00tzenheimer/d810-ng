@@ -436,6 +436,47 @@ class TestCollectConstVarRefsInBlock:
 
         assert refs == frozenset({"228", "650", "658", "660"})
 
+    def test_accepts_semantic_kind_classifiers_for_live_shaped_objects(self):
+        from d810.cfg.loop_bound_writer_guard import (
+            collect_const_var_refs_in_block,
+        )
+
+        class LiveMop:
+            def __init__(self, t, *, nnn=None, s=None, dstr_text=""):
+                self.t = t
+                self.nnn = nnn
+                self.s = s
+                self._dstr = dstr_text
+
+            def dstr(self):
+                return self._dstr
+
+        class LiveInsn:
+            def __init__(self, opcode, *, l=None, d=None):
+                self.opcode = opcode
+                self.l = l
+                self.d = d
+                self.next = None
+
+        src = LiveMop("mop_n", nnn=_NumValue(0xC0FFEE))
+        dst = LiveMop("mop_S", s=_StkOff(0x228), dstr_text="%var_228.8")
+        insn = LiveInsn("m_mov", l=src, d=dst)
+        mba = _Mba([_Mblock(_chain(insn))])
+
+        refs = collect_const_var_refs_in_block(
+            mba,
+            block_serial=0,
+            insn_kind_classifier=lambda obj: (
+                InsnKind.MOV if getattr(obj, "opcode", None) == "m_mov" else None
+            ),
+            operand_kind_classifier=lambda obj: {
+                "mop_n": OperandKind.NUMBER,
+                "mop_S": OperandKind.STACK,
+            }.get(getattr(obj, "t", None)),
+        )
+
+        assert refs == frozenset({"228"})
+
     def test_falls_back_to_instruction_text_for_const_write_dest(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,

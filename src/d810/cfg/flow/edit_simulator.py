@@ -11,6 +11,7 @@ from d810.cfg.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
+    DirectTerminalLoweringKind,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -26,6 +27,7 @@ from d810.cfg.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDirectTerminalLoweringGroup,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchPlan,
@@ -95,29 +97,52 @@ def _reorder_trampoline_serials(patch_plan: PatchPlan) -> frozenset[int]:
 def _tail_opcode_for_existing_block(
     block: BlockSnapshot,
     patch_plan: PatchPlan,
+    succs: tuple[int, ...],
 ) -> InsnKind | None:
+    tail_kind = block.tail_kind
     for step in patch_plan.steps:
         match step:
             case PatchConvertToGoto(block_serial=serial) if serial == block.serial:
-                return InsnKind.GOTO
+                tail_kind = InsnKind.GOTO
+                break
             case PatchRedirectGoto(from_serial=serial) if (
                 serial == block.serial
                 and (block.kind == BlockKind.ONE_WAY or block.nsucc == 1)
             ):
-                return InsnKind.GOTO
+                tail_kind = InsnKind.GOTO
+                break
             case PatchPrivateTerminalSuffixGroup(anchors=anchors) if (
                 block.serial in anchors
             ):
-                return InsnKind.GOTO
+                tail_kind = InsnKind.GOTO
+                break
+            case PatchDirectTerminalLoweringGroup(sites=sites) if any(
+                int(site.anchor_serial) == int(block.serial) for site in sites
+            ):
+                tail_kind = InsnKind.GOTO
+                break
             case PatchRedirectBranch(from_serial=serial) if serial == block.serial:
-                return (
-                    block.tail_kind
-                )  # tail stays as m_jcnd — only successor changes, not opcode
+                tail_kind = block.tail_kind  # successor changes, not opcode
+                break
             case PatchReorderBlocks(old_to_new=old_to_new_pairs):
                 trampoline_serials = frozenset(old for old, _new in old_to_new_pairs)
                 if block.serial in trampoline_serials:
-                    return InsnKind.GOTO
-    return block.tail_kind
+                    tail_kind = InsnKind.GOTO
+                    break
+
+    if len(succs) == 1 and tail_kind in {
+        None,
+        InsnKind.COND_JUMP,
+        InsnKind.EQUALITY_JUMP,
+    }:
+        return InsnKind.GOTO
+    if len(succs) == 0 and tail_kind in {
+        InsnKind.GOTO,
+        InsnKind.COND_JUMP,
+        InsnKind.EQUALITY_JUMP,
+    }:
+        return InsnKind.NOP
+    return tail_kind
 
 
 def _block_kind_for_projected_shape(
@@ -134,6 +159,7 @@ def _block_kind_for_projected_shape(
         return BlockKind.TWO_WAY
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
+        "direct_terminal_lowering_clone",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -145,14 +171,16 @@ def _block_kind_for_projected_shape(
     # 2WAY trampoline is always BLT_1WAY (single m_goto to fallthrough target)
     if kind == "reorder_block_2way_trampoline":
         return BlockKind.ONE_WAY
-    if template_block is not None:
-        return template_block.kind
     if tail_kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP} and len(succs) == 2:
         return BlockKind.TWO_WAY
     if len(succs) == 1:
         return BlockKind.ONE_WAY
     if len(succs) == 0:
         return BlockKind.ZERO_WAY
+    if len(succs) > 2:
+        return BlockKind.N_WAY
+    if template_block is not None and template_block.kind is not BlockKind.UNKNOWN:
+        return template_block.kind
     return BlockKind.NONE
 
 
@@ -174,6 +202,7 @@ def _tail_kind_for_projected_block(
         return InsnKind.COND_JUMP
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
+        "direct_terminal_lowering_clone",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -215,19 +244,24 @@ def _project_existing_blocks(
     goto_converted_serials = _convert_to_goto_serials(patch_plan)
     for block in pre_cfg.blocks.values():
         projected_serial = patch_plan.relocation_map.rewrite_serial(block.serial)
-        # Blocks that become trampolines in ReorderBlocks are converted to BLT_1WAY
-        if block.serial in trampoline_serials:
-            block_kind = BlockKind.ONE_WAY
-        # Blocks converted from 2-way conditional to 1-way goto
-        elif block.serial in goto_converted_serials:
-            block_kind = BlockKind.ONE_WAY
-        else:
-            block_kind = block.kind
-        tail_kind = _tail_opcode_for_existing_block(block, patch_plan)
+        succs = tuple(adj.get(projected_serial, ()))
+        tail_kind = _tail_opcode_for_existing_block(block, patch_plan, succs)
+        block_kind = _block_kind_for_projected_shape(
+            template_block=None,
+            kind=(
+                "reorder_block_2way_trampoline"
+                if block.serial in trampoline_serials
+                else "convert_to_goto"
+                if block.serial in goto_converted_serials
+                else "existing_block"
+            ),
+            succs=succs,
+            tail_kind=tail_kind,
+        )
         projected[projected_serial] = BlockSnapshot(
             serial=projected_serial,
             block_type=block.block_type,
-            succs=tuple(adj.get(projected_serial, ())),
+            succs=succs,
             preds=(),
             flags=int(block.flags),
             start_ea=int(block.start_ea),
@@ -785,6 +819,57 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         )
                     )
 
+            case PatchDirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                sites=sites,
+                per_site_clone_assigned_serials=per_site_serials,
+            ):
+                for site in sites:
+                    anchor = int(site.anchor_serial)
+                    if site.kind is DirectTerminalLoweringKind.RETURN_CONST:
+                        simulated.append(
+                            SimulatedEdit(
+                                kind="direct_terminal_lowering_anchor",
+                                source=anchor,
+                                old_target=shared_entry,
+                                new_target=int(return_block),
+                            )
+                        )
+                        continue
+                    clone_serials = tuple(per_site_serials.get(anchor, ()))
+                    if not clone_serials:
+                        continue
+                    clone_sources = tuple(int(serial) for serial in site.materializer_serials)
+                    if not clone_sources:
+                        clone_sources = tuple(int(serial) for serial in suffix[:-1])
+                    for idx, clone_serial in enumerate(clone_serials):
+                        if idx < len(clone_serials) - 1:
+                            next_serial = clone_serials[idx + 1]
+                        else:
+                            next_serial = None
+                        source = clone_sources[idx] if idx < len(clone_sources) else -1
+                        simulated.append(
+                            SimulatedEdit(
+                                kind="direct_terminal_lowering_clone",
+                                source=source,
+                                old_target=-1,
+                                new_target=next_serial,
+                                created_serial=clone_serial,
+                                stop_serial_before=stop_serial_before,
+                                stop_serial_after=stop_serial_after,
+                            )
+                        )
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="direct_terminal_lowering_anchor",
+                            source=anchor,
+                            old_target=shared_entry,
+                            new_target=clone_serials[0],
+                        )
+                    )
+
             case PatchReorderBlocks(
                 old_to_new=old_to_new_pairs,
                 two_way_serials=two_way,
@@ -979,7 +1064,10 @@ def simulate_edits(
 
         succs = result.get(edit.source, [])
 
-        if edit.kind == "private_terminal_suffix_anchor":
+        if edit.kind in (
+            "private_terminal_suffix_anchor",
+            "direct_terminal_lowering_anchor",
+        ):
             # Fail-closed: anchor MUST still target shared_entry (old_target).
             # Backend rejects this op otherwise; simulator must match.
             new_succs = list(succs)
@@ -1151,7 +1239,10 @@ def simulate_edits(
                     for succ in result[edit.via_pred]
                 ]
 
-        elif edit.kind == "private_terminal_suffix_clone":
+        elif edit.kind in (
+            "private_terminal_suffix_clone",
+            "direct_terminal_lowering_clone",
+        ):
             clone_serial = edit.created_serial
             if clone_serial is None:
                 clone_serial = max(result.keys(), default=-1) + 1

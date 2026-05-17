@@ -147,6 +147,22 @@ def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
     return mapping.get(operand_type, OperandKind.UNKNOWN)
 
 
+def classify_live_insn_kind(insn: object) -> InsnKind | None:
+    """Return backend-neutral instruction semantics for a live Hex-Rays insn."""
+    try:
+        return _insn_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_live_operand_kind(mop: object) -> OperandKind | None:
+    """Return backend-neutral operand semantics for a live Hex-Rays operand."""
+    try:
+        return _operand_kind_from_hexrays(int(getattr(mop, "t")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
     """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
 
@@ -1076,6 +1092,8 @@ class IDAIRTranslator:
 
 __all__ = [
     "IDAIRTranslator",
+    "classify_live_insn_kind",
+    "classify_live_operand_kind",
     "capture_insn_snapshot",
     "capture_mop_snapshot",
     "lift",

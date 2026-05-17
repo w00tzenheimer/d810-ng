@@ -2,6 +2,7 @@
 
 import pytest
 
+from d810.cfg.contracts.contract import CfgContract
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     SimulationResult,
@@ -12,13 +13,23 @@ from d810.cfg.flow.edit_simulator import (
     simulate_edits,
 )
 from d810.cfg.flow.graph_checks import prove_terminal_sink
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
+    DirectTerminalLoweringGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringSite,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
+    PrivateTerminalSuffixGroup,
     RedirectGoto,
     RemoveEdge,
 )
@@ -443,6 +454,53 @@ class TestProjectPostState:
         assert projected.blocks[2].succs == (3,)
         assert projected.blocks[3].preds == (2,)
 
+    def test_project_post_state_recomputes_existing_semantics_after_remove_edge(self):
+        cfg = FlowGraph(
+            blocks={
+                10: BlockSnapshot(
+                    serial=10,
+                    block_type=4,
+                    succs=(11, 12),
+                    preds=(),
+                    flags=0,
+                    start_ea=0x1010,
+                    insn_snapshots=(),
+                    tail_opcode=7,
+                    kind=BlockKind.TWO_WAY,
+                    tail_kind=InsnKind.COND_JUMP,
+                ),
+                11: BlockSnapshot(
+                    serial=11,
+                    block_type=2,
+                    succs=(),
+                    preds=(10,),
+                    flags=0,
+                    start_ea=0x1020,
+                    insn_snapshots=(),
+                ),
+                12: BlockSnapshot(
+                    serial=12,
+                    block_type=2,
+                    succs=(),
+                    preds=(10,),
+                    flags=0,
+                    start_ea=0x1030,
+                    insn_snapshots=(),
+                ),
+            },
+            entry_serial=10,
+            func_ea=0x1000,
+        )
+
+        patch_plan = compile_patch_plan([RemoveEdge(from_serial=10, to_serial=12)], cfg)
+
+        projected = project_post_state(cfg, patch_plan)
+
+        assert projected.blocks[10].succs == (11,)
+        assert projected.blocks[10].kind == BlockKind.ONE_WAY
+        assert projected.blocks[10].tail_kind == InsnKind.GOTO
+        assert CfgContract().check_projected(cfg, patch_plan) == []
+
 
 class TestModificationProjection:
     def test_graph_modifications_to_simulated_edits(self):
@@ -510,6 +568,206 @@ class TestModificationProjection:
         assert sim.adj[2] == [220]
         assert sim.adj[219] == [180]
         assert sim.adj[220] == []
+
+    def test_edge_split_and_insert_block_can_share_source(self):
+        def semantic_block(
+            serial: int,
+            succs: tuple[int, ...],
+            preds: tuple[int, ...],
+        ) -> BlockSnapshot:
+            return BlockSnapshot(
+                serial=serial,
+                block_type=1 if succs else 0,
+                succs=succs,
+                preds=preds,
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                kind=(
+                    BlockKind.TWO_WAY
+                    if len(succs) == 2
+                    else BlockKind.ONE_WAY
+                    if len(succs) == 1
+                    else BlockKind.ZERO_WAY
+                ),
+                tail_kind=(
+                    InsnKind.COND_JUMP
+                    if len(succs) == 2
+                    else InsnKind.GOTO
+                    if len(succs) == 1
+                    else InsnKind.NOP
+                ),
+            )
+
+        cfg = FlowGraph(
+            blocks={
+                54: semantic_block(54, (), (98,)),
+                98: semantic_block(98, (54, 100), ()),
+                99: semantic_block(99, (100,), ()),
+                100: semantic_block(100, (2,), (98, 99)),
+                2: semantic_block(2, (), (100,)),
+                75: semantic_block(75, (), ()),
+                180: semantic_block(180, (), ()),
+                219: semantic_block(219, (), ()),
+            },
+            entry_serial=98,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                EdgeRedirectViaPredSplit(
+                    src_block=100,
+                    old_target=2,
+                    new_target=180,
+                    via_pred=98,
+                    rule_priority=550,
+                ),
+                InsertBlock(
+                    pred_serial=100,
+                    succ_serial=75,
+                    instructions=(InsnSnapshot(opcode=0x90, ea=0x1000, operands=()),),
+                    old_target_serial=2,
+                ),
+            ],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, patch_plan)
+        edge_split_serial = patch_plan.steps[0].assigned_serial
+        insert_serial = patch_plan.steps[1].assigned_serial
+
+        assert projected.blocks[98].succs == (54, edge_split_serial)
+        assert projected.blocks[100].succs == (insert_serial,)
+        assert projected.blocks[edge_split_serial].succs == (180,)
+        assert projected.blocks[insert_serial].succs == (75,)
+        assert CfgContract().check_projected(cfg, patch_plan) == []
+
+    def test_direct_terminal_lowering_and_private_suffix_can_share_return_family(self):
+        def semantic_block(
+            serial: int,
+            succs: tuple[int, ...],
+            preds: tuple[int, ...],
+        ) -> BlockSnapshot:
+            return BlockSnapshot(
+                serial=serial,
+                block_type=1 if succs else 0,
+                succs=succs,
+                preds=preds,
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                kind=(
+                    BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY
+                ),
+                tail_kind=(InsnKind.GOTO if len(succs) == 1 else InsnKind.NOP),
+            )
+
+        cfg = FlowGraph(
+            blocks={
+                26: semantic_block(26, (27,), ()),
+                27: semantic_block(27, (218,), (26,)),
+                206: semantic_block(206, (207,), ()),
+                207: semantic_block(207, (218,), (206,)),
+                218: semantic_block(218, (219,), (27, 207)),
+                219: semantic_block(219, (), (218,)),
+            },
+            entry_serial=26,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                DirectTerminalLoweringGroup(
+                    shared_entry_serial=218,
+                    return_block_serial=219,
+                    suffix_serials=(218, 219),
+                    sites=(
+                        DirectTerminalLoweringSite(
+                            anchor_serial=207,
+                            kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+                            materializer_serials=(27, 218),
+                        ),
+                    ),
+                ),
+                PrivateTerminalSuffixGroup(
+                    anchors=(27,),
+                    shared_entry_serial=218,
+                    return_block_serial=219,
+                    suffix_serials=(218, 219),
+                ),
+            ],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, patch_plan)
+        dtl_step = patch_plan.steps[0]
+        pts_step = patch_plan.steps[1]
+        dtl_clones = dtl_step.per_site_clone_assigned_serials[207]
+        pts_clones = pts_step.per_anchor_clone_assigned_serials[0]
+
+        assert projected.blocks[207].succs == (dtl_clones[0],)
+        assert projected.blocks[dtl_clones[0]].succs == (dtl_clones[1],)
+        assert projected.blocks[dtl_clones[1]].succs == ()
+        assert projected.blocks[27].succs == (pts_clones[0],)
+        assert CfgContract().check_projected(cfg, patch_plan) == []
+
+    def test_return_const_direct_terminal_lowering_rewrites_anchor_without_clone(self):
+        def semantic_block(
+            serial: int,
+            succs: tuple[int, ...],
+            preds: tuple[int, ...],
+        ) -> BlockSnapshot:
+            return BlockSnapshot(
+                serial=serial,
+                block_type=1 if succs else 0,
+                succs=succs,
+                preds=preds,
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                kind=(
+                    BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY
+                ),
+                tail_kind=(InsnKind.GOTO if len(succs) == 1 else InsnKind.NOP),
+            )
+
+        cfg = FlowGraph(
+            blocks={
+                26: semantic_block(26, (27,), ()),
+                27: semantic_block(27, (218,), (26,)),
+                218: semantic_block(218, (219,), (27,)),
+                219: semantic_block(219, (), (218,)),
+            },
+            entry_serial=26,
+            func_ea=0,
+        )
+
+        patch_plan = compile_patch_plan(
+            [
+                DirectTerminalLoweringGroup(
+                    shared_entry_serial=218,
+                    return_block_serial=219,
+                    suffix_serials=(218, 219),
+                    sites=(
+                        DirectTerminalLoweringSite(
+                            anchor_serial=27,
+                            kind=DirectTerminalLoweringKind.RETURN_CONST,
+                            const_value=0x5644FD01B1049C4B,
+                        ),
+                    ),
+                ),
+            ],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, patch_plan)
+        dtl_step = patch_plan.steps[0]
+
+        assert dtl_step.per_site_clone_assigned_serials[27] == ()
+        assert projected.blocks[27].succs == (219,)
+        assert len(projected.blocks) == len(cfg.blocks)
+        assert CfgContract().check_projected(cfg, patch_plan) == []
 
     def test_patch_plan_insert_block_updates_sink_reasoning(self):
         cfg = FlowGraph(
