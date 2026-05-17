@@ -2068,7 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     importlib.import_module(
-        "d810.cfg.region_oracle_cli"
+        "d810.diagnostics.region_oracle_cli"
     ).register_region_diff_parser(sub, common)
 
     from d810.diagnostics.dump_after import register_parser as _register_dump_after
@@ -2902,7 +2902,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
             print(f"\n# {len(rows)} cause(s) shown")
     elif args.command == "region-diff":
-        cfg_cli = importlib.import_module("d810.cfg.region_oracle_cli")
+        cfg_cli = importlib.import_module("d810.diagnostics.region_oracle_cli")
         rc = cfg_cli.handle_region_diff(
             args,
             conn,

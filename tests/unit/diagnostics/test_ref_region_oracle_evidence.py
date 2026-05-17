@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from d810.cfg.ref_region_oracle import (
+from d810.diagnostics.ref_region_oracle import (
     BlockView,
     D810Evidence,
     InstructionView,
@@ -174,7 +174,7 @@ def test_evidence_required_fields_validated_on_construction():
 
 def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
     import sqlite3
-    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+    from d810.diagnostics.ref_region_oracle import collect_block_views_for_snapshot
 
     conn = sqlite3.connect(":memory:")
     conn.executescript(
@@ -216,7 +216,7 @@ def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
 
 def test_collect_block_views_includes_scc_metadata():
     import sqlite3
-    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+    from d810.diagnostics.ref_region_oracle import collect_block_views_for_snapshot
 
     conn = sqlite3.connect(":memory:")
     conn.executescript(
@@ -247,7 +247,7 @@ def test_collect_block_views_includes_scc_metadata():
 
 def test_collect_block_views_returns_empty_for_missing_snapshot():
     import sqlite3
-    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+    from d810.diagnostics.ref_region_oracle import collect_block_views_for_snapshot
 
     conn = sqlite3.connect(":memory:")
     conn.executescript(
@@ -272,7 +272,7 @@ def test_collect_block_views_returns_empty_for_missing_snapshot():
 
 def test_collect_block_views_preserves_instruction_order_per_block():
     import sqlite3
-    from d810.cfg.ref_region_oracle import collect_block_views_for_snapshot
+    from d810.diagnostics.ref_region_oracle import collect_block_views_for_snapshot
 
     conn = sqlite3.connect(":memory:")
     conn.executescript(

@@ -1,4 +1,4 @@
-"""REF region-shape oracle (read-only).
+"""Diagnostic REF region-shape oracle (read-only).
 
 Compares D810 snapshot region-shape against REF (the manually
 unflattened ``tools/equivalence/ref.c``) and produces a normalized
@@ -16,7 +16,8 @@ queries as ``terminal_tail_loss_localizer`` (block-level presence by
 ``start_ea_hex``) plus the existing ``TerminalByteEmitterFact``
 observations for fact-level detection.
 
-Strictly read-only. No CFG edits, no behavior change.
+Strictly read-only. No CFG edits, no behavior change. This module is a
+diagnostic/test-support harness for a known REF artifact, not a CFG primitive.
 """
 from __future__ import annotations
 
@@ -414,6 +415,9 @@ class D810SnapshotInputs:
     byte_emit_present: dict[int, bool]
     byte_emit_block_serial: dict[int, int | None]
     byte_emit_fact_detected: dict[int, bool]
+    byte_emit_source_form: dict[int, str] = field(default_factory=dict)
+    byte_emit_destination_present: dict[int, bool] = field(default_factory=dict)
+    byte_emit_counter_update_present: dict[int, bool] = field(default_factory=dict)
     early_return_guard_present: dict[int, bool] = field(default_factory=dict)
     terminal_tail_acyclic: bool = False
     head_loop_isolated: bool = False
@@ -451,6 +455,27 @@ def d810_features(inputs: D810SnapshotInputs) -> tuple[RegionFeature, ...]:
         add(FeatureRegion.TERMINAL_TAIL, f"byte_emit_{k}_present", present,
             block_serial=inputs.byte_emit_block_serial.get(k),
             fact_detected=inputs.byte_emit_fact_detected.get(k, False))
+        add(
+            FeatureRegion.TERMINAL_TAIL,
+            f"byte_emit_{k}_source_form",
+            inputs.byte_emit_source_form.get(k, "absent"),
+            block_serial=inputs.byte_emit_block_serial.get(k),
+            fact_detected=inputs.byte_emit_fact_detected.get(k, False),
+        )
+        add(
+            FeatureRegion.TERMINAL_TAIL,
+            f"byte_emit_{k}_destination_present",
+            inputs.byte_emit_destination_present.get(k, False),
+            block_serial=inputs.byte_emit_block_serial.get(k),
+            fact_detected=inputs.byte_emit_fact_detected.get(k, False),
+        )
+        add(
+            FeatureRegion.TERMINAL_TAIL,
+            f"byte_emit_{k}_counter_update_present",
+            inputs.byte_emit_counter_update_present.get(k, False),
+            block_serial=inputs.byte_emit_block_serial.get(k),
+            fact_detected=inputs.byte_emit_fact_detected.get(k, False),
+        )
 
     for k in range(6):
         add(FeatureRegion.TERMINAL_TAIL, f"early_return_guard_{k}_present",

@@ -15,7 +15,7 @@ import textwrap
 
 import pytest
 
-from d810.cfg.ref_region_oracle import (
+from d810.diagnostics.ref_region_oracle import (
     FeatureRegion,
     FeatureSource,
     RegionFeature,
