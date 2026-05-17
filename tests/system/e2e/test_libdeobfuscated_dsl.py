@@ -36,6 +36,7 @@ from tests.system.cases.libobfuscated_comprehensive import (
     NESTED_DISPATCHER_CASES,
     OLLVM_CASES,
     TIGRESS_CASES,
+    TIGRESS_ENGINE_CASES,
     UNWRAP_LOOPS_CASES,
     WHILE_SWITCH_CASES,
     HARDENED_OLLVM_COND_CHAIN_CASES,
@@ -300,6 +301,33 @@ class TestTigressPatterns:
         load_expected_stats,
     ):
         """Tigress obfuscation patterns."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
+class TestTigressEnginePatterns:
+    """Replacement-readiness gates for Tigress through the shared engine profile."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", TIGRESS_ENGINE_CASES, ids=lambda c: c.test_id)
+    def test_tigress_engine_patterns(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """Tigress switch-table state machines through EmulatedDispatcherUnflattener."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,

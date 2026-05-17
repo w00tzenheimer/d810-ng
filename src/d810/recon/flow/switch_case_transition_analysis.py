@@ -26,7 +26,10 @@ class SwitchCaseBody:
     state: int
     entry_block: int | None = None
     state_writes: tuple[int, ...] = ()
+    state_write_exit_blocks: tuple[int | None, ...] = ()
+    state_write_ordered_paths: tuple[tuple[int, ...], ...] = ()
     returns: tuple[int | None, ...] = ()
+    return_exit_blocks: tuple[int | None, ...] = ()
     predicate_kind: str | None = None
     source_predicate: bool = False
     payload: dict[str, object] = field(default_factory=dict)
@@ -48,6 +51,8 @@ class SwitchCaseTransitionFact:
     reason: str = ""
     row_kind: str | None = None
     target_block: int | None = None
+    exit_block: int | None = None
+    ordered_path: tuple[int, ...] = ()
     payload: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -68,6 +73,10 @@ class SwitchCaseTransitionFact:
         proof_kind = self.proof.proof_kind_name if self.proof is not None else None
         trusted = int(bool(self.proof.trusted)) if self.proof is not None else 0
         payload = dict(self.payload)
+        if self.exit_block is not None:
+            payload.setdefault("exit_block", self.exit_block)
+        if self.ordered_path:
+            payload.setdefault("ordered_path", tuple(int(serial) for serial in self.ordered_path))
         if self.proof is not None:
             payload.setdefault("proof_id", self.proof.proof_id)
             payload.setdefault("proof_reason", self.proof.reason)
@@ -202,21 +211,32 @@ def collect_switch_case_transition_facts_from_mba(
             continue
 
         next_states: list[int] = []
+        next_state_exits: list[int | None] = []
+        next_state_paths: list[tuple[int, ...]] = []
         returns: list[int | None] = []
+        return_exits: list[int | None] = []
         for path in path_results:
             final_state = getattr(path, "final_state", None)
+            exit_block = getattr(path, "exit_block", None)
+            ordered_path = tuple(int(serial) for serial in getattr(path, "ordered_path", ()) or ())
             if final_state is None:
                 returns.append(_return_value_for_path(mba, getattr(path, "ordered_path", ()) or ()))
+                return_exits.append(None if exit_block is None else int(exit_block))
                 continue
             state_value = int(final_state) & 0xFFFFFFFFFFFFFFFF
             if state_value not in next_states:
                 next_states.append(state_value)
+                next_state_exits.append(None if exit_block is None else int(exit_block))
+                next_state_paths.append(ordered_path)
         case_bodies.append(
             SwitchCaseBody(
                 state=source_state,
                 entry_block=entry_block,
                 state_writes=tuple(next_states),
+                state_write_exit_blocks=tuple(next_state_exits),
+                state_write_ordered_paths=tuple(next_state_paths),
                 returns=tuple(returns),
+                return_exit_blocks=tuple(return_exits),
                 predicate_kind="live_mba_branch" if len(next_states) == 2 else None,
                 source_predicate=_has_live_conditional_branch(
                     mba,
@@ -266,6 +286,7 @@ def _facts_for_body(
                     oracle_kind="switch_case_return_frontier",
                 ),
                 reason="case_body_returns",
+                exit_block=_return_exit_block(body, index),
                 payload=dict(body.payload),
             )
             for index, value in enumerate(body.returns)
@@ -288,6 +309,8 @@ def _facts_for_body(
                 "direct_case_transition"
                 if next_state in visible_states else "direct_target_not_in_switch_rows"
             ),
+            exit_block=_state_write_exit_block(body, 0),
+            ordered_path=_state_write_ordered_path(body, 0),
             payload=dict(body.payload),
         ),)
     if len(writes) == 2:
@@ -330,6 +353,8 @@ def _facts_for_body(
                 },
             ),
             reason=reason,
+            exit_block=_state_write_exit_block(body, 0),
+            ordered_path=_state_write_ordered_path(body, 0),
             payload=dict(body.payload),
         ),)
     return (_unresolved_fact(
@@ -374,6 +399,26 @@ def _diagnostic_fact(
         target_block=target_block,
         payload={"profile_name": profile_name},
     )
+
+
+def _state_write_exit_block(body: SwitchCaseBody, index: int) -> int | None:
+    if index < len(body.state_write_exit_blocks):
+        value = body.state_write_exit_blocks[index]
+        return None if value is None else int(value)
+    return body.entry_block
+
+
+def _state_write_ordered_path(body: SwitchCaseBody, index: int) -> tuple[int, ...]:
+    if index < len(body.state_write_ordered_paths):
+        return tuple(int(serial) for serial in body.state_write_ordered_paths[index])
+    return ()
+
+
+def _return_exit_block(body: SwitchCaseBody, index: int) -> int | None:
+    if index < len(body.return_exit_blocks):
+        value = body.return_exit_blocks[index]
+        return None if value is None else int(value)
+    return body.entry_block
 
 
 def _unresolved_fact(

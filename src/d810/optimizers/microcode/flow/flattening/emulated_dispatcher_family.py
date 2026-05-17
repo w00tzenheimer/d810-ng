@@ -16,6 +16,7 @@ from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
     ReorderBlocks,
@@ -80,6 +81,7 @@ from d810.recon.flow.bst_analysis import (
     resolve_via_bst_walk,
 )
 from d810.recon.flow.branch_ownership import (
+    BranchOwnershipProof,
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
 )
@@ -963,6 +965,31 @@ def _empty_switch_case_transition_facts(
     return ()
 
 
+def _switch_fact_transition_kind_name(fact: object) -> str:
+    name = getattr(fact, "transition_kind_name", None)
+    if name is not None:
+        return str(name)
+    kind = getattr(fact, "transition_kind", "")
+    value = getattr(kind, "value", None)
+    if value is not None:
+        return str(value)
+    return str(kind)
+
+
+def _switch_fact_exit_block(fact: object) -> int | None:
+    exit_block = getattr(fact, "exit_block", None)
+    if exit_block is None:
+        payload = getattr(fact, "payload", {}) or {}
+        if isinstance(payload, dict):
+            exit_block = payload.get("exit_block")
+    if exit_block is None:
+        return None
+    try:
+        return int(exit_block)
+    except Exception:
+        return None
+
+
 def _ollvm_state_dispatcher_maps(
     mba: object,
     analysis: object,
@@ -1363,10 +1390,99 @@ def _state_has_payload_store(
     return False
 
 
-def _edge_has_trusted_nonsemantic_branch_proof(edge: object) -> bool:
+def _collect_phase_branch_ownership_proofs(
+    *,
+    dag: object,
+    dispatch_map: StateDispatcherMap | None,
+    mba: object,
+    profile_name: str,
+    logger: object,
+) -> tuple[BranchOwnershipProof, ...]:
+    """Collect recon branch ownership proofs for planning/diagnostics."""
+
+    proof_refiner = None
+    if str(profile_name).startswith("ollvm"):
+        try:
+            from d810.recon.flow.branch_ownership_oracle import (
+                MopTrackerBranchOwnershipOracle,
+            )
+
+            proof_refiner = MopTrackerBranchOwnershipOracle(mba=mba).refine
+        except Exception:
+            logger.debug(
+                "MopTracker branch ownership oracle unavailable",
+                exc_info=True,
+            )
+    return collect_branch_ownership_proofs(
+        dag=dag,
+        dispatch_map=dispatch_map,
+        proof_refiner=proof_refiner,
+    )
+
+
+def _edge_has_trusted_nonsemantic_branch_proof(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> bool:
     """Return whether recon proved this branch arm is non-semantic."""
 
+    matched_nonsemantic = False
+    matched_semantic = False
+
+    for proof in _iter_branch_ownership_proofs_for_edge(
+        edge,
+        branch_ownership_proofs=branch_ownership_proofs,
+    ):
+        if (
+            not _branch_ownership_proof_has_rewrite_identity(proof)
+            or not _branch_ownership_proof_matches_edge(proof, edge)
+        ):
+            continue
+        if proof.authorizes_semantic_branch_bridge:
+            matched_semantic = True
+        if proof.authorizes_nonsemantic_branch_rewrite:
+            matched_nonsemantic = True
+
+    return matched_nonsemantic and not matched_semantic
+
+
+def _trusted_nonsemantic_branch_proof_for_edge(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> BranchOwnershipProof | None:
+    """Return exact nonsemantic proof for ``edge`` unless semantic proof vetoes."""
+
+    matched_nonsemantic: BranchOwnershipProof | None = None
+    matched_semantic = False
+    for proof in _iter_branch_ownership_proofs_for_edge(
+        edge,
+        branch_ownership_proofs=branch_ownership_proofs,
+    ):
+        if (
+            not _branch_ownership_proof_has_rewrite_identity(proof)
+            or not _branch_ownership_proof_matches_edge(proof, edge)
+        ):
+            continue
+        if proof.authorizes_semantic_branch_bridge:
+            matched_semantic = True
+        if proof.authorizes_nonsemantic_branch_rewrite:
+            matched_nonsemantic = proof
+    if matched_semantic:
+        return None
+    return matched_nonsemantic
+
+
+def _iter_branch_ownership_proofs_for_edge(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+):
+    """Yield branch ownership proof rows attached to or supplied for ``edge``."""
+
     proof_candidates = [
+        branch_ownership_proofs,
         getattr(edge, "branch_ownership_proof", None),
         getattr(edge, "branch_ownership_proofs", None),
     ]
@@ -1389,14 +1505,8 @@ def _edge_has_trusted_nonsemantic_branch_proof(edge: object) -> bool:
         candidates = candidate if isinstance(candidate, (list, tuple)) else (candidate,)
         for proof_candidate in candidates:
             proof = branch_ownership_proof_from_any(proof_candidate)
-            if (
-                proof is not None
-                and proof.authorizes_nonsemantic_branch_rewrite
-                and _branch_ownership_proof_has_rewrite_identity(proof)
-                and _branch_ownership_proof_matches_edge(proof, edge)
-            ):
-                return True
-    return False
+            if proof is not None:
+                yield proof
 
 
 def _branch_ownership_proof_has_rewrite_identity(proof: object) -> bool:
@@ -1474,11 +1584,173 @@ def _proof_field_matches(proof_value: object | None, edge_value: object | None) 
         return str(proof_value) == str(edge_value)
 
 
+def _candidate_has_owned_or_split_lowering(
+    candidate: object,
+    flow_graph: FlowGraph,
+    *,
+    split_via_pred: int | None = None,
+) -> bool:
+    """Return whether proof-gated retargeting has a safe CFG edit shape."""
+
+    mode = str(getattr(candidate, "emission_mode", "") or "")
+    horizon = getattr(candidate, "horizon_block", None)
+    if horizon is None:
+        return False
+    try:
+        horizon = int(horizon)
+    except (TypeError, ValueError):
+        return False
+
+    if mode == "pred_split":
+        shared = getattr(candidate, "first_shared_block", None)
+        via_pred = getattr(candidate, "via_pred", None)
+        if shared is None or via_pred is None:
+            return False
+        try:
+            shared = int(shared)
+            via_pred = int(via_pred)
+        except (TypeError, ValueError):
+            return False
+        shared_block = flow_graph.get_block(shared)
+        return (
+            shared_block is not None
+            and via_pred in tuple(int(pred) for pred in getattr(shared_block, "preds", ()) or ())
+        )
+
+    if (
+        getattr(candidate, "first_shared_block", None) is not None
+        or getattr(candidate, "via_pred", None) is not None
+    ):
+        return False
+
+    horizon_block = flow_graph.get_block(horizon)
+    if horizon_block is None or int(getattr(horizon_block, "npred", 0)) > 1:
+        if split_via_pred is None:
+            return False
+        try:
+            split_via_pred = int(split_via_pred)
+        except (TypeError, ValueError):
+            return False
+        if horizon_block is None:
+            return False
+        if split_via_pred not in tuple(
+            int(pred) for pred in getattr(horizon_block, "preds", ()) or ()
+        ):
+            return False
+        pred_block = flow_graph.get_block(split_via_pred)
+        if pred_block is None:
+            return False
+        return horizon in tuple(
+            int(succ) for succ in getattr(pred_block, "succs", ()) or ()
+        )
+    if mode == "direct":
+        return int(getattr(horizon_block, "nsucc", 0)) == 1
+    if mode == "conditional_arm":
+        return int(getattr(horizon_block, "nsucc", 0)) == 2
+    return False
+
+
+def _terminal_payload_split_via_pred_for_candidate(
+    *,
+    candidate: object,
+    selector_edges: tuple[object, ...],
+    flow_graph: FlowGraph,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> int | None:
+    """Return the selector predecessor that can be split for shared payloads."""
+
+    edge = getattr(candidate, "edge", None)
+    if edge is None:
+        return None
+    source_state = _edge_source_state(edge)
+    if source_state is None:
+        return None
+    try:
+        horizon = int(getattr(candidate, "horizon_block"))
+    except (TypeError, ValueError):
+        return None
+    source_block = flow_graph.get_block(horizon)
+    if source_block is None or int(getattr(source_block, "npred", 0)) <= 1:
+        return None
+    for selector_edge in selector_edges:
+        if _edge_target_state(selector_edge) != source_state:
+            continue
+        proof = _trusted_nonsemantic_branch_proof_for_edge(
+            selector_edge,
+            branch_ownership_proofs=branch_ownership_proofs,
+        )
+        if proof is None:
+            continue
+        via_pred = getattr(proof, "source_block", None)
+        if via_pred is None:
+            continue
+        try:
+            via_pred = int(via_pred)
+        except (TypeError, ValueError):
+            continue
+        pred_block = flow_graph.get_block(via_pred)
+        if pred_block is None:
+            continue
+        if horizon not in tuple(
+            int(succ) for succ in getattr(pred_block, "succs", ()) or ()
+        ):
+            continue
+        if via_pred not in tuple(
+            int(pred) for pred in getattr(source_block, "preds", ()) or ()
+        ):
+            continue
+        return via_pred
+    return None
+
+
+def _terminal_payload_edge_split_replacement(
+    *,
+    candidate: object,
+    modification: object,
+    dag: object,
+    flow_graph: FlowGraph,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...],
+) -> tuple[EdgeRedirectViaPredSplit, ...] | None:
+    """Replace a shared payload direct retarget with a pred-scoped clone."""
+
+    if not isinstance(modification, RedirectGoto):
+        return None
+    edge = getattr(candidate, "edge", None)
+    if edge is None:
+        return None
+    source_state = _edge_source_state(edge)
+    target_state = _edge_target_state(edge)
+    if source_state is None or target_state is None:
+        return None
+    selector_edges = tuple(
+        selector_edge
+        for selector_edge in getattr(dag, "edges", ()) or ()
+        if _edge_source_state(selector_edge) == target_state
+    )
+    via_pred = _terminal_payload_split_via_pred_for_candidate(
+        candidate=candidate,
+        selector_edges=selector_edges,
+        flow_graph=flow_graph,
+        branch_ownership_proofs=branch_ownership_proofs,
+    )
+    if via_pred is None:
+        return None
+    return (
+        EdgeRedirectViaPredSplit(
+            src_block=int(modification.from_serial),
+            old_target=int(modification.old_target),
+            new_target=int(modification.new_target),
+            via_pred=int(via_pred),
+        ),
+    )
+
+
 def _retarget_ollvm_terminal_payload_backedges(
     *,
     dag: object,
     flow_graph: FlowGraph,
     raw_candidates: list,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
     logger: object,
 ) -> list:
     """Send proven opaque terminal payload states to the return frontier.
@@ -1547,10 +1819,28 @@ def _retarget_ollvm_terminal_payload_backedges(
             continue
 
         selector_edges = outgoing_by_state.get(target_state, ())
-        if not any(
+        has_selector_payload_proof = any(
             _edge_target_state(selector_edge) == source_state
-            and _edge_has_trusted_nonsemantic_branch_proof(selector_edge)
+            and _trusted_nonsemantic_branch_proof_for_edge(
+                selector_edge,
+                branch_ownership_proofs=branch_ownership_proofs,
+            ) is not None
             for selector_edge in selector_edges
+        )
+        if not has_selector_payload_proof:
+            rewritten.append(candidate)
+            continue
+
+        split_via_pred = _terminal_payload_split_via_pred_for_candidate(
+            candidate=candidate,
+            selector_edges=tuple(selector_edges),
+            flow_graph=flow_graph,
+            branch_ownership_proofs=branch_ownership_proofs,
+        )
+        if not _candidate_has_owned_or_split_lowering(
+            candidate,
+            flow_graph,
+            split_via_pred=split_via_pred,
         ):
             rewritten.append(candidate)
             continue
@@ -3600,11 +3890,20 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
             return (), ("phase_reconstruction_no_candidates",)
 
+        branch_ownership_proofs = _collect_phase_branch_ownership_proofs(
+            dag=dag,
+            dispatch_map=phase_context.state_dispatcher_map,
+            mba=mba,
+            profile_name=self._profile.name,
+            logger=self._logger,
+        )
+
         if self._profile.name == "ollvm_state_map":
             raw_candidates = _retarget_ollvm_terminal_payload_backedges(
                 dag=dag,
                 flow_graph=flow_graph,
                 raw_candidates=raw_candidates,
+                branch_ownership_proofs=branch_ownership_proofs,
                 logger=self._logger,
             )
 
@@ -3746,6 +4045,36 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 reason_prefix="conditional",
             )
 
+        def _direct_redirect_veto(
+            modification: GraphModification,
+            candidate: object,
+        ) -> str | tuple[GraphModification, ...] | None:
+            replacement = _terminal_payload_edge_split_replacement(
+                candidate=candidate,
+                modification=modification,
+                dag=dag,
+                flow_graph=flow_graph,
+                branch_ownership_proofs=branch_ownership_proofs,
+            )
+            if replacement is not None:
+                self._logger.info(
+                    "Phase reconstruction replaced shared terminal payload "
+                    "redirect with pred-split clone: src=blk[%d] old=blk[%d] "
+                    "new=blk[%d] via_pred=blk[%d]",
+                    int(replacement[0].src_block),
+                    int(replacement[0].old_target),
+                    int(replacement[0].new_target),
+                    int(replacement[0].via_pred),
+                )
+                return replacement
+            if use_def_policy == "off":
+                return None
+            return _veto_use_def_severing_redirect(
+                modification,
+                candidate,
+                reason_prefix="direct",
+            )
+
         try:
             run = execute_primary_reconstruction_modifications(
                 raw_candidates=list(raw_candidates),
@@ -3756,14 +4085,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 owned_blocks=owned_blocks,
                 owned_edges=owned_edges,
                 direct_redirect_veto=(
-                    (
-                        lambda modification, candidate: _veto_use_def_severing_redirect(
-                            modification,
-                            candidate,
-                            reason_prefix="direct",
-                        )
+                    _direct_redirect_veto
+                    if (
+                        use_def_policy != "off"
+                        or self._profile.name == "ollvm_state_map"
                     )
-                    if use_def_policy != "off"
                     else None
                 ),
                 conditional_redirect_veto=(
@@ -4386,6 +4712,115 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         # approov_vm_dispatcher, where recon sees a dispatcher but does not
         # yet prove a loop phase strong enough for structural recovery.
         return (), direct_blockers
+
+    def _collect_tigress_switch_transition_modifications(
+        self,
+        *,
+        flow_graph: FlowGraph,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
+        if self._profile.name != "tigress_switch":
+            return (), ("tigress_switch_transition_not_profile",)
+        if phase_artifact is None or phase_context is None:
+            return (), ("tigress_switch_transition_missing_artifact",)
+        dispatch_map = getattr(phase_context, "state_dispatcher_map", None)
+        if not isinstance(dispatch_map, StateDispatcherMap):
+            return (), ("tigress_switch_transition_missing_dispatcher_map",)
+        facts = tuple(getattr(phase_context, "switch_case_transition_facts", ()) or ())
+        if not facts:
+            return (), ("tigress_switch_transition_missing_facts",)
+
+        # Match the legacy switch rule's large-dispatcher caution. This first
+        # behavior slice can still persist exact diagnostics for large switches,
+        # but runtime planning abstains until repeated-pass/profile guards exist.
+        if len(dispatch_map.rows) > 256:
+            return (), ("tigress_switch_transition_large_dispatcher_abstained",)
+
+        dispatcher_entry = int(dispatch_map.dispatcher_entry_block)
+        modifications: list[GraphModification] = []
+        blockers: Counter[str] = Counter()
+        redirects_by_source: dict[int, int] = {}
+
+        def _add_redirect(source: int, target: int) -> None:
+            redirects_by_source[int(source)] = int(target)
+            modifications.append(
+                RedirectGoto(
+                    from_serial=int(source),
+                    old_target=dispatcher_entry,
+                    new_target=int(target),
+                )
+            )
+
+        initial_state = dispatch_map.initial_state
+        if initial_state is not None and phase_artifact.pre_header_serial is not None:
+            initial_target = dispatch_map.resolve_target(int(initial_state))
+            pre_header = int(phase_artifact.pre_header_serial)
+            pre_header_block = flow_graph.get_block(pre_header)
+            if (
+                initial_target is not None
+                and pre_header_block is not None
+                and pre_header_block.succs == (dispatcher_entry,)
+                and int(initial_target) in flow_graph.blocks
+            ):
+                _add_redirect(pre_header, int(initial_target))
+            else:
+                blockers["tigress_switch_transition_initial_redirect_unproven"] += 1
+
+        for fact in facts:
+            fact_kind = _switch_fact_transition_kind_name(fact)
+            if fact_kind != "DIRECT":
+                blockers[f"tigress_switch_transition_fact_{fact_kind.lower()}"] += 1
+                continue
+            next_states = tuple(
+                int(value) for value in getattr(fact, "next_states", ()) or ()
+            )
+            if len(next_states) != 1:
+                blockers["tigress_switch_transition_direct_target_count"] += 1
+                continue
+            target = dispatch_map.resolve_target(next_states[0])
+            if target is None:
+                blockers["tigress_switch_transition_target_unresolved"] += 1
+                continue
+            target = int(target)
+            if target == dispatcher_entry or target not in flow_graph.blocks:
+                blockers["tigress_switch_transition_target_not_handler"] += 1
+                continue
+            source = _switch_fact_exit_block(fact)
+            if source is None:
+                blockers["tigress_switch_transition_missing_exit_block"] += 1
+                continue
+            if source == target:
+                blockers["tigress_switch_transition_self_loop"] += 1
+                continue
+            source_block = flow_graph.get_block(source)
+            if source_block is None:
+                blockers["tigress_switch_transition_source_missing"] += 1
+                continue
+            if source_block.succs != (dispatcher_entry,):
+                blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
+                continue
+            if int(source_block.npred) > 1:
+                blockers["tigress_switch_transition_source_not_owned"] += 1
+                continue
+            previous = redirects_by_source.get(source)
+            if previous is not None and previous != target:
+                blockers["tigress_switch_transition_conflicting_source"] += 1
+                continue
+            if previous is None:
+                _add_redirect(source, target)
+
+        if not modifications:
+            if blockers:
+                return (), tuple(sorted(blockers))
+            return (), ("tigress_switch_transition_no_direct_candidates",)
+        self._logger.info(
+            "Tigress switch transition lowering selected %d direct edit(s); blockers=%s",
+            len(modifications),
+            ", ".join(f"{reason}={count}" for reason, count in blockers.most_common())
+            or "none",
+        )
+        return tuple(modifications), ()
 
     def _collect_phase_redirect_loop_recovery(
         self,
@@ -5414,6 +5849,21 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     "Phase state-DAG lowering blocked: %s",
                     state_dag_blockers,
                 )
+        switch_transition_modifications: tuple[GraphModification, ...] = ()
+        switch_transition_blockers: tuple[str, ...] = ()
+        if mba.maturity >= ida_hexrays.MMAT_GLBOPT1 and self._profile.name == "tigress_switch":
+            switch_transition_modifications, switch_transition_blockers = (
+                self._collect_tigress_switch_transition_modifications(
+                    flow_graph=flow_graph,
+                    phase_artifact=phase_artifact,
+                    phase_context=phase_context,
+                )
+            )
+            if switch_transition_blockers:
+                self._logger.info(
+                    "Tigress switch transition lowering blocked: %s",
+                    switch_transition_blockers,
+                )
         if (
             not fallback_modifications
             and not fallback_blockers
@@ -5470,10 +5920,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = state_dag_modifications
             selected_lowering_mode = "state_dag_recovery"
             selected_blockers = ()
+        elif switch_transition_modifications and not switch_transition_blockers:
+            selected_modifications = switch_transition_modifications
+            selected_lowering_mode = "tigress_switch_transition_facts"
+            selected_blockers = ()
         elif not selected_modifications and phase_reconstruction_blockers:
             selected_blockers = phase_reconstruction_blockers
         elif not selected_modifications and state_dag_blockers:
             selected_blockers = state_dag_blockers
+        elif not selected_modifications and switch_transition_blockers:
+            selected_blockers = switch_transition_blockers
         if (
             loop_recovery_blockers
             and "dispatcher_loop_recovery_return_carrier_bypass"
@@ -5662,25 +6118,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
 
             observe_dag(snap_ref, dag_nodes, dag_edges)
             observe_dag_local_facts(snap_ref, dag)
-            proof_refiner = None
-            if str(self._profile.name).startswith("ollvm"):
-                try:
-                    from d810.recon.flow.branch_ownership_oracle import (
-                        MopTrackerBranchOwnershipOracle,
-                    )
-
-                    proof_refiner = MopTrackerBranchOwnershipOracle(
-                        mba=mba,
-                    ).refine
-                except Exception:
-                    self._logger.debug(
-                        "MopTracker branch ownership oracle unavailable",
-                        exc_info=True,
-                    )
-            proofs = collect_branch_ownership_proofs(
+            proofs = _collect_phase_branch_ownership_proofs(
                 dag=SimpleNamespace(edges=dag_edge_objects),
                 dispatch_map=phase_context.state_dispatcher_map,
-                proof_refiner=proof_refiner,
+                mba=mba,
+                profile_name=self._profile.name,
+                logger=self._logger,
             )
             if proofs:
                 observe_branch_ownership_proofs(

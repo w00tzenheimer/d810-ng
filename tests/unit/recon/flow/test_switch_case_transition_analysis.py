@@ -130,6 +130,27 @@ def test_conditional_cases_require_valid_states_and_source_predicate() -> None:
     assert unresolved.proof.authorizes_nonsemantic_branch_rewrite is False
 
 
+def test_direct_case_facts_carry_exit_block_and_ordered_path() -> None:
+    facts = collect_switch_case_transition_facts(
+        dispatch_map=_dispatch_map(states=(11, 4)),
+        case_bodies=(
+            SwitchCaseBody(
+                state=11,
+                entry_block=111,
+                state_writes=(4,),
+                state_write_exit_blocks=(211,),
+                state_write_ordered_paths=((111, 211),),
+            ),
+        ),
+    )
+
+    direct = next(fact for fact in facts if fact.transition_kind == SwitchCaseTransitionKind.DIRECT)
+    assert direct.exit_block == 211
+    assert direct.ordered_path == (111, 211)
+    assert direct.to_diag_row()["payload"]["exit_block"] == 211
+    assert direct.to_diag_row()["payload"]["ordered_path"] == (111, 211)
+
+
 def test_alias_self_loop_and_default_rows_are_diagnostics() -> None:
     dispatch_map = StateDispatcherMap(
         rows=(
@@ -197,12 +218,12 @@ def test_collects_live_mba_case_writes_and_return_frontiers(monkeypatch) -> None
     def _evaluate(_mba, *, entry_serial, **_kwargs):
         if entry_serial == 104:
             return (
-                SimpleNamespace(final_state=9, ordered_path=(104,)),
-                SimpleNamespace(final_state=13, ordered_path=(104,)),
+                SimpleNamespace(final_state=9, exit_block=104, ordered_path=(104,)),
+                SimpleNamespace(final_state=13, exit_block=104, ordered_path=(104,)),
             )
         if entry_serial == 109:
-            return (SimpleNamespace(final_state=None, ordered_path=(109,)),)
-        return (SimpleNamespace(final_state=4, ordered_path=(113,)),)
+            return (SimpleNamespace(final_state=None, exit_block=109, ordered_path=(109,)),)
+        return (SimpleNamespace(final_state=4, exit_block=113, ordered_path=(113,)),)
 
     monkeypatch.setattr(
         "d810.recon.flow.state_machine_analysis.evaluate_handler_paths",
@@ -217,9 +238,12 @@ def test_collects_live_mba_case_writes_and_return_frontiers(monkeypatch) -> None
     conditional = next(fact for fact in facts if fact.source_state == 4)
     assert conditional.transition_kind == SwitchCaseTransitionKind.CONDITIONAL
     assert conditional.next_states == (9, 13)
+    assert conditional.exit_block == 104
+    assert conditional.ordered_path == (104,)
     assert conditional.proof is not None
     assert conditional.proof.proof_kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT
 
     ret = next(fact for fact in facts if fact.source_state == 9)
     assert ret.transition_kind == SwitchCaseTransitionKind.RETURN_FRONTIER
     assert ret.return_value == 1
+    assert ret.exit_block == 109
