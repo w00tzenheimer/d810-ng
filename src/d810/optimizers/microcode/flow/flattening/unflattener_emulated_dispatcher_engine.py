@@ -211,16 +211,68 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             self._actual_pass_count += 1
             return 0
 
-        executed = execute_family_pipeline(
-            self._last_snapshot,
-            planned,
-            executor_factory=lambda mba: TransactionalExecutor(
-                mba,
-                safeguard_profile="engine",
+        observation = extract_emulated_dispatcher_metadata(self._last_snapshot.flow_graph)
+        unflat_logger.debug(
+            "Emulated-dispatcher execution start: maturity=%s "
+            "selected_mode=%s selected_modifications=%d",
+            getattr(self.mba, "maturity", None),
+            observation.selected_lowering_mode if observation is not None else None,
+            (
+                int(observation.selected_modification_count)
+                if observation is not None
+                else -1
             ),
-            flow_context=self.flow_context,
         )
+        try:
+            executed = execute_family_pipeline(
+                self._last_snapshot,
+                planned,
+                executor_factory=lambda mba: TransactionalExecutor(
+                    mba,
+                    safeguard_profile="engine",
+                ),
+                flow_context=self.flow_context,
+            )
+        except Exception:
+            unflat_logger.exception(
+                "Emulated-dispatcher execution failed before summary: "
+                "maturity=%s selected_mode=%s selected_modifications=%d",
+                getattr(self.mba, "maturity", None),
+                observation.selected_lowering_mode if observation is not None else None,
+                (
+                    int(observation.selected_modification_count)
+                    if observation is not None
+                    else -1
+                ),
+            )
+            raise
         self._last_provenance = executed.provenance
+        result_summaries = tuple(
+            {
+                "strategy": result.strategy_name,
+                "success": bool(result.success),
+                "edits_applied": int(result.edits_applied),
+                "failure_phase": result.failure_phase,
+                "error": result.error,
+                "backend_filter": result.metadata.get("backend_filter"),
+                "cycle_filter": result.metadata.get("cycle_filter"),
+            }
+            for result in executed.results
+        )
+        unflat_logger.debug(
+            "Emulated-dispatcher execution summary: maturity=%s "
+            "selected_mode=%s selected_modifications=%d total_changes=%d "
+            "results=%s",
+            getattr(self.mba, "maturity", None),
+            observation.selected_lowering_mode if observation is not None else None,
+            (
+                int(observation.selected_modification_count)
+                if observation is not None
+                else -1
+            ),
+            int(executed.total_changes),
+            result_summaries,
+        )
         cleanup_changes = self._family.post_execute_cleanup(
             self.mba,
             snapshot=self._last_snapshot,

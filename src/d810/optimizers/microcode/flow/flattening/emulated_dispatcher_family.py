@@ -4388,6 +4388,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     branch_ownership_proofs=branch_ownership_proofs,
                 )
             )
+            if self._profile.enable_terminal_payload_materialization:
+                self._logger.info(
+                    "OLLVM terminal payload materialization scan: "
+                    "maturity=%s candidates=%d",
+                    getattr(mba, "maturity", None),
+                    len(materialization_candidates),
+                )
             for materialization_candidate in materialization_candidates:
                 self._logger.info(
                     "OLLVM terminal payload materialization candidate: "

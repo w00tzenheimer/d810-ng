@@ -8455,6 +8455,7 @@ class DeferredGraphModifier:
         via_pred: int | None,
         old_target: int | None,
         new_target: int | None,
+        validate_new_target: bool = True,
     ) -> bool:
         """Validate live topology for a trampoline without mutating the MBA."""
         if (
@@ -8474,11 +8475,32 @@ class DeferredGraphModifier:
             return False
 
         mba = self.mba
-        src_blk = mba.get_mblock(source_block_serial)
-        via_pred_blk = mba.get_mblock(via_pred)
-        target_blk = mba.get_mblock(new_target)
+        try:
+            src_blk = mba.get_mblock(source_block_serial)
+            via_pred_blk = mba.get_mblock(via_pred)
+            target_blk = (
+                mba.get_mblock(new_target)
+                if validate_new_target
+                else None
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "edge_split_trampoline: live block probe failed "
+                "src=%s pred=%s old=%s new=%s validate_new_target=%s: %s",
+                source_block_serial,
+                via_pred,
+                old_target,
+                new_target,
+                validate_new_target,
+                exc,
+            )
+            return False
 
-        if src_blk is None or via_pred_blk is None or target_blk is None:
+        if (
+            src_blk is None
+            or via_pred_blk is None
+            or (validate_new_target and target_blk is None)
+        ):
             logger.warning(
                 "edge_split_trampoline: missing block src=%s pred=%s target=%s",
                 source_block_serial,
