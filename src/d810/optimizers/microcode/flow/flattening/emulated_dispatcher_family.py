@@ -25,6 +25,11 @@ from d810.cfg.graph_modification import (
     ZeroStateWrite,
 )
 from d810.cfg.modification_builder import ModificationBuilder
+from d810.cfg.plan import (
+    PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
+    compile_patch_plan,
+)
 from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
@@ -1990,6 +1995,54 @@ def _terminal_selector_payload_materialization_modifications(
     return tuple(modifications)
 
 
+def _compile_terminal_selector_payload_materialization_modifications(
+    candidate: TerminalSelectorPayloadMaterializationCandidate,
+    flow_graph: FlowGraph,
+) -> tuple[tuple[GraphModification, ...], str | None]:
+    """Return validated materialization edits or a blocker reason."""
+
+    modifications = _terminal_selector_payload_materialization_modifications(
+        candidate
+    )
+    try:
+        patch_plan = compile_patch_plan(modifications, flow_graph)
+    except Exception:
+        return (), "terminal_payload_materialization_patch_plan_failed"
+
+    insert_count = len(candidate.external_incoming_edges)
+    expected_step_count = insert_count + 1
+    if len(patch_plan.steps) != expected_step_count:
+        return (), "terminal_payload_materialization_unexpected_patch_plan"
+
+    rewritten_continuation = patch_plan.relocation_map.rewrite_serial(
+        int(candidate.semantic_continuation)
+    )
+    for index, incoming in enumerate(candidate.external_incoming_edges):
+        step = patch_plan.steps[index]
+        if not isinstance(step, PatchInsertBlock):
+            return (), "terminal_payload_materialization_missing_insert_block"
+        if (
+            int(step.pred_serial) != int(incoming.source_block)
+            or int(step.succ_serial) != int(rewritten_continuation)
+            or int(step.old_target_serial or -1) != int(candidate.payload_block)
+            or tuple(step.instructions) != tuple(candidate.side_effect_instructions)
+        ):
+            return (), "terminal_payload_materialization_insert_identity_mismatch"
+
+    split_step = patch_plan.steps[-1]
+    if not isinstance(split_step, PatchEdgeSplitTrampoline):
+        return (), "terminal_payload_materialization_missing_edge_split"
+    if (
+        int(split_step.source_serial) != int(candidate.payload_block)
+        or int(split_step.via_pred) != int(candidate.selector_source_block)
+        or int(split_step.old_target) != int(candidate.payload_backedge_target)
+        or int(split_step.new_target) != int(rewritten_continuation)
+    ):
+        return (), "terminal_payload_materialization_split_identity_mismatch"
+
+    return modifications, None
+
+
 def _candidate_has_owned_or_split_lowering(
     candidate: object,
     flow_graph: FlowGraph,
@@ -2637,6 +2690,7 @@ class GenericDispatcherEngineProfile:
     provenance_hints: tuple[str, ...] = ()
     prefer_switch_transition_facts: bool = False
     allow_incomplete_switch_transition_facts: bool = False
+    enable_terminal_payload_materialization: bool = False
     state_dispatcher_map_factory: Callable[
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
@@ -2905,7 +2959,10 @@ def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
     )
 
 
-def ollvm_state_dispatcher_map_profile() -> GenericDispatcherEngineProfile:
+def ollvm_state_dispatcher_map_profile(
+    *,
+    enable_terminal_payload_materialization: bool = False,
+) -> GenericDispatcherEngineProfile:
     """Return the recon-owned OLLVM equality-chain profile.
 
     OLLVM equality-chain dispatchers are now modelled through the neutral
@@ -2929,6 +2986,7 @@ def ollvm_state_dispatcher_map_profile() -> GenericDispatcherEngineProfile:
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=("equality_chain",),
+        enable_terminal_payload_materialization=enable_terminal_payload_materialization,
         state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
     )
 
@@ -4312,6 +4370,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             logger=self._logger,
         )
 
+        terminal_payload_materialization_modifications: list[GraphModification] = []
+        terminal_payload_materialization_owned_blocks: set[int] = set()
+        terminal_payload_materialization_owned_edges: set[tuple[int, int]] = set()
         if self._profile.name == "ollvm_state_map":
             raw_candidates = _retarget_ollvm_terminal_payload_backedges(
                 dag=dag,
@@ -4351,6 +4412,48 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                         )
                     ),
                 )
+                if not self._profile.enable_terminal_payload_materialization:
+                    continue
+                materialization_modifications, materialization_blocker = (
+                    _compile_terminal_selector_payload_materialization_modifications(
+                        materialization_candidate,
+                        flow_graph,
+                    )
+                )
+                if materialization_blocker is not None:
+                    self._logger.info(
+                        "OLLVM terminal payload materialization blocked: "
+                        "reason=%s selector=0x%08X payload=0x%08X",
+                        materialization_blocker,
+                        int(materialization_candidate.selector_state) & 0xFFFFFFFF,
+                        int(materialization_candidate.payload_state) & 0xFFFFFFFF,
+                    )
+                    continue
+                terminal_payload_materialization_modifications.extend(
+                    materialization_modifications
+                )
+                terminal_payload_materialization_owned_blocks.update(
+                    int(block)
+                    for block in materialization_candidate.side_effect_corridor_blocks
+                )
+                terminal_payload_materialization_owned_edges.update(
+                    (
+                        int(edge.source_block),
+                        int(materialization_candidate.payload_block),
+                    )
+                    for edge in materialization_candidate.external_incoming_edges
+                )
+                terminal_payload_materialization_owned_edges.add((
+                    int(materialization_candidate.payload_block),
+                    int(materialization_candidate.semantic_continuation),
+                ))
+                self._logger.info(
+                    "OLLVM terminal payload materialization enabled: "
+                    "selector=0x%08X payload=0x%08X edits=%d",
+                    int(materialization_candidate.selector_state) & 0xFFFFFFFF,
+                    int(materialization_candidate.payload_state) & 0xFFFFFFFF,
+                    len(materialization_modifications),
+                )
 
         include_entry_redirect = not (
             is_residual_phase and residual_has_terminal_frontier
@@ -4377,6 +4480,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 int(dispatcher_entry),
             )
         initial_modification_count = len(modifications)
+        if terminal_payload_materialization_modifications:
+            modifications.extend(terminal_payload_materialization_modifications)
+            owned_blocks.update(terminal_payload_materialization_owned_blocks)
+            owned_edges.update(terminal_payload_materialization_owned_edges)
         direct_use_def_veto_sources: set[int] = set()
         use_def_policy_env = os.environ.get(
             "D810_OLLVM_PHASE_USE_DEF_VETO", ""
