@@ -19,6 +19,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
+from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchInsertBlock, compile_patch_plan
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import lift as lift_mba
 from d810.optimizers.microcode.flow.flattening import (
@@ -705,6 +706,467 @@ def test_ollvm_terminal_payload_backedge_uses_pred_split_for_shared_payload() ->
             via_pred=98,
         ),
     )
+
+
+def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+    store = InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=())
+    state_write = InsnSnapshot(opcode=ida_hexrays.m_mov, ea=0x40113A, operands=())
+    dag = SimpleNamespace(
+        nodes=(),
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                SemanticEdgeKind.TRANSITION,
+                target_entry=96,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=204,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(204, 136),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(store, state_write),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 136),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="branch_ownership_terminal_selector_backedge",
+        evidence={
+            "requires_side_effect_materialization": True,
+            "opaque_selected_proof_id": "selector-residue-proof",
+            "external_incoming_materialization_veto_proof_ids": (
+                "external-veto-proof",
+            ),
+            "external_incoming_side_effect_guard_reasons": (
+                "discarded_arm_contains_payload_store",
+            ),
+        },
+    )
+    veto = BranchOwnershipProof(
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="z3_branch_ownership",
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto),
+        )
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.selector_source_block == 98
+    assert candidate.selector_branch_arm == 1
+    assert candidate.selector_state == selector_state
+    assert candidate.payload_state == payload_state
+    assert candidate.payload_block == 136
+    assert candidate.payload_backedge_target == 96
+    assert candidate.semantic_continuation == 204
+    assert candidate.side_effect_corridor_blocks == (136,)
+    assert candidate.side_effect_instructions == (store,)
+    assert candidate.side_effect_instructions[0].ea == 0x401136
+    assert candidate.materialization_veto_proof_ids == ("external-veto-proof",)
+    assert candidate.side_effect_guard_reasons == (
+        "discarded_arm_contains_payload_store",
+    )
+
+    modifications = (
+        emulated_family_module
+        ._terminal_selector_payload_materialization_modifications(candidate)
+    )
+    assert modifications == (
+        InsertBlock(
+            pred_serial=146,
+            succ_serial=204,
+            instructions=(store,),
+            old_target_serial=136,
+        ),
+        EdgeRedirectViaPredSplit(
+            src_block=136,
+            old_target=96,
+            new_target=204,
+            via_pred=98,
+        ),
+    )
+    patch_plan = compile_patch_plan(modifications, flow_graph)
+    rewritten_continuation = patch_plan.relocation_map.rewrite_serial(204)
+    assert isinstance(patch_plan.steps[0], PatchInsertBlock)
+    assert patch_plan.steps[0].pred_serial == 146
+    assert patch_plan.steps[0].succ_serial == rewritten_continuation
+    assert patch_plan.steps[0].old_target_serial == 136
+    assert patch_plan.steps[0].instructions == (store,)
+    assert isinstance(patch_plan.steps[1], PatchEdgeSplitTrampoline)
+    assert patch_plan.steps[1].source_serial == 136
+    assert patch_plan.steps[1].via_pred == 98
+    assert patch_plan.steps[1].old_target == 96
+    assert patch_plan.steps[1].new_target == rewritten_continuation
+
+
+def test_ollvm_terminal_payload_materialization_rejects_semantic_external_edge() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+    semantic = BranchOwnershipProof(
+        proof_id="external-semantic-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="source_data_controls_payload",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+    )
+    veto = replace(
+        semantic,
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto, semantic),
+        )
+    )
+
+    assert candidates == ()
+
+
+def test_ollvm_terminal_payload_materialization_rejects_unproven_external_edge() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked,),
+        )
+    )
+
+    assert candidates == ()
 
 
 class _FakeInsn:

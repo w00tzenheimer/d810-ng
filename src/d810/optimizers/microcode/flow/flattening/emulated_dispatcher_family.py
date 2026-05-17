@@ -12,7 +12,7 @@ import ida_hexrays
 
 from d810.core.typing import Protocol
 from d810.cfg.dominator import compute_dom_tree
-from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
@@ -190,6 +190,60 @@ class _LoopReturnCarrierCandidate:
     source_mop: object
     write_block: int
     read_blocks: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class TerminalSelectorPayloadIncomingEdge:
+    """External payload incoming edge blocked by a side-effect veto.
+
+    The branch-ownership diagnostic row tells us why the terminal selector
+    backedge could not become trusted nonsemantic proof: another incoming edge
+    reaches the same payload block, and that edge's discarded arm owns payload
+    side effects.  This value records that exact external edge identity so any
+    later CFG primitive can preserve the payload before redirecting the edge.
+    """
+
+    source_block: int
+    branch_arm: int
+    source_state: int
+    target_state: int
+    target_entry: int
+    veto_proof_id: str
+    side_effect_guard_reason: str
+
+
+@dataclass(frozen=True)
+class TerminalSelectorPayloadMaterializationCandidate:
+    """Proof-gated OLLVM terminal payload materialization plan.
+
+    This is not itself permission to remove a branch.  It is the narrow bridge
+    between branch ownership diagnostics and CFG planning: all edge identities
+    are exact, all external incoming edges have sticky side-effect veto proof,
+    and the payload store snapshots are carried explicitly for replay.
+    """
+
+    selector_source_block: int
+    selector_branch_arm: int
+    selector_state: int
+    payload_state: int
+    payload_block: int
+    payload_backedge_target: int
+    semantic_continuation: int
+    side_effect_corridor_blocks: tuple[int, ...]
+    side_effect_instructions: tuple[InsnSnapshot, ...]
+    selector_blocked_proof_id: str
+    selector_residue_proof_id: str
+    external_incoming_edges: tuple[TerminalSelectorPayloadIncomingEdge, ...]
+
+    @property
+    def materialization_veto_proof_ids(self) -> tuple[str, ...]:
+        return tuple(edge.veto_proof_id for edge in self.external_incoming_edges)
+
+    @property
+    def side_effect_guard_reasons(self) -> tuple[str, ...]:
+        return tuple(
+            edge.side_effect_guard_reason for edge in self.external_incoming_edges
+        )
 
 
 def _iter_block_insns(block: object):
@@ -1680,6 +1734,260 @@ def _proof_field_matches(proof_value: object | None, edge_value: object | None) 
         return int(proof_value) == int(edge_value)
     except (TypeError, ValueError):
         return str(proof_value) == str(edge_value)
+
+
+def _branch_ownership_proof_has_materialization_identity(proof: object) -> bool:
+    """Return whether a proof can identify a concrete materialization edge."""
+
+    return all((
+        getattr(proof, "source_block", None) is not None,
+        getattr(proof, "branch_arm", None) is not None,
+        getattr(proof, "source_state", None) is not None,
+        getattr(proof, "target_state", None) is not None,
+        getattr(proof, "target_entry", None) is not None,
+    ))
+
+
+def _branch_ownership_proof_matches_materialization_edge(
+    proof: object,
+    edge: object,
+) -> bool:
+    return (
+        _branch_ownership_proof_has_materialization_identity(proof)
+        and _branch_ownership_proof_matches_edge(proof, edge)
+    )
+
+
+def _payload_store_snapshots(
+    flow_graph: FlowGraph,
+    payload_block: int,
+) -> tuple[InsnSnapshot, ...]:
+    block = flow_graph.get_block(int(payload_block))
+    if block is None:
+        return ()
+    stores: list[InsnSnapshot] = []
+    for insn in block.iter_insns():
+        try:
+            if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_stx):
+                continue
+        except (TypeError, ValueError):
+            continue
+        stores.append(insn)
+    return tuple(stores)
+
+
+def _return_entries_by_source_state(
+    dag: object,
+) -> tuple[dict[int, list[int]], dict[int, set[int]], dict[int, list[object]]]:
+    outgoing_by_state: dict[int, list[object]] = {}
+    return_entries_by_state: dict[int, list[int]] = {}
+    targets_by_source_state: dict[int, set[int]] = {}
+    for edge in tuple(getattr(dag, "edges", ()) or ()):
+        source_state = _edge_source_state(edge)
+        if source_state is None:
+            continue
+        outgoing_by_state.setdefault(source_state, []).append(edge)
+        target_state = _edge_target_state(edge)
+        if target_state is not None:
+            targets_by_source_state.setdefault(source_state, set()).add(target_state)
+        kind_name = _semantic_edge_kind_name(getattr(edge, "kind", None))
+        if kind_name in {"CONDITIONAL_RETURN", "EXIT_ROUTINE"}:
+            return_entry = _edge_return_entry(edge)
+            if return_entry is not None:
+                return_entries_by_state.setdefault(source_state, []).append(
+                    return_entry
+                )
+    return return_entries_by_state, targets_by_source_state, outgoing_by_state
+
+
+def _terminal_selector_semantic_continuation(
+    *,
+    selector_state: int,
+    payload_state: int,
+    dag: object,
+) -> int | None:
+    (
+        return_entries_by_state,
+        targets_by_source_state,
+        _outgoing_by_state,
+    ) = _return_entries_by_source_state(dag)
+    selector_targets = targets_by_source_state.get(int(selector_state), set())
+    selector_returns = list(return_entries_by_state.get(int(selector_state), ()))
+    for selector_target in sorted(selector_targets):
+        selector_returns.extend(return_entries_by_state.get(selector_target, ()))
+    selector_returns = sorted(set(int(entry) for entry in selector_returns))
+    if len(selector_returns) != 1 or int(payload_state) not in selector_targets:
+        return None
+    return int(selector_returns[0])
+
+
+def _strict_matching_proofs_for_edge(
+    proofs: tuple[BranchOwnershipProof, ...],
+    edge: object,
+) -> tuple[BranchOwnershipProof, ...]:
+    return tuple(
+        proof for proof in proofs
+        if _branch_ownership_proof_matches_materialization_edge(proof, edge)
+    )
+
+
+def _collect_terminal_selector_payload_materialization_candidates(
+    *,
+    dag: object,
+    flow_graph: FlowGraph,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...],
+) -> tuple[TerminalSelectorPayloadMaterializationCandidate, ...]:
+    """Build materialization candidates from terminal-selector gap proofs."""
+
+    edges = tuple(getattr(dag, "edges", ()) or ())
+    incoming_by_target: dict[int, list[object]] = {}
+    outgoing_by_source: dict[int, list[object]] = {}
+    for edge in edges:
+        source_state = _edge_source_state(edge)
+        target_state = _edge_target_state(edge)
+        if source_state is not None:
+            outgoing_by_source.setdefault(source_state, []).append(edge)
+        if target_state is not None:
+            incoming_by_target.setdefault(target_state, []).append(edge)
+
+    candidates: list[TerminalSelectorPayloadMaterializationCandidate] = []
+    for proof in branch_ownership_proofs:
+        if (
+            str(getattr(proof, "reason", ""))
+            != "terminal_selector_backedge_requires_side_effect_materialization"
+        ):
+            continue
+        evidence = getattr(proof, "evidence", {}) or {}
+        if evidence.get("requires_side_effect_materialization") is not True:
+            continue
+        if not _branch_ownership_proof_has_materialization_identity(proof):
+            continue
+
+        selector_state = int(proof.source_state)
+        payload_state = int(proof.target_state)
+        payload_block = int(proof.target_entry)
+        selector_source_block = int(proof.source_block)
+        selector_branch_arm = int(proof.branch_arm)
+
+        selector_edges = tuple(
+            edge for edge in outgoing_by_source.get(selector_state, ())
+            if _branch_ownership_proof_matches_materialization_edge(proof, edge)
+        )
+        if len(selector_edges) != 1:
+            continue
+        payload_backedges = tuple(
+            edge for edge in outgoing_by_source.get(payload_state, ())
+            if _edge_target_state(edge) == selector_state
+        )
+        if len(payload_backedges) != 1:
+            continue
+        payload_backedge_target = _edge_return_entry(payload_backedges[0])
+        if payload_backedge_target is None:
+            continue
+
+        semantic_continuation = _terminal_selector_semantic_continuation(
+            selector_state=selector_state,
+            payload_state=payload_state,
+            dag=dag,
+        )
+        if semantic_continuation is None:
+            continue
+
+        side_effect_instructions = _payload_store_snapshots(
+            flow_graph,
+            payload_block,
+        )
+        if not side_effect_instructions:
+            continue
+
+        external_edges = tuple(
+            edge for edge in incoming_by_target.get(payload_state, ())
+            if not _branch_ownership_proof_matches_materialization_edge(proof, edge)
+        )
+        if not external_edges:
+            continue
+
+        external_incoming: list[TerminalSelectorPayloadIncomingEdge] = []
+        rejected = False
+        for external_edge in external_edges:
+            matching_proofs = _strict_matching_proofs_for_edge(
+                branch_ownership_proofs,
+                external_edge,
+            )
+            if any(
+                matching.authorizes_semantic_branch_bridge
+                for matching in matching_proofs
+            ):
+                rejected = True
+                break
+            veto_proofs = tuple(
+                matching for matching in matching_proofs
+                if matching.vetoes_fallback_refinement
+            )
+            if len(veto_proofs) != 1:
+                rejected = True
+                break
+            veto = veto_proofs[0]
+            reason = str(
+                (getattr(veto, "evidence", {}) or {}).get(
+                    "side_effect_guard_reason",
+                    "",
+                )
+            )
+            if not reason:
+                rejected = True
+                break
+            external_incoming.append(TerminalSelectorPayloadIncomingEdge(
+                source_block=int(veto.source_block),
+                branch_arm=int(veto.branch_arm),
+                source_state=int(veto.source_state),
+                target_state=int(veto.target_state),
+                target_entry=int(veto.target_entry),
+                veto_proof_id=str(veto.proof_id),
+                side_effect_guard_reason=reason,
+            ))
+        if rejected or not external_incoming:
+            continue
+
+        candidates.append(TerminalSelectorPayloadMaterializationCandidate(
+            selector_source_block=selector_source_block,
+            selector_branch_arm=selector_branch_arm,
+            selector_state=selector_state,
+            payload_state=payload_state,
+            payload_block=payload_block,
+            payload_backedge_target=int(payload_backedge_target),
+            semantic_continuation=int(semantic_continuation),
+            side_effect_corridor_blocks=(payload_block,),
+            side_effect_instructions=side_effect_instructions,
+            selector_blocked_proof_id=str(proof.proof_id),
+            selector_residue_proof_id=str(
+                evidence.get("opaque_selected_proof_id") or ""
+            ),
+            external_incoming_edges=tuple(external_incoming),
+        ))
+    return tuple(candidates)
+
+
+def _terminal_selector_payload_materialization_modifications(
+    candidate: TerminalSelectorPayloadMaterializationCandidate,
+) -> tuple[GraphModification, ...]:
+    """Lower a materialization candidate to existing PatchPlan primitives."""
+
+    modifications: list[GraphModification] = []
+    for incoming in candidate.external_incoming_edges:
+        modifications.append(InsertBlock(
+            pred_serial=int(incoming.source_block),
+            succ_serial=int(candidate.semantic_continuation),
+            instructions=candidate.side_effect_instructions,
+            old_target_serial=int(candidate.payload_block),
+        ))
+    modifications.append(EdgeRedirectViaPredSplit(
+        src_block=int(candidate.payload_block),
+        old_target=int(candidate.payload_backedge_target),
+        new_target=int(candidate.semantic_continuation),
+        via_pred=int(candidate.selector_source_block),
+    ))
+    return tuple(modifications)
 
 
 def _candidate_has_owned_or_split_lowering(
@@ -4012,6 +4320,37 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 branch_ownership_proofs=branch_ownership_proofs,
                 logger=self._logger,
             )
+            materialization_candidates = (
+                _collect_terminal_selector_payload_materialization_candidates(
+                    dag=dag,
+                    flow_graph=flow_graph,
+                    branch_ownership_proofs=branch_ownership_proofs,
+                )
+            )
+            for materialization_candidate in materialization_candidates:
+                self._logger.info(
+                    "OLLVM terminal payload materialization candidate: "
+                    "selector=0x%08X arm=%d payload=0x%08X "
+                    "payload_blk[%d] continuation=blk[%d] "
+                    "external_preds=%s side_effect_eas=%s",
+                    int(materialization_candidate.selector_state) & 0xFFFFFFFF,
+                    int(materialization_candidate.selector_branch_arm),
+                    int(materialization_candidate.payload_state) & 0xFFFFFFFF,
+                    int(materialization_candidate.payload_block),
+                    int(materialization_candidate.semantic_continuation),
+                    ",".join(
+                        f"blk[{edge.source_block}]/arm{edge.branch_arm}"
+                        for edge in (
+                            materialization_candidate.external_incoming_edges
+                        )
+                    ),
+                    ",".join(
+                        f"0x{int(insn.ea):X}"
+                        for insn in (
+                            materialization_candidate.side_effect_instructions
+                        )
+                    ),
+                )
 
         include_entry_redirect = not (
             is_residual_phase and residual_has_terminal_frontier
