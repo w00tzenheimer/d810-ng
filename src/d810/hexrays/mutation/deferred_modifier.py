@@ -3108,7 +3108,10 @@ class DeferredGraphModifier:
                     self._debug_dump_block_neighborhood(mod.new_target, f"pre-apply[{i}] target")
             source_before_snapshot = snapshot_block_for_capture(blk)
             target_before_snapshot = None
-            if mod.new_target is not None:
+            if mod.new_target is not None and _is_live_block_serial(
+                self.mba,
+                mod.new_target,
+            ):
                 target_before_snapshot = snapshot_block_for_capture(
                     self.mba.get_mblock(mod.new_target)
                 )
@@ -3152,7 +3155,10 @@ class DeferredGraphModifier:
                     watch_prev = watch_now
                 source_after_snapshot = snapshot_block_for_capture(blk_after)
                 target_after_snapshot = None
-                if mod.new_target is not None:
+                if mod.new_target is not None and _is_live_block_serial(
+                    self.mba,
+                    mod.new_target,
+                ):
                     target_after_snapshot = snapshot_block_for_capture(
                         self.mba.get_mblock(mod.new_target)
                     )
@@ -5283,11 +5289,35 @@ class DeferredGraphModifier:
         (taken) arm of the m_jcnd tail (i.e., ``source_blk.tail.d.b``).
         Redirecting the fallthrough arm is not supported.
         """
+        logger.info(
+            "create_and_redirect: begin src=blk[%d] final=blk[%s] "
+            "expected=blk[%s] old_target=blk[%s] qty=%d",
+            int(source_blk.serial),
+            str(final_target),
+            str(expected_serial),
+            str(old_target_serial),
+            int(getattr(self.mba, "qty", 0) or 0),
+        )
         if instructions_to_copy is None:
             instructions_to_copy = []
-        instructions_to_copy = _prepare_block_creation_instructions(
-            self.mba,
-            instructions_to_copy,
+        try:
+            instructions_to_copy = _prepare_block_creation_instructions(
+                self.mba,
+                instructions_to_copy,
+            )
+        except Exception as exc:
+            logger.error(
+                "create_and_redirect: failed preparing %d instruction(s) "
+                "for blk[%d]: %s",
+                len(instructions_to_copy),
+                int(source_blk.serial),
+                exc,
+            )
+            return False
+        logger.info(
+            "create_and_redirect: prepared %d instruction(s) for blk[%d]",
+            len(instructions_to_copy),
+            int(source_blk.serial),
         )
 
         if source_blk.serial == 0:
@@ -5298,6 +5328,15 @@ class DeferredGraphModifier:
             return False
 
         nsucc = int(source_blk.nsucc())
+        logger.info(
+            "create_and_redirect: source blk[%d] nsucc=%d succs=%s",
+            int(source_blk.serial),
+            nsucc,
+            [
+                int(source_blk.succ(idx))
+                for idx in range(nsucc)
+            ],
+        )
         if nsucc not in (1, 2):
             logger.warning(
                 "create_and_redirect: unsupported nsucc=%d for blk[%d]",
@@ -5339,6 +5378,11 @@ class DeferredGraphModifier:
                     source_blk.serial,
                 )
                 return False
+            logger.info(
+                "create_and_redirect: blk[%d] conditional target=blk[%d]",
+                int(source_blk.serial),
+                cond_target,
+            )
             if cond_target != int(old_target_serial):
                 logger.warning(
                     "create_and_redirect: 2-way source blk[%d] conditional "
@@ -5358,17 +5402,51 @@ class DeferredGraphModifier:
         while ref_block.type in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP):
             tail_serial -= 1
             ref_block = mba.get_mblock(tail_serial)
+        logger.info(
+            "create_and_redirect: ref_block=blk[%d] old_stop=blk[%d] "
+            "initial_effective_final=blk[%d]",
+            int(ref_block.serial),
+            int(mba.qty - 1),
+            int(final_target),
+        )
+
+        old_stop_serial = mba.qty - 1
+        effective_final_target = int(final_target)
+        future_stop_target = False
+        if (
+            not _is_live_block_serial(mba, effective_final_target)
+            and effective_final_target >= int(old_stop_serial)
+        ):
+            logger.debug(
+                "create_and_redirect: resolving future STOP target blk[%d] "
+                "to current STOP blk[%d] for sequential insertion",
+                effective_final_target,
+                int(old_stop_serial),
+            )
+            effective_final_target = int(old_stop_serial)
+            future_stop_target = True
+        logger.info(
+            "create_and_redirect: effective_final=blk[%d] future_stop=%s qty=%d",
+            int(effective_final_target),
+            bool(future_stop_target),
+            int(getattr(mba, "qty", 0) or 0),
+        )
 
         # Get target block to check if it's 0-way
         target_blk = (
-            mba.get_mblock(final_target)
-            if _is_live_block_serial(mba, final_target)
+            mba.get_mblock(effective_final_target)
+            if _is_live_block_serial(mba, effective_final_target)
             else None
         )
         actual_is_0_way = is_0_way or (target_blk and target_blk.type == ida_hexrays.BLT_0WAY)
+        logger.info(
+            "create_and_redirect: target_live=%s target_type=%s actual_is_0_way=%s",
+            target_blk is not None,
+            str(int(target_blk.type)) if target_blk is not None else "None",
+            bool(actual_is_0_way),
+        )
 
         try:
-            old_stop_serial = mba.qty - 1
             old_stop_pred_serials = [
                 serial
                 for serial in range(mba.qty)
@@ -5377,17 +5455,32 @@ class DeferredGraphModifier:
                 and blk.succ(0) == old_stop_serial
             ]
             final_target_was_stop = (
-                not actual_is_0_way
-                and _is_live_block_serial(mba, final_target)
-                and int(final_target) == int(old_stop_serial)
+                future_stop_target
+                or (
+                    not actual_is_0_way
+                    and _is_live_block_serial(mba, effective_final_target)
+                    and int(effective_final_target) == int(old_stop_serial)
+                )
             )
             # Create a standalone block -- ref_block's CFG edges are NOT modified.
+            logger.info(
+                "create_and_redirect: create_standalone src=blk[%d] "
+                "target=blk[%s] planned_expected=blk[%s]",
+                int(source_blk.serial),
+                str(None if actual_is_0_way else effective_final_target),
+                str(expected_serial),
+            )
             new_block = create_standalone_block(
                 ref_block,
                 instructions_to_copy,
-                target_serial=None if actual_is_0_way else final_target,
+                target_serial=None if actual_is_0_way else effective_final_target,
                 is_0_way=actual_is_0_way,
                 verify=False,
+            )
+            logger.info(
+                "create_and_redirect: created blk[%d] qty=%d",
+                int(new_block.serial),
+                int(getattr(mba, "qty", 0) or 0),
             )
             if expected_serial is not None and new_block.serial != expected_serial:
                 self._serial_remap[int(expected_serial)] = int(new_block.serial)
@@ -5400,6 +5493,11 @@ class DeferredGraphModifier:
             new_stop_serial = mba.qty - 1
             new_block_nsucc = getattr(new_block, "nsucc", None)
             new_block_succ = getattr(new_block, "succ", None)
+            expected_successor = (
+                int(new_stop_serial)
+                if final_target_was_stop and not actual_is_0_way
+                else int(effective_final_target)
+            )
             if (
                 final_target_was_stop
                 and callable(new_block_nsucc)
@@ -5522,7 +5620,7 @@ class DeferredGraphModifier:
                 pass_type = (check_type == int(expected_type))
                 pass_succ = (
                     actual_is_0_way
-                    or check_succ0 == int(final_target)
+                    or check_succ0 == int(expected_successor)
                 )
                 pass_ninsns = expected_n_min <= check_ninsns <= expected_n_max
                 pass_all = pass_type and pass_succ and pass_ninsns
@@ -5535,7 +5633,7 @@ class DeferredGraphModifier:
                     " result=%s",
                     new_block.serial,
                     int(expected_type), check_type,
-                    int(final_target), check_succ0, check_nsucc,
+                    int(expected_successor), check_succ0, check_nsucc,
                     planned_n, check_ninsns, check_head_op,
                     "PASS" if pass_all else "FAIL",
                 )

@@ -493,6 +493,53 @@ def execute_shared_group_reconstruction(
             rejection_reason=None,
         )
 
+    owned_via_preds = {
+        int(candidate.via_pred)
+        for candidate in candidates
+        if (
+            candidate.via_pred is not None
+            and (int(candidate.via_pred), int(shared_block)) in owned_edges
+        )
+    }
+    if owned_via_preds:
+        logger.info(
+            "RECON EXEC: shared-group skips owned predecessor edge(s) "
+            "shared=%d via_preds=%s",
+            int(shared_block),
+            tuple(sorted(owned_via_preds)),
+        )
+        rejected_owned_candidates = tuple(
+            candidate
+            for candidate in candidates
+            if (
+                candidate.via_pred is not None
+                and int(candidate.via_pred) in owned_via_preds
+            )
+        )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (
+                candidate.via_pred is None
+                or int(candidate.via_pred) not in owned_via_preds
+            )
+        ]
+        ordered_input_candidates = tuple(
+            SharedGroupEmissionCandidate(
+                via_pred=int(candidate.via_pred),
+                target_entry=int(candidate.target_entry),
+            )
+            for candidate in candidates
+            if candidate.via_pred is not None
+        )
+        if not ordered_input_candidates:
+            return SharedGroupExecutionResult(
+                shared_block=int(shared_block),
+                accepted_candidates=(),
+                rejected_candidates=rejected_owned_candidates,
+                rejection_reason="owned_predecessor_edge",
+            )
+
     if mba is None:
         # Surfaced explicitly so we can audit which call paths bypass the
         # loop-carried induction guards.  A silent skip here is what
@@ -1290,8 +1337,37 @@ def execute_primary_reconstruction_modifications(
                 dispatcher_serial=dispatcher_serial,
                 current_state_entry=pt_entry_d,
             )
-            modifications.extend(pt_plan_d.modifications)
-            passthrough_count = len(pt_plan_d.modifications)
+            effective_passthrough_modifications: list[object] = []
+            for modification in pt_plan_d.modifications:
+                veto_reason = None
+                if callable(conditional_redirect_veto):
+                    try:
+                        veto_reason = conditional_redirect_veto(
+                            modification=modification,
+                            candidate=direct_candidate,
+                            source_block=getattr(modification, "from_serial", None),
+                            old_target=getattr(modification, "old_target", None),
+                            target_block=getattr(modification, "new_target", None),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "RECON EXEC: direct passthrough redirect veto callback raised",
+                            exc_info=True,
+                        )
+                        veto_reason = None
+                if veto_reason:
+                    logger.warning(
+                        "RECON EXEC: direct passthrough redirect vetoed "
+                        "blk[%s] -> blk[%s] old=blk[%s] reason=%s",
+                        getattr(modification, "from_serial", "?"),
+                        getattr(modification, "new_target", "?"),
+                        getattr(modification, "old_target", "?"),
+                        veto_reason,
+                    )
+                    continue
+                effective_passthrough_modifications.append(modification)
+            modifications.extend(effective_passthrough_modifications)
+            passthrough_count = len(effective_passthrough_modifications)
 
         direct_results.append(
             DirectExecutionResult(
