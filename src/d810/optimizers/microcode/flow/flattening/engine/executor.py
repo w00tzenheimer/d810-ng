@@ -54,6 +54,7 @@ from d810.cfg.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
+    InsertBlock,
     RedirectBranch,
     RedirectGoto,
 )
@@ -876,12 +877,26 @@ class TransactionalExecutor:
         modifier = deferred_modifier.DeferredGraphModifier(self.mba)
         rejected_edges: set[tuple[int, int, int, int]] = set()
         for step in trampoline_steps:
-            if modifier._check_edge_split_trampoline_preconditions(
-                source_block_serial=step.source_serial,
-                via_pred=step.via_pred,
-                old_target=step.old_target,
-                new_target=step.new_target,
-            ):
+            try:
+                preconditions_ok = modifier._check_edge_split_trampoline_preconditions(
+                    source_block_serial=step.source_serial,
+                    via_pred=step.via_pred,
+                    old_target=step.old_target,
+                    new_target=step.new_target,
+                    validate_new_target=False,
+                )
+            except RuntimeError as exc:
+                executor_logger.warning(
+                    "executor filter: edge-split live precondition probe failed "
+                    "src=%s pred=%s old=%s new=%s: %s",
+                    step.source_serial,
+                    step.via_pred,
+                    step.old_target,
+                    step.new_target,
+                    exc,
+                )
+                preconditions_ok = False
+            if preconditions_ok:
                 continue
             rejected_edges.add(
                 (step.source_serial, step.old_target, step.via_pred, step.new_target)
@@ -890,22 +905,48 @@ class TransactionalExecutor:
         if not rejected_edges:
             return modifications, patch_plan, 0
 
+        def _depends_on_rejected_edge_split(mod: GraphModification) -> bool:
+            if isinstance(mod, EdgeRedirectViaPredSplit):
+                rewritten_new_target = patch_plan.relocation_map.rewrite_serial(
+                    int(mod.new_target)
+                )
+                return any(
+                    int(mod.src_block) == source_serial
+                    and int(mod.old_target) == old_target
+                    and int(mod.via_pred) == via_pred
+                    and rewritten_new_target == new_target
+                    for (
+                        source_serial,
+                        old_target,
+                        via_pred,
+                        new_target,
+                    ) in rejected_edges
+                )
+            if isinstance(mod, InsertBlock) and mod.old_target_serial is not None:
+                rewritten_succ = patch_plan.relocation_map.rewrite_serial(
+                    int(mod.succ_serial)
+                )
+                return any(
+                    int(mod.old_target_serial) == source_serial
+                    and rewritten_succ == new_target
+                    for (
+                        source_serial,
+                        _old_target,
+                        _via_pred,
+                        new_target,
+                    ) in rejected_edges
+                )
+            return False
+
         filtered_modifications: list[GraphModification] = []
         for mod in patch_plan.planner_modifications:
-            if (
-                isinstance(mod, EdgeRedirectViaPredSplit)
-                and (
-                    mod.src_block,
-                    mod.old_target,
-                    mod.via_pred,
-                    mod.new_target,
-                )
-                in rejected_edges
-            ):
+            if _depends_on_rejected_edge_split(mod):
                 continue
             filtered_modifications.append(mod)
 
-        removed_count = len(rejected_edges)
+        removed_count = len(patch_plan.planner_modifications) - len(
+            filtered_modifications
+        )
         remaining_count = len(filtered_modifications)
         executor_logger.info(
             "executor filter: backend_removed=%d, remaining=%d",
