@@ -82,6 +82,8 @@ class _FakeEvidenceProvider:
 @dataclass
 class _FakeLiveBlock:
     succs: tuple[int, ...] = ()
+    start: int = 0
+    head: object | None = None
 
     def nsucc(self):
         return len(self.succs)
@@ -91,8 +93,18 @@ class _FakeLiveBlock:
 
 
 @dataclass
+class _FakeLiveInsn:
+    ea: int
+    next: object | None = None
+
+
+@dataclass
 class _FakeLiveMba:
     blocks: dict[int, _FakeLiveBlock] = field(default_factory=dict)
+
+    @property
+    def qty(self):
+        return max(self.blocks, default=-1) + 1
 
     def get_mblock(self, serial):
         return self.blocks.get(int(serial))
@@ -210,6 +222,56 @@ def test_load_planner_sites_from_fact_view_uses_observation_source_block():
     assert len(sites) == 1
     assert sites[0].byte_index == 2
     assert sites[0].block_serial == 118
+
+
+def test_load_planner_sites_remaps_stale_source_block_by_live_instruction_ea():
+    from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+        _load_planner_sites_from_fact_view,
+    )
+    from d810.recon.facts.model import FactObservation, ValidatedFactView
+
+    obs = FactObservation(
+        fact_id="terminal-byte-3",
+        kind="TerminalByteEmitterFact",
+        semantic_key="terminal:3",
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=164,
+        source_ea=0x180016285,
+        payload={
+            "byte_index": 3,
+            "corridor_role": "terminal_tail",
+            "emitter_role": "memory_store",
+            "opcode": "m_stx",
+            "source_byte_expression": "xdu.8([ds.2:(%var_190.8+#3.8)].1)",
+            "destination_buffer_expression": "[ds.2:%var_188]",
+            "source_block": 164,
+            "destination_block": 164,
+            "block_serial": 164,
+            "block_ea": 0x180016252,
+        },
+    )
+    adapter = _FakeLiveAdapter(
+        _FakeLiveMba(
+            blocks={
+                163: _FakeLiveBlock(
+                    start=0x180016252,
+                    head=_FakeLiveInsn(ea=0x180016285),
+                ),
+                164: _FakeLiveBlock(start=0x1800162C0),
+            }
+        )
+    )
+
+    sites = _load_planner_sites_from_fact_view(
+        ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,)),
+        adapter=adapter,
+    )
+
+    assert len(sites) == 1
+    assert sites[0].byte_index == 3
+    assert sites[0].block_serial == 163
 
 
 def test_tail_distinct_uses_provider_fact_view_without_diag(monkeypatch):
@@ -363,6 +425,9 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
         ByteTailRuntimeEvidence,
         TerminalTailPlannerEvidence,
     )
+    from d810.recon.flow.terminal_tail_priors import (
+        TerminalTailCascadeEgressPriors,
+    )
 
     blocks = {10: object()}
     sites = [object()]
@@ -373,7 +438,10 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
                 blocks=blocks,
                 sites=sites,
                 dag=dag,
-            )
+            ),
+            terminal_tail_cascade_egress=TerminalTailCascadeEgressPriors(
+                byte_indices=(1,),
+            ),
         )
     )
     calls = {}
@@ -429,6 +497,34 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
     assert provider.seen_mba is mba
     assert calls["blocks"] == blocks
     assert calls["sites"] == sites
+
+
+def test_terminal_tail_without_explicit_cascade_priors_skips(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+    )
+
+    provider = _FakeEvidenceProvider(ByteTailRuntimeEvidence(fact_view=object()))
+
+    def fail_load_planner_blocks_from_mba(mba):
+        raise AssertionError("terminal tail cascade should require explicit priors")
+
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        runtime,
+        "_load_planner_blocks_from_mba",
+        fail_load_planner_blocks_from_mba,
+    )
+
+    runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        object(),
+        evidence_provider=provider,
+    )
+
+    assert provider.seen_mba is not None
 
 
 def test_tail_state_cascade_missing_provider_skips_without_diag(monkeypatch):
@@ -683,6 +779,7 @@ def test_select_terminal_tail_entry_live_uses_fact_backed_prep_block():
         diag_conn=None,
         target_snap=None,
         adapter=adapter,
+        first_byte_index=1,
     )
 
     assert reason == "ok"
@@ -814,11 +911,562 @@ def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monk
         blocks=blocks,
         sites=sites,
         dag=dag,
-            diag_conn=None,
-            target_snap=None,
-            adapter=adapter,
-        )
+        diag_conn=None,
+        target_snap=None,
+        adapter=adapter,
+        first_byte_index=1,
+    )
+
+    assert skipped == ("edge58:already_enters_dag_target:211",)
+    assert applied == ()
+    assert adapter.redirects == []
+
+
+def test_close_terminal_equality_frontiers_skips_byte1_row_by_default(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    rows_by_byte = {
+        1: _FakePlanRow(
+            byte_index=1,
+            source_block=10,
+            current_continuation_target=11,
+            early_return_target=100,
+        ),
+        2: _FakePlanRow(
+            byte_index=2,
+            source_block=20,
+            current_continuation_target=21,
+            early_return_target=200,
+        ),
+    }
+
+    monkeypatch.setattr(
+        runtime,
+        "_map_terminal_return_frontier",
+        lambda **kwargs: (900, "ok"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_successor_map",
+        lambda adapter: {10: (100,), 20: (900,), 100: (111,), 110: (111,), 900: ()},
+    )
+    monkeypatch.setattr(runtime, "_dag_sccs_for_snap_blocks", lambda *args: frozenset({1}))
+    monkeypatch.setattr(
+        runtime,
+        "_map_snap_serial_to_live",
+        lambda **kwargs: (int(kwargs["snap_serial"]), "ok"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_map_snap_successor_to_live",
+        lambda **kwargs: (
+            900 if int(kwargs["snap_target_serial"]) == 200 else int(kwargs["snap_target_serial"]),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_block_is_state_frontier_only",
+        lambda adapter, live_serial: int(live_serial) == 100,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_frontier_for_terminal_arm",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("state-frontier return arms should be handled directly")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_single_successor",
+        lambda adapter, live_serial: 111 if int(live_serial) == 100 else None,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_first_cyclic_scc_reachable",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_cfg_scc_is_illegal_from_dag_sources",
+        lambda **kwargs: True,
+    )
+
+    applied, skipped = runtime._close_terminal_equality_frontiers(
+        rows_by_byte=rows_by_byte,
+        blocks={},
+        sites=(),
+        dag=object(),
+        diag_conn=None,
+        target_snap=None,
+        adapter=adapter,
+        return_frontier_byte_index=2,
+        row_byte_indices=(2, 3),
+        shared_store_guard_byte_indices=(3, 5),
+    )
+
+    assert applied == ()
+    assert skipped == ("byte2_row_equality:already_closed:900",)
+    assert adapter.cleared == []
+    assert adapter.redirects == []
+
+
+def test_close_terminal_equality_frontiers_does_not_discover_byte1_state_frontier(
+    monkeypatch,
+):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    rows_by_byte = {
+        1: _FakePlanRow(
+            byte_index=1,
+            source_block=10,
+            current_continuation_target=11,
+            early_return_target=100,
+        ),
+        2: _FakePlanRow(
+            byte_index=2,
+            source_block=20,
+            current_continuation_target=21,
+            early_return_target=200,
+        ),
+    }
+
+    monkeypatch.setattr(runtime, "_map_terminal_return_frontier", lambda **kwargs: (900, "ok"))
+    monkeypatch.setattr(runtime, "_live_successor_map", lambda adapter: {10: (100,), 20: (900,)})
+    monkeypatch.setattr(runtime, "_dag_sccs_for_snap_blocks", lambda *args: frozenset({1}))
+    monkeypatch.setattr(runtime, "_map_snap_serial_to_live", lambda **kwargs: (int(kwargs["snap_serial"]), "ok"))
+    monkeypatch.setattr(
+        runtime,
+        "_map_snap_successor_to_live",
+        lambda **kwargs: (
+            900 if int(kwargs["snap_target_serial"]) == 200 else int(kwargs["snap_target_serial"]),
+            "ok",
+        ),
+    )
+    monkeypatch.setattr(runtime, "_live_block_is_state_frontier_only", lambda adapter, live_serial: int(live_serial) == 144)
+    monkeypatch.setattr(runtime, "_frontier_for_terminal_arm", lambda **kwargs: (144, 111, "state_frontier"))
+    monkeypatch.setattr(runtime, "_first_cyclic_scc_reachable", lambda **kwargs: object())
+    monkeypatch.setattr(runtime, "_cfg_scc_is_illegal_from_dag_sources", lambda **kwargs: True)
+
+    applied, skipped = runtime._close_terminal_equality_frontiers(
+        rows_by_byte=rows_by_byte,
+        blocks={},
+        sites=(),
+        dag=object(),
+        diag_conn=None,
+        target_snap=None,
+        adapter=adapter,
+        return_frontier_byte_index=2,
+        row_byte_indices=(2, 3),
+        shared_store_guard_byte_indices=(3, 5),
+    )
+
+    assert applied == ()
+    assert skipped == ("byte2_row_equality:already_closed:900",)
+    assert adapter.cleared == []
+    assert adapter.redirects == []
+
+
+def test_close_terminal_equality_frontiers_skips_dag_conditional_returns_by_default(
+    monkeypatch,
+):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    dag = runtime._DagSemantics(
+        snapshot_id=7,
+        state_to_scc={},
+        scc_reachable={},
+        block_to_sccs={26: frozenset({1})},
+        scc_successors={},
+        edges=(
+            runtime._DagEdge(
+                edge_id=92,
+                source_state=0x64AFC49D,
+                target_state=None,
+                edge_kind="CONDITIONAL_RETURN",
+                source_block=26,
+                source_arm=0,
+                target_entry=None,
+                ordered_path=(26, 27, 218, 219),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(runtime, "_map_terminal_return_frontier", lambda **kwargs: (900, "ok"))
+    monkeypatch.setattr(runtime, "_live_successor_map", lambda adapter: {26: (27, 28), 27: (111,), 900: ()})
+    monkeypatch.setattr(runtime, "_map_snap_serial_to_live", lambda **kwargs: (int(kwargs["snap_serial"]), "ok"))
+    monkeypatch.setattr(runtime, "_map_snap_successor_to_live", lambda **kwargs: (int(kwargs["snap_target_serial"]), "ok"))
+    monkeypatch.setattr(runtime, "_live_block_is_state_frontier_only", lambda adapter, live_serial: int(live_serial) == 27)
+    monkeypatch.setattr(runtime, "_live_single_successor", lambda adapter, live_serial: 111 if int(live_serial) == 27 else None)
+    monkeypatch.setattr(
+        runtime,
+        "_first_cyclic_scc_reachable",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("DAG conditional returns do not need a cyclic CFG proof")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_frontier_for_terminal_arm",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("state-frontier return arm should be handled directly")
+        ),
+    )
+
+    applied, skipped = runtime._close_terminal_equality_frontiers(
+        rows_by_byte={},
+        blocks={},
+        sites=(),
+        dag=dag,
+        diag_conn=None,
+        target_snap=None,
+        adapter=adapter,
+        return_frontier_byte_index=2,
+        row_byte_indices=(2, 3),
+        shared_store_guard_byte_indices=(3, 5),
+    )
 
     assert skipped == ()
-    assert applied == ((141, 211, 130),)
-    assert adapter.redirects == [(141, 211, 130)]
+    assert applied == ()
+    assert adapter.cleared == []
+    assert adapter.redirects == []
+
+
+def test_close_terminal_equality_frontiers_skips_dag_fallthrough_source_by_default(
+    monkeypatch,
+):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        fallthrough_redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def redirect_fallthrough_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.fallthrough_redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+            return 28
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    dag = runtime._DagSemantics(
+        snapshot_id=7,
+        state_to_scc={},
+        scc_reachable={},
+        block_to_sccs={26: frozenset({1})},
+        scc_successors={},
+        edges=(
+            runtime._DagEdge(
+                edge_id=130,
+                source_state=0x45B18E82,
+                target_state=None,
+                edge_kind="CONDITIONAL_RETURN",
+                source_block=26,
+                source_arm=0,
+                target_entry=None,
+                ordered_path=(26, 27, 218, 219),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(runtime, "_map_terminal_return_frontier", lambda **kwargs: (900, "ok"))
+    monkeypatch.setattr(runtime, "_live_successor_map", lambda adapter: {26: (27, 28), 27: (111,), 900: ()})
+    monkeypatch.setattr(runtime, "_map_snap_serial_to_live", lambda **kwargs: (int(kwargs["snap_serial"]), "ok"))
+    monkeypatch.setattr(runtime, "_map_snap_successor_to_live", lambda **kwargs: (int(kwargs["snap_target_serial"]), "ok"))
+    monkeypatch.setattr(runtime, "_live_block_is_state_frontier_only", lambda adapter, live_serial: int(live_serial) == 27)
+    monkeypatch.setattr(runtime, "_live_single_successor", lambda adapter, live_serial: 111 if int(live_serial) == 27 else None)
+    monkeypatch.setattr(
+        runtime,
+        "_first_cyclic_scc_reachable",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("DAG conditional returns do not need a cyclic CFG proof")
+        ),
+    )
+
+    applied, skipped = runtime._close_terminal_equality_frontiers(
+        rows_by_byte={},
+        blocks={},
+        sites=(),
+        dag=dag,
+        diag_conn=None,
+        target_snap=None,
+        adapter=adapter,
+        return_frontier_byte_index=2,
+        row_byte_indices=(2, 3),
+        shared_store_guard_byte_indices=(3, 5),
+    )
+
+    assert skipped == ()
+    assert applied == ()
+    assert adapter.cleared == []
+    assert adapter.fallthrough_redirects == []
+    assert adapter.redirects == []
+
+
+def test_impossible_return_artifact_edges_route_to_sibling_continuation(
+    monkeypatch,
+):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.recon.flow.return_frontier_artifacts import (
+        ReturnFrontierArtifactEdgeProof,
+    )
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+
+    monkeypatch.setattr(
+        runtime,
+        "_live_successor_map",
+        lambda adapter: {27: (28, 79), 28: (92,), 79: (29,), 29: (), 92: ()},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_single_successor",
+        lambda adapter, live_serial: {28: 92, 79: 29}.get(int(live_serial)),
+    )
+    applied = runtime._rewrite_impossible_return_artifact_edges(
+        adapter,
+        (
+            ReturnFrontierArtifactEdgeProof(
+                source_block=27,
+                artifact_block=28,
+                old_target_block=92,
+                continuation_block=29,
+                proof_ids=("unit",),
+            ),
+        ),
+    )
+
+    assert applied == ((27, 28, 29),)
+    assert adapter.cleared == [28]
+    assert adapter.redirects == [(28, 92, 29)]
+
+
+def test_impossible_return_artifact_requires_exact_old_target(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.recon.flow.return_frontier_artifacts import (
+        ReturnFrontierArtifactEdgeProof,
+    )
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    monkeypatch.setattr(
+        runtime,
+        "_live_successor_map",
+        lambda adapter: {27: (28, 79), 28: (92,), 79: (29,), 29: (), 92: ()},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_single_successor",
+        lambda adapter, live_serial: {28: 92, 79: 29}.get(int(live_serial)),
+    )
+
+    applied = runtime._rewrite_impossible_return_artifact_edges(
+        adapter,
+        (
+            ReturnFrontierArtifactEdgeProof(
+                source_block=27,
+                artifact_block=28,
+                old_target_block=93,
+                continuation_block=29,
+                proof_ids=("unit",),
+            ),
+        ),
+    )
+
+    assert applied == ()
+    assert adapter.cleared == []
+    assert adapter.redirects == []
+
+
+def test_impossible_return_artifact_rewrite_uses_provider_evidence(monkeypatch):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+    )
+    from d810.recon.flow.return_frontier_artifacts import (
+        ReturnFrontierArtifactEdgeProof,
+    )
+
+    @dataclass
+    class _Adapter:
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+        cleared: list[int] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self, *, source_serial, old_target_serial, new_target_serial,
+        ):
+            self.redirects.append(
+                (int(source_serial), int(old_target_serial), int(new_target_serial))
+            )
+
+        def clear_state_frontier_payload(self, block_serial):
+            self.cleared.append(int(block_serial))
+
+    adapter = _Adapter()
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            impossible_return_artifact_edges=(
+                ReturnFrontierArtifactEdgeProof(
+                    source_block=27,
+                    artifact_block=28,
+                    old_target_block=92,
+                    continuation_block=29,
+                    proof_ids=("unit",),
+                ),
+            )
+        )
+    )
+
+    monkeypatch.setenv("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", "1")
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(
+        runtime,
+        "_live_successor_map",
+        lambda adapter: {27: (28, 79), 28: (92,), 79: (29,), 29: (), 92: ()},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_live_single_successor",
+        lambda adapter, live_serial: {28: 92, 79: 29}.get(int(live_serial)),
+    )
+
+    applied = runtime.maybe_rewrite_impossible_return_artifact_edges(
+        object(),
+        evidence_provider=provider,
+    )
+
+    assert applied == ((27, 28, 29),)
+    assert provider.seen_mba is not None
+    assert adapter.cleared == [28]
+    assert adapter.redirects == [(28, 92, 29)]
+
+
+def test_terminal_zero_guard_literal_return_edges_rewrites_zero_arm(
+    monkeypatch,
+):
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    rewritten: list[tuple[int, int]] = []
+    adapter = object()
+
+    monkeypatch.setattr(
+        runtime,
+        "_live_successor_map",
+        lambda adapter: {61: (62, 88), 62: (27,), 88: (92,), 92: ()},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_terminal_zero_guard_targets_literal_return",
+        lambda adapter, source_serial, return_serial: (
+            int(source_serial) == 61 and int(return_serial) == 88
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_terminal_return_block_has_only_literal_zero_guard_preds",
+        lambda adapter, return_serial: int(return_serial) == 88,
+    )
+
+    def fake_rewrite(adapter, *, return_serial, literal_value):
+        rewritten.append((int(return_serial), int(literal_value)))
+        return True
+
+    monkeypatch.setattr(runtime, "_rewrite_terminal_return_block_to_literal", fake_rewrite)
+
+    applied = runtime._rewrite_terminal_zero_guard_literal_return_edges(
+        adapter,
+        (0x5644FD01B1049C4B,),
+    )
+
+    assert applied == ((61, 88, 0x5644FD01B1049C4B),)
+    assert rewritten == [(88, 0x5644FD01B1049C4B)]

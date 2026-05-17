@@ -666,12 +666,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
         # Used to reset recon state when a new function is decompiled.
         self._recon_runtime = None  # ReconAnalysisRuntime | None
+        self._function_priors_provider = None
         # Optional PassPipeline - set via configure(pass_pipeline=...). None
         # means the pipeline is disabled (zero overhead). When set, fires once
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
         self._post_d810_pipeline_last_maturity: int = -1
+        self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
+        self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
         # When the PassPipeline fires and applies changes, we must skip all
         # remaining block optimizer rule calls for the rest of this maturity.
         # IDA will re-enter at the next maturity with fresh block pointers.
@@ -708,6 +711,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pipeline_last_maturity = -1
         self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
+        self._impossible_return_artifact_rewrite_applied.clear()
+        self._terminal_zero_literal_rewrite_applied.clear()
 
     def _is_loop_carrier_only_pipeline(self) -> bool:
         pipeline = self._pass_pipeline
@@ -1229,6 +1234,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
         else:
             self._flow_context.refresh_mba(mba)
+        self._flow_context.set_function_priors_provider(
+            self._function_priors_provider
+        )
         self._flow_context.set_phase(
             priority=phase_priority,
             phase_index=phase_index,
@@ -1367,7 +1375,91 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             f"{cfg_rule.name} applied {nb_patch} patch(es)"
                         )
                         return nb_patch
+        impossible_artifact_patch_count = (
+            self._maybe_rewrite_impossible_return_artifact_edges(blk)
+        )
+        literal_return_patch_count = (
+            self._maybe_rewrite_terminal_zero_guard_literal_edges(blk)
+        )
+        late_patch_count = impossible_artifact_patch_count + literal_return_patch_count
+        if late_patch_count > 0:
+            self._generation += 1
+            self._invalidate_flow_context(
+                "late terminal return cleanup applied "
+                f"{late_patch_count} patch(es)"
+            )
+            return late_patch_count
         return 0
+
+    def _maybe_rewrite_impossible_return_artifact_edges(
+        self,
+        blk: ida_hexrays.mblock_t,
+    ) -> int:
+        mba = getattr(blk, "mba", None)
+        if mba is None or self.current_maturity is None:
+            return 0
+        if int(self.current_maturity) != int(ida_hexrays.MMAT_GLBOPT2):
+            return 0
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        key = (func_ea, int(self.current_maturity))
+        if key in self._impossible_return_artifact_rewrite_applied:
+            return 0
+        try:
+            from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                maybe_rewrite_impossible_return_artifact_edges,
+            )
+
+            applied = maybe_rewrite_impossible_return_artifact_edges(mba)
+        except Exception:
+            optimizer_logger.exception(
+                "impossible return artifact return-edge cleanup failed"
+            )
+            return 0
+        if not applied:
+            return 0
+        self._impossible_return_artifact_rewrite_applied.add(key)
+        if self.stats is not None:
+            self.stats.record_cfg_rule_patches(
+                "impossible_return_artifact_edges",
+                len(applied),
+                maturity=self.current_maturity,
+            )
+        return len(applied)
+
+    def _maybe_rewrite_terminal_zero_guard_literal_edges(
+        self,
+        blk: ida_hexrays.mblock_t,
+    ) -> int:
+        mba = getattr(blk, "mba", None)
+        if mba is None or self.current_maturity is None:
+            return 0
+        if int(self.current_maturity) != int(ida_hexrays.MMAT_GLBOPT2):
+            return 0
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        key = (func_ea, int(self.current_maturity))
+        if key in self._terminal_zero_literal_rewrite_applied:
+            return 0
+        try:
+            from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                maybe_rewrite_terminal_zero_guard_literal_return_edges,
+            )
+
+            applied = maybe_rewrite_terminal_zero_guard_literal_return_edges(mba)
+        except Exception:
+            optimizer_logger.exception(
+                "terminal zero-guard literal return cleanup failed"
+            )
+            return 0
+        if not applied:
+            return 0
+        self._terminal_zero_literal_rewrite_applied.add(key)
+        if self.stats is not None:
+            self.stats.record_cfg_rule_patches(
+                "terminal_zero_guard_literal_return_edges",
+                len(applied),
+                maturity=self.current_maturity,
+            )
+        return len(applied)
 
     def add_rule(self, cfg_rule: FlowOptimizationRule):
         optimizer_logger.info("Adding cfg rule {0}".format(cfg_rule))
@@ -1377,6 +1469,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def configure(self, **kwargs):
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
         self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
+        self._function_priors_provider = kwargs.get(
+            "function_priors_provider",
+            self._function_priors_provider,
+        )
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
         self._rule_scope_service = kwargs.get(
             "rule_scope_service", self._rule_scope_service

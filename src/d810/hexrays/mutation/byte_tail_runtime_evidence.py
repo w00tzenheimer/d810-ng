@@ -27,6 +27,8 @@ class ByteTailRuntimeEvidence:
     fact_view: Any | None = None
     dag: Any | None = None
     terminal_tail_planner: TerminalTailPlannerEvidence | None = None
+    terminal_tail_cascade_egress: Any | None = None
+    impossible_return_artifact_edges: Sequence[Any] = ()
 
 
 class ByteTailRuntimeEvidenceProvider(Protocol):
