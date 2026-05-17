@@ -110,7 +110,14 @@ def test_conditional_cases_require_valid_states_and_source_predicate() -> None:
     facts = collect_switch_case_transition_facts(
         dispatch_map=_dispatch_map(states=(4, 9, 13)),
         case_bodies=(
-            SwitchCaseBody(state=4, entry_block=104, state_writes=(9, 13), source_predicate=True),
+            SwitchCaseBody(
+                state=4,
+                entry_block=104,
+                state_writes=(9, 13),
+                state_write_exit_blocks=(209, 213),
+                state_write_ordered_paths=((104, 209), (104, 213)),
+                source_predicate=True,
+            ),
         ),
     )
 
@@ -118,6 +125,8 @@ def test_conditional_cases_require_valid_states_and_source_predicate() -> None:
     assert facts[0].proof is not None
     assert facts[0].proof.proof_kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT
     assert facts[0].proof.authorizes_nonsemantic_branch_rewrite is False
+    assert facts[0].payload["arm_exit_blocks"] == (209, 213)
+    assert facts[0].payload["arm_ordered_paths"] == ((104, 209), (104, 213))
 
     unresolved = collect_switch_case_transition_facts(
         dispatch_map=_dispatch_map(states=(4, 9)),
