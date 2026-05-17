@@ -1479,6 +1479,53 @@ def test_branch_ownership_consumer_sibling_real_branch_does_not_veto_rewrite() -
     )
 
 
+def test_branch_ownership_refiner_side_effect_veto_is_sticky() -> None:
+    original = BranchOwnershipProof(
+        proof_id="candidate",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="fixture original",
+        source_block=5,
+        branch_arm=0,
+        source_state=0x10,
+        target_state=0x20,
+        target_entry=8,
+        oracle_kind="fixture",
+    )
+    z3_veto = replace(
+        original,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        evidence={"side_effect_guard_reason": "discarded_arm_contains_payload_store"},
+    )
+
+    def _z3_refiner(
+        _proof: BranchOwnershipProof,
+        _edge: object,
+    ) -> BranchOwnershipProof:
+        return z3_veto
+
+    def _moptracker_refiner(
+        proof: BranchOwnershipProof,
+        _edge: object,
+    ) -> BranchOwnershipProof:
+        return replace(
+            proof,
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="moptracker_fallback_residue",
+        )
+
+    refiner = emulated_family_module._compose_branch_ownership_refiners(
+        (_z3_refiner, _moptracker_refiner)
+    )
+
+    refined = refiner(original, SimpleNamespace())
+
+    assert refined == z3_veto
+    assert refined.vetoes_fallback_refinement is True
+    assert refined.authorizes_nonsemantic_branch_rewrite is False
+
+
 def test_branch_ownership_retarget_requires_owned_source_or_split_plan() -> None:
     flow_graph = FlowGraph(
         blocks={
