@@ -8,9 +8,10 @@ Subcommands wrap the recurring loop of:
     4. inspect a semantic state node via the diag DB
     5. passthrough to `python -m d810.diagnostics` with PYTHONPATH pre-wired
 
-All commands operate against a worktree under `<repo>/.worktrees/<name>/`
-(default: `unflattening-engine-extraction`). Absolute paths are derived from
-this script's location so it works regardless of cwd.
+Commands that need live dump/log/DB artifacts operate against a worktree under
+`<repo>/.worktrees/<name>/`. When this script is run from the root checkout,
+pass `-w/--worktree <name>` explicitly. When it is run from inside
+`.worktrees/<name>/tools/d810cli.py`, that worktree name is inferred.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ if len(SCRIPT_PATH.parents) >= 4 and SCRIPT_PATH.parents[2].name == ".worktrees"
 else:
     REPO_ROOT = SCRIPT_PATH.parents[1]
     _CURRENT_WORKTREE = None
-DEFAULT_WORKTREE = _CURRENT_WORKTREE or "unflattening-engine-extraction"
+DEFAULT_WORKTREE = _CURRENT_WORKTREE
 DEFAULT_FUNCTION = "sub_7FFD3338C040"
 DEFAULT_PROJECT = "hodur_flag2.json"
 DEFAULT_CAPTURE_POST_MATURITY = "8"  # MMAT_GLBOPT1
@@ -76,18 +77,28 @@ def _die(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def worktree_dir(name: str) -> Path:
+def _require_worktree(name: str | None) -> str:
+    if name:
+        return name
+    _die(
+        "worktree is required when running d810cli from the root checkout; "
+        "pass -w/--worktree <name> (short name under .worktrees/)"
+    )
+
+
+def worktree_dir(name: str | None) -> Path:
+    name = _require_worktree(name)
     root = REPO_ROOT / ".worktrees" / name
     if not root.is_dir():
         _die(f"worktree not found: {root}")
     return root
 
 
-def worktree_tmp(name: str) -> Path:
+def worktree_tmp(name: str | None) -> Path:
     return worktree_dir(name) / ".tmp"
 
 
-def worktree_log_dir(name: str) -> Path:
+def worktree_log_dir(name: str | None) -> Path:
     return worktree_tmp(name) / "logs" / "d810_logs"
 
 
@@ -97,7 +108,7 @@ def _latest(paths: list[Path]) -> Path | None:
     return max(paths, key=lambda p: p.stat().st_mtime)
 
 
-def latest_dump(name: str) -> Path:
+def latest_dump(name: str | None) -> Path:
     tmp = worktree_tmp(name)
     if not tmp.is_dir():
         _die(f"worktree .tmp dir not found: {tmp}")
@@ -108,7 +119,7 @@ def latest_dump(name: str) -> Path:
     return p  # type: ignore[return-value]
 
 
-def latest_db(name: str) -> Path:
+def latest_db(name: str | None) -> Path:
     d = worktree_log_dir(name)
     if not d.is_dir():
         _die(f"diag log dir not found: {d}")
@@ -122,7 +133,7 @@ def latest_db(name: str) -> Path:
     return p  # type: ignore[return-value]
 
 
-def resolve_dump(name: str, explicit: str | None) -> Path:
+def resolve_dump(name: str | None, explicit: str | None) -> Path:
     if explicit:
         p = Path(explicit).expanduser().resolve()
         if not p.is_file():
@@ -131,7 +142,7 @@ def resolve_dump(name: str, explicit: str | None) -> Path:
     return latest_dump(name)
 
 
-def resolve_db(name: str, explicit: str | None) -> Path:
+def resolve_db(name: str | None, explicit: str | None) -> Path:
     if explicit:
         p = Path(explicit).expanduser().resolve()
         if not p.is_file():
@@ -182,7 +193,7 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 
 def cmd_dump(args: argparse.Namespace) -> int:
-    wt = args.worktree
+    wt = _require_worktree(args.worktree)
     work_dir = worktree_dir(wt)
     tmp = worktree_tmp(wt)
     tmp.mkdir(parents=True, exist_ok=True)
@@ -999,10 +1010,22 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def _add_worktree(p: argparse.ArgumentParser) -> None:
+    if DEFAULT_WORKTREE:
+        help_text = (
+            "worktree name under .worktrees/ "
+            f"(default: {DEFAULT_WORKTREE}, inferred from script path)"
+        )
+    else:
+        help_text = (
+            "worktree name under .worktrees/ "
+            "(required from root checkout; pass short name, e.g. "
+            "-w engine-wrapper-parity)"
+        )
     p.add_argument(
+        "-w",
         "--worktree",
         default=DEFAULT_WORKTREE,
-        help=f"worktree name under .worktrees/ (default: {DEFAULT_WORKTREE})",
+        help=help_text,
     )
 
 
@@ -1024,7 +1047,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Unflattening debug recipe:\n"
             "  When investigating one function, prefer the full diagnostics mode:\n\n"
-            "    d810cli dump -f FUNC_NAME -p JSON_PROJECT_FILE "
+            "    d810cli dump -w WORKTREE -f FUNC_NAME -p JSON_PROJECT_FILE "
             "--label case_name --full-diagnostics\n\n"
             "  This truncates the worktree d810.log, enables debug logging and diag\n"
             "  snapshots, dumps raw and post-D810 microcode around LOCOPT/CALLS/"
