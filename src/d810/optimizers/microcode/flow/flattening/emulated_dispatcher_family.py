@@ -1400,24 +1400,52 @@ def _collect_phase_branch_ownership_proofs(
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect recon branch ownership proofs for planning/diagnostics."""
 
-    proof_refiner = None
+    proof_refiners = []
     if str(profile_name).startswith("ollvm"):
         try:
             from d810.recon.flow.branch_ownership_oracle import (
                 MopTrackerBranchOwnershipOracle,
+                Z3BranchOwnershipOracle,
             )
 
-            proof_refiner = MopTrackerBranchOwnershipOracle(mba=mba).refine
+            proof_refiners.append(Z3BranchOwnershipOracle(mba=mba).refine)
+            proof_refiners.append(MopTrackerBranchOwnershipOracle(mba=mba).refine)
         except Exception:
             logger.debug(
-                "MopTracker branch ownership oracle unavailable",
+                "Microcode branch ownership oracle unavailable",
                 exc_info=True,
             )
     return collect_branch_ownership_proofs(
         dag=dag,
         dispatch_map=dispatch_map,
-        proof_refiner=proof_refiner,
+        proof_refiner=_compose_branch_ownership_refiners(tuple(proof_refiners)),
     )
+
+
+def _compose_branch_ownership_refiners(
+    refiners: tuple[object, ...],
+):
+    if not refiners:
+        return None
+
+    def _refine(
+        proof: BranchOwnershipProof,
+        edge: object,
+    ) -> BranchOwnershipProof | None:
+        current = proof
+        changed = False
+        for refiner in refiners:
+            try:
+                refined = refiner(current, edge)
+            except Exception:
+                continue
+            if refined is None:
+                continue
+            current = refined
+            changed = True
+        return current if changed else None
+
+    return _refine
 
 
 def _edge_has_trusted_nonsemantic_branch_proof(
