@@ -87,9 +87,51 @@ def test_dump_help_recommends_full_diagnostics_recipe() -> None:
 
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert "--full-diagnostics" in result.stdout
+    assert "d810cli dump -w WORKTREE" in result.stdout
+    assert "required from root" in result.stdout
+    assert "checkout; pass short name" in result.stdout
     assert "Unflattening debug recipe" in result.stdout
     assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout
     assert "--dump-bst-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
+
+
+def test_root_checkout_has_no_implicit_worktree_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(d810cli, "DEFAULT_WORKTREE", None)
+    parser = d810cli.build_parser()
+    args = parser.parse_args(["paths"])
+
+    assert args.worktree is None
+    with pytest.raises(SystemExit):
+        d810cli.worktree_dir(args.worktree)
+
+    captured = capsys.readouterr()
+    assert "pass -w/--worktree <name>" in captured.err
+
+
+def test_users_can_pass_worktree_by_short_or_long_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "DEFAULT_WORKTREE", None)
+    parser = d810cli.build_parser()
+
+    short_args = parser.parse_args(["paths", "-w", "engine-wrapper-parity"])
+    long_args = parser.parse_args(["paths", "--worktree", "badwhile-followup-lanes"])
+
+    assert short_args.worktree == "engine-wrapper-parity"
+    assert long_args.worktree == "badwhile-followup-lanes"
+
+
+def test_worktree_checkout_can_infer_current_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "DEFAULT_WORKTREE", "current-feature")
+    parser = d810cli.build_parser()
+    args = parser.parse_args(["paths"])
+
+    assert args.worktree == "current-feature"
 
 
 def test_dump_full_diagnostics_expands_recon_diag_flags(
