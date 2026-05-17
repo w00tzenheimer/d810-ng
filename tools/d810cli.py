@@ -552,54 +552,6 @@ def cmd_residual_worksheet(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
-def cmd_oracle(args: argparse.Namespace) -> int:
-    """Workflow wrapper for `python -m d810.diagnostics region-diff`.
-
-    Resolves the latest diag SQLite for the worktree (or honours --db) and
-    forwards the snapshot/label/output/microblocks/persist flags untouched.
-    All REF comparison logic and SQL live in
-    ``d810.diagnostics.region_oracle_cli``; this wrapper only resolves paths.
-    """
-    wt = args.worktree
-    worktree = worktree_dir(wt)
-    db = resolve_db(wt, args.db)
-    env = os.environ.copy()
-    src_path = str(worktree / "src")
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
-    diag_argv = [
-        sys.executable,
-        "-m",
-        "d810.diagnostics",
-        "region-diff",
-        "--db", str(db),
-    ]
-    if args.func_ea:
-        diag_argv += ["--func-ea", args.func_ea]
-    if args.snap17 is not None:
-        diag_argv += ["--snap17", str(args.snap17)]
-    if args.snap18 is not None:
-        diag_argv += ["--snap18", str(args.snap18)]
-    if args.snap17_label:
-        diag_argv += ["--snap17-label", args.snap17_label]
-    if args.snap18_label:
-        diag_argv += ["--snap18-label", args.snap18_label]
-    if args.output:
-        diag_argv += ["--output", args.output]
-    if args.microblocks:
-        diag_argv.append("--microblocks")
-    if args.persist:
-        diag_argv.append("--persist")
-    if args.json_output:
-        diag_argv.append("--json")
-    print(f"DB={db}", file=sys.stderr)
-    print(
-        f"d810cli: oracle: diag argv: {' '.join(diag_argv)}",
-        file=sys.stderr,
-    )
-    return subprocess.call(diag_argv, env=env)
-
-
 def cmd_egress_plan(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics cascade-egress-plan`.
 
@@ -1525,56 +1477,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="list snapshots in the diag DB and exit",
     )
     sp.set_defaults(func=cmd_residual_worksheet)
-
-    sp = sub.add_parser(
-        "oracle",
-        help=(
-            "Recompute REF region-shape oracle for the latest diag DB."
-            " Wraps `python -m d810.diagnostics region-diff`."
-        ),
-    )
-    _add_worktree(sp)
-    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
-    sp.add_argument(
-        "--func-ea", default=None,
-        help="function EA in hex (default: spec-resolved via diag DB)",
-    )
-    sp.add_argument(
-        "--snap17", type=int, default=None,
-        help="snap17 (last D810-controlled) snapshot id override",
-    )
-    sp.add_argument(
-        "--snap18", type=int, default=None,
-        help="snap18 (post_d810) snapshot id override",
-    )
-    sp.add_argument(
-        "--snap17-label", default=None,
-        help="resolve snap17 by snapshot label",
-    )
-    sp.add_argument(
-        "--snap18-label", default=None,
-        help="resolve snap18 by snapshot label",
-    )
-    sp.add_argument(
-        "--output", default=None,
-        help="write report to this path instead of stdout",
-    )
-    sp.add_argument(
-        "--microblocks", action="store_true",
-        help="emit per-microblock detail in the oracle report",
-    )
-    sp.add_argument(
-        "--persist", action="store_true",
-        help=(
-            "persist scoped region_shape_features + terminal_tail_dce_causes"
-            " rows into the diag DB"
-        ),
-    )
-    sp.add_argument(
-        "--json", action="store_true", dest="json_output",
-        help="emit JSON instead of a markdown report",
-    )
-    sp.set_defaults(func=cmd_oracle)
 
     sp = sub.add_parser(
         "frontier-diagnostics",

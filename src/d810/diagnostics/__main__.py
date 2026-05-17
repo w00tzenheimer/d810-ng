@@ -34,14 +34,13 @@ Notes::
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import re
 import sqlite3
 import sys
 from pathlib import Path
 
-from d810.core.typing import Any, Iterable, Mapping
+from d810.core.typing import Any
 
 from d810.recon.flow.alternate_correlation import (
     AlternateCorrelation,
@@ -1084,127 +1083,6 @@ def _format_state_write_rewrites(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _resolve_oracle_snap_ids(
-    conn,
-    *,
-    snap17_labels: tuple[str, ...],
-    snap18_labels: tuple[str, ...],
-) -> tuple[int | None, int | None]:
-    """Resolve snap17 and snap18 IDs.
-
-    Snap18 is resolved first via MAX(id) over its preference labels.
-    Snap17 is then resolved as the highest id whose label is in the
-    snap17 preference list AND id < snap18. This handles the common
-    case where a GLBOPT1 pipeline runs more than once and creates
-    multiple `post_bundle_stabilize` rows whose latest copy lives
-    AFTER the actual `GLBOPT1_post_d810` boundary.
-    """
-
-    def _max_id_for_labels(
-        labels: tuple[str, ...], upper_bound: int | None,
-    ) -> int | None:
-        for label in labels:
-            if upper_bound is None:
-                row = conn.execute(
-                    "SELECT MAX(id) FROM snapshots WHERE label = ?",
-                    (label,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT MAX(id) FROM snapshots "
-                    "WHERE label = ? AND id < ?",
-                    (label, upper_bound),
-                ).fetchone()
-            if row is not None and row[0] is not None:
-                return int(row[0])
-        return None
-
-    snap18 = _max_id_for_labels(snap18_labels, None)
-    snap17 = _max_id_for_labels(snap17_labels, snap18)
-    return snap17, snap18
-
-
-def _oracle_persist_features(
-    conn,
-    *,
-    func_ea_hex: str,
-    func_ea_i64: int,
-    features: Iterable[Any],
-) -> int:
-    """Scoped upsert of region_shape_features.
-
-    Uses INSERT OR REPLACE keyed by the table's primary key
-    (func_ea_hex, source, snapshot_id, feature). Never deletes rows
-    outside the (source, snapshot_id, feature) tuples being written.
-    """
-    n = 0
-    for f in features:
-        conn.execute(
-            "INSERT OR REPLACE INTO region_shape_features "
-            "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
-            " feature, value_text, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                func_ea_hex,
-                func_ea_i64,
-                f.snapshot_id,
-                f.source.value,
-                f.region.value,
-                f.feature,
-                str(f.value),
-                json.dumps(f.evidence, sort_keys=True),
-            ),
-        )
-        n += 1
-    conn.commit()
-    return n
-
-
-def _oracle_persist_dce_causes(
-    conn,
-    *,
-    func_ea_hex: str,
-    func_ea_i64: int,
-    causes: Iterable[Mapping[str, Any]],
-) -> int:
-    """Scoped upsert of terminal_tail_dce_causes.
-
-    Each cause row carries an ``evidence`` mapping (dict-like) which is
-    serialized internally via ``json.dumps(..., sort_keys=True)``. This
-    matches the ``_oracle_persist_features`` contract: callers pass a
-    structured value, not a pre-serialized string.
-
-    Primary key is (func_ea_hex, byte_index); INSERT OR REPLACE
-    naturally upserts per-byte without touching unrelated rows.
-    """
-    n = 0
-    for c in causes:
-        conn.execute(
-            "INSERT OR REPLACE INTO terminal_tail_dce_causes "
-            "(func_ea_hex, func_ea_i64, byte_index, "
-            " last_present_snapshot_id, first_missing_snapshot_id, "
-            " last_block_serial, last_ea_hex, "
-            " cause, recommended_action, rationale, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                func_ea_hex,
-                func_ea_i64,
-                int(c["byte_index"]),
-                c.get("last_present_snapshot_id"),
-                c.get("first_missing_snapshot_id"),
-                c.get("last_block_serial"),
-                c.get("last_ea_hex"),
-                str(c["cause"]),
-                str(c["recommended_action"]),
-                str(c["rationale"]),
-                json.dumps(c["evidence"], sort_keys=True),
-            ),
-        )
-        n += 1
-    conn.commit()
-    return n
-
-
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.diagnostics``."""
     # Common args shared by all subcommands via parents= mechanism.
@@ -2067,10 +1945,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Output machine-readable JSON instead of a text table.",
     )
 
-    importlib.import_module(
-        "d810.diagnostics.region_oracle_cli"
-    ).register_region_diff_parser(sub, common)
-
     from d810.diagnostics.dump_after import register_parser as _register_dump_after
     from d810.diagnostics.inspect_state_node import (
         register_parser as _register_inspect_state_node,
@@ -2150,7 +2024,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in (
         "region-shape",
         "terminal-tail-dce",
-        "region-diff",
         "hcc-byte-cascade-trace",
         "admission-explain",
         "compose-evidence-explain",
@@ -2160,9 +2033,6 @@ def main(argv: list[str] | None = None) -> int:
         "return-ledger",
         "cascade-egress-plan",
     ):
-        # region-diff is function-EA-scoped; it resolves its own snap IDs
-        # via labels and tolerates a sparse / schemaless diag DB by
-        # returning a structured error.
         snap_id = -1
     else:
         snap_id = _resolve_snapshot_id(
@@ -2901,18 +2771,6 @@ def main(argv: list[str] | None = None) -> int:
             for r in rows:
                 print(f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
             print(f"\n# {len(rows)} cause(s) shown")
-    elif args.command == "region-diff":
-        cfg_cli = importlib.import_module("d810.diagnostics.region_oracle_cli")
-        rc = cfg_cli.handle_region_diff(
-            args,
-            conn,
-            _resolve_oracle_snap_ids,
-            _oracle_persist_features,
-            _oracle_persist_dce_causes,
-        )
-        conn.close()
-        return rc
-
     elif args.command == "hcc-byte-cascade-trace":
         from d810.diagnostics.hcc_byte_cascade_trace import (
             enrich_rows_with_db,

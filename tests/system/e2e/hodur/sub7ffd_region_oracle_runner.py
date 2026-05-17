@@ -1,17 +1,13 @@
-"""CLI handler for `python -m d810.diagnostics region-diff`."""
+"""Test-support runner for the sub7FFD Hodur region oracle."""
 from __future__ import annotations
 
-import dataclasses
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
-from d810.diagnostics.ref_region_oracle import (
+from tests.system.e2e.hodur.sub7ffd_region_oracle import (
     BlockView,
     D810SnapshotInputs,
-    FeatureRegion,
-    FeatureSource,
     RegionFeature,
     _normalize_func_ea_hex,
     build_d810_evidence,
@@ -30,53 +26,6 @@ from d810.cfg.terminal_tail_dce_diagnosis import (
 )
 
 
-def register_region_diff_parser(sub, common) -> None:
-    p = sub.add_parser(
-        "region-diff",
-        parents=[common],
-        help=(
-            "Recompute REF vs snap17/snap18 region diff and (optionally) "
-            "persist scoped feature + DCE-cause rows."
-        ),
-    )
-    p.add_argument("--func-ea", default=None)
-    p.add_argument("--auto", action="store_true")
-    p.add_argument("--persist", action="store_true")
-    p.add_argument("--snap17", type=int, default=None)
-    p.add_argument("--snap18", type=int, default=None)
-    p.add_argument("--snap17-label", default=None)
-    p.add_argument("--snap18-label", default=None)
-    p.add_argument("--output", default=None)
-    p.add_argument("--microblocks", action="store_true")
-    p.add_argument("--json", action="store_true", dest="json_output")
-
-
-def _resolve_db_path(args) -> str | None:
-    if args.db:
-        return args.db
-    if args.auto:
-        diag_dir = Path(".tmp/logs/d810_logs")
-        cands = (
-            sorted(
-                diag_dir.glob("*.diag.sqlite3"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if diag_dir.exists()
-            else []
-        )
-        return str(cands[0]) if cands else None
-    return None
-
-
-def _emit(text: str, output: str | None) -> None:
-    if output:
-        Path(output).write_text(text)
-        print(f"oracle written: {output}")
-    else:
-        print(text, end="")
-
-
 def _no_ref_spec_stub(func_ea_hex: str) -> str:
     return (
         "# Region Oracle\n\n"
@@ -88,8 +37,40 @@ def _no_ref_spec_stub(func_ea_hex: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Snapshot helpers (ported from tools/scripts/region_oracle.py)
+# Snapshot helpers
 # ---------------------------------------------------------------------------
+
+
+def resolve_oracle_snap_ids(
+    conn: sqlite3.Connection,
+    *,
+    snap17_labels: tuple[str, ...],
+    snap18_labels: tuple[str, ...],
+) -> tuple[int | None, int | None]:
+    """Resolve snap17 and snap18 IDs for the test harness."""
+
+    def _max_id_for_labels(
+        labels: tuple[str, ...], upper_bound: int | None,
+    ) -> int | None:
+        for label in labels:
+            if upper_bound is None:
+                row = conn.execute(
+                    "SELECT MAX(id) FROM snapshots WHERE label = ?",
+                    (label,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT MAX(id) FROM snapshots "
+                    "WHERE label = ? AND id < ?",
+                    (label, upper_bound),
+                ).fetchone()
+            if row is not None and row[0] is not None:
+                return int(row[0])
+        return None
+
+    snap18 = _max_id_for_labels(snap18_labels, None)
+    snap17 = _max_id_for_labels(snap17_labels, snap18)
+    return snap17, snap18
 
 
 def _byte_emit_facts_at(
@@ -547,106 +528,49 @@ def _render_markdown(
     return "\n".join(lines) + "\n"
 
 
-def handle_region_diff(
-    args,
-    conn,
-    resolve_snap_ids,
-    persist_features,
-    persist_dce_causes,
-) -> int:
-    db_path = _resolve_db_path(args)
-    if not db_path and args.auto:
-        print(
-            "oracle skipped: no diag DB present "
-            "(run with --enable-debug-logging to capture one)"
-        )
-        return 0
-    if not db_path:
-        print("oracle: --db or --auto required", file=sys.stderr)
-        return 2
-
-    # Reopen on the resolved path so --auto works.
-    if args.auto and not args.db:
-        conn = sqlite3.connect(db_path)
-
-    if args.func_ea:
-        func_ea_hex = _normalize_func_ea_hex(args.func_ea)
-    else:
-        try:
-            row = conn.execute(
-                "SELECT func_ea_hex FROM snapshots LIMIT 1"
-            ).fetchone()
-        except sqlite3.OperationalError as e:
-            print(f"oracle: schema mismatch: {e}", file=sys.stderr)
-            return 2
-        if row is None or row[0] is None:
-            print(
-                "oracle: cannot infer func_ea from DB; "
-                "pass --func-ea explicitly",
-                file=sys.stderr,
-            )
-            return 2
-        func_ea_hex = _normalize_func_ea_hex(str(row[0]))
-
+def render_region_oracle_report(
+    conn: sqlite3.Connection,
+    *,
+    func_ea_hex: str,
+    snap17: int | None = None,
+    snap18: int | None = None,
+    microblocks: bool = False,
+    json_output: bool = False,
+) -> str:
+    func_ea_hex = _normalize_func_ea_hex(func_ea_hex)
     spec = spec_for(func_ea_hex)
     if spec is None:
-        _emit(_no_ref_spec_stub(func_ea_hex), args.output)
-        return 0
+        return _no_ref_spec_stub(func_ea_hex)
 
-    snap17 = args.snap17
-    snap18 = args.snap18
     if snap17 is None or snap18 is None:
-        snap17_labels = (
-            (args.snap17_label,)
-            if args.snap17_label
-            else spec.snap17_label_preferences
+        r17, r18 = resolve_oracle_snap_ids(
+            conn,
+            snap17_labels=spec.snap17_label_preferences,
+            snap18_labels=spec.snap18_label_preferences,
         )
-        snap18_labels = (
-            (args.snap18_label,)
-            if args.snap18_label
-            else spec.snap18_label_preferences
-        )
-        try:
-            r17, r18 = resolve_snap_ids(
-                conn,
-                snap17_labels=snap17_labels,
-                snap18_labels=snap18_labels,
-            )
-        except sqlite3.OperationalError as e:
-            print(f"oracle: schema mismatch: {e}", file=sys.stderr)
-            return 2
         if snap17 is None:
             snap17 = r17
         if snap18 is None:
             snap18 = r18
 
     if snap17 is None or snap18 is None:
-        print(
-            f"oracle: cannot resolve snap17/snap18 (snap17={snap17}, "
-            f"snap18={snap18}); pass --snap17/--snap18 explicitly.",
-            file=sys.stderr,
+        return (
+            "# Region Oracle\n\n"
+            f"Function: {func_ea_hex}\n"
+            "Status: unresolved_snapshots\n\n"
+            f"Cannot resolve snap17/snap18 (snap17={snap17}, snap18={snap18}).\n"
         )
-        return 2
 
     if snap17 >= snap18:
-        print(
-            f"oracle: snap17 ({snap17}) must be < snap18 ({snap18}). "
-            "Pass valid IDs explicitly.",
-            file=sys.stderr,
+        return (
+            "# Region Oracle\n\n"
+            f"Function: {func_ea_hex}\n"
+            "Status: invalid_snapshots\n\n"
+            f"snap17 ({snap17}) must be < snap18 ({snap18}).\n"
         )
-        return 2
 
-    # Block-view collection MUST surface schema mismatches (missing
-    # columns / tables) as exit-code-2 errors. Silently producing a "0
-    # blocks" report masks real bugs in the diag schema or oracle
-    # queries. Sparse-population (no rows) is fine — the function
-    # naturally returns {} in that case without raising.
-    try:
-        blocks17 = collect_block_views_for_snapshot(conn, snapshot_id=snap17)
-        blocks18 = collect_block_views_for_snapshot(conn, snapshot_id=snap18)
-    except sqlite3.OperationalError as e:
-        print(f"oracle: schema mismatch: {e}", file=sys.stderr)
-        return 2
+    blocks17 = collect_block_views_for_snapshot(conn, snapshot_id=snap17)
+    blocks18 = collect_block_views_for_snapshot(conn, snapshot_id=snap18)
 
     ref = list(ref_features(spec))
     # Probe for the highest snapshot.id labeled
@@ -674,12 +598,7 @@ def handle_region_diff(
     diff17 = list(diff_features(ref, s17))
     diff18 = list(diff_features(ref, s18))
 
-    # Per-byte DCE classification.
-    try:
-        evidences = _build_dce_evidence(conn, snap17, snap18)
-    except sqlite3.OperationalError as e:
-        print(f"oracle: schema mismatch: {e}", file=sys.stderr)
-        return 2
+    evidences = _build_dce_evidence(conn, snap17, snap18)
     classifications = classify_all(evidences)
     overall_action, overall_reason = recommend_overall_action(classifications)
 
@@ -693,7 +612,7 @@ def handle_region_diff(
         s18,
         diff17,
         diff18,
-        args.microblocks,
+        microblocks,
         blocks17,
         blocks18,
         classifications=classifications,
@@ -701,7 +620,7 @@ def handle_region_diff(
         overall_reason=overall_reason,
     )
 
-    if args.json_output:
+    if json_output:
         payload = {
             "function": {"name": spec.func_name, "func_ea_hex": func_ea_hex},
             "snap17": snap17,
@@ -746,35 +665,21 @@ def handle_region_diff(
         }
         body = json.dumps(payload, indent=2, sort_keys=True)
 
-    _emit(body, args.output)
+    return body
 
-    if args.persist:
-        all_feats = list(ref) + list(s17) + list(s18)
-        persist_features(
-            conn,
-            func_ea_hex=func_ea_hex,
-            func_ea_i64=int(func_ea_hex, 16),
-            features=all_feats,
-        )
-        cause_rows = [
-            {
-                "byte_index": c.byte_index,
-                "last_present_snapshot_id": snap17,
-                "first_missing_snapshot_id": snap18,
-                "last_block_serial": c.evidence.snap17_block_serial,
-                "last_ea_hex": c.evidence.snap17_block_ea,
-                "cause": c.cause.value,
-                "recommended_action": c.recommended_action.value,
-                "rationale": c.rationale,
-                "evidence": dataclasses.asdict(c.evidence),
-            }
-            for c in classifications
-        ]
-        persist_dce_causes(
-            conn,
-            func_ea_hex=func_ea_hex,
-            func_ea_i64=int(func_ea_hex, 16),
-            causes=cause_rows,
-        )
 
-    return 0
+def write_region_oracle_report(
+    conn: sqlite3.Connection,
+    *,
+    func_ea_hex: str,
+    output_path: Path,
+    microblocks: bool = False,
+) -> Path:
+    body = render_region_oracle_report(
+        conn,
+        func_ea_hex=func_ea_hex,
+        microblocks=microblocks,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(body)
+    return output_path
