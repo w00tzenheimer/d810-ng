@@ -44,6 +44,8 @@ DEFAULT_FUNCTION = "sub_7FFD3338C040"
 DEFAULT_PROJECT = "hodur_flag2.json"
 DEFAULT_CAPTURE_POST_MATURITY = "8"  # MMAT_GLBOPT1
 DEFAULT_EXTRAS = [
+    "-m",
+    "pseudocode_dump",
     "--dump-microcode-maturity",
     "CALLS,GLBOPT1",
     "--dump-microcode-d810",
@@ -52,6 +54,8 @@ DEFAULT_EXTRAS = [
     "GLBOPT1",
 ]
 FULL_DIAGNOSTIC_EXTRAS = [
+    "-m",
+    "pseudocode_dump",
     "--dump-microcode-maturity",
     "LOCOPT,CALLS,GLBOPT1",
     "--dump-microcode-d810",
