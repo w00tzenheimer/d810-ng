@@ -193,10 +193,11 @@ def cmd_dump(args: argparse.Namespace) -> int:
 
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_name = f"{args.prefix}_{args.label}_{ts}.txt"
+    full_diagnostics = bool(getattr(args, "full_diagnostics", False))
 
     extras = args.extra if args.extra else (
         list(FULL_DIAGNOSTIC_EXTRAS)
-        if args.full_diagnostics
+        if full_diagnostics
         else list(DEFAULT_EXTRAS)
     )
 
@@ -211,7 +212,7 @@ def cmd_dump(args: argparse.Namespace) -> int:
     if not args.no_debug_logging:
         argv.append("-l")
         argv.append("--enable-debug-logging")
-    if args.full_diagnostics:
+    if full_diagnostics:
         argv.append("--enable-diag-snapshot")
     argv.append("--")
     argv.extend(extras)

@@ -148,6 +148,107 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert "CALLS,GLBOPT1,GLBOPT2" in argv
 
 
+def _write_minimal_capture_dump(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "FUNCTION: test_xor @ 0x180012340",
+                "BINARY: libobfuscated.dll",
+                "PROJECT: example_libobfuscated.json",
+                "CODE_CHANGED: True",
+                "",
+                "--- BEFORE ---",
+                "int test_xor()",
+                "{",
+                "  return a + b - 2 * (a & b);",
+                "}",
+                "",
+                "--- AFTER ---",
+                "int test_xor()",
+                "{",
+                "  return a ^ b;",
+                "}",
+                "=== STATS: test_xor ===",
+            ]
+        )
+        + "\n"
+    )
+
+
+def test_pseudocode_capture_without_dump_uses_default_dump_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    db = tmp_path / "capture.sqlite3"
+    calls: list[list[str]] = []
+
+    def fake_call(argv: list[str], **_kwargs) -> int:
+        calls.append(argv)
+        output_name = argv[argv.index("-o") + 1]
+        _write_minimal_capture_dump(wt / ".tmp" / output_name)
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_pseudocode_capture(
+        argparse.Namespace(
+            worktree="wt",
+            function="test_xor",
+            project="example_libobfuscated.json",
+            db=str(db),
+            dump=None,
+            binary_name=None,
+            prefix="pseudocode_capture",
+            label="capture",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            extra=None,
+        )
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert "--enable-diag-snapshot" not in calls[0]
+    assert db.is_file()
+
+
+def test_trace_uses_default_dump_diagnostics_without_full_diagnostics_attr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _make_temp_repo_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    calls: list[list[str]] = []
+
+    def fake_call(argv: list[str], **_kwargs) -> int:
+        calls.append(argv)
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_trace(
+        argparse.Namespace(
+            worktree="wt",
+            function="sub_7FFD3338C040",
+            project="hodur_flag2.json",
+            prefix="trace",
+            label="hcc",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            extra=None,
+            json_output=False,
+        )
+    )
+
+    assert rc == 0
+    assert len(calls) == 2
+    assert calls[0][:2] == [str(tmp_path / "run_system_tests_docker.sh"), "dump"]
+    assert "--enable-diag-snapshot" not in calls[0]
+    assert calls[1][1:3] == ["-m", "d810.diagnostics"]
+
+
 def test_latest_db_ignores_zero_byte_sqlite_placeholders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
