@@ -69,6 +69,12 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         super().configure(kwargs)
         profile_name = str(self.config.get("profile", "") or "").strip().lower()
         self.diagnostics_only = bool(self.config.get("diagnostics_only", False))
+        prefer_switch_transition_facts = bool(
+            self.config.get("prefer_switch_transition_facts", False)
+        )
+        allow_incomplete_switch_transition_facts = bool(
+            self.config.get("allow_incomplete_switch_transition_facts", False)
+        )
         if profile_name in {
             "state_dispatcher_map",
             "state_map",
@@ -84,7 +90,10 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             "switch_state_map",
         }:
             self._family = EmulatedDispatcherStrategyFamily(
-                profile=tigress_switch_dispatcher_profile()
+                profile=tigress_switch_dispatcher_profile(
+                    prefer_switch_transition_facts=prefer_switch_transition_facts,
+                    allow_incomplete_switch_transition_facts=allow_incomplete_switch_transition_facts,
+                )
             )
         else:
             self._family = EmulatedDispatcherStrategyFamily()

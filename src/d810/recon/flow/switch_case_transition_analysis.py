@@ -355,7 +355,17 @@ def _facts_for_body(
             reason=reason,
             exit_block=_state_write_exit_block(body, 0),
             ordered_path=_state_write_ordered_path(body, 0),
-            payload=dict(body.payload),
+            payload={
+                "arm_exit_blocks": tuple(
+                    _state_write_exit_block(body, index)
+                    for index in range(len(writes))
+                ),
+                "arm_ordered_paths": tuple(
+                    _state_write_ordered_path(body, index)
+                    for index in range(len(writes))
+                ),
+                **dict(body.payload),
+            },
         ),)
     return (_unresolved_fact(
         dispatch_map=dispatch_map,
