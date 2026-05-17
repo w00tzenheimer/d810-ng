@@ -22,8 +22,8 @@ from d810.core.typing import Any, Callable
 
 import pytest
 
-from d810.cfg.contracts import invariants as inv
-from d810.cfg.contracts.native_oracle import check_mba_native, oracle_available
+from d810.hexrays.contracts import invariants as inv
+from d810.hexrays.contracts.native_oracle import check_mba_native, oracle_available
 
 # ---------------------------------------------------------------------------
 # Re-use mock primitives from test_invariants.py
@@ -196,7 +196,7 @@ _MATRIX_PATH = (
     pathlib.Path(__file__).resolve().parents[4]
     / "src"
     / "d810"
-    / "cfg"
+    / "hexrays"
     / "contracts"
     / "parity_matrix.json"
 )

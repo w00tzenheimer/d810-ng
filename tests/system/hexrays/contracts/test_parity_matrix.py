@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_MATRIX_PATH = _REPO_ROOT / "src" / "d810" / "cfg" / "contracts" / "parity_matrix.json"
-_INVARIANTS_PATH = _REPO_ROOT / "src" / "d810" / "cfg" / "contracts" / "invariants.py"
+_MATRIX_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "parity_matrix.json"
+_INVARIANTS_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "invariants.py"
 
 _VALID_DISPOSITIONS = {
     "mapped",

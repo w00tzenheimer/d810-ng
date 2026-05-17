@@ -3,7 +3,7 @@ import json
 import pathlib
 import pytest
 
-_CFG_CONTRACT_DIR = pathlib.Path(__file__).resolve().parents[4] / "src" / "d810" / "cfg" / "contracts"
+_CFG_CONTRACT_DIR = pathlib.Path(__file__).resolve().parents[4] / "src" / "d810" / "hexrays" / "contracts"
 
 _TERMINAL_DISPOSITIONS = {"mapped", "native_oracle", "native_oracle_limited", "native_oracle_deferred", "blocked_by_api"}
 _PROHIBITED_DISPOSITIONS = {"unmapped", "unknown"}
@@ -45,7 +45,7 @@ class TestReleaseGate:
 
     def test_native_oracle_availability_tracked(self):
         """Verify we can programmatically check oracle status."""
-        from d810.cfg.contracts.native_oracle import oracle_available, NATIVE_ORACLE_AVAILABLE
+        from d810.hexrays.contracts.native_oracle import oracle_available, NATIVE_ORACLE_AVAILABLE
         assert oracle_available() == NATIVE_ORACLE_AVAILABLE
         # In non-Cython env, oracle is unavailable — that's OK but must be tracked
         if not oracle_available():

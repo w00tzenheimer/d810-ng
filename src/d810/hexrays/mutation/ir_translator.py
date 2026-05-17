@@ -10,7 +10,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgContract
+from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
 
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
