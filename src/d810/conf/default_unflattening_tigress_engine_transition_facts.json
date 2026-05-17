@@ -1,7 +1,36 @@
 {
   "description": "Validation profile for Tigress switch-table transition-fact lowering",
-  "ins_rules": [],
+  "ins_rules": [
+    {
+      "name": "ConstantSubtreeFoldRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Z3ConstantOptimization",
+      "is_activated": true,
+      "config": {
+        "min_nb_opcode": 4,
+        "min_nb_constant": 3
+      }
+    },
+    {
+      "name": "Z3setnzRuleGeneric",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Z3setzRuleGeneric",
+      "is_activated": true,
+      "config": {}
+    }
+  ],
   "blk_rules": [
+    {
+      "name": "ForwardConstantPropagationRule",
+      "is_activated": true,
+      "config": {}
+    },
     {
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
