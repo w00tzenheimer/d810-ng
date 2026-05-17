@@ -148,6 +148,24 @@ class BranchOwnershipProof:
             == BranchOwnershipProofKind.REAL_DATA_DEPENDENT.value
         )
 
+    @property
+    def vetoes_fallback_refinement(self) -> bool:
+        """Whether later, weaker oracles must not reclassify this proof.
+
+        Some proofs are deliberately untrusted diagnostics because an oracle
+        found evidence that prevents a rewrite.  For example, the Z3/JumpFixer
+        oracle can prove a branch condition is constant but still veto removing
+        the discarded arm because that arm owns payload side effects.  That
+        result must stay sticky: a later fallback oracle may not reinterpret the
+        same arm as disposable obfuscation residue and lose the safety guard.
+        """
+
+        return (
+            self.proof_kind_name == BranchOwnershipProofKind.UNRESOLVED.value
+            and not bool(self.trusted)
+            and "side_effect_guard_reason" in self.evidence
+        )
+
     def to_diag_row(
         self,
         *,
