@@ -23,8 +23,8 @@ from collections import Counter
 
 import ida_hexrays
 
-from d810.cfg.contracts import IDACfgContract
 from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
+from d810.hexrays.contracts import IDACfgContract
 from d810.cfg.block_identity import (
     block_fingerprint,
     block_label,

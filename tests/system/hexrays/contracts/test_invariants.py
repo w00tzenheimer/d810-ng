@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from d810.cfg.contracts import invariants as inv
+from d810.hexrays.contracts import invariants as inv
 
 
 _HR = inv.ida_hexrays

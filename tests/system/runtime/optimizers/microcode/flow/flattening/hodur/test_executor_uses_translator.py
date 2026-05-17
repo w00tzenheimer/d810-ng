@@ -400,7 +400,7 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
     from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(
@@ -456,7 +456,7 @@ def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.Mo
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
     from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(

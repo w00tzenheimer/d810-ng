@@ -1,20 +1,9 @@
-"""IDA-backed CFG contract checker."""
+"""Pure CFG contract orchestration."""
 
 from __future__ import annotations
 
-from d810.core import logging, getLogger
-from d810.core.typing import Literal
-from d810.core.typing import Iterable
+from d810.core.typing import Iterable, Protocol
 
-from d810.cfg.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_native
-
-logger = getLogger(__name__)
-
-if NATIVE_ORACLE_AVAILABLE:
-    logger.info("Native CFG oracle available - full parity mode")
-else:
-    logger.info("Native CFG oracle unavailable - Python-only parity mode")
-from d810.cfg.contracts.insn_invariants import check_all_insn_invariants
 from d810.cfg.contracts.invariants import (
     block_address_range,
     block_closing_opcode_at_tail,
@@ -26,14 +15,26 @@ from d810.cfg.contracts.invariants import (
     pred_succ_symmetry,
     successor_set_matches_tail_semantics,
 )
-from d810.cfg.plan import PatchPlan
 from d810.cfg.contracts.report import InvariantViolation
+from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.plan import PatchPlan
 
-ContractScope = Literal["focused", "full"]
-ContractPhase = Literal["pre", "post", "rollback", "projected"]
+ContractScope = str
+ContractPhase = str
 
-# Native oracle violation code prefix — distinguishes oracle results from Python checks
-_NATIVE_PREFIX = "CFG_NATIVE_"
+
+class BackendContractOracle(Protocol):
+    """Backend-specific live contract checks accepted by CFG orchestration."""
+
+    def check_backend_contract(
+        self,
+        backend_graph,
+        *,
+        phase: str,
+        focus_serials: Iterable[int] | None,
+        include_insn_checks: bool = False,
+    ) -> Iterable[InvariantViolation]:
+        ...
 
 
 def _summarize_violations(
@@ -61,7 +62,7 @@ class CfgContractViolationError(RuntimeError):
     def __init__(
         self,
         *,
-        phase: ContractPhase,
+        phase: str,
         violations: Iterable[InvariantViolation],
     ) -> None:
         self.phase = phase
@@ -72,8 +73,11 @@ class CfgContractViolationError(RuntimeError):
         )
 
 
-class IDACfgContract:
-    """Verifier-inspired contract checks for pre/post transaction validation."""
+class CfgContract:
+    """Backend-neutral contract checks for patch-plan validation."""
+
+    def __init__(self, oracle: BackendContractOracle | None = None) -> None:
+        self._oracle = oracle
 
     @staticmethod
     def summarize_violations(
@@ -121,8 +125,7 @@ class IDACfgContract:
         ):
             self._maybe_add_serial(serials, getattr(obj, attr_name, None))
 
-        source_successors = getattr(obj, "source_successors", ())
-        for successor in source_successors or ():
+        for successor in getattr(obj, "source_successors", ()) or ():
             self._maybe_add_serial(serials, successor)
 
         self._collect_edge_serials(serials, getattr(obj, "incoming_edge", None))
@@ -150,42 +153,21 @@ class IDACfgContract:
             self._collect_serials_from_object(serials, op)
         return sorted(serials)
 
-    def check_pre(
+    def verify_projected(
         self,
-        mba,
+        pre_cfg: FlowGraph,
         plan: PatchPlan,
         *,
         scope: ContractScope = "focused",
-        include_insn_checks: bool = False,
-    ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(mba, phase="pre", focus_serials=focus, include_insn_checks=include_insn_checks)
-
-    def check_post(
-        self,
-        mba,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-        include_insn_checks: bool = False,
-    ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(mba, phase="post", focus_serials=focus, include_insn_checks=include_insn_checks)
-
-    def check_rollback(
-        self,
-        mba,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-        include_insn_checks: bool = False,
-    ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(mba, phase="rollback", focus_serials=focus, include_insn_checks=include_insn_checks)
+    ) -> tuple[InvariantViolation, ...]:
+        violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))
+        if violations:
+            raise CfgContractViolationError(phase="projected", violations=violations)
+        return violations
 
     def check_projected(
         self,
-        pre_cfg,
+        pre_cfg: FlowGraph,
         plan: PatchPlan,
         *,
         scope: ContractScope = "focused",
@@ -200,46 +182,21 @@ class IDACfgContract:
             focus_serials=focus,
         )
 
-    def verify_projected(
-        self,
-        pre_cfg,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-    ) -> tuple[InvariantViolation, ...]:
-        """Convenience wrapper: project + check + raise on violations.
-
-        Mirrors :meth:`verify` behaviour for the ``"projected"`` phase:
-        returns an empty tuple on success, raises
-        :class:`CfgContractViolationError` with ``phase="projected"``
-        when any invariant is violated.
-
-        Projected-state construction is delegated to
-        :func:`d810.cfg.flow.edit_simulator.project_post_state` (called
-        internally by :meth:`check_projected`).
-        """
-        violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))
-        if violations:
-            raise CfgContractViolationError(phase="projected", violations=violations)
-        return violations
-
     def verify(
         self,
-        mba,
+        graph,
         plan: PatchPlan | None = None,
         *,
         phase: ContractPhase = "post",
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> tuple[InvariantViolation, ...]:
-        if phase not in ("pre", "post", "rollback"):
-            raise ValueError(f"Unknown cfg contract phase: {phase}")
         focus = None
         if plan is not None and scope != "full":
             focus = self._focus_serials(plan) or None
         violations = tuple(
             self._check(
-                mba,
+                graph,
                 phase=phase,
                 focus_serials=focus,
                 include_insn_checks=include_insn_checks,
@@ -251,68 +208,36 @@ class IDACfgContract:
 
     def _check(
         self,
-        mba,
+        graph,
         *,
         phase: str,
         focus_serials: Iterable[int] | None,
         include_insn_checks: bool = False,
     ) -> list[InvariantViolation]:
-        violations: list[InvariantViolation] = []
-        violations.extend(
-            block_list_consistency(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            pred_succ_symmetry(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            successor_set_matches_tail_semantics(
-                mba, phase=phase, focus_serials=focus_serials
+        if isinstance(graph, FlowGraph):
+            return self._check_projected(graph, phase=phase, focus_serials=focus_serials)
+        if self._oracle is None:
+            return []
+        return list(
+            self._oracle.check_backend_contract(
+                graph,
+                phase=phase,
+                focus_serials=focus_serials,
+                include_insn_checks=include_insn_checks,
             )
         )
-        violations.extend(
-            block_type_vs_tail(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            predecessor_uniqueness(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            block_serial_range(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            block_closing_opcode_at_tail(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            block_address_range(mba, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            block_unknown_flags(mba, phase=phase, focus_serials=focus_serials)
-        )
-        if include_insn_checks:
-            violations.extend(
-                check_all_insn_invariants(
-                    mba, phase=phase, focus_serials=focus_serials
-                )
-            )
-        if NATIVE_ORACLE_AVAILABLE:
-            for interr_code, block_serial, msg in check_mba_native(mba):
-                violations.append(
-                    InvariantViolation(
-                        code=f"{_NATIVE_PREFIX}{interr_code}",
-                        message=msg,
-                        phase=phase,
-                        block_serial=block_serial,
-                    )
-                )
-        return violations
 
     def _check_projected(
         self,
-        projected_cfg,
+        projected_cfg: FlowGraph,
         *,
         phase: str,
         focus_serials: Iterable[int] | None,
     ) -> list[InvariantViolation]:
         violations: list[InvariantViolation] = []
+        violations.extend(
+            block_list_consistency(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
         violations.extend(
             pred_succ_symmetry(projected_cfg, phase=phase, focus_serials=focus_serials)
         )
@@ -335,5 +260,18 @@ class IDACfgContract:
         )
         violations.extend(
             block_serial_range(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
+        violations.extend(
+            block_closing_opcode_at_tail(
+                projected_cfg,
+                phase=phase,
+                focus_serials=focus_serials,
+            )
+        )
+        violations.extend(
+            block_address_range(projected_cfg, phase=phase, focus_serials=focus_serials)
+        )
+        violations.extend(
+            block_unknown_flags(projected_cfg, phase=phase, focus_serials=focus_serials)
         )
         return violations

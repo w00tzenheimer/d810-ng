@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.flow import edit_simulator
-from d810.cfg.contracts.ida_contract import (
+from d810.cfg.contracts.contract import (
+    CfgContract,
     CfgContractViolationError,
-    IDACfgContract,
 )
 from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
@@ -13,14 +13,14 @@ from d810.cfg.plan import PatchPlan
 
 
 def test_verify_returns_empty_tuple_when_no_violations(monkeypatch: pytest.MonkeyPatch):
-    contract = IDACfgContract()
+    contract = CfgContract()
     monkeypatch.setattr(contract, "_check", lambda *_a, **_k: [])
 
     assert contract.verify(object(), phase="post") == ()
 
 
 def test_verify_raises_with_summarized_violations(monkeypatch: pytest.MonkeyPatch):
-    contract = IDACfgContract()
+    contract = CfgContract()
     violations = [
         InvariantViolation(
             code="CFG_BAD",
@@ -40,7 +40,7 @@ def test_verify_raises_with_summarized_violations(monkeypatch: pytest.MonkeyPatc
 
 
 def test_verify_projected_returns_empty_on_success(monkeypatch: pytest.MonkeyPatch):
-    contract = IDACfgContract()
+    contract = CfgContract()
     clean_cfg = FlowGraph(
         blocks={
             0: BlockSnapshot(
@@ -74,7 +74,7 @@ def test_verify_projected_returns_empty_on_success(monkeypatch: pytest.MonkeyPat
 
 
 def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
-    contract = IDACfgContract()
+    contract = CfgContract()
     # Block 0 lists block 1 as successor but block 1 does NOT list block 0 as pred
     broken_cfg = FlowGraph(
         blocks={
@@ -113,7 +113,7 @@ def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyPatch):
-    contract = IDACfgContract()
+    contract = CfgContract()
     projected_cfg = FlowGraph(
         blocks={
             0: BlockSnapshot(
