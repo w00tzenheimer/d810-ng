@@ -1443,6 +1443,8 @@ def _compose_branch_ownership_refiners(
                 continue
             current = refined
             changed = True
+            if current.vetoes_fallback_refinement:
+                break
         return current if changed else None
 
     return _refine
