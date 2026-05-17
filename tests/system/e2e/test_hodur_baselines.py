@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import platform
+from pathlib import Path
 
 import pytest
 
@@ -105,6 +106,7 @@ class TestHodurBaselines:
         d810_state,
         pseudocode_to_string,
         code_comparator,
+        request,
     ):
         """Assert AFTER pseudocode AST metrics match the locked-in baseline."""
         assert code_comparator is not None, (
@@ -114,6 +116,15 @@ class TestHodurBaselines:
         func_ea = _get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function '{func_name}' not found in binary")
+
+        if func_name == "sub_7FFD3338C040":
+            from d810.core.settings import configure_settings, reset_settings
+
+            configure_settings(
+                diag_snapshots=True,
+                capture_post_maturity=idaapi.MMAT_GLBOPT1,
+            )
+            request.addfinalizer(reset_settings)
 
         with d810_state() as state:
             with state.for_project(project_config):
@@ -142,6 +153,24 @@ class TestHodurBaselines:
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
             )
+            from d810.core.diag import get_diag_db
+            from tests.system.e2e.hodur.sub7ffd_region_oracle_runner import (
+                render_region_oracle_report,
+            )
+
+            diag_conn = get_diag_db(func_ea)
+            if diag_conn is None:
+                pytest.fail("sub7FFD region oracle requires a diag DB")
+            report = render_region_oracle_report(
+                diag_conn,
+                func_ea_hex=f"0x{func_ea:016x}",
+            )
+            artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            report_path = artifact_dir / "sub7ffd_region_oracle.md"
+            report_path.write_text(report)
+            print(f"\n=== SUB7FFD REGION ORACLE: {report_path} ===")
+            print(report)
 
         # Show per-metric diff for any mismatches
         diffs = {}

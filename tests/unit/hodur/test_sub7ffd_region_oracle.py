@@ -1,7 +1,7 @@
-"""Tests for the REF region-shape oracle."""
+"""Tests for the sub7FFD Hodur region-shape oracle support."""
 from __future__ import annotations
 
-from d810.diagnostics.ref_region_oracle import (
+from tests.system.e2e.hodur.sub7ffd_region_oracle import (
     D810SnapshotInputs,
     FeatureRegion,
     FeatureSource,
@@ -179,7 +179,7 @@ class TestDiffFeatures:
 
 
 def test_spec_for_known_function_returns_spec():
-    from d810.diagnostics.ref_region_oracle import spec_for, RefSpec
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import RefSpec, spec_for
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     assert isinstance(spec, RefSpec)
@@ -187,24 +187,24 @@ def test_spec_for_known_function_returns_spec():
 
 
 def test_spec_for_unknown_function_returns_none():
-    from d810.diagnostics.ref_region_oracle import spec_for
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
     assert spec_for("0x00000000DEADBEEF") is None
 
 
 def test_spec_for_is_case_insensitive_in_hex_digits():
-    from d810.diagnostics.ref_region_oracle import spec_for
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
     assert spec_for("0X0000000180012DF0") is not None
     assert spec_for("0x0000000180012DF0") is not None
 
 
 def test_is_registered_matches_spec_for():
-    from d810.diagnostics.ref_region_oracle import is_registered, spec_for
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import is_registered, spec_for
     assert is_registered("0x0000000180012df0") is (spec_for("0x0000000180012df0") is not None)
     assert is_registered("0x00000000DEADBEEF") is (spec_for("0x00000000DEADBEEF") is not None)
 
 
 def test_spec_carries_snap_label_preferences():
-    from d810.diagnostics.ref_region_oracle import spec_for
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     assert spec.snap17_label_preferences[0] == "post_bundle_stabilize"
@@ -212,7 +212,7 @@ def test_spec_carries_snap_label_preferences():
 
 
 def test_ref_features_requires_spec_arg():
-    from d810.diagnostics.ref_region_oracle import ref_features, spec_for
+    from tests.system.e2e.hodur.sub7ffd_region_oracle import ref_features, spec_for
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     feats = list(ref_features(spec))
