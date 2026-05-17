@@ -293,6 +293,29 @@ def _state_dispatcher_map(
     )
 
 
+def _switch_return_fact(source_state: int, exit_block: int):
+    return switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id=f"tigress_switch:case={source_state}:return",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.RETURN_FRONTIER,
+        source_state=source_state,
+        case_entry_block=exit_block,
+        return_value=0,
+        proof=BranchOwnershipProof(
+            proof_id=f"tigress_switch:case={source_state}:return",
+            proof_kind=BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER,
+            trusted=True,
+            reason="case_body_returns",
+            source_state=source_state,
+            source_block=exit_block,
+            predicate_block=exit_block,
+            dispatcher_entry_block=2,
+            oracle_kind="switch_case_return_frontier",
+        ),
+        reason="case_body_returns",
+        exit_block=exit_block,
+    )
+
+
 def test_phase_node_entry_by_state_prefers_exact_dispatcher_map_rows() -> None:
     def _node(state: int, entry: int):
         return SimpleNamespace(
@@ -2208,7 +2231,10 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
 
 
 def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
-    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=2),
+        initial_state=None,
+    )
     fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
         fact_id="tigress_switch:case=16:direct",
         transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
@@ -2220,11 +2246,20 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
     )
     flow_graph = FlowGraph(
         blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
             2: BlockSnapshot(
                 serial=2,
                 block_type=ida_hexrays.BLT_2WAY,
                 succs=(5, 7),
-                preds=(0, 5),
+                preds=(1, 5),
                 flags=0,
                 start_ea=0x401002,
                 insn_snapshots=(),
@@ -2240,8 +2275,8 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
             ),
             7: BlockSnapshot(
                 serial=7,
-                block_type=ida_hexrays.BLT_1WAY,
-                succs=(2,),
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
                 preds=(2,),
                 flags=0,
                 start_ea=0x401007,
@@ -2254,7 +2289,11 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
     family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
     modifications, blockers = family._collect_tigress_switch_transition_modifications(
         flow_graph=flow_graph,
-        phase_artifact=EmulatedDispatcherPhaseArtifact(dispatcher_entry_serial=2),
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+            initial_state=0x10,
+        ),
         phase_context=EmulatedDispatcherPhaseContext(
             bst_result=object(),
             transition_result=object(),
@@ -2262,13 +2301,95 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
             dag=object(),
             semantic_reference_program=object(),
             state_dispatcher_map=dispatch_map,
-            switch_case_transition_facts=(fact,),
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
         ),
     )
 
     assert blockers == ()
     assert modifications == (
+        RedirectGoto(from_serial=1, old_target=2, new_target=5),
         RedirectGoto(from_serial=5, old_target=2, new_target=7),
+    )
+
+
+def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(0x10, 5, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+            StateDispatcherRow(0x20, 7, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+            StateDispatcherRow(0x30, 9, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
+        initial_state=0x10,
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:conditional",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.CONDITIONAL,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20, 0x30),
+        exit_block=6,
+        ordered_path=(5, 6),
+        proof=BranchOwnershipProof(
+            proof_id="tigress_switch:case=16:conditional",
+            proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+            trusted=True,
+            reason="conditional_case_transition_source_predicate",
+            source_state=0x10,
+            source_block=5,
+            predicate_block=5,
+            dispatcher_entry_block=2,
+            oracle_kind="switch_case_branch_ownership",
+        ),
+        payload={
+            "arm_exit_blocks": (6, 8),
+            "arm_ordered_paths": ((5, 6), (5, 8)),
+        },
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, ida_hexrays.BLT_1WAY, (2,), (), 0, 0x401001, ()),
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (5, 7, 9), (1, 6, 8), 0, 0x401002, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_2WAY, (6, 8), (2,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            8: BlockSnapshot(8, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401008, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=1,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(
+                fact,
+                _switch_return_fact(0x20, 7),
+                _switch_return_fact(0x30, 9),
+            ),
+        ),
+    )
+
+    assert blockers == ()
+    assert modifications == (
+        RedirectGoto(from_serial=1, old_target=2, new_target=5),
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+        RedirectGoto(from_serial=8, old_target=2, new_target=9),
     )
 
 
@@ -2285,11 +2406,20 @@ def test_tigress_switch_transition_facts_reject_shared_source() -> None:
     )
     flow_graph = FlowGraph(
         blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
             2: BlockSnapshot(
                 serial=2,
                 block_type=ida_hexrays.BLT_2WAY,
                 succs=(5, 7),
-                preds=(5,),
+                preds=(1, 5),
                 flags=0,
                 start_ea=0x401002,
                 insn_snapshots=(),
@@ -2305,8 +2435,8 @@ def test_tigress_switch_transition_facts_reject_shared_source() -> None:
             ),
             7: BlockSnapshot(
                 serial=7,
-                block_type=ida_hexrays.BLT_1WAY,
-                succs=(2,),
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
                 preds=(2,),
                 flags=0,
                 start_ea=0x401007,
@@ -2319,7 +2449,10 @@ def test_tigress_switch_transition_facts_reject_shared_source() -> None:
     family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
     modifications, blockers = family._collect_tigress_switch_transition_modifications(
         flow_graph=flow_graph,
-        phase_artifact=EmulatedDispatcherPhaseArtifact(dispatcher_entry_serial=2),
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+        ),
         phase_context=EmulatedDispatcherPhaseContext(
             bst_result=object(),
             transition_result=object(),
@@ -2327,12 +2460,13 @@ def test_tigress_switch_transition_facts_reject_shared_source() -> None:
             dag=object(),
             semantic_reference_program=object(),
             state_dispatcher_map=dispatch_map,
-            switch_case_transition_facts=(fact,),
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
         ),
     )
 
     assert modifications == ()
-    assert blockers == ("tigress_switch_transition_source_not_owned",)
+    assert "tigress_switch_transition_source_not_owned" in blockers
+    assert "tigress_switch_transition_visible_state_not_lowered" in blockers
 
 
 def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
@@ -3602,6 +3736,77 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
 
 class TestEmulatedDispatcherManagedContext:
     binary_name = _get_default_binary()
+
+    def test_tigress_minmaxarray_transition_fact_validation_selects_mode(
+        self,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        monkeypatch,
+    ) -> None:
+        func_ea = get_func_ea("tigress_minmaxarray")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("Function 'tigress_minmaxarray' not found")
+
+        captured: dict[str, object] = {}
+        original_build_snapshot = EmulatedDispatcherStrategyFamily.build_snapshot
+
+        def _wrapped_build_snapshot(self, mba, detection):
+            snapshot = original_build_snapshot(self, mba, detection)
+            metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+            if metadata is not None and (
+                metadata.selected_lowering_mode == "tigress_switch_transition_facts"
+                or metadata.selected_modification_count
+                > int(captured.get("selected_modification_count", -1))
+            ):
+                captured["selected_modification_count"] = (
+                    metadata.selected_modification_count
+                )
+                captured["snapshot"] = asdict(metadata)
+            return snapshot
+
+        monkeypatch.setattr(
+            EmulatedDispatcherStrategyFamily,
+            "build_snapshot",
+            _wrapped_build_snapshot,
+        )
+
+        project_name = "default_unflattening_tigress_engine_transition_facts.json"
+        with d810_state() as state:
+            state.stop_d810()
+            project_index = _resolve_test_project_index(state, project_name)
+            state.load_project(project_index)
+            with state.for_project(project_name) as ctx:
+                dispatcher_rule = next(
+                    (
+                        rule
+                        for rule in ctx.active_blk_rules
+                        if type(rule).__name__ == "EmulatedDispatcherUnflattener"
+                    ),
+                    None,
+                )
+                assert dispatcher_rule is not None
+                state.stats.reset()
+                state.start_d810()
+                previous_override = _force_rule_scope_to_current_profile(
+                    state,
+                    ctx,
+                    func_ea,
+                )
+                try:
+                    cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+                    assert cfunc is not None
+                    rendered = pseudocode_to_string(cfunc.get_pseudocode())
+                finally:
+                    _restore_forced_rule_scope(state, func_ea, previous_override)
+            state.stop_d810()
+
+        snapshot = captured.get("snapshot")
+        assert snapshot is not None
+        assert snapshot["selected_lowering_mode"] == "tigress_switch_transition_facts"
+        assert snapshot["planning_ready"] is True
+        assert snapshot["selected_modification_count"] >= 18
+        assert "for (" in rendered
 
     def test_approov_real_pattern_post_apply_dump_preserves_verify_in_managed_context(
         self,

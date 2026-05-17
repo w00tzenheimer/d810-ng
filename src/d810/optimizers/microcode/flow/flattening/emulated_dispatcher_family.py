@@ -990,6 +990,74 @@ def _switch_fact_exit_block(fact: object) -> int | None:
         return None
 
 
+def _switch_fact_source_state(fact: object) -> int | None:
+    source_state = getattr(fact, "source_state", None)
+    if source_state is None:
+        return None
+    try:
+        return int(source_state)
+    except Exception:
+        return None
+
+
+def _switch_fact_next_states(fact: object) -> tuple[int, ...]:
+    try:
+        return tuple(int(value) for value in getattr(fact, "next_states", ()) or ())
+    except Exception:
+        return ()
+
+
+def _switch_fact_arm_exit_blocks(fact: object) -> tuple[int | None, ...]:
+    payload = getattr(fact, "payload", {}) or {}
+    raw = payload.get("arm_exit_blocks") if isinstance(payload, dict) else None
+    if raw is not None:
+        try:
+            return tuple(None if value is None else int(value) for value in raw)
+        except Exception:
+            return ()
+    exit_block = _switch_fact_exit_block(fact)
+    return () if exit_block is None else (exit_block,)
+
+
+def _switch_fact_arm_ordered_paths(fact: object) -> tuple[tuple[int, ...], ...]:
+    payload = getattr(fact, "payload", {}) or {}
+    raw = payload.get("arm_ordered_paths") if isinstance(payload, dict) else None
+    if raw is not None:
+        try:
+            return tuple(
+                tuple(int(serial) for serial in (path or ()))
+                for path in raw
+            )
+        except Exception:
+            return ()
+    ordered_path = tuple(int(serial) for serial in getattr(fact, "ordered_path", ()) or ())
+    return () if not ordered_path else (ordered_path,)
+
+
+def _switch_fact_trusted_proof_kind(fact: object, expected_kind: str) -> bool:
+    proof = getattr(fact, "proof", None)
+    if proof is None or not bool(getattr(proof, "trusted", False)):
+        return False
+    proof_kind = getattr(proof, "proof_kind_name", None)
+    if proof_kind is None:
+        raw_kind = getattr(proof, "proof_kind", "")
+        proof_kind = getattr(raw_kind, "value", raw_kind)
+    return str(proof_kind) == expected_kind
+
+
+def _ordered_path_predecessor(
+    ordered_path: tuple[int, ...],
+    source: int,
+) -> int | None:
+    try:
+        source_index = ordered_path.index(int(source))
+    except ValueError:
+        return None
+    if source_index <= 0:
+        return None
+    return int(ordered_path[source_index - 1])
+
+
 def _ollvm_state_dispatcher_maps(
     mba: object,
     analysis: object,
@@ -2229,6 +2297,8 @@ class GenericDispatcherEngineProfile:
     state_transport: str
     lowering_mode: str
     provenance_hints: tuple[str, ...] = ()
+    prefer_switch_transition_facts: bool = False
+    allow_incomplete_switch_transition_facts: bool = False
     state_dispatcher_map_factory: Callable[
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
@@ -2525,7 +2595,11 @@ def ollvm_state_dispatcher_map_profile() -> GenericDispatcherEngineProfile:
     )
 
 
-def tigress_switch_dispatcher_profile() -> GenericDispatcherEngineProfile:
+def tigress_switch_dispatcher_profile(
+    *,
+    prefer_switch_transition_facts: bool = False,
+    allow_incomplete_switch_transition_facts: bool = False,
+) -> GenericDispatcherEngineProfile:
     """Return a switch-table state-machine profile for Tigress-style dispatchers."""
 
     return GenericDispatcherEngineProfile(
@@ -2535,6 +2609,8 @@ def tigress_switch_dispatcher_profile() -> GenericDispatcherEngineProfile:
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=("switch_table",),
+        prefer_switch_transition_facts=prefer_switch_transition_facts,
+        allow_incomplete_switch_transition_facts=allow_incomplete_switch_transition_facts,
         state_dispatcher_map_factory=_tigress_switch_state_dispatcher_maps,
         switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
     )
@@ -4740,19 +4816,95 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         dispatcher_entry = int(dispatch_map.dispatcher_entry_block)
         modifications: list[GraphModification] = []
         blockers: Counter[str] = Counter()
-        redirects_by_source: dict[int, int] = {}
+        redirects_by_claim: dict[tuple[int, int | None], int] = {}
+        lowered_states: set[int] = set()
+        terminal_states: set[int] = set()
+        visible_handler_states = {
+            int(row.state_const)
+            for row in dispatch_map.rows
+            if getattr(row, "row_kind", "handler") == "handler"
+        }
 
-        def _add_redirect(source: int, target: int) -> None:
-            redirects_by_source[int(source)] = int(target)
-            modifications.append(
-                RedirectGoto(
-                    from_serial=int(source),
-                    old_target=dispatcher_entry,
-                    new_target=int(target),
+        def _add_redirect(
+            source: int,
+            target: int,
+            *,
+            ordered_path: tuple[int, ...] = (),
+        ) -> bool:
+            source = int(source)
+            target = int(target)
+            source_block = flow_graph.get_block(source)
+            if source_block is None:
+                blockers["tigress_switch_transition_source_missing"] += 1
+                return False
+            if source_block.succs != (dispatcher_entry,):
+                blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
+                return False
+            if target == dispatcher_entry or target not in flow_graph.blocks:
+                blockers["tigress_switch_transition_target_not_handler"] += 1
+                return False
+            if source == target:
+                blockers["tigress_switch_transition_self_loop"] += 1
+                return False
+            via_pred: int | None = None
+            if int(source_block.npred) > 1:
+                via_pred = _ordered_path_predecessor(ordered_path, source)
+                if via_pred is None:
+                    blockers["tigress_switch_transition_source_not_owned"] += 1
+                    return False
+                if via_pred not in tuple(int(pred) for pred in source_block.preds):
+                    blockers["tigress_switch_transition_pred_split_unproven"] += 1
+                    return False
+            key = (source, via_pred)
+            previous = redirects_by_claim.get(key)
+            if previous is not None:
+                if previous != target:
+                    blockers["tigress_switch_transition_conflicting_source"] += 1
+                    return False
+                return True
+            redirects_by_claim[key] = target
+            if via_pred is None:
+                modifications.append(
+                    RedirectGoto(
+                        from_serial=source,
+                        old_target=dispatcher_entry,
+                        new_target=target,
+                    )
                 )
-            )
+            else:
+                modifications.append(
+                    EdgeRedirectViaPredSplit(
+                        src_block=source,
+                        old_target=dispatcher_entry,
+                        new_target=target,
+                        via_pred=via_pred,
+                    )
+                )
+            return True
 
-        initial_state = dispatch_map.initial_state
+        def _target_for_state(state: int) -> int | None:
+            target = dispatch_map.resolve_target(int(state))
+            if target is None:
+                blockers["tigress_switch_transition_target_unresolved"] += 1
+                return None
+            target = int(target)
+            if target == dispatcher_entry or target not in flow_graph.blocks:
+                blockers["tigress_switch_transition_target_not_handler"] += 1
+                return None
+            return target
+
+        map_initial_state = dispatch_map.initial_state
+        artifact_initial_state = phase_artifact.initial_state
+        initial_state = map_initial_state
+        if initial_state is None:
+            initial_state = artifact_initial_state
+        elif (
+            artifact_initial_state is not None
+            and (int(initial_state) & 0xFFFFFFFFFFFFFFFF)
+            != (int(artifact_initial_state) & 0xFFFFFFFFFFFFFFFF)
+        ):
+            blockers["tigress_switch_transition_initial_state_conflict"] += 1
+        initial_redirect_proven = False
         if initial_state is not None and phase_artifact.pre_header_serial is not None:
             initial_target = dispatch_map.resolve_target(int(initial_state))
             pre_header = int(phase_artifact.pre_header_serial)
@@ -4763,64 +4915,104 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 and pre_header_block.succs == (dispatcher_entry,)
                 and int(initial_target) in flow_graph.blocks
             ):
-                _add_redirect(pre_header, int(initial_target))
+                initial_redirect_proven = _add_redirect(pre_header, int(initial_target))
             else:
                 blockers["tigress_switch_transition_initial_redirect_unproven"] += 1
+        else:
+            blockers["tigress_switch_transition_initial_redirect_unproven"] += 1
 
         for fact in facts:
             fact_kind = _switch_fact_transition_kind_name(fact)
-            if fact_kind != "DIRECT":
+            source_state = _switch_fact_source_state(fact)
+            if source_state is None:
+                if fact_kind in {"DIAGNOSTIC", "UNRESOLVED"}:
+                    blockers[f"tigress_switch_transition_fact_{fact_kind.lower()}"] += 1
+                continue
+            if fact_kind in {"DIAGNOSTIC", "UNRESOLVED"}:
                 blockers[f"tigress_switch_transition_fact_{fact_kind.lower()}"] += 1
                 continue
-            next_states = tuple(
-                int(value) for value in getattr(fact, "next_states", ()) or ()
-            )
-            if len(next_states) != 1:
-                blockers["tigress_switch_transition_direct_target_count"] += 1
+            if fact_kind == "RETURN_FRONTIER":
+                if not _switch_fact_trusted_proof_kind(fact, "TERMINAL_RETURN_FRONTIER"):
+                    blockers["tigress_switch_transition_return_frontier_unproven"] += 1
+                    continue
+                exit_block = _switch_fact_exit_block(fact)
+                if exit_block is not None:
+                    block = flow_graph.get_block(exit_block)
+                    if block is not None and dispatcher_entry in tuple(block.succs):
+                        blockers["tigress_switch_transition_return_frontier_still_dispatches"] += 1
+                        continue
+                terminal_states.add(source_state)
                 continue
-            target = dispatch_map.resolve_target(next_states[0])
-            if target is None:
-                blockers["tigress_switch_transition_target_unresolved"] += 1
+
+            next_states = _switch_fact_next_states(fact)
+            arm_exit_blocks = _switch_fact_arm_exit_blocks(fact)
+            arm_ordered_paths = _switch_fact_arm_ordered_paths(fact)
+            if fact_kind == "DIRECT":
+                if len(next_states) != 1:
+                    blockers["tigress_switch_transition_direct_target_count"] += 1
+                    continue
+                target = _target_for_state(next_states[0])
+                if target is None:
+                    continue
+                source = _switch_fact_exit_block(fact)
+                if source is None:
+                    blockers["tigress_switch_transition_missing_exit_block"] += 1
+                    continue
+                ordered_path = arm_ordered_paths[0] if arm_ordered_paths else ()
+                if _add_redirect(source, target, ordered_path=ordered_path):
+                    lowered_states.add(source_state)
                 continue
-            target = int(target)
-            if target == dispatcher_entry or target not in flow_graph.blocks:
-                blockers["tigress_switch_transition_target_not_handler"] += 1
+
+            if fact_kind == "CONDITIONAL":
+                if not _switch_fact_trusted_proof_kind(fact, "REAL_DATA_DEPENDENT"):
+                    blockers["tigress_switch_transition_conditional_untrusted"] += 1
+                    continue
+                if len(next_states) != 2:
+                    blockers["tigress_switch_transition_conditional_target_count"] += 1
+                    continue
+                if len(arm_exit_blocks) != 2 or any(
+                    value is None for value in arm_exit_blocks
+                ):
+                    blockers["tigress_switch_transition_conditional_missing_arm_exit"] += 1
+                    continue
+                arm_targets = tuple(_target_for_state(state) for state in next_states)
+                if any(target is None for target in arm_targets):
+                    continue
+                arm_ok = True
+                for index, (source, target) in enumerate(zip(arm_exit_blocks, arm_targets)):
+                    ordered_path = (
+                        arm_ordered_paths[index]
+                        if index < len(arm_ordered_paths)
+                        else ()
+                    )
+                    arm_ok = (
+                        _add_redirect(int(source), int(target), ordered_path=ordered_path)
+                        and arm_ok
+                    )
+                if arm_ok:
+                    lowered_states.add(source_state)
                 continue
-            source = _switch_fact_exit_block(fact)
-            if source is None:
-                blockers["tigress_switch_transition_missing_exit_block"] += 1
-                continue
-            if source == target:
-                blockers["tigress_switch_transition_self_loop"] += 1
-                continue
-            source_block = flow_graph.get_block(source)
-            if source_block is None:
-                blockers["tigress_switch_transition_source_missing"] += 1
-                continue
-            if source_block.succs != (dispatcher_entry,):
-                blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
-                continue
-            if int(source_block.npred) > 1:
-                blockers["tigress_switch_transition_source_not_owned"] += 1
-                continue
-            previous = redirects_by_source.get(source)
-            if previous is not None and previous != target:
-                blockers["tigress_switch_transition_conflicting_source"] += 1
-                continue
-            if previous is None:
-                _add_redirect(source, target)
+
+            blockers[f"tigress_switch_transition_fact_{fact_kind.lower()}"] += 1
+
+        if not initial_redirect_proven:
+            blockers["tigress_switch_transition_initial_redirect_unproven"] += 1
+        for state in sorted(visible_handler_states - lowered_states - terminal_states):
+            blockers["tigress_switch_transition_visible_state_not_lowered"] += 1
 
         if not modifications:
             if blockers:
                 return (), tuple(sorted(blockers))
             return (), ("tigress_switch_transition_no_direct_candidates",)
+        if blockers and not self._profile.allow_incomplete_switch_transition_facts:
+            return (), tuple(sorted(blockers))
         self._logger.info(
-            "Tigress switch transition lowering selected %d direct edit(s); blockers=%s",
+            "Tigress switch transition lowering selected %d edit(s); blockers=%s",
             len(modifications),
             ", ".join(f"{reason}={count}" for reason, count in blockers.most_common())
             or "none",
         )
-        return tuple(modifications), ()
+        return tuple(modifications), tuple(sorted(blockers))
 
     def _collect_phase_redirect_loop_recovery(
         self,
@@ -5912,7 +6104,15 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_modifications = fallback_modifications
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
-        if phase_reconstruction_modifications and not phase_reconstruction_blockers:
+        switch_transition_selectable = bool(switch_transition_modifications) and (
+            not switch_transition_blockers
+            or self._profile.allow_incomplete_switch_transition_facts
+        )
+        if self._profile.prefer_switch_transition_facts and switch_transition_selectable:
+            selected_modifications = switch_transition_modifications
+            selected_lowering_mode = "tigress_switch_transition_facts"
+            selected_blockers = switch_transition_blockers
+        elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
             selected_modifications = phase_reconstruction_modifications
             selected_lowering_mode = "state_region_reconstruction"
             selected_blockers = ()
@@ -5967,7 +6167,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             candidate_count=len(fallback_modifications),
             rejected_fathers=len(fallback_blockers),
             candidate_kinds=tuple(type(mod).__name__ for mod in selected_modifications),
-            rejection_reasons=tuple(sorted(set(fallback_blockers))),
+            rejection_reasons=tuple(sorted(set(selected_blockers))),
             candidate_records=candidate_records,
             phase_artifact=phase_artifact,
             selected_lowering_mode=selected_lowering_mode,
