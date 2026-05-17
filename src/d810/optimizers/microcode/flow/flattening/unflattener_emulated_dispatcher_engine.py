@@ -75,6 +75,9 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         allow_incomplete_switch_transition_facts = bool(
             self.config.get("allow_incomplete_switch_transition_facts", False)
         )
+        enable_terminal_payload_materialization = bool(
+            self.config.get("enable_terminal_payload_materialization", False)
+        )
         if profile_name in {
             "state_dispatcher_map",
             "state_map",
@@ -82,7 +85,11 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             "ollvm_state_map",
         }:
             self._family = EmulatedDispatcherStrategyFamily(
-                profile=ollvm_state_dispatcher_map_profile()
+                profile=ollvm_state_dispatcher_map_profile(
+                    enable_terminal_payload_materialization=(
+                        enable_terminal_payload_materialization
+                    )
+                )
             )
         elif profile_name in {
             "tigress_switch",

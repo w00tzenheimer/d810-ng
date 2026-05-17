@@ -900,6 +900,15 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
         emulated_family_module
         ._terminal_selector_payload_materialization_modifications(candidate)
     )
+    compiled_modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+    assert blocker is None
+    assert compiled_modifications == modifications
     assert modifications == (
         InsertBlock(
             pred_serial=146,
@@ -926,6 +935,184 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
     assert patch_plan.steps[1].via_pred == 98
     assert patch_plan.steps[1].old_target == 96
     assert patch_plan.steps[1].new_target == rewritten_continuation
+
+
+def test_ollvm_terminal_payload_materialization_rejects_missing_payload_snapshot() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_mov, ea=0x40113A, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+    veto = BranchOwnershipProof(
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto),
+        )
+    )
+
+    assert candidates == ()
+
+
+def test_ollvm_terminal_payload_materialization_compile_failure_blocks(
+    monkeypatch,
+) -> None:
+    candidate = (
+        emulated_family_module.TerminalSelectorPayloadMaterializationCandidate(
+            selector_source_block=98,
+            selector_branch_arm=1,
+            selector_state=0x049FD3A3,
+            payload_state=0x2AC056AD,
+            payload_block=136,
+            payload_backedge_target=96,
+            semantic_continuation=204,
+            side_effect_corridor_blocks=(136,),
+            side_effect_instructions=(
+                InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+            ),
+            selector_blocked_proof_id="selector-gap-proof",
+            selector_residue_proof_id="selector-residue-proof",
+            external_incoming_edges=(
+                emulated_family_module.TerminalSelectorPayloadIncomingEdge(
+                    source_block=146,
+                    branch_arm=1,
+                    source_state=0x3CFC5AAB,
+                    target_state=0x2AC056AD,
+                    target_entry=136,
+                    veto_proof_id="external-veto-proof",
+                    side_effect_guard_reason="discarded_arm_contains_payload_store",
+                ),
+            ),
+        )
+    )
+    flow_graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0x401000)
+
+    def _raise_compile_failure(*_args, **_kwargs):
+        raise ValueError("compile failure")
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "compile_patch_plan",
+        _raise_compile_failure,
+    )
+
+    modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+
+    assert modifications == ()
+    assert blocker == "terminal_payload_materialization_patch_plan_failed"
 
 
 def test_ollvm_terminal_payload_materialization_rejects_semantic_external_edge() -> None:
@@ -2572,6 +2759,17 @@ def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> Non
     assert rule._family._profile.name == "tigress_switch"
     assert rule._family._profile.state_transport == "state_dispatcher_map"
     assert rule.diagnostics_only is True
+
+
+def test_emulated_dispatcher_unflattener_accepts_ollvm_materialization_guard() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "ollvm_state_map",
+        "enable_terminal_payload_materialization": True,
+    })
+
+    assert rule._family._profile.name == "ollvm_state_map"
+    assert rule._family._profile.enable_terminal_payload_materialization is True
 
 
 def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
