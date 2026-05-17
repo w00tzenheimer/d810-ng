@@ -36,6 +36,7 @@ pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 if IDA_AVAILABLE:
     from d810.cfg.flowgraph import InsnSnapshot
     from d810.cfg.graph_modification import (
+        EdgeRedirectViaPredSplit,
         InsertBlock,
         RedirectBranch,
         RedirectGoto,
@@ -636,6 +637,76 @@ class TestPayloadIntermediateTopologyBoundary:
             RedirectGoto(from_serial=30, old_target=40, new_target=50),
         ]
         assert backend.seen == [(mba, 30)]
+
+    def test_payload_intermediate_feeder_uses_pred_split_for_region_claim(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _MbaWithoutMblocks:
+            pass
+
+        class _RejectingLiveTopologyBackend:
+            def block_exists(self, mba: object, serial: int) -> bool:
+                return True
+
+            def read_one_way_successor(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveOneWaySuccessorProbe:
+                raise AssertionError("region-owned feeder should not be probed")
+
+            def read_block_topology(
+                self,
+                mba: object,
+                serial: int,
+            ) -> hcc_topology_backend_module.LiveBlockTopologyProbe:
+                raise AssertionError("unexpected block-topology probe")
+
+            def resolve_first_predecessor(
+                self,
+                mba: object,
+                *,
+                first_anchor: int,
+                region_anchors: set[int],
+            ) -> int | None:
+                return None
+
+        monkeypatch.setattr(
+            hcc_module,
+            "_block_has_non_state_payload",
+            lambda *args, **kwargs: True,
+        )
+        strategy = HandlerChainComposerStrategy()
+        strategy._live_topology_backend = _RejectingLiveTopologyBackend()
+        mba = _MbaWithoutMblocks()
+        region_claim = InsertBlock(
+            pred_serial=100,
+            old_target_serial=2,
+            succ_serial=75,
+        )
+
+        filtered = strategy._filter_payload_intermediate_redirects(
+            [
+                RedirectBranch(from_serial=98, old_target=100, new_target=217),
+                region_claim,
+            ],
+            mba=mba,
+            dispatcher_serial=2,
+            bst_node_blocks=frozenset(),
+            state_var_stkoff=None,
+        )
+
+        assert filtered == [
+            EdgeRedirectViaPredSplit(
+                src_block=100,
+                old_target=2,
+                new_target=217,
+                via_pred=98,
+                rule_priority=550,
+            ),
+            region_claim,
+        ]
 
 
 # ---------------------------------------------------------------------------
