@@ -2,7 +2,6 @@
 
 import pytest
 
-from d810.cfg.flow import edit_simulator as _edit_simulator
 from d810.cfg.flow.edit_simulator import (
     SimulatedEdit,
     SimulationResult,
@@ -13,7 +12,7 @@ from d810.cfg.flow.edit_simulator import (
     simulate_edits,
 )
 from d810.cfg.flow.graph_checks import prove_terminal_sink
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -386,7 +385,7 @@ class TestProjectPostState:
         projected = project_post_state(cfg, patch_plan)
 
         assert projected.blocks[1].succs == (9,)
-        assert projected.blocks[1].tail_opcode == _edit_simulator._M_GOTO
+        assert projected.blocks[1].tail_kind == InsnKind.GOTO
 
     def test_project_post_state_rebuilds_created_block_preds(self):
         cfg = FlowGraph(

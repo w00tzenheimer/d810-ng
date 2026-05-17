@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, OperandKind
 
 
 _MATURITY_NAMES = {
@@ -26,24 +26,6 @@ _MATURITY_NAMES = {
 }
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
-_MOP_NAMES = {
-    0: None,
-    1: "mop_r",
-    2: "mop_n",
-    3: "mop_S",
-    4: "mop_d",
-    5: "mop_v",
-    6: "mop_b",
-    7: "mop_f",
-    8: "mop_l",
-    9: "mop_a",
-    10: "mop_h",
-    11: "mop_str",
-    12: "mop_c",
-    13: "mop_fn",
-    14: "mop_p",
-    15: "mop_sc",
-}
 
 
 def hex64(value: object | None) -> str | None:
@@ -132,7 +114,8 @@ def instruction_fingerprint(
         if idx >= limit:
             parts.append("...")
             break
-        parts.append(f"0x{int(insn.ea):x}:op{int(insn.opcode)}")
+        raw_opcode = getattr(insn, "raw_opcode", getattr(insn, "opcode", None))
+        parts.append(f"0x{int(insn.ea):x}:op{int(raw_opcode)}")
     return "[" + ",".join(parts) + "]"
 
 
@@ -152,14 +135,14 @@ def block_fingerprint(
 
 
 def _mop_type_name(value: object | None) -> str | None:
-    if value is None:
+    if not isinstance(value, OperandKind) or value is OperandKind.UNKNOWN:
         return None
-    return _MOP_NAMES.get(_safe_i64(value))
+    return value.value
 
 
 def _mop_row(mop: object | None) -> dict[str, object | None]:
     return {
-        "t": _mop_type_name(getattr(mop, "t", None)),
+        "t": _mop_type_name(getattr(mop, "kind", None)),
         "o": _safe_i64(getattr(mop, "stkoff", None)),
         "s": _safe_i64(getattr(mop, "size", None)) if mop is not None else None,
         "v": hex64(getattr(mop, "value", None)),
@@ -186,7 +169,7 @@ def block_body_observation_fingerprint(
         separators=(",", ":"),
     )
     op_fp = json.dumps(
-        [int(insn.opcode) for insn in block.insn_snapshots],
+        [int(getattr(insn, "raw_opcode", getattr(insn, "opcode", 0))) for insn in block.insn_snapshots],
         separators=(",", ":"),
     )
     operand_rows: list[dict[str, object | None]] = []

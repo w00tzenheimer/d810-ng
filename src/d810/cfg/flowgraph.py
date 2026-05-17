@@ -3,11 +3,62 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 
 from d810.core.logging import getLogger
 
 logger = getLogger(__name__)
+
+
+class BlockKind(Enum):
+    """Backend-neutral block topology semantics."""
+
+    UNKNOWN = "unknown"
+    NONE = "none"
+    STOP = "stop"
+    EXTERNAL = "external"
+    ZERO_WAY = "zero_way"
+    ONE_WAY = "one_way"
+    TWO_WAY = "two_way"
+    N_WAY = "n_way"
+
+
+class InsnKind(Enum):
+    """Backend-neutral instruction semantics used by CFG planning."""
+
+    UNKNOWN = "unknown"
+    NOP = "nop"
+    MOV = "mov"
+    LOAD = "load"
+    XDU = "xdu"
+    ADD = "add"
+    AND = "and"
+    GOTO = "goto"
+    COND_JUMP = "cond_jump"
+    EQUALITY_JUMP = "equality_jump"
+
+
+class OperandKind(Enum):
+    """Backend-neutral operand semantics used by CFG planning."""
+
+    UNKNOWN = "unknown"
+    EMPTY = "empty"
+    REGISTER = "register"
+    NUMBER = "number"
+    STRING = "string"
+    SUBINSN = "subinsn"
+    STACK = "stack"
+    GLOBAL = "global"
+    BLOCK = "block"
+    ARG_LIST = "arg_list"
+    LVAR = "lvar"
+    ADDRESS = "address"
+    HELPER = "helper"
+    CASE_LIST = "case_list"
+    FP_CONST = "fp_const"
+    PAIR = "pair"
+    SCATTERED = "scattered"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,12 +74,18 @@ class MopSnapshot:
     ``d810.hexrays.mutation.ir_translator``.
     """
 
-    t: int                        # mop type enum (mop_z=0, mop_r=1, mop_n=2, mop_S/mop_str=3, ...)
+    t: int = -1                   # raw backend operand type; diagnostic only
     size: int = 0
     value: int | None = None      # mop_n: nnn.value
     stkoff: int | None = None     # mop_S/mop_str: s.off
     reg: int | None = None        # mop_r: r
     block_ref: int | None = None  # mop_b: b
+    kind: OperandKind = OperandKind.UNKNOWN
+    raw_operand_type: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.raw_operand_type is None and self.t >= 0:
+            object.__setattr__(self, "raw_operand_type", int(self.t))
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +100,15 @@ class InsnSnapshot:
     l: MopSnapshot | None = None   # left operand
     r: MopSnapshot | None = None   # right operand
     d: MopSnapshot | None = None   # dest operand
+    kind: InsnKind = InsnKind.UNKNOWN
+    raw_opcode: int | None = None
 
     def __post_init__(self) -> None:
-        if self.opcode < 0:
+        if self.raw_opcode is None and self.opcode >= 0:
+            object.__setattr__(self, "raw_opcode", int(self.opcode))
+        if self.opcode < 0 and self.raw_opcode is not None:
+            object.__setattr__(self, "opcode", int(self.raw_opcode))
+        if self.opcode < 0 and self.kind is InsnKind.UNKNOWN:
             raise ValueError(f"InsnSnapshot: opcode must be non-negative, got {self.opcode}")
         if self.ea < 0:
             raise ValueError(f"InsnSnapshot: ea must be non-negative, got {self.ea}")
@@ -62,7 +125,8 @@ class InsnSnapshot:
                 )
 
     def __repr__(self) -> str:
-        return f"InsnSnapshot(op=0x{self.opcode:x}, ea=0x{self.ea:x}, nops={len(self.operands)})"
+        op = self.raw_opcode if self.raw_opcode is not None else self.opcode
+        return f"InsnSnapshot(kind={self.kind.value}, op=0x{op:x}, ea=0x{self.ea:x}, nops={len(self.operands)})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,12 +141,20 @@ class BlockSnapshot:
     start_ea: int
     insn_snapshots: tuple[InsnSnapshot, ...]
     tail_opcode: int | None = None
+    kind: BlockKind = BlockKind.UNKNOWN
+    tail_kind: InsnKind | None = None
+    raw_block_type: int | None = None
+    raw_tail_opcode: int | None = None
 
     def __post_init__(self) -> None:
         if self.serial < 0:
             raise ValueError(f"BlockSnapshot: serial must be non-negative, got {self.serial}")
-        if self.block_type < 0 or self.block_type > 6:
-            raise ValueError(f"BlockSnapshot: block_type must be 0-6, got {self.block_type}")
+        if self.raw_block_type is None and self.block_type >= 0:
+            object.__setattr__(self, "raw_block_type", int(self.block_type))
+        if self.block_type < 0 and self.raw_block_type is not None:
+            object.__setattr__(self, "block_type", int(self.raw_block_type))
+        if self.block_type < 0 and self.kind is BlockKind.UNKNOWN:
+            raise ValueError(f"BlockSnapshot: block_type must be non-negative, got {self.block_type}")
         if self.start_ea < 0:
             raise ValueError(f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}")
         if not isinstance(self.succs, tuple):
@@ -93,8 +165,19 @@ class BlockSnapshot:
             raise TypeError(
                 f"BlockSnapshot: insn_snapshots must be tuple, got {type(self.insn_snapshots)}"
             )
+        if self.kind is BlockKind.UNKNOWN:
+            if len(self.succs) == 2:
+                object.__setattr__(self, "kind", BlockKind.TWO_WAY)
+            elif len(self.succs) == 1:
+                object.__setattr__(self, "kind", BlockKind.ONE_WAY)
+            elif len(self.succs) == 0:
+                object.__setattr__(self, "kind", BlockKind.ZERO_WAY)
         if self.tail_opcode is None and self.insn_snapshots:
             object.__setattr__(self, "tail_opcode", int(self.insn_snapshots[-1].opcode))
+        if self.raw_tail_opcode is None and self.tail_opcode is not None:
+            object.__setattr__(self, "raw_tail_opcode", int(self.tail_opcode))
+        if self.tail_kind is None and self.insn_snapshots:
+            object.__setattr__(self, "tail_kind", self.insn_snapshots[-1].kind)
 
     @property
     def nsucc(self) -> int:
@@ -120,7 +203,7 @@ class BlockSnapshot:
 
     def __repr__(self) -> str:
         return (
-            f"BlockSnapshot(serial={self.serial}, type={self.block_type}, "
+            f"BlockSnapshot(serial={self.serial}, kind={self.kind.value}, type={self.block_type}, "
             f"succs={self.succs}, preds={self.preds}, "
             f"ninsns={len(self.insn_snapshots)})"
         )
@@ -189,4 +272,12 @@ class FlowGraph:
         )
 
 
-__all__ = ["MopSnapshot", "InsnSnapshot", "BlockSnapshot", "FlowGraph"]
+__all__ = [
+    "BlockKind",
+    "InsnKind",
+    "OperandKind",
+    "MopSnapshot",
+    "InsnSnapshot",
+    "BlockSnapshot",
+    "FlowGraph",
+]

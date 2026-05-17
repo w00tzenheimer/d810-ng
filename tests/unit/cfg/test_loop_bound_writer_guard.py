@@ -1,46 +1,13 @@
 """Unit test for the loop-bound-writer detector.
 
-The detector requires ``ida_hexrays`` to read opcode/mop_t enum values.
-This test injects a minimal fake ``ida_hexrays`` module into
-``sys.modules`` and a hand-built ``mba`` skeleton with the four
-conjunctive conditions present at one specific block, so we can verify
-the detector returns a diagnostic only for that block.
+The detector consumes Hex-Rays-shaped instruction and operand objects, but it
+must not import live Hex-Rays modules. These tests use hand-built ``mba``
+skeletons with known opcode/mop_t values so we can verify the detector returns
+a diagnostic only for the intended block.
 """
 from __future__ import annotations
 
-import sys
-import types
-
-import pytest
-
-
-# Microcode opcode + mop type values used by the detector.
-_M_XDU = 0x09
-_M_AND = 0x14
-_M_JNZ = 0x2B
-_M_JZ = 0x2C
-_M_ADD = 0x0C
-_MOP_N = 0x02  # number/const
-_MOP_S = 0x05  # stkvar
-_MOP_D = 0x04  # sub-instruction
-
-
-@pytest.fixture
-def fake_ida_hexrays(monkeypatch):
-    """Inject a fake ``ida_hexrays`` module so the lazy import inside
-    :func:`detect_loop_bound_writer_redirect` resolves to known opcode
-    and mop_t enum values."""
-    fake = types.ModuleType("ida_hexrays")
-    fake.m_xdu = _M_XDU
-    fake.m_and = _M_AND
-    fake.m_jnz = _M_JNZ
-    fake.m_jz = _M_JZ
-    fake.m_add = _M_ADD
-    fake.mop_n = _MOP_N
-    fake.mop_S = _MOP_S
-    fake.mop_d = _MOP_D
-    monkeypatch.setitem(sys.modules, "ida_hexrays", fake)
-    yield fake
+from d810.cfg.flowgraph import InsnKind, OperandKind
 
 
 class _StkOff:
@@ -57,16 +24,16 @@ class _Mop:
     """Minimal mop_t shim.  Set ``t``, plus the appropriate sub-attributes
     for the type."""
 
-    def __init__(self, t: int, *, s=None, nnn=None, d=None):
-        self.t = t
+    def __init__(self, kind: OperandKind, *, s=None, nnn=None, d=None):
+        self.kind = kind
         self.s = s
         self.nnn = nnn
         self.d = d
 
 
 class _Insn:
-    def __init__(self, opcode: int, *, ea: int = 0, l=None, r=None, d=None):
-        self.opcode = opcode
+    def __init__(self, kind: InsnKind, *, ea: int = 0, l=None, r=None, d=None):
+        self.kind = kind
         self.ea = ea
         self.l = l
         self.r = r
@@ -99,12 +66,12 @@ def _chain(*insns: _Insn) -> _Insn | None:
 
 def _build_bound_writer_block(*, bound_stkoff: int, ea: int) -> _Mblock:
     """Block whose only stkvar write is ``m_xdu (X & 0x3E), %B``."""
-    var_x = _Mop(_MOP_S, s=_StkOff(0x100))
-    const_3e = _Mop(_MOP_N, nnn=_NumValue(0x3E))
-    inner_and = _Insn(_M_AND, l=var_x, r=const_3e)
-    masked = _Mop(_MOP_D, d=inner_and)
-    dest = _Mop(_MOP_S, s=_StkOff(bound_stkoff))
-    writer = _Insn(_M_XDU, ea=ea, l=masked, d=dest)
+    var_x = _Mop(OperandKind.STACK, s=_StkOff(0x100))
+    const_3e = _Mop(OperandKind.NUMBER, nnn=_NumValue(0x3E))
+    inner_and = _Insn(InsnKind.AND, l=var_x, r=const_3e)
+    masked = _Mop(OperandKind.SUBINSN, d=inner_and)
+    dest = _Mop(OperandKind.STACK, s=_StkOff(bound_stkoff))
+    writer = _Insn(InsnKind.XDU, ea=ea, l=masked, d=dest)
     return _Mblock(_chain(writer))
 
 
@@ -116,18 +83,18 @@ def _build_loop_test_block(
     ea: int,
 ) -> _Mblock:
     """Block whose tail is ``m_jnz (counter + delta), %B, @T``."""
-    counter_var = _Mop(_MOP_S, s=_StkOff(counter_stkoff))
-    delta_const = _Mop(_MOP_N, nnn=_NumValue(delta))
-    inner_add = _Insn(_M_ADD, l=counter_var, r=delta_const)
-    counter_advance = _Mop(_MOP_D, d=inner_add)
-    bound_read = _Mop(_MOP_S, s=_StkOff(bound_stkoff))
-    test = _Insn(_M_JNZ, ea=ea, l=counter_advance, r=bound_read)
+    counter_var = _Mop(OperandKind.STACK, s=_StkOff(counter_stkoff))
+    delta_const = _Mop(OperandKind.NUMBER, nnn=_NumValue(delta))
+    inner_add = _Insn(InsnKind.ADD, l=counter_var, r=delta_const)
+    counter_advance = _Mop(OperandKind.SUBINSN, d=inner_add)
+    bound_read = _Mop(OperandKind.STACK, s=_StkOff(bound_stkoff))
+    test = _Insn(InsnKind.EQUALITY_JUMP, ea=ea, l=counter_advance, r=bound_read)
     return _Mblock(_chain(test))
 
 
 def _build_unrelated_block() -> _Mblock:
     """Block with a non-matching instruction (m_add, no stkvar dest)."""
-    insn = _Insn(_M_ADD)
+    insn = _Insn(InsnKind.ADD)
     return _Mblock(_chain(insn))
 
 
@@ -158,7 +125,7 @@ class TestDetectLoopBoundWriterRedirect:
             _build_unrelated_block(),
         ])
 
-    def test_matches_bound_writer_block(self, fake_ida_hexrays):
+    def test_matches_bound_writer_block(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
@@ -172,7 +139,7 @@ class TestDetectLoopBoundWriterRedirect:
         assert diag.loop_test_ea == self.LOOP_TEST_EA
         assert diag.counter_stkoff == self.COUNTER_STKOFF
 
-    def test_does_not_match_unrelated_block(self, fake_ida_hexrays):
+    def test_does_not_match_unrelated_block(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
@@ -185,7 +152,7 @@ class TestDetectLoopBoundWriterRedirect:
         # Block 3 has no relevant instructions.
         assert detect_loop_bound_writer_redirect(mba, source_block_serial=3) is None
 
-    def test_rejects_when_writer_uniqueness_violated(self, fake_ida_hexrays):
+    def test_rejects_when_writer_uniqueness_violated(self):
         """If another block also writes the same stkvar B, the detector
         must reject -- the writer is no longer unique."""
         from d810.cfg.loop_bound_writer_guard import (
@@ -195,36 +162,36 @@ class TestDetectLoopBoundWriterRedirect:
         mba = self._build_mba()
         # Inject a second writer to bound_stkoff into block 0.
         secondary_writer = _Insn(
-            _M_XDU,
+            InsnKind.XDU,
             ea=0x180099999,
             l=_Mop(
-                _MOP_D,
+                OperandKind.SUBINSN,
                 d=_Insn(
-                    _M_AND,
-                    l=_Mop(_MOP_S, s=_StkOff(0x200)),
-                    r=_Mop(_MOP_N, nnn=_NumValue(0x3E)),
+                    InsnKind.AND,
+                    l=_Mop(OperandKind.STACK, s=_StkOff(0x200)),
+                    r=_Mop(OperandKind.NUMBER, nnn=_NumValue(0x3E)),
                 ),
             ),
-            d=_Mop(_MOP_S, s=_StkOff(self.BOUND_STKOFF)),
+            d=_Mop(OperandKind.STACK, s=_StkOff(self.BOUND_STKOFF)),
         )
         mba._blocks[0] = _Mblock(secondary_writer)
 
         diag = detect_loop_bound_writer_redirect(mba, source_block_serial=1)
         assert diag is None
 
-    def test_rejects_when_mask_not_in_set(self, fake_ida_hexrays):
+    def test_rejects_when_mask_not_in_set(self):
         """Mask 0x55 is not a recognized loop-bound mask -- reject."""
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
         # Build a writer block with mask 0x55 instead of 0x3E.
-        var_x = _Mop(_MOP_S, s=_StkOff(0x100))
-        const_55 = _Mop(_MOP_N, nnn=_NumValue(0x55))
-        inner_and = _Insn(_M_AND, l=var_x, r=const_55)
-        masked = _Mop(_MOP_D, d=inner_and)
-        dest = _Mop(_MOP_S, s=_StkOff(self.BOUND_STKOFF))
-        writer = _Insn(_M_XDU, ea=self.BOUND_WRITER_EA, l=masked, d=dest)
+        var_x = _Mop(OperandKind.STACK, s=_StkOff(0x100))
+        const_55 = _Mop(OperandKind.NUMBER, nnn=_NumValue(0x55))
+        inner_and = _Insn(InsnKind.AND, l=var_x, r=const_55)
+        masked = _Mop(OperandKind.SUBINSN, d=inner_and)
+        dest = _Mop(OperandKind.STACK, s=_StkOff(self.BOUND_STKOFF))
+        writer = _Insn(InsnKind.XDU, ea=self.BOUND_WRITER_EA, l=masked, d=dest)
 
         mba = _Mba([
             _Mblock(_chain(writer)),
@@ -237,7 +204,7 @@ class TestDetectLoopBoundWriterRedirect:
         ])
         assert detect_loop_bound_writer_redirect(mba, source_block_serial=0) is None
 
-    def test_rejects_when_counter_delta_not_small(self, fake_ida_hexrays):
+    def test_rejects_when_counter_delta_not_small(self):
         """Delta 16 isn't in the recognized counter-advance set -- reject."""
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
@@ -257,7 +224,7 @@ class TestDetectLoopBoundWriterRedirect:
         ])
         assert detect_loop_bound_writer_redirect(mba, source_block_serial=0) is None
 
-    def test_returns_none_when_mba_is_none(self, fake_ida_hexrays):
+    def test_returns_none_when_mba_is_none(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
@@ -267,31 +234,11 @@ class TestDetectLoopBoundWriterRedirect:
 
 def _build_counter_advance_block(*, counter_stkoff: int, delta: int, ea: int) -> _Mblock:
     """Block with ``m_add %counter, #delta -> %temp`` (the advance)."""
-    counter_var = _Mop(_MOP_S, s=_StkOff(counter_stkoff))
-    delta_const = _Mop(_MOP_N, nnn=_NumValue(delta))
-    temp_dest = _Mop(_MOP_S, s=_StkOff(0xABC))
-    advance = _Insn(_M_ADD, ea=ea, l=counter_var, r=delta_const, d=temp_dest)
+    counter_var = _Mop(OperandKind.STACK, s=_StkOff(counter_stkoff))
+    delta_const = _Mop(OperandKind.NUMBER, nnn=_NumValue(delta))
+    temp_dest = _Mop(OperandKind.STACK, s=_StkOff(0xABC))
+    advance = _Insn(InsnKind.ADD, ea=ea, l=counter_var, r=delta_const, d=temp_dest)
     return _Mblock(_chain(advance))
-
-
-_MOP_L = 0x09  # mop_l (lvar) sentinel for the writeback-tail tests
-
-
-@pytest.fixture
-def fake_ida_hexrays_with_lvar(monkeypatch):
-    fake = types.ModuleType("ida_hexrays")
-    fake.m_xdu = _M_XDU
-    fake.m_and = _M_AND
-    fake.m_jnz = _M_JNZ
-    fake.m_jz = _M_JZ
-    fake.m_add = _M_ADD
-    fake.m_mov = 0x04
-    fake.mop_n = _MOP_N
-    fake.mop_S = _MOP_S
-    fake.mop_d = _MOP_D
-    fake.mop_l = _MOP_L
-    monkeypatch.setitem(sys.modules, "ida_hexrays", fake)
-    yield fake
 
 
 class TestDetectLoopCounterWritebackTail:
@@ -305,9 +252,9 @@ class TestDetectLoopCounterWritebackTail:
         """Block with ``m_mov %lvar -> %counter`` (writeback from a
         loop-carried lvar/temp)."""
         # mop_l source -- not constant, distinct from mop_S.
-        src_lvar = _Mop(_MOP_L)
-        dest = _Mop(_MOP_S, s=_StkOff(counter_stkoff))
-        writeback = _Insn(0x04, ea=ea, l=src_lvar, d=dest)  # m_mov
+        src_lvar = _Mop(OperandKind.LVAR)
+        dest = _Mop(OperandKind.STACK, s=_StkOff(counter_stkoff))
+        writeback = _Insn(InsnKind.MOV, ea=ea, l=src_lvar, d=dest)
         return _Mblock(_chain(writeback))
 
     def _build_mba(
@@ -340,7 +287,7 @@ class TestDetectLoopCounterWritebackTail:
             _build_unrelated_block(),
         ])
 
-    def test_matches_writeback_tail_block(self, fake_ida_hexrays_with_lvar):
+    def test_matches_writeback_tail_block(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
@@ -355,7 +302,7 @@ class TestDetectLoopCounterWritebackTail:
         assert diag.loop_test_ea == self.LOOP_TEST_EA
         assert diag.advance_ea == self.ADVANCE_EA
 
-    def test_does_not_match_non_writeback_blocks(self, fake_ida_hexrays_with_lvar):
+    def test_does_not_match_non_writeback_blocks(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
@@ -368,18 +315,16 @@ class TestDetectLoopCounterWritebackTail:
         # Block 3 is unrelated.
         assert detect_loop_counter_writeback_tail(mba, tail_block_serial=3) is None
 
-    def test_rejects_when_writeback_source_is_constant(
-        self, fake_ida_hexrays_with_lvar,
-    ):
+    def test_rejects_when_writeback_source_is_constant(self):
         """``mov #0, %counter`` is a counter RESET, not a loop-carried
         writeback -- the detector must reject."""
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
-        const_zero = _Mop(_MOP_N, nnn=_NumValue(0))
-        dest = _Mop(_MOP_S, s=_StkOff(self.COUNTER_STKOFF))
-        reset = _Insn(0x04, ea=self.WRITEBACK_EA, l=const_zero, d=dest)
+        const_zero = _Mop(OperandKind.NUMBER, nnn=_NumValue(0))
+        dest = _Mop(OperandKind.STACK, s=_StkOff(self.COUNTER_STKOFF))
+        reset = _Insn(InsnKind.MOV, ea=self.WRITEBACK_EA, l=const_zero, d=dest)
         mba = _Mba([
             _build_counter_advance_block(
                 counter_stkoff=self.COUNTER_STKOFF,
@@ -396,7 +341,7 @@ class TestDetectLoopCounterWritebackTail:
         ])
         assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
 
-    def test_rejects_when_no_loop_test_present(self, fake_ida_hexrays_with_lvar):
+    def test_rejects_when_no_loop_test_present(self):
         """Without a ``counter+small_const`` loop test, the writeback is
         not loop-carried."""
         from d810.cfg.loop_bound_writer_guard import (
@@ -417,7 +362,7 @@ class TestDetectLoopCounterWritebackTail:
         ])
         assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
 
-    def test_rejects_when_no_advance_compute(self, fake_ida_hexrays_with_lvar):
+    def test_rejects_when_no_advance_compute(self):
         """Without an ``m_add counter+small_const`` somewhere in the
         function, the writeback isn't connected to a counter advance."""
         from d810.cfg.loop_bound_writer_guard import (
@@ -439,7 +384,7 @@ class TestDetectLoopCounterWritebackTail:
         ])
         assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
 
-    def test_returns_none_when_mba_is_none(self, fake_ida_hexrays_with_lvar):
+    def test_returns_none_when_mba_is_none(self):
         from d810.cfg.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
@@ -465,14 +410,14 @@ class TestCollectConstVarRefsInBlock:
         """Build a block with ``m_mov #const, %var_NNN`` per pair."""
         insns: list[_Insn] = []
         for stkoff, var_token in const_pairs:
-            src = _Mop(_MOP_N, nnn=_NumValue(0xC0FFEE0000 + stkoff))
+            src = _Mop(OperandKind.NUMBER, nnn=_NumValue(0xC0FFEE0000 + stkoff))
             dst = _MopWithDstr(
-                _MOP_S, s=_StkOff(stkoff), dstr_text=f"%var_{var_token}.8"
+                OperandKind.STACK, s=_StkOff(stkoff), dstr_text=f"%var_{var_token}.8"
             )
-            insns.append(_Insn(0x04, l=src, d=dst))  # m_mov
+            insns.append(_Insn(InsnKind.MOV, l=src, d=dst))
         return _Mblock(_chain(*insns))
 
-    def test_returns_var_refs_for_const_writes(self, fake_ida_hexrays_with_lvar):
+    def test_returns_var_refs_for_const_writes(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
@@ -491,16 +436,14 @@ class TestCollectConstVarRefsInBlock:
 
         assert refs == frozenset({"228", "650", "658", "660"})
 
-    def test_falls_back_to_instruction_text_for_const_write_dest(
-        self, fake_ida_hexrays_with_lvar,
-    ):
+    def test_falls_back_to_instruction_text_for_const_write_dest(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
-        src = _Mop(_MOP_N, nnn=_NumValue(0xC0FFEE))
-        dst = _Mop(_MOP_S, s=_StkOff(0x648))
-        insn = _Insn(0x04, l=src, d=dst)
+        src = _Mop(OperandKind.NUMBER, nnn=_NumValue(0xC0FFEE))
+        dst = _Mop(OperandKind.STACK, s=_StkOff(0x648))
+        insn = _Insn(InsnKind.MOV, l=src, d=dst)
         insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_648.8"
         mba = _Mba([_Mblock(_chain(insn))])
 
@@ -508,25 +451,21 @@ class TestCollectConstVarRefsInBlock:
             "648",
         })
 
-    def test_returns_empty_when_block_has_no_const_writes(
-        self, fake_ida_hexrays_with_lvar,
-    ):
+    def test_returns_empty_when_block_has_no_const_writes(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
         # Block has only an arithmetic instruction, no m_mov #const, K.
-        var_x = _Mop(_MOP_S, s=_StkOff(0x100))
-        var_y = _Mop(_MOP_S, s=_StkOff(0x108))
-        dest = _Mop(_MOP_S, s=_StkOff(0x200))
-        arith = _Insn(_M_ADD, l=var_x, r=var_y, d=dest)
+        var_x = _Mop(OperandKind.STACK, s=_StkOff(0x100))
+        var_y = _Mop(OperandKind.STACK, s=_StkOff(0x108))
+        dest = _Mop(OperandKind.STACK, s=_StkOff(0x200))
+        arith = _Insn(InsnKind.ADD, l=var_x, r=var_y, d=dest)
         mba = _Mba([_Mblock(_chain(arith))])
 
         assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
 
-    def test_returns_empty_when_block_serial_out_of_range(
-        self, fake_ida_hexrays_with_lvar,
-    ):
+    def test_returns_empty_when_block_serial_out_of_range(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
@@ -537,22 +476,24 @@ class TestCollectConstVarRefsInBlock:
         # Block 5 is past mba.qty == 1.
         assert collect_const_var_refs_in_block(mba, block_serial=5) == frozenset()
 
-    def test_returns_empty_when_mba_is_none(self, fake_ida_hexrays_with_lvar):
+    def test_returns_empty_when_mba_is_none(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
         assert collect_const_var_refs_in_block(None, block_serial=0) == frozenset()
 
-    def test_skips_non_constant_movs(self, fake_ida_hexrays_with_lvar):
+    def test_skips_non_constant_movs(self):
         from d810.cfg.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
         # m_mov mop_S(K1), mop_S(K2) -- not a constant, must not match.
-        src_var = _Mop(_MOP_S, s=_StkOff(0x100))
-        dst_var = _MopWithDstr(_MOP_S, s=_StkOff(0x200), dstr_text="%var_200.8")
-        insn = _Insn(0x04, l=src_var, d=dst_var)
+        src_var = _Mop(OperandKind.STACK, s=_StkOff(0x100))
+        dst_var = _MopWithDstr(
+            OperandKind.STACK, s=_StkOff(0x200), dstr_text="%var_200.8"
+        )
+        insn = _Insn(InsnKind.MOV, l=src_var, d=dst_var)
         mba = _Mba([_Mblock(_chain(insn))])
 
         assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
