@@ -12,6 +12,7 @@ from d810.recon.flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
     PredicateOwnershipKind,
     PredicateOwnershipResult,
+    Z3BranchOwnershipOracle,
 )
 
 
@@ -26,9 +27,63 @@ class _FakeBlock:
 class _FakeMba:
     def __init__(self, blocks: dict[int, _FakeBlock]):
         self._blocks = blocks
+        self.qty = max(blocks) + 1 if blocks else 0
 
     def get_mblock(self, serial: int) -> _FakeBlock | None:
         return self._blocks.get(int(serial))
+
+
+class _FakeCfgBlock:
+    def __init__(
+        self,
+        *,
+        serial: int,
+        tail: object | None = None,
+        next_serial: int | None = None,
+        succs: tuple[int, ...] = (),
+        head: object | None = None,
+    ):
+        self.serial = serial
+        self.tail = tail
+        self.nextb = (
+            SimpleNamespace(serial=next_serial)
+            if next_serial is not None else None
+        )
+        self._succs = tuple(int(succ) for succ in succs)
+        self.head = head
+
+    def nsucc(self) -> int:
+        return len(self._succs)
+
+    def succ(self, index: int) -> int:
+        return self._succs[index]
+
+
+class _FakeProver:
+    def __init__(
+        self,
+        *,
+        equal: bool = False,
+        unequal: bool = False,
+        zero: bool = False,
+        nonzero: bool = False,
+    ):
+        self.equal = equal
+        self.unequal = unequal
+        self.zero = zero
+        self.nonzero = nonzero
+
+    def are_equal(self, *_args, **_kwargs) -> bool:
+        return self.equal
+
+    def are_unequal(self, *_args, **_kwargs) -> bool:
+        return self.unequal
+
+    def is_always_zero(self, *_args, **_kwargs) -> bool:
+        return self.zero
+
+    def is_always_nonzero(self, *_args, **_kwargs) -> bool:
+        return self.nonzero
 
 
 def _edge(
@@ -61,6 +116,22 @@ def _edge(
     )
 
 
+def _mop(value: int | None = None):
+    return SimpleNamespace(t="mop_n" if value is not None else "mop_r", value=value, size=4)
+
+
+def _block_ref(serial: int):
+    return SimpleNamespace(t="mop_b", b=serial)
+
+
+def _tail(opcode: str, *, jump_target: int, left: object, right: object | None = None):
+    return SimpleNamespace(opcode=opcode, l=left, r=right, d=_block_ref(jump_target))
+
+
+def _insn(opcode: str, *, text: str = ""):
+    return SimpleNamespace(opcode=opcode, next=None, text=text)
+
+
 def _proofs_for(
     *edges: object,
     result: PredicateOwnershipResult,
@@ -75,6 +146,44 @@ def _proofs_for(
         dag=SimpleNamespace(edges=edges),
         proof_refiner=oracle.refine,
     )
+
+
+def _proofs_for_z3(
+    *,
+    tail: object,
+    prover: _FakeProver | None = None,
+    discarded_head: object | None = None,
+):
+    mba = _FakeMba({
+        5: _FakeCfgBlock(
+            serial=5,
+            tail=tail,
+            next_serial=8,
+            succs=(8, 9),
+        ),
+        8: _FakeCfgBlock(serial=8, succs=(), head=discarded_head),
+        9: _FakeCfgBlock(serial=9, succs=()),
+    })
+    oracle = Z3BranchOwnershipOracle(
+        mba=mba,
+        prover_factory=(lambda: prover) if prover is not None else None,
+    )
+    return collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(
+            _edge(branch_arm=0, target_state=0x20, target_entry=8),
+            _edge(branch_arm=1, target_state=0x30, target_entry=9),
+        )),
+        proof_refiner=oracle.refine,
+    )
+
+
+def _proof_by_arm(proofs, arm: int) -> BranchOwnershipProof:
+    matches = [
+        proof for proof in proofs
+        if proof.source_block == 5 and proof.branch_arm == arm
+    ]
+    assert len(matches) == 1
+    return matches[0]
 
 
 def test_path_constant_predicate_marks_non_taken_arm_as_obfuscation_residue():
@@ -614,3 +723,88 @@ def test_incomplete_edge_identity_does_not_create_trusted_rewrite_proof():
 
     assert proofs[0].proof_kind == BranchOwnershipProofKind.UNRESOLVED
     assert proofs[0].trusted is False
+
+
+def test_z3_jz_equal_chooses_jump_target_arm():
+    proofs = _proofs_for_z3(
+        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        prover=_FakeProver(equal=True),
+    )
+
+    fallthrough = _proof_by_arm(proofs, 0)
+    jumped = _proof_by_arm(proofs, 1)
+    assert jumped.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+    assert jumped.trusted is True
+    assert jumped.authorizes_nonsemantic_branch_rewrite is False
+    assert jumped.evidence["opcode_sense"] == "jump_if_equal"
+    assert jumped.evidence["chosen_target"] == 9
+    assert jumped.evidence["discarded_target"] == 8
+    assert fallthrough.proof_kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
+    assert fallthrough.authorizes_nonsemantic_branch_rewrite is True
+    assert fallthrough.target_entry == 8
+
+
+def test_z3_jnz_equal_chooses_fallthrough_arm():
+    proofs = _proofs_for_z3(
+        tail=_tail("m_jnz", jump_target=9, left=_mop(), right=_mop()),
+        prover=_FakeProver(equal=True),
+    )
+
+    fallthrough = _proof_by_arm(proofs, 0)
+    jumped = _proof_by_arm(proofs, 1)
+    assert fallthrough.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_FALSE
+    assert fallthrough.trusted is True
+    assert fallthrough.evidence["chosen_target"] == 8
+    assert fallthrough.evidence["discarded_target"] == 9
+    assert jumped.proof_kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
+    assert jumped.authorizes_nonsemantic_branch_rewrite is True
+
+
+def test_z3_jcnd_constant_nonzero_chooses_jump_target_arm():
+    proofs = _proofs_for_z3(
+        tail=_tail("m_jcnd", jump_target=9, left=_mop(1)),
+    )
+
+    fallthrough = _proof_by_arm(proofs, 0)
+    jumped = _proof_by_arm(proofs, 1)
+    assert jumped.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+    assert jumped.evidence["opcode_sense"] == "jump_if_nonzero"
+    assert jumped.evidence["taken_arm"] == 1
+    assert fallthrough.proof_kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
+
+
+def test_z3_sibling_arm_proof_does_not_authorize_wrong_edge():
+    proofs = _proofs_for_z3(
+        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        prover=_FakeProver(equal=True),
+    )
+
+    residue = _proof_by_arm(proofs, 0)
+    selected = _proof_by_arm(proofs, 1)
+    assert residue.authorizes_nonsemantic_branch_rewrite is True
+    assert residue.branch_arm == 0
+    assert residue.target_state == 0x20
+    assert residue.target_entry == 8
+    assert selected.branch_arm == 1
+    assert selected.target_state == 0x30
+    assert selected.target_entry == 9
+    assert selected.authorizes_nonsemantic_branch_rewrite is False
+
+
+def test_z3_discarded_payload_store_blocks_rewrite_authority():
+    proofs = _proofs_for_z3(
+        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        prover=_FakeProver(equal=True),
+        discarded_head=_insn("m_stx", text="stx #1.1, [payload]"),
+    )
+
+    fallthrough = _proof_by_arm(proofs, 0)
+    jumped = _proof_by_arm(proofs, 1)
+    assert jumped.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+    assert fallthrough.proof_kind == BranchOwnershipProofKind.UNRESOLVED
+    assert fallthrough.trusted is False
+    assert fallthrough.authorizes_nonsemantic_branch_rewrite is False
+    assert fallthrough.reason == "z3_jumpfixer_discarded_arm_side_effect_guard"
+    assert fallthrough.evidence["side_effect_guard_reason"] == (
+        "discarded_arm_contains_payload_store"
+    )
