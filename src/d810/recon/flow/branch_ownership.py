@@ -456,6 +456,7 @@ def _append_terminal_selector_backedge_residue_proofs(
         )
         external_residue_proofs: list[BranchOwnershipProof] = []
         external_semantic_proofs: list[BranchOwnershipProof] = []
+        external_materialization_veto_proofs: list[BranchOwnershipProof] = []
         unproven_external_edges = 0
         for incoming_edge in external_incoming_edges:
             matching_proofs = tuple(
@@ -473,12 +474,28 @@ def _append_terminal_selector_backedge_residue_proofs(
                 existing for existing in matching_proofs
                 if existing.authorizes_nonsemantic_branch_rewrite
             )
-            if not residue_proofs:
+            if residue_proofs:
+                external_residue_proofs.extend(residue_proofs)
+                continue
+            materialization_veto_proofs = tuple(
+                existing for existing in matching_proofs
+                if existing.vetoes_fallback_refinement
+            )
+            if materialization_veto_proofs:
+                external_materialization_veto_proofs.extend(
+                    materialization_veto_proofs
+                )
+                continue
+            else:
                 unproven_external_edges += 1
                 continue
-            external_residue_proofs.extend(residue_proofs)
 
-        if None in incoming_sources or external_semantic_proofs or unproven_external_edges:
+        if (
+            None in incoming_sources
+            or external_semantic_proofs
+            or external_materialization_veto_proofs
+            or unproven_external_edges
+        ):
             evidence["payload_incoming_source_states"] = tuple(
                 _hex_state(source) for source in sorted(
                     source for source in incoming_sources if source is not None
@@ -490,12 +507,35 @@ def _append_terminal_selector_backedge_residue_proofs(
             evidence["external_incoming_semantic_proof_ids"] = tuple(
                 proof.proof_id for proof in external_semantic_proofs
             )
+            evidence["external_incoming_materialization_veto_proof_ids"] = tuple(
+                proof.proof_id for proof in external_materialization_veto_proofs
+            )
+            side_effect_guard_reasons = tuple(
+                str(proof.evidence.get("side_effect_guard_reason"))
+                for proof in external_materialization_veto_proofs
+                if proof.evidence.get("side_effect_guard_reason") is not None
+            )
+            if side_effect_guard_reasons:
+                evidence["external_incoming_side_effect_guard_reasons"] = (
+                    side_effect_guard_reasons
+                )
+                evidence["requires_side_effect_materialization"] = True
             evidence["unproven_external_incoming_edges"] = unproven_external_edges
+            reason = "terminal_selector_backedge_payload_not_private"
+            if (
+                external_materialization_veto_proofs
+                and not external_semantic_proofs
+                and not unproven_external_edges
+                and None not in incoming_sources
+            ):
+                reason = (
+                    "terminal_selector_backedge_requires_side_effect_materialization"
+                )
             added.append(BranchOwnershipProof(
                 proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
                 proof_kind=BranchOwnershipProofKind.UNRESOLVED,
                 trusted=False,
-                reason="terminal_selector_backedge_payload_not_private",
+                reason=reason,
                 source_block=proof.source_block,
                 branch_arm=proof.branch_arm,
                 source_state=proof.source_state,
