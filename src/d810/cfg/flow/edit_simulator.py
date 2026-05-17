@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 
-import ida_hexrays
-
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
@@ -41,15 +39,6 @@ from d810.cfg.plan import (
 from d810.core.logging import getLogger
 
 logger = getLogger(__name__)
-
-_BLT_NONE = ida_hexrays.BLT_NONE
-_BLT_STOP = ida_hexrays.BLT_STOP
-_BLT_0WAY = ida_hexrays.BLT_0WAY
-_BLT_1WAY = ida_hexrays.BLT_1WAY
-_BLT_2WAY = ida_hexrays.BLT_2WAY
-_M_NOP = ida_hexrays.m_nop
-_M_GOTO = ida_hexrays.m_goto
-_M_JCND = ida_hexrays.m_jcnd
 
 
 @dataclass
@@ -106,94 +95,95 @@ def _reorder_trampoline_serials(patch_plan: PatchPlan) -> frozenset[int]:
 def _tail_opcode_for_existing_block(
     block: BlockSnapshot,
     patch_plan: PatchPlan,
-) -> int | None:
+) -> InsnKind | None:
     for step in patch_plan.steps:
         match step:
             case PatchConvertToGoto(block_serial=serial) if serial == block.serial:
-                return _M_GOTO
+                return InsnKind.GOTO
             case PatchRedirectGoto(from_serial=serial) if (
-                serial == block.serial and int(block.block_type) == _BLT_1WAY
+                serial == block.serial
+                and (block.kind == BlockKind.ONE_WAY or block.nsucc == 1)
             ):
-                return _M_GOTO
+                return InsnKind.GOTO
             case PatchPrivateTerminalSuffixGroup(anchors=anchors) if (
                 block.serial in anchors
             ):
-                return _M_GOTO
+                return InsnKind.GOTO
             case PatchRedirectBranch(from_serial=serial) if serial == block.serial:
                 return (
-                    block.tail_opcode
+                    block.tail_kind
                 )  # tail stays as m_jcnd — only successor changes, not opcode
             case PatchReorderBlocks(old_to_new=old_to_new_pairs):
                 trampoline_serials = frozenset(old for old, _new in old_to_new_pairs)
                 if block.serial in trampoline_serials:
-                    return _M_GOTO
-    return block.tail_opcode
+                    return InsnKind.GOTO
+    return block.tail_kind
 
 
-def _block_type_for_projected_shape(
+def _block_kind_for_projected_shape(
     *,
     template_block: BlockSnapshot | None,
     kind: str,
     succs: tuple[int, ...],
-    tail_opcode: int | None,
-) -> int:
+    tail_kind: InsnKind | None,
+) -> BlockKind:
     if (
         kind in {"conditional_redirect_clone", "duplicate_block_clone"}
         and len(succs) == 2
     ):
-        return _BLT_2WAY
+        return BlockKind.TWO_WAY
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
         "edge_split_trampoline",
         "insert_block",
     }:
         if len(succs) >= 2:
-            return _BLT_2WAY
+            return BlockKind.TWO_WAY
         if len(succs) == 1:
-            return _BLT_1WAY
-        return _BLT_0WAY
+            return BlockKind.ONE_WAY
+        return BlockKind.ZERO_WAY
     # 2WAY trampoline is always BLT_1WAY (single m_goto to fallthrough target)
     if kind == "reorder_block_2way_trampoline":
-        return _BLT_1WAY
+        return BlockKind.ONE_WAY
     if template_block is not None:
-        return int(template_block.block_type)
-    if tail_opcode == _M_JCND and len(succs) == 2:
-        return _BLT_2WAY
+        return template_block.kind
+    if tail_kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP} and len(succs) == 2:
+        return BlockKind.TWO_WAY
     if len(succs) == 1:
-        return _BLT_1WAY
+        return BlockKind.ONE_WAY
     if len(succs) == 0:
-        return _BLT_0WAY
-    return _BLT_NONE
+        return BlockKind.ZERO_WAY
+    return BlockKind.NONE
 
 
-def _tail_opcode_for_projected_block(
+def _tail_kind_for_projected_block(
     *,
     kind: str,
     template_block: BlockSnapshot | None,
     instructions,
     succs: tuple[int, ...],
-) -> int | None:
+) -> InsnKind | None:
     if instructions:
-        return int(instructions[-1].opcode)
+        return instructions[-1].kind
     if (
         kind in {"conditional_redirect_clone", "duplicate_block_clone"}
         and len(succs) == 2
     ):
-        if template_block is not None and template_block.tail_opcode is not None:
-            return int(template_block.tail_opcode)
-        return _M_JCND
+        if template_block is not None and template_block.tail_kind is not None:
+            return template_block.tail_kind
+        return InsnKind.COND_JUMP
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
         "edge_split_trampoline",
         "insert_block",
     }:
-        return _M_GOTO if succs else _M_NOP
+        return InsnKind.GOTO if succs else InsnKind.NOP
     # 2WAY trampoline is always a single m_goto
     if kind == "reorder_block_2way_trampoline":
-        return _M_GOTO
+        return InsnKind.GOTO
     if template_block is not None:
-        return template_block.tail_opcode
-    return _M_GOTO if succs else _M_NOP
+        return template_block.tail_kind
+    return InsnKind.GOTO if succs else InsnKind.NOP
 
 
 def _build_pred_map(adj: dict[int, list[int]]) -> dict[int, tuple[int, ...]]:
@@ -227,21 +217,26 @@ def _project_existing_blocks(
         projected_serial = patch_plan.relocation_map.rewrite_serial(block.serial)
         # Blocks that become trampolines in ReorderBlocks are converted to BLT_1WAY
         if block.serial in trampoline_serials:
-            block_type = _BLT_1WAY
+            block_kind = BlockKind.ONE_WAY
         # Blocks converted from 2-way conditional to 1-way goto
         elif block.serial in goto_converted_serials:
-            block_type = _BLT_1WAY
+            block_kind = BlockKind.ONE_WAY
         else:
-            block_type = int(block.block_type)
+            block_kind = block.kind
+        tail_kind = _tail_opcode_for_existing_block(block, patch_plan)
         projected[projected_serial] = BlockSnapshot(
             serial=projected_serial,
-            block_type=block_type,
+            block_type=block.block_type,
             succs=tuple(adj.get(projected_serial, ())),
             preds=(),
             flags=int(block.flags),
             start_ea=int(block.start_ea),
             insn_snapshots=tuple(block.insn_snapshots),
-            tail_opcode=_tail_opcode_for_existing_block(block, patch_plan),
+            tail_opcode=block.tail_opcode,
+            kind=block_kind,
+            tail_kind=tail_kind,
+            raw_block_type=block.raw_block_type,
+            raw_tail_opcode=block.raw_tail_opcode,
         )
     return projected
 
@@ -272,27 +267,32 @@ def _project_created_blocks(
             else None
         )
         instructions = tuple(spec.instructions or ())
-        tail_opcode = _tail_opcode_for_projected_block(
+        tail_kind = _tail_kind_for_projected_block(
             kind=spec.kind,
             template_block=template_block,
             instructions=instructions,
             succs=succs,
         )
+        block_kind = _block_kind_for_projected_shape(
+            template_block=template_block,
+            kind=spec.kind,
+            succs=succs,
+            tail_kind=tail_kind,
+        )
         projected[assigned_serial] = BlockSnapshot(
             serial=assigned_serial,
-            block_type=_block_type_for_projected_shape(
-                template_block=template_block,
-                kind=spec.kind,
-                succs=succs,
-                tail_opcode=tail_opcode,
-            ),
+            block_type=int(getattr(template_block, "block_type", -1)),
             succs=succs,
             preds=(),
             flags=int(getattr(template_block, "flags", 0)),
             start_ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
             insn_snapshots=instructions
             or tuple(getattr(template_block, "insn_snapshots", ())),
-            tail_opcode=tail_opcode,
+            tail_opcode=getattr(template_block, "tail_opcode", None),
+            kind=block_kind,
+            tail_kind=tail_kind,
+            raw_block_type=getattr(template_block, "raw_block_type", None),
+            raw_tail_opcode=getattr(template_block, "raw_tail_opcode", None),
         )
     return projected
 
@@ -341,6 +341,10 @@ def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
             start_ea=block.start_ea,
             insn_snapshots=block.insn_snapshots,
             tail_opcode=block.tail_opcode,
+            kind=block.kind,
+            tail_kind=block.tail_kind,
+            raw_block_type=block.raw_block_type,
+            raw_tail_opcode=block.raw_tail_opcode,
         )
         for serial, block in projected_blocks.items()
     }
