@@ -36,8 +36,8 @@ def _edge(
     source_state: int = 0x10,
     target_state: int | None = 0x20,
     kind: str = "CONDITIONAL_TRANSITION",
-    source_block: int = 5,
-    branch_arm: int = 0,
+    source_block: int | None = 5,
+    branch_arm: int | None = 0,
     target_entry: int | None = 9,
     ordered_path: tuple[int, ...] = (4, 5, 9),
 ):
@@ -49,9 +49,13 @@ def _edge(
             if target_state is not None else None
         ),
         target_entry_anchor=target_entry,
-        source_anchor=SimpleNamespace(
-            block_serial=source_block,
-            branch_arm=branch_arm,
+        source_anchor=(
+            SimpleNamespace(
+                block_serial=source_block,
+                branch_arm=branch_arm,
+            )
+            if source_block is not None or branch_arm is not None
+            else None
         ),
         ordered_path=ordered_path,
     )
@@ -490,6 +494,96 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
     assert selected[1].evidence["external_incoming_semantic_proof_ids"] == (
         semantic_external[0].proof_id,
     )
+
+
+def test_terminal_selector_backedge_rejects_unanchored_external_residue_identity():
+    selector_state = 0x49FD3A3
+    payload_state = 0x2AC056AD
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+    edges = (
+        _edge(
+            source_state=payload_state,
+            target_state=selector_state,
+            kind="TRANSITION",
+            source_block=13,
+            branch_arm=0,
+            target_entry=5,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=payload_state,
+            source_block=5,
+            branch_arm=1,
+            target_entry=13,
+        ),
+        _edge(
+            source_state=selector_state,
+            target_state=return_state,
+            source_block=5,
+            branch_arm=0,
+            target_entry=21,
+        ),
+        _edge(
+            source_state=external_state,
+            target_state=payload_state,
+            source_block=None,
+            branch_arm=None,
+            target_entry=13,
+        ),
+        _edge(
+            source_state=return_state,
+            target_state=None,
+            kind="CONDITIONAL_RETURN",
+            source_block=21,
+            branch_arm=0,
+            target_entry=21,
+        ),
+    )
+
+    def _refine(
+        proof: BranchOwnershipProof,
+        _edge_obj: object,
+    ) -> BranchOwnershipProof:
+        if proof.source_state == selector_state and proof.target_state == payload_state:
+            return replace(
+                proof,
+                proof_kind=BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+                trusted=True,
+                reason="synthetic_selector_path_constant",
+                oracle_kind="fixture",
+            )
+        if proof.source_state == external_state and proof.target_state == payload_state:
+            return replace(
+                proof,
+                proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+                trusted=True,
+                reason="synthetic_unanchored_external_residue",
+                oracle_kind="fixture",
+            )
+        return proof
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=edges),
+        proof_refiner=_refine,
+    )
+    selected = [
+        proof for proof in proofs
+        if (
+            proof.source_state == selector_state
+            and proof.target_state == payload_state
+            and proof.branch_arm == 1
+        )
+    ]
+
+    assert [proof.proof_kind for proof in selected] == [
+        BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
+        BranchOwnershipProofKind.UNRESOLVED,
+    ]
+    assert selected[1].reason == "terminal_selector_backedge_payload_not_private"
+    assert selected[1].authorizes_nonsemantic_branch_rewrite is False
+    assert selected[1].evidence["unproven_external_incoming_edges"] == 1
+    assert selected[1].evidence["external_incoming_residue_proof_ids"] == ()
 
 
 def test_real_data_dependent_predicate_marks_arm_as_semantic_branch_authority():

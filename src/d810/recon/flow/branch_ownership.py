@@ -558,12 +558,30 @@ def _proof_matches_edge_identity(
     proof: BranchOwnershipProof,
     edge: object,
 ) -> bool:
+    edge_source_block = _source_anchor_int(edge, "block_serial")
+    edge_branch_arm = _source_anchor_int(edge, "branch_arm")
+    edge_source_state = _edge_state(getattr(edge, "source_key", None))
+    edge_target_state = _edge_state(getattr(edge, "target_key", None))
+    edge_target_entry = _maybe_int(getattr(edge, "target_entry_anchor", None))
+    if (
+        proof.source_block is None
+        or proof.branch_arm is None
+        or proof.source_state is None
+        or proof.target_state is None
+        or proof.target_entry is None
+        or edge_source_block is None
+        or edge_branch_arm is None
+        or edge_source_state is None
+        or edge_target_state is None
+        or edge_target_entry is None
+    ):
+        return False
     return (
-        proof.source_block == _source_anchor_int(edge, "block_serial")
-        and proof.branch_arm == _source_anchor_int(edge, "branch_arm")
-        and proof.source_state == _edge_state(getattr(edge, "source_key", None))
-        and proof.target_state == _edge_state(getattr(edge, "target_key", None))
-        and proof.target_entry == _maybe_int(getattr(edge, "target_entry_anchor", None))
+        proof.source_block == edge_source_block
+        and proof.branch_arm == edge_branch_arm
+        and proof.source_state == edge_source_state
+        and proof.target_state == edge_target_state
+        and proof.target_entry == edge_target_entry
     )
 
 
