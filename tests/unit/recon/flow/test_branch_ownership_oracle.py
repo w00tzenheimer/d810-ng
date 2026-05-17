@@ -93,7 +93,10 @@ def test_path_constant_predicate_marks_non_taken_arm_as_obfuscation_residue():
     assert residue.target_entry == 9
     assert residue.branch_arm == 0
     assert residue.evidence["taken_arm"] == 1
-    assert taken.proof_kind == BranchOwnershipProofKind.UNRESOLVED
+    assert taken.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+    assert taken.trusted is True
+    assert taken.authorizes_nonsemantic_branch_rewrite is False
+    assert taken.evidence["path_constant_arm"] == 1
 
 
 def test_path_constant_predicate_does_not_downgrade_terminal_frontier_arm():
@@ -116,6 +119,27 @@ def test_path_constant_predicate_does_not_downgrade_terminal_frontier_arm():
     assert proofs[0].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
     assert proofs[0].trusted is True
     assert proofs[0].authorizes_nonsemantic_branch_rewrite is False
+
+
+def test_path_constant_false_predicate_marks_selected_arm_as_opaque_false():
+    proofs = _proofs_for(
+        _edge(branch_arm=0, target_state=0x20),
+        _edge(branch_arm=1, target_state=0x30),
+        result=PredicateOwnershipResult(
+            PredicateOwnershipKind.PATH_CONSTANT,
+            "synthetic_moptracker_constant",
+            taken=False,
+        ),
+    )
+
+    selected = proofs[0]
+    residue = proofs[1]
+    assert selected.proof_kind == BranchOwnershipProofKind.OPAQUE_ALWAYS_FALSE
+    assert selected.trusted is True
+    assert selected.authorizes_nonsemantic_branch_rewrite is False
+    assert selected.evidence["path_constant_arm"] == 0
+    assert residue.proof_kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
+    assert residue.authorizes_nonsemantic_branch_rewrite is True
 
 
 def test_real_data_dependent_predicate_marks_arm_as_semantic_branch_authority():

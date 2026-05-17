@@ -91,7 +91,23 @@ class MopTrackerBranchOwnershipOracle:
                 return None
             taken_arm = 1 if bool(result.taken) else 0
             if int(proof.branch_arm) == taken_arm:
-                return None
+                return self._replace_proof(
+                    proof,
+                    proof_kind=(
+                        BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE
+                        if bool(result.taken)
+                        else BranchOwnershipProofKind.OPAQUE_ALWAYS_FALSE
+                    ),
+                    trusted=True,
+                    reason="moptracker_path_constant_taken_arm",
+                    oracle_kind="moptracker_branch_ownership",
+                    result=result,
+                    extra_evidence={
+                        "taken_arm": taken_arm,
+                        "path_constant_arm": int(proof.branch_arm),
+                        "via_pred": via_pred,
+                    },
+                )
             return self._replace_proof(
                 proof,
                 proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
