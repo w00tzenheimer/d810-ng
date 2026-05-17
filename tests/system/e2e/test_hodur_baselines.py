@@ -149,6 +149,10 @@ class TestHodurBaselines:
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode returns 0 instead of the reference constant"
             )
+            assert "return 0xC5FB34A1D9A6E315uLL;" not in code_after, (
+                "sub_7FFD3338C040 return-carrier regression: "
+                "the AFTER pseudocode returns a pool-qword/state-guard artifact"
+            )
             assert "return 0x5644FD01B1049C4BLL;" in code_after, (
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
