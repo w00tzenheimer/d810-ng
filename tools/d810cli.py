@@ -558,7 +558,7 @@ def cmd_oracle(args: argparse.Namespace) -> int:
     Resolves the latest diag SQLite for the worktree (or honours --db) and
     forwards the snapshot/label/output/microblocks/persist flags untouched.
     All REF comparison logic and SQL live in
-    ``d810.cfg.region_oracle_cli``; this wrapper only resolves paths.
+    ``d810.diagnostics.region_oracle_cli``; this wrapper only resolves paths.
     """
     wt = args.worktree
     worktree = worktree_dir(wt)

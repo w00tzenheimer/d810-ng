@@ -1,6 +1,6 @@
 """No-spec stub and structured-error tests for `region-diff`.
 
-The production handler lives in d810.cfg.region_oracle_cli. These tests
+The production handler lives in d810.diagnostics.region_oracle_cli. These tests
 shell out to `python -m d810.diagnostics region-diff` to exercise the
 full importlib-dispatched path.
 """

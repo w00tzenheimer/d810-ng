@@ -1,11 +1,4 @@
-"""CLI handler for `python -m d810.diagnostics region-diff`.
-
-Lives in d810.cfg because the layered-architecture contract forbids
-d810.core.diag from importing d810.cfg. The diag CLI dispatches here
-via importlib.import_module(...). The handler is injected with the
-core/diag helpers it needs (resolver + persistence) so this module
-does NOT static-import them.
-"""
+"""CLI handler for `python -m d810.diagnostics region-diff`."""
 from __future__ import annotations
 
 import dataclasses
@@ -14,7 +7,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from d810.cfg.ref_region_oracle import (
+from d810.diagnostics.ref_region_oracle import (
     BlockView,
     D810SnapshotInputs,
     FeatureRegion,
@@ -145,6 +138,41 @@ def _block_at(
     return int(row[0]), int(row[1] or 0), int(row[2] or 0)
 
 
+def _source_form_from_payload(payload: dict, byte_index: int) -> str:
+    source = str(payload.get("source_byte_expression") or "")
+    if not source or source in {"unknown-source", "guard-only"}:
+        return "absent"
+    if f"v52[{byte_index}]" in source:
+        return "indexed_base_plus_k"
+    if byte_index == 0 and source in {"v52[0]", "v52", "*v52"}:
+        return "indexed_base_plus_k"
+    if f"#{byte_index}." in source or f"#{byte_index:x}." in source.lower():
+        return "indexed_base_plus_k"
+    if "<<" in source or "|" in source or "^" in source:
+        return "folded"
+    if byte_index == 0 and "[ds." in source:
+        return "base_only"
+    return "folded"
+
+
+def _destination_present_from_payload(payload: dict) -> bool:
+    destination = str(payload.get("destination_buffer_expression") or "")
+    return bool(destination and destination not in {"unknown-destination", "guard-only"})
+
+
+def _counter_update_present_from_payload(payload: dict) -> bool:
+    counter = str(payload.get("counter_carrier") or "")
+    role = str(payload.get("emitter_role") or "")
+    if role == "guard_only":
+        return False
+    return bool(counter and counter != "unknown-counter")
+
+
+def _early_return_guard_present_from_payload(payload: dict) -> bool:
+    guard = str(payload.get("guard_condition") or "")
+    return bool(guard and guard != "unknown-guard")
+
+
 def _build_snapshot_inputs(
     conn: sqlite3.Connection,
     snap_id: int,
@@ -163,6 +191,10 @@ def _build_snapshot_inputs(
     byte_emit_present: dict[int, bool] = {}
     byte_emit_block_serial: dict[int, int | None] = {}
     byte_emit_fact_detected: dict[int, bool] = {}
+    byte_emit_source_form: dict[int, str] = {}
+    byte_emit_destination_present: dict[int, bool] = {}
+    byte_emit_counter_update_present: dict[int, bool] = {}
+    early_return_guard_present: dict[int, bool] = {}
 
     # Seed: facts firing at snap_id directly.
     for k in range(7):
@@ -170,10 +202,20 @@ def _build_snapshot_inputs(
             byte_emit_present[k] = True
             byte_emit_block_serial[k] = int(facts[k].get("block_serial", 0))
             byte_emit_fact_detected[k] = True
+            byte_emit_source_form[k] = _source_form_from_payload(facts[k], k)
+            byte_emit_destination_present[k] = _destination_present_from_payload(facts[k])
+            byte_emit_counter_update_present[k] = _counter_update_present_from_payload(facts[k])
+            if k < 6:
+                early_return_guard_present[k] = _early_return_guard_present_from_payload(facts[k])
         else:
             byte_emit_present[k] = False
             byte_emit_block_serial[k] = None
             byte_emit_fact_detected[k] = False
+            byte_emit_source_form[k] = "absent"
+            byte_emit_destination_present[k] = False
+            byte_emit_counter_update_present[k] = False
+            if k < 6:
+                early_return_guard_present[k] = False
 
     # Survival fallback: if no fact fires at snap_id but an initial
     # snapshot baseline is given, check whether each byte's baseline
@@ -199,6 +241,15 @@ def _build_snapshot_inputs(
                     serial_at_snap, _, _ = survived
                     byte_emit_present[k] = True
                     byte_emit_block_serial[k] = serial_at_snap
+                    byte_emit_source_form[k] = _source_form_from_payload(fact, k)
+                    byte_emit_destination_present[k] = _destination_present_from_payload(fact)
+                    byte_emit_counter_update_present[k] = (
+                        _counter_update_present_from_payload(fact)
+                    )
+                    if k < 6:
+                        early_return_guard_present[k] = (
+                            _early_return_guard_present_from_payload(fact)
+                        )
                     # fact_detected stays False — the live fact didn't fire.
 
     # SCC analysis on the snapshot's block graph.
@@ -236,6 +287,10 @@ def _build_snapshot_inputs(
         byte_emit_present=byte_emit_present,
         byte_emit_block_serial=byte_emit_block_serial,
         byte_emit_fact_detected=byte_emit_fact_detected,
+        byte_emit_source_form=byte_emit_source_form,
+        byte_emit_destination_present=byte_emit_destination_present,
+        byte_emit_counter_update_present=byte_emit_counter_update_present,
+        early_return_guard_present=early_return_guard_present,
         terminal_tail_acyclic=terminal_tail_acyclic,
         head_loop_isolated=head_loop_isolated,
         chunk_loop_isolated=chunk_loop_isolated,

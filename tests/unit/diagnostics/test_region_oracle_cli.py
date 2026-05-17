@@ -331,8 +331,16 @@ def test_region_diff_emits_real_d810_feature_values(tmp_path):
         (17, "0x0000000180012df0", 0x180012df0, "1",
          "TerminalByteEmitterFact", "byte_3", "MMAT_GLBOPT1",
          "post_bundle_stabilize", 1.0,
-         _json.dumps({"byte_index": 3, "block_serial": 161,
-                      "corridor_role": "terminal_tail"}),
+         _json.dumps({
+             "byte_index": 3,
+             "block_serial": 161,
+             "corridor_role": "terminal_tail",
+             "source_byte_expression": "v52[3]",
+             "destination_buffer_expression": "%var_dst.8",
+             "counter_carrier": "%var_53.8",
+             "guard_condition": "jcnd %var_53.8 == #3.8, @241",
+             "emitter_role": "memory_store",
+         }),
          "{}"),
     )
     # Insert the matching block at snap17.
@@ -368,6 +376,11 @@ def test_region_diff_emits_real_d810_feature_values(tmp_path):
     assert s17_byte3["value"] in (True, "True"), (
         f"snap17.byte_emit_3_present should be truthy, got {s17_byte3['value']!r}"
     )
+    s17_by_feature = {f["feature"]: f for f in payload["snap17_features"]}
+    assert s17_by_feature["byte_emit_3_source_form"]["value"] == "indexed_base_plus_k"
+    assert s17_by_feature["byte_emit_3_destination_present"]["value"] is True
+    assert s17_by_feature["byte_emit_3_counter_update_present"]["value"] is True
+    assert s17_by_feature["early_return_guard_3_present"]["value"] is True
 
     # snap18: same byte should be False (no fact row at snap18).
     s18_byte3 = next(
