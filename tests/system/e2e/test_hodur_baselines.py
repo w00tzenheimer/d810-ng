@@ -26,6 +26,19 @@ import pytest
 import idaapi
 import idc
 
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactEdgeProof,
+    ReturnFrontierArtifactPriors,
+)
+from d810.recon.flow.terminal_tail_priors import (
+    TerminalTailCascadeEgressPriors,
+    TerminalTailContinuationBridgePrior,
+    TerminalTailEntryFrontierPriors,
+    TerminalTailEqualityFrontierPriors,
+    TerminalTailRowTargetOverride,
+)
+from d810.recon.function_priors import FunctionAnalysisPriors
+
 
 def _get_func_ea(name: str) -> int:
     """Get function address by name or hex address string.
@@ -73,6 +86,68 @@ HODUR_BASELINES = [
         id="sub_7FFD3338C040",
     ),
 ]
+
+SUB_7FFD_KNOWN_IMPOSSIBLE_RETURN_CONSTANTS = (
+    "0xC5FB34A1D9A6E315",
+)
+SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS = (
+    ReturnFrontierArtifactEdgeProof(
+        source_block=27,
+        artifact_block=28,
+        old_target_block=92,
+        continuation_block=29,
+        proof_ids=(
+            "sub7ffd_return_frontier_artifact",
+            "layout:source27_artifact28_continuation29",
+        ),
+    ),
+)
+SUB_7FFD_TERMINAL_TAIL_CASCADE_EGRESS_PRIORS = (
+    TerminalTailCascadeEgressPriors(
+        byte_indices=(1, 2, 5),
+        split_byte_indices=(3,),
+        row_target_overrides=(
+            TerminalTailRowTargetOverride(
+                byte_index=2,
+                target_entry_byte_index=3,
+            ),
+        ),
+        continuation_bridges=(
+            TerminalTailContinuationBridgePrior(
+                continuation_byte_index=3,
+                source_byte_index=4,
+                target_store_guard_byte_index=5,
+                max_depth=8,
+            ),
+        ),
+        equality_frontier=TerminalTailEqualityFrontierPriors(
+            return_frontier_byte_index=2,
+            row_byte_indices=(2, 3),
+            shared_store_guard_byte_indices=(3, 5),
+        ),
+        entry_frontier=TerminalTailEntryFrontierPriors(first_byte_index=1),
+    )
+)
+SUB_7FFD_FUNCTION_PRIORS = FunctionAnalysisPriors(
+    return_frontier_artifacts=(
+        ReturnFrontierArtifactPriors.from_known_impossible_return_constants(
+            SUB_7FFD_KNOWN_IMPOSSIBLE_RETURN_CONSTANTS
+        ).with_impossible_return_artifact_edges(
+            SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS
+        )
+    ),
+    terminal_tail_cascade_egress=SUB_7FFD_TERMINAL_TAIL_CASCADE_EGRESS_PRIORS,
+)
+
+
+def _configure_sub7ffd_function_priors(ctx, func_ea: int) -> None:
+    """Inject sub7FFD-only function priors through ProjectContext."""
+    ctx.add_function_priors(func_ea, SUB_7FFD_FUNCTION_PRIORS)
+    assert ctx.function_priors(func_ea) == SUB_7FFD_FUNCTION_PRIORS
+    assert (
+        ctx.state.manager.function_analysis_priors_for_ea(func_ea)
+        == SUB_7FFD_FUNCTION_PRIORS
+    )
 
 
 @pytest.fixture(scope="class")
@@ -127,7 +202,9 @@ class TestHodurBaselines:
             request.addfinalizer(reset_settings)
 
         with d810_state() as state:
-            with state.for_project(project_config):
+            with state.for_project(project_config) as ctx:
+                if func_name == "sub_7FFD3338C040":
+                    _configure_sub7ffd_function_priors(ctx, func_ea)
                 state.stats.reset()
                 state.start_d810()
                 cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
@@ -232,7 +309,8 @@ class TestSemanticReferenceRegression:
         request.addfinalizer(reset_settings)
 
         with d810_state() as state:
-            with state.for_project("hodur_flag2.json"):
+            with state.for_project("hodur_flag2.json") as ctx:
+                _configure_sub7ffd_function_priors(ctx, func_ea)
                 state.stats.reset()
                 state.start_d810()
                 cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
@@ -345,7 +423,8 @@ class TestSub7FFDCorridorPreservationRegression:
         request.addfinalizer(_restore_gate)
 
         with d810_state() as state:
-            with state.for_project("hodur_flag2.json"):
+            with state.for_project("hodur_flag2.json") as ctx:
+                _configure_sub7ffd_function_priors(ctx, func_ea)
                 state.stats.reset()
                 state.start_d810()
                 cfunc = idaapi.decompile(
