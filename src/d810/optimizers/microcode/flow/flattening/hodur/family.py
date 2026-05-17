@@ -62,6 +62,7 @@ from d810.recon.flow.graph_reachability import (
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )
+from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.recon.flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
@@ -211,6 +212,33 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
 
+    def _function_analysis_priors_for_mba(
+        self,
+        mba: object,
+    ) -> FunctionAnalysisPriors:
+        try:
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        except (TypeError, ValueError):
+            return FunctionAnalysisPriors()
+        runtime = self._fact_runtime
+        if runtime is None:
+            return FunctionAnalysisPriors()
+        provider = getattr(runtime, "function_analysis_priors", None)
+        if not callable(provider):
+            return FunctionAnalysisPriors()
+        try:
+            priors = provider(func_ea)
+        except Exception:
+            family_logger.debug(
+                "Function analysis priors lookup failed for 0x%x",
+                func_ea,
+                exc_info=True,
+            )
+            return FunctionAnalysisPriors()
+        if isinstance(priors, FunctionAnalysisPriors):
+            return priors
+        return FunctionAnalysisPriors()
+
     def reset_runtime_state(self) -> None:
         self._state_machine: DispatcherStateMachine | None = None
         self._detector: HodurStateMachineDetector | None = None
@@ -272,6 +300,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         # runtime is available.  Strategies may consult this for fact-rooted
         # safety gates.  Never falls back to heuristics when absent.
         fact_view = self._resolve_fact_view(mba)
+        function_priors = self._function_analysis_priors_for_mba(mba)
+        return_frontier_artifact_priors = (
+            function_priors.return_frontier_artifacts
+        )
 
         if state_machine is None:
             return AnalysisSnapshot(
@@ -392,6 +424,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     dispatcher=getattr(bst_result, "dispatcher", None),
                     mba=mba,
                     prefer_local_corridors=True,
+                    return_frontier_artifact_priors=(
+                        return_frontier_artifact_priors
+                    ),
                 )
             except Exception as exc:
                 family_logger.debug(
