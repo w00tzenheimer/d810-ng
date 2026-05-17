@@ -31,6 +31,8 @@ from d810.recon.flow.linearized_state_dag import (
 )
 from d810.recon.flow.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides,
+)
+from d810.diagnostics.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides_from_diag,
 )
 

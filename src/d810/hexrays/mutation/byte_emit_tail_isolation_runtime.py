@@ -12,7 +12,6 @@ from collections import deque
 import dataclasses
 import json
 import os
-import sqlite3
 
 from d810.core import logging
 from d810.core.typing import Any, Iterable
@@ -45,6 +44,10 @@ from d810.cfg.transform.byte_emit_tail_isolation import (
     parse_tail_duplicate_convergence_byte_env,
 )
 from d810.cfg.scc import CfgSCC, compute_live_cfg_sccs
+from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+    ByteTailRuntimeEvidenceProvider,
+    normalize_byte_tail_runtime_evidence,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -89,90 +92,6 @@ def _copy_block_keep(mba, ref_blk, dest_serial):
         except Exception:
             pass
     return new_blk
-
-
-class DiagDbFactView:
-    """FactView backed by a diag-DB ``fact_observations`` table.
-
-    Resolves the highest snapshot.id whose label matches the GLBOPT1
-    ``pre_d810`` capture (with sensible fallbacks), then yields all
-    ``TerminalByteEmitterFact`` rows whose payload byte_index matches
-    the requested byte.
-
-    Pure SQLite — no IDA imports.
-    """
-
-    _LABEL_CANDIDATES = (
-        "maturity_MMAT_GLBOPT1_pre_d810",
-        "MMAT_GLBOPT1_pre_d810",
-        "pre_d810",
-    )
-
-    def __init__(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        func_ea_hex: str,
-    ) -> None:
-        self._conn = conn
-        self._func_ea_hex = func_ea_hex
-
-    def terminal_byte_emit_facts(
-        self, byte_index: int,
-    ) -> Iterable[FactRow]:
-        snap_id: int | None = None
-        for label in self._LABEL_CANDIDATES:
-            row = self._conn.execute(
-                "SELECT MAX(id) FROM snapshots WHERE label = ?",
-                (label,),
-            ).fetchone()
-            if row is not None and row[0] is not None:
-                snap_id = int(row[0])
-                break
-        if snap_id is None:
-            return ()
-
-        rows: list[FactRow] = []
-        for (payload_json,) in self._conn.execute(
-            "SELECT payload FROM fact_observations "
-            "WHERE kind='TerminalByteEmitterFact' AND snapshot_id=? "
-            "  AND func_ea_hex=? "
-            "ORDER BY fact_id",
-            (snap_id, self._func_ea_hex),
-        ):
-            try:
-                payload = json.loads(payload_json or "{}")
-            except json.JSONDecodeError:
-                continue
-            try:
-                bi = int(payload.get("byte_index"))
-                bs = int(payload.get("block_serial", 0))
-            except (TypeError, ValueError):
-                continue
-            if bi != byte_index:
-                continue
-            # The TerminalByteEmitterFact payload uses ``block_ea`` (int).
-            # Older paths stored ``start_ea_hex``; honor either when present.
-            ea_hex = str(payload.get("start_ea_hex") or "")
-            if not ea_hex:
-                raw_ea = payload.get("block_ea")
-                if isinstance(raw_ea, int):
-                    ea_hex = f"0x{raw_ea & ((1 << 64) - 1):016x}"
-                elif isinstance(raw_ea, str) and raw_ea:
-                    try:
-                        ea_hex = f"0x{int(raw_ea, 0) & ((1 << 64) - 1):016x}"
-                    except ValueError:
-                        ea_hex = ""
-            rows.append(
-                FactRow(
-                    snapshot_id=snap_id,
-                    byte_index=bi,
-                    block_serial=bs,
-                    start_ea_hex=ea_hex,
-                    corridor_role=str(payload.get("corridor_role") or ""),
-                )
-            )
-        return rows
 
 
 class LiveMbaAdapter:
@@ -1942,14 +1861,87 @@ def _is_v190_plus_k(op, byte_index: int) -> bool:
     return False
 
 
-def maybe_run_tail_distinct(mba: Any) -> None:
+class _ValidatedFactViewAdapter:
+    """Adapt in-memory lifecycle facts to the CFG byte-tail FactView."""
+
+    def __init__(self, fact_view: Any) -> None:
+        self._fact_view = fact_view
+
+    def terminal_byte_emit_facts(self, byte_index: int) -> Iterable[FactRow]:
+        rows: list[FactRow] = []
+        for obs in getattr(self._fact_view, "active_observations", ()) or ():
+            if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
+                continue
+            payload = getattr(obs, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            try:
+                bi = int(payload.get("byte_index"))
+            except (TypeError, ValueError):
+                continue
+            if bi != int(byte_index):
+                continue
+            block_raw = (
+                payload.get("destination_block")
+                or payload.get("block_serial")
+                or payload.get("source_block")
+                or getattr(obs, "source_block", None)
+            )
+            try:
+                block_serial = int(block_raw)
+            except (TypeError, ValueError):
+                block_serial = 0
+            ea_hex = str(payload.get("start_ea_hex") or "")
+            if not ea_hex:
+                raw_ea = payload.get("block_ea")
+                if raw_ea is None:
+                    raw_ea = getattr(obs, "source_ea", None)
+                try:
+                    if raw_ea is not None:
+                        ea_int = (
+                            int(raw_ea, 0)
+                            if isinstance(raw_ea, str)
+                            else int(raw_ea)
+                        )
+                        ea_hex = (
+                            f"0x{ea_int & ((1 << 64) - 1):016x}"
+                        )
+                except (TypeError, ValueError):
+                    ea_hex = ""
+            rows.append(
+                FactRow(
+                    snapshot_id=0,
+                    byte_index=bi,
+                    block_serial=block_serial,
+                    start_ea_hex=ea_hex,
+                    corridor_role=str(payload.get("corridor_role") or ""),
+                )
+            )
+        return rows
+
+
+def _byte_emit_fact_view(fact_view: Any | None) -> Any | None:
+    if fact_view is None:
+        return None
+    if callable(getattr(fact_view, "terminal_byte_emit_facts", None)):
+        return fact_view
+    if hasattr(fact_view, "active_observations"):
+        return _ValidatedFactViewAdapter(fact_view)
+    return fact_view
+
+
+def maybe_run_tail_distinct(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
     Default-off.  When ``D810_TAIL_DISTINCT_BYTE`` is set to a valid byte
-    index in ``[0, 6]`` this resolves the matching
-    ``TerminalByteEmitterFact`` from the diag DB, finds the live block,
-    and inserts a single empty trampoline between byte_emit[k] and its
-    shared successor.
+    index in ``[0, 6]`` this resolves the matching in-memory
+    ``TerminalByteEmitterFact``, finds the live block, and inserts a single
+    empty trampoline between byte_emit[k] and its shared successor.
 
     Lives in ``d810.cfg.transform`` (not ``d810.manager``) so the
     optimizer call site can import it without violating the layered
@@ -1965,25 +1957,19 @@ def maybe_run_tail_distinct(mba: Any) -> None:
     if byte_index is None:
         return  # default-off: no log, no mutation
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
 
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception("tail_distinct: cannot acquire diag DB; skipping")
-        return
-
-    if diag_conn is None:
+    if fact_view is None:
         logger.warning(
-            "tail_distinct: D810_TAIL_DISTINCT_BYTE=%r set but diag DB "
-            "unavailable; skipping",
+            "tail_distinct: D810_TAIL_DISTINCT_BYTE=%r set but in-memory "
+            "fact view unavailable; skipping",
             raw,
         )
         return
 
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+    fact_view = _byte_emit_fact_view(fact_view)
     adapter = LiveMbaAdapter(mba)
     try:
         report = isolate_byte_emit_tail(
@@ -2001,13 +1987,18 @@ def maybe_run_tail_distinct(mba: Any) -> None:
     logger.info("tail_distinct: %s", report)
 
 
-def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
+def maybe_run_tail_duplicate_convergence(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
     """Env-gated hook: ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE`` probe.
 
     Default-off.  When set to exactly ``"6"`` and
     ``D810_TAIL_DISTINCT_BYTE`` is NOT set, this resolves the matching
-    ``TerminalByteEmitterFact`` for byte 6 from the diag DB, walks
-    forward to the first shared convergence block that reaches
+    in-memory ``TerminalByteEmitterFact`` for byte 6, walks forward to
+    the first shared convergence block that reaches
     ``BLT_STOP``, clones that convergence, and rewires the
     byte-side predecessor's edge onto the clone.  The original
     convergence remains intact for sibling paths.
@@ -2034,27 +2025,19 @@ def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
         )
         return
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
 
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception(
-            "tail_duplicate_convergence: cannot acquire diag DB; skipping"
-        )
-        return
-
-    if diag_conn is None:
+    if fact_view is None:
         logger.warning(
             "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE="
-            "%r set but diag DB unavailable; skipping",
+            "%r set but in-memory fact view unavailable; skipping",
             raw,
         )
         return
 
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_view = DiagDbFactView(diag_conn, func_ea_hex=func_ea_hex)
+    fact_view = _byte_emit_fact_view(fact_view)
     adapter = LiveMbaAdapter(mba)
     try:
         report = duplicate_convergence_for_byte_path(
@@ -2081,13 +2064,6 @@ def maybe_run_tail_duplicate_convergence(mba: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-_STATE_CASCADE_FACT_LABELS = (
-    "maturity_MMAT_GLBOPT1_pre_d810",
-    "MMAT_GLBOPT1_pre_d810",
-    "pre_d810",
-)
-
-
 def _json_int_tuple(value) -> tuple[int, ...]:
     if not value:
         return ()
@@ -2104,90 +2080,6 @@ def _json_int_tuple(value) -> tuple[int, ...]:
         except (TypeError, ValueError):
             continue
     return tuple(out)
-
-
-def _load_planner_blocks(
-    conn,  # sqlite3.Connection
-    snapshot_id: int,
-):
-    """Read block + instruction rows from a CFG snapshot into the
-    pure planner's ``TerminalTailBlock`` shape.
-
-    The diag DB is per-IDB per-run, so ``snapshot_id`` already
-    uniquely identifies the function under analysis — neither
-    ``blocks`` nor ``instructions`` have a ``func_ea_hex`` column.
-    """
-    from d810.cfg.terminal_tail_cascade_egress_planner import TerminalTailBlock
-
-    rows = conn.execute(
-        "SELECT serial, type_name, start_ea_hex, succs, preds "
-        "FROM blocks WHERE snapshot_id=? "
-        "ORDER BY serial",
-        (snapshot_id,),
-    ).fetchall()
-    op_rows = conn.execute(
-        "SELECT block_serial, opcode_name, COALESCE(dstr, '') "
-        "FROM instructions WHERE snapshot_id=? "
-        "ORDER BY block_serial, insn_index",
-        (snapshot_id,),
-    ).fetchall()
-    opcodes_by_block: dict[int, list[str]] = {}
-    text_by_block: dict[int, list[str]] = {}
-    for block_serial, opcode, dstr in op_rows:
-        bs = int(block_serial)
-        opcodes_by_block.setdefault(bs, []).append(str(opcode or ""))
-        text_by_block.setdefault(bs, []).append(str(dstr or ""))
-
-    blocks = {}
-    for serial, type_name, start_ea_hex, succs, preds in rows:
-        bs = int(serial)
-        blocks[bs] = TerminalTailBlock(
-            serial=bs,
-            succs=_json_int_tuple(succs),
-            preds=_json_int_tuple(preds),
-            type_name=str(type_name or ""),
-            start_ea_hex=start_ea_hex,
-            insn_opcodes=tuple(opcodes_by_block.get(bs, ())),
-            insn_text=tuple(text_by_block.get(bs, ())),
-        )
-    return blocks
-
-
-def _load_planner_sites(
-    conn,  # sqlite3.Connection
-    snapshot_id: int,
-    func_ea_hex: str,
-):
-    """Yield ``TerminalByteEmitSite`` rows from a fact snapshot."""
-    from d810.cfg.terminal_tail_cascade_egress_planner import (
-        terminal_byte_emit_site_from_payload,
-    )
-
-    rows = conn.execute(
-        "SELECT fact_id, payload, source_ea_hex, confidence "
-        "FROM fact_observations "
-        "WHERE snapshot_id=? AND kind='TerminalByteEmitterFact' "
-        "  AND func_ea_hex=? "
-        "ORDER BY fact_id",
-        (snapshot_id, func_ea_hex),
-    ).fetchall()
-    sites: list = []
-    for fact_id, payload_json, source_ea_hex, confidence in rows:
-        try:
-            payload = json.loads(payload_json or "{}")
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        site = terminal_byte_emit_site_from_payload(
-            str(fact_id),
-            payload,
-            source_ea_hex=source_ea_hex,
-            confidence=float(confidence or 0.0),
-        )
-        if site is not None:
-            sites.append(site)
-    return sites
 
 
 def _load_planner_blocks_from_mba(mba):
@@ -2291,45 +2183,6 @@ def _load_planner_sites_from_fact_view(fact_view):
     return sites
 
 
-def _resolve_planner_snapshots(
-    conn, func_ea_hex: str,
-) -> tuple[int | None, int | None]:
-    """Resolve (fact_snapshot_id, target_snapshot_id) for a func_ea.
-
-    fact_snapshot is the highest-id snapshot whose label matches a
-    GLBOPT1 pre_d810 capture and which has a
-    ``TerminalByteEmitterFact`` row for this function.
-    target_snapshot is the highest-id snapshot whose label is
-    ``post_bundle_stabilize`` and which has block rows for this
-    function.
-    """
-    fact_snap: int | None = None
-    for label in _STATE_CASCADE_FACT_LABELS:
-        row = conn.execute(
-            "SELECT MAX(s.id) FROM snapshots s "
-            "JOIN fact_observations f ON f.snapshot_id = s.id "
-            "WHERE s.label = ? "
-            "  AND f.kind = 'TerminalByteEmitterFact' "
-            "  AND f.func_ea_hex = ?",
-            (label, func_ea_hex),
-        ).fetchone()
-        if row is not None and row[0] is not None:
-            fact_snap = int(row[0])
-            break
-
-    target_snap: int | None = None
-    row = conn.execute(
-        "SELECT MAX(s.id) FROM snapshots s "
-        "WHERE s.label = 'post_bundle_stabilize' "
-        "  AND EXISTS (SELECT 1 FROM blocks b "
-        "              WHERE b.snapshot_id = s.id)",
-    ).fetchone()
-    if row is not None and row[0] is not None:
-        target_snap = int(row[0])
-
-    return (fact_snap, target_snap)
-
-
 def _bridge_plan_row_to_live_mba(
     plan_row,
     *,
@@ -2417,76 +2270,7 @@ def _bridge_plan_row_to_live_mba(
             "ok",
         )
 
-    if snap17_id is None:
-        return (None, "live_block_not_resolvable:snapshot:None")
-
-    mapped_serials: dict[str, int | None] = {}
-    for field_name in fields_to_map:
-        snap_serial = getattr(plan_row, field_name, None)
-        if snap_serial is None:
-            return (
-                None,
-                f"live_block_not_resolvable:{field_name}:None:planner_serial_none",
-            )
-        snap_serial_i = int(snap_serial)
-        row = diag_conn.execute(
-            "SELECT start_ea_i64 FROM blocks "
-            "WHERE snapshot_id=? AND serial=?",
-            (int(snap17_id), snap_serial_i),
-        ).fetchone()
-        if row is None or row[0] is None:
-            return (
-                None,
-                f"live_block_not_resolvable:{field_name}:{snap_serial_i}:no_snap17_row",
-            )
-        ea_signed = int(row[0])
-        ea = ea_signed & ((1 << 64) - 1)
-        view = adapter.find_block_by_ea(ea)
-        if view is None:
-            return (
-                None,
-                f"live_block_not_resolvable:{field_name}:{snap_serial_i}:"
-                f"ea_{ea:#x}_not_in_live_mba",
-            )
-        live_serial = int(getattr(view, "serial", -1))
-        if logger_ is not None:
-            logger_.info(
-                "tail_state_cascade EA-bridge: field=%s snap17=%s ea=%#x live=%s",
-                field_name, snap_serial_i, ea, live_serial,
-            )
-        mapped_serials[field_name] = live_serial
-
-    snap_source = getattr(plan_row, "source_block", None)
-    snap_current = getattr(plan_row, "current_continuation_target", None)
-    if snap_source is None or snap_current is None:
-        return (
-            None,
-            "live_block_not_resolvable:current_continuation_target:None:planner_serial_none",
-        )
-    live_current, current_reason = _map_snap_successor_to_live(
-        diag_conn=diag_conn,
-        snapshot_id=snap17_id,
-        snap_source_serial=int(snap_source),
-        snap_target_serial=int(snap_current),
-        live_source_serial=int(mapped_serials["source_block"]),
-        adapter=adapter,
-    )
-    if live_current is None:
-        return (None, current_reason)
-    mapped_serials["current_continuation_target"] = int(live_current)
-
-    # state_write_block passthrough when not required.
-    if not state_write_required:
-        mapped_serials["state_write_block"] = state_write_serial
-
-    mapped_row = dataclasses.replace(
-        plan_row,
-        source_block=mapped_serials["source_block"],
-        current_continuation_target=mapped_serials["current_continuation_target"],
-        intended_target=mapped_serials["intended_target"],
-        state_write_block=mapped_serials["state_write_block"],
-    )
-    return (mapped_row, "ok")
+    return (None, "live_block_not_resolvable:diag_bridge_disabled")
 
 
 def _live_successors(adapter, live_serial: int) -> tuple[int, ...]:
@@ -2521,16 +2305,7 @@ def _map_snap_successor_to_live(
     live_source_serial: int,
     adapter,
 ) -> tuple[int | None, str]:
-    if diag_conn is None:
-        snap_succs = _live_successors(adapter, int(live_source_serial))
-    else:
-        if snapshot_id is None:
-            return (None, "live_block_not_resolvable:snapshot:None")
-        row = diag_conn.execute(
-            "SELECT succs FROM blocks WHERE snapshot_id=? AND serial=?",
-            (int(snapshot_id), int(snap_source_serial)),
-        ).fetchone()
-        snap_succs = _json_int_tuple(row[0]) if row is not None else ()
+    snap_succs = _live_successors(adapter, int(live_source_serial))
     live_succs = _live_successors(adapter, int(live_source_serial))
 
     if int(snap_target_serial) in snap_succs:
@@ -2543,7 +2318,7 @@ def _map_snap_successor_to_live(
 
     return _map_snap_serial_to_live(
         diag_conn=diag_conn,
-        snapshot_id=int(snapshot_id),
+        snapshot_id=int(snapshot_id) if snapshot_id is not None else None,
         snap_serial=int(snap_target_serial),
         adapter=adapter,
         field_name="current_continuation_target",
@@ -2558,29 +2333,12 @@ def _map_snap_serial_to_live(
     adapter,
     field_name: str,
 ) -> tuple[int | None, str]:
-    if diag_conn is None:
-        if _live_block_exists(adapter, int(snap_serial)):
-            return (int(snap_serial), "ok")
-        return (
-            None,
-            f"live_block_not_resolvable:{field_name}:{snap_serial}:not_in_live_mba",
-        )
-    if snapshot_id is None:
-        return (None, f"live_block_not_resolvable:{field_name}:{snap_serial}:snapshot_none")
-    row = diag_conn.execute(
-        "SELECT start_ea_i64 FROM blocks WHERE snapshot_id=? AND serial=?",
-        (int(snapshot_id), int(snap_serial)),
-    ).fetchone()
-    if row is None or row[0] is None:
-        return (None, f"live_block_not_resolvable:{field_name}:{snap_serial}:no_snapshot_row")
-    ea = int(row[0]) & ((1 << 64) - 1)
-    view = adapter.find_block_by_ea(ea)
-    if view is None:
-        return (
-            None,
-            f"live_block_not_resolvable:{field_name}:{snap_serial}:ea_{ea:#x}_not_in_live_mba",
-        )
-    return (int(getattr(view, "serial", -1)), "ok")
+    if _live_block_exists(adapter, int(snap_serial)):
+        return (int(snap_serial), "ok")
+    return (
+        None,
+        f"live_block_not_resolvable:{field_name}:{snap_serial}:not_in_live_mba",
+    )
 
 
 def _block_mentions_source_byte(block, byte_index: int) -> bool:
@@ -2796,17 +2554,7 @@ def _snap_start_ea(
     target_snap: int | None,
     snap_serial: int,
 ) -> int | None:
-    if diag_conn is None:
-        return None
-    if target_snap is None:
-        return None
-    row = diag_conn.execute(
-        "SELECT start_ea_i64 FROM blocks WHERE snapshot_id=? AND serial=?",
-        (int(target_snap), int(snap_serial)),
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return int(row[0]) & ((1 << 64) - 1)
+    return None
 
 
 def _snap_instruction_eas(
@@ -2815,22 +2563,7 @@ def _snap_instruction_eas(
     target_snap: int | None,
     snap_serial: int,
 ) -> tuple[int, ...]:
-    if diag_conn is None or target_snap is None:
-        return ()
-    cursor = diag_conn.execute(
-        "SELECT ea_i64 FROM instructions "
-        "WHERE snapshot_id=? AND block_serial=? ORDER BY insn_index",
-        (int(target_snap), int(snap_serial)),
-    )
-    fetchall = getattr(cursor, "fetchall", None)
-    if fetchall is None:
-        return ()
-    rows = fetchall()
-    return tuple(
-        int(row[0]) & ((1 << 64) - 1)
-        for row in rows
-        if row is not None and row[0] is not None
-    )
+    return ()
 
 
 def _live_blocks_with_start_ea(adapter, ea: int) -> tuple[int, ...]:
@@ -2882,29 +2615,7 @@ def _snap_serial_for_live_block(
     adapter,
     live_serial: int,
 ) -> int | None:
-    if diag_conn is None:
-        return int(live_serial) if _live_block_exists(adapter, int(live_serial)) else None
-    if target_snap is None:
-        return None
-    ea = _live_block_start_ea(adapter, int(live_serial))
-    if ea is None:
-        return None
-    row = diag_conn.execute(
-        "SELECT serial FROM blocks WHERE snapshot_id=? AND start_ea_i64=? "
-        "ORDER BY serial LIMIT 1",
-        (int(target_snap), int(ea)),
-    ).fetchone()
-    if row is not None:
-        return int(row[0])
-    row = diag_conn.execute(
-        "SELECT serial FROM blocks "
-        "WHERE snapshot_id=? AND start_ea_i64<=? AND end_ea_i64>? "
-        "ORDER BY (end_ea_i64-start_ea_i64), serial LIMIT 1",
-        (int(target_snap), int(ea), int(ea)),
-    ).fetchone()
-    if row is None:
-        return None
-    return int(row[0])
+    return int(live_serial) if _live_block_exists(adapter, int(live_serial)) else None
 
 
 def _parse_state_hex(value) -> int | None:
@@ -2917,121 +2628,7 @@ def _parse_state_hex(value) -> int | None:
 
 
 def _load_dag_semantics(diag_conn) -> _DagSemantics | None:
-    row = diag_conn.execute("SELECT MAX(snapshot_id) FROM dag_edges").fetchone()
-    if row is None or row[0] is None:
-        return None
-    snapshot_id = int(row[0])
-
-    states: set[int] = set()
-    adj: dict[int, tuple[int, ...]] = {}
-    temp_adj: dict[int, set[int]] = {}
-    edges: list[_DagEdge] = []
-    for (
-        edge_id,
-        source_state_hex,
-        target_state_hex,
-        edge_kind,
-        source_block,
-        source_arm,
-        target_entry,
-        ordered_path_json,
-    ) in diag_conn.execute(
-        "SELECT edge_id, source_state_hex, target_state_hex, edge_kind, "
-        "source_block, source_arm, target_entry, ordered_path "
-        "FROM dag_edges WHERE snapshot_id=? ORDER BY edge_id",
-        (snapshot_id,),
-    ):
-        source_state = _parse_state_hex(source_state_hex)
-        target_state = _parse_state_hex(target_state_hex)
-        if source_state is not None:
-            states.add(source_state)
-        if target_state is not None:
-            states.add(target_state)
-            if source_state is not None:
-                temp_adj.setdefault(source_state, set()).add(target_state)
-        ordered_path = _json_int_tuple(ordered_path_json)
-        edges.append(
-            _DagEdge(
-                edge_id=int(edge_id),
-                source_state=source_state,
-                target_state=target_state,
-                edge_kind=str(edge_kind or ""),
-                source_block=int(source_block) if source_block is not None else None,
-                source_arm=int(source_arm) if source_arm is not None else None,
-                target_entry=int(target_entry) if target_entry is not None else None,
-                ordered_path=ordered_path,
-            )
-        )
-
-    for (state_hex,) in diag_conn.execute(
-        "SELECT state_hex FROM dag_nodes WHERE snapshot_id=?",
-        (snapshot_id,),
-    ):
-        state = _parse_state_hex(state_hex)
-        if state is not None:
-            states.add(state)
-
-    for state in states:
-        adj[state] = tuple(sorted(temp_adj.get(state, ())))
-
-    sccs = compute_live_cfg_sccs(adj)
-    state_to_scc: dict[int, int] = {}
-    for scc in sccs:
-        for state in scc.blocks:
-            state_to_scc[int(state)] = int(scc.scc_id)
-
-    scc_successors_mut: dict[int, set[int]] = {
-        int(scc.scc_id): set() for scc in sccs
-    }
-    for source, targets in adj.items():
-        source_scc = state_to_scc.get(int(source))
-        if source_scc is None:
-            continue
-        for target in targets:
-            target_scc = state_to_scc.get(int(target))
-            if target_scc is None or target_scc == source_scc:
-                continue
-            scc_successors_mut.setdefault(source_scc, set()).add(target_scc)
-
-    scc_reachable: dict[int, frozenset[int]] = {}
-    for scc_id in scc_successors_mut:
-        seen: set[int] = set()
-        queue: deque[int] = deque([scc_id])
-        while queue:
-            cur = queue.popleft()
-            if cur in seen:
-                continue
-            seen.add(cur)
-            queue.extend(scc_successors_mut.get(cur, ()))
-        scc_reachable[scc_id] = frozenset(seen)
-
-    block_to_sccs_mut: dict[int, set[int]] = {}
-    for state_hex, block_serial in diag_conn.execute(
-        "SELECT state_hex, block_serial FROM dag_node_blocks "
-        "WHERE snapshot_id=?",
-        (snapshot_id,),
-    ):
-        state = _parse_state_hex(state_hex)
-        if state is None:
-            continue
-        scc_id = state_to_scc.get(state)
-        if scc_id is None:
-            continue
-        block_to_sccs_mut.setdefault(int(block_serial), set()).add(int(scc_id))
-
-    return _DagSemantics(
-        snapshot_id=snapshot_id,
-        state_to_scc=state_to_scc,
-        scc_reachable=scc_reachable,
-        block_to_sccs={
-            block: frozenset(sccs_) for block, sccs_ in block_to_sccs_mut.items()
-        },
-        scc_successors={
-            scc_id: frozenset(targets)
-            for scc_id, targets in scc_successors_mut.items()
-        },
-        edges=tuple(edges),
-    )
+    return None
 
 
 def _dag_state_value_from_node(node) -> int | None:
@@ -3890,6 +3487,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     *,
     fact_view: Any | None = None,
     dag: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
 ) -> None:
     """Default-on fact-backed terminal-tail cascade egress lowering.
 
@@ -3914,7 +3512,16 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         )
         return
 
-    if fact_view is None:
+    planner_evidence = None
+    if fact_view is None or dag is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        if fact_view is None:
+            fact_view = evidence.fact_view
+        if dag is None:
+            dag = evidence.dag
+        planner_evidence = evidence.terminal_tail_planner
+
+    if fact_view is None and planner_evidence is None:
         logger.warning(
             "terminal_tail_cascade_egress: fact view unavailable; skipping"
         )
@@ -3928,8 +3535,14 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
             TerminalTailCascadeEgressPlanner,
         )
 
-        blocks = _load_planner_blocks_from_mba(mba)
-        sites = _load_planner_sites_from_fact_view(fact_view)
+        if planner_evidence is None:
+            blocks = _load_planner_blocks_from_mba(mba)
+            sites = _load_planner_sites_from_fact_view(fact_view)
+        else:
+            blocks = dict(planner_evidence.blocks)
+            sites = list(planner_evidence.sites)
+            if dag is None:
+                dag = planner_evidence.dag
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
         dag = _load_dag_semantics_from_dag(dag)
     except Exception:
@@ -4143,24 +3756,29 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     )
 
 
-def maybe_run_tail_state_cascade(mba: Any) -> None:
+def maybe_run_tail_state_cascade(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
     """Env-gated hook: ``D810_TERMINAL_TAIL_STATE_CASCADE_PAIR`` probe.
 
     Default-off. When set to exactly ``"5:6"`` and neither
     ``D810_TAIL_DISTINCT_BYTE`` nor ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE``
     is set, this:
 
-    1. Resolves the latest GLBOPT1 fact snapshot and the latest
-       ``post_bundle_stabilize`` block snapshot from the diag DB.
+    1. Uses explicit in-memory planner/fact evidence supplied by the caller.
     2. Builds planner inputs (TerminalTailBlock map + TerminalByteEmitSite
-       list) and runs ``TerminalTailCascadeEgressPlanner.build_plan()``.
+       list) without querying diagnostic SQLite and runs
+       ``TerminalTailCascadeEgressPlanner.build_plan()``.
     3. Selects the byte-5 row.
     4. Hands off to the pure ``execute_state_cascade`` orchestrator,
        which gates on the planner's ``SAFE_TARGET_POST_GUARD`` verdict
        and rewires byte5's advance edge through ``LiveMbaAdapter``.
 
-    Any failure (env not set, no diag DB, no fact snapshot, planner
-    returns no byte-5 row, verdict not safe, …) is logged and swallowed
+    Any failure (env not set, no fact view, planner returns no byte-5 row,
+    verdict not safe, …) is logged and swallowed
     so the manager pipeline never breaks.
     """
     raw = os.environ.get("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR")
@@ -4179,42 +3797,30 @@ def maybe_run_tail_state_cascade(mba: Any) -> None:
         )
         return
 
-    try:
-        from d810.core.observability import get_active_diag_conn as get_diag_db
-
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        diag_conn = get_diag_db(func_ea)
-    except Exception:
-        logger.exception(
-            "tail_state_cascade: cannot acquire diag DB; skipping"
-        )
-        return
-
-    if diag_conn is None:
-        logger.warning(
-            "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR=%r "
-            "set but diag DB unavailable; skipping",
-            raw,
-        )
-        return
-
-    func_ea_hex = f"0x{int(getattr(mba, 'entry_ea', 0) or 0):016x}"
-    fact_snap, target_snap = _resolve_planner_snapshots(diag_conn, func_ea_hex)
-    if fact_snap is None or target_snap is None:
-        logger.warning(
-            "tail_state_cascade: missing planner snapshots "
-            "fact_snap=%s target_snap=%s; skipping",
-            fact_snap, target_snap,
-        )
-        return
+    planner_evidence = None
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
+        planner_evidence = evidence.terminal_tail_planner
 
     try:
         from d810.cfg.terminal_tail_cascade_egress_planner import (
             TerminalTailCascadeEgressPlanner,
         )
 
-        blocks = _load_planner_blocks(diag_conn, target_snap)
-        sites = _load_planner_sites(diag_conn, fact_snap, func_ea_hex)
+        if planner_evidence is None:
+            if fact_view is None:
+                logger.warning(
+                    "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR=%r "
+                    "set but in-memory fact view unavailable; skipping",
+                    raw,
+                )
+                return
+            blocks = _load_planner_blocks_from_mba(mba)
+            sites = _load_planner_sites_from_fact_view(fact_view)
+        else:
+            blocks = dict(planner_evidence.blocks)
+            sites = list(planner_evidence.sites)
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
     except Exception:
         logger.exception(
@@ -4249,32 +3855,10 @@ def maybe_run_tail_state_cascade(mba: Any) -> None:
 
     adapter = LiveMbaAdapter(mba)
 
-    # Bridge: planner serials are in snap17 space (post_bundle_stabilize).
-    # The live MBA at hook-fire time uses a different serial space, so we
-    # translate via start_ea_i64 -> find_block_by_ea before handing off
-    # to the orchestrator. Without this, redirect_advance_edge would
-    # call mba.get_mblock(<snap17_serial>) and trigger INTERR 52719.
-    snap17_row = diag_conn.execute(
-        "SELECT MAX(id) FROM snapshots WHERE label = 'post_bundle_stabilize'"
-    ).fetchone()
-    snap17_id = (
-        int(snap17_row[0]) if snap17_row and snap17_row[0] is not None else None
-    )
-    if snap17_id is None:
-        logger.info(
-            "tail_state_cascade: no_snap17_snapshot_in_db; emitting no-op report"
-        )
-        from d810.cfg.transform.byte_emit_tail_isolation import StateCascadeReport
-        report = StateCascadeReport(
-            applied=False, pair="5:6", reason="no_snap17_snapshot_in_db",
-        )
-        logger.info("tail_state_cascade: %s", report)
-        return
-
     mapped_row, bridge_reason = _bridge_plan_row_to_live_mba(
         byte5_row,
-        diag_conn=diag_conn,
-        snap17_id=snap17_id,
+        diag_conn=None,
+        snap17_id=None,
         adapter=adapter,
         logger_=logger,
     )

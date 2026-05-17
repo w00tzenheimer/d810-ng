@@ -42,17 +42,17 @@ from pathlib import Path
 
 from d810.core.typing import Any
 
-from d810.recon.flow.alternate_correlation import (
+from d810.diagnostics.alternate_correlation import (
     AlternateCorrelation,
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )
-from d810.recon.flow.alternate_selection import (
+from d810.diagnostics.alternate_selection import (
     AlternateSelection,
     persist_alternate_selections,
     select_alternate_edges,
 )
-from d810.recon.flow.bst_resolution import (
+from d810.diagnostics.bst_resolution import (
     BstResolution,
     load_latest_bst_intervals_from_db,
     parse_latest_bst_intervals_from_log,
@@ -64,7 +64,7 @@ from d810.diagnostics.state_dispatcher_resolution import (
     persist_state_dispatch_resolutions,
     resolve_state_transition_facts_with_dispatcher,
 )
-from d810.recon.flow.edge_diagnostics import (
+from d810.diagnostics.edge_diagnostics import (
     EdgeDiagnostic,
     classify_dag_edges,
     persist_edge_diagnostics,

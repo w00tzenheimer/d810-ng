@@ -897,9 +897,8 @@ def _classify_yes_handlers_with_convergence(
 # uee-b7ze Step 2.1: refined opaque-call anchor classification + per-anchor
 # diagnostic context.  Helpers below do NOT change emission behavior; they
 # augment HCC_CALL_BARRIER_CANDIDATE / REGION_LOWERING_SUMMARY logs with
-# structured shape sub-labels and (when the diag DB is reachable at plan
-# time) per-anchor liveness across snapshots so the user can pinpoint the
-# earliest kill point for an anchor block.
+# structured shape sub-labels and optional diagnostics-layer snapshot context
+# so the user can pinpoint the earliest kill point for an anchor block.
 # ---------------------------------------------------------------------------
 
 # Refined opaque-call anchor shape labels. Priority order (most specific
@@ -913,17 +912,6 @@ _OPAQUE_CALL_SHAPE_KEYS: tuple[str, ...] = (
     "OTHER",
 )
 
-# Snapshot labels we walk to compute the earliest kill point. Order is
-# pipeline-temporal: anchors disappearing at an earlier label than the
-# final IDA cleanup are dying inside our pipeline.
-_KILL_POINT_SNAPSHOT_ORDER: tuple[str, ...] = (
-    "maturity_MMAT_GLBOPT1_pre_d810",
-    "handler_chain_composer_post_apply",
-    "post_pipeline",
-    "maturity_MMAT_GLBOPT1_post_d810",
-)
-
-
 def _format_serial_list(items) -> str:
     """Render an iterable of ints as ``[blk[a], blk[b], ...]`` (sorted)."""
     try:
@@ -933,6 +921,39 @@ def _format_serial_list(items) -> str:
     if not sorted_items:
         return "[]"
     return "[" + ", ".join(f"blk[{s}]" for s in sorted_items) + "]"
+
+
+def _collect_anchor_snapshot_context_from_diagnostics(
+    *,
+    anchor_serial: int,
+) -> dict[str, object]:
+    """Collect DB-backed HCC anchor diagnostics without storage imports."""
+    fallback: dict[str, object] = {
+        "preds_pre_pipeline": "UNKNOWN",
+        "preds_post_hcc": "UNKNOWN",
+        "preds_post_pipeline": "UNKNOWN",
+        "succs_pre_pipeline": "UNKNOWN",
+        "succs_post_hcc": "UNKNOWN",
+        "succs_post_pipeline": "UNKNOWN",
+        "reachable_from_entry_post_pipeline": "UNKNOWN",
+        "survives_glbopt1_post_d810": "UNKNOWN",
+        "earliest_kill_point": "unknown",
+    }
+    try:
+        from importlib import import_module
+
+        module = import_module(
+            "d810.diagnostics.hcc_anchor_snapshot_context",
+        )
+        collector = getattr(module, "collect_anchor_snapshot_context")
+        context = collector(anchor_serial=anchor_serial)
+    except Exception:  # pragma: no cover - diagnostic best-effort
+        return fallback
+    if not isinstance(context, dict):
+        return fallback
+    merged = dict(fallback)
+    merged.update(context)
+    return merged
 
 
 def _refine_opaque_call_shape(
@@ -1076,149 +1097,6 @@ def _refine_opaque_call_shape(
     return "OTHER"
 
 
-def _open_diag_db_readonly() -> object | None:
-    """Return a sqlite3 Connection to a diag DB usable for cross-snapshot
-    queries, or ``None``.
-
-    The diag subsystem is per-decompilation: the active session's DB
-    only contains snapshots taken so far in this run, so ``post_pipeline``
-    / ``maturity_MMAT_GLBOPT1_post_d810`` from this run's GLBOPT1 plan
-    pass aren't there yet.  For "earliest kill point" diagnostics we
-    look at the most recent diag DB on disk that already has the full
-    snapshot timeline for the same function.
-
-    Falls back to ``None`` when no usable DB is found.
-    """
-    try:
-        from d810.core.settings import get_settings
-    except Exception:
-        return None
-    try:
-        if not get_settings().diag_snapshots:
-            return None
-    except Exception:
-        return None
-    # Walk DB files newest-first; pick the first one that has the
-    # late post-pipeline / GLBOPT1-post-d810 snapshots we need.
-    try:
-        import os as _os
-        import sqlite3 as _sqlite3
-        from pathlib import Path as _Path
-        log_dir = _Path(_os.path.expanduser("~/.idapro/logs/d810_logs"))
-        if not log_dir.exists():
-            return None
-        candidates = sorted(
-            log_dir.glob("*.diag.sqlite3"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        for path in candidates:
-            try:
-                conn = _sqlite3.connect(str(path))
-            except Exception:
-                continue
-            try:
-                has_post_pipeline = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("post_pipeline",),
-                ).fetchone()
-                has_glbopt1_post = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("maturity_MMAT_GLBOPT1_post_d810",),
-                ).fetchone()
-            except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                continue
-            if (
-                has_post_pipeline is not None
-                and has_glbopt1_post is not None
-            ):
-                return conn
-            try:
-                conn.close()
-            except Exception:
-                pass
-    except Exception:
-        return None
-    return None
-
-
-def _query_block_state_in_snapshot(
-    conn,
-    snapshot_label: str,
-    block_serial: int,
-) -> dict[str, object] | None:
-    """Return ``{'preds': [...], 'succs': [...], 'reachable_from_0': YES|NO}``
-    for ``block_serial`` in the latest snapshot with ``snapshot_label``,
-    or ``None`` when the snapshot is missing or the block is missing in
-    that snapshot.
-
-    Snapshot label resolution: prefer the highest snapshot id with the
-    given label (most recent run).  Reachability uses BFS over
-    ``blocks.succs`` JSON.
-    """
-    try:
-        row = conn.execute(
-            "SELECT id FROM snapshots WHERE label = ? ORDER BY id DESC LIMIT 1",
-            (snapshot_label,),
-        ).fetchone()
-    except Exception:
-        return None
-    if row is None:
-        return None
-    snapshot_id = int(row[0])
-    try:
-        blk_row = conn.execute(
-            "SELECT preds, succs FROM blocks WHERE snapshot_id = ? AND serial = ?",
-            (snapshot_id, block_serial),
-        ).fetchone()
-    except Exception:
-        return None
-    if blk_row is None:
-        return {"preds": None, "succs": None, "reachable_from_0": "NO"}
-    import json as _json
-    try:
-        preds = _json.loads(blk_row[0]) if blk_row[0] else []
-        succs = _json.loads(blk_row[1]) if blk_row[1] else []
-    except Exception:
-        preds, succs = [], []
-    # BFS from blk[0] over succs to determine reachability.
-    reachable = "UNKNOWN"
-    try:
-        all_rows = conn.execute(
-            "SELECT serial, succs FROM blocks WHERE snapshot_id = ?",
-            (snapshot_id,),
-        ).fetchall()
-        succ_map: dict[int, list[int]] = {}
-        for serial, succs_blob in all_rows:
-            try:
-                succ_map[int(serial)] = (
-                    _json.loads(succs_blob) if succs_blob else []
-                )
-            except Exception:
-                succ_map[int(serial)] = []
-        visited: set[int] = set()
-        stack = [0]
-        while stack:
-            cur = stack.pop()
-            if cur in visited:
-                continue
-            visited.add(cur)
-            for nxt in succ_map.get(cur, ()):
-                stack.append(int(nxt))
-        reachable = "YES" if int(block_serial) in visited else "NO"
-    except Exception:
-        reachable = "UNKNOWN"
-    return {
-        "preds": [int(p) for p in preds],
-        "succs": [int(s) for s in succs],
-        "reachable_from_0": reachable,
-    }
-
-
 def _collect_anchor_diag_context(
     *,
     anchor_serial: int,
@@ -1276,85 +1154,12 @@ def _collect_anchor_diag_context(
         except Exception:
             pass
 
-    # Snapshot probes.
-    conn = _open_diag_db_readonly()
-    snapshot_results: dict[str, dict[str, object] | None] = {}
-    if conn is not None:
-        for label in _KILL_POINT_SNAPSHOT_ORDER:
-            try:
-                snapshot_results[label] = _query_block_state_in_snapshot(
-                    conn, label, anchor_serial,
-                )
-            except Exception:
-                snapshot_results[label] = None
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    def _fmt(label: str, key: str) -> str:
-        snap = snapshot_results.get(label)
-        if snap is None or snap.get(key) is None:
-            return "UNKNOWN"
-        return _format_serial_list(snap.get(key) or ())
-
-    pre_pipeline_lbl = "maturity_MMAT_GLBOPT1_pre_d810"
-    post_hcc_lbl = "handler_chain_composer_post_apply"
-    post_pipeline_lbl = "post_pipeline"
-    post_glbopt1_lbl = "maturity_MMAT_GLBOPT1_post_d810"
-
-    reach_post_pipeline = "UNKNOWN"
-    snap_post = snapshot_results.get(post_pipeline_lbl)
-    if snap_post is not None:
-        v = snap_post.get("reachable_from_0")
-        if isinstance(v, str):
-            reach_post_pipeline = v
-
-    survives_glbopt1 = "UNKNOWN"
-    snap_glbopt1 = snapshot_results.get(post_glbopt1_lbl)
-    if snap_glbopt1 is None:
-        survives_glbopt1 = "UNKNOWN"
-    else:
-        # Block missing at snapshot => preds=None, reachable_from_0=NO.
-        if snap_glbopt1.get("preds") is None:
-            survives_glbopt1 = "NO"
-        else:
-            survives_glbopt1 = "YES"
-
-    # earliest_kill_point: walk in pipeline-temporal order, first label
-    # where the block has been removed wins. ``preds is None`` is the
-    # canonical "missing in this snapshot" signal from
-    # ``_query_block_state_in_snapshot``.
-    earliest_kill_point = "NEVER"
-    if conn is None and not snapshot_results:
-        earliest_kill_point = "unknown"
-    else:
-        # Was the block alive in the FIRST snapshot at all?  If not,
-        # we cannot really declare a kill point.
-        first_snap = snapshot_results.get(_KILL_POINT_SNAPSHOT_ORDER[0])
-        if first_snap is None or first_snap.get("preds") is None:
-            earliest_kill_point = "unknown"
-        else:
-            for label in _KILL_POINT_SNAPSHOT_ORDER:
-                snap = snapshot_results.get(label)
-                if snap is None:
-                    # snapshot itself missing -> can't conclude
-                    continue
-                if snap.get("preds") is None:
-                    earliest_kill_point = label
-                    break
-
+    snapshot_context = _collect_anchor_snapshot_context_from_diagnostics(
+        anchor_serial=anchor_serial,
+    )
     return {
         "owning_states_via_local_facts": owning_descriptions,
-        "preds_pre_pipeline": _fmt(pre_pipeline_lbl, "preds"),
-        "preds_post_hcc": _fmt(post_hcc_lbl, "preds"),
-        "preds_post_pipeline": _fmt(post_pipeline_lbl, "preds"),
-        "succs_pre_pipeline": _fmt(pre_pipeline_lbl, "succs"),
-        "succs_post_hcc": _fmt(post_hcc_lbl, "succs"),
-        "succs_post_pipeline": _fmt(post_pipeline_lbl, "succs"),
-        "reachable_from_entry_post_pipeline": reach_post_pipeline,
-        "survives_glbopt1_post_d810": survives_glbopt1,
-        "earliest_kill_point": earliest_kill_point,
+        **snapshot_context,
     }
 
 
