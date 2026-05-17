@@ -8,10 +8,11 @@ Subcommands wrap the recurring loop of:
     4. inspect a semantic state node via the diag DB
     5. passthrough to `python -m d810.diagnostics` with PYTHONPATH pre-wired
 
-Commands that need live dump/log/DB artifacts operate against a worktree under
-`<repo>/.worktrees/<name>/`. When this script is run from the root checkout,
-pass `-w/--worktree <name>` explicitly. When it is run from inside
-`.worktrees/<name>/tools/d810cli.py`, that worktree name is inferred.
+Commands that need live dump/log/DB artifacts default to the checkout this
+script belongs to. From the root checkout, that is the repo root itself. From
+`.worktrees/<name>/tools/d810cli.py`, that is the named worktree. Pass
+`-w/--worktree <name>` only when you want to override the checkout and target
+`<repo>/.worktrees/<name>/`.
 """
 
 from __future__ import annotations
@@ -77,17 +78,9 @@ def _die(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def _require_worktree(name: str | None) -> str:
-    if name:
-        return name
-    _die(
-        "worktree is required when running d810cli from the root checkout; "
-        "pass -w/--worktree <name> (short name under .worktrees/)"
-    )
-
-
 def worktree_dir(name: str | None) -> Path:
-    name = _require_worktree(name)
+    if name is None:
+        return REPO_ROOT
     root = REPO_ROOT / ".worktrees" / name
     if not root.is_dir():
         _die(f"worktree not found: {root}")
@@ -193,7 +186,7 @@ def cmd_paths(args: argparse.Namespace) -> int:
 
 
 def cmd_dump(args: argparse.Namespace) -> int:
-    wt = _require_worktree(args.worktree)
+    wt = args.worktree
     work_dir = worktree_dir(wt)
     tmp = worktree_tmp(wt)
     tmp.mkdir(parents=True, exist_ok=True)
@@ -221,9 +214,10 @@ def cmd_dump(args: argparse.Namespace) -> int:
         "dump",
         "-f", args.function,
         "-p", args.project,
-        "-w", wt,
         "-o", out_name,
     ]
+    if wt is not None:
+        argv.extend(["-w", wt])
     if not args.no_debug_logging:
         argv.append("-l")
         argv.append("--enable-debug-logging")
@@ -1012,13 +1006,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 def _add_worktree(p: argparse.ArgumentParser) -> None:
     if DEFAULT_WORKTREE:
         help_text = (
-            "worktree name under .worktrees/ "
+            "override checkout with a worktree name under .worktrees/ "
             f"(default: {DEFAULT_WORKTREE}, inferred from script path)"
         )
     else:
         help_text = (
-            "worktree name under .worktrees/ "
-            "(required from root checkout; pass short name, e.g. "
+            "override checkout with a worktree name under .worktrees/ "
+            "(default: current root checkout; pass short name, e.g. "
             "-w engine-wrapper-parity)"
         )
     p.add_argument(
@@ -1047,7 +1041,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Unflattening debug recipe:\n"
             "  When investigating one function, prefer the full diagnostics mode:\n\n"
-            "    d810cli dump -w WORKTREE -f FUNC_NAME -p JSON_PROJECT_FILE "
+            "    d810cli dump -f FUNC_NAME -p JSON_PROJECT_FILE "
             "--label case_name --full-diagnostics\n\n"
             "  This truncates the worktree d810.log, enables debug logging and diag\n"
             "  snapshots, dumps raw and post-D810 microcode around LOCOPT/CALLS/"

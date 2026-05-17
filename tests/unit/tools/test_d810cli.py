@@ -87,28 +87,25 @@ def test_dump_help_recommends_full_diagnostics_recipe() -> None:
 
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert "--full-diagnostics" in result.stdout
-    assert "d810cli dump -w WORKTREE" in result.stdout
-    assert "required from root" in result.stdout
-    assert "checkout; pass short name" in result.stdout
+    assert "d810cli dump -f FUNC_NAME" in result.stdout
+    assert "default: current root checkout" in result.stdout
+    assert "short name" in result.stdout
     assert "Unflattening debug recipe" in result.stdout
     assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout
     assert "--dump-bst-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
 
 
-def test_root_checkout_has_no_implicit_worktree_default(
+def test_root_checkout_defaults_to_repo_root_without_worktree(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(d810cli, "DEFAULT_WORKTREE", None)
     parser = d810cli.build_parser()
     args = parser.parse_args(["paths"])
 
     assert args.worktree is None
-    with pytest.raises(SystemExit):
-        d810cli.worktree_dir(args.worktree)
-
-    captured = capsys.readouterr()
-    assert "pass -w/--worktree <name>" in captured.err
+    assert d810cli.worktree_dir(args.worktree) == tmp_path
 
 
 def test_users_can_pass_worktree_by_short_or_long_option(
@@ -125,13 +122,18 @@ def test_users_can_pass_worktree_by_short_or_long_option(
 
 
 def test_worktree_checkout_can_infer_current_worktree(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(d810cli, "DEFAULT_WORKTREE", "current-feature")
+    wt = tmp_path / ".worktrees" / "current-feature"
+    wt.mkdir(parents=True)
     parser = d810cli.build_parser()
     args = parser.parse_args(["paths"])
 
     assert args.worktree == "current-feature"
+    assert d810cli.worktree_dir(args.worktree) == wt
 
 
 def test_dump_full_diagnostics_expands_recon_diag_flags(
@@ -179,6 +181,7 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert cwd == str(tmp_path)
     assert env["D810_CAPTURE_POST_MATURITY"] == "8"
     assert argv[:2] == [str(tmp_path / "run_system_tests_docker.sh"), "dump"]
+    assert argv[argv.index("-w") + 1] == "wt"
     assert "-l" in argv
     assert "--enable-debug-logging" in argv
     assert "--enable-diag-snapshot" in argv
@@ -190,6 +193,54 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert "--dump-terminal-return-valranges" in argv
     assert "--dump-bst-maturity" in argv
     assert "CALLS,GLBOPT1,GLBOPT2" in argv
+
+
+def test_dump_without_worktree_uses_root_checkout_and_omits_runner_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    (tmp_path / "src").mkdir()
+    calls: list[tuple[list[str], dict[str, str], str]] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> int:
+        assert env is not None
+        assert cwd is not None
+        calls.append((argv, env, cwd))
+        db = tmp_path / ".tmp" / "logs" / "d810_logs" / "fresh.diag.sqlite3"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"sqlite data")
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_dump(
+        argparse.Namespace(
+            worktree=None,
+            function="test_function_ollvm_fla_bcf_sub",
+            project="default_unflattening_ollvm.json",
+            prefix="dump",
+            label="ollvm",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            full_diagnostics=True,
+            extra=None,
+        )
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    argv, env, cwd = calls[0]
+    assert cwd == str(tmp_path)
+    assert env["D810_REPO_ROOT"] == str(tmp_path)
+    assert "-w" not in argv
+    assert (tmp_path / ".tmp" / "logs" / "d810_logs" / "d810.log").is_file()
 
 
 def _write_minimal_capture_dump(path: Path) -> None:
