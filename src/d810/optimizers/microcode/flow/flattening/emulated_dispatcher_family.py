@@ -16,6 +16,7 @@ from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
     ReorderBlocks,
@@ -1446,6 +1447,33 @@ def _edge_has_trusted_nonsemantic_branch_proof(
     return matched_nonsemantic and not matched_semantic
 
 
+def _trusted_nonsemantic_branch_proof_for_edge(
+    edge: object,
+    *,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> BranchOwnershipProof | None:
+    """Return exact nonsemantic proof for ``edge`` unless semantic proof vetoes."""
+
+    matched_nonsemantic: BranchOwnershipProof | None = None
+    matched_semantic = False
+    for proof in _iter_branch_ownership_proofs_for_edge(
+        edge,
+        branch_ownership_proofs=branch_ownership_proofs,
+    ):
+        if (
+            not _branch_ownership_proof_has_rewrite_identity(proof)
+            or not _branch_ownership_proof_matches_edge(proof, edge)
+        ):
+            continue
+        if proof.authorizes_semantic_branch_bridge:
+            matched_semantic = True
+        if proof.authorizes_nonsemantic_branch_rewrite:
+            matched_nonsemantic = proof
+    if matched_semantic:
+        return None
+    return matched_nonsemantic
+
+
 def _iter_branch_ownership_proofs_for_edge(
     edge: object,
     *,
@@ -1559,6 +1587,8 @@ def _proof_field_matches(proof_value: object | None, edge_value: object | None) 
 def _candidate_has_owned_or_split_lowering(
     candidate: object,
     flow_graph: FlowGraph,
+    *,
+    split_via_pred: int | None = None,
 ) -> bool:
     """Return whether proof-gated retargeting has a safe CFG edit shape."""
 
@@ -1595,12 +1625,124 @@ def _candidate_has_owned_or_split_lowering(
 
     horizon_block = flow_graph.get_block(horizon)
     if horizon_block is None or int(getattr(horizon_block, "npred", 0)) > 1:
-        return False
+        if split_via_pred is None:
+            return False
+        try:
+            split_via_pred = int(split_via_pred)
+        except (TypeError, ValueError):
+            return False
+        if horizon_block is None:
+            return False
+        if split_via_pred not in tuple(
+            int(pred) for pred in getattr(horizon_block, "preds", ()) or ()
+        ):
+            return False
+        pred_block = flow_graph.get_block(split_via_pred)
+        if pred_block is None:
+            return False
+        return horizon in tuple(
+            int(succ) for succ in getattr(pred_block, "succs", ()) or ()
+        )
     if mode == "direct":
         return int(getattr(horizon_block, "nsucc", 0)) == 1
     if mode == "conditional_arm":
         return int(getattr(horizon_block, "nsucc", 0)) == 2
     return False
+
+
+def _terminal_payload_split_via_pred_for_candidate(
+    *,
+    candidate: object,
+    selector_edges: tuple[object, ...],
+    flow_graph: FlowGraph,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...] = (),
+) -> int | None:
+    """Return the selector predecessor that can be split for shared payloads."""
+
+    edge = getattr(candidate, "edge", None)
+    if edge is None:
+        return None
+    source_state = _edge_source_state(edge)
+    if source_state is None:
+        return None
+    try:
+        horizon = int(getattr(candidate, "horizon_block"))
+    except (TypeError, ValueError):
+        return None
+    source_block = flow_graph.get_block(horizon)
+    if source_block is None or int(getattr(source_block, "npred", 0)) <= 1:
+        return None
+    for selector_edge in selector_edges:
+        if _edge_target_state(selector_edge) != source_state:
+            continue
+        proof = _trusted_nonsemantic_branch_proof_for_edge(
+            selector_edge,
+            branch_ownership_proofs=branch_ownership_proofs,
+        )
+        if proof is None:
+            continue
+        via_pred = getattr(proof, "source_block", None)
+        if via_pred is None:
+            continue
+        try:
+            via_pred = int(via_pred)
+        except (TypeError, ValueError):
+            continue
+        pred_block = flow_graph.get_block(via_pred)
+        if pred_block is None:
+            continue
+        if horizon not in tuple(
+            int(succ) for succ in getattr(pred_block, "succs", ()) or ()
+        ):
+            continue
+        if via_pred not in tuple(
+            int(pred) for pred in getattr(source_block, "preds", ()) or ()
+        ):
+            continue
+        return via_pred
+    return None
+
+
+def _terminal_payload_edge_split_replacement(
+    *,
+    candidate: object,
+    modification: object,
+    dag: object,
+    flow_graph: FlowGraph,
+    branch_ownership_proofs: tuple[BranchOwnershipProof, ...],
+) -> tuple[EdgeRedirectViaPredSplit, ...] | None:
+    """Replace a shared payload direct retarget with a pred-scoped clone."""
+
+    if not isinstance(modification, RedirectGoto):
+        return None
+    edge = getattr(candidate, "edge", None)
+    if edge is None:
+        return None
+    source_state = _edge_source_state(edge)
+    target_state = _edge_target_state(edge)
+    if source_state is None or target_state is None:
+        return None
+    selector_edges = tuple(
+        selector_edge
+        for selector_edge in getattr(dag, "edges", ()) or ()
+        if _edge_source_state(selector_edge) == target_state
+    )
+    via_pred = _terminal_payload_split_via_pred_for_candidate(
+        candidate=candidate,
+        selector_edges=selector_edges,
+        flow_graph=flow_graph,
+        branch_ownership_proofs=branch_ownership_proofs,
+    )
+    if via_pred is None:
+        return None
+    return (
+        EdgeRedirectViaPredSplit(
+            src_block=int(modification.from_serial),
+            old_target=int(modification.old_target),
+            new_target=int(modification.new_target),
+            via_pred=int(via_pred),
+        ),
+    )
 
 
 def _retarget_ollvm_terminal_payload_backedges(
@@ -1675,18 +1817,30 @@ def _retarget_ollvm_terminal_payload_backedges(
         ):
             rewritten.append(candidate)
             continue
-        if not _candidate_has_owned_or_split_lowering(candidate, flow_graph):
+
+        selector_edges = outgoing_by_state.get(target_state, ())
+        has_selector_payload_proof = any(
+            _edge_target_state(selector_edge) == source_state
+            and _trusted_nonsemantic_branch_proof_for_edge(
+                selector_edge,
+                branch_ownership_proofs=branch_ownership_proofs,
+            ) is not None
+            for selector_edge in selector_edges
+        )
+        if not has_selector_payload_proof:
             rewritten.append(candidate)
             continue
 
-        selector_edges = outgoing_by_state.get(target_state, ())
-        if not any(
-            _edge_target_state(selector_edge) == source_state
-            and _edge_has_trusted_nonsemantic_branch_proof(
-                selector_edge,
-                branch_ownership_proofs=branch_ownership_proofs,
-            )
-            for selector_edge in selector_edges
+        split_via_pred = _terminal_payload_split_via_pred_for_candidate(
+            candidate=candidate,
+            selector_edges=tuple(selector_edges),
+            flow_graph=flow_graph,
+            branch_ownership_proofs=branch_ownership_proofs,
+        )
+        if not _candidate_has_owned_or_split_lowering(
+            candidate,
+            flow_graph,
+            split_via_pred=split_via_pred,
         ):
             rewritten.append(candidate)
             continue
@@ -3891,6 +4045,36 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 reason_prefix="conditional",
             )
 
+        def _direct_redirect_veto(
+            modification: GraphModification,
+            candidate: object,
+        ) -> str | tuple[GraphModification, ...] | None:
+            replacement = _terminal_payload_edge_split_replacement(
+                candidate=candidate,
+                modification=modification,
+                dag=dag,
+                flow_graph=flow_graph,
+                branch_ownership_proofs=branch_ownership_proofs,
+            )
+            if replacement is not None:
+                self._logger.info(
+                    "Phase reconstruction replaced shared terminal payload "
+                    "redirect with pred-split clone: src=blk[%d] old=blk[%d] "
+                    "new=blk[%d] via_pred=blk[%d]",
+                    int(replacement[0].src_block),
+                    int(replacement[0].old_target),
+                    int(replacement[0].new_target),
+                    int(replacement[0].via_pred),
+                )
+                return replacement
+            if use_def_policy == "off":
+                return None
+            return _veto_use_def_severing_redirect(
+                modification,
+                candidate,
+                reason_prefix="direct",
+            )
+
         try:
             run = execute_primary_reconstruction_modifications(
                 raw_candidates=list(raw_candidates),
@@ -3901,14 +4085,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 owned_blocks=owned_blocks,
                 owned_edges=owned_edges,
                 direct_redirect_veto=(
-                    (
-                        lambda modification, candidate: _veto_use_def_severing_redirect(
-                            modification,
-                            candidate,
-                            reason_prefix="direct",
-                        )
+                    _direct_redirect_veto
+                    if (
+                        use_def_policy != "off"
+                        or self._profile.name == "ollvm_state_map"
                     )
-                    if use_def_policy != "off"
                     else None
                 ),
                 conditional_redirect_veto=(

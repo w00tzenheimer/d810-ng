@@ -432,11 +432,29 @@ def _append_terminal_selector_backedge_residue_proofs(
             "payload_incoming_count": len(target_incoming),
             "payload_outgoing_count": len(target_outgoing),
         })
-        if incoming_sources != {source_state}:
+        external_incoming_sources = {
+            source for source in incoming_sources
+            if source is not None and source != source_state
+        }
+        external_residue_proofs = tuple(
+            existing for existing in proofs
+            if (
+                existing.source_state in external_incoming_sources
+                and existing.target_state == target_state
+                and existing.authorizes_nonsemantic_branch_rewrite
+            )
+        )
+        external_residue_sources = {
+            proof.source_state for proof in external_residue_proofs
+        }
+        if None in incoming_sources or external_residue_sources != external_incoming_sources:
             evidence["payload_incoming_source_states"] = tuple(
                 _hex_state(source) for source in sorted(
                     source for source in incoming_sources if source is not None
                 )
+            )
+            evidence["external_incoming_residue_proof_ids"] = tuple(
+                proof.proof_id for proof in external_residue_proofs
             )
             added.append(BranchOwnershipProof(
                 proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
@@ -455,6 +473,19 @@ def _append_terminal_selector_backedge_residue_proofs(
                 payload=dict(proof.payload),
             ))
             continue
+
+        if external_residue_proofs:
+            evidence["payload_private_to_selector"] = False
+            evidence["requires_cfg_split"] = True
+            evidence["external_incoming_residue_proof_ids"] = tuple(
+                proof.proof_id for proof in external_residue_proofs
+            )
+            evidence["payload_incoming_source_states"] = tuple(
+                _hex_state(source) for source in sorted(external_incoming_sources)
+            )
+        else:
+            evidence["payload_private_to_selector"] = True
+            evidence["requires_cfg_split"] = False
 
         added.append(BranchOwnershipProof(
             proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
