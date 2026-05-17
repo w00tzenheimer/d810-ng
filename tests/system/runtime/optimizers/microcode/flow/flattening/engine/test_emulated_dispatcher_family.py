@@ -15,6 +15,7 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     InsertBlock,
     PhaseCycleLowering,
+    PromoteOperandToScalar,
     ReorderBlocks,
     RedirectGoto,
     ZeroStateWrite,
@@ -795,17 +796,26 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
             98: BlockSnapshot(
                 serial=98,
                 block_type=ida_hexrays.BLT_2WAY,
-                succs=(204, 136),
+                succs=(204, 100),
                 preds=(96,),
                 flags=0,
                 start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            100: BlockSnapshot(
+                serial=100,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(136,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401100,
                 insn_snapshots=(),
             ),
             136: BlockSnapshot(
                 serial=136,
                 block_type=ida_hexrays.BLT_1WAY,
                 succs=(96,),
-                preds=(98, 146),
+                preds=(100, 148),
                 flags=0,
                 start_ea=0x401136,
                 insn_snapshots=(store, state_write),
@@ -813,10 +823,19 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
             146: BlockSnapshot(
                 serial=146,
                 block_type=ida_hexrays.BLT_2WAY,
-                succs=(147, 136),
+                succs=(147, 148),
                 preds=(145,),
                 flags=0,
                 start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            148: BlockSnapshot(
+                serial=148,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(136,),
+                preds=(146,),
+                flags=0,
+                start_ea=0x401148,
                 insn_snapshots=(),
             ),
             204: BlockSnapshot(
@@ -883,6 +902,7 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
     candidate = candidates[0]
     assert candidate.selector_source_block == 98
     assert candidate.selector_branch_arm == 1
+    assert candidate.selector_old_target == 100
     assert candidate.selector_state == selector_state
     assert candidate.payload_state == payload_state
     assert candidate.payload_block == 136
@@ -891,10 +911,12 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
     assert candidate.side_effect_corridor_blocks == (136,)
     assert candidate.side_effect_instructions == (store,)
     assert candidate.side_effect_instructions[0].ea == 0x401136
+    assert candidate.external_incoming_edges[0].old_target == 148
     assert candidate.materialization_veto_proof_ids == ("external-veto-proof",)
     assert candidate.side_effect_guard_reasons == (
         "discarded_arm_contains_payload_store",
     )
+    assert candidate.owned_redirect_edges == ((98, 100), (146, 148))
 
     modifications = (
         emulated_family_module
@@ -911,30 +933,113 @@ def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> N
     assert compiled_modifications == modifications
     assert modifications == (
         InsertBlock(
+            pred_serial=98,
+            succ_serial=204,
+            instructions=(store,),
+            old_target_serial=100,
+        ),
+        InsertBlock(
             pred_serial=146,
             succ_serial=204,
             instructions=(store,),
-            old_target_serial=136,
-        ),
-        EdgeRedirectViaPredSplit(
-            src_block=136,
-            old_target=96,
-            new_target=204,
-            via_pred=98,
+            old_target_serial=148,
         ),
     )
     patch_plan = compile_patch_plan(modifications, flow_graph)
     rewritten_continuation = patch_plan.relocation_map.rewrite_serial(204)
     assert isinstance(patch_plan.steps[0], PatchInsertBlock)
-    assert patch_plan.steps[0].pred_serial == 146
+    assert patch_plan.steps[0].pred_serial == 98
     assert patch_plan.steps[0].succ_serial == rewritten_continuation
-    assert patch_plan.steps[0].old_target_serial == 136
+    assert patch_plan.steps[0].old_target_serial == 100
     assert patch_plan.steps[0].instructions == (store,)
-    assert isinstance(patch_plan.steps[1], PatchEdgeSplitTrampoline)
-    assert patch_plan.steps[1].source_serial == 136
-    assert patch_plan.steps[1].via_pred == 98
-    assert patch_plan.steps[1].old_target == 96
-    assert patch_plan.steps[1].new_target == rewritten_continuation
+    assert isinstance(patch_plan.steps[1], PatchInsertBlock)
+    assert patch_plan.steps[1].pred_serial == 146
+    assert patch_plan.steps[1].succ_serial == rewritten_continuation
+    assert patch_plan.steps[1].old_target_serial == 148
+    assert patch_plan.steps[1].instructions == (store,)
+
+
+def test_ollvm_terminal_payload_materialization_rejects_fallthrough_selector_arm() -> None:
+    store = InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=())
+    candidate = emulated_family_module.TerminalSelectorPayloadMaterializationCandidate(
+        selector_source_block=98,
+        selector_branch_arm=0,
+        selector_old_target=204,
+        selector_state=0x049FD3A3,
+        payload_state=0x2AC056AD,
+        payload_block=136,
+        payload_backedge_target=96,
+        semantic_continuation=204,
+        side_effect_corridor_blocks=(136,),
+        side_effect_instructions=(store,),
+        selector_blocked_proof_id="selector-gap-proof",
+        selector_residue_proof_id="selector-residue-proof",
+        external_incoming_edges=(
+            emulated_family_module.TerminalSelectorPayloadIncomingEdge(
+                source_block=146,
+                branch_arm=1,
+                old_target=148,
+                source_state=0x3CFC5AAB,
+                target_state=0x2AC056AD,
+                target_entry=136,
+                veto_proof_id="external-veto-proof",
+                side_effect_guard_reason="discarded_arm_contains_payload_store",
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(204, 136),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(store,),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 136),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=98,
+        func_ea=0x401000,
+    )
+
+    modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+
+    assert modifications == ()
+    assert blocker == "terminal_payload_materialization_selector_arm_not_supported"
 
 
 def test_ollvm_terminal_payload_materialization_rejects_missing_payload_snapshot() -> None:
@@ -1068,6 +1173,7 @@ def test_ollvm_terminal_payload_materialization_compile_failure_blocks(
         emulated_family_module.TerminalSelectorPayloadMaterializationCandidate(
             selector_source_block=98,
             selector_branch_arm=1,
+            selector_old_target=100,
             selector_state=0x049FD3A3,
             payload_state=0x2AC056AD,
             payload_block=136,
@@ -1083,6 +1189,7 @@ def test_ollvm_terminal_payload_materialization_compile_failure_blocks(
                 emulated_family_module.TerminalSelectorPayloadIncomingEdge(
                     source_block=146,
                     branch_arm=1,
+                    old_target=148,
                     source_state=0x3CFC5AAB,
                     target_state=0x2AC056AD,
                     target_entry=136,
@@ -4120,6 +4227,63 @@ def test_emulated_dispatcher_strategy_plans_validated_snapshot_modifications() -
     assert fragment.metadata["safeguard_min_required"] == 1
     assert fragment.modifications == [
         RedirectGoto(from_serial=0, old_target=1, new_target=1),
+    ]
+
+
+def test_emulated_dispatcher_strategy_plans_scalar_promotions() -> None:
+    strategy = EmulatedDispatcherStrategy()
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={
+                "emulated_dispatcher": EmulatedDispatcherMetadata(
+                    dispatcher_shape="conditional_chain",
+                    state_transport="state_dispatcher_map",
+                    lowering_mode="ollvm_semantic_carrier_hoist",
+                    provenance_hints=("equality_chain",),
+                    analysis_dispatchers=(7,),
+                    collector_dispatchers=(),
+                    planning_ready=True,
+                    planning_blocker=None,
+                    candidate_count=1,
+                    rejected_fathers=0,
+                    candidate_kinds=("PromoteOperandToScalar",),
+                    rejection_reasons=(),
+                    selected_lowering_mode="ollvm_semantic_carrier_hoist",
+                    selected_modification_count=1,
+                ),
+                EMULATED_DISPATCHER_MODIFICATIONS_KEY: (
+                    PromoteOperandToScalar(
+                        block_serial=0,
+                        host_ea=0x401000,
+                        host_opcode=ida_hexrays.m_stx,
+                        operand_side="l",
+                    ),
+                ),
+            },
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is not None
+    assert fragment.strategy_name == "emulated_dispatcher"
+    assert fragment.modifications == [
+        PromoteOperandToScalar(
+            block_serial=0,
+            host_ea=0x401000,
+            host_opcode=ida_hexrays.m_stx,
+            operand_side="l",
+        ),
     ]
 
 

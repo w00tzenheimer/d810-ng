@@ -907,7 +907,8 @@
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
       "config": {
-        "profile": "state_dispatcher_map"
+        "profile": "state_dispatcher_map",
+        "enable_terminal_payload_materialization": true
       }
     },
     {
