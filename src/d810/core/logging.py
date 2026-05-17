@@ -409,7 +409,6 @@ class LoggerConfigurator:
         dyn = {
             name
             for name, logger in mgr.loggerDict.items()
-            # ast-grep-ignore: no-concrete-isinstance
             if isinstance(logger, logging.Logger)
         }
         # 2) static ones from your dictConfig
