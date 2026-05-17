@@ -1,6 +1,7 @@
 """Tests for the maturity fact runtime."""
 from __future__ import annotations
 
+import d810.recon.facts.runtime as facts_runtime_module
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
 from d810.recon.facts import (
@@ -114,6 +115,33 @@ def test_capture_persists_collector_mappings() -> None:
     assert summary.mapping_count == 1
     # signature: (snapshot, func_ea, observations, mappings, conflicts)
     assert calls[0][3][0].source_fact_id == "induction:blk10"
+
+
+def test_capture_summary_log_uses_maturity_name(monkeypatch) -> None:
+    configure_settings(fact_lifecycle=True)
+    messages: list[str] = []
+
+    def _record_info(message, *args, **_kwargs) -> None:
+        messages.append(message % args)
+
+    monkeypatch.setattr(facts_runtime_module.logger, "info", _record_info)
+
+    runtime = FactLifecycleRuntime()
+    runtime.capture(
+        object(),
+        func_ea=0x401000,
+        maturity=_MATURITY_CALLS,
+        phase="pre_d810",
+    )
+
+    capture_lines = [
+        message
+        for message in messages
+        if message.startswith("FACT_LIFECYCLE_CAPTURE")
+    ]
+    assert capture_lines
+    assert "maturity=MMAT_CALLS" in capture_lines[0]
+    assert f"maturity={_MATURITY_CALLS}" not in capture_lines[0]
 
 
 def test_validated_view_accumulates_observations_and_filters_stale_mappings() -> None:

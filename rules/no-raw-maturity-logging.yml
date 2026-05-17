@@ -1,0 +1,70 @@
+# Flag logger messages that format maturity as a raw integer.
+#
+# BAD:  logger.info("... maturity=%d ...", maturity)
+# BAD:  logger.debug("... at maturity %d", mba.maturity)
+# BAD:  logger.debug("... maturity=%s", getattr(mba, "maturity", None))
+# BAD:  logger.debug("... maturity=%s", self.mba.maturity)
+# GOOD: logger.info("... maturity=%s ...", maturity_to_string(maturity))
+# GOOD: logger.debug("... at maturity %s", _maturity_text(mba.maturity))
+#
+# Rationale:
+# - d810 log records already carry the friendly maturity in MDC.
+# - Message fields should use the same MMAT_* names for grepability.
+# - Raw values such as 4 or 6 are easy to misread across IDA versions.
+
+id: no-raw-maturity-logging
+language: python
+severity: warning
+
+files:
+  - "src/d810/**/*.py"
+
+ignores:
+  - "src/d810/_vendor/**"
+
+message: |
+  Log messages must not format maturity as a raw integer.
+
+  Use a friendly maturity formatter such as `maturity_to_string(...)`,
+  `_maturity_text(...)`, or an existing `maturity_name` / `maturity_text`
+  variable, and format it with `%s`.
+
+rule:
+  any:
+    - all:
+        - pattern: $LOGGER.$METHOD($$$)
+        # Numeric maturity placeholders produce raw ids such as 4 or 6.
+        - regex: "\\bmaturity\\s*(?:[=:]|\\s)\\s*%[di]"
+    # `%s` is okay only when the argument is already formatted. Catch the
+    # common raw microcode maturity sources that previously produced
+    # `maturity=6`, without flagging normalized fields such as view.maturity.
+    - pattern: $LOGGER.$METHOD($MESSAGE, getattr($OBJ, "maturity", $$$))
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, getattr($OBJ, "maturity", $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, getattr($OBJ, "maturity", $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, $C, getattr($OBJ, "maturity", $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, getattr($OBJ, 'maturity', $$$))
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, getattr($OBJ, 'maturity', $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, getattr($OBJ, 'maturity', $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, $C, getattr($OBJ, 'maturity', $$$), $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, mba.maturity)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, mba.maturity, $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, mba.maturity, $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, $C, mba.maturity, $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, self.mba.maturity)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, self.mba.maturity, $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, self.mba.maturity, $$$REST)
+    - pattern: $LOGGER.$METHOD($MESSAGE, $A, $B, $C, self.mba.maturity, $$$REST)
+
+constraints:
+  METHOD:
+    regex: "^(debug|info|warning|error|exception|critical)$"
+
+note: |
+  Standard replacement:
+
+    # Before
+    logger.info("analyzed func=0x%x maturity=%d", func_ea, maturity)
+
+    # After
+    maturity_text = maturity_to_string(maturity)
+    logger.info("analyzed func=0x%x maturity=%s", func_ea, maturity_text)

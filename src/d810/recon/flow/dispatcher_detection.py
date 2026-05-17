@@ -52,6 +52,27 @@ if TYPE_CHECKING:
 
 logger = getLogger("D810.dispatcher")
 
+_MATURITY_NAMES = (
+    "MMAT_GENERATED",
+    "MMAT_PREOPTIMIZED",
+    "MMAT_LOCOPT",
+    "MMAT_CALLS",
+    "MMAT_GLBOPT1",
+    "MMAT_GLBOPT2",
+    "MMAT_GLBOPT3",
+    "MMAT_LVARS",
+)
+
+
+def _maturity_text(maturity: int) -> str:
+    for name in _MATURITY_NAMES:
+        try:
+            if int(getattr(ida_hexrays, name)) == int(maturity):
+                return name
+        except Exception:
+            continue
+    return f"MMAT_{int(maturity)}"
+
 
 class DispatcherStrategy(IntFlag):
     """Flags indicating which strategies detected a block as a dispatcher."""
@@ -268,8 +289,9 @@ class DispatcherCache:
         if self._analysis is not None and self._last_maturity == self.mba.maturity:
             return self._analysis
 
+        maturity_text = _maturity_text(self.mba.maturity)
         logger.debug(
-            "Analyzing function 0x%x at maturity %d", self.func_ea, self.mba.maturity
+            "Analyzing function 0x%x at maturity %s", self.func_ea, maturity_text
         )
 
         analysis = DispatcherAnalysis(
@@ -832,15 +854,16 @@ class DispatcherCache:
         # Dynamic threshold: lower requirement when nested loops are detected
         # Nested loops are a strong structural indicator even when constants are gone
         min_score = 30 if analysis.nested_loop_depth >= 2 else 50
+        maturity_text = _maturity_text(self.mba.maturity)
 
         # Classify based on score
         if conditional_chain_score >= min_score:
             analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
             logger.info(
-                "Classified as CONDITIONAL_CHAIN dispatcher (score=%d, threshold=%d, maturity=%d)",
+                "Classified as CONDITIONAL_CHAIN dispatcher (score=%d, threshold=%d, maturity=%s)",
                 conditional_chain_score,
                 min_score,
-                self.mba.maturity,
+                maturity_text,
             )
             # Find initial state for conditional chain dispatchers
             self._find_initial_state(analysis)
@@ -849,10 +872,10 @@ class DispatcherCache:
             # FixPredecessorOfConditionalJumpBlock removing comparison blocks
             analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
             logger.info(
-                "Locked-in CONDITIONAL_CHAIN from previous maturity (score=%d, threshold=%d, maturity=%d)",
+                "Locked-in CONDITIONAL_CHAIN from previous maturity (score=%d, threshold=%d, maturity=%s)",
                 conditional_chain_score,
                 min_score,
-                self.mba.maturity,
+                maturity_text,
             )
             self._find_initial_state(analysis)
         elif has_jtbl:
