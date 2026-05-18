@@ -378,6 +378,50 @@ def test_latest_db_errors_when_only_empty_sqlite_placeholders_exist(
         d810cli.latest_db("wt")
 
 
+def _write_diag_db(path: Path, *, indirect_rows: bool) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE state_dispatcher_rows (dispatcher_kind TEXT)"
+        )
+        if indirect_rows:
+            conn.execute(
+                "INSERT INTO state_dispatcher_rows VALUES ('INDIRECT_JUMP')"
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_latest_indirect_transfer_db_skips_newer_non_indirect_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    log_dir = _worktree_log_dir(tmp_path, "wt")
+    indirect = log_dir / "older-indirect.diag.sqlite3"
+    non_indirect = log_dir / "newer-other.diag.sqlite3"
+    _write_diag_db(indirect, indirect_rows=True)
+    _write_diag_db(non_indirect, indirect_rows=False)
+
+    indirect.touch()
+    non_indirect.touch()
+
+    assert d810cli.latest_indirect_transfer_db("wt") == indirect
+
+
+def test_latest_indirect_transfer_db_errors_without_indirect_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
+    log_dir = _worktree_log_dir(tmp_path, "wt")
+    _write_diag_db(log_dir / "other.diag.sqlite3", indirect_rows=False)
+
+    with pytest.raises(SystemExit):
+        d810cli.latest_indirect_transfer_db("wt")
+
+
 def test_after_stats_appends_stats_after_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
