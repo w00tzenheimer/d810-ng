@@ -1829,7 +1829,7 @@ def test_build_state_resolver_still_overrides_nonraw_exact_row_to_dispatcher() -
     assert resolve_handler(0x474EEEBB) == 71
 
 
-def test_build_state_resolver_prefers_dispatcher_over_state_guard_artifact() -> None:
+def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_return_writer() -> None:
     report = DispatcherTransitionReport(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
