@@ -54,6 +54,11 @@ from d810.cfg.reconstruction_emission import (
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
 )
+from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
+    collect_ollvm_branch_ownership_refiners,
+    collect_ollvm_post_execute_carrier_facts,
+    collect_ollvm_profile_fact_observations,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
@@ -135,7 +140,6 @@ from d810.recon.facts.carrier import (
     OBSERVABLE_STORE_FACT_KIND,
     SAME_CARRIER_ALIAS_FACT_KIND,
     production_carrier_fact,
-    project_carrier_fact_families,
 )
 from d810.recon.flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
@@ -1218,6 +1222,21 @@ def _tigress_switch_case_transition_facts(
         return ()
 
 
+def _empty_post_execute_carrier_facts(_mba: object) -> tuple[object, ...]:
+    return ()
+
+
+def _empty_profile_fact_observations(_mba: object) -> tuple[object, ...]:
+    return ()
+
+
+def _empty_branch_ownership_refiners(
+    _mba: object,
+    _logger: object,
+) -> tuple[object, ...]:
+    return ()
+
+
 def _entry_to_pre_header_corridor(
     flow_graph: FlowGraph,
     *,
@@ -1544,43 +1563,10 @@ def _collect_phase_branch_ownership_proofs(
     *,
     dag: object,
     dispatch_map: StateDispatcherMap | None,
-    mba: object,
-    profile_name: str,
-    logger: object,
+    proof_refiners: tuple[object, ...] = (),
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect recon branch ownership proofs for planning/diagnostics."""
 
-    proof_refiners = []
-    if str(profile_name).startswith("ollvm"):
-        try:
-            from d810.recon.facts.collectors import (
-                OllvmSemanticCarrierFactCollector,
-            )
-            from d810.recon.flow.branch_ownership_oracle import (
-                MopTrackerBranchOwnershipOracle,
-                OllvmCarrierBranchOwnershipOracle,
-                Z3BranchOwnershipOracle,
-            )
-
-            carrier_facts = OllvmSemanticCarrierFactCollector().collect(
-                mba,
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=int(getattr(mba, "maturity", 0) or 0),
-                phase="pre_d810",
-            )
-            proof_refiners.append(
-                OllvmCarrierBranchOwnershipOracle(
-                    mba=mba,
-                    carrier_facts=project_carrier_fact_families(carrier_facts),
-                ).refine
-            )
-            proof_refiners.append(Z3BranchOwnershipOracle(mba=mba).refine)
-            proof_refiners.append(MopTrackerBranchOwnershipOracle(mba=mba).refine)
-        except Exception:
-            logger.debug(
-                "Microcode branch ownership oracle unavailable",
-                exc_info=True,
-            )
     return collect_branch_ownership_proofs(
         dag=dag,
         dispatch_map=dispatch_map,
@@ -2378,7 +2364,7 @@ def _ollvm_fact_specs_by_block_ea(
         )
     return specs
 
-def _apply_ollvm_output_alias_repair(
+def _apply_carrier_output_alias_repair(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2477,7 +2463,7 @@ def _apply_ollvm_output_alias_repair(
     return int(changed)
 
 
-def _apply_ollvm_local_alias_mem2reg(
+def _apply_local_alias_mem2reg(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2595,26 +2581,6 @@ def _copy_mop(mop: object | None) -> object | None:
         return None
 
 
-def _collect_ollvm_semantic_carrier_facts(
-    mba: object,
-) -> tuple[object, ...]:
-    """Collect concrete generic carrier facts from OLLVM oracle evidence."""
-
-    if mba is None:
-        return ()
-    try:
-        from d810.recon.facts.collectors import OllvmSemanticCarrierFactCollector
-    except Exception:
-        return ()
-    raw_facts = OllvmSemanticCarrierFactCollector().collect(
-        mba,
-        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-        maturity=int(getattr(mba, "maturity", 0) or 0),
-        phase="pre_d810",
-    )
-    return project_carrier_fact_families(raw_facts)
-
-
 def _same_carrier_alias_repair_specs(
     carrier_facts: tuple[object, ...],
 ) -> dict[tuple[int, int], tuple[str, frozenset[str], str]]:
@@ -2655,7 +2621,7 @@ def _same_carrier_alias_repair_specs(
     return specs
 
 
-def _apply_ollvm_same_carrier_alias_repairs(
+def _apply_same_carrier_alias_repairs(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2767,7 +2733,7 @@ def _ollvm_store_target_is_direct_local(insn: object) -> bool:
     return "[ds" not in tail
 
 
-def _ollvm_semantic_store_fact_specs(
+def _carrier_store_promotion_specs(
     carrier_facts: tuple[object, ...],
 ) -> frozenset[tuple[int, int]]:
     specs = _ollvm_fact_specs_by_block_ea(
@@ -2876,7 +2842,7 @@ def _scalarize_ollvm_direct_local_carrier_store(
     return True
 
 
-def _apply_ollvm_semantic_carrier_promotions(
+def _apply_semantic_carrier_promotions(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -3001,7 +2967,7 @@ def _apply_ollvm_semantic_carrier_promotions(
     return int(applied) + int(scalarized)
 
 
-def _collect_ollvm_semantic_carrier_promotion_modifications(
+def _collect_semantic_carrier_promotion_modifications(
     mba: object,
     carrier_facts: tuple[object, ...],
 ) -> tuple[GraphModification, ...]:
@@ -3009,7 +2975,7 @@ def _collect_ollvm_semantic_carrier_promotion_modifications(
 
     if mba is None:
         return ()
-    semantic_store_specs = _ollvm_semantic_store_fact_specs(carrier_facts)
+    semantic_store_specs = _carrier_store_promotion_specs(carrier_facts)
     if not semantic_store_specs:
         return ()
     modifications: list[GraphModification] = []
@@ -3926,6 +3892,18 @@ class GenericDispatcherEngineProfile:
         [object, StateDispatcherMap, str],
         tuple[object, ...],
     ] = _empty_switch_case_transition_facts
+    post_execute_carrier_fact_factory: Callable[
+        [object],
+        tuple[object, ...],
+    ] = _empty_post_execute_carrier_facts
+    fact_observation_factory: Callable[
+        [object],
+        tuple[object, ...],
+    ] = _empty_profile_fact_observations
+    branch_ownership_refiner_factory: Callable[
+        [object, object],
+        tuple[object, ...],
+    ] = _empty_branch_ownership_refiners
 
     def configure_resolver(
         self,
@@ -4100,6 +4078,35 @@ class GenericDispatcherEngineProfile:
             )
         )
 
+    def collect_post_execute_carrier_facts(
+        self,
+        mba: object,
+    ) -> tuple[object, ...]:
+        """Return concrete carrier fact families supplied by this profile.
+
+        The engine family consumes these only by generic fact kind/capability.
+        Profile-specific oracle witnesses stay behind the factory boundary.
+        """
+
+        return tuple(self.post_execute_carrier_fact_factory(mba))
+
+    def collect_fact_observations(
+        self,
+        mba: object,
+    ) -> tuple[object, ...]:
+        """Return profile-specific fact rows to mirror into diagnostics."""
+
+        return tuple(self.fact_observation_factory(mba))
+
+    def collect_branch_ownership_refiners(
+        self,
+        mba: object,
+        logger: object,
+    ) -> tuple[object, ...]:
+        """Return profile-specific branch ownership proof refiners."""
+
+        return tuple(self.branch_ownership_refiner_factory(mba, logger))
+
     def select_dynamic_transition(
         self,
         transition_result: object,
@@ -4183,6 +4190,9 @@ def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
         state_transport="father_history_emulation",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
+        post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
+        fact_observation_factory=collect_ollvm_profile_fact_observations,
+        branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
     )
 
 
@@ -4215,6 +4225,9 @@ def ollvm_state_dispatcher_map_profile(
         provenance_hints=("equality_chain",),
         enable_terminal_payload_materialization=enable_terminal_payload_materialization,
         state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
+        post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
+        fact_observation_factory=collect_ollvm_profile_fact_observations,
+        branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
     )
 
 
@@ -5592,9 +5605,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         branch_ownership_proofs = _collect_phase_branch_ownership_proofs(
             dag=dag,
             dispatch_map=phase_context.state_dispatcher_map,
-            mba=mba,
-            profile_name=self._profile.name,
-            logger=self._logger,
+            proof_refiners=self._profile.collect_branch_ownership_refiners(
+                mba,
+                self._logger,
+            ),
         )
 
         terminal_payload_materialization_modifications: list[GraphModification] = []
@@ -7898,20 +7912,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
             )
         semantic_carrier_modifications: tuple[GraphModification, ...] = ()
-        if (
-            mba.maturity >= ida_hexrays.MMAT_GLBOPT1
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
-        ):
-            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
+        if mba.maturity >= ida_hexrays.MMAT_GLBOPT1:
+            carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
             semantic_carrier_modifications = (
-                _collect_ollvm_semantic_carrier_promotion_modifications(
+                _collect_semantic_carrier_promotion_modifications(
                     mba,
                     carrier_facts,
                 )
             )
             if semantic_carrier_modifications:
                 self._logger.info(
-                    "OLLVM semantic carrier GLBOPT1 lowering found %d fused store value(s)",
+                    "Semantic carrier GLBOPT1 lowering found %d fused store value(s)",
                     len(semantic_carrier_modifications),
                 )
         selected_modifications = fallback_modifications
@@ -7960,7 +7971,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and not selected_modifications
         ):
             selected_modifications = semantic_carrier_modifications
-            selected_lowering_mode = "ollvm_semantic_carrier_hoist"
+            selected_lowering_mode = "semantic_carrier_hoist"
             selected_blockers = ()
         # Match the safer legacy posture for partially-resolved dispatcher
         # families: observe raw candidates for diagnostics, but do not lower
@@ -8062,9 +8073,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 observe_state_transition_dispatch_resolutions,
                 observe_switch_case_transition_facts,
             )
-            from d810.recon.facts.collectors import (
-                OllvmSemanticCarrierFactCollector,
-            )
 
             maturity_name = self._maturity_name(
                 int(getattr(mba, "maturity", 0) or 0)
@@ -8145,9 +8153,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             proofs = _collect_phase_branch_ownership_proofs(
                 dag=SimpleNamespace(edges=dag_edge_objects),
                 dispatch_map=phase_context.state_dispatcher_map,
-                mba=mba,
-                profile_name=self._profile.name,
-                logger=self._logger,
+                proof_refiners=self._profile.collect_branch_ownership_refiners(
+                    mba,
+                    self._logger,
+                ),
             )
             if proofs:
                 observe_branch_ownership_proofs(
@@ -8185,29 +8194,18 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(switch_case_transition_facts),
                     self._profile.name,
                 )
-            if str(self._profile.name).startswith("ollvm"):
-                carrier_facts = OllvmSemanticCarrierFactCollector().collect(
-                    mba,
-                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                    maturity=int(getattr(mba, "maturity", 0) or 0),
-                    phase="pre_d810",
+            profile_fact_observations = self._profile.collect_fact_observations(mba)
+            if profile_fact_observations:
+                observe_fact_observation(
+                    snap_ref,
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    profile_fact_observations,
                 )
-                if carrier_facts:
-                    projected_carrier_facts = project_carrier_fact_families(
-                        carrier_facts
-                    )
-                    observe_fact_observation(
-                        snap_ref,
-                        int(getattr(mba, "entry_ea", 0) or 0),
-                        (*carrier_facts, *projected_carrier_facts),
-                    )
-                    self._logger.info(
-                        "OLLVM_SEMANTIC_CARRIER_FACTS: emitted %d raw rows "
-                        "and %d normalized rows for profile=%s",
-                        len(carrier_facts),
-                        len(projected_carrier_facts),
-                        self._profile.name,
-                    )
+                self._logger.info(
+                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s",
+                    len(profile_fact_observations),
+                    self._profile.name,
+                )
             observe_rendered_program(
                 snap_ref,
                 phase_context.semantic_reference_program,
@@ -8372,35 +8370,34 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return 0
 
         semantic_carrier_changes = 0
-        carrier_facts: tuple[object, ...] = ()
+        carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
         if (
             int(getattr(mba, "maturity", -1) or -1) == int(ida_hexrays.MMAT_CALLS)
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+            and carrier_facts
         ):
-            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
-            semantic_carrier_changes += _apply_ollvm_output_alias_repair(
+            semantic_carrier_changes += _apply_carrier_output_alias_repair(
                 mba,
                 self._logger,
                 carrier_facts,
             )
-            semantic_carrier_changes += _apply_ollvm_local_alias_mem2reg(
+            semantic_carrier_changes += _apply_local_alias_mem2reg(
                 mba,
                 self._logger,
                 carrier_facts,
             )
-            semantic_carrier_changes += _apply_ollvm_same_carrier_alias_repairs(
+            semantic_carrier_changes += _apply_same_carrier_alias_repairs(
                 mba,
                 self._logger,
                 carrier_facts,
             )
         if (
             int(getattr(mba, "maturity", -1) or -1) >= int(ida_hexrays.MMAT_GLBOPT1)
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+            and carrier_facts
         ):
-            semantic_carrier_changes = _apply_ollvm_semantic_carrier_promotions(
+            semantic_carrier_changes = _apply_semantic_carrier_promotions(
                 mba,
                 self._logger,
-                _collect_ollvm_semantic_carrier_facts(mba),
+                carrier_facts,
             ) + semantic_carrier_changes
 
         lowered_modifications = ()
@@ -8422,7 +8419,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             mba.mark_chains_dirty()
             if semantic_carrier_changes > 0:
                 mba.optimize_local(0)
-                post_opt_carrier_changes = _apply_ollvm_same_carrier_alias_repairs(
+                post_opt_carrier_changes = _apply_same_carrier_alias_repairs(
                     mba,
                     self._logger,
                     carrier_facts,
