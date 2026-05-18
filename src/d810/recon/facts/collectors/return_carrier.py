@@ -158,8 +158,21 @@ def _carrier_class(insn: _InstructionView) -> str:
     return "computed_return"
 
 
-class ReturnCarrierFactCollector:
-    """Observe return-slot carrier writes across maturities."""
+class ReturnSlotFactCollector:
+    """Observe return-slot writes across maturities.
+
+    Canonical class name (value-flow rename Phase 4). Tracks the storage
+    slot used to communicate a function's return value at the ABI
+    boundary (e.g. ``%var_8.8`` for stack-returned aggregates). A peer
+    class :class:`ReturnValueFactCollector` is reserved for facts about
+    the recovered semantic value once a producer exists.
+
+    The legacy class name ``ReturnCarrierFactCollector`` is preserved as
+    an alias at the end of this module. The serialized
+    ``FactObservation.kind`` value stays ``"ReturnCarrierFact"`` so old
+    diag SQLite snapshots remain queryable via the Phase 3 alias
+    registry.
+    """
 
     name = "ReturnCarrierFactCollector"
     fact_kinds = frozenset({"ReturnCarrierFact"})
@@ -274,3 +287,34 @@ class ReturnCarrierFactCollector:
 
 
 __all__ = ["ReturnCarrierFactCollector"]
+
+
+class ReturnValueFactCollector:
+    """Placeholder collector for facts about the recovered return value.
+
+    Distinct from :class:`ReturnSlotFactCollector`, which records facts
+    about the storage slot. The split was decided in answer to open
+    question 3 of the value-flow rename design. No producer is wired up
+    yet; consumers can already target the canonical split shape so that
+    a future producer landing here does not require a second migration.
+    """
+
+    name = "ReturnValueFactCollector"
+    fact_kinds = frozenset({"ReturnValueFact"})
+    maturities = _TARGET_MATURITIES
+
+    def collect(
+        self,
+        target: object,
+        *,
+        func_ea: int,
+        maturity: int,
+        phase: str,
+    ) -> tuple[FactObservation, ...]:
+        return ()
+
+
+# Legacy class name kept as an alias during the value-flow rename. The
+# current slot-based collector logic lives in ReturnSlotFactCollector;
+# ReturnValueFactCollector is the future home for value-recovery facts.
+ReturnCarrierFactCollector = ReturnSlotFactCollector
