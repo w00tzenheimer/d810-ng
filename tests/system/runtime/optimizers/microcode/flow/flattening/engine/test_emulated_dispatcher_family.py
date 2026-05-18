@@ -3790,7 +3790,17 @@ def test_tigress_indirect_blocks_coalesced_dispatcher_handler_row() -> None:
     )
 
 
-def test_tigress_indirect_repairs_terminal_state_write_stub() -> None:
+@pytest.mark.parametrize(
+    ("edge_kind", "edge_target_state"),
+    (
+        (SemanticEdgeKind.CONDITIONAL_RETURN, None),
+        (SemanticEdgeKind.TRANSITION, 0x1B),
+    ),
+)
+def test_tigress_indirect_repairs_terminal_state_write_stub(
+    edge_kind,
+    edge_target_state,
+) -> None:
     state_write = InsnSnapshot(
         opcode=ida_hexrays.m_mov,
         ea=0x180017719,
@@ -3858,8 +3868,8 @@ def test_tigress_indirect_repairs_terminal_state_write_stub() -> None:
         initial_state=0x22,
     )
     edge = SimpleNamespace(
-        kind=SemanticEdgeKind.CONDITIONAL_RETURN,
-        target_state=None,
+        kind=edge_kind,
+        target_state=edge_target_state,
         ordered_path=(9, 10),
     )
 
