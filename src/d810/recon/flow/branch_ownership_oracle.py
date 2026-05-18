@@ -16,6 +16,12 @@ from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
+from d810.recon.facts.carrier import (
+    CALL_RESULT_CARRIER_FACT_KIND,
+    LOOP_PREDICATE_CARRIER_FACT_KIND,
+    GENERIC_CARRIER_FACT_KINDS,
+    project_carrier_fact_families,
+)
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
@@ -251,15 +257,20 @@ class OllvmCarrierBranchOwnershipOracle:
         carrier_facts: tuple[object, ...] = (),
     ) -> None:
         self._mba = mba
-        self._carrier_facts = tuple(carrier_facts or ())
-        self._role_tokens = _carrier_role_tokens(self._carrier_facts)
+        self._carrier_facts = _normalized_carrier_facts(tuple(carrier_facts or ()))
         instruction_texts = tuple(_iter_mba_instruction_texts(mba))
         self._password_predicate_tokens = _derive_data_predicate_tokens(
-            self._role_tokens.get("PASSWORD_COMPARE_RESULT", frozenset()),
+            _carrier_projection_tokens(
+                self._carrier_facts,
+                fact_kinds=frozenset({CALL_RESULT_CARRIER_FACT_KIND}),
+            ),
             instruction_texts,
         )
         self._loop_predicate_tokens = _derive_loop_predicate_tokens(
-            self._role_tokens.get("LOOP_INDEX_CARRIER", frozenset()),
+            _carrier_projection_tokens(
+                self._carrier_facts,
+                fact_kinds=frozenset({LOOP_PREDICATE_CARRIER_FACT_KIND}),
+            ),
             instruction_texts,
         )
 
@@ -300,7 +311,8 @@ class OllvmCarrierBranchOwnershipOracle:
             return self._replace_proof(
                 proof,
                 reason="ollvm_carrier_password_compare_predicate",
-                carrier_role="PASSWORD_COMPARE_RESULT",
+                carrier_kind="call_result",
+                expression_class="call_result",
                 predicate_tokens=password_matches,
                 tail_text=tail_text,
                 edge=edge,
@@ -311,7 +323,8 @@ class OllvmCarrierBranchOwnershipOracle:
             return self._replace_proof(
                 proof,
                 reason="ollvm_carrier_loop_index_predicate",
-                carrier_role="LOOP_INDEX_CARRIER",
+                carrier_kind="induction",
+                expression_class="loop_predicate_carrier",
                 predicate_tokens=loop_matches,
                 tail_text=tail_text,
                 edge=edge,
@@ -324,7 +337,8 @@ class OllvmCarrierBranchOwnershipOracle:
         proof: BranchOwnershipProof,
         *,
         reason: str,
-        carrier_role: str,
+        carrier_kind: str,
+        expression_class: str,
         predicate_tokens: tuple[str, ...],
         tail_text: str,
         edge: object,
@@ -335,7 +349,8 @@ class OllvmCarrierBranchOwnershipOracle:
                 PredicateOwnershipKind.REAL_DATA_DEPENDENT.value
             ),
             "predicate_ownership_reason": reason,
-            "carrier_role": carrier_role,
+            "carrier_kind": carrier_kind,
+            "expression_class": expression_class,
             "predicate_tokens": predicate_tokens,
             "tail_text": tail_text,
             "via_pred": _path_predecessor(edge, proof.source_block),
@@ -691,25 +706,46 @@ def _resolve_predicate_with_moptracker(
     )
 
 
-def _carrier_role_tokens(
+def _normalized_carrier_facts(
     facts: tuple[object, ...],
-) -> dict[str, frozenset[str]]:
-    role_tokens: dict[str, set[str]] = {}
+) -> tuple[object, ...]:
+    normalized: list[object] = []
+    raw = []
+    for fact in facts:
+        kind = str(_fact_kind(fact) or "")
+        if kind in GENERIC_CARRIER_FACT_KINDS:
+            normalized.append(fact)
+            continue
+        if kind != "OllvmSemanticCarrierFact":
+            continue
+        if not all(
+            hasattr(fact, attr)
+            for attr in ("fact_id", "semantic_key", "maturity", "phase", "confidence")
+        ):
+            continue
+        raw.append(fact)
+    if raw:
+        normalized.extend(project_carrier_fact_families(tuple(raw)))  # type: ignore[arg-type]
+    return tuple(normalized)
+
+
+def _carrier_projection_tokens(
+    facts: tuple[object, ...],
+    *,
+    fact_kinds: frozenset[str],
+) -> frozenset[str]:
+    tokens: set[str] = set()
     for fact in facts:
         payload = _fact_payload(fact)
         if not payload:
             continue
-        if str(_fact_kind(fact) or "") != "OllvmSemanticCarrierFact":
+        if str(_fact_kind(fact) or "") not in fact_kinds:
             continue
-        role = str(payload.get("role") or "")
-        token = _canonical_token(payload.get("carrier_token"))
-        if not role or token is None:
+        token = _canonical_token(payload.get("storage_identity"))
+        if token is None:
             continue
-        role_tokens.setdefault(role, set()).add(token)
-    return {
-        role: frozenset(sorted(tokens))
-        for role, tokens in role_tokens.items()
-    }
+        tokens.add(token)
+    return frozenset(sorted(tokens))
 
 
 def _carrier_oracle_may_refine(proof: BranchOwnershipProof) -> bool:

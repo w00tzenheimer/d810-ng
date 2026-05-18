@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+from d810.recon.facts.model import FactObservation
 from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -147,14 +148,26 @@ def _carrier_fact(
     block: int,
     text: str,
 ):
-    return SimpleNamespace(
+    return FactObservation(
+        fact_id=f"ollvm:{role}:{token}:blk={block}",
         kind="OllvmSemanticCarrierFact",
+        semantic_key=f"ollvm_carrier:{role}:{token}",
+        maturity="MMAT_CALLS",
+        phase="pre_d810",
+        confidence=0.8,
+        source_block=block,
+        source_ea=0x180000000 + block,
+        block_fingerprint=f"blk[{block}].0:m_setb",
+        mop_signature=f"ollvm_carrier:{role}:{token}",
         payload={
             "role": role,
             "carrier_token": token,
             "source_block": block,
+            "instruction_index": 0,
+            "instruction_ea": 0x180000000 + block,
             "instruction_dstr": text,
         },
+        evidence=(text,),
     )
 
 
@@ -895,7 +908,8 @@ def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
     assert all(proof.authorizes_semantic_branch_bridge for proof in proofs)
     assert not any(proof.authorizes_nonsemantic_branch_rewrite for proof in proofs)
     assert proofs[0].reason == "ollvm_carrier_password_compare_predicate"
-    assert proofs[0].evidence["carrier_role"] == "PASSWORD_COMPARE_RESULT"
+    assert proofs[0].evidence["carrier_kind"] == "call_result"
+    assert proofs[0].evidence["expression_class"] == "call_result"
     assert proofs[0].evidence["predicate_tokens"] == ("%var_18",)
 
 
@@ -936,7 +950,8 @@ def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
         BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
     ]
     assert proofs[0].reason == "ollvm_carrier_loop_index_predicate"
-    assert proofs[0].evidence["carrier_role"] == "LOOP_INDEX_CARRIER"
+    assert proofs[0].evidence["carrier_kind"] == "induction"
+    assert proofs[0].evidence["expression_class"] == "loop_predicate_carrier"
     assert proofs[0].evidence["predicate_tokens"] == ("%var_3A1",)
 
 

@@ -191,6 +191,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import re
 import uuid
 
 from d810.core.typing import TYPE_CHECKING, Callable
@@ -353,6 +354,49 @@ def _mlist_dstr(value) -> str | None:
     return text or None
 
 
+_LOCAL_VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
+
+
+def _canonical_local_var_token(token: str | None) -> str | None:
+    if token is None:
+        return None
+    if token.startswith("%var_"):
+        return f"%var_{token[5:].upper()}"
+    return token
+
+
+def _mop_text(mop: object | None) -> str:
+    if mop is None:
+        return ""
+    dstr = getattr(mop, "dstr", None)
+    if callable(dstr):
+        try:
+            return str(dstr())
+        except Exception:
+            pass
+    return str(mop)
+
+
+def _mop_local_var_token(mop: object | None) -> str | None:
+    tokens = tuple(
+        _canonical_local_var_token(match.group(0))
+        for match in _LOCAL_VAR_TOKEN_RE.finditer(_mop_text(mop))
+    )
+    tokens = tuple(token for token in tokens if token is not None)
+    return tokens[-1] if tokens else None
+
+
+def _copy_mop_for_alias_scalarization(mop: object | None) -> object | None:
+    if mop is None:
+        return None
+    try:
+        copied = ida_hexrays.mop_t()
+        copied.assign(mop)
+        return copied
+    except Exception:
+        return None
+
+
 def _trace_conditional_redirect_step(
     label: str,
     mba: ida_hexrays.mba_t,
@@ -426,6 +470,7 @@ class ModificationType(Enum):
     INSN_NOP = auto()                 # NOP a specific instruction
     INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
     INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
+    INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
@@ -515,6 +560,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.INSN_NOP: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.BLOCK_NOP_INSNS: StagedAtomicClassification.INSTRUCTION_ONLY,
     # Destructive-expressible: mutate an existing block's tail/succset in-place.
     # Lowered to copy-and-swap under staged_atomic.
@@ -813,6 +859,9 @@ class GraphModification:
     host_opcode: int | None = None
     # For INSN_PROMOTE_OPERAND_TO_SCALAR: which operand side to extract ("l" | "r")
     operand_side: str | None = None
+    # For INSN_SCALARIZE_LOCAL_ALIAS_ACCESS: local pointer alias and base local tokens
+    alias_token: str | None = None
+    base_token: str | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1323,6 +1372,48 @@ class DeferredGraphModifier:
         logger.debug(
             "Queued promote_operand_to_scalar: block %d, host_ea=%s, side=%s",
             block_serial, hex(host_ea), operand_side,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_scalarize_local_alias_access(
+        self,
+        block_serial: int,
+        host_ea: int,
+        host_opcode: int,
+        alias_token: str,
+        base_token: str,
+        description: str = "",
+    ) -> None:
+        """Queue scalarization of a proven local pointer alias access.
+
+        The mutation rehydrates the current base-local mop from the live MBA at
+        apply time and rewrites only the identified instruction.  It is kept as
+        a queued instruction-only primitive so producer facts remain
+        serializable and consumers do not perform ad hoc live surgery.
+        """
+        alias_token = _canonical_local_var_token(alias_token) or ""
+        base_token = _canonical_local_var_token(base_token) or ""
+        if not alias_token or not base_token:
+            raise ValueError(
+                "alias_token and base_token must be non-empty local tokens"
+            )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
+            block_serial=block_serial,
+            insn_ea=host_ea,
+            host_opcode=host_opcode,
+            alias_token=alias_token,
+            base_token=base_token,
+            priority=850,
+            description=description or (
+                f"scalarize local alias {alias_token}->{base_token} at "
+                f"{hex(host_ea)} in block {block_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued scalarize_local_alias_access: block %d, host_ea=%s, alias=%s, base=%s",
+            block_serial, hex(host_ea), alias_token, base_token,
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -4880,6 +4971,15 @@ class DeferredGraphModifier:
                 blk, mod.insn_ea, mod.host_opcode, mod.operand_side,
             )
 
+        elif mod.mod_type == ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS:
+            return self._apply_scalarize_local_alias_access(
+                blk,
+                mod.insn_ea,
+                mod.host_opcode,
+                mod.alias_token,
+                mod.base_token,
+            )
+
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
             return self._apply_create_and_redirect(
                 blk,
@@ -5264,6 +5364,181 @@ class DeferredGraphModifier:
             "PROMOTE_OPERAND_TO_SCALAR: blk[%d]@0x%x — hoisted operand "
             "%s (sub_ea=0x%x size=%d) into fresh kreg=%d",
             blk.serial, host_ea, operand_side, sub_ea, sub_size, kreg,
+        )
+        return True
+
+    def _local_alias_base_mop(
+        self,
+        alias_token: str | None,
+        base_token: str | None,
+        *,
+        size_hint: int = 0,
+    ) -> object | None:
+        alias = _canonical_local_var_token(alias_token)
+        base = _canonical_local_var_token(base_token)
+        if alias is None or base is None:
+            return None
+        qty = int(getattr(self.mba, "qty", 0) or 0)
+        for serial in range(qty):
+            try:
+                blk = self.mba.get_mblock(serial)
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            insn = getattr(blk, "head", None)
+            while insn is not None:
+                if int(getattr(insn, "opcode", -1)) == int(ida_hexrays.m_mov):
+                    dest = getattr(insn, "d", None)
+                    source = getattr(insn, "l", None)
+                    if (
+                        _mop_local_var_token(dest) == alias
+                        and _mop_local_var_token(source) == base
+                        and "&(" in _mop_text(source)
+                    ):
+                        inner = getattr(source, "a", None)
+                        base_mop = _copy_mop_for_alias_scalarization(inner)
+                        if base_mop is None:
+                            return None
+                        if size_hint > 0:
+                            with contextlib.suppress(Exception):
+                                base_mop.size = int(size_hint)
+                        return base_mop
+                insn = getattr(insn, "next", None)
+        return None
+
+    def _replace_local_alias_load_mop(
+        self,
+        mop: object | None,
+        *,
+        alias_token: str,
+        base_token: str,
+    ) -> int:
+        if mop is None:
+            return 0
+        nested = getattr(mop, "d", None)
+        if nested is None:
+            return 0
+        changed = 0
+        if int(getattr(nested, "opcode", -1)) == int(ida_hexrays.m_ldx):
+            source = getattr(nested, "r", None)
+            if _mop_local_var_token(source) == alias_token:
+                if alias_token == base_token:
+                    base_mop = _copy_mop_for_alias_scalarization(source)
+                else:
+                    base_mop = self._local_alias_base_mop(
+                        alias_token,
+                        base_token,
+                        size_hint=int(getattr(mop, "size", 0) or 0),
+                    )
+                if base_mop is None:
+                    return 0
+                try:
+                    mop.assign(base_mop)
+                    return 1
+                except Exception:
+                    return 0
+        for side in ("l", "r", "d"):
+            changed += self._replace_local_alias_load_mop(
+                getattr(nested, side, None),
+                alias_token=alias_token,
+                base_token=base_token,
+            )
+        return changed
+
+    def _apply_scalarize_local_alias_access(
+        self,
+        blk: ida_hexrays.mblock_t,
+        host_ea: int | None,
+        host_opcode: int | None,
+        alias_token: str | None,
+        base_token: str | None,
+    ) -> bool:
+        alias = _canonical_local_var_token(alias_token)
+        base = _canonical_local_var_token(base_token)
+        if alias is None or base is None:
+            logger.warning(
+                "scalarize_local_alias_access: invalid alias/base %r -> %r",
+                alias_token, base_token,
+            )
+            return False
+        host = blk.head
+        while host is not None:
+            if host.ea == host_ea and (
+                host_opcode is None or host.opcode == host_opcode
+            ):
+                break
+            host = host.next
+        if host is None:
+            logger.warning(
+                "scalarize_local_alias_access: host insn at EA %s not found in block %d",
+                hex(host_ea or 0), blk.serial,
+            )
+            return False
+
+        changed = 0
+        opcode = int(getattr(host, "opcode", -1))
+        if opcode == int(ida_hexrays.m_ldx):
+            source = getattr(host, "r", None)
+            dest = getattr(host, "d", None)
+            if _mop_local_var_token(source) == alias and dest is not None:
+                if alias == base:
+                    base_mop = _copy_mop_for_alias_scalarization(source)
+                else:
+                    base_mop = self._local_alias_base_mop(
+                        alias,
+                        base,
+                        size_hint=int(getattr(dest, "size", 0) or 0),
+                    )
+                if base_mop is None:
+                    return False
+                try:
+                    saved_dest = ida_hexrays.mop_t()
+                    saved_dest.assign(dest)
+                    host.opcode = ida_hexrays.m_mov
+                    host.l.assign(base_mop)
+                    host.r.erase()
+                    host.d.assign(saved_dest)
+                    changed += 1
+                except Exception:
+                    return False
+        elif opcode == int(ida_hexrays.m_stx):
+            target = getattr(host, "d", None)
+            source = getattr(host, "l", None)
+            if _mop_local_var_token(target) == alias and source is not None:
+                if alias == base:
+                    base_mop = _copy_mop_for_alias_scalarization(target)
+                else:
+                    base_mop = self._local_alias_base_mop(
+                        alias,
+                        base,
+                        size_hint=int(getattr(source, "size", 0) or 0),
+                    )
+                if base_mop is None:
+                    return False
+                try:
+                    saved_source = ida_hexrays.mop_t()
+                    saved_source.assign(source)
+                    host.opcode = ida_hexrays.m_mov
+                    host.l.assign(saved_source)
+                    host.r.erase()
+                    host.d.assign(base_mop)
+                    changed += 1
+                except Exception:
+                    return False
+
+        for side in ("l", "r", "d"):
+            changed += self._replace_local_alias_load_mop(
+                getattr(host, side, None),
+                alias_token=alias,
+                base_token=base,
+            )
+        if changed <= 0:
+            return False
+        blk.mark_lists_dirty()
+        logger.info(
+            "SCALARIZE_LOCAL_ALIAS_ACCESS: blk[%d]@0x%x alias=%s base=%s rewrites=%d",
+            blk.serial, int(host_ea or 0), alias, base, changed,
         )
         return True
 

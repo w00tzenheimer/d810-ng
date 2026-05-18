@@ -92,10 +92,13 @@ class TestOllvmFlaBcfSubOracle:
         )
         artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        pseudocode_path = artifact_dir / "ollvm_fla_bcf_sub_after.c"
+        pseudocode_path.write_text(code_after, encoding="utf-8")
         report_path = artifact_dir / "ollvm_fla_bcf_sub_oracle.md"
         report_path.write_text(report, encoding="utf-8")
 
         print(f"\n=== test_function_ollvm_fla_bcf_sub ORACLE: {report_path} ===")
+        print(f"=== test_function_ollvm_fla_bcf_sub AFTER: {pseudocode_path} ===")
         print(report)
 
         assert result.passed, report
