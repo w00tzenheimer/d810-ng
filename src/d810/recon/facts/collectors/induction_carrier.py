@@ -384,8 +384,18 @@ def _iter_writeback_tail_updates(
                     break
 
 
-class InductionCarrierFactCollector:
-    """Observe direct stack-variable induction updates across maturities."""
+class InductionVariableFactCollector:
+    """Observe direct stack-variable induction updates across maturities.
+
+    Canonical class name (value-flow rename Phase 4). The legacy class name
+    ``InductionCarrierFactCollector`` remains available as an alias below
+    for callers that have not yet migrated. The serialized
+    ``FactObservation.kind`` value stays ``"InductionCarrierFact"`` so old
+    diag SQLite snapshots remain queryable; the diagnostic alias registry
+    in :mod:`d810.recon.facts.value_flow.alias_registry` normalizes that
+    legacy serialized kind to the canonical ``InductionVariableFact`` type
+    at the diagnostics boundary.
+    """
 
     name = "InductionCarrierFactCollector"
     fact_kinds = frozenset({"InductionCarrierFact"})
@@ -563,3 +573,8 @@ class InductionCarrierFactCollector:
                 )
             )
         return tuple(observations)
+
+
+# Legacy class name kept as an alias during the value-flow rename. Phase 4
+# class rename is mechanical; the same object answers to both spellings.
+InductionCarrierFactCollector = InductionVariableFactCollector
