@@ -1443,6 +1443,158 @@ def _merge_compatible_state_dispatcher_maps(
     )
 
 
+def _coalesced_dispatcher_handler_states(
+    dispatch_map: StateDispatcherMap | None,
+) -> tuple[int, ...]:
+    """Return handler states whose target is the dispatcher entry itself.
+
+    For materialized Tigress computed-goto functions this means Hex-Rays has
+    folded a label body into the dispatcher jump block.  The row is useful
+    diagnostics, but it is not safe rewrite authority for phase reconstruction
+    because a semantic handler and dispatcher loop share one block serial.
+    """
+
+    if dispatch_map is None:
+        return ()
+    dispatcher_entry = int(dispatch_map.dispatcher_entry_block)
+    states = []
+    for row in dispatch_map.rows:
+        if not row.is_handler_row:
+            continue
+        if int(row.target_block) == dispatcher_entry:
+            states.append(int(row.state_const) & 0xFFFFFFFFFFFFFFFF)
+    return tuple(sorted(states))
+
+
+def _collect_tigress_indirect_terminal_stub_modifications(
+    *,
+    dag: object,
+    flow_graph: FlowGraph,
+    dispatch_map: StateDispatcherMap | None,
+    state_var_stkoff: int,
+    constant_result: object,
+    logger: object | None = None,
+) -> tuple[GraphModification, ...]:
+    """Repair computed-goto stubs that recon classified as terminal.
+
+    Tigress indirect label tables can materialize as ``handler -> empty stub``
+    in Hex-Rays even when the handler just wrote the next dispatcher state and
+    loaded the computed target.  The native xref is enough for IDA to see the
+    label targets, but the microcode snapshot can still end the state DAG at the
+    empty stub.  Only repair that shape when the written state resolves through
+    the exact indirect ``StateDispatcherMap``.
+    """
+
+    if dispatch_map is None:
+        return ()
+
+    dispatcher_entry = int(dispatch_map.dispatcher_entry_block)
+    in_stk_maps = getattr(constant_result, "in_stk_maps", {}) or {}
+    in_reg_maps = getattr(constant_result, "in_reg_maps", {}) or {}
+    modifications: list[GraphModification] = []
+    seen_sources: set[tuple[int, int]] = set()
+
+    for edge in getattr(dag, "edges", ()) or ():
+        kind = getattr(edge, "kind", None)
+        edge_target_state = getattr(edge, "target_state", None)
+        edge_kind_name = _semantic_edge_kind_name(kind)
+        is_terminal_return_edge = (
+            kind == SemanticEdgeKind.CONDITIONAL_RETURN
+            or edge_kind_name == "CONDITIONAL_RETURN"
+        )
+        is_state_transition_edge = edge_target_state is not None and (
+            kind
+            in {
+                SemanticEdgeKind.TRANSITION,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+            }
+            or edge_kind_name
+            in {
+                "TRANSITION",
+                "CONDITIONAL_TRANSITION",
+            }
+        )
+        if not (is_terminal_return_edge or is_state_transition_edge):
+            continue
+
+        ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
+        if len(ordered_path) < 2:
+            continue
+        resolved = find_last_state_write_site_on_path_snapshot(
+            flow_graph,
+            ordered_path,
+            int(state_var_stkoff),
+            in_stk_maps=in_stk_maps,
+            in_reg_maps=in_reg_maps,
+        )
+        if resolved is None:
+            continue
+
+        write_block_serial, site = resolved
+        write_block = flow_graph.get_block(int(write_block_serial))
+        if write_block is None or write_block.nsucc != 1:
+            continue
+        old_target = int(write_block.succs[0])
+        if old_target == dispatcher_entry:
+            continue
+
+        try:
+            write_index = ordered_path.index(int(write_block_serial))
+            old_target_index = ordered_path.index(old_target)
+        except ValueError:
+            continue
+        if old_target_index <= write_index:
+            continue
+
+        old_target_block = flow_graph.get_block(old_target)
+        if (
+            old_target_block is None
+            or old_target_block.nsucc != 0
+            or old_target_block.insn_snapshots
+        ):
+            continue
+
+        next_state = int(site.state_value) & 0xFFFFFFFFFFFFFFFF
+        if edge_target_state is not None and (
+            int(edge_target_state) & 0xFFFFFFFFFFFFFFFF
+        ) != next_state:
+            continue
+        target = dispatch_map.resolve_target(next_state)
+        if target is None:
+            continue
+        target = int(target)
+        if (
+            target == dispatcher_entry
+            or target == old_target
+            or target not in flow_graph.blocks
+        ):
+            continue
+
+        source_key = (int(write_block_serial), old_target)
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        modifications.append(
+            RedirectGoto(
+                from_serial=int(write_block_serial),
+                old_target=old_target,
+                new_target=target,
+            )
+        )
+        if logger is not None:
+            logger.info(
+                "Tigress indirect terminal stub repaired: "
+                "blk[%d] old=blk[%d] state=0x%X target=blk[%d] write_ea=0x%X",
+                int(write_block_serial),
+                old_target,
+                next_state,
+                target,
+                int(site.insn_ea),
+            )
+
+    return tuple(modifications)
+
+
 def _phase_mod_source_serial(modification: GraphModification) -> int:
     if isinstance(modification, (RedirectGoto, RedirectBranch)):
         return int(modification.from_serial)
@@ -4073,6 +4225,7 @@ class GenericDispatcherEngineProfile:
     prefer_switch_transition_facts: bool = False
     allow_incomplete_switch_transition_facts: bool = False
     enable_terminal_payload_materialization: bool = False
+    enable_phase_reorder: bool = False
     state_dispatcher_map_factory: Callable[
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
@@ -4388,6 +4541,7 @@ def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
 def ollvm_state_dispatcher_map_profile(
     *,
     enable_terminal_payload_materialization: bool = False,
+    enable_phase_reorder: bool = False,
 ) -> GenericDispatcherEngineProfile:
     """Return the recon-owned OLLVM equality-chain profile.
 
@@ -4413,6 +4567,7 @@ def ollvm_state_dispatcher_map_profile(
         lowering_mode="generic_graph_modifications",
         provenance_hints=("equality_chain",),
         enable_terminal_payload_materialization=enable_terminal_payload_materialization,
+        enable_phase_reorder=enable_phase_reorder,
         state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
         post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
         fact_observation_factory=collect_ollvm_profile_fact_observations,
@@ -4444,6 +4599,7 @@ def tigress_switch_dispatcher_profile(
 def tigress_indirect_dispatcher_profile(
     *,
     goto_table_info: object | None = None,
+    enable_phase_reorder: bool = False,
 ) -> GenericDispatcherEngineProfile:
     """Return a read-only profile for Tigress computed-goto dispatch tables."""
 
@@ -4454,6 +4610,7 @@ def tigress_indirect_dispatcher_profile(
         state_transport="state_dispatcher_map",
         lowering_mode="indirect_jump_table_diagnostics",
         provenance_hints=("indirect_jump_table",),
+        enable_phase_reorder=enable_phase_reorder,
         state_dispatcher_map_factory=_make_tigress_indirect_state_dispatcher_maps(
             goto_table_info or {}
         ),
@@ -4603,10 +4760,20 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         Other dispatcher profiles keep the existing GLBOPT gate.
         """
 
-        if detection.dispatcher_shape not in {"conditional_chain", "switch_table"}:
+        if detection.dispatcher_shape not in {
+            "conditional_chain",
+            "indirect_jump",
+            "switch_table",
+        }:
             return False
         maturity = int(getattr(mba, "maturity", -1))
         if maturity >= int(ida_hexrays.MMAT_GLBOPT1):
+            return True
+        if (
+            self._profile.name == "tigress_indirect"
+            and detection.dispatcher_shape == "indirect_jump"
+            and maturity >= int(ida_hexrays.MMAT_LOCOPT)
+        ):
             return True
         return (
             self._profile.state_transport == "state_dispatcher_map"
@@ -5611,7 +5778,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         in-memory recon objects attached to ``phase_context``.
         """
 
-        if detection.dispatcher_shape not in {"conditional_chain", "switch_table"}:
+        if detection.dispatcher_shape not in {
+            "conditional_chain",
+            "indirect_jump",
+            "switch_table",
+        }:
             return (), ("phase_reconstruction_not_supported_dispatcher",)
         if phase_artifact is None or phase_context is None:
             return (), ("phase_reconstruction_missing_artifact",)
@@ -5650,6 +5821,23 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         dag = getattr(phase_context, "dag", None)
         if dag is None:
             return (), ("phase_reconstruction_missing_dag",)
+        if self._profile.name == "tigress_indirect":
+            coalesced_states = _coalesced_dispatcher_handler_states(
+                getattr(phase_context, "state_dispatcher_map", None),
+            )
+            if coalesced_states:
+                self._logger.info(
+                    "Tigress indirect phase reconstruction blocked: "
+                    "dispatcher blk[%d] also owns handler state(s)=%s",
+                    int(phase_artifact.dispatcher_entry_serial),
+                    tuple(
+                        f"0x{int(state) & 0xFFFFFFFFFFFFFFFF:016X}"
+                        for state in coalesced_states
+                    ),
+                )
+                return (), (
+                    "phase_reconstruction_indirect_handler_coalesced_with_dispatcher",
+                )
 
         dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
         pre_header = int(phase_artifact.pre_header_serial)
@@ -5748,6 +5936,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if (
             is_residual_phase
             and residual_has_terminal_frontier
+            and self._profile.name == "ollvm_state_map"
             and not residual_primary_enabled
         ):
             terminal_modifications, terminal_blockers = (
@@ -5911,9 +6100,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(materialization_modifications),
                 )
 
-        include_entry_redirect = not (
-            is_residual_phase and residual_has_terminal_frontier
+        use_residual_terminal_postprocess = (
+            is_residual_phase
+            and residual_has_terminal_frontier
+            and self._profile.name == "ollvm_state_map"
         )
+        include_entry_redirect = not use_residual_terminal_postprocess
         modifications: list[GraphModification] = []
         owned_blocks: set[int] = set()
         owned_edges: set[tuple[int, int]] = set()
@@ -5948,7 +6140,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             use_def_policy = "off"
         elif use_def_policy_env == "1":
             use_def_policy = "veto"
-        elif is_residual_phase and residual_has_terminal_frontier:
+        elif use_residual_terminal_postprocess:
             use_def_policy = "veto"
         elif self._profile.state_transport == "state_dispatcher_map":
             use_def_policy = "advisory"
@@ -6274,10 +6466,51 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     ),
                 )
 
-        reorder_enabled = (
-            self._profile.name == "ollvm_state_map"
-            and os.environ.get("D810_OLLVM_PHASE_REORDER", "").strip() == "1"
-            and not is_residual_phase
+        if self._profile.name == "tigress_indirect":
+            terminal_stub_modifications = (
+                _collect_tigress_indirect_terminal_stub_modifications(
+                    dag=dag,
+                    flow_graph=flow_graph,
+                    dispatch_map=getattr(phase_context, "state_dispatcher_map", None),
+                    state_var_stkoff=int(phase_artifact.state_var_stkoff),
+                    constant_result=constant_result,
+                    logger=self._logger,
+                )
+            )
+            if terminal_stub_modifications:
+                existing_redirect_edges = {
+                    (int(mod.from_serial), int(mod.old_target))
+                    for mod in modifications
+                    if isinstance(mod, (RedirectGoto, RedirectBranch))
+                }
+                appended_terminal_stub_modifications = tuple(
+                    mod
+                    for mod in terminal_stub_modifications
+                    if not isinstance(mod, RedirectGoto)
+                    or (int(mod.from_serial), int(mod.old_target))
+                    not in existing_redirect_edges
+                )
+                if appended_terminal_stub_modifications:
+                    modifications.extend(appended_terminal_stub_modifications)
+                    owned_edges.update(
+                        (
+                            int(mod.from_serial),
+                            int(mod.new_target),
+                        )
+                        for mod in appended_terminal_stub_modifications
+                        if isinstance(mod, RedirectGoto)
+                    )
+                    self._logger.info(
+                        "Tigress indirect terminal stub repair appended %d edit(s)",
+                        len(appended_terminal_stub_modifications),
+                    )
+
+        reorder_enabled = not is_residual_phase and (
+            bool(self._profile.enable_phase_reorder)
+            or (
+                self._profile.name == "ollvm_state_map"
+                and os.environ.get("D810_OLLVM_PHASE_REORDER", "").strip() == "1"
+            )
         )
         if reorder_enabled:
             reorder = _phase_reconstruction_reorder_blocks_from_dag(
@@ -6304,7 +6537,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
 
         if len(modifications) <= initial_modification_count:
-            if is_residual_phase and residual_has_terminal_frontier:
+            if use_residual_terminal_postprocess:
                 terminal_modifications, terminal_blockers = (
                     self._collect_residual_terminal_postprocess_modifications(
                         mba=mba,
@@ -6540,6 +6773,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if state_dispatcher_map is not None:
             handler_map = state_dispatcher_map.to_dispatcher_handler_map()
             bst_result = handler_map.to_bst_result()
+            map_initial_state = getattr(state_dispatcher_map, "initial_state", None)
             if state_dispatcher_map.state_var_stkoff is not None:
                 if (
                     state_var_stkoff is not None
@@ -6562,7 +6796,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
                 if pre_header_serial is not None:
                     bst_result.pre_header_serial = int(pre_header_serial)
-                if initial_state is not None:
+                if initial_state is not None and map_initial_state is None:
                     bst_result.initial_state = int(initial_state) & 0xFFFFFFFF
             except Exception:
                 self._logger.debug(

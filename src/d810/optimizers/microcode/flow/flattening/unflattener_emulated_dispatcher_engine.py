@@ -105,6 +105,7 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         enable_terminal_payload_materialization = bool(
             self.config.get("enable_terminal_payload_materialization", False)
         )
+        enable_phase_reorder = bool(self.config.get("enable_phase_reorder", False))
         if profile_name in {
             "state_dispatcher_map",
             "state_map",
@@ -115,7 +116,8 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
                 profile=ollvm_state_dispatcher_map_profile(
                     enable_terminal_payload_materialization=(
                         enable_terminal_payload_materialization
-                    )
+                    ),
+                    enable_phase_reorder=enable_phase_reorder,
                 )
             )
         elif profile_name in {
@@ -134,9 +136,36 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             "indirect_jump",
             "indirect_jump_table",
         }:
+            if bool(self.config.get("materialize_indirect_targets", False)):
+                try:
+                    from d810.hexrays.preanalysis.indirect_jump_labels import (
+                        materialize_indirect_label_targets_from_config,
+                    )
+
+                    results = materialize_indirect_label_targets_from_config(
+                        self.config.get("goto_table_info", {})
+                    )
+                    for result in results:
+                        unflat_logger.info(
+                            "Tigress indirect preanalysis 0x%X: success=%s "
+                            "targets=%d/%d jump_xrefs=%d switch_info=%s reason=%s",
+                            result.function_ea,
+                            result.success,
+                            result.materialized_target_count,
+                            result.target_count,
+                            result.jump_xref_count,
+                            result.switch_info_installed,
+                            result.reason,
+                        )
+                except Exception:
+                    unflat_logger.warning(
+                        "Tigress indirect target materialization failed",
+                        exc_info=True,
+                    )
             self._family = EmulatedDispatcherStrategyFamily(
                 profile=tigress_indirect_dispatcher_profile(
                     goto_table_info=self.config.get("goto_table_info", {}),
+                    enable_phase_reorder=enable_phase_reorder,
                 )
             )
         else:

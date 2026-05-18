@@ -9,7 +9,7 @@ import pytest
 
 import d810.hexrays.observability as hexrays_observability
 import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
@@ -3018,6 +3018,40 @@ def test_emulated_dispatcher_unflattener_accepts_tigress_indirect_profile() -> N
     assert rule.diagnostics_only is True
 
 
+def test_tigress_indirect_profile_can_materialize_targets(monkeypatch) -> None:
+    calls = []
+
+    def _materialize(config):
+        calls.append(config)
+        return ()
+
+    import d810.hexrays.preanalysis.indirect_jump_labels as indirect_labels
+
+    monkeypatch.setattr(
+        indirect_labels,
+        "materialize_indirect_label_targets_from_config",
+        _materialize,
+    )
+
+    config = {
+        "0x401000": {
+            "table_address": "0x402000",
+            "table_nb_elt": 2,
+            "label_end": "0x401100",
+        }
+    }
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "tigress_indirect",
+        "diagnostics_only": True,
+        "materialize_indirect_targets": True,
+        "goto_table_info": config,
+    })
+
+    assert calls == [config]
+    assert rule._family._profile.name == "tigress_indirect"
+
+
 def test_emulated_dispatcher_unflattener_accepts_ollvm_materialization_guard() -> None:
     rule = EmulatedDispatcherUnflattener()
     rule.configure({
@@ -3144,6 +3178,11 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     )
     monkeypatch.setattr(
         emulated_family_module,
+        "_find_pre_header_state",
+        lambda *_args, **_kwargs: (1, 0x20),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
         "recover_dynamic_state_write_transitions",
         lambda **kwargs: kwargs["transition_result"],
     )
@@ -3187,6 +3226,7 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     assert artifact is not None
     assert context is not None
     assert artifact.dispatcher_entry_serial == 2
+    assert artifact.pre_header_serial == 1
     assert artifact.state_var_stkoff == 0x3C
     assert artifact.initial_state == 0x10
     assert artifact.handler_state_map == ((5, 0x10), (7, 0x20))
@@ -3673,6 +3713,183 @@ def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstructio
     assert modifications == ()
     assert blockers == (
         "phase_reconstruction_residual_terminal_frontier_not_loop_aware",
+    )
+
+
+def test_tigress_indirect_phase_reconstruction_allowed_at_locopt() -> None:
+    family = EmulatedDispatcherStrategyFamily(
+        profile=tigress_indirect_dispatcher_profile(),
+    )
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="indirect_jump",
+        state_transport="state_dispatcher_map",
+        lowering_mode="indirect_jump_table_diagnostics",
+        state_dispatcher_entries=(16,),
+    )
+
+    assert family._phase_reconstruction_allowed(
+        SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT),
+        detection,
+    )
+
+
+def test_tigress_indirect_blocks_coalesced_dispatcher_handler_row() -> None:
+    family = EmulatedDispatcherStrategyFamily(
+        profile=tigress_indirect_dispatcher_profile(),
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x23,
+                target_block=11,
+                dispatcher_block=11,
+                compare_block=None,
+                branch_kind="indirect_jump_table",
+                source=DispatcherType.INDIRECT_JUMP,
+            ),
+        ),
+        dispatcher_entry_block=11,
+        dispatcher_blocks=frozenset({11}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=0x22,
+    )
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=11,
+        state_var_stkoff=0x30,
+        pre_header_serial=0,
+        initial_state=0x22,
+        handler_state_map=((11, 0x23),),
+        semantic_reference_variant="semantic_reference_like",
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(edges=()),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+    )
+
+    modifications, blockers = family._collect_phase_reconstruction_modifications(
+        mba=_fake_mba(),
+        flow_graph=_flow_graph(),
+        detection=EmulatedDispatcherDetection(
+            dispatcher_shape="indirect_jump",
+            state_transport="state_dispatcher_map",
+            lowering_mode="indirect_jump_table_diagnostics",
+        ),
+        phase_artifact=artifact,
+        phase_context=context,
+    )
+
+    assert modifications == ()
+    assert blockers == (
+        "phase_reconstruction_indirect_handler_coalesced_with_dispatcher",
+    )
+
+
+@pytest.mark.parametrize(
+    ("edge_kind", "edge_target_state"),
+    (
+        (SemanticEdgeKind.CONDITIONAL_RETURN, None),
+        (SemanticEdgeKind.TRANSITION, 0x1B),
+    ),
+)
+def test_tigress_indirect_repairs_terminal_state_write_stub(
+    edge_kind,
+    edge_target_state,
+) -> None:
+    state_write = InsnSnapshot(
+        opcode=ida_hexrays.m_mov,
+        ea=0x180017719,
+        operands=(),
+        l=MopSnapshot(
+            t=ida_hexrays.mop_n,
+            size=4,
+            value=0x1B,
+        ),
+        d=MopSnapshot(
+            t=ida_hexrays.mop_S,
+            size=4,
+            stkoff=0x30,
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            9: BlockSnapshot(
+                serial=9,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(10,),
+                preds=(18,),
+                flags=0,
+                start_ea=0x180017711,
+                insn_snapshots=(state_write,),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(9,),
+                flags=0,
+                start_ea=0x18001772F,
+                insn_snapshots=(),
+            ),
+            27: BlockSnapshot(
+                serial=27,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(16,),
+                preds=(),
+                flags=0,
+                start_ea=0x18001790B,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=9,
+        func_ea=0x1800175C0,
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x1B,
+                target_block=27,
+                dispatcher_block=16,
+                compare_block=None,
+                branch_kind="indirect_jump_table",
+                source=DispatcherType.INDIRECT_JUMP,
+            ),
+        ),
+        dispatcher_entry_block=16,
+        dispatcher_blocks=frozenset({16}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=0x22,
+    )
+    edge = SimpleNamespace(
+        kind=edge_kind,
+        target_state=edge_target_state,
+        ordered_path=(9, 10),
+    )
+
+    modifications = (
+        emulated_family_module
+        ._collect_tigress_indirect_terminal_stub_modifications(
+            dag=SimpleNamespace(edges=(edge,)),
+            flow_graph=flow_graph,
+            dispatch_map=dispatch_map,
+            state_var_stkoff=0x30,
+            constant_result=SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
+        )
+    )
+
+    assert modifications == (
+        RedirectGoto(
+            from_serial=9,
+            old_target=10,
+            new_target=27,
+        ),
     )
 
 
