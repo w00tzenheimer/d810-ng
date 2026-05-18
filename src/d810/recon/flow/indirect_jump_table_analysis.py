@@ -155,17 +155,83 @@ def _find_ijmp_dispatcher_serial(mba: object) -> int | None:
     return None
 
 
-def _find_mba_block_for_ea(mba: object, target_ea: int) -> int | None:
+def _find_dispatcher_serial_by_ea(mba: object, ea: int | None) -> int | None:
+    if ea is None:
+        return None
+    return _find_mba_block_for_instruction_ea(mba, int(ea))
+
+
+def _find_materialized_dispatcher_serial(mba: object) -> int | None:
+    best_serial = None
+    best_preds = -1
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        try:
+            pred_count = int(blk.npred())
+        except Exception:
+            pred_count = 0
+        if pred_count > best_preds:
+            best_serial = int(serial)
+            best_preds = pred_count
+    return best_serial
+
+
+def _find_mba_block_for_instruction_ea(mba: object, target_ea: int) -> int | None:
     target = int(target_ea)
     for serial in range(int(getattr(mba, "qty", 0) or 0)):
         blk = mba.get_mblock(serial)
         start = int(getattr(blk, "start", 0) or 0)
-        end = int(getattr(blk, "end", 0) or 0)
         if start == target:
             return int(serial)
-        if start <= target < end:
+        tail = getattr(blk, "tail", None)
+        if tail is not None and int(getattr(tail, "ea", -1)) == target:
             return int(serial)
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            try:
+                if int(getattr(insn, "ea", -1)) == target:
+                    return int(serial)
+            except Exception:
+                pass
+            insn = getattr(insn, "next", None)
     return None
+
+
+def _find_mba_block_for_ea(mba: object, target_ea: int) -> int | None:
+    return _find_mba_block_for_instruction_ea(mba, target_ea)
+
+
+def _find_mba_block_for_target_interval(
+    mba: object,
+    target_ea: int,
+    next_target_ea: int | None,
+) -> int | None:
+    """Find a block whose first live instruction belongs to a native label.
+
+    Hex-Rays may fold the setup instructions at a computed-goto label into
+    call arguments, leaving no micro-instruction with the exact label EA.  The
+    label is still represented by the first later instruction before the next
+    table label.
+    """
+    target = int(target_ea)
+    interval_end = int(next_target_ea) if next_target_ea is not None else None
+    best: tuple[int, int] | None = None
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        insn = getattr(blk, "head", None)
+        while insn is not None:
+            try:
+                ea = int(getattr(insn, "ea", -1))
+            except Exception:
+                insn = getattr(insn, "next", None)
+                continue
+            if ea > target and (interval_end is None or ea < interval_end):
+                candidate = (ea, int(serial))
+                if best is None or candidate < best:
+                    best = candidate
+                break
+            insn = getattr(insn, "next", None)
+    return None if best is None else int(best[1])
 
 
 def _observe_state_dispatcher_map(
@@ -197,9 +263,20 @@ def analyze_tigress_indirect_dispatcher_from_config(
     cfg = _config_for_function(mba, goto_table_info)
     if cfg is None:
         return None
-    dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
+    dispatch_jump_ea = _parse_int(cfg.get("dispatch_jump_ea"))
+    dispatcher_serial = (
+        _find_ijmp_dispatcher_serial(mba)
+        if dispatch_jump_ea is None else
+        _find_dispatcher_serial_by_ea(mba, dispatch_jump_ea)
+    )
     if dispatcher_serial is None:
-        logger.debug("Tigress indirect config matched but no m_ijmp block was found")
+        dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
+    if dispatcher_serial is None and bool(cfg.get("materialized_targets", False)):
+        dispatcher_serial = _find_materialized_dispatcher_serial(mba)
+    if dispatcher_serial is None:
+        logger.debug(
+            "Tigress indirect config matched but no dispatcher block was found"
+        )
         return None
 
     table_address = _parse_int(cfg.get("table_address"))
@@ -209,22 +286,38 @@ def analyze_tigress_indirect_dispatcher_from_config(
         return None
 
     initial_state = _parse_int(cfg.get("initial_state"))
-    state_var_stkoff = _parse_int(
-        cfg.get("state_var_stkoff"),
-        default=_parse_int(cfg.get("stack_table_offset")),
-    )
+    state_var_stkoff = _parse_int(cfg.get("state_var_stkoff"))
     state_base = _parse_int(cfg.get("state_base"), default=1) or 1
 
     import ida_bytes  # type: ignore[import-untyped]
 
+    raw_targets = tuple(
+        int(ida_bytes.get_qword(int(table_address) + index * 8))
+        for index in range(int(table_count))
+    )
+    unique_targets = sorted({target for target in raw_targets if target})
+    next_target_by_ea = {
+        int(target): (
+            int(unique_targets[index + 1])
+            if index + 1 < len(unique_targets) else
+            None
+        )
+        for index, target in enumerate(unique_targets)
+    }
     entries: list[IndirectJumpTableEntry] = []
-    for index in range(int(table_count)):
-        target_ea = int(ida_bytes.get_qword(int(table_address) + index * 8))
+    for index, target_ea in enumerate(raw_targets):
+        target_block = _find_mba_block_for_ea(mba, target_ea)
+        if target_block is None:
+            target_block = _find_mba_block_for_target_interval(
+                mba,
+                target_ea,
+                next_target_by_ea.get(int(target_ea)),
+            )
         entries.append(
             IndirectJumpTableEntry(
                 state_const=int(state_base) + index,
                 target_ea=target_ea,
-                target_block=_find_mba_block_for_ea(mba, target_ea),
+                target_block=target_block,
             )
         )
 

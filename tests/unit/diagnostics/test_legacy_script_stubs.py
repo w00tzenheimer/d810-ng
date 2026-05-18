@@ -46,6 +46,7 @@ def _subprocess_env() -> dict:
         ("terminal_tail_cascade_egress_plan.py", "cascade-egress-plan"),
         ("extract_after_pseudocode.py", "dump-after"),
         ("inspect_linearized_state_node.py", "inspect-state-node"),
+        ("tigress_indirect_state_transfer_map.py", "indirect-transfer-map"),
     ],
 )
 def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
@@ -77,6 +78,7 @@ def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
         "terminal_tail_cascade_egress_plan.py",
         "extract_after_pseudocode.py",
         "inspect_linearized_state_node.py",
+        "tigress_indirect_state_transfer_map.py",
     ],
 )
 def test_wrapper_stub_contains_no_legacy_implementation(script: str) -> None:

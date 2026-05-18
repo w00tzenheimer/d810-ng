@@ -22,6 +22,7 @@ import datetime as _dt
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -126,6 +127,43 @@ def latest_db(name: str | None) -> Path:
     return p  # type: ignore[return-value]
 
 
+def _db_has_indirect_rows(path: Path) -> bool:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM state_dispatcher_rows
+                WHERE dispatcher_kind = 'INDIRECT_JUMP'
+                LIMIT 1
+                """
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def latest_indirect_transfer_db(name: str | None) -> Path:
+    d = worktree_log_dir(name)
+    if not d.is_dir():
+        _die(f"diag log dir not found: {d}")
+    cand = sorted(
+        (
+            p for p in d.glob("*.diag.sqlite3")
+            if p.is_file() and p.stat().st_size > 0
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for db_path in cand:
+        if _db_has_indirect_rows(db_path):
+            return db_path
+    _die(f"no diag sqlite3 DBs with INDIRECT_JUMP rows under {d}")
+
+
 def resolve_dump(name: str | None, explicit: str | None) -> Path:
     if explicit:
         p = Path(explicit).expanduser().resolve()
@@ -142,6 +180,12 @@ def resolve_db(name: str | None, explicit: str | None) -> Path:
             _die(f"db not found: {p}")
         return p
     return latest_db(name)
+
+
+def resolve_indirect_transfer_db(name: str | None, explicit: str | None) -> Path:
+    if explicit:
+        return resolve_db(name, explicit)
+    return latest_indirect_transfer_db(name)
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +515,36 @@ def cmd_db(args: argparse.Namespace) -> int:
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
     argv = [sys.executable, "-m", "d810.diagnostics", *passthrough]
     return subprocess.call(argv, env=env)
+
+
+def cmd_indirect_transfer_map(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics indirect-transfer-map`."""
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_indirect_transfer_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "indirect-transfer-map",
+        "--db", str(db),
+        "--state-var-stkoff", args.state_var_stkoff,
+        "--table-stkoff", args.table_stkoff,
+        "--state-base", args.state_base,
+        "--pointer-size", str(args.pointer_size),
+        "--max-depth", str(args.max_depth),
+    ]
+    if args.snapshot_id is not None:
+        diag_argv.extend(["--snapshot-id", str(args.snapshot_id)])
+    if args.table_count is not None:
+        diag_argv.extend(["--table-count", str(args.table_count)])
+    if args.json_output:
+        diag_argv.append("--json")
+    return subprocess.call(diag_argv, env=env)
 
 
 def cmd_trace(args: argparse.Namespace) -> int:
@@ -1226,6 +1300,50 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("args", nargs=argparse.REMAINDER,
                     help="all args after `--` are forwarded to d810.diagnostics")
     sp.set_defaults(func=cmd_db)
+
+    sp = sub.add_parser(
+        "indirect-transfer-map",
+        help=(
+            "Extract an indirect-dispatcher state-transfer map from the latest"
+            " indirect diag DB. Wraps `python -m d810.diagnostics"
+            " indirect-transfer-map`."
+        ),
+        description=(
+            "Extract an indirect-dispatcher state-transfer map from the latest"
+            " diag DB that contains INDIRECT_JUMP state-dispatcher rows,"
+            " including compact instruction metadata used to prove table"
+            " population."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument(
+        "--db",
+        help="explicit diag DB (default: latest indirect-dispatcher DB in worktree)",
+    )
+    sp.add_argument("--snapshot-id", type=int, default=None)
+    sp.add_argument(
+        "--state-var-stkoff",
+        default="0x30",
+        help="state variable stack offset (default: 0x30)",
+    )
+    sp.add_argument(
+        "--table-stkoff",
+        default="0x70",
+        help="stack offset of the indirect target table (default: 0x70)",
+    )
+    sp.add_argument(
+        "--state-base",
+        default="0x1",
+        help="base state value subtracted before table indexing (default: 0x1)",
+    )
+    sp.add_argument("--table-count", type=int, default=None)
+    sp.add_argument("--pointer-size", type=int, default=8)
+    sp.add_argument("--max-depth", type=int, default=64)
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable report",
+    )
+    sp.set_defaults(func=cmd_indirect_transfer_map)
 
     sp = sub.add_parser(
         "trace",
