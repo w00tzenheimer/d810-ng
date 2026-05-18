@@ -24,10 +24,7 @@ ignores:
   - "src/d810/_vendor/**"
   - "src/d810/ui/testbed.py"
   - "src/d810/hexrays/hexrays_helpers.py"   # demo/example function with showcase prints
-  - "src/d810/core/tracker_components.py"   # __main__ benchmark runner
-  - "src/d810/core/descriptors.py"          # dead code marker (print never reached)
   - "src/d810/mba/backends/egglog_backend.py"  # __main__ dev runner
-  - "src/d810/core/cymode.py"                  # startup messages before logging is initialized
   - "src/d810/hexrays/microcode_dump.py"       # CLI dump tool — intentional stdout/stderr output
   - "src/d810/qt_shim.py"                      # pre-logging startup error (before logger available)
 

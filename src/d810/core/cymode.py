@@ -1,7 +1,11 @@
 import dataclasses
 import os
 
+from d810.core import logging
+
 from .registry import survives_reload, SingletonMeta
+
+logger = logging.getLogger(__name__)
 
 
 def _get_default_cython_enabled() -> bool:
@@ -91,13 +95,13 @@ class CythonMode(metaclass=SingletonMeta):
         """Point the public API to the fast Cython implementations."""
         if not self._enabled:
             self._set_flag(True)
-            print("Cython speedups ENABLED.")
+            logger.info("Cython speedups ENABLED.")
 
     def disable(self) -> None:
         """Point the public API to the pure Python implementations for debugging."""
         if self._enabled:
             self._set_flag(False)
-            print("Cython speedups DISABLED (using pure Python).")
+            logger.info("Cython speedups DISABLED (using pure Python).")
 
     def is_enabled(self) -> bool:
         """Check if the Cython implementation is currently active."""
