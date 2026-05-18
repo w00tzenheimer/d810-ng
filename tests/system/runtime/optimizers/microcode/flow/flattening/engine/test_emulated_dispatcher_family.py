@@ -2894,6 +2894,107 @@ def test_tigress_switch_profile_collects_live_transition_facts(monkeypatch) -> N
     assert calls == [(mba, dispatch_map, "tigress_switch")]
 
 
+def test_ollvm_profile_supplies_carrier_facts_via_profile(monkeypatch) -> None:
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_CALLS)
+    calls = []
+
+    def _collect(seen_mba):
+        calls.append(seen_mba)
+        return ("carrier_fact",)
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "collect_ollvm_post_execute_carrier_facts",
+        _collect,
+    )
+
+    profile = ollvm_state_dispatcher_map_profile()
+    assert profile.collect_post_execute_carrier_facts(mba) == ("carrier_fact",)
+    assert calls == [mba]
+
+
+def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate(
+    monkeypatch,
+) -> None:
+    facts = (SimpleNamespace(fact_id="carrier:1"),)
+    seen: list[tuple[str, tuple[object, ...]]] = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="carrier_fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            post_execute_carrier_fact_factory=lambda _mba: facts,
+        )
+    )
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_CALLS,
+        mark_chains_dirty=lambda: seen.append(("mark", ())),
+        optimize_local=lambda _arg: seen.append(("optimize", ())),
+    )
+    snapshot = AnalysisSnapshot(
+        mba=mba,
+        maturity=ida_hexrays.MMAT_CALLS,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={EMULATED_DISPATCHER_MODIFICATIONS_KEY: ()},
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_carrier_output_alias_repair",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("output", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_local_alias_mem2reg",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("alias", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_same_carrier_alias_repairs",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("same", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "mba_deep_cleaning",
+        lambda _mba, _final: seen.append(("deep_clean", ())) or 0,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "safe_verify",
+        lambda _mba, _context, logger_func=None: seen.append(("verify", ())),
+    )
+
+    assert family.post_execute_cleanup(mba, snapshot=snapshot, total_changes=1) == 1
+    assert ("output", facts) in seen
+    assert ("alias", facts) in seen
+    assert ("same", facts) in seen
+
+
 def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> None:
     rule = EmulatedDispatcherUnflattener()
     rule.configure({"profile": "tigress_switch", "diagnostics_only": True})
@@ -4292,7 +4393,7 @@ def test_emulated_dispatcher_strategy_plans_scalar_promotions() -> None:
                 "emulated_dispatcher": EmulatedDispatcherMetadata(
                     dispatcher_shape="conditional_chain",
                     state_transport="state_dispatcher_map",
-                    lowering_mode="ollvm_semantic_carrier_hoist",
+                    lowering_mode="semantic_carrier_hoist",
                     provenance_hints=("equality_chain",),
                     analysis_dispatchers=(7,),
                     collector_dispatchers=(),
@@ -4302,7 +4403,7 @@ def test_emulated_dispatcher_strategy_plans_scalar_promotions() -> None:
                     rejected_fathers=0,
                     candidate_kinds=("PromoteOperandToScalar",),
                     rejection_reasons=(),
-                    selected_lowering_mode="ollvm_semantic_carrier_hoist",
+                    selected_lowering_mode="semantic_carrier_hoist",
                     selected_modification_count=1,
                 ),
                 EMULATED_DISPATCHER_MODIFICATIONS_KEY: (

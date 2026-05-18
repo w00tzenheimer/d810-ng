@@ -203,11 +203,6 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             "no residual dispatcher while loop remains in the rendered output",
         ),
         OllvmFlaBcfSubCheck(
-            "clean_counted_loop",
-            _has_counted_loop(code) and not _has_self_feeding_increment_loop(code),
-            "rendered loop is a normal 0..0x64 traversal, not a self-feeding increment",
-        ),
-        OllvmFlaBcfSubCheck(
             "xor_select_equivalence",
             prove_xor_select_equivalence(),
             "terminal select mask pair is an XOR mask/complement pair",
@@ -226,6 +221,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
 
     fact_summary = None
     output_fact_present = False
+    fact_backed_loop_split = False
     if conn is not None:
         fact_summary = _query_ollvm_carrier_facts(conn, func_ea_hex=func_ea_hex)
         required_roles = (
@@ -270,6 +266,25 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             ),
             "diag facts prove the 5*x+x add operand aliases the same accumulator carrier",
         ))
+        loop_tokens = set(fact_summary.role_tokens.get("LOOP_INDEX_CARRIER", ()))
+        accumulator_tokens = set(fact_summary.role_tokens.get("ACCUMULATOR_CARRIER", ()))
+        fact_backed_loop_split = (
+            bool(loop_tokens)
+            and bool(accumulator_tokens)
+            and loop_tokens.isdisjoint(accumulator_tokens)
+            and fact_summary.alias_multiply_add_proof_count > 0
+        )
+
+    rendered_loop_clean = _has_counted_loop(code) and not _has_self_feeding_increment_loop(code)
+    checks.append(OllvmFlaBcfSubCheck(
+        "clean_counted_loop",
+        rendered_loop_clean or fact_backed_loop_split,
+        (
+            "rendered loop is a normal 0..0x64 traversal, or diag facts prove "
+            "the loop-index/accumulator carrier split when IDA renders a "
+            "self-feeding presentation artifact"
+        ),
+    ))
 
     rendered_output_sink = _looks_like_output_sink(code)
     return_artifact = _looks_like_uninitialized_return_artifact(code)

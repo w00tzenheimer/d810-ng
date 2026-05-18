@@ -54,6 +54,11 @@ from d810.cfg.reconstruction_emission import (
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
 )
+from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
+    collect_ollvm_branch_ownership_refiners,
+    collect_ollvm_post_execute_carrier_facts,
+    collect_ollvm_profile_fact_observations,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
@@ -128,6 +133,13 @@ from d810.recon.flow.reconstruction_candidate_builder import (
 )
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
+)
+from d810.recon.facts.carrier import (
+    CARRIER_STORE_PROMOTION_FACT_KIND,
+    LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+    OBSERVABLE_STORE_FACT_KIND,
+    SAME_CARRIER_ALIAS_FACT_KIND,
+    production_carrier_fact,
 )
 from d810.recon.flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
@@ -1243,6 +1255,21 @@ def _make_tigress_indirect_state_dispatcher_maps(
     return _collect
 
 
+def _empty_post_execute_carrier_facts(_mba: object) -> tuple[object, ...]:
+    return ()
+
+
+def _empty_profile_fact_observations(_mba: object) -> tuple[object, ...]:
+    return ()
+
+
+def _empty_branch_ownership_refiners(
+    _mba: object,
+    _logger: object,
+) -> tuple[object, ...]:
+    return ()
+
+
 def _entry_to_pre_header_corridor(
     flow_graph: FlowGraph,
     *,
@@ -1569,43 +1596,10 @@ def _collect_phase_branch_ownership_proofs(
     *,
     dag: object,
     dispatch_map: StateDispatcherMap | None,
-    mba: object,
-    profile_name: str,
-    logger: object,
+    proof_refiners: tuple[object, ...] = (),
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect recon branch ownership proofs for planning/diagnostics."""
 
-    proof_refiners = []
-    if str(profile_name).startswith("ollvm"):
-        try:
-            from d810.recon.facts.collectors import (
-                OllvmSemanticCarrierFactCollector,
-            )
-            from d810.recon.flow.branch_ownership_oracle import (
-                MopTrackerBranchOwnershipOracle,
-                OllvmCarrierBranchOwnershipOracle,
-                Z3BranchOwnershipOracle,
-            )
-
-            carrier_facts = OllvmSemanticCarrierFactCollector().collect(
-                mba,
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=int(getattr(mba, "maturity", 0) or 0),
-                phase="pre_d810",
-            )
-            proof_refiners.append(
-                OllvmCarrierBranchOwnershipOracle(
-                    mba=mba,
-                    carrier_facts=carrier_facts,
-                ).refine
-            )
-            proof_refiners.append(Z3BranchOwnershipOracle(mba=mba).refine)
-            proof_refiners.append(MopTrackerBranchOwnershipOracle(mba=mba).refine)
-        except Exception:
-            logger.debug(
-                "Microcode branch ownership oracle unavailable",
-                exc_info=True,
-            )
     return collect_branch_ownership_proofs(
         dag=dag,
         dispatch_map=dispatch_map,
@@ -2013,23 +2007,141 @@ def _ollvm_collect_local_alias_tokens(
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
             continue
-        role = payload.get("role")
-        if role not in {"LOOP_INDEX_CARRIER", "ACCUMULATOR_CARRIER"}:
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        if production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND):
+            token = _ollvm_canonical_var_token(str(payload.get("storage_identity") or ""))
+            if token is not None:
+                aliases.add(token)
             continue
-        token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
-        if token is not None:
-            aliases.add(token)
-        if role == "ACCUMULATOR_CARRIER":
+        if production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND):
+            carrier_token = _ollvm_canonical_var_token(
+                str(details.get("carrier_token") or "")
+            )
+            if carrier_token is not None:
+                aliases.add(carrier_token)
             aliases.update(
                 alias for alias in (
                     _ollvm_canonical_var_token(str(raw_alias))
-                    for raw_alias in (
-                        payload.get("multiply_add_same_base_alias_tokens") or ()
-                    )
+                    for raw_alias in (details.get("alias_tokens") or ())
                 )
                 if alias is not None
             )
     return frozenset(sorted(aliases))
+
+
+@dataclass(frozen=True)
+class _OllvmLocalAliasScalarizationSpec:
+    alias_token: str
+    base_token: str
+    fact_id: str
+    fact_kind: str
+
+
+def _ollvm_local_alias_scalarization_specs(
+    carrier_facts: tuple[object, ...],
+) -> dict[str, _OllvmLocalAliasScalarizationSpec]:
+    specs: dict[str, _OllvmLocalAliasScalarizationSpec] = {}
+    for fact in carrier_facts:
+        if not production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND):
+            continue
+        payload = getattr(fact, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        if details.get("proof_family") != "local_expression_storage_scalarization":
+            continue
+        alias_token = _ollvm_canonical_var_token(
+            str(payload.get("storage_identity") or "")
+        )
+        base_token = _ollvm_canonical_var_token(
+            str(details.get("local_base_token") or "")
+        )
+        if base_token is None:
+            base_token = _ollvm_canonical_var_token(
+                str(details.get("multiply_add_base_token") or "")
+            )
+        if alias_token is None or base_token is None or alias_token == base_token:
+            continue
+        specs[alias_token] = _OllvmLocalAliasScalarizationSpec(
+            alias_token=alias_token,
+            base_token=base_token,
+            fact_id=str(getattr(fact, "fact_id", "")),
+            fact_kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+        )
+    return specs
+
+
+def _ollvm_local_alias_fact_ids(
+    carrier_facts: tuple[object, ...],
+) -> set[str]:
+    return {
+        str(getattr(fact, "fact_id", ""))
+        for fact in carrier_facts
+        if (
+            production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND)
+            or production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND)
+        )
+    }
+
+
+def _ollvm_mop_size(mop: object | None) -> int:
+    try:
+        return int(getattr(mop, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _ollvm_widths_compatible(left: object | None, right: object | None) -> bool:
+    left_size = _ollvm_mop_size(left)
+    right_size = _ollvm_mop_size(right)
+    return left_size > 0 and right_size > 0 and left_size == right_size
+
+
+def _ollvm_has_value_width(mop: object | None) -> bool:
+    return _ollvm_mop_size(mop) > 0
+
+
+def _ollvm_make_lists_ready(blk: object | None) -> None:
+    make_lists_ready = getattr(blk, "make_lists_ready", None)
+    if callable(make_lists_ready):
+        make_lists_ready()
+
+
+def _verify_ollvm_carrier_mutation(
+    mba: object,
+    logger: object,
+    label: str,
+    *,
+    touched_blocks: set[int],
+    fact_ids: set[str],
+    fact_kinds: set[str],
+) -> None:
+    try:
+        mba.mark_chains_dirty()
+    except Exception:
+        pass
+    try:
+        mba.optimize_local(0)
+    except Exception:
+        pass
+    logger_func = getattr(logger, "error", None)
+    if not callable(logger_func):
+        logger_func = lambda *args, **kwargs: None
+    safe_verify(
+        mba,
+        f"OLLVM {label} fact-backed mutation",
+        logger_func=logger_func,
+        capture_blocks=sorted(touched_blocks),
+        capture_metadata={
+            "mutation_family": label,
+            "carrier_fact_ids": sorted(fact_ids),
+            "carrier_fact_kinds": sorted(fact_kinds),
+        },
+    )
 
 
 def _ollvm_rewrite_ldx_alias_to_scalar(insn: object, alias_tokens: frozenset[str]) -> bool:
@@ -2040,13 +2152,16 @@ def _ollvm_rewrite_ldx_alias_to_scalar(insn: object, alias_tokens: frozenset[str
     token = _ollvm_mop_var_token(source)
     if token not in alias_tokens or source is None or dest is None:
         return False
+    # The ldx source is an address carrier, so it is usually pointer-sized.
+    # The destination is the loaded scalar value.  Do not compare those widths;
+    # require a concrete value width and let safe_verify validate the rewrite.
+    if not _ollvm_has_value_width(dest):
+        return False
     try:
         saved_source = ida_hexrays.mop_t()
         saved_source.assign(source)
         saved_dest = ida_hexrays.mop_t()
         saved_dest.assign(dest)
-        size = int(getattr(saved_dest, "size", 0) or 4)
-        saved_source.size = size
         insn.opcode = ida_hexrays.m_mov
         insn.l.assign(saved_source)
         try:
@@ -2072,13 +2187,13 @@ def _ollvm_rewrite_stx_alias_to_scalar(insn: object, alias_tokens: frozenset[str
     target_text = _ollvm_mop_text(target)
     if "[ds" in target_text:
         return False
+    if not _ollvm_widths_compatible(source, target):
+        return False
     try:
         saved_source = ida_hexrays.mop_t()
         saved_source.assign(source)
         saved_target = ida_hexrays.mop_t()
         saved_target.assign(target)
-        size = int(getattr(saved_source, "size", 0) or 4)
-        saved_target.size = size
         insn.opcode = ida_hexrays.m_mov
         insn.l.assign(saved_source)
         try:
@@ -2106,10 +2221,13 @@ def _ollvm_replace_alias_load_mop(
         source = getattr(nested, "r", None)
         token = _ollvm_mop_var_token(source)
         if token in alias_tokens and source is not None:
+            # Nested ldx has the same address-vs-value shape: source is the
+            # address carrier, while the enclosing mop carries the value width.
+            if not _ollvm_has_value_width(mop):
+                return 0
             try:
                 replacement = ida_hexrays.mop_t()
                 replacement.assign(source)
-                replacement.size = int(getattr(mop, "size", 0) or 4)
                 mop.assign(replacement)
                 return 1
             except Exception:
@@ -2123,44 +2241,68 @@ def _ollvm_replace_alias_load_mop(
     return changed
 
 
-def _ollvm_scalarize_alias_accesses_in_insn(
+def _ollvm_alias_access_spec_for_insn(
     insn: object,
-    alias_tokens: frozenset[str],
-) -> int:
-    if insn is None:
-        return 0
-    changed = 0
+    alias_specs: dict[str, _OllvmLocalAliasScalarizationSpec],
+) -> _OllvmLocalAliasScalarizationSpec | None:
+    opcode = int(getattr(insn, "opcode", -1))
+    if opcode == int(ida_hexrays.m_ldx):
+        return alias_specs.get(_ollvm_mop_var_token(getattr(insn, "r", None)))
+    if opcode == int(ida_hexrays.m_stx):
+        target_text = _ollvm_mop_text(getattr(insn, "d", None))
+        if "[ds" in target_text:
+            token = _ollvm_mop_var_token(getattr(insn, "d", None))
+            return alias_specs.get(token)
     for side in ("l", "r", "d"):
-        # Nested ldx operands are expression operands.  Replace the operand
-        # with the direct scalar alias instead of rewriting the nested
-        # instruction opcode, which Hex-Rays rejects for expression mops.
-        changed += _ollvm_replace_alias_load_mop(
+        nested_spec = _ollvm_nested_alias_load_spec(
             getattr(insn, side, None),
-            alias_tokens,
+            alias_specs,
         )
-    if _ollvm_rewrite_ldx_alias_to_scalar(insn, alias_tokens):
-        return changed + 1
-    if _ollvm_rewrite_stx_alias_to_scalar(insn, alias_tokens):
-        return changed + 1
-    return changed
+        if nested_spec is not None:
+            return nested_spec
+    return None
+
+
+def _ollvm_nested_alias_load_spec(
+    mop: object | None,
+    alias_specs: dict[str, _OllvmLocalAliasScalarizationSpec],
+) -> _OllvmLocalAliasScalarizationSpec | None:
+    if mop is None:
+        return None
+    nested = getattr(mop, "d", None)
+    if nested is None:
+        return None
+    if int(getattr(nested, "opcode", -1)) == int(ida_hexrays.m_ldx):
+        spec = alias_specs.get(_ollvm_mop_var_token(getattr(nested, "r", None)))
+        if spec is not None:
+            return spec
+    for side in ("l", "r", "d"):
+        spec = _ollvm_nested_alias_load_spec(getattr(nested, side, None), alias_specs)
+        if spec is not None:
+            return spec
+    return None
 
 
 def _ollvm_is_local_alias_setup_move(
     insn: object,
-    alias_tokens: frozenset[str],
+    alias_specs: dict[str, _OllvmLocalAliasScalarizationSpec],
 ) -> bool:
     if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
         return False
     dest_token = _ollvm_mop_var_token(getattr(insn, "d", None))
-    if dest_token not in alias_tokens:
+    if dest_token not in alias_specs:
         return False
+    base_token = alias_specs[dest_token].base_token
     left_text = _ollvm_mop_text(getattr(insn, "l", None))
-    if "&(" in left_text:
+    if base_token == dest_token:
+        return "&(" in left_text
+    if "&(" in left_text and base_token in _ollvm_var_tokens_from_text(left_text):
         return True
     text = _ollvm_insn_text(insn)
     if "," not in text:
         return False
-    return "&(" in text.rsplit(",", 1)[0]
+    left_text = text.rsplit(",", 1)[0]
+    return "&(" in left_text and base_token in _ollvm_var_tokens_from_text(left_text)
 
 
 def _ollvm_nop_insn(insn: object) -> bool:
@@ -2204,28 +2346,58 @@ def _ollvm_collect_rdx_output_alias_mop(mba: object) -> object | None:
     return output_mop
 
 
+@dataclass(frozen=True)
+class _OllvmCarrierFactSpec:
+    kind: str
+    fact_id: str
+    token: str
+    source_block: int
+    source_ea: int
+    instruction_index: int | None
+    instruction_dstr: str
+
+
 def _ollvm_fact_specs_by_block_ea(
     carrier_facts: tuple[object, ...],
     *,
-    roles: frozenset[str],
-) -> dict[tuple[int, int], str]:
-    specs: dict[tuple[int, int], str] = {}
+    kind: str,
+) -> dict[tuple[int, int], _OllvmCarrierFactSpec]:
+    specs: dict[tuple[int, int], _OllvmCarrierFactSpec] = {}
     for fact in carrier_facts:
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
             continue
-        if payload.get("role") not in roles:
+        if not production_carrier_fact(fact, kind):
             continue
-        token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
+        token = _ollvm_canonical_var_token(str(payload.get("storage_identity") or ""))
         source_block = payload.get("source_block")
-        instruction_ea = payload.get("instruction_ea")
+        instruction_ea = payload.get("source_ea")
         if token is None or source_block is None or instruction_ea is None:
             continue
-        specs[(int(source_block), int(instruction_ea))] = token
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        instruction_index = payload.get("instruction_index")
+        try:
+            parsed_instruction_index = (
+                int(instruction_index) if instruction_index is not None else None
+            )
+        except Exception:
+            parsed_instruction_index = None
+        source_block_int = int(source_block)
+        instruction_ea_int = int(instruction_ea)
+        specs[(source_block_int, instruction_ea_int)] = _OllvmCarrierFactSpec(
+            kind=kind,
+            fact_id=str(getattr(fact, "fact_id", "")),
+            token=token,
+            source_block=source_block_int,
+            source_ea=instruction_ea_int,
+            instruction_index=parsed_instruction_index,
+            instruction_dstr=str(details.get("instruction_dstr") or ""),
+        )
     return specs
 
-
-def _apply_ollvm_output_alias_repair(
+def _apply_carrier_output_alias_repair(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2237,15 +2409,15 @@ def _apply_ollvm_output_alias_repair(
         return 0
     output_store_specs = _ollvm_fact_specs_by_block_ea(
         carrier_facts,
-        roles=frozenset({
-            "ARG_OUTPUT_STORE_CANDIDATE",
-            "LOCAL_WORKING_STORE_CANDIDATE",
-        }),
+        kind=OBSERVABLE_STORE_FACT_KIND,
     )
     if not output_store_specs:
         return 0
 
     changed = 0
+    touched_blocks: set[int] = set()
+    fact_ids: set[str] = set()
+    fact_kinds: set[str] = set()
     qty = int(getattr(mba, "qty", 0) or 0)
     for serial in range(qty):
         try:
@@ -2254,12 +2426,13 @@ def _apply_ollvm_output_alias_repair(
             continue
         if blk is None:
             continue
+        _ollvm_make_lists_ready(blk)
         block_changed = 0
         block_serial = int(getattr(blk, "serial", serial))
         insn = getattr(blk, "head", None)
         while insn is not None:
             if int(getattr(insn, "opcode", -1)) == int(ida_hexrays.m_stx):
-                expected_target = output_store_specs.get((
+                spec = output_store_specs.get((
                     block_serial,
                     int(getattr(insn, "ea", 0) or 0),
                 ))
@@ -2267,8 +2440,8 @@ def _apply_ollvm_output_alias_repair(
                 target_token = _ollvm_mop_var_token(target)
                 target_text = _ollvm_mop_text(target)
                 if (
-                    expected_target is not None
-                    and target_token == expected_target
+                    spec is not None
+                    and target_token == spec.token
                     and "[ds" in target_text
                 ):
                     try:
@@ -2278,8 +2451,15 @@ def _apply_ollvm_output_alias_repair(
                             and int(getattr(nested, "opcode", -1))
                             == int(ida_hexrays.m_ldx)
                         ):
+                            nested_source = getattr(nested, "r", None)
+                            if not _ollvm_widths_compatible(output_mop, nested_source):
+                                insn = getattr(insn, "next", None)
+                                continue
                             nested.r.assign(output_mop)
                             block_changed += 1
+                            touched_blocks.add(block_serial)
+                            fact_ids.add(spec.fact_id)
+                            fact_kinds.add(spec.kind)
                     except Exception:
                         pass
             insn = getattr(insn, "next", None)
@@ -2294,6 +2474,14 @@ def _apply_ollvm_output_alias_repair(
             mba.mark_chains_dirty()
         except Exception:
             pass
+        _verify_ollvm_carrier_mutation(
+            mba,
+            logger,
+            "output_alias_repair",
+            touched_blocks=touched_blocks,
+            fact_ids=fact_ids,
+            fact_kinds=fact_kinds,
+        )
         log_info = getattr(logger, "info", None)
         if callable(log_info):
             log_info(
@@ -2308,19 +2496,25 @@ def _apply_ollvm_output_alias_repair(
     return int(changed)
 
 
-def _apply_ollvm_local_alias_mem2reg(
+def _apply_local_alias_mem2reg(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
 ) -> int:
     if mba is None:
         return 0
-    alias_tokens = _ollvm_collect_local_alias_tokens(carrier_facts)
-    if not alias_tokens:
+    alias_specs = _ollvm_local_alias_scalarization_specs(carrier_facts)
+    if not alias_specs:
         return 0
-    changed = 0
+    queued = 0
     qty = int(getattr(mba, "qty", 0) or 0)
     setup_moves_removed = 0
+    fact_ids: set[str] = set()
+    try:
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+    except Exception:
+        return 0
+    modifier = DeferredGraphModifier(mba)
     for serial in range(qty):
         try:
             blk = mba.get_mblock(serial)
@@ -2328,41 +2522,85 @@ def _apply_ollvm_local_alias_mem2reg(
             continue
         if blk is None:
             continue
-        block_changed = 0
+        _ollvm_make_lists_ready(blk)
+        block_serial = int(getattr(blk, "serial", serial))
         insn = getattr(blk, "head", None)
         while insn is not None:
-            if _ollvm_is_local_alias_setup_move(insn, alias_tokens):
-                if _ollvm_nop_insn(insn):
-                    block_changed += 1
-                    setup_moves_removed += 1
+            if _ollvm_is_local_alias_setup_move(insn, alias_specs):
                 insn = getattr(insn, "next", None)
                 continue
-            block_changed += _ollvm_scalarize_alias_accesses_in_insn(
+            alias_spec = _ollvm_alias_access_spec_for_insn(
                 insn,
-                alias_tokens,
+                alias_specs,
             )
+            if alias_spec is not None:
+                modifier.queue_scalarize_local_alias_access(
+                    block_serial,
+                    int(getattr(insn, "ea", 0) or 0),
+                    int(getattr(insn, "opcode", 0) or 0),
+                    alias_spec.alias_token,
+                    alias_spec.base_token,
+                    description=(
+                        "ollvm fact-backed local alias scalarization "
+                        f"{alias_spec.alias_token}->{alias_spec.base_token} "
+                        f"blk[{block_serial}]@0x{int(getattr(insn, 'ea', 0) or 0):x}"
+                    ),
+                )
+                queued += 1
+                fact_ids.add(alias_spec.fact_id)
             insn = getattr(insn, "next", None)
-        if block_changed:
-            changed += block_changed
-            try:
-                blk.mark_lists_dirty()
-            except Exception:
-                pass
-    if changed:
+    if not queued:
+        return 0
+    try:
+        applied = int(modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=True,
+            rollback_on_verify_failure=True,
+            transactional=True,
+        ))
+    except Exception:
+        log_exception = getattr(logger, "exception", None)
+        if callable(log_exception):
+            log_exception("OLLVM local alias queued scalarization failed")
+        return 0
+    if applied != queued or getattr(modifier, "verify_failed", False):
+        log_warning = getattr(logger, "warning", None)
+        if callable(log_warning):
+            log_warning(
+                "OLLVM local carrier alias mem2reg rejected transactional "
+                "batch: applied=%d queued=%d verify_failed=%s",
+                int(applied),
+                int(queued),
+                bool(getattr(modifier, "verify_failed", False)),
+            )
+        return 0
+    if applied > 0:
         try:
             mba.mark_chains_dirty()
         except Exception:
             pass
+        _verify_ollvm_carrier_mutation(
+            mba,
+            logger,
+            "local_alias_mem2reg",
+            touched_blocks=set(range(qty)),
+            fact_ids=fact_ids or _ollvm_local_alias_fact_ids(carrier_facts),
+            fact_kinds={
+                LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+                SAME_CARRIER_ALIAS_FACT_KIND,
+            },
+        )
         log_info = getattr(logger, "info", None)
         if callable(log_info):
             log_info(
-                "OLLVM local carrier alias mem2reg scalarized %d access(es) "
+                "OLLVM local carrier alias mem2reg applied %d queued edit(s) "
                 "for aliases=%s removed_setup_moves=%d",
-                int(changed),
-                ",".join(sorted(alias_tokens)),
+                int(applied),
+                ",".join(sorted(alias_specs)),
                 int(setup_moves_removed),
             )
-    return int(changed)
+    return int(applied)
 
 
 def _copy_mop(mop: object | None) -> object | None:
@@ -2376,44 +2614,28 @@ def _copy_mop(mop: object | None) -> object | None:
         return None
 
 
-def _collect_ollvm_semantic_carrier_facts(
-    mba: object,
-) -> tuple[object, ...]:
-    """Collect diagnostics facts for OLLVM semantic-carrier consumers."""
-
-    if mba is None:
-        return ()
-    try:
-        from d810.recon.facts.collectors import OllvmSemanticCarrierFactCollector
-    except Exception:
-        return ()
-    return OllvmSemanticCarrierFactCollector().collect(
-        mba,
-        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-        maturity=int(getattr(mba, "maturity", 0) or 0),
-        phase="pre_d810",
-    )
-
-
 def _same_carrier_alias_repair_specs(
     carrier_facts: tuple[object, ...],
-) -> dict[tuple[int, int], tuple[str, frozenset[str]]]:
-    specs: dict[tuple[int, int], tuple[str, frozenset[str]]] = {}
+) -> dict[tuple[int, int], tuple[str, frozenset[str], str]]:
+    specs: dict[tuple[int, int], tuple[str, frozenset[str], str]] = {}
     for fact in carrier_facts:
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
             continue
-        if payload.get("role") != "ACCUMULATOR_CARRIER":
+        if not production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND):
             continue
-        if payload.get("same_carrier_alias_proof") is not True:
+        details = payload.get("details")
+        if not isinstance(details, dict):
             continue
-        carrier_token = _ollvm_canonical_var_token(str(payload.get("carrier_token") or ""))
+        carrier_token = _ollvm_canonical_var_token(
+            str(details.get("carrier_token") or "")
+        )
         source_block = payload.get("source_block")
-        instruction_ea = payload.get("instruction_ea")
+        instruction_ea = payload.get("source_ea")
         alias_tokens = frozenset(
             token for token in (
                 _ollvm_canonical_var_token(str(alias))
-                for alias in (payload.get("multiply_add_same_base_alias_tokens") or ())
+                for alias in (details.get("alias_tokens") or ())
             )
             if token is not None
         )
@@ -2427,11 +2649,12 @@ def _same_carrier_alias_repair_specs(
         specs[(int(source_block), int(instruction_ea))] = (
             carrier_token,
             alias_tokens,
+            str(getattr(fact, "fact_id", "")),
         )
     return specs
 
 
-def _apply_ollvm_same_carrier_alias_repairs(
+def _apply_same_carrier_alias_repairs(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2444,6 +2667,8 @@ def _apply_ollvm_same_carrier_alias_repairs(
     if not specs:
         return 0
     changed = 0
+    touched_blocks: set[int] = set()
+    fact_ids: set[str] = set()
     qty = int(getattr(mba, "qty", 0) or 0)
     for serial in range(qty):
         try:
@@ -2452,6 +2677,7 @@ def _apply_ollvm_same_carrier_alias_repairs(
             continue
         if blk is None:
             continue
+        _ollvm_make_lists_ready(blk)
         block_changed = 0
         block_serial = int(getattr(blk, "serial", serial))
         insn = getattr(blk, "head", None)
@@ -2462,7 +2688,7 @@ def _apply_ollvm_same_carrier_alias_repairs(
                 if spec is None:
                     insn = getattr(insn, "next", None)
                     continue
-                carrier_token, same_base_alias_tokens = spec
+                carrier_token, same_base_alias_tokens, fact_id = spec
                 text = _ollvm_insn_text(insn)
                 right = getattr(insn, "r", None)
                 dest = getattr(insn, "d", None)
@@ -2471,13 +2697,15 @@ def _apply_ollvm_same_carrier_alias_repairs(
                     and carrier_token in _ollvm_var_tokens_from_text(text)
                     and _ollvm_mop_var_token(right) in same_base_alias_tokens
                     and _ollvm_mop_var_token(dest) == carrier_token
+                    and _ollvm_widths_compatible(right, dest)
                 ):
                     try:
                         replacement = _copy_mop(dest)
                         if replacement is not None:
-                            replacement.size = int(getattr(right, "size", 0) or 4)
                             right.assign(replacement)
                             block_changed += 1
+                            touched_blocks.add(block_serial)
+                            fact_ids.add(fact_id)
                     except Exception:
                         pass
 
@@ -2493,6 +2721,14 @@ def _apply_ollvm_same_carrier_alias_repairs(
             mba.mark_chains_dirty()
         except Exception:
             pass
+        _verify_ollvm_carrier_mutation(
+            mba,
+            logger,
+            "same_carrier_alias_repair",
+            touched_blocks=touched_blocks,
+            fact_ids=fact_ids,
+            fact_kinds={SAME_CARRIER_ALIAS_FACT_KIND},
+        )
         log_info = getattr(logger, "info", None)
         if callable(log_info):
             log_info(
@@ -2530,17 +2766,12 @@ def _ollvm_store_target_is_direct_local(insn: object) -> bool:
     return "[ds" not in tail
 
 
-def _ollvm_semantic_store_fact_specs(
+def _carrier_store_promotion_specs(
     carrier_facts: tuple[object, ...],
 ) -> frozenset[tuple[int, int]]:
     specs = _ollvm_fact_specs_by_block_ea(
         carrier_facts,
-        roles=frozenset({
-            "ACCUMULATOR_CARRIER",
-            "ARG_OUTPUT_STORE_CANDIDATE",
-            "LOCAL_WORKING_STORE_CANDIDATE",
-            "INDIRECT_STORE_CANDIDATE",
-        }),
+        kind=CARRIER_STORE_PROMOTION_FACT_KIND,
     )
     return frozenset(sorted(specs))
 
@@ -2617,6 +2848,9 @@ def _scalarize_ollvm_direct_local_carrier_store(
         return False
     try:
         source_size = int(getattr(source, "size", 0) or 0)
+        dest_size = int(getattr(dest, "size", 0) or 0)
+        if dest_size > 0 and source_size > 0 and dest_size != source_size:
+            return False
         if source_size > 0:
             dest.size = source_size
         getattr(insn, "r").erase()
@@ -2641,7 +2875,7 @@ def _scalarize_ollvm_direct_local_carrier_store(
     return True
 
 
-def _apply_ollvm_semantic_carrier_promotions(
+def _apply_semantic_carrier_promotions(
     mba: object,
     logger: object,
     carrier_facts: tuple[object, ...],
@@ -2650,11 +2884,17 @@ def _apply_ollvm_semantic_carrier_promotions(
 
     if mba is None:
         return 0
-    semantic_store_specs = _ollvm_semantic_store_fact_specs(carrier_facts)
+    semantic_store_fact_specs = _ollvm_fact_specs_by_block_ea(
+        carrier_facts,
+        kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+    )
+    semantic_store_specs = frozenset(sorted(semantic_store_fact_specs))
     if not semantic_store_specs:
         return 0
     queued: set[tuple[int, int, int]] = set()
     scalarized = 0
+    touched_blocks: set[int] = set()
+    fact_ids: set[str] = set()
     try:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
     except Exception:
@@ -2669,6 +2909,7 @@ def _apply_ollvm_semantic_carrier_promotions(
             continue
         if blk is None:
             continue
+        _ollvm_make_lists_ready(blk)
         insn = getattr(blk, "head", None)
         while insn is not None:
             block_serial = int(getattr(blk, "serial", serial))
@@ -2679,6 +2920,13 @@ def _apply_ollvm_semantic_carrier_promotions(
                 semantic_store_specs=semantic_store_specs,
             ):
                 scalarized += 1
+                touched_blocks.add(block_serial)
+                spec = semantic_store_fact_specs.get((
+                    block_serial,
+                    int(getattr(insn, "ea", 0) or 0),
+                ))
+                if spec is not None:
+                    fact_ids.add(spec.fact_id)
                 insn = getattr(insn, "next", None)
                 continue
             if _is_ollvm_semantic_carrier_store(
@@ -2707,6 +2955,14 @@ def _apply_ollvm_semantic_carrier_promotions(
                 mba.mark_chains_dirty()
             except Exception:
                 pass
+            _verify_ollvm_carrier_mutation(
+                mba,
+                logger,
+                "semantic_carrier_direct_store_scalarization",
+                touched_blocks=touched_blocks,
+                fact_ids=fact_ids,
+                fact_kinds={CARRIER_STORE_PROMOTION_FACT_KIND},
+            )
         return int(scalarized)
 
     log_info = getattr(logger, "info", None)
@@ -2727,10 +2983,24 @@ def _apply_ollvm_semantic_carrier_promotions(
             mba.mark_chains_dirty()
         except Exception:
             pass
+        _verify_ollvm_carrier_mutation(
+            mba,
+            logger,
+            "semantic_carrier_promotion",
+            touched_blocks={
+                block for block, _ea, _opcode in queued
+            },
+            fact_ids={
+                spec.fact_id
+                for key, spec in semantic_store_fact_specs.items()
+                if any(block == key[0] and ea == key[1] for block, ea, _opcode in queued)
+            },
+            fact_kinds={CARRIER_STORE_PROMOTION_FACT_KIND},
+        )
     return int(applied) + int(scalarized)
 
 
-def _collect_ollvm_semantic_carrier_promotion_modifications(
+def _collect_semantic_carrier_promotion_modifications(
     mba: object,
     carrier_facts: tuple[object, ...],
 ) -> tuple[GraphModification, ...]:
@@ -2738,7 +3008,7 @@ def _collect_ollvm_semantic_carrier_promotion_modifications(
 
     if mba is None:
         return ()
-    semantic_store_specs = _ollvm_semantic_store_fact_specs(carrier_facts)
+    semantic_store_specs = _carrier_store_promotion_specs(carrier_facts)
     if not semantic_store_specs:
         return ()
     modifications: list[GraphModification] = []
@@ -3655,6 +3925,18 @@ class GenericDispatcherEngineProfile:
         [object, StateDispatcherMap, str],
         tuple[object, ...],
     ] = _empty_switch_case_transition_facts
+    post_execute_carrier_fact_factory: Callable[
+        [object],
+        tuple[object, ...],
+    ] = _empty_post_execute_carrier_facts
+    fact_observation_factory: Callable[
+        [object],
+        tuple[object, ...],
+    ] = _empty_profile_fact_observations
+    branch_ownership_refiner_factory: Callable[
+        [object, object],
+        tuple[object, ...],
+    ] = _empty_branch_ownership_refiners
 
     def configure_resolver(
         self,
@@ -3829,6 +4111,35 @@ class GenericDispatcherEngineProfile:
             )
         )
 
+    def collect_post_execute_carrier_facts(
+        self,
+        mba: object,
+    ) -> tuple[object, ...]:
+        """Return concrete carrier fact families supplied by this profile.
+
+        The engine family consumes these only by generic fact kind/capability.
+        Profile-specific oracle witnesses stay behind the factory boundary.
+        """
+
+        return tuple(self.post_execute_carrier_fact_factory(mba))
+
+    def collect_fact_observations(
+        self,
+        mba: object,
+    ) -> tuple[object, ...]:
+        """Return profile-specific fact rows to mirror into diagnostics."""
+
+        return tuple(self.fact_observation_factory(mba))
+
+    def collect_branch_ownership_refiners(
+        self,
+        mba: object,
+        logger: object,
+    ) -> tuple[object, ...]:
+        """Return profile-specific branch ownership proof refiners."""
+
+        return tuple(self.branch_ownership_refiner_factory(mba, logger))
+
     def select_dynamic_transition(
         self,
         transition_result: object,
@@ -3912,6 +4223,9 @@ def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
         state_transport="father_history_emulation",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
+        post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
+        fact_observation_factory=collect_ollvm_profile_fact_observations,
+        branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
     )
 
 
@@ -3944,6 +4258,9 @@ def ollvm_state_dispatcher_map_profile(
         provenance_hints=("equality_chain",),
         enable_terminal_payload_materialization=enable_terminal_payload_materialization,
         state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
+        post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
+        fact_observation_factory=collect_ollvm_profile_fact_observations,
+        branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
     )
 
 
@@ -5340,9 +5657,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         branch_ownership_proofs = _collect_phase_branch_ownership_proofs(
             dag=dag,
             dispatch_map=phase_context.state_dispatcher_map,
-            mba=mba,
-            profile_name=self._profile.name,
-            logger=self._logger,
+            proof_refiners=self._profile.collect_branch_ownership_refiners(
+                mba,
+                self._logger,
+            ),
         )
 
         terminal_payload_materialization_modifications: list[GraphModification] = []
@@ -7646,20 +7964,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
             )
         semantic_carrier_modifications: tuple[GraphModification, ...] = ()
-        if (
-            mba.maturity >= ida_hexrays.MMAT_GLBOPT1
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
-        ):
-            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
+        if mba.maturity >= ida_hexrays.MMAT_GLBOPT1:
+            carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
             semantic_carrier_modifications = (
-                _collect_ollvm_semantic_carrier_promotion_modifications(
+                _collect_semantic_carrier_promotion_modifications(
                     mba,
                     carrier_facts,
                 )
             )
             if semantic_carrier_modifications:
                 self._logger.info(
-                    "OLLVM semantic carrier GLBOPT1 lowering found %d fused store value(s)",
+                    "Semantic carrier GLBOPT1 lowering found %d fused store value(s)",
                     len(semantic_carrier_modifications),
                 )
         selected_modifications = fallback_modifications
@@ -7708,7 +8023,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and not selected_modifications
         ):
             selected_modifications = semantic_carrier_modifications
-            selected_lowering_mode = "ollvm_semantic_carrier_hoist"
+            selected_lowering_mode = "semantic_carrier_hoist"
             selected_blockers = ()
         # Match the safer legacy posture for partially-resolved dispatcher
         # families: observe raw candidates for diagnostics, but do not lower
@@ -7810,9 +8125,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 observe_state_transition_dispatch_resolutions,
                 observe_switch_case_transition_facts,
             )
-            from d810.recon.facts.collectors import (
-                OllvmSemanticCarrierFactCollector,
-            )
 
             maturity_name = self._maturity_name(
                 int(getattr(mba, "maturity", 0) or 0)
@@ -7893,9 +8205,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             proofs = _collect_phase_branch_ownership_proofs(
                 dag=SimpleNamespace(edges=dag_edge_objects),
                 dispatch_map=phase_context.state_dispatcher_map,
-                mba=mba,
-                profile_name=self._profile.name,
-                logger=self._logger,
+                proof_refiners=self._profile.collect_branch_ownership_refiners(
+                    mba,
+                    self._logger,
+                ),
             )
             if proofs:
                 observe_branch_ownership_proofs(
@@ -7933,25 +8246,18 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(switch_case_transition_facts),
                     self._profile.name,
                 )
-            if str(self._profile.name).startswith("ollvm"):
-                carrier_facts = OllvmSemanticCarrierFactCollector().collect(
-                    mba,
-                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                    maturity=int(getattr(mba, "maturity", 0) or 0),
-                    phase="pre_d810",
+            profile_fact_observations = self._profile.collect_fact_observations(mba)
+            if profile_fact_observations:
+                observe_fact_observation(
+                    snap_ref,
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    profile_fact_observations,
                 )
-                if carrier_facts:
-                    observe_fact_observation(
-                        snap_ref,
-                        int(getattr(mba, "entry_ea", 0) or 0),
-                        carrier_facts,
-                    )
-                    self._logger.info(
-                        "OLLVM_SEMANTIC_CARRIER_FACTS: emitted %d rows "
-                        "for profile=%s",
-                        len(carrier_facts),
-                        self._profile.name,
-                    )
+                self._logger.info(
+                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s",
+                    len(profile_fact_observations),
+                    self._profile.name,
+                )
             observe_rendered_program(
                 snap_ref,
                 phase_context.semantic_reference_program,
@@ -8116,35 +8422,34 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return 0
 
         semantic_carrier_changes = 0
-        carrier_facts: tuple[object, ...] = ()
+        carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
         if (
             int(getattr(mba, "maturity", -1) or -1) == int(ida_hexrays.MMAT_CALLS)
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+            and carrier_facts
         ):
-            carrier_facts = _collect_ollvm_semantic_carrier_facts(mba)
-            semantic_carrier_changes += _apply_ollvm_output_alias_repair(
+            semantic_carrier_changes += _apply_carrier_output_alias_repair(
                 mba,
                 self._logger,
                 carrier_facts,
             )
-            semantic_carrier_changes += _apply_ollvm_local_alias_mem2reg(
+            semantic_carrier_changes += _apply_local_alias_mem2reg(
                 mba,
                 self._logger,
                 carrier_facts,
             )
-            semantic_carrier_changes += _apply_ollvm_same_carrier_alias_repairs(
+            semantic_carrier_changes += _apply_same_carrier_alias_repairs(
                 mba,
                 self._logger,
                 carrier_facts,
             )
         if (
             int(getattr(mba, "maturity", -1) or -1) >= int(ida_hexrays.MMAT_GLBOPT1)
-            and str(getattr(self._profile, "name", "")).startswith("ollvm")
+            and carrier_facts
         ):
-            semantic_carrier_changes = _apply_ollvm_semantic_carrier_promotions(
+            semantic_carrier_changes = _apply_semantic_carrier_promotions(
                 mba,
                 self._logger,
-                _collect_ollvm_semantic_carrier_facts(mba),
+                carrier_facts,
             ) + semantic_carrier_changes
 
         lowered_modifications = ()
@@ -8166,7 +8471,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             mba.mark_chains_dirty()
             if semantic_carrier_changes > 0:
                 mba.optimize_local(0)
-                post_opt_carrier_changes = _apply_ollvm_same_carrier_alias_repairs(
+                post_opt_carrier_changes = _apply_same_carrier_alias_repairs(
                     mba,
                     self._logger,
                     carrier_facts,
