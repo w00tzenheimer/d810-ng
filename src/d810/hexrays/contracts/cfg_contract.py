@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from d810.core import logging, getLogger
-from d810.core.typing import Literal
-from d810.core.typing import Iterable
+from d810.core.typing import Iterable, Literal
 
-from d810.cfg.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_native
+from d810.hexrays.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_native
 
 logger = getLogger(__name__)
 
@@ -14,8 +13,9 @@ if NATIVE_ORACLE_AVAILABLE:
     logger.info("Native CFG oracle available - full parity mode")
 else:
     logger.info("Native CFG oracle unavailable - Python-only parity mode")
-from d810.cfg.contracts.insn_invariants import check_all_insn_invariants
-from d810.cfg.contracts.invariants import (
+from d810.cfg.contracts.contract import CfgContract, CfgContractViolationError
+from d810.hexrays.contracts.insn_invariants import check_all_insn_invariants
+from d810.hexrays.contracts.invariants import (
     block_address_range,
     block_closing_opcode_at_tail,
     block_list_consistency,
@@ -53,23 +53,6 @@ def _summarize_violations(
     if len(all_violations) > limit:
         summaries.append(f"+{len(all_violations) - limit} more")
     return ", ".join(summaries)
-
-
-class CfgContractViolationError(RuntimeError):
-    """Raised when a CFG contract check finds violations."""
-
-    def __init__(
-        self,
-        *,
-        phase: ContractPhase,
-        violations: Iterable[InvariantViolation],
-    ) -> None:
-        self.phase = phase
-        self.violations = tuple(violations)
-        self.summary = _summarize_violations(self.violations)
-        super().__init__(
-            f"cfg contract {phase}-check failed: {self.summary or 'unknown violation'}"
-        )
 
 
 class IDACfgContract:
@@ -190,15 +173,7 @@ class IDACfgContract:
         *,
         scope: ContractScope = "focused",
     ) -> list[InvariantViolation]:
-        from d810.cfg.flow.edit_simulator import project_post_state
-
-        projected_cfg = project_post_state(pre_cfg, plan)
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check_projected(
-            projected_cfg,
-            phase="projected",
-            focus_serials=focus,
-        )
+        return CfgContract().check_projected(pre_cfg, plan, scope=scope)
 
     def verify_projected(
         self,
@@ -312,28 +287,8 @@ class IDACfgContract:
         phase: str,
         focus_serials: Iterable[int] | None,
     ) -> list[InvariantViolation]:
-        violations: list[InvariantViolation] = []
-        violations.extend(
-            pred_succ_symmetry(projected_cfg, phase=phase, focus_serials=focus_serials)
+        return CfgContract()._check_projected(
+            projected_cfg,
+            phase=phase,
+            focus_serials=focus_serials,
         )
-        violations.extend(
-            successor_set_matches_tail_semantics(
-                projected_cfg,
-                phase=phase,
-                focus_serials=focus_serials,
-            )
-        )
-        violations.extend(
-            block_type_vs_tail(projected_cfg, phase=phase, focus_serials=focus_serials)
-        )
-        violations.extend(
-            predecessor_uniqueness(
-                projected_cfg,
-                phase=phase,
-                focus_serials=focus_serials,
-            )
-        )
-        violations.extend(
-            block_serial_range(projected_cfg, phase=phase, focus_serials=focus_serials)
-        )
-        return violations

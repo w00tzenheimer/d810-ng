@@ -35,6 +35,9 @@ from d810.recon.flow.return_frontier_carrier_facts import (
     ReturnFrontierCarrierFact,
     detect_return_frontier_carrier_facts,
 )
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactPriors,
+)
 from d810.recon.flow.transition_builder import TransitionResult
 from d810.recon.flow.transition_trust import (
     transition_is_trusted_for_explicit_conditional_bridge,
@@ -2657,6 +2660,7 @@ def _build_state_resolver(
     flow_graph: object | None = None,
     prefer_local_corridors: bool = False,
     transient_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
+    state_var_stkoff: int | None = None,
 ) -> tuple[dict[int, int], Callable[[int], int | None]]:
     exact_state_to_handler = {
         row.state_const: row.handler_serial
@@ -5022,6 +5026,7 @@ def build_live_linearized_state_dag_from_graph(
     dispatcher: IntervalDispatcher | None = None,
     mba: object | None = None,
     prefer_local_corridors: bool = False,
+    return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
     corrected_dag_out: list | None = None,
 ) -> LinearizedStateDag:
     """Build a live DAG from graph-backed analysis inputs.
@@ -5108,6 +5113,7 @@ def build_live_linearized_state_dag_from_graph(
             handler_paths_by_handler=handler_paths_by_handler,
             conditional_transitions_by_handler=conditional_transitions_by_handler,
             prefer_local_corridors=prefer_local_corridors,
+            return_frontier_artifact_priors=return_frontier_artifact_priors,
         )
 
     handler_entry_blocks = {
@@ -5330,6 +5336,7 @@ def build_live_linearized_state_dag_from_graph(
                 prefer_local_corridors=prefer_local_corridors,
                 transient_state_values=suppressed_target_states,
                 terminal_alias_state_values=terminal_alias_target_states,
+                return_frontier_artifact_priors=return_frontier_artifact_priors,
             )
         )
 
@@ -5345,6 +5352,7 @@ def build_live_linearized_state_dag_from_graph(
         handler_paths_by_handler=handler_paths_by_handler,
         conditional_transitions_by_handler=conditional_transitions_by_handler,
         prefer_local_corridors=prefer_local_corridors,
+        return_frontier_artifact_priors=return_frontier_artifact_priors,
     )
     while True:
         existing_states = {
@@ -5393,6 +5401,7 @@ def build_live_linearized_state_dag_from_graph(
                 prefer_local_corridors=prefer_local_corridors,
                 transient_state_values=suppressed_target_states,
                 terminal_alias_state_values=terminal_alias_target_states,
+                return_frontier_artifact_priors=return_frontier_artifact_priors,
             )
         pending_states = sorted(state for state in supplemental_states if state not in existing_states)
         if not pending_states:
@@ -6234,6 +6243,7 @@ def build_live_linearized_state_dag_from_graph(
             prefer_local_corridors=prefer_local_corridors,
             transient_state_values=suppressed_target_states,
             terminal_alias_state_values=terminal_alias_target_states,
+            return_frontier_artifact_priors=return_frontier_artifact_priors,
         )
 
 
@@ -6251,6 +6261,7 @@ def build_linearized_state_dag_from_graph(
     prefer_local_corridors: bool = False,
     transient_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
     terminal_alias_state_values: set[int] | tuple[int, ...] | frozenset[int] = frozenset(),
+    return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
 ) -> LinearizedStateDag:
     """Build a state-level DAG from structured graph-backed inputs."""
     transient_target_states = {
@@ -6302,6 +6313,7 @@ def build_linearized_state_dag_from_graph(
         flow_graph=flow_graph,
         prefer_local_corridors=prefer_local_corridors,
         transient_state_values=transient_target_states,
+        state_var_stkoff=report.state_var_stkoff,
     )
 
     nodes: list[StateDagNode] = []
@@ -6995,7 +7007,9 @@ def build_linearized_state_dag_from_graph(
             corridor[-1],
         )
     return_frontier_carrier_facts = detect_return_frontier_carrier_facts(
-        flow_graph
+        flow_graph,
+        state_var_stkoff=report.state_var_stkoff,
+        artifact_priors=return_frontier_artifact_priors,
     )
     return replace(
         dag,

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError
+from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.graph_modification import CreateConditionalRedirect
 from d810.cfg.plan import compile_patch_plan

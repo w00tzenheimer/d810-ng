@@ -13,19 +13,12 @@ def insn_checks_enabled() -> bool:
 
 
 def __getattr__(name: str):
-    if name == "IDACfgContract":
-        return import_module("d810.cfg.contracts.ida_contract").IDACfgContract
-    if name == "CfgContractViolationError":
-        return import_module("d810.cfg.contracts.ida_contract").CfgContractViolationError
-    if name == "check_all_insn_invariants":
-        return import_module("d810.cfg.contracts.insn_invariants").check_all_insn_invariants
     if name in {
-        "NATIVE_ORACLE_AVAILABLE",
-        "check_block_native",
-        "check_mba_native",
-        "oracle_available",
+        "BackendContractOracle",
+        "CfgContract",
+        "CfgContractViolationError",
     }:
-        module = import_module("d810.cfg.contracts.native_oracle")
+        module = import_module("d810.cfg.contracts.contract")
         return getattr(module, name)
     if name in {
         "block_list_consistency",
@@ -55,21 +48,17 @@ def __getattr__(name: str):
 
 __all__ = [
     "CfgContractViolationError",
+    "BackendContractOracle",
+    "CfgContract",
     "CfgTransactionEngine",
     "FailureClassification",
-    "IDACfgContract",
-    "NATIVE_ORACLE_AVAILABLE",
     "TRANSACTION_PHASES",
     "TransactionPhase",
     "TransactionResult",
     "block_list_consistency",
     "block_type_vs_tail",
-    "check_all_insn_invariants",
-    "check_block_native",
-    "check_mba_native",
     "classify_failure",
     "insn_checks_enabled",
-    "oracle_available",
     "pred_succ_symmetry",
     "predecessor_uniqueness",
     "successor_set_matches_tail_semantics",

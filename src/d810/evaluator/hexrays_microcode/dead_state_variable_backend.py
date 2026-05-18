@@ -632,14 +632,23 @@ def _dest_is_non_state_stkvar(
                         gutted_count, len(defs), use.block_serial,
                     )
 
+                live_def_count = len(defs) - gutted_count
+                if non_const_count == 0 and live_def_count > 0:
+                    logger.info(
+                        "DSVE cleanup allowed for blk[%d]: all %d/%d live"
+                        " reaching defs are state constants (%d gutted);"
+                        " dest is non-state stkvar at off=0x%x",
+                        use.block_serial, live_def_count, len(defs),
+                        gutted_count,
+                        skip_tuple[1],
+                    )
+                    return None
+
                 if non_const_count == 0:
                     logger.info(
-                        "DSVE guard KEPT for blk[%d]: all %d reaching"
-                        " defs are state constants (%d gutted, %d live)"
-                        " but dest is non-state stkvar at off=0x%x",
-                        use.block_serial, len(defs),
-                        gutted_count, len(defs) - gutted_count,
-                        skip_tuple[1],
+                        "DSVE guard PRESERVED for blk[%d]: no live reaching"
+                        " defs after filtering %d gutted defs",
+                        use.block_serial, gutted_count,
                     )
                     return skip_tuple
 

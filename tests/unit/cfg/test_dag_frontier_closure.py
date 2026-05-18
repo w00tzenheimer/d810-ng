@@ -8,7 +8,14 @@ from d810.cfg.dag_frontier_closure import (
     _choices_for_observed_edge,
     plan_dag_authoritative_frontier_closure,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -81,9 +88,9 @@ def _state_jz(state_const: int, target: int) -> InsnSnapshot:
         opcode = int(ida_hexrays.m_jz)
     except Exception:
         opcode = 5
-    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC)
-    const = MopSnapshot(t=2, size=4, value=state_const)
-    dest = MopSnapshot(t=5, size=0, block_ref=target)
+    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC, kind=OperandKind.STACK)
+    const = MopSnapshot(t=2, size=4, value=state_const, kind=OperandKind.NUMBER)
+    dest = MopSnapshot(t=5, size=0, block_ref=target, kind=OperandKind.BLOCK)
     return InsnSnapshot(
         opcode=opcode,
         ea=0x180000000 + target,
@@ -92,6 +99,7 @@ def _state_jz(state_const: int, target: int) -> InsnSnapshot:
         l=state_var,
         r=const,
         d=dest,
+        kind=InsnKind.EQUALITY_JUMP,
     )
 
 
@@ -102,9 +110,9 @@ def _state_jbe(state_const: int, target: int) -> InsnSnapshot:
         opcode = int(ida_hexrays.m_jbe)
     except Exception:
         opcode = 48
-    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC)
-    const = MopSnapshot(t=2, size=4, value=state_const)
-    dest = MopSnapshot(t=5, size=0, block_ref=target)
+    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC, kind=OperandKind.STACK)
+    const = MopSnapshot(t=2, size=4, value=state_const, kind=OperandKind.NUMBER)
+    dest = MopSnapshot(t=5, size=0, block_ref=target, kind=OperandKind.BLOCK)
     return InsnSnapshot(
         opcode=opcode,
         ea=0x180000000 + target,
@@ -113,6 +121,7 @@ def _state_jbe(state_const: int, target: int) -> InsnSnapshot:
         l=state_var,
         r=const,
         d=dest,
+        kind=InsnKind.COND_JUMP,
     )
 
 
@@ -123,8 +132,8 @@ def _state_mov(state_const: int) -> InsnSnapshot:
         opcode = int(ida_hexrays.m_mov)
     except Exception:
         opcode = 4
-    const = MopSnapshot(t=2, size=4, value=state_const)
-    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC)
+    const = MopSnapshot(t=2, size=4, value=state_const, kind=OperandKind.NUMBER)
+    state_var = MopSnapshot(t=3, size=4, stkoff=0x7BC, kind=OperandKind.STACK)
     return InsnSnapshot(
         opcode=opcode,
         ea=0x180000000 + state_const,
@@ -132,6 +141,7 @@ def _state_mov(state_const: int) -> InsnSnapshot:
         operand_slots=(("l", const), ("d", state_var)),
         l=const,
         d=state_var,
+        kind=InsnKind.MOV,
     )
 
 

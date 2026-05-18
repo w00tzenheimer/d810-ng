@@ -150,7 +150,7 @@ def _carrier_class(insn: _InstructionView) -> str:
     opcode = insn.opcode_name.lower()
     text = insn.dstr.lower()
     if "xdu" in opcode or text.lstrip().startswith("xdu"):
-        return "state_guard_artifact_candidate"
+        return "protected_non_carrier_return_writer_candidate"
     if opcode in {"m_mov", "op_4"} and insn.src_l_stkoff is not None:
         return "stack_identity_carrier"
     if insn.src_l_value is not None or insn.src_r_value is not None:

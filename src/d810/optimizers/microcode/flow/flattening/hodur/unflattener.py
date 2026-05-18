@@ -43,6 +43,7 @@ from d810.recon.flow.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
+from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
@@ -325,6 +326,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 # maturity argument.  Returns None when no fact lifecycle
                 # callbacks are attached.
                 return self._ctx.validated_fact_view(maturity)
+
+            def function_analysis_priors(self, func_ea=None):
+                return self._ctx.function_analysis_priors(func_ea)
 
         self._family.set_fact_runtime(_FactRuntimeAdapter(flow_ctx))
 
@@ -982,10 +986,18 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                     except (TypeError, ValueError):
                         corridors = ()
+                function_priors = FunctionAnalysisPriors()
+                if self.flow_context is not None:
+                    function_priors = self.flow_context.function_analysis_priors(
+                        self.mba.entry_ea
+                    )
                 audit_return_frontier_carriers(
                     mba=self.mba,
                     side_effect_corridors=corridors,
                     label="post_pipeline",
+                    artifact_priors=(
+                        function_priors.return_frontier_artifacts
+                    ),
                 )
             except Exception:
                 unflat_logger.debug(
@@ -1066,11 +1078,12 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Default-off; only fires when the corresponding env gate is set.
         try:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                maybe_rewrite_impossible_return_artifact_edges,
                 maybe_run_byte_anchor,
+                maybe_run_terminal_tail_cascade_egress_lowering,
                 maybe_run_tail_distinct,
                 maybe_run_tail_duplicate_convergence,
                 maybe_run_tail_state_cascade,
-                maybe_run_terminal_tail_cascade_egress_lowering,
             )
             from d810.hexrays.mutation.byte_tail_runtime_evidence import (
                 ByteTailRuntimeEvidence,
@@ -1129,13 +1142,36 @@ class HodurUnflattener(GenericUnflatteningRule):
                     "terminal_tail_cascade_egress DAG lookup failed",
                     exc_info=True,
                 )
+            function_priors = FunctionAnalysisPriors()
+            if self.flow_context is not None:
+                function_priors = self.flow_context.function_analysis_priors(
+                    self.mba.entry_ea
+                )
+            impossible_return_artifact_edges = tuple(
+                function_priors
+                .return_frontier_artifacts
+                .impossible_return_artifact_edges
+            )
             evidence_provider = StaticByteTailRuntimeEvidenceProvider(
-                ByteTailRuntimeEvidence(fact_view=fact_view, dag=latest_dag)
+                ByteTailRuntimeEvidence(
+                    fact_view=fact_view,
+                    dag=latest_dag,
+                    terminal_tail_cascade_egress=(
+                        function_priors.terminal_tail_cascade_egress
+                    ),
+                    impossible_return_artifact_edges=(
+                        impossible_return_artifact_edges
+                    ),
+                )
             )
             maybe_run_terminal_tail_cascade_egress_lowering(
                 self.mba,
                 fact_view=fact_view,
                 dag=latest_dag,
+                evidence_provider=evidence_provider,
+            )
+            maybe_rewrite_impossible_return_artifact_edges(
+                self.mba,
                 evidence_provider=evidence_provider,
             )
             maybe_run_tail_distinct(

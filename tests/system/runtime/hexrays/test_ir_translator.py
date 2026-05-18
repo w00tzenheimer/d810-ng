@@ -16,7 +16,14 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
     CreateConditionalRedirect,
@@ -43,6 +50,11 @@ from d810.cfg.plan import (
 )
 from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.mutation.ir_translator import (
+    _block_kind_from_hexrays,
+    _insn_kind_from_hexrays,
+    _operand_kind_from_hexrays,
+)
 
 
 _DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
@@ -77,6 +89,17 @@ def _cfg() -> FlowGraph:
         entry_serial=44,
         func_ea=0,
     )
+
+
+def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
+    assert _block_kind_from_hexrays(ida_hexrays.BLT_2WAY) == BlockKind.TWO_WAY
+    assert _block_kind_from_hexrays(ida_hexrays.BLT_1WAY) == BlockKind.ONE_WAY
+    assert _insn_kind_from_hexrays(ida_hexrays.m_goto) == InsnKind.GOTO
+    assert _insn_kind_from_hexrays(ida_hexrays.m_jnz) == InsnKind.EQUALITY_JUMP
+    assert _insn_kind_from_hexrays(ida_hexrays.m_jcnd) == InsnKind.COND_JUMP
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_b) == OperandKind.BLOCK
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_n) == OperandKind.NUMBER
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_S) == OperandKind.STACK
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:

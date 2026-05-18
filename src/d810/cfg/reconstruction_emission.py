@@ -15,8 +15,10 @@ from d810.cfg.graph_modification import (
     ZeroStateWrite,
 )
 from d810.cfg.loop_bound_writer_guard import (
+    InsnKindClassifier,
     LoopBoundWriterDiagnostic,
     LoopCounterWritebackDiagnostic,
+    OperandKindClassifier,
     detect_loop_bound_writer_redirect,
     detect_loop_counter_writeback_tail,
 )
@@ -451,6 +453,8 @@ def execute_shared_group_reconstruction(
     force_clone: bool = False,
     allow_divergent_per_pred_redirect: bool = False,
     mba=None,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> SharedGroupExecutionResult:
     if _should_hoist_sub7ffd_shared_group(int(shared_block), candidates):
         modification = RedirectBranch(
@@ -558,7 +562,12 @@ def execute_shared_group_reconstruction(
         # and IDA's DCE drops the counter update -- non-progressing
         # do-while.  Reject the whole emission for this shared_block.
         writeback_diag: LoopCounterWritebackDiagnostic | None = (
-            detect_loop_counter_writeback_tail(mba, int(shared_block))
+            detect_loop_counter_writeback_tail(
+                mba,
+                int(shared_block),
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
+            )
         )
         if writeback_diag is not None:
             logger.info(
@@ -726,6 +735,8 @@ def apply_shared_group_reachability_fallback(
     force_clone_shared_blocks: frozenset[int] | set[int] = frozenset(),
     force_keep_per_pred_shared_blocks: frozenset[int] | set[int] = frozenset(),
     mba=None,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> tuple[SharedGroupExecutionResult, ...]:
     has_per_pred_shared_groups = any(
         result.emission_mode == "per_pred_redirect"
@@ -871,6 +882,8 @@ def apply_shared_group_reachability_fallback(
                         allow_divergent_per_pred_redirect
                     ),
                     mba=mba,
+                    insn_kind_classifier=insn_kind_classifier,
+                    operand_kind_classifier=operand_kind_classifier,
                 )
                 continue
             trial_modifications = list(modifications)
@@ -909,6 +922,8 @@ def apply_shared_group_reachability_fallback(
                     allow_divergent_per_pred_redirect
                 ),
                 mba=mba,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
 
         rebuilt_results: list[SharedGroupExecutionResult] = []
@@ -940,6 +955,8 @@ def execute_primary_reconstruction_modifications(
     direct_redirect_veto=None,
     conditional_redirect_veto=None,
     mba=None,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> PrimaryReconstructionExecutionResult:
     direct_groups: defaultdict[int, list] = defaultdict(list)
     shared_groups: defaultdict[int, list] = defaultdict(list)
@@ -1424,6 +1441,8 @@ def execute_primary_reconstruction_modifications(
                 allow_divergent_shared_group_redirects
             ),
             mba=mba,
+            insn_kind_classifier=insn_kind_classifier,
+            operand_kind_classifier=operand_kind_classifier,
         )
         zero_mods = _collect_zero_state_write_modifications(
             tuple(shared_result.accepted_candidates),
