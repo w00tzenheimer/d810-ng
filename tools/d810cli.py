@@ -22,6 +22,7 @@ import datetime as _dt
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -126,6 +127,43 @@ def latest_db(name: str | None) -> Path:
     return p  # type: ignore[return-value]
 
 
+def _db_has_indirect_rows(path: Path) -> bool:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM state_dispatcher_rows
+                WHERE dispatcher_kind = 'INDIRECT_JUMP'
+                LIMIT 1
+                """
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def latest_indirect_transfer_db(name: str | None) -> Path:
+    d = worktree_log_dir(name)
+    if not d.is_dir():
+        _die(f"diag log dir not found: {d}")
+    cand = sorted(
+        (
+            p for p in d.glob("*.diag.sqlite3")
+            if p.is_file() and p.stat().st_size > 0
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for db_path in cand:
+        if _db_has_indirect_rows(db_path):
+            return db_path
+    _die(f"no diag sqlite3 DBs with INDIRECT_JUMP rows under {d}")
+
+
 def resolve_dump(name: str | None, explicit: str | None) -> Path:
     if explicit:
         p = Path(explicit).expanduser().resolve()
@@ -142,6 +180,12 @@ def resolve_db(name: str | None, explicit: str | None) -> Path:
             _die(f"db not found: {p}")
         return p
     return latest_db(name)
+
+
+def resolve_indirect_transfer_db(name: str | None, explicit: str | None) -> Path:
+    if explicit:
+        return resolve_db(name, explicit)
+    return latest_indirect_transfer_db(name)
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +521,7 @@ def cmd_indirect_transfer_map(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics indirect-transfer-map`."""
     wt = args.worktree
     worktree = worktree_dir(wt)
-    db = resolve_db(wt, args.db)
+    db = resolve_indirect_transfer_db(wt, args.db)
     env = os.environ.copy()
     src_path = str(worktree / "src")
     existing = env.get("PYTHONPATH", "")
@@ -1261,17 +1305,21 @@ def build_parser() -> argparse.ArgumentParser:
         "indirect-transfer-map",
         help=(
             "Extract an indirect-dispatcher state-transfer map from the latest"
-            " diag DB. Wraps `python -m d810.diagnostics"
+            " indirect diag DB. Wraps `python -m d810.diagnostics"
             " indirect-transfer-map`."
         ),
         description=(
             "Extract an indirect-dispatcher state-transfer map from the latest"
-            " diag DB, including compact instruction metadata used to prove"
-            " table population."
+            " diag DB that contains INDIRECT_JUMP state-dispatcher rows,"
+            " including compact instruction metadata used to prove table"
+            " population."
         ),
     )
     _add_worktree(sp)
-    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument(
+        "--db",
+        help="explicit diag DB (default: latest indirect-dispatcher DB in worktree)",
+    )
     sp.add_argument("--snapshot-id", type=int, default=None)
     sp.add_argument(
         "--state-var-stkoff",
