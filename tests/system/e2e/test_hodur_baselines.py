@@ -389,15 +389,12 @@ class TestSub7FFDCorridorPreservationRegression:
             "the preserved cascade body regressed."
         )
 
-        # All 9 callees must be preserved (corridor preservation must
-        # not have rejected mods that were genuinely needed).
-        sub_call_count = code_after.count("sub_180016E60")
-        # sub_180016E60 is the most distinctive callee; a regression
-        # that drops the protected corridor's calls would also drop
-        # these.  Conservative threshold: 8 (the cascade's zeroing
-        # suffix plus a callsite).
-        assert sub_call_count >= 8, (
-            f"sub_180016E60 call count regressed: expected >= 8, "
-            f"got {sub_call_count}.  Corridor preservation may be "
-            f"rejecting mods that the cascade needs."
+        # The callee auto-name moves when libobfuscated.dll is rebuilt, so
+        # key this guard to the stable zeroing-cascade payload instead.
+        zeroing_call_count = code_after.count("&unk_180019E95, 0x10)")
+        assert zeroing_call_count >= 8, (
+            "zeroing-cascade call count regressed: expected >= 8 "
+            f"stable payload calls, got {zeroing_call_count}.  "
+            "Corridor preservation may be rejecting mods that the cascade "
+            "needs."
         )
