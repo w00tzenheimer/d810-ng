@@ -10,6 +10,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     ollvm_state_dispatcher_map_profile,
+    tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
@@ -126,6 +127,16 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
                 profile=tigress_switch_dispatcher_profile(
                     prefer_switch_transition_facts=prefer_switch_transition_facts,
                     allow_incomplete_switch_transition_facts=allow_incomplete_switch_transition_facts,
+                )
+            )
+        elif profile_name in {
+            "tigress_indirect",
+            "indirect_jump",
+            "indirect_jump_table",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=tigress_indirect_dispatcher_profile(
+                    goto_table_info=self.config.get("goto_table_info", {}),
                 )
             )
         else:

@@ -759,6 +759,9 @@ def snapshot_state_dispatcher_rows(
             ),
             "row_kind": state_row_kind,
         }
+        row_payload = _mapping_value(row, "payload")
+        if isinstance(row_payload, MappingABC):
+            payload = {**payload, **dict(row_payload)}
         db_rows.append((
             int(snapshot_id),
             int(row_index),
@@ -774,7 +777,7 @@ def snapshot_state_dispatcher_rows(
             str(row_branch_kind) if row_branch_kind is not None else None,
             maturity,
             float(confidence),
-            _json_text(_mapping_value(row, "payload", payload), payload),
+            _json_text(payload, payload),
         ))
     if db_rows:
         conn.executemany(
