@@ -487,9 +487,21 @@ CONSTANT_FOLDING_CASES = [
     ),
     DeobfuscationCase(
         function="AntiDebug_ExceptionFilter",
-        description="Anti-debugging exception handler with constant folding",
-        project="example_libobfuscated.json",
-        must_change=False,
+        description=(
+            "Anti-debugging exception handler through the shared Tigress switch "
+            "engine profile. The legacy switch rule can expose invalid readonly "
+            "folding such as a synthetic MEMORY[0xB10000007FFE00E1] rotate chain."
+        ),
+        project="default_unflattening_tigress_engine_transition_facts.json",
+        deobfuscated_not_contains=[
+            "MEMORY[0xB10000007FFE00E1]",
+        ],
+        required_rules=["EmulatedDispatcherUnflattener"],
+        forbidden_rules=[
+            "UnflattenerSwitchCase",
+            "UnflattenerTigressIndirect",
+        ],
+        must_change=True,
     ),
 ]
 
@@ -732,13 +744,22 @@ OLLVM_CASES = [
 TIGRESS_CASES = [
     DeobfuscationCase(
         function="tigress_minmaxarray",
-        description="Tigress flattened min/max array search",
-        project="example_libobfuscated.json",
+        description=(
+            "Tigress flattened min/max array search through the shared "
+            "transition-fact engine profile"
+        ),
+        project="default_unflattening_tigress_engine_transition_facts.json",
         # Tigress uses switch/case state machine (not while loops)
         # Original test: expects 10+ case statements, reduced after deobfuscation
         obfuscated_contains=["switch", "case"],
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
+        required_rules=["EmulatedDispatcherUnflattener"],
+        forbidden_rules=[
+            "Unflattener",
+            "UnflattenerSwitchCase",
+            "UnflattenerTigressIndirect",
+        ],
         must_change=True,  # Original test: case_count_after < case_count_before
     ),
 ]
@@ -750,7 +771,7 @@ TIGRESS_ENGINE_CASES = [
             "Tigress flattened min/max array search through the shared "
             "state-dispatcher engine profile with legacy switch rules disabled"
         ),
-        project="default_unflattening_tigress_engine.json",
+        project="default_unflattening_tigress_engine_transition_facts.json",
         obfuscated_contains=["switch", "case"],
         deobfuscated_contains=[
             "for (",
