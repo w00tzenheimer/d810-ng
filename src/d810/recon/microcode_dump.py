@@ -1652,6 +1652,7 @@ def main_cli():
     """Command-line interface for microcode dump tool."""
     import argparse
     import sys
+    from pathlib import Path
 
     parser = argparse.ArgumentParser(
         description="Dump Hex-Rays microcode to JSON for debugging and analysis.",
@@ -1676,6 +1677,8 @@ Examples:
     parser.add_argument(
         "-o",
         "--output",
+        type=Path,
+        default=None,
         help="Output file path (default: stdout)",
     )
     parser.add_argument(
@@ -1723,19 +1726,22 @@ Examples:
         sys.exit(1)
 
     # Now import and map maturity constants (after IDA is loaded)
-
     maturity = STRING_TO_MATURITY_DICT[args.maturity]
 
     # Dump microcode
     try:
         json_output = dump_microcode_json(
             func_ea,
-            output_path=args.output,
             maturity=maturity,
             indent=args.indent,
         )
-        if not args.output:
-            print(json_output)
+        if args.output is None:
+            sys.stdout.write(json_output)
+            sys.stdout.write("\n")
+        else:
+            with args.output.open("w", encoding="utf-8") as output:
+                output.write(json_output)
+                output.write("\n")
     except Exception as e:
         print(f"Error dumping microcode: {e}", file=sys.stderr)
         sys.exit(1)

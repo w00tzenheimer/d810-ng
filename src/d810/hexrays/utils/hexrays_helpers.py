@@ -17,6 +17,7 @@ from d810.core import getLogger, typing
 # Import constant tables from d810.core (IDA-independent)
 from d810.core.bits import AND_TABLE, MSB_TABLE
 from d810.core.cymode import CythonMode
+from d810.core.logging import configure_loggers
 from d810.core.typing import TYPE_CHECKING, Optional, Tuple, TypedDict, Union
 
 # Try to import Cython hash_mop if CythonMode is enabled
@@ -2365,6 +2366,8 @@ def get_opcode_info(opcode: MicrocodeOpcode) -> CachedOpcodeInfo:
 # ============================================================================
 
 if __name__ == "__main__":
+    configure_loggers(".tmp/logs/hexrays_helpers_demo")
+
     # Example usage of the enhanced microcode representation
 
     # Create some operands
@@ -2378,50 +2381,56 @@ if __name__ == "__main__":
 
     # Use enhanced pattern matching to analyze the instruction
     result = analyze_instruction_enhanced(add_insn)
-    print(f"Enhanced analysis result: {result}")
+    logger.info("Enhanced analysis result: %s", result)
 
     # Analyze operands with enhanced function
-    print(f"Constant operand analysis: {analyze_operand_enhanced(const_op)}")
-    print(f"Register operand analysis: {analyze_operand_enhanced(reg_op)}")
+    logger.info("Constant operand analysis: %s", analyze_operand_enhanced(const_op))
+    logger.info("Register operand analysis: %s", analyze_operand_enhanced(reg_op))
 
     # Demonstrate enhanced string representations
-    print(f"Instruction: {add_insn}")
-    print(f"Instruction repr: {repr(add_insn)}")
-    print(f"Constant operand: {const_op}")
-    print(f"Register operand: {reg_op}")
+    logger.info("Instruction: %s", add_insn)
+    logger.info("Instruction repr: %r", add_insn)
+    logger.info("Constant operand: %s", const_op)
+    logger.info("Register operand: %s", reg_op)
 
     # Demonstrate readable property access
-    print(f"Instruction opcode: {add_insn.opcode.name}")
-    print(f"Is arithmetic: {add_insn.is_arithmetic}")
-    print(f"First operand: {add_insn.first_operand}")
-    print(f"Second operand: {add_insn.second_operand}")
-    print(f"Result operand: {add_insn.result_operand}")
+    logger.info("Instruction opcode: %s", add_insn.opcode.name)
+    logger.info("Is arithmetic: %s", add_insn.is_arithmetic)
+    logger.info("First operand: %s", add_insn.first_operand)
+    logger.info("Second operand: %s", add_insn.second_operand)
+    logger.info("Result operand: %s", add_insn.result_operand)
 
     # Demonstrate opcode properties
-    print(
-        f"ADD opcode info: operands={MicrocodeOpcode.ADD.num_operands}, "
-        f"commutative={MicrocodeOpcode.ADD.is_commutative}, "
-        f"symbol='{MicrocodeOpcode.ADD.symbol}', "
-        f"description='{MicrocodeOpcode.ADD.description}'"
+    logger.info(
+        "ADD opcode info: operands=%s, commutative=%s, symbol=%r, description=%r",
+        MicrocodeOpcode.ADD.num_operands,
+        MicrocodeOpcode.ADD.is_commutative,
+        MicrocodeOpcode.ADD.symbol,
+        MicrocodeOpcode.ADD.description,
     )
 
     # Example of different instruction types
-    print("\n--- Different Instruction Types ---")
+    logger.info("--- Different Instruction Types ---")
 
     # Move instruction
     mov_insn = create_instruction(
         MicrocodeOpcode.MOV, ea=0x1004, left=const_op, right=reg_op, destination=reg_op
     )
-    print(f"Move instruction: {mov_insn}")
-    print(f"Source: {mov_insn.source_operand}, Target: {mov_insn.target_operand}")
+    logger.info("Move instruction: %s", mov_insn)
+    logger.info(
+        "Source: %s, Target: %s",
+        mov_insn.source_operand,
+        mov_insn.target_operand,
+    )
 
     # Comparison instruction
     cmp_insn = create_instruction(
         MicrocodeOpcode.SETZ, ea=0x1008, left=const_op, right=reg_op, destination=reg_op
     )
-    print(f"Comparison instruction: {cmp_insn}")
-    print(
-        f"Comparison left: {cmp_insn.comparison_left}, "
-        f"Comparison right: {cmp_insn.comparison_right}, "
-        f"Comparison result: {cmp_insn.comparison_result}"
+    logger.info("Comparison instruction: %s", cmp_insn)
+    logger.info(
+        "Comparison left: %s, Comparison right: %s, Comparison result: %s",
+        cmp_insn.comparison_left,
+        cmp_insn.comparison_right,
+        cmp_insn.comparison_result,
     )

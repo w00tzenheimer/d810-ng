@@ -55,6 +55,25 @@ class TestChainCommand:
         assert "blk[174]@synthetic" in out
         assert "blk[176]@synthetic" in out
 
+    def test_chain_writes_to_output_file(
+        self,
+        loaded_db_path: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ):
+        output = tmp_path / "chain.txt"
+        rc = main([
+            "chain",
+            "--db",
+            str(loaded_db_path),
+            "--output",
+            str(output),
+            "131",
+        ])
+        assert rc == 0
+        assert capsys.readouterr().out == ""
+        assert "blk[131]@0x180014852" in output.read_text()
+
     def test_chain_shows_hop_ok(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
         rc = main(["chain", "--db", str(loaded_db_path), "131", "174"])
         assert rc == 0

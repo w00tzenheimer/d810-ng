@@ -18,7 +18,9 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
+from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.diagnostics.dump_after import extract_after_pseudocode
+
 
 
 def normalize_state(text: str) -> tuple[str, str]:
@@ -166,6 +168,7 @@ def register_parser(sub) -> None:
         default=6,
         help="Number of surrounding lines to include around each match",
     )
+    add_output_argument(p)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -173,32 +176,32 @@ def run(args: argparse.Namespace) -> int:
     state_hex, state_token = normalize_state(args.state)
     db_path = Path(args.db)
     if not db_path.exists():
-        print(f"error: db not found: {db_path}")
+        write_output(get_output(args), f"error: db not found: {db_path}")
         return 2
     conn = sqlite3.connect(str(db_path))
     try:
         snapshot_id = latest_semantic_snapshot_id(conn)
         if snapshot_id is None:
-            print("error: no semantic_reference_like snapshot found")
+            write_output(get_output(args), "error: no semantic_reference_like snapshot found")
             return 2
 
-        print(f"=== semantic_reference_like snapshot {snapshot_id} ===")
+        write_output(get_output(args), f"=== semantic_reference_like snapshot {snapshot_id} ===")
         semantic_rows = find_semantic_context(
             conn, snapshot_id, state_hex, args.context,
         )
         if not semantic_rows:
-            print(f"(no semantic lines for STATE_{state_hex})")
+            write_output(get_output(args), f"(no semantic lines for STATE_{state_hex})")
         else:
             for line_no, text in semantic_rows:
-                print(f"{line_no:>5}: {text}")
+                write_output(get_output(args), f"{line_no:>5}: {text}")
     finally:
         conn.close()
 
     if args.dump:
         dump_path = Path(args.dump)
         after_lines = extract_after_lines(dump_path)
-        print()
-        print(f"=== AFTER matches for {state_token} ===")
+        write_output(get_output(args))
+        write_output(get_output(args), f"=== AFTER matches for {state_token} ===")
         rows = matching_after_lines(
             after_lines,
             tokens=(
@@ -209,9 +212,9 @@ def run(args: argparse.Namespace) -> int:
             context=args.context,
         )
         if not rows:
-            print("(no AFTER matches)")
+            write_output(get_output(args), "(no AFTER matches)")
         else:
             for line_no, text in rows:
-                print(f"{line_no:>5}: {text}")
+                write_output(get_output(args), f"{line_no:>5}: {text}")
 
     return 0

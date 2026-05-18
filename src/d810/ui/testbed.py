@@ -529,7 +529,7 @@ class PyUnitTestRunnerWrapper(runner.TextTestRunner):
                 test_case = next(iter(test_case), None)
 
             if test_case:
-                print(type(test_case))
+                LOGGER.debug("Partial test case: %s", type(test_case))
                 if hasattr(test_case, "tearDown"):
                     test_case.tearDown = self._dummy_function
                 if self._partial_mode == RUN_TEST_SETUP_ONLY:

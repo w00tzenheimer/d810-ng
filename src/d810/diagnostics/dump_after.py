@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from d810.diagnostics.output import add_output_argument, get_output, write_output
+
 START_MARKER = "--- AFTER ---"
 END_MARKER_PREFIX = "=== STATS:"
 
@@ -95,6 +97,7 @@ def register_parser(sub) -> None:
             " the full artifact."
         ),
     )
+    add_output_argument(p)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -103,14 +106,14 @@ def run(args: argparse.Namespace) -> int:
     try:
         text = dump_path.read_text()
     except FileNotFoundError:
-        print(f"error: dump file not found: {dump_path}")
+        write_output(get_output(args), f"error: dump file not found: {dump_path}")
         return 1
     lines = text.splitlines()
     try:
         rendered = render_after_pseudocode(lines, line_numbers=args.line_numbers)
     except ValueError as exc:
-        print(f"error: {exc}")
+        write_output(get_output(args), f"error: {exc}")
         return 1
     for line in rendered:
-        print(line)
+        write_output(get_output(args), line)
     return 0
