@@ -45,6 +45,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
     ollvm_state_dispatcher_map_profile,
+    tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
@@ -2827,11 +2828,45 @@ def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
     for profile in (
         ollvm_state_dispatcher_map_profile(),
         tigress_switch_dispatcher_profile(),
+        tigress_indirect_dispatcher_profile(),
     ):
         resolver = profile.resolver_factory()
         assert type(resolver).__name__ == "_NoopDispatcherResolver"
         assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
         assert resolver.check_if_histories_are_resolved(None) is False
+
+
+def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=34,
+    )
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_CALLS)
+    calls = []
+
+    def _analyze(mba_arg, goto_table_info):
+        calls.append((mba_arg, goto_table_info))
+        return SimpleNamespace(state_dispatcher_map=dispatch_map)
+
+    import d810.recon.flow.indirect_jump_table_analysis as indirect_analysis
+
+    monkeypatch.setattr(
+        indirect_analysis,
+        "analyze_tigress_indirect_dispatcher_from_config",
+        _analyze,
+    )
+
+    config = {"0x401000": {"table_address": "0x402000"}}
+    profile = tigress_indirect_dispatcher_profile(goto_table_info=config)
+    maps = profile.collect_state_dispatcher_maps(
+        mba,
+        analysis=object(),
+        collector_dispatchers=(),
+    )
+
+    assert maps == (dispatch_map,)
+    assert calls == [(mba, config)]
 
 
 def test_tigress_switch_profile_collects_live_transition_facts(monkeypatch) -> None:
@@ -2865,6 +2900,20 @@ def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> Non
 
     assert rule._family._profile.name == "tigress_switch"
     assert rule._family._profile.state_transport == "state_dispatcher_map"
+    assert rule.diagnostics_only is True
+
+
+def test_emulated_dispatcher_unflattener_accepts_tigress_indirect_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "tigress_indirect",
+        "diagnostics_only": True,
+        "goto_table_info": {"0x401000": {"table_address": "0x402000"}},
+    })
+
+    assert rule._family._profile.name == "tigress_indirect"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+    assert rule._family._profile.lowering_mode == "indirect_jump_table_diagnostics"
     assert rule.diagnostics_only is True
 
 

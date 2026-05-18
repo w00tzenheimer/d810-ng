@@ -1,0 +1,23 @@
+{
+  "description": "Diagnostics profile for Tigress indirect jump-table dispatchers through the shared engine",
+  "ins_rules": [],
+  "blk_rules": [
+    {
+      "name": "EmulatedDispatcherUnflattener",
+      "is_activated": true,
+      "config": {
+        "profile": "tigress_indirect",
+        "diagnostics_only": true,
+        "goto_table_info": {
+          "0x1800175c0": {
+            "state_base": 1,
+            "initial_state": 34,
+            "stack_table_offset": "0x70",
+            "table_address": "0x180019f10",
+            "table_nb_elt": 37
+          }
+        }
+      }
+    }
+  ]
+}

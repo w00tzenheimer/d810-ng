@@ -126,6 +126,7 @@ def test_snapshot_state_dispatcher_rows_round_trip() -> None:
                 "compare_block": 6,
                 "dispatcher_kind": "CONDITIONAL_CHAIN",
                 "branch_kind": "jz_taken",
+                "payload": {"target_ea_hex": "0x00000001800178e3"},
             }
         ],
         dispatcher_entry_block=5,
@@ -134,10 +135,14 @@ def test_snapshot_state_dispatcher_rows_round_trip() -> None:
     )
 
     row = conn.execute(
-        "SELECT state_const_hex, target_block, dispatcher_kind "
+        "SELECT state_const_hex, target_block, dispatcher_kind, payload_json "
         "FROM state_dispatcher_rows"
     ).fetchone()
-    assert row == ("0x0000000089407346", 76, "CONDITIONAL_CHAIN")
+    assert row[:3] == ("0x0000000089407346", 76, "CONDITIONAL_CHAIN")
+    payload = json.loads(row[3])
+    assert payload["row_kind"] is None
+    assert payload["branch_kind"] == "jz_taken"
+    assert payload["target_ea_hex"] == "0x00000001800178e3"
 
 
 def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:

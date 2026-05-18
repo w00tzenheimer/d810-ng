@@ -6,7 +6,7 @@ core relation: concrete state constant -> handler entry block.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from d810.recon.flow.dispatcher_detection import DispatcherType
 
@@ -23,6 +23,7 @@ class StateDispatcherRow:
     source: DispatcherType
     confidence: float = 1.0
     row_kind: str = "handler"
+    payload: dict[str, object] = field(default_factory=dict)
 
     @property
     def is_handler_row(self) -> bool:

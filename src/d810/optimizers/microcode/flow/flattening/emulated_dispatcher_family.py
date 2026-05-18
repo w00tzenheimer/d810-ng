@@ -161,6 +161,7 @@ __all__ = [
     "GenericDispatcherResolverProtocol",
     "default_ollvm_dispatcher_profile",
     "ollvm_state_dispatcher_map_profile",
+    "tigress_indirect_dispatcher_profile",
     "tigress_switch_dispatcher_profile",
 ]
 
@@ -1208,6 +1209,38 @@ def _tigress_switch_case_transition_facts(
             exc_info=True,
         )
         return ()
+
+
+def _make_tigress_indirect_state_dispatcher_maps(
+    goto_table_info: object,
+) -> Callable[[object, object, tuple[object, ...]], tuple[StateDispatcherMap, ...]]:
+    def _collect(
+        mba: object,
+        _analysis: object,
+        _collector_dispatchers: tuple[object, ...],
+    ) -> tuple[StateDispatcherMap, ...]:
+        if not isinstance(goto_table_info, dict):
+            return ()
+        try:
+            from d810.recon.flow.indirect_jump_table_analysis import (
+                analyze_tigress_indirect_dispatcher_from_config,
+            )
+
+            result = analyze_tigress_indirect_dispatcher_from_config(
+                mba,
+                goto_table_info,
+            )
+        except Exception:
+            family_logger.debug(
+                "indirect jump-table state dispatcher profile collection failed",
+                exc_info=True,
+            )
+            return ()
+        if result is None:
+            return ()
+        return (result.state_dispatcher_map,)
+
+    return _collect
 
 
 def _entry_to_pre_header_corridor(
@@ -3932,6 +3965,25 @@ def tigress_switch_dispatcher_profile(
         allow_incomplete_switch_transition_facts=allow_incomplete_switch_transition_facts,
         state_dispatcher_map_factory=_tigress_switch_state_dispatcher_maps,
         switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
+    )
+
+
+def tigress_indirect_dispatcher_profile(
+    *,
+    goto_table_info: object | None = None,
+) -> GenericDispatcherEngineProfile:
+    """Return a read-only profile for Tigress computed-goto dispatch tables."""
+
+    return GenericDispatcherEngineProfile(
+        name="tigress_indirect",
+        collector_factory=_NoopDispatcherCollector,
+        resolver_factory=_NoopDispatcherResolver,
+        state_transport="state_dispatcher_map",
+        lowering_mode="indirect_jump_table_diagnostics",
+        provenance_hints=("indirect_jump_table",),
+        state_dispatcher_map_factory=_make_tigress_indirect_state_dispatcher_maps(
+            goto_table_info or {}
+        ),
     )
 
 
