@@ -325,6 +325,146 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(monk
     assert modifier.verify_failed is True
 
 
+def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
+            block_serial=0,
+            insn_ea=0x1000,
+            host_opcode=ida_hexrays.m_ldx,
+            alias_token="%var_378",
+            base_token="%var_18",
+            description="alias scalarization must rollback on verify failure",
+        ),
+    ]
+
+    apply_calls = {"count": 0}
+    restore_calls = {"count": 0}
+    verify_calls = {"count": 0}
+
+    def _apply_alias(*_args, **_kwargs):
+        apply_calls["count"] += 1
+        return True
+
+    def _safe_verify(*_args, **_kwargs):
+        verify_calls["count"] += 1
+        if verify_calls["count"] == 2:
+            raise RuntimeError("alias scalarization verify failure")
+
+    monkeypatch.setattr(modifier, "_apply_scalarize_local_alias_access", _apply_alias)
+    monkeypatch.setattr(
+        modifier,
+        "_restore_from_snapshot",
+        lambda _snap: restore_calls.__setitem__("count", restore_calls["count"] + 1) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", _safe_verify)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        verify_each_mod=True,
+        rollback_on_verify_failure=True,
+        transactional=True,
+    )
+
+    assert applied == 0
+    assert apply_calls["count"] == 1
+    assert restore_calls["count"] == 1
+    assert modifier.verify_failed is False
+
+
+def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch):
+    from d810.optimizers.microcode.flow.flattening import (
+        emulated_dispatcher_family as edf,
+    )
+    from d810.recon.facts.carrier import (
+        LIFECYCLE_PRODUCTION_PROVEN,
+        LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+    )
+
+    class _Mop:
+        def __init__(self, text: str):
+            self._text = text
+            self.size = 4
+
+        def dstr(self) -> str:
+            return self._text
+
+    insn = SimpleNamespace(
+        opcode=ida_hexrays.m_ldx,
+        ea=0x18000F123,
+        r=_Mop("[ds.2:%var_378.8].4"),
+        d=_Mop("%var_420.4"),
+        next=None,
+    )
+    block = _FakeBlock(0)
+    block.head = insn
+    block.make_lists_ready = lambda: None  # type: ignore[attr-defined]
+    mba = _FakeMBA()
+    mba.blocks = {0: block}
+    mba.qty = 1
+
+    created_modifiers = []
+
+    class _FakeModifier:
+        def __init__(self, _mba):
+            self.queued = []
+            self.apply_kwargs = {}
+            self.verify_failed = False
+            created_modifiers.append(self)
+
+        def queue_scalarize_local_alias_access(self, *args, **kwargs):
+            self.queued.append((args, kwargs))
+
+        def apply(self, **kwargs):
+            self.apply_kwargs = dict(kwargs)
+            return len(self.queued)
+
+    fact = SimpleNamespace(
+        kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+        fact_id="local-scalarization",
+        payload={
+            "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
+            "storage_identity": "%var_378",
+            "details": {
+                "proof_family": "local_expression_storage_scalarization",
+                "local_base_token": "%var_18",
+            },
+        },
+    )
+    verify_calls = {"count": 0}
+
+    monkeypatch.setattr(dm, "DeferredGraphModifier", _FakeModifier)
+    monkeypatch.setattr(
+        edf,
+        "_verify_ollvm_carrier_mutation",
+        lambda *_args, **_kwargs: verify_calls.__setitem__("count", verify_calls["count"] + 1),
+    )
+
+    applied = edf._apply_ollvm_local_alias_mem2reg(
+        mba,
+        SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
+        (fact,),
+    )
+
+    assert applied == 1
+    assert verify_calls["count"] == 1
+    assert len(created_modifiers) == 1
+    assert len(created_modifiers[0].queued) == 1
+    assert created_modifiers[0].apply_kwargs == {
+        "run_optimize_local": True,
+        "run_deep_cleaning": False,
+        "verify_each_mod": True,
+        "rollback_on_verify_failure": True,
+        "transactional": True,
+    }
+
+
 def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
