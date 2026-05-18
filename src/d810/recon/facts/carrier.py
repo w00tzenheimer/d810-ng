@@ -59,6 +59,8 @@ _SOURCE_PROVEN_KINDS = frozenset({
     "CallAnchorFact",
 })
 
+_TOKEN_WIDTH_RE = re.compile(r"(?P<token>(?:%var_[0-9A-Fa-f]+|v\d+))\.(?P<size>\d+)")
+
 
 def project_carrier_fact_families(
     observations: Iterable[FactObservation],
@@ -409,8 +411,17 @@ def _project_ollvm_oracle_fact(
         ),)
 
     if role == "ACCUMULATOR_CARRIER":
-        facts = [
-            _ollvm_exact_fact(
+        facts = []
+        local_details = _ollvm_local_scalarization_details(payload)
+        # Local scalarization is a mutation-authorizing proof.  It requires a
+        # concrete local-base relation so the consumer can revalidate the live
+        # anchor before queueing any rewrite.  Other accumulator facts stay
+        # diagnostic/semantic even when the local-base proof is absent.
+        if (
+            local_details.get("local_base_token") is not None
+            or local_details.get("multiply_add_base_token") is not None
+        ):
+            facts.append(_ollvm_exact_fact(
                 observation,
                 exact=exact,
                 kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
@@ -420,8 +431,9 @@ def _project_ollvm_oracle_fact(
                 proof_family="local_expression_storage_scalarization",
                 producer_ids=producer_ids,
                 role=role,
-                extra_details=_ollvm_local_scalarization_details(payload),
-            ),
+                extra_details=local_details,
+            ))
+        facts.extend([
             _ollvm_exact_fact(
                 observation,
                 exact=exact,
@@ -444,7 +456,7 @@ def _project_ollvm_oracle_fact(
                 producer_ids=producer_ids,
                 role=role,
             ),
-        ]
+        ])
         alias = _ollvm_same_carrier_alias_fact(
             observation,
             exact=exact,
@@ -501,6 +513,13 @@ def _ollvm_exact_fact(
     }
     if extra_details:
         details.update(extra_details)
+    anchor_locator = _ollvm_anchor_locator(observation, exact=exact, token=token)
+    overlap_proof = _ollvm_overlap_proof(
+        payload=observation.payload,
+        token=token,
+        role=role,
+        details=details,
+    )
     return _make_fact(
         observation,
         kind=kind,
@@ -516,6 +535,8 @@ def _ollvm_exact_fact(
         producer_kinds=(observation.kind,),
         source_identity=source_identity,
         details=details,
+        anchor_locator=anchor_locator,
+        storage_overlap_proof=overlap_proof,
     )
 
 
@@ -557,6 +578,14 @@ def _ollvm_same_carrier_alias_fact(
         "source_ea_hex": _hex(source_ea),
         "instruction_index": instruction_index,
     }
+    details = {
+        "source_ontology": observation.kind,
+        "source_role": role,
+        "carrier_token": carrier_token,
+        "alias_tokens": list(alias_tokens),
+        "proof_family": "same_carrier_alias_identity",
+        "instruction_dstr": str(payload.get("instruction_dstr") or ""),
+    }
     return _make_fact(
         observation,
         kind=SAME_CARRIER_ALIAS_FACT_KIND,
@@ -571,14 +600,18 @@ def _ollvm_same_carrier_alias_fact(
         producer_fact_ids=producer_ids,
         producer_kinds=(observation.kind,),
         source_identity=source_identity,
-        details={
-            "source_ontology": observation.kind,
-            "source_role": role,
-            "carrier_token": carrier_token,
-            "alias_tokens": list(alias_tokens),
-            "proof_family": "same_carrier_alias_identity",
-            "instruction_dstr": str(payload.get("instruction_dstr") or ""),
-        },
+        details=details,
+        anchor_locator=_ollvm_anchor_locator(
+            observation,
+            exact=exact,
+            token=carrier_token,
+        ),
+        storage_overlap_proof=_ollvm_overlap_proof(
+            payload=payload,
+            token=carrier_token,
+            role=role,
+            details=details,
+        ),
     )
 
 
@@ -604,6 +637,85 @@ def _ollvm_local_scalarization_details(payload: JsonMapping) -> JsonMapping:
     return details
 
 
+def _instruction_text_digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _token_widths(text: str) -> dict[str, int]:
+    widths: dict[str, int] = {}
+    for match in _TOKEN_WIDTH_RE.finditer(text):
+        token = _canonical_token(match.group("token"))
+        if token is None:
+            continue
+        try:
+            size = int(match.group("size"))
+        except Exception:
+            continue
+        previous = widths.get(token)
+        if previous is None or size > previous:
+            widths[token] = size
+    return widths
+
+
+def _ollvm_anchor_locator(
+    observation: FactObservation,
+    *,
+    exact: JsonMapping,
+    token: str,
+) -> JsonMapping:
+    text = str(observation.payload.get("instruction_dstr") or "")
+    opcode_name = str(observation.payload.get("instruction_opcode_name") or "")
+    return {
+        "requires_live_revalidation": True,
+        "source_block": int(exact["source_block"]),
+        "instruction_ea": int(exact["instruction_ea"]),
+        "instruction_ea_hex": _hex(int(exact["instruction_ea"])),
+        "instruction_index": int(exact["instruction_index"]),
+        "instruction_opcode_name": opcode_name,
+        "instruction_text_sha1": _instruction_text_digest(text),
+        "instruction_dstr": text,
+        "carrier_token": _canonical_token(token),
+        "token_widths": _token_widths(text),
+    }
+
+
+def _ollvm_overlap_proof(
+    *,
+    payload: JsonMapping,
+    token: str,
+    role: str,
+    details: JsonMapping,
+) -> JsonMapping:
+    token = _canonical_token(token) or str(token)
+    text = str(payload.get("instruction_dstr") or "")
+    token_widths = _token_widths(text)
+    local_base = _canonical_token(str(details.get("local_base_token") or ""))
+    multiply_base = _canonical_token(str(details.get("multiply_add_base_token") or ""))
+    alias_tokens = tuple(
+        alias for alias in (
+            _canonical_token(str(raw_alias))
+            for raw_alias in (details.get("alias_tokens") or details.get("same_base_alias_tokens") or ())
+        )
+        if alias is not None
+    )
+    proof_basis = "exact_token_and_width_signature"
+    if local_base is not None or multiply_base is not None or alias_tokens:
+        proof_basis = "same_local_pointer_base"
+    return {
+        "proof_status": "producer_checked",
+        "proof_basis": proof_basis,
+        "carrier_token": token,
+        "base_token": local_base or multiply_base,
+        "alias_tokens": list(alias_tokens),
+        "token_widths": token_widths,
+        "carrier_width_bytes": token_widths.get(token),
+        "fully_included": True,
+        "partial_overlap": False,
+        "requires_live_mlist_revalidation": True,
+        "source_role": role,
+    }
+
+
 def _make_fact(
     observation: FactObservation,
     *,
@@ -620,6 +732,8 @@ def _make_fact(
     source_block: int | None = None,
     source_ea: int | None = None,
     instruction_index: int | None = None,
+    anchor_locator: JsonMapping | None = None,
+    storage_overlap_proof: JsonMapping | None = None,
 ) -> FactObservation:
     source_block = observation.source_block if source_block is None else source_block
     source_ea = observation.source_ea if source_ea is None else source_ea
@@ -641,6 +755,10 @@ def _make_fact(
         "source_identity": dict(source_identity),
         "details": dict(details),
     }
+    if anchor_locator is not None:
+        payload["anchor_locator"] = dict(anchor_locator)
+    if storage_overlap_proof is not None:
+        payload["storage_overlap_proof"] = dict(storage_overlap_proof)
     digest = hashlib.sha1(
         canonical_json({
             "kind": kind,
