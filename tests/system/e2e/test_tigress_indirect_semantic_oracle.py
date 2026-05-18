@@ -43,6 +43,56 @@ def _diag_db_path(diag_conn, *, func_ea: int) -> Path:
     return latest
 
 
+def _applied_redirect_edges(diag_conn) -> set[tuple[int, int, int]]:
+    rows = diag_conn.execute(
+        """
+        SELECT block_serial, target_serial, extra_json
+        FROM cfg_provenance
+        WHERE action = 'REDIRECT_EDGE'
+        """
+    ).fetchall()
+    edges: set[tuple[int, int, int]] = set()
+    for source_block, target_block, raw_extra in rows:
+        try:
+            extra = json.loads(raw_extra or "{}")
+        except json.JSONDecodeError:
+            continue
+        old_target = extra.get("old_target")
+        if old_target is None:
+            continue
+        edges.add((int(source_block), int(target_block), int(old_target)))
+    return edges
+
+
+def _derive_live_repaired_handoffs(report: dict, diag_conn) -> dict[int, int]:
+    target_block_by_state = {
+        int(transfer["state"]): int(transfer["target_block"])
+        for transfer in report.get("transfers", ())
+        if int(transfer.get("target_block", -1)) >= 0
+    }
+    applied_edges = _applied_redirect_edges(diag_conn)
+    handoffs: dict[int, int] = {}
+    for transfer in report.get("transfers", ()):
+        state = int(transfer["state"])
+        for terminal_path in transfer.get("terminal_paths", ()):
+            next_state = terminal_path.get("last_state")
+            if next_state is None:
+                continue
+            next_state = int(next_state)
+            target_block = target_block_by_state.get(next_state)
+            if target_block is None:
+                continue
+            path = tuple(int(block) for block in terminal_path.get("path", ()))
+            writes = tuple(terminal_path.get("writes", ()))
+            if len(path) < 2 or not writes:
+                continue
+            old_target = int(path[-1])
+            write_block = int(writes[-1]["block"])
+            if (write_block, target_block, old_target) in applied_edges:
+                handoffs[state] = next_state
+    return handoffs
+
+
 @pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     if not idaapi.init_hexrays_plugin():
@@ -107,13 +157,15 @@ class TestTigressIndirectSemanticOracle:
         )
         db_path = _diag_db_path(diag_conn, func_ea=func_ea)
         report = extract_transfer_map(db_path)
+        repaired_handoffs = _derive_live_repaired_handoffs(report, diag_conn)
+        assert repaired_handoffs, (
+            "tigress_flatten_indirect oracle expected live terminal-stub "
+            "handoff repair evidence in cfg_provenance"
+        )
         inputs = inputs_from_transfer_report(
             report,
             initial_state=0x22,
-            repaired_handoffs={
-                0x11: 0x24,
-                0x16: 0x1B,
-            },
+            repaired_handoffs=repaired_handoffs,
             pseudocode=code_after,
             func_name=func_name,
         )
