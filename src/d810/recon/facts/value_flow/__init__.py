@@ -63,6 +63,17 @@ from d810.recon.facts.value_flow.state_write import STATE_WRITE_FACT_TYPE
 from d810.recon.facts.value_flow.symbolic_expression import (
     SYMBOLIC_EXPRESSION_FACT_TYPE,
 )
+from d810.recon.facts.value_flow.alias_registry import (
+    FACT_TYPE_ALIAS_REGISTRY,
+    FactTypeAlias,
+    all_canonical_fact_types,
+    all_legacy_kinds,
+    canonical_fact_type,
+    display_name_for,
+    industry_term_for,
+    legacy_kinds_for,
+    producer_ontology_for,
+)
 
 VALUE_FLOW_FACT_TYPES = frozenset({
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
@@ -84,6 +95,8 @@ __all__ = [
     "CALL_EFFECT_SUMMARY_FACT_TYPE",
     "CALL_RETURN_VALUE_FACT_TYPE",
     "EFFECT_PATH_FACT_TYPE",
+    "FACT_TYPE_ALIAS_REGISTRY",
+    "FactTypeAlias",
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
     "MATERIALIZATION_POINT_FACT_TYPE",
@@ -95,8 +108,15 @@ __all__ = [
     "STATE_WRITE_FACT_TYPE",
     "SYMBOLIC_EXPRESSION_FACT_TYPE",
     "VALUE_FLOW_FACT_TYPES",
+    "all_canonical_fact_types",
+    "all_legacy_kinds",
+    "canonical_fact_type",
+    "display_name_for",
     "exact_source_identity",
+    "industry_term_for",
     "is_value_flow_fact",
+    "legacy_kinds_for",
+    "producer_ontology_for",
     "production_value_flow_fact",
     "project_value_flow_facts",
 ]
