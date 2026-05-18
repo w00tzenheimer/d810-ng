@@ -255,9 +255,10 @@ MANUALLY_OBFUSCATED_CASES = [
         function="test_neg",
         description="Negation pattern: ~x + 1 => -x (two's complement)",
         project="default_instruction_only.json",
-        # IDA often already simplifies, just verify negation present
-        # Or verify the function at least compiles and runs
-        acceptable_patterns=["-a1", "- a1", "-a", "-(a1", "-*a1", "- *a1"],
+        # IDA can print equivalent post-rule forms here; assert the rewrite
+        # fired instead of pinning one decompiler spelling of the negation.
+        check_stats=True,
+        required_rules=["Neg_HackersDelightRule_1"],
         must_change=False,  # IDA may already have simplified
     ),
     DeobfuscationCase(
@@ -925,7 +926,8 @@ RESIZE_BUFFER_CFF_CASES = [
             "return nullptr",
         ],
         deobfuscated_contains=[
-            "sub_1800134C0(a2, a4, 0xA, 0x44);",
+            # The helper auto-name moves when the fixture binary is rebuilt.
+            "(a2, a4, 0xA, 0x44);",
             "*(_BYTE *)(i + v6) = 0;",
             "*v5 = a4;",
             "return (unsigned int *)(a2 + 0x10);",
