@@ -267,12 +267,15 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
         if loop_match is not None:
             token = _canonical_token(loop_match.group("token"))
             if token is not None:
+                details: dict[str, Any] = {"bound": 0x64}
+                if token in local_pointer_base:
+                    details["local_base_token"] = local_pointer_base[token]
                 yield _CarrierHit(
                     role="LOOP_INDEX_CARRIER",
                     token=token,
                     insn=insn,
                     confidence=0.82,
-                    details={"bound": 0x64},
+                    details=details,
                 )
 
         if insn.opcode_name in {"m_stx", "op_1"}:
