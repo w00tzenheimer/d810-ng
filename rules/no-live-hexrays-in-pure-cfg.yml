@@ -1,8 +1,6 @@
 # Keep pure CFG planning/model modules backend-neutral.
 #
-# A small number of cfg modules are intentionally Hex-Rays adjacent
-# (contracts, simulators, emission/materialization adapters). Everything else
-# should consume FlowGraph/BlockSnapshot/caller-provided summaries.
+# CFG modules should consume FlowGraph/BlockSnapshot/caller-provided summaries.
 
 id: no-live-hexrays-in-pure-cfg
 language: python
@@ -10,18 +8,6 @@ severity: error
 
 files:
   - "src/d810/cfg/**/*.py"
-
-ignores:
-  - "src/d810/cfg/contracts/**"
-  - "src/d810/cfg/flow/edit_simulator.py"
-  - "src/d810/cfg/materialization_backend.py"
-  - "src/d810/cfg/terminal_corridor_emission.py"
-
-  # Existing mixed-boundary modules. Do not add new exceptions here without
-  # first considering a backend adapter or cfg emission split.
-  - "src/d810/cfg/dag_frontier_closure.py"
-  - "src/d810/cfg/loop_bound_writer_guard.py"
-  - "src/d810/cfg/reorder_blocks_planning.py"
 
 message: |
   Pure CFG modules must not import live IDA/Hex-Rays APIs directly.

@@ -132,6 +132,10 @@ from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
     DefinitionRescueBackend,
     HexRaysDefinitionRescueBackend,
 )
+from d810.hexrays.mutation.ir_translator import (
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     CumulativePlannerView,
     PLANNER_CTX_METADATA_KEY,
@@ -182,6 +186,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_DIRECT,
     OwnershipScope,
     PlanFragment,
+)
+from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
+    append_protected_non_carrier_return_writer_direct_lowerings,
 )
 from d810.recon.flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
@@ -2265,12 +2272,13 @@ class HandlerChainComposerStrategy:
             # Reject mods that would collapse a return-frontier carrier-def
             # path before IDA's MMAT_GLBOPT1 copy-prop sweep can substitute
             # the lvar carrier identity into the return-slot store.
-            if (
-                os.environ.get(
-                    self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
-                ).strip()
-                == "1"
-            ):
+            if self._return_frontier_carrier_guard_enabled():
+                _discovery = getattr(snapshot, "discovery", None)
+                _artifact_priors = getattr(
+                    _discovery,
+                    "return_frontier_artifact_priors",
+                    None,
+                )
                 _swr_dag = swr_result.get("dag") if swr_result else None
                 _carrier_facts: tuple[ReturnFrontierCarrierFact, ...] = ()
                 if _swr_dag is not None:
@@ -2280,17 +2288,20 @@ class HandlerChainComposerStrategy:
                     )
                 if not _carrier_facts:
                     _carrier_facts = detect_return_frontier_carrier_facts(
-                        getattr(snapshot, "flow_graph", None)
+                        getattr(snapshot, "flow_graph", None),
+                        state_var_stkoff=filter_state_var_stkoff,
+                        artifact_priors=_artifact_priors,
                     )
                 if _carrier_facts:
                     for _f in _carrier_facts:
                         logger.info(
                             "RETURN_FRONTIER_CARRIER_GUARD: fact (SWR+region "
                             "path): ret=blk[%d] writer=blk[%d] "
-                            "carrier_lvar=%s|stkoff=%s "
+                            "classification=%s carrier_lvar=%s|stkoff=%s "
                             "path_blocks=%s",
                             _f.ret_block,
                             _f.writer_block,
+                            getattr(_f, "classification", "RETURN_CARRIER"),
                             (
                                 str(_f.carrier_lvar_idx)
                                 if _f.carrier_lvar_idx is not None
@@ -2307,6 +2318,13 @@ class HandlerChainComposerStrategy:
                         self._filter_carrier_shredding_mods(
                             combined_modifications,
                             _carrier_facts,
+                        )
+                    )
+                    combined_modifications = (
+                        append_protected_non_carrier_return_writer_direct_lowerings(
+                            combined_modifications,
+                            mba=snapshot.mba,
+                            carrier_facts=_carrier_facts,
                         )
                     )
             frontier_closure = plan_dag_authoritative_frontier_closure(
@@ -2541,12 +2559,13 @@ class HandlerChainComposerStrategy:
                 side_effect_corridors,
             )
         # Return-frontier carrier-shred guard (region-collapse path).
-        if (
-            os.environ.get(
-                self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
-            ).strip()
-            == "1"
-        ):
+        if self._return_frontier_carrier_guard_enabled():
+            _discovery = getattr(snapshot, "discovery", None)
+            _artifact_priors = getattr(
+                _discovery,
+                "return_frontier_artifact_priors",
+                None,
+            )
             _region_dag = swr_result.get("dag") if swr_result else None
             _carrier_facts2: tuple[ReturnFrontierCarrierFact, ...] = ()
             if _region_dag is not None:
@@ -2558,17 +2577,20 @@ class HandlerChainComposerStrategy:
                 )
             if not _carrier_facts2:
                 _carrier_facts2 = detect_return_frontier_carrier_facts(
-                    getattr(snapshot, "flow_graph", None)
+                    getattr(snapshot, "flow_graph", None),
+                    state_var_stkoff=_resolve_state_var_stkoff_loose(snapshot),
+                    artifact_priors=_artifact_priors,
                 )
             if _carrier_facts2:
                 for _f in _carrier_facts2:
                     logger.info(
                         "RETURN_FRONTIER_CARRIER_GUARD: fact (region-collapse "
                         "path): ret=blk[%d] writer=blk[%d] "
-                        "carrier_lvar=%s|stkoff=%s "
+                        "classification=%s carrier_lvar=%s|stkoff=%s "
                         "path_blocks=%s",
                         _f.ret_block,
                         _f.writer_block,
+                        getattr(_f, "classification", "RETURN_CARRIER"),
                         (
                             str(_f.carrier_lvar_idx)
                             if _f.carrier_lvar_idx is not None
@@ -2584,6 +2606,13 @@ class HandlerChainComposerStrategy:
                 filtered_modifications = self._filter_carrier_shredding_mods(
                     filtered_modifications,
                     _carrier_facts2,
+                )
+                filtered_modifications = (
+                    append_protected_non_carrier_return_writer_direct_lowerings(
+                        filtered_modifications,
+                        mba=snapshot.mba,
+                        carrier_facts=_carrier_facts2,
+                    )
                 )
         owned_blocks_combined = set(region_owned_blocks)
         owned_blocks_combined.update(call_barrier_owned_blocks)
@@ -3026,6 +3055,8 @@ class HandlerChainComposerStrategy:
             ),
             conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(
             run
@@ -3143,6 +3174,8 @@ class HandlerChainComposerStrategy:
                 ),
                 conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
                 mba=mba,
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
             for result in fallback_run.conditional_results:
                 candidate = result.candidate
@@ -3314,6 +3347,8 @@ class HandlerChainComposerStrategy:
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results
@@ -3757,11 +3792,15 @@ class HandlerChainComposerStrategy:
     # a return-frontier carrier-def path into a single-def/single-use
     # shape that downstream copy-prop will substitute, severing the lvar
     # carrier identity (e.g. ``return v49`` becoming ``return a5 + 0xD0``).
-    # Off by default until validated; flip on with
-    # ``D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1``.
+    # Enabled by default; set ``D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=0``
+    # to bisect carrier-guard effects.
     _RETURN_FRONTIER_CARRIER_PRESERVE_ENV = (
         "D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE"
     )
+
+    @classmethod
+    def _return_frontier_carrier_guard_enabled(cls) -> bool:
+        return os.environ.get(cls._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, "1").strip() != "0"
 
     @staticmethod
     def _filter_carrier_shredding_mods(
@@ -3798,6 +3837,13 @@ class HandlerChainComposerStrategy:
         line naming the offending mod and the protecting fact.
         """
         if not carrier_facts or not modifications:
+            return modifications
+        carrier_facts = tuple(
+            fact
+            for fact in carrier_facts
+            if getattr(fact, "classification", "RETURN_CARRIER") == "RETURN_CARRIER"
+        )
+        if not carrier_facts:
             return modifications
 
         # Build a per-fact membership index plus the union for fast first-
@@ -3888,6 +3934,7 @@ class HandlerChainComposerStrategy:
             fact = _matching_fact(offending_blocks)
             fact_repr = (
                 f"ret=blk[{fact.ret_block}] writer=blk[{fact.writer_block}] "
+                f"classification={getattr(fact, 'classification', 'RETURN_CARRIER')} "
                 f"carrier_lvar={fact.carrier_lvar_idx}|"
                 f"stkoff={fact.carrier_stkoff if fact.carrier_stkoff is None else hex(fact.carrier_stkoff)}"
                 if fact is not None
@@ -3937,6 +3984,18 @@ class HandlerChainComposerStrategy:
             for mod in modifications
             if isinstance(mod, RedirectGoto)
         }
+        claimed_topology_sources: set[int] = set()
+        insert_old_targets_by_source: dict[int, int] = {}
+        for mod in modifications:
+            if isinstance(mod, (RedirectGoto, RedirectBranch)):
+                claimed_topology_sources.add(int(mod.from_serial))
+            elif isinstance(mod, ConvertToGoto):
+                claimed_topology_sources.add(int(mod.block_serial))
+            elif isinstance(mod, InsertBlock):
+                source = int(mod.pred_serial)
+                claimed_topology_sources.add(source)
+                if mod.old_target_serial is not None:
+                    insert_old_targets_by_source[source] = int(mod.old_target_serial)
         for mod in modifications:
             if not isinstance(mod, RedirectBranch):
                 kept.append(mod)
@@ -3960,6 +4019,39 @@ class HandlerChainComposerStrategy:
                 (int(mod.from_serial), old_target, int(mod.new_target))
             )
             if (old_target, int(mod.new_target)) in goto_pairs:
+                continue
+            if old_target in claimed_topology_sources:
+                claimed_old_target = insert_old_targets_by_source.get(old_target)
+                if claimed_old_target is not None:
+                    kept.append(
+                        EdgeRedirectViaPredSplit(
+                            src_block=old_target,
+                            old_target=claimed_old_target,
+                            new_target=int(mod.new_target),
+                            via_pred=int(mod.from_serial),
+                            rule_priority=550,
+                        )
+                    )
+                    added_feeders.append(
+                        (old_target, claimed_old_target, int(mod.new_target))
+                    )
+                    logger.info(
+                        "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SPLIT"
+                        " source=blk[%d] old=blk[%d] target=blk[%d]"
+                        " via_pred=blk[%d] reason=old_target_region_claim",
+                        old_target,
+                        claimed_old_target,
+                        int(mod.new_target),
+                        int(mod.from_serial),
+                    )
+                    continue
+                logger.info(
+                    "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SKIPPED"
+                    " source=blk[%d] target=blk[%d]"
+                    " reason=old_target_already_claimed",
+                    old_target,
+                    int(mod.new_target),
+                )
                 continue
             old_probe = self._read_live_one_way_successor(mba, old_target)
             old_succ = (

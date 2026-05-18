@@ -5110,7 +5110,7 @@ class DeferredGraphModifier:
             )
 
         elif mod.mod_type == ModificationType.DIRECT_TERMINAL_LOWERING_GROUP:
-            return self._apply_direct_terminal_lowering_group(mba, mod)
+            return self._apply_direct_terminal_lowering_group(self.mba, mod)
 
         elif mod.mod_type == ModificationType.REORDER_BLOCKS:
             return self._apply_reorder_blocks(
@@ -7060,7 +7060,10 @@ class DeferredGraphModifier:
             logger.warning("private_terminal_suffix: empty suffix_serials")
             return False
 
-        # Validate suffix topology
+        # Validate suffix topology. Earlier block-creating edits insert before
+        # BLT_STOP, so a planned final suffix serial can become a historical
+        # stop handle while the live stop moves to ``mba.qty - 1``.
+        final_stop_relocated = False
         for idx, suffix_serial in enumerate(suffix_serials):
             suffix_blk = mba.get_mblock(suffix_serial)
             if suffix_blk is None:
@@ -7079,12 +7082,29 @@ class DeferredGraphModifier:
                     return False
             else:
                 if suffix_blk.nsucc() != 0:
-                    logger.warning(
-                        "private_terminal_suffix: final suffix blk[%d] is not 0-way (nsucc=%d)",
+                    current_stop_serial = mba.qty - 1
+                    current_stop_blk = mba.get_mblock(current_stop_serial)
+                    if current_stop_blk is None or current_stop_blk.nsucc() != 0:
+                        logger.warning(
+                            "private_terminal_suffix: final suffix blk[%d] is not 0-way "
+                            "(nsucc=%d), and current stop blk[%d] is invalid (nsucc=%d)",
+                            suffix_serial,
+                            suffix_blk.nsucc(),
+                            current_stop_serial,
+                            (
+                                current_stop_blk.nsucc()
+                                if current_stop_blk is not None
+                                else -1
+                            ),
+                        )
+                        return False
+                    final_stop_relocated = True
+                    logger.debug(
+                        "private_terminal_suffix: final suffix blk[%d] relocated "
+                        "to current stop blk[%d]",
                         suffix_serial,
-                        suffix_blk.nsucc(),
+                        current_stop_serial,
                     )
-                    return False
 
         try:
             old_stop_serial = mba.qty - 1
@@ -7097,13 +7117,24 @@ class DeferredGraphModifier:
             ]
 
             cloned_serials: list[int] = []
+            clone_source_serials = (
+                tuple(suffix_serials[:-1])
+                if final_stop_relocated
+                else tuple(suffix_serials)
+            )
+            if not clone_source_serials:
+                logger.warning("private_terminal_suffix: no suffix blocks to clone")
+                return False
             # Clone suffix blocks in forward order (each creates a new block)
-            for idx, suffix_serial in enumerate(suffix_serials):
+            for idx, suffix_serial in enumerate(clone_source_serials):
                 template_blk = mba.get_mblock(suffix_serial)
                 if template_blk is None:
                     return False
 
-                is_last = idx == len(suffix_serials) - 1
+                is_last = (
+                    idx == len(clone_source_serials) - 1
+                    and not final_stop_relocated
+                )
 
                 # Collect instructions from template (skip trailing goto for non-final)
                 instructions_to_copy = []
@@ -7177,6 +7208,24 @@ class DeferredGraphModifier:
                         "private_terminal_suffix: failed to wire clone blk[%d] -> blk[%d]",
                         cloned_serials[idx],
                         next_clone_serial,
+                    )
+                    return False
+
+            if final_stop_relocated:
+                last_clone_blk = mba.get_mblock(cloned_serials[-1])
+                if last_clone_blk is None:
+                    return False
+                new_stop_serial = mba.qty - 1
+                if not change_1way_block_successor(
+                    last_clone_blk,
+                    new_stop_serial,
+                    verify=False,
+                ):
+                    logger.warning(
+                        "private_terminal_suffix: failed to wire clone blk[%d] "
+                        "to relocated stop blk[%d]",
+                        cloned_serials[-1],
+                        new_stop_serial,
                     )
                     return False
 
@@ -7283,6 +7332,10 @@ class DeferredGraphModifier:
             anchor_blks.append(anchor_blk)
 
         # ---- Phase 2: Validate suffix topology ONCE ----
+        # Earlier additive edits can relocate BLT_STOP. Interior suffix
+        # serials must still be stable 1-way blocks; the final serial may be
+        # the historical stop, in which case the current live stop is
+        # ``mba.qty - 1``.
         for idx, suffix_serial in enumerate(suffix_serials):
             if suffix_serial >= mba.qty:
                 logger.warning(
@@ -7310,13 +7363,29 @@ class DeferredGraphModifier:
                     return False
             else:
                 if suffix_blk.nsucc() != 0:
-                    logger.warning(
+                    current_stop_serial = mba.qty - 1
+                    current_stop_blk = mba.get_mblock(current_stop_serial)
+                    if current_stop_blk is None or current_stop_blk.nsucc() != 0:
+                        logger.warning(
+                            "private_terminal_suffix_group: final suffix blk[%d] "
+                            "is not 0-way (nsucc=%d), and current stop blk[%d] "
+                            "is invalid (nsucc=%d)",
+                            suffix_serial,
+                            suffix_blk.nsucc(),
+                            current_stop_serial,
+                            (
+                                current_stop_blk.nsucc()
+                                if current_stop_blk is not None
+                                else -1
+                            ),
+                        )
+                        return False
+                    logger.debug(
                         "private_terminal_suffix_group: final suffix blk[%d] "
-                        "is not 0-way (nsucc=%d)",
+                        "relocated to current stop blk[%d]",
                         suffix_serial,
-                        suffix_blk.nsucc(),
+                        current_stop_serial,
                     )
-                    return False
 
         try:
             # ---- Phase 3: Snapshot STOP predecessors ONCE ----
@@ -7622,15 +7691,27 @@ class DeferredGraphModifier:
                     )
                     return False
             else:
-                # Last suffix block is BLT_STOP (0-way)
-                if suffix_blk.nsucc() != 0:
+                # The final suffix serial is the return/STOP block captured
+                # during planning. Earlier block-creating modifications can
+                # relocate the live BLT_STOP, so validate the current stop
+                # instead of requiring this historical serial to remain 0-way.
+                current_stop_serial = mba.qty - 1
+                current_stop_blk = mba.get_mblock(current_stop_serial)
+                if current_stop_blk is None or current_stop_blk.nsucc() != 0:
                     logger.warning(
-                        "direct_terminal_lowering_group: final suffix blk[%d] "
+                        "direct_terminal_lowering_group: current stop blk[%d] "
                         "is not 0-way (nsucc=%d)",
-                        suffix_serial,
-                        suffix_blk.nsucc(),
+                        current_stop_serial,
+                        current_stop_blk.nsucc() if current_stop_blk is not None else -1,
                     )
                     return False
+                if int(suffix_serial) != current_stop_serial:
+                    logger.debug(
+                        "direct_terminal_lowering_group: final suffix blk[%d] "
+                        "relocated to current stop blk[%d]",
+                        suffix_serial,
+                        current_stop_serial,
+                    )
 
         try:
             # Determine which blocks to clone per site.
@@ -7656,15 +7737,124 @@ class DeferredGraphModifier:
                 mba.qty,
             )
 
+            def _terminal_return_destination_mop():
+                for suffix_serial in interior_suffix_serials:
+                    suffix_blk = mba.get_mblock(suffix_serial)
+                    if suffix_blk is None:
+                        continue
+                    cur = suffix_blk.head
+                    while cur is not None:
+                        if (
+                            cur.opcode == ida_hexrays.m_mov
+                            and getattr(cur.d, "t", None) == ida_hexrays.mop_r
+                        ):
+                            return ida_hexrays.mop_t(cur.d)
+                        cur = cur.next
+                return None
+
+            def _make_return_const_insn(value: int, dst_mop) -> object:
+                insn = ida_hexrays.minsn_t(mba.entry_ea)
+                insn.opcode = ida_hexrays.m_mov
+                size = int(getattr(dst_mop, "size", 0) or 8)
+                mask = (1 << (size * 8)) - 1
+                insn.l = ida_hexrays.mop_t()
+                insn.l.make_number(int(value) & mask, size, mba.entry_ea)
+                insn.r = ida_hexrays.mop_t()
+                insn.r.erase()
+                insn.d = ida_hexrays.mop_t(dst_mop)
+                return insn
+
+            def _rewrite_anchor_as_return_const(anchor_blk, value: int, dst_mop) -> bool:
+                target_insn = None
+                tail = anchor_blk.tail
+                cur = anchor_blk.head
+                while cur is not None:
+                    next_insn = cur.next
+                    if cur is not tail:
+                        if target_insn is None:
+                            target_insn = cur
+                        else:
+                            anchor_blk.make_nop(cur)
+                    cur = next_insn
+                if target_insn is None:
+                    logger.warning(
+                        "direct_terminal_lowering_group: RETURN_CONST anchor "
+                        "blk[%d] has no carrier instruction to rewrite",
+                        anchor_blk.serial,
+                    )
+                    return False
+
+                replacement = _make_return_const_insn(value, dst_mop)
+                anchor_blk.make_nop(target_insn)
+                target_insn.opcode = replacement.opcode
+                target_insn.ea = mba.entry_ea
+                target_insn.l = ida_hexrays.mop_t(replacement.l)
+                target_insn.r = ida_hexrays.mop_t(replacement.r)
+                target_insn.d = ida_hexrays.mop_t(replacement.d)
+                anchor_blk.type = ida_hexrays.BLT_1WAY
+                anchor_blk.flags |= ida_hexrays.MBL_GOTO
+                anchor_blk.mark_lists_dirty()
+                mba.mark_chains_dirty()
+                return True
+
             # ---- Phase 4: Create private blocks per site ----
             per_site_first_clone: list[int] = []
 
             for site_idx, site in enumerate(sites):
                 # Determine materializer serials for this site.
                 # For CLONE_MATERIALIZER: use site.materializer_serials
-                # For RETURN_CONST (v1 fallback): use interior suffix serials
+                # For RETURN_CONST: rewrite the anchor to materialize the
+                # literal directly and route it to the live STOP. This matches
+                # the typed CFG contract, which allocates no clones for this
+                # lowering kind.
                 # For RETURN_FROM_SLOT/REG (v2 fallback): use interior suffix serials
-                if (
+                if site.kind == DirectTerminalLoweringKind.RETURN_CONST:
+                    if site.const_value is None:
+                        logger.warning(
+                            "direct_terminal_lowering_group: RETURN_CONST site "
+                            "anchor=%d has no const_value",
+                            site.anchor_serial,
+                        )
+                        return False
+                    dst_mop = _terminal_return_destination_mop()
+                    if dst_mop is None:
+                        logger.warning(
+                            "direct_terminal_lowering_group: RETURN_CONST site "
+                            "anchor=%d cannot find terminal return destination",
+                            site.anchor_serial,
+                        )
+                        return False
+                    if not _rewrite_anchor_as_return_const(
+                        anchor_blks[site_idx],
+                        int(site.const_value),
+                        dst_mop,
+                    ):
+                        return False
+                    try:
+                        from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                            remember_terminal_zero_guard_literal_return_value,
+                        )
+
+                        remember_terminal_zero_guard_literal_return_value(
+                            mba,
+                            int(site.const_value),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "direct_terminal_lowering_group: failed to remember "
+                            "terminal literal",
+                            exc_info=True,
+                        )
+                    logger.debug(
+                        "DTL_DIAG Phase4_RETURN_CONST: site[%d] anchor=%d "
+                        "const=0x%016x -> direct stop",
+                        site_idx,
+                        site.anchor_serial,
+                        int(site.const_value) & 0xFFFFFFFFFFFFFFFF,
+                    )
+                    per_site_first_clone.append(mba.qty - 1)
+                    continue
+                elif (
                     site.kind == DirectTerminalLoweringKind.CLONE_MATERIALIZER
                     and site.materializer_serials
                 ):

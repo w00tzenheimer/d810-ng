@@ -51,7 +51,7 @@ Rollback Wiring
 
 After ``DeferredGraphModifier`` snapshot restore succeeds (phases
 ``rollback_restore``), the caller should invoke
-``IDACfgContract.check_rollback(mba, plan)`` to verify the restored MBA
+``CfgContract.check_rollback(mba, plan)`` to verify the restored graph
 satisfies invariants. If ``check_rollback()`` finds violations, the MBA
 enters the ``verify_failed`` quarantine path and no further pipeline stages
 execute.

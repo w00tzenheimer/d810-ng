@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.graph_modification import GraphModification, RedirectGoto
-from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
+from d810.cfg.loop_bound_writer_guard import (
+    InsnKindClassifier,
+    OperandKindClassifier,
+    collect_const_var_refs_in_block,
+)
 from d810.core import logging
 from d810.core.typing import Any
 
@@ -149,6 +153,8 @@ def filter_return_carrier_fact_redirects(
     dispatcher_serial: int,
     stale_hazard_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
     reject_carrier_writer_bypass: bool = False,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> tuple[list[GraphModification], tuple[ReturnCarrierFactRejection, ...]]:
     """Reject fact-proven return-carrier constant-feed redirects.
 
@@ -199,7 +205,12 @@ def filter_return_carrier_fact_redirects(
             filtered.append(mod)
             continue
 
-        const_written = collect_const_var_refs_in_block(mba, source)
+        const_written = collect_const_var_refs_in_block(
+            mba,
+            source,
+            insn_kind_classifier=insn_kind_classifier,
+            operand_kind_classifier=operand_kind_classifier,
+        )
 
         rejected = False
         for hazard_block, fact_status, site in bypass_sites:

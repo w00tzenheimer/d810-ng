@@ -7,7 +7,7 @@ from d810.core.typing import Any
 
 import pytest
 
-from d810.cfg.contracts import insn_invariants as inv
+from d810.hexrays.contracts import insn_invariants as inv
 
 _HR = inv.ida_hexrays
 

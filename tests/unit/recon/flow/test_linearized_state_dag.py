@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.recon.flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
@@ -1817,6 +1824,83 @@ def test_build_state_resolver_still_overrides_nonraw_exact_row_to_dispatcher() -
         TransitionResult(),
         dispatcher,
         flow_graph=flow_graph,
+    )
+
+    assert resolve_handler(0x474EEEBB) == 71
+
+
+def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_return_writer() -> None:
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x6107F8EC,
+        handler_state_map={66: 0x474EEEBB},
+        handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x474EEEBB,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=66,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x6107F8EC,
+                conditional_states=(),
+                state_label="State 0x474eeebb",
+                transition_label="next=0x6107f8ec",
+                chain_preview=(66,),
+                path=TransitionPath(
+                    handler_serial=66,
+                    chain=(66, 68),
+                    next_state=0x6107F8EC,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=1,
+            known_count=1,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=0,
+        ),
+        diagnostics=(),
+    )
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(lo=0x474EEEBB, hi=0x4E69F350, target=71),
+        ]
+    )
+    artifact_writer = InsnSnapshot(
+        opcode=-1,
+        ea=0x7100,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, stkoff=0x3C),
+        d=MopSnapshot(kind=OperandKind.STACK, stkoff=0x80),
+        kind=InsnKind.XDU,
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            66: BlockSnapshot(66, 0, (68,), (), 0, 0, ()),
+            68: BlockSnapshot(68, 0, (), (66,), 0, 0, ()),
+            71: BlockSnapshot(71, 0, (), (), 0, 0, (artifact_writer,)),
+        },
+        entry_serial=66,
+        func_ea=0x401000,
+    )
+
+    _, resolve_handler = _build_state_resolver(
+        report,
+        TransitionResult(),
+        dispatcher,
+        flow_graph=flow_graph,
+        state_var_stkoff=0x3C,
     )
 
     assert resolve_handler(0x474EEEBB) == 71

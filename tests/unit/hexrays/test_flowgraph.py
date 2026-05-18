@@ -171,14 +171,23 @@ class TestBlockSnapshot:
                 flags=0, start_ea=0x1000, insn_snapshots=()
             )
 
-    @pytest.mark.parametrize("block_type", [-1, 7, 100])
-    def test_invalid_block_type_validation(self, block_type: int) -> None:
-        """Test that invalid block_type raises ValueError."""
-        with pytest.raises(ValueError, match="block_type must be 0-6"):
+    def test_negative_block_type_validation(self) -> None:
+        """Test that a negative block_type still needs a semantic kind."""
+        with pytest.raises(ValueError, match="block_type must be non-negative"):
             BlockSnapshot(
-                serial=0, block_type=block_type, succs=(), preds=(),
+                serial=0, block_type=-1, succs=(), preds=(),
                 flags=0, start_ea=0x1000, insn_snapshots=()
             )
+
+    @pytest.mark.parametrize("block_type", [7, 100])
+    def test_raw_block_type_values_are_diagnostic(self, block_type: int) -> None:
+        """Backend raw block type values are diagnostic, not Hex-Rays-limited."""
+        blk = BlockSnapshot(
+            serial=0, block_type=block_type, succs=(), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=()
+        )
+        assert blk.block_type == block_type
+        assert blk.raw_block_type == block_type
 
     def test_negative_start_ea_validation(self) -> None:
         """Test that negative start_ea raises ValueError."""

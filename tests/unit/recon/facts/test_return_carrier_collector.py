@@ -95,7 +95,7 @@ def test_collects_return_slot_identity_carrier() -> None:
     assert fact.evidence == ("mov %var_178.8, %var_8.8",)
 
 
-def test_collects_state_guard_artifact_candidate() -> None:
+def test_collects_protected_non_carrier_return_writer_candidate() -> None:
     collector = ReturnCarrierFactCollector()
 
     facts = collector.collect(
@@ -120,7 +120,7 @@ def test_collects_state_guard_artifact_candidate() -> None:
 
     assert len(facts) == 1
     assert facts[0].semantic_key == (
-        "return_carrier:slot=0x7f0:class=state_guard_artifact_candidate:"
+        "return_carrier:slot=0x7f0:class=protected_non_carrier_return_writer_candidate:"
         "source=mop_S:0x3c"
     )
     assert facts[0].payload["source_signature"] == "mop_S:0x3c"

@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.cfg.transform.loop_carrier_backedge_refresh import (
     LoopCarrierBackedgeRefreshPass,
@@ -29,10 +36,35 @@ def _insn(
     l_stkoff: int | None = None,
     r_value: int | None = None,
 ) -> InsnSnapshot:
-    d = MopSnapshot(t=3, size=8, stkoff=dst) if dst is not None else None
-    l = MopSnapshot(t=3, size=8, stkoff=l_stkoff) if l_stkoff is not None else None
-    r = MopSnapshot(t=2, size=8, value=r_value) if r_value is not None else None
-    return InsnSnapshot(opcode=opcode, ea=0x1000 + opcode, operands=(), l=l, r=r, d=d)
+    d = (
+        MopSnapshot(t=3, size=8, stkoff=dst, kind=OperandKind.STACK)
+        if dst is not None
+        else None
+    )
+    l = (
+        MopSnapshot(t=3, size=8, stkoff=l_stkoff, kind=OperandKind.STACK)
+        if l_stkoff is not None
+        else None
+    )
+    r = (
+        MopSnapshot(t=2, size=8, value=r_value, kind=OperandKind.NUMBER)
+        if r_value is not None
+        else None
+    )
+    kind = {
+        2: InsnKind.LOAD,
+        4: InsnKind.MOV,
+        12: InsnKind.ADD,
+    }.get(opcode, InsnKind.UNKNOWN)
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=0x1000 + opcode,
+        operands=(),
+        l=l,
+        r=r,
+        d=d,
+        kind=kind,
+    )
 
 
 def _blk(

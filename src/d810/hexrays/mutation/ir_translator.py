@@ -10,7 +10,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgContract
+from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
 
 from d810.cfg.graph_modification import (
     CloneConditionalAsGoto,
@@ -28,7 +28,14 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
     NopInstructions,
 )
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
     ExecutionPolicy,
@@ -74,6 +81,88 @@ import os
 import ida_hexrays
 
 
+def _block_kind_from_hexrays(block_type: int) -> BlockKind:
+    block_type = int(block_type)
+    if block_type == int(ida_hexrays.BLT_NONE):
+        return BlockKind.NONE
+    if block_type == int(ida_hexrays.BLT_STOP):
+        return BlockKind.STOP
+    if block_type == int(ida_hexrays.BLT_XTRN):
+        return BlockKind.EXTERNAL
+    if block_type == int(ida_hexrays.BLT_0WAY):
+        return BlockKind.ZERO_WAY
+    if block_type == int(ida_hexrays.BLT_1WAY):
+        return BlockKind.ONE_WAY
+    if block_type == int(ida_hexrays.BLT_2WAY):
+        return BlockKind.TWO_WAY
+    if block_type == int(ida_hexrays.BLT_NWAY):
+        return BlockKind.N_WAY
+    return BlockKind.UNKNOWN
+
+
+def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
+    opcode = int(opcode)
+    if opcode == int(ida_hexrays.m_nop):
+        return InsnKind.NOP
+    if opcode == int(ida_hexrays.m_mov):
+        return InsnKind.MOV
+    if opcode == int(ida_hexrays.m_ldx):
+        return InsnKind.LOAD
+    if opcode == int(ida_hexrays.m_xdu):
+        return InsnKind.XDU
+    if opcode == int(ida_hexrays.m_add):
+        return InsnKind.ADD
+    if opcode == int(ida_hexrays.m_and):
+        return InsnKind.AND
+    if opcode == int(ida_hexrays.m_goto):
+        return InsnKind.GOTO
+    if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
+        return InsnKind.EQUALITY_JUMP
+    is_jcond = getattr(ida_hexrays, "is_mcode_jcond", None)
+    if callable(is_jcond) and is_jcond(opcode):
+        return InsnKind.COND_JUMP
+    return InsnKind.UNKNOWN
+
+
+def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
+    operand_type = int(operand_type)
+    mapping = {
+        int(ida_hexrays.mop_z): OperandKind.EMPTY,
+        int(ida_hexrays.mop_r): OperandKind.REGISTER,
+        int(ida_hexrays.mop_n): OperandKind.NUMBER,
+        int(ida_hexrays.mop_str): OperandKind.STRING,
+        int(ida_hexrays.mop_d): OperandKind.SUBINSN,
+        int(ida_hexrays.mop_S): OperandKind.STACK,
+        int(ida_hexrays.mop_v): OperandKind.GLOBAL,
+        int(ida_hexrays.mop_b): OperandKind.BLOCK,
+        int(ida_hexrays.mop_f): OperandKind.ARG_LIST,
+        int(ida_hexrays.mop_l): OperandKind.LVAR,
+        int(ida_hexrays.mop_a): OperandKind.ADDRESS,
+        int(ida_hexrays.mop_h): OperandKind.HELPER,
+        int(ida_hexrays.mop_c): OperandKind.CASE_LIST,
+        int(ida_hexrays.mop_fn): OperandKind.FP_CONST,
+        int(ida_hexrays.mop_p): OperandKind.PAIR,
+        int(ida_hexrays.mop_sc): OperandKind.SCATTERED,
+    }
+    return mapping.get(operand_type, OperandKind.UNKNOWN)
+
+
+def classify_live_insn_kind(insn: object) -> InsnKind | None:
+    """Return backend-neutral instruction semantics for a live Hex-Rays insn."""
+    try:
+        return _insn_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_live_operand_kind(mop: object) -> OperandKind | None:
+    """Return backend-neutral operand semantics for a live Hex-Rays operand."""
+    try:
+        return _operand_kind_from_hexrays(int(getattr(mop, "t")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
     """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
 
@@ -83,17 +172,18 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         return None
     t = mop.t
     size = mop.size
+    kind = _operand_kind_from_hexrays(t)
     if t == ida_hexrays.mop_n:
         nnn = mop.nnn
-        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0)
+        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
     if t == ida_hexrays.mop_S:
         s = mop.s
-        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None)
+        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None, kind=kind)
     if t == ida_hexrays.mop_r:
-        return CfgMopSnapshot(t=t, size=size, reg=mop.r)
+        return CfgMopSnapshot(t=t, size=size, reg=mop.r, kind=kind)
     if t == ida_hexrays.mop_b:
-        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b)
-    return CfgMopSnapshot(t=t, size=size)
+        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b, kind=kind)
+    return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
 def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
@@ -124,6 +214,8 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         l=capture_mop_snapshot(insn.l),
         r=capture_mop_snapshot(insn.r),
         d=capture_mop_snapshot(insn.d),
+        kind=_insn_kind_from_hexrays(opcode),
+        raw_opcode=int(opcode),
     )
 
 
@@ -150,6 +242,8 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
         flags=flags,
         start_ea=start_ea,
         insn_snapshots=tuple(insn_snapshots),
+        kind=_block_kind_from_hexrays(block_type),
+        raw_block_type=int(block_type),
     )
 
 
@@ -998,6 +1092,8 @@ class IDAIRTranslator:
 
 __all__ = [
     "IDAIRTranslator",
+    "classify_live_insn_kind",
+    "classify_live_operand_kind",
     "capture_insn_snapshot",
     "capture_mop_snapshot",
     "lift",
