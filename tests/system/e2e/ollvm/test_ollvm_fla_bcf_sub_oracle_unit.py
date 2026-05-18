@@ -123,7 +123,7 @@ def test_oracle_accepts_current_style_after_with_fact_backing() -> None:
     assert not warning.blocker
 
 
-def test_oracle_rejects_self_feeding_loop_shape() -> None:
+def test_oracle_accepts_self_feeding_loop_only_with_fact_backed_carrier_split() -> None:
     bad_code = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)",
         "for (i = 0; i < 0x64; i += *((char *)v8 + i) * v5)",
@@ -135,9 +135,23 @@ def test_oracle_rejects_self_feeding_loop_shape() -> None:
         func_ea_hex="0x000000018000e360",
     )
 
-    assert not result.passed
+    assert result.passed
+
+    conn = _diag_db_with_carrier_facts()
+    conn.execute(
+        "UPDATE fact_observations SET payload = replace("
+        "payload, '\"role\": \"LOOP_INDEX_CARRIER\"', "
+        "'\"role\": \"ACCUMULATOR_CARRIER\"')"
+    )
+    missing_split = evaluate_ollvm_fla_bcf_sub_oracle(
+        bad_code,
+        conn=conn,
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert not missing_split.passed
     assert any(
-        blocker.name == "clean_counted_loop" for blocker in result.blockers
+        blocker.name == "clean_counted_loop" for blocker in missing_split.blockers
     )
 
 
