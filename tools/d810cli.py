@@ -473,6 +473,36 @@ def cmd_db(args: argparse.Namespace) -> int:
     return subprocess.call(argv, env=env)
 
 
+def cmd_indirect_transfer_map(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics indirect-transfer-map`."""
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "indirect-transfer-map",
+        "--db", str(db),
+        "--state-var-stkoff", args.state_var_stkoff,
+        "--table-stkoff", args.table_stkoff,
+        "--state-base", args.state_base,
+        "--pointer-size", str(args.pointer_size),
+        "--max-depth", str(args.max_depth),
+    ]
+    if args.snapshot_id is not None:
+        diag_argv.extend(["--snapshot-id", str(args.snapshot_id)])
+    if args.table_count is not None:
+        diag_argv.extend(["--table-count", str(args.table_count)])
+    if args.json_output:
+        diag_argv.append("--json")
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_trace(args: argparse.Namespace) -> int:
     """Dump + HCC byte-cascade trace in one shot."""
     os.environ["D810_HCC_BYTE_CASCADE_TRACE"] = "1"
@@ -1226,6 +1256,46 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("args", nargs=argparse.REMAINDER,
                     help="all args after `--` are forwarded to d810.diagnostics")
     sp.set_defaults(func=cmd_db)
+
+    sp = sub.add_parser(
+        "indirect-transfer-map",
+        help=(
+            "Extract an indirect-dispatcher state-transfer map from the latest"
+            " diag DB. Wraps `python -m d810.diagnostics"
+            " indirect-transfer-map`."
+        ),
+        description=(
+            "Extract an indirect-dispatcher state-transfer map from the latest"
+            " diag DB, including compact instruction metadata used to prove"
+            " table population."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument("--snapshot-id", type=int, default=None)
+    sp.add_argument(
+        "--state-var-stkoff",
+        default="0x30",
+        help="state variable stack offset (default: 0x30)",
+    )
+    sp.add_argument(
+        "--table-stkoff",
+        default="0x70",
+        help="stack offset of the indirect target table (default: 0x70)",
+    )
+    sp.add_argument(
+        "--state-base",
+        default="0x1",
+        help="base state value subtracted before table indexing (default: 0x1)",
+    )
+    sp.add_argument("--table-count", type=int, default=None)
+    sp.add_argument("--pointer-size", type=int, default=8)
+    sp.add_argument("--max-depth", type=int, default=64)
+    sp.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="emit JSON instead of the human-readable report",
+    )
+    sp.set_defaults(func=cmd_indirect_transfer_map)
 
     sp = sub.add_parser(
         "trace",
