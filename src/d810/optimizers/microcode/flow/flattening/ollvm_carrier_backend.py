@@ -1,7 +1,7 @@
 """OLLVM carrier fact backend for the shared emulated-dispatcher profile."""
 from __future__ import annotations
 
-from d810.recon.facts.carrier import project_carrier_fact_families
+from d810.recon.facts.value_flow import project_value_flow_facts
 
 
 def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
@@ -25,7 +25,7 @@ def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
 
 
 def collect_ollvm_post_execute_carrier_facts(mba: object) -> tuple[object, ...]:
-    return project_carrier_fact_families(
+    return project_value_flow_facts(
         collect_ollvm_raw_semantic_carrier_facts(mba)
     )
 
@@ -34,7 +34,7 @@ def collect_ollvm_profile_fact_observations(mba: object) -> tuple[object, ...]:
     raw_facts = collect_ollvm_raw_semantic_carrier_facts(mba)
     if not raw_facts:
         return ()
-    projected_facts = project_carrier_fact_families(raw_facts)
+    projected_facts = project_value_flow_facts(raw_facts)
     return (*raw_facts, *projected_facts)
 
 
