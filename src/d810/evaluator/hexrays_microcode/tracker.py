@@ -1160,7 +1160,13 @@ def get_segment_register_indexes(mop_list: list[ida_hexrays.mop_t]) -> list[int]
     for i, mop in enumerate(mop_list):
         if mop.t == ida_hexrays.mop_r:
             formatted_mop = format_mop_t(mop)
-            if formatted_mop in ["ds.2", "cs.2", "es.2", "ss.2"]:
+            base_formatted_mop = formatted_mop.split("{", 1)[0]
+            # format_mop_t() can return either a bare register name or a full
+            # debug rendering containing dstr=cs.2, depending on call site.
+            if base_formatted_mop in ["ds.2", "cs.2", "es.2", "ss.2"] or any(
+                segment_name in formatted_mop
+                for segment_name in ("ds.2", "cs.2", "es.2", "ss.2")
+            ):
                 segment_register_indexes.append(i)
     return segment_register_indexes
 

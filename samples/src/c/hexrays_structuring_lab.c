@@ -437,6 +437,7 @@ pred_b:
  */
 __asm__(
 ".text\n"
+".att_syntax prefix\n"
 ".globl hexrays_lab_badwhile_direct_triangle_case_asm\n"
 ".def hexrays_lab_badwhile_direct_triangle_case_asm; .scl 2; .type 32; .endef\n"
 "hexrays_lab_badwhile_direct_triangle_case_asm:\n"
@@ -475,6 +476,7 @@ __asm__(
 
 __asm__(
 ".text\n"
+".att_syntax prefix\n"
 ".globl hexrays_lab_badwhile_trampoline_triangle_case_asm\n"
 ".def hexrays_lab_badwhile_trampoline_triangle_case_asm; .scl 2; .type 32; .endef\n"
 "hexrays_lab_badwhile_trampoline_triangle_case_asm:\n"
@@ -515,6 +517,7 @@ __asm__(
 
 __asm__(
 ".text\n"
+".att_syntax prefix\n"
 ".globl hexrays_lab_badwhile_duplicate_group_triangle_asm\n"
 ".def hexrays_lab_badwhile_duplicate_group_triangle_asm; .scl 2; .type 32; .endef\n"
 "hexrays_lab_badwhile_duplicate_group_triangle_asm:\n"
