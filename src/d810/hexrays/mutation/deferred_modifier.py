@@ -191,6 +191,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import hashlib
 import re
 import uuid
 
@@ -375,6 +376,22 @@ def _mop_text(mop: object | None) -> str:
         except Exception:
             pass
     return str(mop)
+
+
+def _insn_text(insn: object | None) -> str:
+    if insn is None:
+        return ""
+    dstr = getattr(insn, "dstr", None)
+    if callable(dstr):
+        try:
+            return str(dstr())
+        except Exception:
+            pass
+    return str(insn)
+
+
+def _instruction_text_digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
 def _mop_local_var_token(mop: object | None) -> str | None:
@@ -862,6 +879,8 @@ class GraphModification:
     # For INSN_SCALARIZE_LOCAL_ALIAS_ACCESS: local pointer alias and base local tokens
     alias_token: str | None = None
     base_token: str | None = None
+    host_text_sha1: str | None = None
+    value_size: int | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1383,6 +1402,8 @@ class DeferredGraphModifier:
         host_opcode: int,
         alias_token: str,
         base_token: str,
+        host_text_sha1: str | None = None,
+        value_size: int | None = None,
         description: str = "",
     ) -> None:
         """Queue scalarization of a proven local pointer alias access.
@@ -1405,6 +1426,8 @@ class DeferredGraphModifier:
             host_opcode=host_opcode,
             alias_token=alias_token,
             base_token=base_token,
+            host_text_sha1=str(host_text_sha1 or "") or None,
+            value_size=int(value_size or 0) or None,
             priority=850,
             description=description or (
                 f"scalarize local alias {alias_token}->{base_token} at "
@@ -2237,6 +2260,17 @@ class DeferredGraphModifier:
                 ModificationType.EDGE_SPLIT_TRAMPOLINE,
             ):
                 key = (mod.mod_type, mod.src_block, mod.old_target, mod.via_pred, mod.new_target)
+            elif mod.mod_type == ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.insn_ea,
+                    mod.host_opcode,
+                    mod.alias_token,
+                    mod.base_token,
+                    mod.host_text_sha1,
+                    mod.value_size,
+                )
             else:
                 key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
 
@@ -4978,6 +5012,8 @@ class DeferredGraphModifier:
                 mod.host_opcode,
                 mod.alias_token,
                 mod.base_token,
+                mod.host_text_sha1,
+                mod.value_size,
             )
 
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
@@ -5413,6 +5449,7 @@ class DeferredGraphModifier:
         *,
         alias_token: str,
         base_token: str,
+        value_size: int | None = None,
     ) -> int:
         if mop is None:
             return 0
@@ -5423,6 +5460,12 @@ class DeferredGraphModifier:
         if int(getattr(nested, "opcode", -1)) == int(ida_hexrays.m_ldx):
             source = getattr(nested, "r", None)
             if _mop_local_var_token(source) == alias_token:
+                if value_size is not None and value_size > 0:
+                    try:
+                        if int(getattr(mop, "size", 0) or 0) != int(value_size):
+                            return 0
+                    except Exception:
+                        return 0
                 if alias_token == base_token:
                     base_mop = _copy_mop_for_alias_scalarization(source)
                 else:
@@ -5443,6 +5486,7 @@ class DeferredGraphModifier:
                 getattr(nested, side, None),
                 alias_token=alias_token,
                 base_token=base_token,
+                value_size=value_size,
             )
         return changed
 
@@ -5453,6 +5497,8 @@ class DeferredGraphModifier:
         host_opcode: int | None,
         alias_token: str | None,
         base_token: str | None,
+        host_text_sha1: str | None = None,
+        value_size: int | None = None,
     ) -> bool:
         alias = _canonical_local_var_token(alias_token)
         base = _canonical_local_var_token(base_token)
@@ -5475,6 +5521,15 @@ class DeferredGraphModifier:
                 hex(host_ea or 0), blk.serial,
             )
             return False
+        if host_text_sha1:
+            current_hash = _instruction_text_digest(_insn_text(host))
+            if current_hash != host_text_sha1:
+                logger.warning(
+                    "scalarize_local_alias_access: live host text hash mismatch "
+                    "at blk[%d]@%s expected=%s actual=%s",
+                    blk.serial, hex(host_ea or 0), host_text_sha1, current_hash,
+                )
+                return False
 
         changed = 0
         opcode = int(getattr(host, "opcode", -1))
@@ -5482,6 +5537,12 @@ class DeferredGraphModifier:
             source = getattr(host, "r", None)
             dest = getattr(host, "d", None)
             if _mop_local_var_token(source) == alias and dest is not None:
+                if value_size is not None and value_size > 0:
+                    try:
+                        if int(getattr(dest, "size", 0) or 0) != int(value_size):
+                            return False
+                    except Exception:
+                        return False
                 if alias == base:
                     base_mop = _copy_mop_for_alias_scalarization(source)
                 else:
@@ -5506,6 +5567,12 @@ class DeferredGraphModifier:
             target = getattr(host, "d", None)
             source = getattr(host, "l", None)
             if _mop_local_var_token(target) == alias and source is not None:
+                if value_size is not None and value_size > 0:
+                    try:
+                        if int(getattr(source, "size", 0) or 0) != int(value_size):
+                            return False
+                    except Exception:
+                        return False
                 if alias == base:
                     base_mop = _copy_mop_for_alias_scalarization(target)
                 else:
@@ -5532,6 +5599,7 @@ class DeferredGraphModifier:
                 getattr(host, side, None),
                 alias_token=alias,
                 base_token=base,
+                value_size=value_size,
             )
         if changed <= 0:
             return False

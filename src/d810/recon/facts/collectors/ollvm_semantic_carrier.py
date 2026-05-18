@@ -391,6 +391,7 @@ class OllvmSemanticCarrierFactCollector:
                     if source_ea is not None
                     else None
                 ),
+                "instruction_opcode_name": hit.insn.opcode_name,
                 "instruction_dstr": hit.insn.dstr,
                 **hit.details,
             }

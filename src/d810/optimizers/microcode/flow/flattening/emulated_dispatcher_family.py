@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -1989,6 +1990,84 @@ def _ollvm_insn_text(insn: object | None) -> str:
     return str(insn)
 
 
+def _ollvm_instruction_text_digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _ollvm_live_instruction_at_locator(
+    mba: object,
+    locator: dict[str, object],
+) -> object | None:
+    try:
+        block_serial = int(locator.get("source_block"))  # type: ignore[arg-type]
+    except Exception:
+        return None
+    try:
+        blk = mba.get_mblock(block_serial)
+    except Exception:
+        return None
+    if blk is None:
+        return None
+    expected_ea = locator.get("instruction_ea")
+    expected_index = locator.get("instruction_index")
+    expected_hash = str(locator.get("instruction_text_sha1") or "")
+    expected_token = _ollvm_canonical_var_token(str(locator.get("carrier_token") or ""))
+    expected_opcode_name = str(locator.get("instruction_opcode_name") or "")
+    insn = getattr(blk, "head", None)
+    index = 0
+    while insn is not None:
+        ea_matches = True
+        if expected_ea is not None:
+            try:
+                ea_matches = int(getattr(insn, "ea", 0) or 0) == int(expected_ea)
+            except Exception:
+                ea_matches = False
+        index_matches = True
+        if expected_index is not None:
+            try:
+                index_matches = int(index) == int(expected_index)
+            except Exception:
+                index_matches = False
+        if ea_matches and index_matches:
+            text = _ollvm_insn_text(insn)
+            if expected_hash and _ollvm_instruction_text_digest(text) != expected_hash:
+                return None
+            if expected_token is not None and expected_token not in _ollvm_var_tokens_from_text(text):
+                return None
+            if expected_opcode_name and expected_opcode_name.startswith("m_"):
+                # Keep this a text-level check because unit and IDA runtime
+                # environments represent opcode names differently.
+                if not text.lstrip().startswith(expected_opcode_name[2:]):
+                    return None
+            return insn
+        insn = getattr(insn, "next", None)
+        index += 1
+    return None
+
+
+def _ollvm_fact_anchor_is_live(
+    mba: object,
+    locator: dict[str, object],
+) -> bool:
+    if locator.get("requires_live_revalidation") is not True:
+        return False
+    return _ollvm_live_instruction_at_locator(mba, locator) is not None
+
+
+def _ollvm_overlap_proof_authorizes_alias_scalarization(
+    proof: dict[str, object],
+) -> bool:
+    if proof.get("fully_included") is not True:
+        return False
+    if proof.get("partial_overlap") is not False:
+        return False
+    base = _ollvm_canonical_var_token(str(proof.get("base_token") or ""))
+    carrier = _ollvm_canonical_var_token(str(proof.get("carrier_token") or ""))
+    if base is None or carrier is None or base == carrier:
+        return False
+    return True
+
+
 def _ollvm_stx_target_token_from_text(text: str) -> str | None:
     if ", ds" not in text:
         return None
@@ -2037,10 +2116,13 @@ class _OllvmLocalAliasScalarizationSpec:
     base_token: str
     fact_id: str
     fact_kind: str
+    anchor_locator: dict[str, object]
+    overlap_proof: dict[str, object]
 
 
 def _ollvm_local_alias_scalarization_specs(
     carrier_facts: tuple[object, ...],
+    mba: object | None = None,
 ) -> dict[str, _OllvmLocalAliasScalarizationSpec]:
     specs: dict[str, _OllvmLocalAliasScalarizationSpec] = {}
     for fact in carrier_facts:
@@ -2053,6 +2135,14 @@ def _ollvm_local_alias_scalarization_specs(
         if not isinstance(details, dict):
             details = {}
         if details.get("proof_family") != "local_expression_storage_scalarization":
+            continue
+        anchor_locator = payload.get("anchor_locator")
+        overlap_proof = payload.get("storage_overlap_proof")
+        if not isinstance(anchor_locator, dict) or not isinstance(overlap_proof, dict):
+            continue
+        if not _ollvm_overlap_proof_authorizes_alias_scalarization(overlap_proof):
+            continue
+        if mba is not None and not _ollvm_fact_anchor_is_live(mba, anchor_locator):
             continue
         alias_token = _ollvm_canonical_var_token(
             str(payload.get("storage_identity") or "")
@@ -2071,6 +2161,8 @@ def _ollvm_local_alias_scalarization_specs(
             base_token=base_token,
             fact_id=str(getattr(fact, "fact_id", "")),
             fact_kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+            anchor_locator=dict(anchor_locator),
+            overlap_proof=dict(overlap_proof),
         )
     return specs
 
@@ -2281,6 +2373,45 @@ def _ollvm_nested_alias_load_spec(
         if spec is not None:
             return spec
     return None
+
+
+def _ollvm_nested_alias_value_size(
+    mop: object | None,
+    alias_token: str,
+) -> int:
+    if mop is None:
+        return 0
+    nested = getattr(mop, "d", None)
+    if nested is None:
+        return 0
+    if (
+        int(getattr(nested, "opcode", -1)) == int(ida_hexrays.m_ldx)
+        and _ollvm_mop_var_token(getattr(nested, "r", None)) == alias_token
+    ):
+        return _ollvm_mop_size(mop)
+    for side in ("l", "r", "d"):
+        size = _ollvm_nested_alias_value_size(getattr(nested, side, None), alias_token)
+        if size > 0:
+            return size
+    return 0
+
+
+def _ollvm_alias_access_value_size(
+    insn: object,
+    alias_token: str,
+) -> int:
+    opcode = int(getattr(insn, "opcode", -1))
+    if opcode == int(ida_hexrays.m_ldx):
+        if _ollvm_mop_var_token(getattr(insn, "r", None)) == alias_token:
+            return _ollvm_mop_size(getattr(insn, "d", None))
+    if opcode == int(ida_hexrays.m_stx):
+        if _ollvm_mop_var_token(getattr(insn, "d", None)) == alias_token:
+            return _ollvm_mop_size(getattr(insn, "l", None))
+    for side in ("l", "r", "d"):
+        size = _ollvm_nested_alias_value_size(getattr(insn, side, None), alias_token)
+        if size > 0:
+            return size
+    return 0
 
 
 def _ollvm_is_local_alias_setup_move(
@@ -2503,7 +2634,7 @@ def _apply_local_alias_mem2reg(
 ) -> int:
     if mba is None:
         return 0
-    alias_specs = _ollvm_local_alias_scalarization_specs(carrier_facts)
+    alias_specs = _ollvm_local_alias_scalarization_specs(carrier_facts, mba=mba)
     if not alias_specs:
         return 0
     queued = 0
@@ -2515,6 +2646,7 @@ def _apply_local_alias_mem2reg(
     except Exception:
         return 0
     modifier = DeferredGraphModifier(mba)
+    queued_keys: set[tuple[int, int, int, str, str]] = set()
     for serial in range(qty):
         try:
             blk = mba.get_mblock(serial)
@@ -2534,12 +2666,36 @@ def _apply_local_alias_mem2reg(
                 alias_specs,
             )
             if alias_spec is not None:
-                modifier.queue_scalarize_local_alias_access(
+                host_ea = int(getattr(insn, "ea", 0) or 0)
+                host_opcode = int(getattr(insn, "opcode", 0) or 0)
+                queue_key = (
                     block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                    int(getattr(insn, "opcode", 0) or 0),
+                    host_ea,
+                    host_opcode,
                     alias_spec.alias_token,
                     alias_spec.base_token,
+                )
+                if queue_key in queued_keys:
+                    insn = getattr(insn, "next", None)
+                    continue
+                value_size = _ollvm_alias_access_value_size(
+                    insn,
+                    alias_spec.alias_token,
+                )
+                if value_size <= 0:
+                    insn = getattr(insn, "next", None)
+                    continue
+                queued_keys.add(queue_key)
+                modifier.queue_scalarize_local_alias_access(
+                    block_serial,
+                    host_ea,
+                    host_opcode,
+                    alias_spec.alias_token,
+                    alias_spec.base_token,
+                    host_text_sha1=_ollvm_instruction_text_digest(
+                        _ollvm_insn_text(insn)
+                    ),
+                    value_size=value_size,
                     description=(
                         "ollvm fact-backed local alias scalarization "
                         f"{alias_spec.alias_token}->{alias_spec.base_token} "

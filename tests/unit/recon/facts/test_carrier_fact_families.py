@@ -227,6 +227,9 @@ def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
     assert by_kind[CARRIER_STORE_PROMOTION_FACT_KIND].payload["details"]["proof_family"] == (
         "observable_output_store_carrier_promotion"
     )
+    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["anchor_locator"]["requires_live_revalidation"] is True
+    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["anchor_locator"]["instruction_text_sha1"]
+    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["storage_overlap_proof"]["partial_overlap"] is False
 
 
 @pytest.mark.parametrize(
@@ -268,6 +271,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
             "instruction_ea": 0x18000F123,
             "instruction_dstr": "add %var_378.4, #5.4*%var_390.4, %var_378.4",
             "same_carrier_alias_proof": True,
+            "multiply_add_base_token": "%var_18",
             "multiply_add_same_base_alias_tokens": ("%var_390",),
         },
         source_block=10,
@@ -313,6 +317,29 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
     assert CARRIER_STORE_PROMOTION_FACT_KIND in kinds
 
 
+def test_accumulator_without_local_base_does_not_emit_scalarization_authority() -> None:
+    accumulator = _fact(
+        fact_id="ollvm-accumulator-no-base",
+        kind="OllvmSemanticCarrierFact",
+        payload={
+            "role": "ACCUMULATOR_CARRIER",
+            "carrier_token": "%var_378",
+            "instruction_index": 3,
+            "instruction_ea": 0x18000F123,
+            "instruction_opcode_name": "m_add",
+            "instruction_dstr": "add %var_378.4, #5.4*%var_390.4, %var_378.4",
+        },
+        source_block=10,
+        source_ea=0x18000F123,
+    )
+
+    projected = project_carrier_fact_families((accumulator,))
+    kinds = {fact.kind for fact in projected}
+
+    assert LOCAL_STORAGE_SCALARIZATION_FACT_KIND not in kinds
+    assert EXPRESSION_CARRIER_FACT_KIND in kinds
+
+
 def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
     loop_index = _fact(
         fact_id="ollvm-loop-index",
@@ -346,6 +373,7 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
             "local_base_token": "%var_18",
             "instruction_index": 3,
             "instruction_ea": 0x18000F123,
+            "instruction_opcode_name": "m_add",
             "instruction_dstr": "add %var_378.4, #5.4*%var_390.4, %var_378.4",
         },
         source_block=10,
@@ -362,6 +390,8 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
     assert scalarization[0].payload["details"]["proof_family"] == (
         "local_expression_storage_scalarization"
     )
+    assert scalarization[0].payload["storage_overlap_proof"]["base_token"] == "%var_18"
+    assert scalarization[0].payload["anchor_locator"]["carrier_token"] == "%var_378"
 
 
 def test_call_result_oracle_fact_becomes_concrete_call_result_family() -> None:

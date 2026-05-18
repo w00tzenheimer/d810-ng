@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 import platform
 from types import SimpleNamespace
@@ -402,6 +403,7 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
         d=_Mop("%var_420.4"),
         next=None,
     )
+    insn.dstr = lambda: "ldx [ds.2:%var_378.8].4, %var_420.4"
     block = _FakeBlock(0)
     block.head = insn
     block.make_lists_ready = lambda: None  # type: ignore[attr-defined]
@@ -431,6 +433,24 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
         payload={
             "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
             "storage_identity": "%var_378",
+            "anchor_locator": {
+                "requires_live_revalidation": True,
+                "source_block": 0,
+                "instruction_ea": 0x18000F123,
+                "instruction_index": 0,
+                "instruction_opcode_name": "m_ldx",
+                "instruction_text_sha1": hashlib.sha1(
+                    insn.dstr().encode("utf-8")
+                ).hexdigest()[:16],
+                "carrier_token": "%var_378",
+            },
+            "storage_overlap_proof": {
+                "fully_included": True,
+                "partial_overlap": False,
+                "carrier_token": "%var_378",
+                "base_token": "%var_18",
+                "requires_live_mlist_revalidation": True,
+            },
             "details": {
                 "proof_family": "local_expression_storage_scalarization",
                 "local_base_token": "%var_18",
@@ -463,6 +483,65 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
         "rollback_on_verify_failure": True,
         "transactional": True,
     }
+    queued_args, queued_kwargs = created_modifiers[0].queued[0]
+    assert queued_args[:5] == (
+        0,
+        0x18000F123,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+    )
+    assert queued_kwargs["host_text_sha1"]
+    assert queued_kwargs["value_size"] == 4
+
+
+def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    block = _FakeBlock(0)
+    host = SimpleNamespace(
+        opcode=ida_hexrays.m_ldx,
+        ea=0x18000F123,
+        next=None,
+        dstr=lambda: "ldx [ds.2:%var_378.8].4, %var_420.4",
+    )
+    block.head = host
+
+    assert modifier._apply_scalarize_local_alias_access(
+        block,
+        0x18000F123,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        "definitely-wrong",
+        4,
+    ) is False
+
+
+def test_scalarize_local_alias_access_coalesce_keeps_distinct_live_anchors() -> None:
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.queue_scalarize_local_alias_access(
+        7,
+        0x180010000,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        host_text_sha1="hash-a",
+        value_size=4,
+    )
+    modifier.queue_scalarize_local_alias_access(
+        7,
+        0x180010010,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        host_text_sha1="hash-b",
+        value_size=4,
+    )
+
+    assert modifier.coalesce() == 0
+    assert len(modifier.modifications) == 2
 
 
 def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
