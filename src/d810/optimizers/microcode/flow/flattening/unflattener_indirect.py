@@ -32,12 +32,17 @@ class TigressIndirectDispatcherInfo(GenericDispatcherInfo):
         self.mop_compared = self._get_comparison_info(blk)
         self.entry_block = TigressIndirectDispatcherBlockInfo(blk)
         self.entry_block.parse()
-        self.entry_block.use_list = remove_segment_registers(self.entry_block.use_list)
+        self.entry_block.use_list = remove_segment_registers(
+            self.entry_block.use_list,
+            accept_debug_dstr=True,
+        )
         self.entry_block.use_before_def_list = remove_segment_registers(
-            self.entry_block.use_before_def_list
+            self.entry_block.use_before_def_list,
+            accept_debug_dstr=True,
         )
         self.entry_block.assume_def_list = remove_segment_registers(
-            self.entry_block.assume_def_list
+            self.entry_block.assume_def_list,
+            accept_debug_dstr=True,
         )
         for used_mop in self.entry_block.use_list:
             append_mop_if_not_in_list(used_mop, self.entry_block.assume_def_list)
