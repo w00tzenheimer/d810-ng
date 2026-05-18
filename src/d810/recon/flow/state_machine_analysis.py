@@ -1452,6 +1452,23 @@ def evaluate_handler_paths(
             return live_val, list(cur_writes)
 
         if not succs:
+            final_val, final_writes = _resolved_final_state_and_writes()
+            if (
+                final_val is not None
+                and final_writes
+                and known_handler_states is not None
+                and (final_val & 0xFFFFFFFF)
+                in {state & 0xFFFFFFFF for state in known_handler_states}
+            ):
+                results.append(
+                    HandlerPathResult(
+                        exit_block=curr_serial,
+                        final_state=final_val & 0xFFFFFFFF,
+                        state_writes=list(final_writes),
+                        ordered_path=list(ordered_path),
+                    )
+                )
+                continue
             results.append(
                 HandlerPathResult(
                     exit_block=curr_serial,

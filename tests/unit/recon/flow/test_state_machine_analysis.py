@@ -162,6 +162,89 @@ def test_evaluate_handler_paths_uses_snapshot_state_for_handler_handoff(
     assert results[0].ordered_path == [1, 2]
 
 
+def test_evaluate_handler_paths_resolves_no_successor_state_write_stub(
+    monkeypatch,
+):
+    mba = _FakeMBA(
+        {
+            1: _FakeBlock((2,)),
+            2: _FakeBlock(()),
+        }
+    )
+
+    def fake_snapshot_state(_flow_graph, ordered_path, _state_var_stkoff):
+        assert tuple(ordered_path) == (1, 2)
+        return (
+            2,
+            SimpleNamespace(
+                state_value=0x24,
+                insn_ea=0x1820,
+            ),
+        )
+
+    monkeypatch.setattr(
+        sma,
+        "find_last_state_write_site_on_path_snapshot",
+        fake_snapshot_state,
+    )
+
+    results = sma.evaluate_handler_paths(
+        mba,
+        entry_serial=1,
+        incoming_state=0x11,
+        bst_node_blocks={0},
+        state_var_stkoff=0x364,
+        flow_graph=object(),
+        known_handler_states={0x24},
+    )
+
+    assert len(results) == 1
+    assert results[0].final_state == 0x24
+    assert results[0].state_writes == [(2, 0x1820)]
+    assert results[0].ordered_path == [1, 2]
+
+
+def test_evaluate_handler_paths_keeps_unknown_no_successor_write_terminal(
+    monkeypatch,
+):
+    mba = _FakeMBA(
+        {
+            1: _FakeBlock((2,)),
+            2: _FakeBlock(()),
+        }
+    )
+
+    def fake_snapshot_state(_flow_graph, _ordered_path, _state_var_stkoff):
+        return (
+            2,
+            SimpleNamespace(
+                state_value=0x99,
+                insn_ea=0x1830,
+            ),
+        )
+
+    monkeypatch.setattr(
+        sma,
+        "find_last_state_write_site_on_path_snapshot",
+        fake_snapshot_state,
+    )
+
+    results = sma.evaluate_handler_paths(
+        mba,
+        entry_serial=1,
+        incoming_state=0x11,
+        bst_node_blocks={0},
+        state_var_stkoff=0x364,
+        flow_graph=object(),
+        known_handler_states={0x24},
+    )
+
+    assert len(results) == 1
+    assert results[0].final_state is None
+    assert results[0].state_writes == []
+    assert results[0].ordered_path == [1, 2]
+
+
 def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
     flow_graph = _SnapshotFlowGraph(
         {

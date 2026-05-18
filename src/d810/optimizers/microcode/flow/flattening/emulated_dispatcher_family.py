@@ -1495,12 +1495,26 @@ def _collect_tigress_indirect_terminal_stub_modifications(
     seen_sources: set[tuple[int, int]] = set()
 
     for edge in getattr(dag, "edges", ()) or ():
-        if getattr(edge, "target_state", None) is not None:
-            continue
         kind = getattr(edge, "kind", None)
-        if kind != SemanticEdgeKind.CONDITIONAL_RETURN and (
-            _semantic_edge_kind_name(kind) != "CONDITIONAL_RETURN"
-        ):
+        edge_target_state = getattr(edge, "target_state", None)
+        edge_kind_name = _semantic_edge_kind_name(kind)
+        is_terminal_return_edge = (
+            kind == SemanticEdgeKind.CONDITIONAL_RETURN
+            or edge_kind_name == "CONDITIONAL_RETURN"
+        )
+        is_state_transition_edge = edge_target_state is not None and (
+            kind
+            in {
+                SemanticEdgeKind.TRANSITION,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+            }
+            or edge_kind_name
+            in {
+                "TRANSITION",
+                "CONDITIONAL_TRANSITION",
+            }
+        )
+        if not (is_terminal_return_edge or is_state_transition_edge):
             continue
 
         ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
@@ -1541,6 +1555,10 @@ def _collect_tigress_indirect_terminal_stub_modifications(
             continue
 
         next_state = int(site.state_value) & 0xFFFFFFFFFFFFFFFF
+        if edge_target_state is not None and (
+            int(edge_target_state) & 0xFFFFFFFFFFFFFFFF
+        ) != next_state:
+            continue
         target = dispatch_map.resolve_target(next_state)
         if target is None:
             continue
