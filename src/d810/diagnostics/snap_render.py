@@ -19,7 +19,10 @@ import argparse
 import json
 import sqlite3
 from pathlib import Path
+
+from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable
+
 
 
 def _resolve_snapshot_id(
@@ -198,20 +201,21 @@ def register_parser(sub) -> None:
         action="store_true",
         help="Emit each instruction's ea_hex alongside opcode + dstr.",
     )
+    add_output_argument(p)
 
 
 def run(args: argparse.Namespace) -> int:
     """Execute ``snap-render`` from parsed args; return exit code."""
     db_path: Path = args.db
     if not db_path.exists():
-        print(f"error: diag DB not found: {db_path}")
+        write_output(get_output(args), f"error: diag DB not found: {db_path}")
         return 1
     only_serials: tuple[int, ...] | None = None
     if args.serials:
         try:
             only_serials = tuple(int(s) for s in args.serials.split(",") if s.strip())
         except ValueError:
-            print(f"error: --serials must be comma-separated integers: {args.serials!r}")
+            write_output(get_output(args), f"error: --serials must be comma-separated integers: {args.serials!r}")
             return 1
     try:
         rendered = render_snapshot(
@@ -222,8 +226,8 @@ def run(args: argparse.Namespace) -> int:
             include_eas=args.include_eas,
         )
     except ValueError as exc:
-        print(f"error: {exc}")
+        write_output(get_output(args), f"error: {exc}")
         return 1
     for line in rendered:
-        print(line)
+        write_output(get_output(args), line)
     return 0

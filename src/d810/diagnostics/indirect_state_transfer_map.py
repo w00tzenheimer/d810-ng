@@ -24,7 +24,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
+
 
 
 @dataclass(frozen=True)
@@ -800,6 +802,8 @@ def register_parser(subparsers, common: argparse.ArgumentParser | None = None) -
         ),
     )
     _add_arguments(parser, include_db=common is None)
+    if common is None:
+        add_output_argument(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -807,6 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Extract an indirect-dispatcher state-transfer map from a D810 diag DB."
     )
     _add_arguments(parser, include_db=True)
+    add_output_argument(parser)
     return parser
 
 
@@ -822,9 +827,9 @@ def run(args: argparse.Namespace) -> int:
         max_depth=args.max_depth,
     )
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        write_output(get_output(args), json.dumps(report, indent=2, sort_keys=True))
     else:
-        print(render_text(report))
+        write_output(get_output(args), render_text(report))
     return 0
 
 
