@@ -62,7 +62,8 @@ def _create_schema(conn: sqlite3.Connection) -> None:
           src_r_type TEXT,
           src_r_stkoff INTEGER,
           src_r_value_i64 INTEGER,
-          dstr TEXT
+          dstr TEXT,
+          meta TEXT
         );
         CREATE TABLE state_dispatcher_rows (
           snapshot_id INTEGER,
@@ -120,10 +121,10 @@ def _insert_state_write(
         INSERT INTO instructions (
           snapshot_id, block_serial, insn_index, ea_hex, ea_i64, opcode_name,
           dest_type, dest_stkoff, dest_size, src_l_type, src_l_stkoff,
-          src_l_value_i64, src_r_type, src_r_stkoff, src_r_value_i64, dstr
+          src_l_value_i64, src_r_type, src_r_stkoff, src_r_value_i64, dstr, meta
         )
         VALUES (1, ?, ?, ?, ?, 'm_mov', 'mop_S', ?, ?, 'mop_n', NULL, ?,
-                NULL, NULL, NULL, ?)
+                NULL, NULL, NULL, ?, NULL)
         """,
         (
             block,
@@ -156,6 +157,62 @@ def _insert_dispatch_row(
                 json_object('target_ea_hex', ?))
         """,
         (row_index, state, f"0x{state:x}", target, f"0x{0x180000000 + target:x}"),
+    )
+
+
+def _insert_call_with_table_setup_meta(conn: sqlite3.Connection, block: int) -> None:
+    meta = {
+        "opcode": 56,
+        "opcode_name": "m_call",
+        "call_setup_registers": [
+            {
+                "register": 16,
+                "register_name": "rdx",
+                "source": {
+                    "type": "mop_a",
+                    "sub_operand": {
+                        "type": "mop_v",
+                        "global_ea": "0x180019f10",
+                    },
+                },
+            },
+            {
+                "register": 24,
+                "register_name": "rcx",
+                "source": {
+                    "type": "mop_a",
+                    "sub_operand": {
+                        "type": "mop_S",
+                        "stkoff": 0x70,
+                    },
+                },
+            },
+            {
+                "register": 72,
+                "register_name": "r8",
+                "source": {
+                    "type": "mop_n",
+                    "value": 0x20,
+                },
+            },
+        ],
+    }
+    conn.execute(
+        """
+        INSERT INTO instructions (
+          snapshot_id, block_serial, insn_index, ea_hex, ea_i64, opcode_name,
+          dest_type, dest_stkoff, dest_size, src_l_type, src_l_stkoff,
+          src_l_value_i64, src_r_type, src_r_stkoff, src_r_value_i64, dstr, meta
+        )
+        VALUES (1, ?, 9, ?, ?, 'm_call', NULL, NULL, NULL, 'mop_v', NULL, NULL,
+                NULL, NULL, NULL, 'call $0x180000000', ?)
+        """,
+        (
+            block,
+            f"0x{0x180020000 + block:x}",
+            0x180020000 + block,
+            json.dumps(meta, sort_keys=True),
+        ),
     )
 
 
@@ -243,5 +300,36 @@ def test_table_invariance_rejects_overlapping_stack_write(tmp_path: Path) -> Non
             "dest_stkoff": 0x78,
             "dest_size": 8,
             "dstr": "%var_78.8 = #180020000",
+        }
+    ]
+
+
+def test_table_invariance_records_initializer_from_call_setup_meta(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    db_path = _base_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _insert_block(conn, 10, succs=(99,), preds=())
+        _insert_state_write(conn, 10, 2)
+        _insert_call_with_table_setup_meta(conn, 10)
+        _insert_dispatch_row(conn, 1, 10, row_index=0)
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = module.extract_transfer_map(db_path, table_count=4)
+
+    assert report["table_invariance"]["proved_invariant"] is True
+    assert report["table_invariance"]["initializer_calls"] == [
+        {
+            "block": 10,
+            "ea": "0x18002000a",
+            "dstr": "call $0x180000000",
+            "dest_stkoff": 0x70,
+            "source_global_ea": "0x180019f10",
+            "byte_count": 0x20,
+            "proof": "call_setup_registers",
         }
     ]
