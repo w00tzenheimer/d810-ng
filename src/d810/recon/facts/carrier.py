@@ -935,3 +935,54 @@ __all__ = [
     "production_carrier_fact",
     "project_carrier_fact_families",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Value-flow rename compatibility surface (Phase 1).
+#
+# Canonical names live in ``d810.recon.facts.value_flow``. The carrier module
+# is kept as a compatibility shim so legacy imports continue to work; consumers
+# partway through the migration can use either spelling. Phase 4 may swap the
+# source-of-truth, at which point the assignments below become re-imports from
+# ``value_flow``.
+# ---------------------------------------------------------------------------
+
+OBSERVABLE_MEMORY_DEF_FACT_TYPE = OBSERVABLE_STORE_FACT_KIND
+SCALAR_PROMOTION_FACT_TYPE = CARRIER_STORE_PROMOTION_FACT_KIND
+MUST_ALIAS_FACT_TYPE = SAME_CARRIER_ALIAS_FACT_KIND
+SCALAR_REPLACEMENT_FACT_TYPE = LOCAL_STORAGE_SCALARIZATION_FACT_KIND
+SYMBOLIC_EXPRESSION_FACT_TYPE = EXPRESSION_CARRIER_FACT_KIND
+LOOP_PREDICATE_VALUE_FACT_TYPE = LOOP_PREDICATE_CARRIER_FACT_KIND
+CALL_RETURN_VALUE_FACT_TYPE = CALL_RESULT_CARRIER_FACT_KIND
+INDUCTION_VARIABLE_FACT_TYPE = INDUCTION_CARRIER_FACT_KIND
+MATERIALIZATION_POINT_FACT_TYPE = TERMINAL_MATERIALIZATION_FACT_KIND
+STATE_WRITE_FACT_TYPE = STATE_VARIABLE_WRITE_FACT_KIND
+STATE_TRANSITION_FACT_TYPE = STATE_TRANSITION_CARRIER_FACT_KIND
+EFFECT_PATH_FACT_TYPE = SIDE_EFFECT_CORRIDOR_FACT_KIND
+CALL_EFFECT_SUMMARY_FACT_TYPE = CALL_SIDE_EFFECT_ANCHOR_FACT_KIND
+
+VALUE_FLOW_FACT_TYPES = GENERIC_CARRIER_FACT_KINDS
+
+project_value_flow_facts = project_carrier_fact_families
+is_value_flow_fact = is_generic_carrier_fact
+production_value_flow_fact = production_carrier_fact
+
+__all__ += [
+    "CALL_EFFECT_SUMMARY_FACT_TYPE",
+    "CALL_RETURN_VALUE_FACT_TYPE",
+    "EFFECT_PATH_FACT_TYPE",
+    "INDUCTION_VARIABLE_FACT_TYPE",
+    "LOOP_PREDICATE_VALUE_FACT_TYPE",
+    "MATERIALIZATION_POINT_FACT_TYPE",
+    "MUST_ALIAS_FACT_TYPE",
+    "OBSERVABLE_MEMORY_DEF_FACT_TYPE",
+    "SCALAR_PROMOTION_FACT_TYPE",
+    "SCALAR_REPLACEMENT_FACT_TYPE",
+    "STATE_TRANSITION_FACT_TYPE",
+    "STATE_WRITE_FACT_TYPE",
+    "SYMBOLIC_EXPRESSION_FACT_TYPE",
+    "VALUE_FLOW_FACT_TYPES",
+    "is_value_flow_fact",
+    "production_value_flow_fact",
+    "project_value_flow_facts",
+]
