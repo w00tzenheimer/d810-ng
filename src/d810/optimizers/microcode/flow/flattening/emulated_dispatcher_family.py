@@ -2533,11 +2533,28 @@ def _apply_ollvm_local_alias_mem2reg(
     if not queued:
         return 0
     try:
-        applied = int(modifier.apply())
+        applied = int(modifier.apply(
+            run_optimize_local=True,
+            run_deep_cleaning=False,
+            verify_each_mod=True,
+            rollback_on_verify_failure=True,
+            transactional=True,
+        ))
     except Exception:
         log_exception = getattr(logger, "exception", None)
         if callable(log_exception):
             log_exception("OLLVM local alias queued scalarization failed")
+        return 0
+    if applied != queued or getattr(modifier, "verify_failed", False):
+        log_warning = getattr(logger, "warning", None)
+        if callable(log_warning):
+            log_warning(
+                "OLLVM local carrier alias mem2reg rejected transactional "
+                "batch: applied=%d queued=%d verify_failed=%s",
+                int(applied),
+                int(queued),
+                bool(getattr(modifier, "verify_failed", False)),
+            )
         return 0
     if applied > 0:
         try:
