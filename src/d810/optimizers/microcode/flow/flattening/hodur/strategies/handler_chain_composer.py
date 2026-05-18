@@ -188,7 +188,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
 )
 from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
-    append_state_guard_artifact_direct_lowerings,
+    append_protected_non_carrier_return_writer_direct_lowerings,
 )
 from d810.recon.flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
@@ -2321,7 +2321,7 @@ class HandlerChainComposerStrategy:
                         )
                     )
                     combined_modifications = (
-                        append_state_guard_artifact_direct_lowerings(
+                        append_protected_non_carrier_return_writer_direct_lowerings(
                             combined_modifications,
                             mba=snapshot.mba,
                             carrier_facts=_carrier_facts,
@@ -2608,7 +2608,7 @@ class HandlerChainComposerStrategy:
                     _carrier_facts2,
                 )
                 filtered_modifications = (
-                    append_state_guard_artifact_direct_lowerings(
+                    append_protected_non_carrier_return_writer_direct_lowerings(
                         filtered_modifications,
                         mba=snapshot.mba,
                         carrier_facts=_carrier_facts2,

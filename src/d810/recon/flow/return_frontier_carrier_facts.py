@@ -333,7 +333,7 @@ def _writer_const_value(writer: InsnSnapshot) -> int | None:
     return None
 
 
-def _writer_is_state_guard_artifact(
+def _writer_is_state_variable_return_writer(
     writer: InsnSnapshot,
     *,
     state_var_stkoff: int | None,
@@ -402,7 +402,7 @@ def _block_references_carrier(
     return False
 
 
-def _state_guard_artifact_fact(
+def _protected_non_carrier_return_writer_fact(
     *,
     ret_serial: int,
     writer_serial: int,
@@ -445,7 +445,7 @@ def _state_guard_artifact_fact(
     return fact
 
 
-def _detect_state_guard_artifact_facts_for_return(
+def _detect_protected_non_carrier_return_writer_facts_for_return(
     flow_graph: FlowGraph,
     *,
     ret_serial: int,
@@ -503,12 +503,12 @@ def _detect_state_guard_artifact_facts_for_return(
                 return_stkoff=return_stkoff,
             )
             if writer is not None:
-                if _writer_is_state_guard_artifact(
+                if _writer_is_state_variable_return_writer(
                     writer,
                     state_var_stkoff=state_var_stkoff,
                 ):
                     facts.append(
-                        _state_guard_artifact_fact(
+                        _protected_non_carrier_return_writer_fact(
                             ret_serial=ret_serial,
                             writer_serial=pserial,
                             walk_path=new_path,
@@ -523,7 +523,7 @@ def _detect_state_guard_artifact_facts_for_return(
                     )
                 ):
                     facts.append(
-                        _state_guard_artifact_fact(
+                        _protected_non_carrier_return_writer_fact(
                             ret_serial=ret_serial,
                             writer_serial=pserial,
                             walk_path=new_path,
@@ -600,7 +600,7 @@ def detect_return_frontier_carrier_facts(
         if return_stkoff is None:
             continue
 
-        artifact_facts = _detect_state_guard_artifact_facts_for_return(
+        artifact_facts = _detect_protected_non_carrier_return_writer_facts_for_return(
             flow_graph,
             ret_serial=ret_serial,
             m_mov=m_mov,
@@ -690,11 +690,11 @@ def detect_return_frontier_carrier_facts(
         assert writer is not None and writer_serial is not None
 
         # Capture the carrier identity from the writer's source.
-        if _writer_is_state_guard_artifact(
+        if _writer_is_state_variable_return_writer(
             writer,
             state_var_stkoff=state_var_stkoff,
         ):
-            fact = _state_guard_artifact_fact(
+            fact = _protected_non_carrier_return_writer_fact(
                 ret_serial=ret_serial,
                 writer_serial=writer_serial,
                 walk_path=walk_path,
@@ -713,7 +713,7 @@ def detect_return_frontier_carrier_facts(
                     const_value
                 )
             ):
-                fact = _state_guard_artifact_fact(
+                fact = _protected_non_carrier_return_writer_fact(
                     ret_serial=ret_serial,
                     writer_serial=writer_serial,
                     walk_path=walk_path,

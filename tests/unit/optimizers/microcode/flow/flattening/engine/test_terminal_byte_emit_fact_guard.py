@@ -15,7 +15,7 @@ from d810.optimizers.microcode.flow.flattening.engine import (
     terminal_byte_emit_fact_guard,
 )
 from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
-    append_state_guard_artifact_direct_lowerings,
+    append_protected_non_carrier_return_writer_direct_lowerings,
     filter_terminal_byte_emit_fact_redirects,
 )
 from d810.recon.flow.return_frontier_artifacts import (
@@ -483,7 +483,7 @@ def test_zero_guard_retargeter_matches_display_named_state_var(
     assert rejections[0].replacement_target == 27
 
 
-def test_state_guard_artifact_fact_stays_observational() -> None:
+def test_protected_non_carrier_return_writer_fact_stays_observational() -> None:
     blocks = {
         27: SimpleNamespace(
             predset=(),
@@ -508,7 +508,7 @@ def test_state_guard_artifact_fact_stays_observational() -> None:
         walk_path=(219, 218, 41),
     )
 
-    filtered = append_state_guard_artifact_direct_lowerings(
+    filtered = append_protected_non_carrier_return_writer_direct_lowerings(
         [],
         mba=_fake_mba(blocks),
         carrier_facts=(fact,),
@@ -517,7 +517,7 @@ def test_state_guard_artifact_fact_stays_observational() -> None:
     assert filtered == []
 
 
-def test_state_guard_artifact_fact_does_not_duplicate_existing_lowering() -> None:
+def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lowering() -> None:
     blocks = {
         27: SimpleNamespace(
             predset=(),
@@ -555,7 +555,7 @@ def test_state_guard_artifact_fact_does_not_duplicate_existing_lowering() -> Non
         reason="existing",
     )
 
-    filtered = append_state_guard_artifact_direct_lowerings(
+    filtered = append_protected_non_carrier_return_writer_direct_lowerings(
         [existing],
         mba=_fake_mba(blocks),
         carrier_facts=(fact,),

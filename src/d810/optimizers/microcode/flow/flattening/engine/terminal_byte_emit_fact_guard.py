@@ -491,7 +491,7 @@ def _direct_lowering_site_anchors(
     return anchors
 
 
-def _shared_entry_for_state_guard_fact(fact: Any) -> int | None:
+def _shared_entry_for_protected_non_carrier_fact(fact: Any) -> int | None:
     try:
         writer = int(getattr(fact, "writer_block"))
     except (TypeError, ValueError):
@@ -511,13 +511,13 @@ def _shared_entry_for_state_guard_fact(fact: Any) -> int | None:
     return None
 
 
-def append_state_guard_artifact_direct_lowerings(
+def append_protected_non_carrier_return_writer_direct_lowerings(
     modifications: list[GraphModification],
     *,
     mba: Any,
     carrier_facts: tuple[Any, ...],
 ) -> list[GraphModification]:
-    """Keep state-guard artifact facts observational.
+    """Keep protected non-carrier return-writer facts observational.
 
     Protected non-carrier return-frontier facts identify writers that have
     already lost recoverable carrier identity. Rewriting them through a sibling
@@ -755,6 +755,6 @@ def filter_terminal_byte_emit_fact_redirects(
 
 __all__ = [
     "TerminalByteEmitFactRejection",
-    "append_state_guard_artifact_direct_lowerings",
+    "append_protected_non_carrier_return_writer_direct_lowerings",
     "filter_terminal_byte_emit_fact_redirects",
 ]
