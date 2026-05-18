@@ -1956,9 +1956,13 @@ def main(argv: list[str] | None = None) -> int:
     from d810.diagnostics.frontier_diagnostics import (
         register_parser as _register_frontier_diagnostics,
     )
+    from d810.diagnostics.indirect_state_transfer_map import (
+        register_parser as _register_indirect_transfer_map,
+    )
 
     _register_dump_after(sub)
     _register_frontier_diagnostics(sub)
+    _register_indirect_transfer_map(sub, common)
     _register_inspect_state_node(sub)
     _register_residual_worksheet(sub)
     _register_snap_render(sub)
@@ -1987,6 +1991,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return _run_frontier_diagnostics(args)
+
+    if args.command == "indirect-transfer-map":
+        from d810.diagnostics.indirect_state_transfer_map import (
+            run as _run_indirect_transfer_map,
+        )
+
+        return _run_indirect_transfer_map(args)
 
     # inspect-state-node opens its own DB on a path that may differ from
     # the heuristic default, so it does not flow through the common

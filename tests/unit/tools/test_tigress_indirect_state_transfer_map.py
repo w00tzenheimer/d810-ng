@@ -1,28 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
-
-def _load_module():
-    module_path = (
-        Path(__file__).resolve().parents[3]
-        / "tools"
-        / "scripts"
-        / "tigress_indirect_state_transfer_map.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "tigress_indirect_state_transfer_map", module_path
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from d810.diagnostics.__main__ import main as diagnostics_main
+from d810.diagnostics.indirect_state_transfer_map import extract_transfer_map
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -233,7 +218,6 @@ def _base_db(tmp_path: Path) -> Path:
 
 
 def test_extracts_direct_conditional_and_terminal_transfers(tmp_path: Path) -> None:
-    module = _load_module()
     db_path = _base_db(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -252,7 +236,7 @@ def test_extracts_direct_conditional_and_terminal_transfers(tmp_path: Path) -> N
     finally:
         conn.close()
 
-    report = module.extract_transfer_map(db_path, table_count=4)
+    report = extract_transfer_map(db_path, table_count=4)
 
     assert report["z3_bounds_proof"]["proved_non_negative_index"] is True
     assert report["z3_bounds_proof"]["proved_table_upper_bound"] is True
@@ -270,8 +254,55 @@ def test_extracts_direct_conditional_and_terminal_transfers(tmp_path: Path) -> N
     assert by_state[3]["kind"] == "terminal"
 
 
+def test_diagnostics_cli_exposes_indirect_transfer_map(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    db_path = _base_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _insert_block(conn, 10, succs=(99,), preds=())
+        _insert_state_write(conn, 10, 2)
+        _insert_dispatch_row(conn, 1, 10, row_index=0)
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc = diagnostics_main(
+        [
+            "indirect-transfer-map",
+            "--db",
+            str(db_path),
+            "--table-count",
+            "4",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["transfer_kind_counts"] == {"direct": 1}
+
+
+def test_d810cli_exposes_indirect_transfer_map_help() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "tools" / "d810cli.py"),
+            "indirect-transfer-map",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+    )
+
+    assert result.returncode == 0
+    assert "indirect-dispatcher state-transfer map" in result.stdout
+
+
 def test_table_invariance_rejects_overlapping_stack_write(tmp_path: Path) -> None:
-    module = _load_module()
     db_path = _base_db(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -290,7 +321,7 @@ def test_table_invariance_rejects_overlapping_stack_write(tmp_path: Path) -> Non
     finally:
         conn.close()
 
-    report = module.extract_transfer_map(db_path, table_count=4)
+    report = extract_transfer_map(db_path, table_count=4)
 
     assert report["table_invariance"]["proved_invariant"] is False
     assert report["table_invariance"]["explicit_overlapping_writes"] == [
@@ -307,7 +338,6 @@ def test_table_invariance_rejects_overlapping_stack_write(tmp_path: Path) -> Non
 def test_table_invariance_records_initializer_from_call_setup_meta(
     tmp_path: Path,
 ) -> None:
-    module = _load_module()
     db_path = _base_db(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -319,7 +349,7 @@ def test_table_invariance_records_initializer_from_call_setup_meta(
     finally:
         conn.close()
 
-    report = module.extract_transfer_map(db_path, table_count=4)
+    report = extract_transfer_map(db_path, table_count=4)
 
     assert report["table_invariance"]["proved_invariant"] is True
     assert report["table_invariance"]["initializer_calls"] == [
