@@ -446,7 +446,7 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
         lambda *_args, **_kwargs: verify_calls.__setitem__("count", verify_calls["count"] + 1),
     )
 
-    applied = edf._apply_ollvm_local_alias_mem2reg(
+    applied = edf._apply_local_alias_mem2reg(
         mba,
         SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
         (fact,),
