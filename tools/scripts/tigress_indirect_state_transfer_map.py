@@ -144,7 +144,8 @@ def load_instructions(
           src_r_type,
           src_r_stkoff,
           src_r_value_i64,
-          dstr
+          dstr,
+          meta
         FROM instructions
         WHERE snapshot_id = ?
         ORDER BY block_serial, insn_index
@@ -169,6 +170,7 @@ def load_instructions(
                 "src_r_stkoff": None if row[12] is None else int(row[12]),
                 "src_r_value_i64": None if row[13] is None else int(row[13]),
                 "dstr": row[14] or "",
+                "meta": row[15] or None,
             }
         )
     return dict(by_block)
@@ -243,6 +245,97 @@ def _constant_state_write(
         "ea": insn["ea_hex"],
         "block": insn["block_serial"],
         "dstr": insn["dstr"],
+    }
+
+
+def _meta_json(insn: dict[str, Any]) -> dict[str, Any]:
+    raw = insn.get("meta")
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _record_for_register(
+    records: list[dict[str, Any]],
+    *,
+    names: tuple[str, ...],
+    numbers: tuple[int, ...],
+) -> dict[str, Any] | None:
+    wanted_names = {name.lower() for name in names}
+    wanted_numbers = {int(number) for number in numbers}
+    for record in records:
+        if int(record.get("register", -1)) in wanted_numbers:
+            return record
+        register_name = str(record.get("register_name") or "").lower()
+        if register_name in wanted_names:
+            return record
+    return None
+
+
+def _address_stack_offset(source: dict[str, Any] | None) -> int | None:
+    if not isinstance(source, dict) or source.get("type") != "mop_a":
+        return None
+    inner = source.get("sub_operand")
+    if not isinstance(inner, dict) or inner.get("type") != "mop_S":
+        return None
+    stkoff = inner.get("stkoff")
+    return None if stkoff is None else int(stkoff)
+
+
+def _address_global_ea(source: dict[str, Any] | None) -> str | None:
+    if not isinstance(source, dict) or source.get("type") != "mop_a":
+        return None
+    inner = source.get("sub_operand")
+    if not isinstance(inner, dict) or inner.get("type") != "mop_v":
+        return None
+    global_ea = inner.get("global_ea")
+    return None if global_ea is None else str(global_ea)
+
+
+def _constant_value(source: dict[str, Any] | None) -> int | None:
+    if not isinstance(source, dict) or source.get("type") != "mop_n":
+        return None
+    value = source.get("value")
+    return None if value is None else int(value)
+
+
+def _table_initializer_from_call_meta(
+    insn: dict[str, Any],
+    *,
+    table_stkoff: int,
+    table_count: int,
+    pointer_size: int,
+) -> dict[str, Any] | None:
+    meta = _meta_json(insn)
+    records = meta.get("call_setup_registers")
+    if not isinstance(records, list):
+        return None
+    register_records = [record for record in records if isinstance(record, dict)]
+    # Windows x64 argument registers: rcx=dest, rdx=source, r8=size.
+    dest = _record_for_register(register_records, names=("rcx",), numbers=(24,))
+    source = _record_for_register(register_records, names=("rdx",), numbers=(16,))
+    size = _record_for_register(register_records, names=("r8",), numbers=(72,))
+    if dest is None or source is None or size is None:
+        return None
+
+    dest_stkoff = _address_stack_offset(dest.get("source"))
+    byte_count = _constant_value(size.get("source"))
+    source_global = _address_global_ea(source.get("source"))
+    expected_size = table_count * pointer_size
+    if dest_stkoff != int(table_stkoff) or byte_count != int(expected_size):
+        return None
+    return {
+        "block": int(insn["block_serial"]),
+        "ea": insn["ea_hex"],
+        "dstr": insn.get("dstr", ""),
+        "dest_stkoff": dest_stkoff,
+        "source_global_ea": source_global,
+        "byte_count": byte_count,
+        "proof": "call_setup_registers",
     }
 
 
@@ -367,6 +460,15 @@ def check_table_invariance(
     for block_serial, insns in instructions_by_block.items():
         for insn in insns:
             dstr = insn.get("dstr", "")
+            call_initializer = _table_initializer_from_call_meta(
+                insn,
+                table_stkoff=table_stkoff,
+                table_count=table_count,
+                pointer_size=pointer_size,
+            )
+            if call_initializer is not None:
+                initializer_calls.append(call_initializer)
+                continue
             if "call" in dstr and "%var_1A8" in dstr:
                 record = {
                     "block": block_serial,
