@@ -256,39 +256,88 @@ in commits `87bd185c` through `c9d094ea` and the rolled-back
    Z3 confirmed `(v_528 + v_508) == v_4F8` is SAT (counterexample
    `v22 = 0x7FF7E50B1B8DC1EC`).  Folding it would not help.
 
-6. **The remaining harness divergence is loop-carrier loss.**
+6. **The remaining harness divergence is loop-predicate value loss.**
    `%var_3A8` (v22) is written only by `blk[151]`/`[186]` *outside*
    the post-HCC loop SCC.  Loop back-edges `[79, 236, 52] -> 81`
    never traverse a v22 writer, so v22 stays invariant per
    iteration in the rendered C transliteration.  D810's HCC
    linearization absorbed the dispatcher round-trip that originally
-   refreshed the carrier each iteration but did not preserve a
-   per-iteration carrier write inside the loop region.
+   refreshed the loop-predicate value each iteration but did not
+   preserve a per-iteration value-flow def inside the loop region.
 
 ## Architectural ruling and next direction
 
 For state-machine deobfuscation cases where the harness still
 diverges after applying every fact-rooted guard, override, and
-correlation, the load-bearing failure is **loop-carrier
+correlation, the load-bearing failure is **loop-predicate value
 preservation**, not byte-tail topology and not opaque-predicate
 folding.
 
 The next architectural unit (deferred from the prior session) is a
-`LoopCarrierFact` substrate that:
+`LoopPredicateValueFact` substrate that:
 
-1. captures pre-HCC carrier writers + readers + loop SCC at
+1. captures pre-HCC loop-predicate value defs + uses + loop SCC at
    LOCOPT/CALLS,
-2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations,
+2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations (the
+   serialized fact-kind preserves the legacy name; see the
+   value-flow alias registry),
 3. persists fact rows mirroring the existing
    `state_write_anchor` / `state_transition_anchor` shape.
 
 Behavior, after the diagnostic substrate proves stable, is one of:
 - **preserve route** (preferred first): HCC refuses redirects that
-  move a carrier writer out of the loop SCC.  Mirrors the
-  return-carrier rule.
-- **reinsert route**: HCC materializes a safe carrier write at the
-  loop update point.
+  move a loop-predicate value def out of the loop SCC.  Mirrors the
+  return materialization-point rule.
+- **reinsert route**: HCC materializes a safe loop-predicate value
+  def at the loop update point.
 
-Do NOT pick a route until the `LoopCarrierFact` table shows the
-violation persisted and queryable for `sub_7FFD`'s v22 case plus at
-least one secondary case (likely the byte-counter).
+Do NOT pick a route until the `LoopPredicateValueFact` table shows
+the violation persisted and queryable for `sub_7FFD`'s v22 case plus
+at least one secondary case (likely the byte-counter).
+
+---
+
+## Vocabulary: value-flow facts and historical names
+
+The fact ontology described above is the **value-flow** family per
+``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``. Code
+symbols and serialized fact-kind strings still use the older
+"carrier" vocabulary; the diagnostic alias registry at
+``d810.recon.facts.value_flow.alias_registry`` normalizes raw
+``FactObservation.kind`` values into canonical fact types at query
+time.
+
+When reading older code paths, diag SQL, or archived notes, translate
+as follows:
+
+|Read|Mean|
+|-|-|
+|carrier fact|value-flow fact|
+|carrier|abstract location|
+|`ObservableStoreFact` (kind)|`ObservableMemoryDefFact` (type)|
+|`CarrierStorePromotionFact` (kind)|`ScalarPromotionFact` (type)|
+|`SameCarrierAliasFact` (kind)|`MustAliasFact` (type)|
+|`LocalStorageScalarizationFact` (kind)|`ScalarReplacementFact` (type)|
+|`ExpressionCarrierFact` (kind)|`SymbolicExpressionFact` (type)|
+|`LoopPredicateCarrierFact` (kind)|`LoopPredicateValueFact` (type)|
+|`CallResultCarrierFact` (kind)|`CallReturnValueFact` (type)|
+|`GenericInductionCarrierFact` (kind)|`InductionVariableFact` (type)|
+|`TerminalMaterializationFact` (kind)|`MaterializationPointFact` (type)|
+|`StateVariableWriteFact` (kind)|`StateWriteFact` (type)|
+|`StateTransitionCarrierFact` (kind)|`StateTransitionFact` (type)|
+|`SideEffectCorridorFact` (kind)|`EffectPathFact` (type)|
+|`CallSideEffectAnchorFact` (kind)|`CallEffectSummaryFact` (type)|
+|`InductionCarrierFactCollector`|`InductionVariableFactCollector`|
+|`LoopCarrierFactCollector`|`LoopPredicateValueFactCollector`|
+|`ReturnCarrierFactCollector`|`ReturnSlotFactCollector` (with `ReturnValueFactCollector` reserved for value-recovery facts)|
+|`OllvmSemanticCarrierFactCollector`|`OllvmValueFlowEvidenceCollector`|
+
+The legacy collector class names remain importable as compatibility
+aliases. The serialized ``FactObservation.kind`` values stay at their
+historical strings; old diag SQLite snapshots therefore remain
+queryable through the canonical surface without rewrites.
+
+See the Phase 0 inventory under ``.tmp/terminology_rename/`` for the
+full glossary, term definitions (materialization point, ModRef,
+MemoryDef vs MemoryUse vs MemoryPhi, etc.), and the rename-map
+rationale.
