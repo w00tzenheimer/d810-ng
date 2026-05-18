@@ -139,12 +139,12 @@ from d810.recon.flow.reconstruction_candidate_builder import (
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
-from d810.recon.facts.carrier import (
-    CARRIER_STORE_PROMOTION_FACT_KIND,
-    LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
-    OBSERVABLE_STORE_FACT_KIND,
-    SAME_CARRIER_ALIAS_FACT_KIND,
-    production_carrier_fact,
+from d810.recon.facts.value_flow import (
+    MUST_ALIAS_FACT_TYPE,
+    OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+    SCALAR_PROMOTION_FACT_TYPE,
+    SCALAR_REPLACEMENT_FACT_TYPE,
+    production_value_flow_fact,
 )
 from d810.recon.flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
@@ -2245,12 +2245,12 @@ def _ollvm_collect_local_alias_tokens(
         details = payload.get("details")
         if not isinstance(details, dict):
             details = {}
-        if production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND):
+        if production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE):
             token = _ollvm_canonical_var_token(str(payload.get("storage_identity") or ""))
             if token is not None:
                 aliases.add(token)
             continue
-        if production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND):
+        if production_value_flow_fact(fact, MUST_ALIAS_FACT_TYPE):
             carrier_token = _ollvm_canonical_var_token(
                 str(details.get("carrier_token") or "")
             )
@@ -2282,7 +2282,7 @@ def _ollvm_local_alias_scalarization_specs(
 ) -> dict[str, _OllvmLocalAliasScalarizationSpec]:
     specs: dict[str, _OllvmLocalAliasScalarizationSpec] = {}
     for fact in carrier_facts:
-        if not production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND):
+        if not production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE):
             continue
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
@@ -2316,7 +2316,7 @@ def _ollvm_local_alias_scalarization_specs(
             alias_token=alias_token,
             base_token=base_token,
             fact_id=str(getattr(fact, "fact_id", "")),
-            fact_kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+            fact_kind=SCALAR_REPLACEMENT_FACT_TYPE,
             anchor_locator=dict(anchor_locator),
             overlap_proof=dict(overlap_proof),
         )
@@ -2330,8 +2330,8 @@ def _ollvm_local_alias_fact_ids(
         str(getattr(fact, "fact_id", ""))
         for fact in carrier_facts
         if (
-            production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND)
-            or production_carrier_fact(fact, LOCAL_STORAGE_SCALARIZATION_FACT_KIND)
+            production_value_flow_fact(fact, MUST_ALIAS_FACT_TYPE)
+            or production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE)
         )
     }
 
@@ -2654,7 +2654,7 @@ def _ollvm_fact_specs_by_block_ea(
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
             continue
-        if not production_carrier_fact(fact, kind):
+        if not production_value_flow_fact(fact, kind):
             continue
         token = _ollvm_canonical_var_token(str(payload.get("storage_identity") or ""))
         source_block = payload.get("source_block")
@@ -2696,7 +2696,7 @@ def _apply_carrier_output_alias_repair(
         return 0
     output_store_specs = _ollvm_fact_specs_by_block_ea(
         carrier_facts,
-        kind=OBSERVABLE_STORE_FACT_KIND,
+        kind=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
     )
     if not output_store_specs:
         return 0
@@ -2899,8 +2899,8 @@ def _apply_local_alias_mem2reg(
             touched_blocks=set(range(qty)),
             fact_ids=fact_ids or _ollvm_local_alias_fact_ids(carrier_facts),
             fact_kinds={
-                LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
-                SAME_CARRIER_ALIAS_FACT_KIND,
+                SCALAR_REPLACEMENT_FACT_TYPE,
+                MUST_ALIAS_FACT_TYPE,
             },
         )
         log_info = getattr(logger, "info", None)
@@ -2934,7 +2934,7 @@ def _same_carrier_alias_repair_specs(
         payload = getattr(fact, "payload", None)
         if not isinstance(payload, dict):
             continue
-        if not production_carrier_fact(fact, SAME_CARRIER_ALIAS_FACT_KIND):
+        if not production_value_flow_fact(fact, MUST_ALIAS_FACT_TYPE):
             continue
         details = payload.get("details")
         if not isinstance(details, dict):
@@ -3039,7 +3039,7 @@ def _apply_same_carrier_alias_repairs(
             "same_carrier_alias_repair",
             touched_blocks=touched_blocks,
             fact_ids=fact_ids,
-            fact_kinds={SAME_CARRIER_ALIAS_FACT_KIND},
+            fact_kinds={MUST_ALIAS_FACT_TYPE},
         )
         log_info = getattr(logger, "info", None)
         if callable(log_info):
@@ -3083,7 +3083,7 @@ def _carrier_store_promotion_specs(
 ) -> frozenset[tuple[int, int]]:
     specs = _ollvm_fact_specs_by_block_ea(
         carrier_facts,
-        kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+        kind=SCALAR_PROMOTION_FACT_TYPE,
     )
     return frozenset(sorted(specs))
 
@@ -3198,7 +3198,7 @@ def _apply_semantic_carrier_promotions(
         return 0
     semantic_store_fact_specs = _ollvm_fact_specs_by_block_ea(
         carrier_facts,
-        kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+        kind=SCALAR_PROMOTION_FACT_TYPE,
     )
     semantic_store_specs = frozenset(sorted(semantic_store_fact_specs))
     if not semantic_store_specs:
@@ -3273,7 +3273,7 @@ def _apply_semantic_carrier_promotions(
                 "semantic_carrier_direct_store_scalarization",
                 touched_blocks=touched_blocks,
                 fact_ids=fact_ids,
-                fact_kinds={CARRIER_STORE_PROMOTION_FACT_KIND},
+                fact_kinds={SCALAR_PROMOTION_FACT_TYPE},
             )
         return int(scalarized)
 
@@ -3307,7 +3307,7 @@ def _apply_semantic_carrier_promotions(
                 for key, spec in semantic_store_fact_specs.items()
                 if any(block == key[0] and ea == key[1] for block, ea, _opcode in queued)
             },
-            fact_kinds={CARRIER_STORE_PROMOTION_FACT_KIND},
+            fact_kinds={SCALAR_PROMOTION_FACT_TYPE},
         )
     return int(applied) + int(scalarized)
 

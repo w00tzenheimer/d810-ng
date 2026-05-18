@@ -16,11 +16,11 @@ from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
-from d810.recon.facts.carrier import (
-    CALL_RESULT_CARRIER_FACT_KIND,
-    LOOP_PREDICATE_CARRIER_FACT_KIND,
-    GENERIC_CARRIER_FACT_KINDS,
-    project_carrier_fact_families,
+from d810.recon.facts.value_flow import (
+    CALL_RETURN_VALUE_FACT_TYPE,
+    LOOP_PREDICATE_VALUE_FACT_TYPE,
+    VALUE_FLOW_FACT_TYPES,
+    project_value_flow_facts,
 )
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -262,14 +262,14 @@ class OllvmCarrierBranchOwnershipOracle:
         self._password_predicate_tokens = _derive_data_predicate_tokens(
             _carrier_projection_tokens(
                 self._carrier_facts,
-                fact_kinds=frozenset({CALL_RESULT_CARRIER_FACT_KIND}),
+                fact_kinds=frozenset({CALL_RETURN_VALUE_FACT_TYPE}),
             ),
             instruction_texts,
         )
         self._loop_predicate_tokens = _derive_loop_predicate_tokens(
             _carrier_projection_tokens(
                 self._carrier_facts,
-                fact_kinds=frozenset({LOOP_PREDICATE_CARRIER_FACT_KIND}),
+                fact_kinds=frozenset({LOOP_PREDICATE_VALUE_FACT_TYPE}),
             ),
             instruction_texts,
         )
@@ -713,7 +713,7 @@ def _normalized_carrier_facts(
     raw = []
     for fact in facts:
         kind = str(_fact_kind(fact) or "")
-        if kind in GENERIC_CARRIER_FACT_KINDS:
+        if kind in VALUE_FLOW_FACT_TYPES:
             normalized.append(fact)
             continue
         if kind != "OllvmSemanticCarrierFact":
@@ -725,7 +725,7 @@ def _normalized_carrier_facts(
             continue
         raw.append(fact)
     if raw:
-        normalized.extend(project_carrier_fact_families(tuple(raw)))  # type: ignore[arg-type]
+        normalized.extend(project_value_flow_facts(tuple(raw)))  # type: ignore[arg-type]
     return tuple(normalized)
 
 
