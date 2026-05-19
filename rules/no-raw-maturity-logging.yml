@@ -14,7 +14,7 @@
 
 id: no-raw-maturity-logging
 language: python
-severity: warning
+severity: error
 
 files:
   - "src/d810/**/*.py"
