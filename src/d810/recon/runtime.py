@@ -22,6 +22,7 @@ from d810.recon.store import get_recon_writer
 from d810.core.typing import TYPE_CHECKING, Any
 
 from d810.recon.analysis import AnalysisPhase
+from d810.recon.maturity import microcode_maturity_text
 from d810.recon.models import DeobfuscationHints
 from d810.recon.outcome import (
     ConsumerOutcomeReport,
@@ -274,9 +275,10 @@ class ReconAnalysisRuntime:
         results = self._phase.run_microcode_collectors(
             target, func_ea=func_ea, maturity=maturity,
         )
+        maturity_text = microcode_maturity_text(maturity)
         logger.debug(
-            "collect_and_analyze: func=0x%x maturity=%d collectors_fired=%d",
-            func_ea, maturity, len(results),
+            "collect_and_analyze: func=0x%x maturity=%s collectors_fired=%d",
+            func_ea, maturity_text, len(results),
         )
 
         hints = self._analysis.interpret(
