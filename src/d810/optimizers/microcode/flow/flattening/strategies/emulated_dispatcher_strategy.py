@@ -119,6 +119,7 @@ class EmulatedDispatcherMetadata:
     rejected_fathers: int = 0
     candidate_kinds: tuple[str, ...] = ()
     rejection_reasons: tuple[str, ...] = ()
+    nonfatal_rewrite_gaps: tuple[str, ...] = ()
     candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...] = ()
     phase_artifact: EmulatedDispatcherPhaseArtifact | None = None
     selected_lowering_mode: str | None = None
