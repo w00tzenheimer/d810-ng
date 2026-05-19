@@ -35,7 +35,7 @@ from pathlib import Path
 from d810.core import logging
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-from d810.hexrays.utils.hexrays_formatters import format_mop_t
+from d810.hexrays.utils.hexrays_formatters import format_mop_t, maturity_to_string
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
 )
@@ -407,9 +407,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             view = self.flow_context.validated_fact_view(maturity)
         except Exception:
             unflat_logger.exception(
-                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%d reason=view-error",
+                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%s reason=view-error",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
             )
             return
         if view is None:
@@ -551,10 +551,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         unflat_logger.debug(
-            "HodurUnflattener: Starting pass %d/%d at maturity %d",
+            "HodurUnflattener: Starting pass %d/%d at maturity %s",
             self._actual_pass_count,
             self.max_passes,
-            self.cur_maturity,
+            maturity_to_string(self.cur_maturity),
         )
 
         if self._actual_pass_count == 0:
@@ -946,9 +946,9 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         if nb_changes == 0:
             unflat_logger.info(
-                "HodurUnflattener: convergence reached at pass %d, maturity %d",
+                "HodurUnflattener: convergence reached at pass %d, maturity %s",
                 self._actual_pass_count,
-                self.cur_maturity,
+                maturity_to_string(self.cur_maturity),
             )
 
         self._actual_pass_count += 1

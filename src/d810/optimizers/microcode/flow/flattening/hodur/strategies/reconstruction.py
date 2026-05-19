@@ -39,6 +39,7 @@ from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
 )
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
@@ -633,9 +634,9 @@ class StateWriteReconstructionStrategy:
             )
             if cached_structured_regions:
                 logger.info(
-                    "RECON DAG: cached structured regions available for func=0x%X maturity=%d but deferred because the live pass could not rediscover them: names=%s",
+                    "RECON DAG: cached structured regions available for func=0x%X maturity=%s but deferred because the live pass could not rediscover them: names=%s",
                     cache_key[0],
-                    cache_key[1],
+                    maturity_to_string(cache_key[1]),
                     [str(region.region_name) for region in cached_structured_regions],
                 )
         # Snapshot for diagnostics, then apply selected-alternate overrides

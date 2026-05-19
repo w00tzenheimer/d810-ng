@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 from d810.cfg.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -76,8 +77,8 @@ class TopologicalSortStrategy:
             maturity = mba.maturity
             if (func_ea, maturity) in TopologicalSortStrategy._applied:
                 logger.debug(
-                    "TopologicalSort: already applied for func_ea=0x%x maturity=%d, skipping",
-                    func_ea, maturity,
+                    "TopologicalSort: already applied for func_ea=0x%x maturity=%s, skipping",
+                    func_ea, maturity_to_string(maturity),
                 )
                 return False
 

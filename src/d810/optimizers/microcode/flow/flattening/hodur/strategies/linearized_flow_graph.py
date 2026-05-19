@@ -15,6 +15,7 @@ import os
 
 import ida_hexrays
 
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
@@ -1617,9 +1618,9 @@ class LinearizedFlowGraphStrategy:
         effective_residual_preds = raw_residual_preds or residual_preds
         if not effective_residual_preds:
             logger.info(
-                "LFG: already applied for func 0x%X at maturity %d",
+                "LFG: already applied for func 0x%X at maturity %s",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
             )
             return False
         previous_residual_count = cls._last_successful_residual_dispatcher_pred_counts.get(key)
@@ -1637,9 +1638,9 @@ class LinearizedFlowGraphStrategy:
                 if consume_retry:
                     cls._same_count_exact_rerun_used.add(key)
                 logger.info(
-                    "LFG: allowing one same-count rerun for func 0x%X at maturity %d because live residual exact handoffs remain: %s",
+                    "LFG: allowing one same-count rerun for func 0x%X at maturity %s because live residual exact handoffs remain: %s",
                     func_ea,
-                    maturity,
+                    maturity_to_string(maturity),
                     effective_residual_preds,
                 )
                 return True
@@ -1651,17 +1652,17 @@ class LinearizedFlowGraphStrategy:
                 if consume_retry:
                     cls._same_count_exact_rerun_used.add(key)
                 logger.info(
-                    "LFG: allowing one exploratory same-count rerun for func 0x%X at maturity %d because residual dispatcher preds remain: %s",
+                    "LFG: allowing one exploratory same-count rerun for func 0x%X at maturity %s because residual dispatcher preds remain: %s",
                     func_ea,
-                    maturity,
+                    maturity_to_string(maturity),
                     effective_residual_preds,
                 )
                 return True
             logger.info(
-                "LFG: suppressing same-maturity rerun for func 0x%X at maturity %d "
+                "LFG: suppressing same-maturity rerun for func 0x%X at maturity %s "
                 "because residual dispatcher preds did not improve (%d -> %d)",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
                 previous_residual_count,
                 len(effective_residual_preds),
             )

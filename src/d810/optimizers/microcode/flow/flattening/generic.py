@@ -62,6 +62,7 @@ from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_list,
     format_mop_t,
+    maturity_to_string,
 )
 from d810.hexrays.utils.hexrays_helpers import (
     CONDITIONAL_JUMP_OPCODES,
@@ -811,9 +812,9 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             # Gate: maturity filter — normal operation, not a bypass.
             if unflat_logger.debug_on:
                 unflat_logger.debug(
-                    "Gate skipped [maturity_filter]: %s at maturity %d not in %s",
+                    "Gate skipped [maturity_filter]: %s at maturity %s not in %s",
                     self.__class__.__name__,
-                    self.cur_maturity,
+                    maturity_to_string(self.cur_maturity),
                     self.maturities,
                 )
             return False
@@ -2468,7 +2469,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     "Skipping rewrite for blk %d at maturity %s: required dispatcher "
                     "side effects are not dependency-safe to copy",
                     dispatcher_father.serial,
-                    self.mba.maturity,
+                    maturity_to_string(self.mba.maturity),
                 )
                 return 0
 
@@ -3220,7 +3221,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
         self.retrieve_all_dispatchers()
         if len(self.dispatcher_list) == 0:
-            unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
+            unflat_logger.info(
+                "No dispatcher found at maturity %s",
+                maturity_to_string(self.mba.maturity),
+            )
             return initial_changes
 
         layout_signals = self._collect_dispatcher_layout_signals()
