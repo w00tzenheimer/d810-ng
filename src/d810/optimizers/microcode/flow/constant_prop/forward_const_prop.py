@@ -201,17 +201,15 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     def optimize(self, blk: ida_hexrays.mblock_t):
         if logger.debug_on:
             logger.debug(
-                "[FCP] optimize() called at maturity=%d (%s) blk=%d",
-                blk.mba.maturity if blk.mba else -1,
+                "[FCP] optimize() called at maturity=%s blk=%d",
                 maturity_to_string(blk.mba.maturity) if blk.mba else "?",
                 blk.serial,
             )
         if self.current_maturity not in self.maturities:
             if logger.debug_on:
                 logger.debug(
-                    "maturity is %s (%d), expecting one of: %s",
+                    "maturity is %s, expecting one of: %s",
                     maturity_to_string(self.current_maturity),
-                    self.current_maturity,
                     ", ".join(map(maturity_to_string, self.maturities)),
                 )
             return 0
@@ -391,9 +389,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """
         if logger.debug_on:
             logger.debug(
-                "[FCP] _slow_run_on_function: %d blocks, maturity=%d (%s)",
+                "[FCP] _slow_run_on_function: %d blocks, maturity=%s",
                 mba.qty,
-                mba.maturity,
                 maturity_to_string(mba.maturity),
             )
         IN, _ = self._slow_dataflow(mba)
