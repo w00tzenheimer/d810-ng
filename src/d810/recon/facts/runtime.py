@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from d810.core.logging import getLogger
 from d810.core.settings import get_settings
 from d810.core.typing import Any, Callable, Protocol, runtime_checkable
+from d810.recon.maturity import microcode_maturity_text
 from d810.recon.facts.model import (
     FactConflict,
     FactMapping,
@@ -135,25 +136,7 @@ class FactLifecycleRuntime:
 
     @staticmethod
     def _maturity_text(maturity: int) -> str:
-        try:
-            import ida_hexrays  # type: ignore
-
-            names = (
-                "MMAT_GENERATED",
-                "MMAT_PREOPTIMIZED",
-                "MMAT_LOCOPT",
-                "MMAT_CALLS",
-                "MMAT_GLBOPT1",
-                "MMAT_GLBOPT2",
-                "MMAT_GLBOPT3",
-                "MMAT_LVARS",
-            )
-            for name in names:
-                if int(getattr(ida_hexrays, name)) == int(maturity):
-                    return name
-        except Exception:
-            pass
-        return f"MMAT_{int(maturity)}"
+        return microcode_maturity_text(maturity)
 
     @staticmethod
     def _maturity_rank(maturity: int | str) -> int:

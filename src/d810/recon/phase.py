@@ -11,6 +11,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Protocol, runtime_checkable
 
+from d810.recon.maturity import ctree_maturity_text, microcode_maturity_text
 from d810.recon.models import ReconResult
 from d810.recon.store import ReconStore, get_recon_writer
 
@@ -128,9 +129,10 @@ class ReconPhase:
                 writer.flush()
                 results.append(result)
             except Exception:
+                maturity_text = microcode_maturity_text(maturity)
                 logger.exception(
-                    "ReconCollector '%s' failed at func=0x%x maturity=%d",
-                    collector.name, func_ea, maturity,
+                    "ReconCollector '%s' failed at func=0x%x maturity=%s",
+                    collector.name, func_ea, maturity_text,
                 )
 
         fired_maturities.add(maturity)
@@ -162,9 +164,10 @@ class ReconPhase:
                 )
                 results.append(result)
             except Exception:
+                maturity_text = ctree_maturity_text(maturity)
                 logger.exception(
-                    "ReconCollector '%s' (ctree) failed at func=0x%x maturity=%d",
-                    collector.name, func_ea, maturity,
+                    "ReconCollector '%s' (ctree) failed at func=0x%x maturity=%s",
+                    collector.name, func_ea, maturity_text,
                 )
 
         fired_maturities.add(ctree_key)  # type: ignore[arg-type]
