@@ -10,6 +10,7 @@ from d810.cfg.flow.return_frontier import ReturnSite
 from d810.cfg.flowgraph import FlowGraph
 from d810.core import logging
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
 )
@@ -504,6 +505,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         strategies_by_name = {
             getattr(strategy, "name", None): strategy for strategy in self._strategies
         }
+        maturity_name = maturity_to_string(maturity)
 
         for fragment, result in zip(pipeline, results):
             if not (result.success and result.edits_applied > 0):
@@ -517,10 +519,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
             if applied is not None:
                 applied.add((func_ea, maturity))
                 self._logger.info(
-                    "Marking strategy %s as applied for func 0x%X maturity=%d",
+                    "Marking strategy %s as applied for func 0x%X maturity=%s",
                     fragment.strategy_name,
                     func_ea,
-                    maturity,
+                    maturity_name,
                 )
 
             residual_counts = getattr(
@@ -540,10 +542,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
             )
             residual_counts[(func_ea, maturity)] = len(residual_preds)
             self._logger.info(
-                "Recorded %s residual dispatcher pred count for func 0x%X maturity=%d: %d",
+                "Recorded %s residual dispatcher pred count for func 0x%X maturity=%s: %d",
                 fragment.strategy_name,
                 func_ea,
-                maturity,
+                maturity_name,
                 len(residual_preds),
             )
 
