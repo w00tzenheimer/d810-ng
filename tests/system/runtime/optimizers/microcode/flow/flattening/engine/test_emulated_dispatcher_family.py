@@ -3519,7 +3519,7 @@ def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None
     ))
 
 
-def test_switch_transition_partial_lowering_records_nonfatal_rewrite_gaps(monkeypatch) -> None:
+def test_switch_transition_partial_lowering_records_waived_proof_obligations(monkeypatch) -> None:
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
         initial_state=None,
@@ -3601,12 +3601,14 @@ def test_switch_transition_partial_lowering_records_nonfatal_rewrite_gaps(monkey
     assert metadata.planning_ready is True
     assert metadata.selected_lowering_mode == "tigress_switch_transition_facts"
     assert metadata.rejection_reasons == ()
-    assert metadata.nonfatal_rewrite_gaps == (
+    assert metadata.waived_proof_obligations == (
         "tigress_switch_transition_initial_redirect_unproven",
     )
-    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
+    modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
+    assert modifications == (
         RedirectGoto(from_serial=6, old_target=2, new_target=7),
     )
+    assert all(getattr(mod, "from_serial", None) not in {2, 3} for mod in modifications)
 
 
 def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:
@@ -4910,7 +4912,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "rejected_fathers": 0,
         "candidate_kinds": (),
         "rejection_reasons": (),
-        "nonfatal_rewrite_gaps": (),
+        "waived_proof_obligations": (),
         "candidate_records": (),
         "phase_artifact": None,
         "selected_lowering_mode": None,

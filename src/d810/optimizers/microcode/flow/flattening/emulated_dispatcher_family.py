@@ -8633,7 +8633,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_modifications = fallback_modifications
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
-        selected_nonfatal_rewrite_gaps: tuple[str, ...] = ()
+        selected_waived_proof_obligations: tuple[str, ...] = ()
         switch_transition_partial_allowed = (
             self._profile.allow_incomplete_switch_transition_facts
             and _switch_transition_blockers_allow_partial_lowering(
@@ -8654,7 +8654,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 () if switch_transition_partial_allowed else switch_transition_blockers
             )
             if switch_transition_partial_allowed:
-                selected_nonfatal_rewrite_gaps = tuple(
+                selected_waived_proof_obligations = tuple(
                     sorted(set(switch_transition_blockers))
                 )
         elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
@@ -8672,7 +8672,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 () if switch_transition_partial_allowed else switch_transition_blockers
             )
             if switch_transition_partial_allowed:
-                selected_nonfatal_rewrite_gaps = tuple(
+                selected_waived_proof_obligations = tuple(
                     sorted(set(switch_transition_blockers))
                 )
         elif not selected_modifications and phase_reconstruction_blockers:
@@ -8726,7 +8726,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             rejected_fathers=len(fallback_blockers),
             candidate_kinds=tuple(type(mod).__name__ for mod in selected_modifications),
             rejection_reasons=tuple(sorted(set(selected_blockers))),
-            nonfatal_rewrite_gaps=selected_nonfatal_rewrite_gaps,
+            waived_proof_obligations=selected_waived_proof_obligations,
             candidate_records=candidate_records,
             phase_artifact=phase_artifact,
             selected_lowering_mode=selected_lowering_mode,
