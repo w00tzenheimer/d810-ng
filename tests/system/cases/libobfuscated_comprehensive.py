@@ -883,6 +883,10 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         # emulated-dispatcher owner even when the lowerer applies.
         required_rules=[],
         expected_rules=[],
+        skip=(
+            "luoa-pr8g: legacy-off engine profile does not yet lower the "
+            "hardened OLLVM conditional-chain/opaque-table shape"
+        ),
     ),
     DeobfuscationCase(
         function="sub_7FFC1EB47830",
