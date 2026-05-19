@@ -278,9 +278,9 @@ The next architectural unit (deferred from the prior session) is a
 
 1. captures pre-HCC loop-predicate value defs + uses + loop SCC at
    LOCOPT/CALLS,
-2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations (the
-   serialized fact-kind preserves the legacy name; see the
-   value-flow alias registry),
+2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations (the source
+   collector still emits `LoopCarrierFact`; projected value-flow rows use
+   `LoopPredicateValueFact`),
 3. persists fact rows mirroring the existing
    `state_write_anchor` / `state_transition_anchor` shape.
 
@@ -297,14 +297,15 @@ at least one secondary case (likely the byte-counter).
 
 ---
 
-## Vocabulary: value-flow facts and historical names
+## Vocabulary: value-flow facts and schema canonicalization
 
 The fact ontology described above is the **value-flow** family per
 ``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``. New
 projected value-flow facts use canonical serialized
 ``FactObservation.kind`` values. The diagnostic alias registry at
-``d810.recon.facts.value_flow.alias_registry`` still records historical
-carrier-era names for reading archived diagnostics and old notes.
+``d810.recon.facts.value_flow.alias_registry`` is the canonicalization
+boundary for observed producer names and previous schema names; it is not a
+reason for new projected value-flow rows to emit carrier-era strings.
 
 When reading older code paths, diag SQL, or archived notes, translate
 as follows:
@@ -322,13 +323,17 @@ as follows:
 |`CallResultCarrierFact` (kind)|`CallReturnValueFact` (type)|
 |`GenericInductionCarrierFact` (kind)|`InductionVariableFact` (type)|
 |`TerminalMaterializationFact` (kind)|`MaterializationPointFact` (type)|
+|Hodur `ReturnCarrierFact` slot use|`MemoryUseFact` (type)|
+|Hodur `ReturnFrontierFact` merge|`MemoryPhiFact` (type)|
+|Hodur byte-emitter destination expression|`PointsToFact` (type)|
+|Hodur `ReturnCarrierFact` returned value|`ReturnValueFact` (type)|
 |`StateVariableWriteFact` (kind)|`StateWriteFact` (type)|
 |`StateTransitionCarrierFact` (kind)|`StateTransitionFact` (type)|
 |`SideEffectCorridorFact` (kind)|`EffectPathFact` (type)|
 |`CallSideEffectAnchorFact` (kind)|`CallEffectSummaryFact` (type)|
 |`InductionCarrierFactCollector`|`InductionVariableFactCollector`|
 |`LoopCarrierFactCollector`|`LoopPredicateValueFactCollector`|
-|`ReturnCarrierFactCollector`|`ReturnSlotFactCollector` (with `ReturnValueFactCollector` reserved for value-recovery facts)|
+|`ReturnCarrierFactCollector`|`ReturnSlotFactCollector`; `ReturnValueFactCollector` projects the same Hodur evidence into `ReturnValueFact`|
 |`OllvmSemanticCarrierFactCollector`|`OllvmValueFlowEvidenceCollector`|
 
 The carrier-era collector class names remain importable as compatibility

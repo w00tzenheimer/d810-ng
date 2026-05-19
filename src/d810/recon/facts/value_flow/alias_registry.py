@@ -1,19 +1,15 @@
-"""Fact-type alias registry used at the diagnostics boundary.
+"""Fact-type schema registry used at the diagnostics boundary.
 
-The registry is the single source of truth that maps a canonical value-flow
-fact type to:
+The registry is the single source of truth that maps observed producer/schema
+names onto canonical value-flow fact types.  It exists because D-810 records
+both raw source observations (for example ``ReturnCarrierFact``) and projected
+value-flow facts. Diagnostic readers should call :func:`canonical_fact_type`
+before grouping rows so producer names, previous schema names, and canonical
+types land in the same public ontology.
 
-- historical carrier-era kind names used by older collectors, archived
-  diagnostics, and notes;
-- a human-readable display name used by CLI / diagnostic output;
-- the industry-standard term (LLVM MemorySSA, angr, SVF, etc.);
-- the producer ontology (which collectors emit observations that land in
-  this canonical bucket).
-
-Diagnostic readers should call :func:`canonical_fact_type` to translate an
-observed ``FactObservation.kind`` row into the canonical surface. New
-projected value-flow facts should emit canonical strings directly; this
-registry is only a lookup table for historical names and UI metadata.
+New projected value-flow facts must emit canonical strings directly. This
+registry is a schema-normalization boundary, not permission for new projected
+rows to keep using carrier-era serialized names.
 """
 from __future__ import annotations
 
@@ -36,10 +32,14 @@ from d810.recon.facts.value_flow.loop_predicate_value import (
 from d810.recon.facts.value_flow.materialization_point import (
     MATERIALIZATION_POINT_FACT_TYPE,
 )
+from d810.recon.facts.value_flow.memory_phi import MEMORY_PHI_FACT_TYPE
+from d810.recon.facts.value_flow.memory_use import MEMORY_USE_FACT_TYPE
 from d810.recon.facts.value_flow.must_alias import MUST_ALIAS_FACT_TYPE
 from d810.recon.facts.value_flow.observable_memory_def import (
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
 )
+from d810.recon.facts.value_flow.points_to import POINTS_TO_FACT_TYPE
+from d810.recon.facts.value_flow.return_value import RETURN_VALUE_FACT_TYPE
 from d810.recon.facts.value_flow.scalar_promotion import (
     SCALAR_PROMOTION_FACT_TYPE,
 )
@@ -57,108 +57,142 @@ from d810.recon.facts.value_flow.symbolic_expression import (
 
 @dataclass(frozen=True)
 class FactTypeAlias:
-    """Canonical-to-legacy mapping for one value-flow fact family.
+    """Canonical mapping for one value-flow fact family.
 
-    The canonical fact type is the public ontology label. The legacy
-    kinds tuple lists historical ``FactObservation.kind`` values that may
-    still appear in archived diagnostics or notes.
+    The canonical fact type is the public ontology label. The accepted
+    aliases tuple lists raw producer names and previous schema names that
+    should normalize to the canonical type at diagnostic read time.
     """
 
     canonical_fact_type: str
-    legacy_kinds: tuple[str, ...]
+    accepted_kind_aliases: tuple[str, ...]
     display_name: str
     industry_term: str
     producer_ontology: str
+
+    @property
+    def legacy_kinds(self) -> tuple[str, ...]:
+        """Compatibility spelling for callers not yet renamed."""
+
+        return self.accepted_kind_aliases
 
 
 FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
     FactTypeAlias(
         canonical_fact_type=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
-        legacy_kinds=("ObservableStoreFact",),
+        accepted_kind_aliases=("ObservableStoreFact", "TerminalByteEmitterFact"),
         display_name="Observable memory def",
         industry_term="LLVM MemorySSA MemoryDef (externally visible) / angr store action",
         producer_ontology="Hodur TerminalByteEmitter and OLLVM oracle output-store candidates.",
     ),
     FactTypeAlias(
         canonical_fact_type=SCALAR_PROMOTION_FACT_TYPE,
-        legacy_kinds=("CarrierStorePromotionFact",),
+        accepted_kind_aliases=("CarrierStorePromotionFact",),
         display_name="Scalar promotion",
         industry_term="LLVM mem2reg / scalar-promotion",
         producer_ontology="OLLVM accumulator and output-store carrier facts.",
     ),
     FactTypeAlias(
         canonical_fact_type=MUST_ALIAS_FACT_TYPE,
-        legacy_kinds=("SameCarrierAliasFact",),
+        accepted_kind_aliases=("SameCarrierAliasFact",),
         display_name="Must-alias",
         industry_term="Alias-analysis MustAlias",
         producer_ontology="OLLVM accumulator same-carrier alias proofs.",
     ),
     FactTypeAlias(
         canonical_fact_type=SCALAR_REPLACEMENT_FACT_TYPE,
-        legacy_kinds=("LocalStorageScalarizationFact",),
+        accepted_kind_aliases=("LocalStorageScalarizationFact",),
         display_name="Scalar replacement",
         industry_term="LLVM SROA / scalar replacement",
         producer_ontology="OLLVM local-pointer / accumulator carriers with proven local base.",
     ),
     FactTypeAlias(
         canonical_fact_type=SYMBOLIC_EXPRESSION_FACT_TYPE,
-        legacy_kinds=("ExpressionCarrierFact",),
+        accepted_kind_aliases=("ExpressionCarrierFact",),
         display_name="Symbolic expression",
         industry_term="angr Claripy AST / LLVM SSA value",
         producer_ontology="OLLVM accumulator carrier semantic expression proofs.",
     ),
     FactTypeAlias(
         canonical_fact_type=LOOP_PREDICATE_VALUE_FACT_TYPE,
-        legacy_kinds=("LoopPredicateCarrierFact",),
+        accepted_kind_aliases=("LoopPredicateCarrierFact", "LoopCarrierFact"),
         display_name="Loop-predicate value",
         industry_term="Loop-predicate / loop-bound value",
         producer_ontology="Hodur LoopCarrierFact and OLLVM LOOP_INDEX_CARRIER role.",
     ),
     FactTypeAlias(
         canonical_fact_type=CALL_RETURN_VALUE_FACT_TYPE,
-        legacy_kinds=("CallResultCarrierFact",),
+        accepted_kind_aliases=("CallResultCarrierFact",),
         display_name="Call return value",
         industry_term="Call return value (ABI return)",
         producer_ontology="OLLVM PASSWORD_COMPARE_RESULT and similar call-result carriers.",
     ),
     FactTypeAlias(
         canonical_fact_type=INDUCTION_VARIABLE_FACT_TYPE,
-        legacy_kinds=("GenericInductionCarrierFact",),
+        accepted_kind_aliases=("GenericInductionCarrierFact", "InductionCarrierFact"),
         display_name="Induction variable",
         industry_term="Loop induction variable",
         producer_ontology="Hodur InductionCarrierFact (recurrences and direct copies).",
     ),
     FactTypeAlias(
         canonical_fact_type=MATERIALIZATION_POINT_FACT_TYPE,
-        legacy_kinds=("TerminalMaterializationFact",),
+        accepted_kind_aliases=("TerminalMaterializationFact", "ReturnCarrierFact", "ReturnFrontierFact"),
         display_name="Materialization point",
         industry_term="Materialization point (return value, output exposure)",
         producer_ontology="Hodur ReturnCarrierFact and ReturnFrontierFact terminals.",
     ),
     FactTypeAlias(
+        canonical_fact_type=MEMORY_USE_FACT_TYPE,
+        accepted_kind_aliases=("ReturnSlotUseFact", "ReturnCarrierFact"),
+        display_name="Memory use",
+        industry_term="LLVM MemorySSA MemoryUse / angr memory read action",
+        producer_ontology="Hodur ReturnCarrierFact return-slot uses.",
+    ),
+    FactTypeAlias(
+        canonical_fact_type=MEMORY_PHI_FACT_TYPE,
+        accepted_kind_aliases=("ReturnFrontierMergeFact", "ReturnFrontierFact"),
+        display_name="Memory phi",
+        industry_term="LLVM MemorySSA MemoryPhi / memory-version merge",
+        producer_ontology="Hodur ReturnFrontierFact carrier convergence.",
+    ),
+    FactTypeAlias(
+        canonical_fact_type=POINTS_TO_FACT_TYPE,
+        accepted_kind_aliases=("DestinationPointsToFact", "TerminalByteEmitterFact"),
+        display_name="Points-to",
+        industry_term="Alias-analysis points-to relation / memory location equivalence",
+        producer_ontology="Hodur TerminalByteEmitter destination-buffer expressions.",
+    ),
+    FactTypeAlias(
+        canonical_fact_type=RETURN_VALUE_FACT_TYPE,
+        accepted_kind_aliases=("ReturnCarrierFact",),
+        display_name="Return value",
+        industry_term="ABI return value / SSA return value",
+        producer_ontology="Hodur ReturnCarrierFact return-slot value evidence.",
+    ),
+    FactTypeAlias(
         canonical_fact_type=STATE_WRITE_FACT_TYPE,
-        legacy_kinds=("StateVariableWriteFact",),
+        accepted_kind_aliases=("StateVariableWriteFact", "StateWriteAnchorFact"),
         display_name="State write",
         industry_term="LLVM MemoryDef / angr store action over FSM state variable",
         producer_ontology="Hodur StateWriteAnchorFact.",
     ),
     FactTypeAlias(
         canonical_fact_type=STATE_TRANSITION_FACT_TYPE,
-        legacy_kinds=("StateTransitionCarrierFact",),
+        accepted_kind_aliases=("StateTransitionCarrierFact", "StateTransitionAnchorFact"),
         display_name="State transition",
         industry_term="FSM transition edge (or LLVM MemoryPhi at joins)",
         producer_ontology="Hodur StateTransitionAnchorFact.",
     ),
     FactTypeAlias(
         canonical_fact_type=EFFECT_PATH_FACT_TYPE,
-        legacy_kinds=("SideEffectCorridorFact",),
+        accepted_kind_aliases=("SideEffectCorridorFact", "ByteEmitCorridorFact"),
         display_name="Effect path",
         industry_term="Effect system / LLVM ModRef path / angr action sequence",
         producer_ontology="Hodur ByteEmitCorridorFact.",
     ),
     FactTypeAlias(
         canonical_fact_type=CALL_EFFECT_SUMMARY_FACT_TYPE,
-        legacy_kinds=("CallSideEffectAnchorFact",),
+        accepted_kind_aliases=("CallSideEffectAnchorFact", "CallAnchorFact"),
         display_name="Call effect summary",
         industry_term="LLVM ModRef call summary",
         producer_ontology="Hodur CallAnchorFact.",
@@ -167,38 +201,64 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
 
 
 def _build_canonical_lookup() -> Mapping[str, FactTypeAlias]:
-    lookup: dict[str, FactTypeAlias] = {}
+    return {
+        alias.canonical_fact_type: alias
+        for alias in FACT_TYPE_ALIAS_REGISTRY
+    }
+
+
+def _build_observed_lookup() -> Mapping[str, tuple[FactTypeAlias, ...]]:
+    lookup: dict[str, list[FactTypeAlias]] = {}
     for alias in FACT_TYPE_ALIAS_REGISTRY:
-        lookup[alias.canonical_fact_type] = alias
-        for legacy in alias.legacy_kinds:
-            lookup[legacy] = alias
-    return lookup
+        lookup.setdefault(alias.canonical_fact_type, []).append(alias)
+        for observed_kind in alias.accepted_kind_aliases:
+            lookup.setdefault(observed_kind, []).append(alias)
+    return {key: tuple(values) for key, values in lookup.items()}
 
 
 _CANONICAL_LOOKUP: Mapping[str, FactTypeAlias] = _build_canonical_lookup()
+_OBSERVED_LOOKUP: Mapping[str, tuple[FactTypeAlias, ...]] = _build_observed_lookup()
 
 
 def canonical_fact_type(observed_kind: str) -> str | None:
-    """Return the canonical fact type for *observed_kind*, or ``None``.
+    """Return the unique canonical fact type for *observed_kind*, or ``None``.
 
-    *observed_kind* may be either the canonical type or a legacy serialized
-    kind from an old diag snapshot. Unknown kinds return ``None`` so the
-    caller can preserve the raw value rather than coerce it into the
-    canonical surface.
+    *observed_kind* may be either the canonical type, a raw producer kind, or
+    a previous serialized schema name. Unknown kinds return ``None`` so the
+    caller can preserve the raw value rather than coerce it into the canonical
+    surface. Producer kinds that project into several canonical families also
+    return ``None`` here; use :func:`canonical_fact_types` when a caller wants
+    the full set.
     """
 
-    alias = _CANONICAL_LOOKUP.get(observed_kind)
-    return None if alias is None else alias.canonical_fact_type
+    aliases = _OBSERVED_LOOKUP.get(observed_kind, ())
+    fact_types = tuple(dict.fromkeys(alias.canonical_fact_type for alias in aliases))
+    if len(fact_types) != 1:
+        return None
+    return fact_types[0]
 
 
-def legacy_kinds_for(fact_type: str) -> tuple[str, ...]:
-    """Return the legacy serialized kinds for *fact_type*.
+def canonical_fact_types(observed_kind: str) -> tuple[str, ...]:
+    """Return every canonical value-flow type for *observed_kind*."""
+
+    aliases = _OBSERVED_LOOKUP.get(observed_kind, ())
+    return tuple(dict.fromkeys(alias.canonical_fact_type for alias in aliases))
+
+
+def accepted_kind_aliases_for(fact_type: str) -> tuple[str, ...]:
+    """Return accepted producer/schema aliases for *fact_type*.
 
     Returns an empty tuple when *fact_type* is unknown.
     """
 
     alias = _CANONICAL_LOOKUP.get(fact_type)
-    return () if alias is None else alias.legacy_kinds
+    return () if alias is None else alias.accepted_kind_aliases
+
+
+def legacy_kinds_for(fact_type: str) -> tuple[str, ...]:
+    """Compatibility spelling for :func:`accepted_kind_aliases_for`."""
+
+    return accepted_kind_aliases_for(fact_type)
 
 
 def display_name_for(fact_type: str) -> str | None:
@@ -228,22 +288,31 @@ def all_canonical_fact_types() -> tuple[str, ...]:
     return tuple(alias.canonical_fact_type for alias in FACT_TYPE_ALIAS_REGISTRY)
 
 
-def all_legacy_kinds() -> frozenset[str]:
-    """Return every legacy serialized kind known to the registry."""
+def all_accepted_kind_aliases() -> frozenset[str]:
+    """Return every accepted producer/schema alias known to the registry."""
 
     return frozenset(
-        legacy
+        observed_kind
         for alias in FACT_TYPE_ALIAS_REGISTRY
-        for legacy in alias.legacy_kinds
+        for observed_kind in alias.accepted_kind_aliases
     )
+
+
+def all_legacy_kinds() -> frozenset[str]:
+    """Compatibility spelling for :func:`all_accepted_kind_aliases`."""
+
+    return all_accepted_kind_aliases()
 
 
 __all__ = [
     "FACT_TYPE_ALIAS_REGISTRY",
     "FactTypeAlias",
+    "accepted_kind_aliases_for",
+    "all_accepted_kind_aliases",
     "all_canonical_fact_types",
     "all_legacy_kinds",
     "canonical_fact_type",
+    "canonical_fact_types",
     "display_name_for",
     "industry_term_for",
     "legacy_kinds_for",

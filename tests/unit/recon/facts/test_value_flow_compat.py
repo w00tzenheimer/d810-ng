@@ -24,6 +24,10 @@ CANONICAL_TO_LEGACY = {
     "CALL_RETURN_VALUE_FACT_TYPE": "CALL_RESULT_CARRIER_FACT_KIND",
     "INDUCTION_VARIABLE_FACT_TYPE": "INDUCTION_CARRIER_FACT_KIND",
     "MATERIALIZATION_POINT_FACT_TYPE": "TERMINAL_MATERIALIZATION_FACT_KIND",
+    "MEMORY_PHI_FACT_TYPE": "MEMORY_PHI_FACT_KIND",
+    "MEMORY_USE_FACT_TYPE": "MEMORY_USE_FACT_KIND",
+    "POINTS_TO_FACT_TYPE": "POINTS_TO_FACT_KIND",
+    "RETURN_VALUE_FACT_TYPE": "RETURN_VALUE_FACT_KIND",
     "STATE_WRITE_FACT_TYPE": "STATE_VARIABLE_WRITE_FACT_KIND",
     "STATE_TRANSITION_FACT_TYPE": "STATE_TRANSITION_CARRIER_FACT_KIND",
     "EFFECT_PATH_FACT_TYPE": "SIDE_EFFECT_CORRIDOR_FACT_KIND",
@@ -50,7 +54,7 @@ def test_value_flow_fact_types_matches_generic_carrier_fact_kinds():
 
     assert vf.VALUE_FLOW_FACT_TYPES == carrier_mod.GENERIC_CARRIER_FACT_KINDS
     assert isinstance(vf.VALUE_FLOW_FACT_TYPES, frozenset)
-    assert len(vf.VALUE_FLOW_FACT_TYPES) == 13
+    assert len(vf.VALUE_FLOW_FACT_TYPES) == 17
 
 
 def test_projection_function_alias_is_identity():
@@ -124,7 +128,11 @@ def test_per_family_submodule_imports_resolve_to_canonical_value():
     from d810.recon.facts.value_flow.materialization_point import (
         MATERIALIZATION_POINT_FACT_TYPE,
     )
+    from d810.recon.facts.value_flow.memory_phi import MEMORY_PHI_FACT_TYPE
+    from d810.recon.facts.value_flow.memory_use import MEMORY_USE_FACT_TYPE
     from d810.recon.facts.value_flow.state_write import STATE_WRITE_FACT_TYPE
+    from d810.recon.facts.value_flow.points_to import POINTS_TO_FACT_TYPE
+    from d810.recon.facts.value_flow.return_value import RETURN_VALUE_FACT_TYPE
     from d810.recon.facts.value_flow.state_transition import (
         STATE_TRANSITION_FACT_TYPE,
     )
@@ -142,6 +150,10 @@ def test_per_family_submodule_imports_resolve_to_canonical_value():
     assert CALL_RETURN_VALUE_FACT_TYPE == "CallReturnValueFact"
     assert INDUCTION_VARIABLE_FACT_TYPE == "InductionVariableFact"
     assert MATERIALIZATION_POINT_FACT_TYPE == "MaterializationPointFact"
+    assert MEMORY_USE_FACT_TYPE == "MemoryUseFact"
+    assert MEMORY_PHI_FACT_TYPE == "MemoryPhiFact"
+    assert POINTS_TO_FACT_TYPE == "PointsToFact"
+    assert RETURN_VALUE_FACT_TYPE == "ReturnValueFact"
     assert STATE_WRITE_FACT_TYPE == "StateWriteFact"
     assert STATE_TRANSITION_FACT_TYPE == "StateTransitionFact"
     assert EFFECT_PATH_FACT_TYPE == "EffectPathFact"
@@ -160,7 +172,11 @@ def test_carrier_import_shim_remains_working():
         INDUCTION_CARRIER_FACT_KIND,
         LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
         LOOP_PREDICATE_CARRIER_FACT_KIND,
+        MEMORY_PHI_FACT_KIND,
+        MEMORY_USE_FACT_KIND,
         OBSERVABLE_STORE_FACT_KIND,
+        POINTS_TO_FACT_KIND,
+        RETURN_VALUE_FACT_KIND,
         SAME_CARRIER_ALIAS_FACT_KIND,
         SIDE_EFFECT_CORRIDOR_FACT_KIND,
         STATE_TRANSITION_CARRIER_FACT_KIND,
