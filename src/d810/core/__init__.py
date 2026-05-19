@@ -105,6 +105,8 @@ from .persistence import (
     NetnodeCorruptError,
     create_optimization_storage,
     FunctionFingerprint,
+    ProviderPhase,
+    ProviderPhaseSnapshot,
     CachedResult,
     FunctionRuleConfig,
 )
@@ -256,6 +258,8 @@ __all__ = [
     "NetnodeCorruptError",
     "create_optimization_storage",
     "FunctionFingerprint",
+    "ProviderPhase",
+    "ProviderPhaseSnapshot",
     "CachedResult",
     "FunctionRuleConfig",
     # stats

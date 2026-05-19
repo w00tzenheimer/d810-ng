@@ -12,6 +12,7 @@ from d810.core.persistence import (
     FunctionFingerprint,
     Netnode,
     NetnodeOptimizationStorage,
+    ProviderPhaseSnapshot,
     create_optimization_storage,
 )
 
@@ -124,18 +125,23 @@ class TestNetnodeWrapperRuntime:
             block_count=3,
             instruction_count=7,
         )
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name="hexrays_microcode",
+            provider_level=5,
+            friendly_provider_level="MMAT_GLBOPT1",
+        )
 
         optimization_storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase,
             changes=2,
             patches=[{"type": "redirect_edge", "from": 1, "to": 2}],
         )
 
         assert optimization_storage.has_valid_cache(0x401000, "runtime-netnode-hash") is True
 
-        result = optimization_storage.load_result(0x401000, 5)
+        result = optimization_storage.load_result(0x401000, provider_phase)
         assert result is not None
         assert result.function_addr == 0x401000
         assert result.changes_made == 2
