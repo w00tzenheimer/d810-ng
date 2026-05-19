@@ -1554,13 +1554,28 @@ def _merge_compatible_state_dispatcher_maps(
         None,
     )
     if primary is None:
-        return None
+        if not maps:
+            return None
+        # Equality-chain extraction can produce one exact map per suffix
+        # compare block.  The semantic dispatcher root may be a wider range
+        # block from the generic dispatcher analysis, not one of those exact
+        # suffix maps.  Keep the exact rows, but anchor the merged phase map
+        # to the caller-proven root so pre-header and cleanup planning consume
+        # the whole dispatcher, not just a suffix island.
+        if any(
+            str(getattr(dispatch_map.source, "name", ""))
+            != "CONDITIONAL_CHAIN"
+            for dispatch_map in maps
+        ):
+            return None
+        primary = maps[0]
 
     rows_by_state: dict[int, StateDispatcherRow] = {
         int(row.state_const) & 0xFFFFFFFFFFFFFFFF: row
         for row in primary.rows
     }
     dispatcher_blocks = set(int(block) for block in primary.dispatcher_blocks)
+    dispatcher_blocks.add(int(dispatcher_entry_serial))
     skipped_conflicts = 0
     skipped_incompatible = 0
 
@@ -1621,7 +1636,7 @@ def _merge_compatible_state_dispatcher_maps(
         rows=tuple(
             rows_by_state[state] for state in sorted(rows_by_state)
         ),
-        dispatcher_entry_block=int(primary.dispatcher_entry_block),
+        dispatcher_entry_block=int(dispatcher_entry_serial),
         dispatcher_blocks=frozenset(dispatcher_blocks),
         state_var_stkoff=primary.state_var_stkoff,
         state_var_lvar_idx=primary.state_var_lvar_idx,
@@ -6972,6 +6987,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         self,
         detection: EmulatedDispatcherDetection,
     ) -> int | None:
+        if (
+            detection.dispatcher_shape == "conditional_chain"
+            and detection.state_dispatcher_entries
+            and detection.analysis_dispatchers
+        ):
+            return int(detection.analysis_dispatchers[0])
         if detection.state_dispatcher_entries:
             return int(detection.state_dispatcher_entries[0])
         for dispatcher_info in detection.collector_dispatchers:
