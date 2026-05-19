@@ -8689,10 +8689,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = ()
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = loop_recovery_blockers
+            selected_waived_proof_obligations = ()
         if loop_recovery_modifications and not loop_recovery_blockers:
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = ()
+            selected_waived_proof_obligations = ()
         if (
             semantic_carrier_modifications
             and not selected_modifications
