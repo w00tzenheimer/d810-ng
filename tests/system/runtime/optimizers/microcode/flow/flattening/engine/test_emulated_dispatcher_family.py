@@ -3519,7 +3519,7 @@ def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None
     ))
 
 
-def test_switch_transition_partial_lowering_records_waived_proof_obligations(monkeypatch) -> None:
+def test_switch_transition_partial_lowering_records_partial_rewrite_reasons(monkeypatch) -> None:
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
         initial_state=None,
@@ -3601,9 +3601,10 @@ def test_switch_transition_partial_lowering_records_waived_proof_obligations(mon
     assert metadata.planning_ready is True
     assert metadata.selected_lowering_mode == "tigress_switch_transition_facts"
     assert metadata.rejection_reasons == ()
-    assert metadata.waived_proof_obligations == (
+    assert metadata.partial_rewrite_reasons == (
         "tigress_switch_transition_initial_redirect_unproven",
     )
+    assert metadata.is_partial is True
     modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
     assert modifications == (
         RedirectGoto(from_serial=6, old_target=2, new_target=7),
@@ -3611,7 +3612,7 @@ def test_switch_transition_partial_lowering_records_waived_proof_obligations(mon
     assert all(getattr(mod, "from_serial", None) not in {2, 3} for mod in modifications)
 
 
-def test_loop_recovery_override_clears_switch_waived_proof_obligations(monkeypatch) -> None:
+def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatch) -> None:
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
         initial_state=None,
@@ -3703,7 +3704,8 @@ def test_loop_recovery_override_clears_switch_waived_proof_obligations(monkeypat
     assert metadata.planning_ready is True
     assert metadata.selected_lowering_mode == "dispatcher_loop_recovery"
     assert metadata.rejection_reasons == ()
-    assert metadata.waived_proof_obligations == ()
+    assert metadata.partial_rewrite_reasons == ()
+    assert metadata.is_partial is False
     assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
         loop_recovery_modifications
     )
@@ -5010,7 +5012,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "rejected_fathers": 0,
         "candidate_kinds": (),
         "rejection_reasons": (),
-        "waived_proof_obligations": (),
+        "partial_rewrite_reasons": (),
         "candidate_records": (),
         "phase_artifact": None,
         "selected_lowering_mode": None,
