@@ -386,8 +386,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         mba, func_ea=mba_ea, maturity=new_maturity
                     )
                 except Exception:
+                    new_maturity_name = maturity_to_string(new_maturity)
                     optimizer_logger.exception(
-                        "ReconPhase failed at maturity %d", new_maturity
+                        "ReconPhase failed at maturity %s", new_maturity_name
                     )
                 if self._recon_runtime is not None:
                     try:
