@@ -8,12 +8,12 @@ def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
     if mba is None:
         return ()
     try:
-        from d810.recon.facts.collectors import OllvmSemanticCarrierFactCollector
+        from d810.recon.facts.collectors import OllvmValueFlowEvidenceCollector
     except Exception:
         return ()
     try:
         return tuple(
-            OllvmSemanticCarrierFactCollector().collect(
+            OllvmValueFlowEvidenceCollector().collect(
                 mba,
                 func_ea=int(getattr(mba, "entry_ea", 0) or 0),
                 maturity=int(getattr(mba, "maturity", 0) or 0),

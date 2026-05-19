@@ -3,24 +3,17 @@
 The registry is the single source of truth that maps a canonical value-flow
 fact type to:
 
-- the legacy serialized kind names produced by older collectors and
-  persisted into diag SQLite snapshots;
+- historical carrier-era kind names used by older collectors, archived
+  diagnostics, and notes;
 - a human-readable display name used by CLI / diagnostic output;
 - the industry-standard term (LLVM MemorySSA, angr, SVF, etc.);
 - the producer ontology (which collectors emit observations that land in
   this canonical bucket).
 
 Diagnostic readers should call :func:`canonical_fact_type` to translate an
-observed ``FactObservation.kind`` row into the canonical surface, while
-preserving the original observed kind in the raw snapshot row. This lets
-old snapshots remain queryable through canonical names without lossy
-rewrites.
-
-During Phase 3 of the value-flow terminology rename the canonical type and
-the legacy serialized kind have identical string values (no schema
-migration yet). Phase 4 may introduce new canonical values; the alias
-registry then carries the legacy strings forward without breaking older
-diag SQLite snapshots.
+observed ``FactObservation.kind`` row into the canonical surface. New
+projected value-flow facts should emit canonical strings directly; this
+registry is only a lookup table for historical names and UI metadata.
 """
 from __future__ import annotations
 
@@ -67,10 +60,8 @@ class FactTypeAlias:
     """Canonical-to-legacy mapping for one value-flow fact family.
 
     The canonical fact type is the public ontology label. The legacy
-    kinds tuple lists every serialized ``FactObservation.kind`` value that
-    must normalize to this canonical type for diagnostic queries. During
-    Phase 3 every alias contains exactly one legacy kind equal to the
-    canonical type's current string value.
+    kinds tuple lists historical ``FactObservation.kind`` values that may
+    still appear in archived diagnostics or notes.
     """
 
     canonical_fact_type: str

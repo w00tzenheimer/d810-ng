@@ -63,7 +63,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
     )
     ollvm_output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ARG_OUTPUT_STORE_CANDIDATE",
             "carrier_token": "%var_30",
@@ -82,7 +82,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
     assert len(observable) == 2
     assert {
         fact.payload["producer_kinds"][0] for fact in observable
-    } == {"TerminalByteEmitterFact", "OllvmSemanticCarrierFact"}
+    } == {"TerminalByteEmitterFact", "OllvmValueFlowEvidence"}
     assert all(production_carrier_fact(fact, OBSERVABLE_STORE_FACT_KIND) for fact in observable)
     assert all(fact.payload["lifecycle_status"] == LIFECYCLE_PRODUCTION_PROVEN for fact in observable)
     assert "capabilities" not in observable[0].payload
@@ -187,7 +187,7 @@ def test_projects_existing_source_fact_families_to_generic_families(
 def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
     ollvm_output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ARG_OUTPUT_STORE_CANDIDATE",
             "carrier_token": "%var_30",
@@ -203,7 +203,7 @@ def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
 def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
     output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOCAL_WORKING_STORE_CANDIDATE",
             "carrier_token": "%var_390",
@@ -241,7 +241,7 @@ def test_exact_arg_and_local_store_candidates_keep_carrier_store_promotion(
 ) -> None:
     output_store = _fact(
         fact_id=f"ollvm-store-{role}",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": role,
             "carrier_token": "%var_390",
@@ -263,7 +263,7 @@ def test_exact_arg_and_local_store_candidates_keep_carrier_store_promotion(
 def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -279,7 +279,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
     )
     loop_index = _fact(
         fact_id="ollvm-loop-index",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOOP_INDEX_CARRIER",
             "carrier_token": "%var_398",
@@ -292,7 +292,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
     )
     indirect_store = _fact(
         fact_id="ollvm-indirect-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "INDIRECT_STORE_CANDIDATE",
             "carrier_token": "%var_390",
@@ -320,7 +320,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
 def test_accumulator_without_local_base_does_not_emit_scalarization_authority() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator-no-base",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -343,7 +343,7 @@ def test_accumulator_without_local_base_does_not_emit_scalarization_authority() 
 def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
     loop_index = _fact(
         fact_id="ollvm-loop-index",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOOP_INDEX_CARRIER",
             "carrier_token": "%var_398",
@@ -366,7 +366,7 @@ def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
 def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -397,7 +397,7 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
 def test_call_result_oracle_fact_becomes_concrete_call_result_family() -> None:
     compare = _fact(
         fact_id="ollvm-password-result",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "PASSWORD_COMPARE_RESULT",
             "carrier_token": "%var_58",

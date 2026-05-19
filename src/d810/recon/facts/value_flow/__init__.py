@@ -4,10 +4,9 @@ This package is the canonical home for D-810's value-flow fact ontology.
 Each module exports a single canonical ``*_FACT_TYPE`` constant; the package
 aggregates the full set as :data:`VALUE_FLOW_FACT_TYPES`.
 
-During Phase 1 of the value-flow terminology rename, the canonical
-constants are aliases for the legacy ``*_FACT_KIND`` constants in
-:mod:`d810.recon.facts.carrier`. Phase 4 may introduce new canonical
-serialized values backed by a diagnostic alias registry.
+The constants are canonical serialized ``FactObservation.kind`` values.
+Historical carrier-era strings are recognized only by the diagnostics alias
+registry and by compatibility import shims.
 
 Glossary: ``.tmp/terminology_rename/inventory.md`` (Phase 0 artifact).
 Design plan: ``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``.

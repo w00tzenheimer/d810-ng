@@ -1,10 +1,9 @@
 """Phase 4 acceptance tests for producer-class renames.
 
 Each test verifies that the canonical class name resolves to the same
-collector implementation as the legacy carrier-era class name, and that
-the emitted ``FactObservation.kind`` value continues to match the legacy
-serialized string (so old diag SQLite snapshots remain queryable through
-the Phase 3 alias registry).
+collector implementation as the carrier-era class name. Producer facts use
+their source-ontology strings; projected value-flow families use canonical
+serialized type strings.
 """
 from __future__ import annotations
 
@@ -21,10 +20,6 @@ def test_induction_variable_collector_alias_matches_legacy():
     # Confirm both spellings are re-exported by the collectors package.
     assert collectors.InductionVariableFactCollector is InductionVariableFactCollector
     assert collectors.InductionCarrierFactCollector is InductionVariableFactCollector
-    # The serialized FactObservation.kind value stays at the legacy string
-    # so existing diag SQLite snapshots remain queryable. The Phase 3
-    # alias registry handles canonical translation at the diagnostics
-    # boundary.
     assert InductionVariableFactCollector.fact_kinds == frozenset({"InductionCarrierFact"})
 
 
@@ -75,7 +70,7 @@ def test_ollvm_value_flow_evidence_collector_alias_matches_legacy():
     assert collectors.OllvmSemanticCarrierFactCollector is OllvmValueFlowEvidenceCollector
     assert (
         OllvmValueFlowEvidenceCollector.fact_kinds
-        == frozenset({"OllvmSemanticCarrierFact"})
+        == frozenset({"OllvmValueFlowEvidence"})
     )
 
 

@@ -1,10 +1,10 @@
-"""Tests for OllvmSemanticCarrierFactCollector."""
+"""Tests for OllvmValueFlowEvidenceCollector."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import OllvmSemanticCarrierFactCollector
+from d810.recon.facts.collectors import OllvmValueFlowEvidenceCollector
 from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 
 
@@ -53,7 +53,7 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
 
 
 def _collect(target: object):
-    return OllvmSemanticCarrierFactCollector().collect(
+    return OllvmValueFlowEvidenceCollector().collect(
         target,
         func_ea=0x18000E360,
         maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],

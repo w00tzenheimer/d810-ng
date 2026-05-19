@@ -17,19 +17,19 @@ from d810.recon.facts.model import FactObservation, JsonMapping, canonical_json
 
 LIFECYCLE_PRODUCTION_PROVEN = "production_proven"
 
-OBSERVABLE_STORE_FACT_KIND = "ObservableStoreFact"
-CARRIER_STORE_PROMOTION_FACT_KIND = "CarrierStorePromotionFact"
-SAME_CARRIER_ALIAS_FACT_KIND = "SameCarrierAliasFact"
-LOCAL_STORAGE_SCALARIZATION_FACT_KIND = "LocalStorageScalarizationFact"
-EXPRESSION_CARRIER_FACT_KIND = "ExpressionCarrierFact"
-LOOP_PREDICATE_CARRIER_FACT_KIND = "LoopPredicateCarrierFact"
-CALL_RESULT_CARRIER_FACT_KIND = "CallResultCarrierFact"
-INDUCTION_CARRIER_FACT_KIND = "GenericInductionCarrierFact"
-TERMINAL_MATERIALIZATION_FACT_KIND = "TerminalMaterializationFact"
-STATE_VARIABLE_WRITE_FACT_KIND = "StateVariableWriteFact"
-STATE_TRANSITION_CARRIER_FACT_KIND = "StateTransitionCarrierFact"
-SIDE_EFFECT_CORRIDOR_FACT_KIND = "SideEffectCorridorFact"
-CALL_SIDE_EFFECT_ANCHOR_FACT_KIND = "CallSideEffectAnchorFact"
+OBSERVABLE_STORE_FACT_KIND = "ObservableMemoryDefFact"
+CARRIER_STORE_PROMOTION_FACT_KIND = "ScalarPromotionFact"
+SAME_CARRIER_ALIAS_FACT_KIND = "MustAliasFact"
+LOCAL_STORAGE_SCALARIZATION_FACT_KIND = "ScalarReplacementFact"
+EXPRESSION_CARRIER_FACT_KIND = "SymbolicExpressionFact"
+LOOP_PREDICATE_CARRIER_FACT_KIND = "LoopPredicateValueFact"
+CALL_RESULT_CARRIER_FACT_KIND = "CallReturnValueFact"
+INDUCTION_CARRIER_FACT_KIND = "InductionVariableFact"
+TERMINAL_MATERIALIZATION_FACT_KIND = "MaterializationPointFact"
+STATE_VARIABLE_WRITE_FACT_KIND = "StateWriteFact"
+STATE_TRANSITION_CARRIER_FACT_KIND = "StateTransitionFact"
+SIDE_EFFECT_CORRIDOR_FACT_KIND = "EffectPathFact"
+CALL_SIDE_EFFECT_ANCHOR_FACT_KIND = "CallEffectSummaryFact"
 
 GENERIC_CARRIER_FACT_KINDS = frozenset({
     OBSERVABLE_STORE_FACT_KIND,
@@ -72,7 +72,7 @@ def project_carrier_fact_families(
         if observation.kind in GENERIC_CARRIER_FACT_KINDS:
             projected.append(observation)
             continue
-        if observation.kind == "OllvmSemanticCarrierFact":
+        if observation.kind == "OllvmValueFlowEvidence":
             projected.extend(_project_ollvm_oracle_fact(observation))
             continue
         projected.extend(_project_source_fact(observation))
@@ -938,13 +938,11 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Value-flow rename compatibility surface (Phase 1).
+# Value-flow rename compatibility surface.
 #
 # Canonical names live in ``d810.recon.facts.value_flow``. The carrier module
-# is kept as a compatibility shim so legacy imports continue to work; consumers
-# partway through the migration can use either spelling. Phase 4 may swap the
-# source-of-truth, at which point the assignments below become re-imports from
-# ``value_flow``.
+# remains as an import shim for old call sites, but the exported values are now
+# canonical serialized fact types, not old carrier-era serialized kind strings.
 # ---------------------------------------------------------------------------
 
 OBSERVABLE_MEMORY_DEF_FACT_TYPE = OBSERVABLE_STORE_FACT_KIND

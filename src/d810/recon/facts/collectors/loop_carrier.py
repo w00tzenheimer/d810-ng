@@ -215,14 +215,12 @@ def _carrier_stkoff(writers: tuple[_InstructionView, ...]) -> int | None:
 class LoopPredicateValueFactCollector:
     """Observe loop predicates whose carrier writer is outside the loop SCC.
 
-    Canonical class name (value-flow rename Phase 4). The legacy class name
-    ``LoopCarrierFactCollector`` is preserved as an alias at the end of
-    this module. The serialized ``FactObservation.kind`` value stays
-    ``"LoopCarrierFact"`` so old diag SQLite snapshots continue to work
-    via the Phase 3 alias registry.
+    Canonical collector class name for loop-predicate source evidence.
+    ``LoopCarrierFactCollector`` is preserved as an import alias only;
+    projected value-flow facts serialize as ``LoopPredicateValueFact``.
     """
 
-    name = "LoopCarrierFactCollector"
+    name = "LoopPredicateValueFactCollector"
     fact_kinds = frozenset({"LoopCarrierFact"})
     maturities = _TARGET_MATURITIES
 

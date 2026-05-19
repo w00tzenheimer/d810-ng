@@ -87,7 +87,7 @@ def _diag_db_with_carrier_facts() -> sqlite3.Connection:
             "INSERT INTO fact_observations VALUES (?,?,?,?,?)",
             (
                 1,
-                "OllvmSemanticCarrierFact",
+                "OllvmValueFlowEvidence",
                 f"fact-{index}",
                 "0x000000018000e360",
                 json.dumps(payload),
