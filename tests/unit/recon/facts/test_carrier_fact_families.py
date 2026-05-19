@@ -11,7 +11,11 @@ from d810.recon.facts.carrier import (
     LIFECYCLE_PRODUCTION_PROVEN,
     LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
     LOOP_PREDICATE_CARRIER_FACT_KIND,
+    MEMORY_PHI_FACT_KIND,
+    MEMORY_USE_FACT_KIND,
     OBSERVABLE_STORE_FACT_KIND,
+    POINTS_TO_FACT_KIND,
+    RETURN_VALUE_FACT_KIND,
     SAME_CARRIER_ALIAS_FACT_KIND,
     SIDE_EFFECT_CORRIDOR_FACT_KIND,
     STATE_TRANSITION_CARRIER_FACT_KIND,
@@ -89,12 +93,12 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "payload", "expected_kind"),
+    ("kind", "payload", "expected_kinds"),
     [
         (
             "InductionCarrierFact",
             {"dest_stkoff": 0x30, "step": 1, "insn_index": 2},
-            INDUCTION_CARRIER_FACT_KIND,
+            {INDUCTION_CARRIER_FACT_KIND},
         ),
         (
             "LoopCarrierFact",
@@ -103,7 +107,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "predicate_instruction_index": 4,
                 "classification": "LOOP_CARRIER_WRITER_OUTSIDE_SCC",
             },
-            LOOP_PREDICATE_CARRIER_FACT_KIND,
+            {LOOP_PREDICATE_CARRIER_FACT_KIND},
         ),
         (
             "ReturnCarrierFact",
@@ -111,8 +115,11 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "return_slot_stkoff": 0x8,
                 "carrier_class": "stack_identity_carrier",
                 "insn_index": 5,
+                "source_signature": "%var_20.8",
+                "upstream_writer_block_serial": 17,
+                "upstream_writer_insn_index": 2,
             },
-            TERMINAL_MATERIALIZATION_FACT_KIND,
+            {TERMINAL_MATERIALIZATION_FACT_KIND, MEMORY_USE_FACT_KIND, RETURN_VALUE_FACT_KIND},
         ),
         (
             "ReturnFrontierFact",
@@ -120,8 +127,9 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "return_block": 99,
                 "carrier_fact_ids": ["return-carrier-1"],
                 "frontier_blocks": [70, 80],
+                "writer_blocks": [55, 56],
             },
-            TERMINAL_MATERIALIZATION_FACT_KIND,
+            {TERMINAL_MATERIALIZATION_FACT_KIND, MEMORY_PHI_FACT_KIND},
         ),
         (
             "TerminalByteEmitterFact",
@@ -130,7 +138,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "byte_index": 2,
                 "insn_index": 3,
             },
-            OBSERVABLE_STORE_FACT_KIND,
+            {OBSERVABLE_STORE_FACT_KIND, POINTS_TO_FACT_KIND},
         ),
         (
             "ByteEmitCorridorFact",
@@ -139,7 +147,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "member_fact_ids": ["byte-2"],
                 "byte_indexes": [2],
             },
-            SIDE_EFFECT_CORRIDOR_FACT_KIND,
+            {SIDE_EFFECT_CORRIDOR_FACT_KIND},
         ),
         (
             "StateWriteAnchorFact",
@@ -148,7 +156,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "state_const_hex": "0x0000000042",
                 "instruction_index": 6,
             },
-            STATE_VARIABLE_WRITE_FACT_KIND,
+            {STATE_VARIABLE_WRITE_FACT_KIND},
         ),
         (
             "StateTransitionAnchorFact",
@@ -158,30 +166,75 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "next_state_const_hex": "0x00000002",
                 "instruction_index": 7,
             },
-            STATE_TRANSITION_CARRIER_FACT_KIND,
+            {STATE_TRANSITION_CARRIER_FACT_KIND},
         ),
         (
             "CallAnchorFact",
             {"call_target": "strncmp", "call_kind": "direct_call", "insn_index": 8},
-            CALL_SIDE_EFFECT_ANCHOR_FACT_KIND,
+            {CALL_SIDE_EFFECT_ANCHOR_FACT_KIND},
         ),
     ],
 )
 def test_projects_existing_source_fact_families_to_generic_families(
     kind: str,
     payload: dict[str, object],
-    expected_kind: str,
+    expected_kinds: set[str],
 ) -> None:
     concrete = _fact(fact_id=f"{kind}:1", kind=kind, payload=payload)
 
-    (projected,) = project_carrier_fact_families((concrete,))
+    projected = project_carrier_fact_families((concrete,))
+    projected_by_kind = {fact.kind: fact for fact in projected}
 
-    assert projected.kind == expected_kind
-    assert projected.payload["producer_fact_ids"][0] == concrete.fact_id
-    assert projected.payload["expression_class"]
-    assert projected.payload["observable_effect"] is not None
-    assert projected.payload["source_identity"]["producer_kind"] == kind
-    assert "capabilities" not in projected.payload
+    assert expected_kinds <= set(projected_by_kind)
+    for projected_fact in projected_by_kind.values():
+        assert projected_fact.payload["producer_fact_ids"][0] == concrete.fact_id
+        assert projected_fact.payload["expression_class"]
+        assert projected_fact.payload["observable_effect"] is not None
+        assert projected_fact.payload["source_identity"]["producer_kind"] == kind
+        assert "capabilities" not in projected_fact.payload
+
+
+def test_hodur_return_and_byte_evidence_project_to_standard_value_flow_families() -> None:
+    """Hodur-backed producers already supply MemoryUse/Phi/PointsTo/ReturnValue."""
+
+    return_slot = _fact(
+        fact_id="return-carrier",
+        kind="ReturnCarrierFact",
+        payload={
+            "return_slot_stkoff": 0x8,
+            "carrier_class": "stack_identity_carrier",
+            "source_signature": "%var_20.8",
+            "upstream_writer_block_serial": 17,
+            "upstream_writer_insn_index": 2,
+        },
+    )
+    return_frontier = _fact(
+        fact_id="return-frontier",
+        kind="ReturnFrontierFact",
+        payload={
+            "return_block": 99,
+            "carrier_fact_ids": ["return-carrier"],
+            "frontier_blocks": [70, 80],
+            "writer_blocks": [55, 56],
+        },
+    )
+    byte_emit = _fact(
+        fact_id="byte-emit",
+        kind="TerminalByteEmitterFact",
+        payload={
+            "destination_buffer_expression": "[ds:v51+2]",
+            "byte_index": 2,
+            "insn_index": 3,
+        },
+    )
+
+    projected = project_carrier_fact_families((return_slot, return_frontier, byte_emit))
+    kinds = {fact.kind for fact in projected}
+
+    assert MEMORY_USE_FACT_KIND in kinds
+    assert MEMORY_PHI_FACT_KIND in kinds
+    assert POINTS_TO_FACT_KIND in kinds
+    assert RETURN_VALUE_FACT_KIND in kinds
 
 
 def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
@@ -428,8 +481,8 @@ def test_projection_is_idempotent_for_existing_generic_fact() -> None:
         source_block=42,
         source_ea=0x180015005,
     )
-    (generic_fact,) = project_carrier_fact_families((source,))
+    generic_facts = project_carrier_fact_families((source,))
 
-    (projected_again,) = project_carrier_fact_families((generic_fact,))
+    projected_again = project_carrier_fact_families(generic_facts)
 
-    assert projected_again is generic_fact
+    assert projected_again == generic_facts

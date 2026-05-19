@@ -8,6 +8,7 @@ serialized type strings.
 from __future__ import annotations
 
 from d810.recon.facts import collectors
+from d810.recon.facts.value_flow import RETURN_VALUE_FACT_TYPE
 
 
 def test_induction_variable_collector_alias_matches_legacy():
@@ -47,16 +48,9 @@ def test_return_slot_collector_alias_matches_legacy():
     assert collectors.ReturnCarrierFactCollector is ReturnSlotFactCollector
     assert ReturnSlotFactCollector.fact_kinds == frozenset({"ReturnCarrierFact"})
 
-    # ReturnValueFactCollector is a placeholder that records no producer
-    # yet. It exists so consumers can target the canonical split shape now
-    # without a second migration when a real producer is added.
-    placeholder = ReturnValueFactCollector()
-    assert placeholder.collect(None, func_ea=0, maturity=0, phase="pre_d810") == ()
-    # fact_kinds stays empty until a real producer lands and the canonical
-    # ReturnValueFact type is registered in the alias registry. An
-    # unregistered fact-kind string would confuse the diagnostic
-    # canonicalization layer.
-    assert ReturnValueFactCollector.fact_kinds == frozenset()
+    # ReturnValueFactCollector is a normalized projection producer over the
+    # same Hodur return-slot evidence, not a theoretical placeholder.
+    assert ReturnValueFactCollector.fact_kinds == frozenset({RETURN_VALUE_FACT_TYPE})
 
 
 def test_ollvm_value_flow_evidence_collector_alias_matches_legacy():

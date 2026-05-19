@@ -26,6 +26,10 @@ from d810.recon.facts.collectors.induction_carrier import (
     _iter_instruction_views,
     _maturity_name,
 )
+from d810.recon.facts.carrier import (
+    RETURN_VALUE_FACT_TYPE,
+    project_carrier_fact_families,
+)
 from d810.recon.facts.model import FactObservation
 
 
@@ -163,12 +167,14 @@ class ReturnSlotFactCollector:
 
     Canonical class name (value-flow rename Phase 4). Tracks the storage
     slot used to communicate a function's return value at the ABI
-    boundary (e.g. ``%var_8.8`` for stack-returned aggregates). A peer
-    class :class:`ReturnValueFactCollector` is reserved for facts about
-    the recovered semantic value once a producer exists.
+    boundary (e.g. ``%var_8.8`` for stack-returned aggregates). The peer
+    class :class:`ReturnValueFactCollector` projects those observations
+    into canonical return-value value-flow facts when a caller wants the
+    normalized family directly.
 
     ``ReturnCarrierFactCollector`` is preserved as an import alias only.
-    Projected value-flow facts serialize as ``MaterializationPointFact``.
+    Projected value-flow facts serialize as ``MaterializationPointFact``,
+    ``MemoryUseFact``, and ``ReturnValueFact``.
     """
 
     name = "ReturnSlotFactCollector"
@@ -291,25 +297,20 @@ __all__ = [
 
 
 class ReturnValueFactCollector:
-    """Placeholder collector for facts about the recovered return value.
+    """Collect canonical facts about the recovered return value.
 
     Distinct from :class:`ReturnSlotFactCollector`, which records facts
-    about the storage slot. The split was decided in answer to open
-    question 3 of the value-flow rename design. No producer is wired up
-    yet; consumers can already target the canonical split shape so that
-    a future producer landing here does not require a second migration.
+    about the storage slot. This collector reuses the same Hodur
+    return-slot evidence and returns only the normalized ``ReturnValueFact``
+    projection.
     """
 
     name = "ReturnValueFactCollector"
-    # Empty until a real producer lands. The placeholder emits nothing,
-    # and an unregistered fact-kind string in ``fact_kinds`` would confuse
-    # the diagnostic alias registry which canonicalizes observed kinds.
-    # When a real ``ReturnValueFact`` producer is added, register the
-    # canonical fact type in
-    # :mod:`d810.recon.facts.value_flow.alias_registry` first, then
-    # populate this set.
-    fact_kinds: frozenset[str] = frozenset()
+    fact_kinds: frozenset[str] = frozenset({RETURN_VALUE_FACT_TYPE})
     maturities = _TARGET_MATURITIES
+
+    def __init__(self) -> None:
+        self._slot_collector = ReturnSlotFactCollector()
 
     def collect(
         self,
@@ -319,10 +320,15 @@ class ReturnValueFactCollector:
         maturity: int,
         phase: str,
     ) -> tuple[FactObservation, ...]:
-        return ()
+        projected = project_carrier_fact_families(self._slot_collector.collect(
+            target,
+            func_ea=func_ea,
+            maturity=maturity,
+            phase=phase,
+        ))
+        return tuple(fact for fact in projected if fact.kind == RETURN_VALUE_FACT_TYPE)
 
 
 # Legacy class name kept as an alias during the value-flow rename. The
-# current slot-based collector logic lives in ReturnSlotFactCollector;
-# ReturnValueFactCollector is the future home for value-recovery facts.
+# current slot-based collector logic lives in ReturnSlotFactCollector.
 ReturnCarrierFactCollector = ReturnSlotFactCollector

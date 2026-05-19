@@ -26,6 +26,10 @@ LOOP_PREDICATE_CARRIER_FACT_KIND = "LoopPredicateValueFact"
 CALL_RESULT_CARRIER_FACT_KIND = "CallReturnValueFact"
 INDUCTION_CARRIER_FACT_KIND = "InductionVariableFact"
 TERMINAL_MATERIALIZATION_FACT_KIND = "MaterializationPointFact"
+MEMORY_USE_FACT_KIND = "MemoryUseFact"
+MEMORY_PHI_FACT_KIND = "MemoryPhiFact"
+POINTS_TO_FACT_KIND = "PointsToFact"
+RETURN_VALUE_FACT_KIND = "ReturnValueFact"
 STATE_VARIABLE_WRITE_FACT_KIND = "StateWriteFact"
 STATE_TRANSITION_CARRIER_FACT_KIND = "StateTransitionFact"
 SIDE_EFFECT_CORRIDOR_FACT_KIND = "EffectPathFact"
@@ -41,6 +45,10 @@ GENERIC_CARRIER_FACT_KINDS = frozenset({
     CALL_RESULT_CARRIER_FACT_KIND,
     INDUCTION_CARRIER_FACT_KIND,
     TERMINAL_MATERIALIZATION_FACT_KIND,
+    MEMORY_USE_FACT_KIND,
+    MEMORY_PHI_FACT_KIND,
+    POINTS_TO_FACT_KIND,
+    RETURN_VALUE_FACT_KIND,
     STATE_VARIABLE_WRITE_FACT_KIND,
     STATE_TRANSITION_CARRIER_FACT_KIND,
     SIDE_EFFECT_CORRIDOR_FACT_KIND,
@@ -169,60 +177,136 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             payload,
             ("return_slot_stkoff",),
         )
-        return (_make_fact(
-            observation,
-            kind=TERMINAL_MATERIALIZATION_FACT_KIND,
-            semantic_key=f"terminal_return:{storage_kind}:{storage_identity}",
-            storage_kind=storage_kind,
-            storage_identity=storage_identity,
-            expression_class=_return_expression_class(payload),
-            observable_effect="return_value",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "carrier_class": payload.get("carrier_class"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=TERMINAL_MATERIALIZATION_FACT_KIND,
+                semantic_key=f"terminal_return:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class=_return_expression_class(payload),
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "carrier_class": payload.get("carrier_class"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=MEMORY_USE_FACT_KIND,
+                semantic_key=f"return_slot_use:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class="return_slot_use",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "source_signature": payload.get("source_signature"),
+                    "carrier_class": payload.get("carrier_class"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=RETURN_VALUE_FACT_KIND,
+                semantic_key=f"return_value:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class=_return_expression_class(payload),
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "source_signature": payload.get("source_signature"),
+                    "carrier_class": payload.get("carrier_class"),
+                    "upstream_writer_block_serial": payload.get("upstream_writer_block_serial"),
+                    "upstream_writer_insn_index": payload.get("upstream_writer_insn_index"),
+                },
+            ),
+        )
 
     if observation.kind == "ReturnFrontierFact":
         producer_ids = _producer_fact_ids(
             observation,
             extra_ids=_string_list(payload.get("carrier_fact_ids")),
         )
-        return (_make_fact(
-            observation,
-            kind=TERMINAL_MATERIALIZATION_FACT_KIND,
-            semantic_key=f"terminal_return_frontier:{payload.get('return_block', 'unknown')}",
-            storage_kind="block",
-            storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
-            expression_class="return_frontier",
-            observable_effect="return_value",
-            producer_fact_ids=producer_ids,
-            producer_kinds=(observation.kind, "ReturnCarrierFact"),
-            source_identity=_source_identity(observation, producer_ids=producer_ids),
-            details={
-                "source_ontology": observation.kind,
-                "frontier_blocks": payload.get("frontier_blocks"),
-            },
-        ),)
+        source_identity = _source_identity(observation, producer_ids=producer_ids)
+        return (
+            _make_fact(
+                observation,
+                kind=TERMINAL_MATERIALIZATION_FACT_KIND,
+                semantic_key=f"terminal_return_frontier:{payload.get('return_block', 'unknown')}",
+                storage_kind="block",
+                storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
+                expression_class="return_frontier",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                producer_kinds=(observation.kind, "ReturnCarrierFact"),
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "frontier_blocks": payload.get("frontier_blocks"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=MEMORY_PHI_FACT_KIND,
+                semantic_key=f"return_frontier_phi:{payload.get('return_block', 'unknown')}",
+                storage_kind="block",
+                storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
+                expression_class="return_frontier_merge",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                producer_kinds=(observation.kind, "ReturnCarrierFact"),
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "frontier_blocks": payload.get("frontier_blocks"),
+                    "writer_blocks": payload.get("writer_blocks"),
+                    "carrier_semantic_keys": payload.get("carrier_semantic_keys"),
+                },
+            ),
+        )
 
     if observation.kind == "TerminalByteEmitterFact":
-        return (_make_fact(
-            observation,
-            kind=OBSERVABLE_STORE_FACT_KIND,
-            semantic_key=f"observable_store:{payload.get('destination_buffer_expression', 'unknown')}",
-            storage_kind="memory_expression",
-            storage_identity=str(payload.get("destination_buffer_expression") or "unknown"),
-            expression_class="byte_transform",
-            observable_effect="byte_store",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "byte_index": payload.get("byte_index"),
-            },
-        ),)
+        destination = str(payload.get("destination_buffer_expression") or "unknown")
+        return (
+            _make_fact(
+                observation,
+                kind=OBSERVABLE_STORE_FACT_KIND,
+                semantic_key=f"observable_store:{destination}",
+                storage_kind="memory_expression",
+                storage_identity=destination,
+                expression_class="byte_transform",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_index": payload.get("byte_index"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=POINTS_TO_FACT_KIND,
+                semantic_key=f"points_to:{destination}",
+                storage_kind="memory_expression",
+                storage_identity=destination,
+                expression_class="destination_points_to",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_index": payload.get("byte_index"),
+                    "destination_buffer_expression": destination,
+                },
+            ),
+        )
 
     if observation.kind == "ByteEmitCorridorFact":
         producer_ids = _producer_fact_ids(
@@ -924,7 +1008,11 @@ __all__ = [
     "LIFECYCLE_PRODUCTION_PROVEN",
     "LOCAL_STORAGE_SCALARIZATION_FACT_KIND",
     "LOOP_PREDICATE_CARRIER_FACT_KIND",
+    "MEMORY_PHI_FACT_KIND",
+    "MEMORY_USE_FACT_KIND",
     "OBSERVABLE_STORE_FACT_KIND",
+    "POINTS_TO_FACT_KIND",
+    "RETURN_VALUE_FACT_KIND",
     "SAME_CARRIER_ALIAS_FACT_KIND",
     "SIDE_EFFECT_CORRIDOR_FACT_KIND",
     "STATE_TRANSITION_CARRIER_FACT_KIND",
@@ -954,6 +1042,10 @@ LOOP_PREDICATE_VALUE_FACT_TYPE = LOOP_PREDICATE_CARRIER_FACT_KIND
 CALL_RETURN_VALUE_FACT_TYPE = CALL_RESULT_CARRIER_FACT_KIND
 INDUCTION_VARIABLE_FACT_TYPE = INDUCTION_CARRIER_FACT_KIND
 MATERIALIZATION_POINT_FACT_TYPE = TERMINAL_MATERIALIZATION_FACT_KIND
+MEMORY_USE_FACT_TYPE = MEMORY_USE_FACT_KIND
+MEMORY_PHI_FACT_TYPE = MEMORY_PHI_FACT_KIND
+POINTS_TO_FACT_TYPE = POINTS_TO_FACT_KIND
+RETURN_VALUE_FACT_TYPE = RETURN_VALUE_FACT_KIND
 STATE_WRITE_FACT_TYPE = STATE_VARIABLE_WRITE_FACT_KIND
 STATE_TRANSITION_FACT_TYPE = STATE_TRANSITION_CARRIER_FACT_KIND
 EFFECT_PATH_FACT_TYPE = SIDE_EFFECT_CORRIDOR_FACT_KIND
@@ -972,8 +1064,12 @@ __all__ += [
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
     "MATERIALIZATION_POINT_FACT_TYPE",
+    "MEMORY_PHI_FACT_TYPE",
+    "MEMORY_USE_FACT_TYPE",
     "MUST_ALIAS_FACT_TYPE",
     "OBSERVABLE_MEMORY_DEF_FACT_TYPE",
+    "POINTS_TO_FACT_TYPE",
+    "RETURN_VALUE_FACT_TYPE",
     "SCALAR_PROMOTION_FACT_TYPE",
     "SCALAR_REPLACEMENT_FACT_TYPE",
     "STATE_TRANSITION_FACT_TYPE",
