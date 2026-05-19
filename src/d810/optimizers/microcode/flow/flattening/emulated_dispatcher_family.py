@@ -8633,7 +8633,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_modifications = fallback_modifications
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
-        selected_waived_proof_obligations: tuple[str, ...] = ()
+        selected_partial_rewrite_reasons: tuple[str, ...] = ()
         switch_transition_partial_allowed = (
             self._profile.allow_incomplete_switch_transition_facts
             and _switch_transition_blockers_allow_partial_lowering(
@@ -8654,7 +8654,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 () if switch_transition_partial_allowed else switch_transition_blockers
             )
             if switch_transition_partial_allowed:
-                selected_waived_proof_obligations = tuple(
+                selected_partial_rewrite_reasons = tuple(
                     sorted(set(switch_transition_blockers))
                 )
         elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
@@ -8672,7 +8672,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 () if switch_transition_partial_allowed else switch_transition_blockers
             )
             if switch_transition_partial_allowed:
-                selected_waived_proof_obligations = tuple(
+                selected_partial_rewrite_reasons = tuple(
                     sorted(set(switch_transition_blockers))
                 )
         elif not selected_modifications and phase_reconstruction_blockers:
@@ -8689,12 +8689,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = ()
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = loop_recovery_blockers
-            selected_waived_proof_obligations = ()
+            selected_partial_rewrite_reasons = ()
         if loop_recovery_modifications and not loop_recovery_blockers:
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = ()
-            selected_waived_proof_obligations = ()
+            selected_partial_rewrite_reasons = ()
         if (
             semantic_carrier_modifications
             and not selected_modifications
@@ -8728,7 +8728,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             rejected_fathers=len(fallback_blockers),
             candidate_kinds=tuple(type(mod).__name__ for mod in selected_modifications),
             rejection_reasons=tuple(sorted(set(selected_blockers))),
-            waived_proof_obligations=selected_waived_proof_obligations,
+            partial_rewrite_reasons=selected_partial_rewrite_reasons,
             candidate_records=candidate_records,
             phase_artifact=phase_artifact,
             selected_lowering_mode=selected_lowering_mode,

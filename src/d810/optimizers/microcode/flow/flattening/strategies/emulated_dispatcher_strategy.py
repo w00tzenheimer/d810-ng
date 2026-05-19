@@ -119,9 +119,9 @@ class EmulatedDispatcherMetadata:
     rejected_fathers: int = 0
     candidate_kinds: tuple[str, ...] = ()
     rejection_reasons: tuple[str, ...] = ()
-    # Undischarged completeness obligations waived only when fallback paths
-    # remain structurally preserved by the selected partial lowering.
-    waived_proof_obligations: tuple[str, ...] = ()
+    # Reasons the selected rewrite is intentionally partial. These are the
+    # waived proof obligations for selected partial rewrites, not hard blockers.
+    partial_rewrite_reasons: tuple[str, ...] = ()
     candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...] = ()
     phase_artifact: EmulatedDispatcherPhaseArtifact | None = None
     selected_lowering_mode: str | None = None
@@ -135,6 +135,10 @@ class EmulatedDispatcherMetadata:
             or self.collector_dispatchers
             or self.state_dispatcher_entries
         )
+
+    @property
+    def is_partial(self) -> bool:
+        return bool(self.partial_rewrite_reasons)
 
 
 def extract_emulated_dispatcher_metadata(
