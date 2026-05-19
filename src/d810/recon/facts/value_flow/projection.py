@@ -1,4 +1,4 @@
-"""Generic carrier fact families used as production rewrite contracts.
+"""value-flow fact families used as production rewrite contracts.
 
 The functions here adapt existing producer observations into concrete,
 source-neutral fact kinds.  They intentionally avoid a catch-all capability
@@ -17,34 +17,46 @@ from d810.recon.facts.model import FactObservation, JsonMapping, canonical_json
 
 LIFECYCLE_PRODUCTION_PROVEN = "production_proven"
 
-OBSERVABLE_STORE_FACT_KIND = "ObservableStoreFact"
-CARRIER_STORE_PROMOTION_FACT_KIND = "CarrierStorePromotionFact"
-SAME_CARRIER_ALIAS_FACT_KIND = "SameCarrierAliasFact"
-LOCAL_STORAGE_SCALARIZATION_FACT_KIND = "LocalStorageScalarizationFact"
-EXPRESSION_CARRIER_FACT_KIND = "ExpressionCarrierFact"
-LOOP_PREDICATE_CARRIER_FACT_KIND = "LoopPredicateCarrierFact"
-CALL_RESULT_CARRIER_FACT_KIND = "CallResultCarrierFact"
-INDUCTION_CARRIER_FACT_KIND = "GenericInductionCarrierFact"
-TERMINAL_MATERIALIZATION_FACT_KIND = "TerminalMaterializationFact"
-STATE_VARIABLE_WRITE_FACT_KIND = "StateVariableWriteFact"
-STATE_TRANSITION_CARRIER_FACT_KIND = "StateTransitionCarrierFact"
-SIDE_EFFECT_CORRIDOR_FACT_KIND = "SideEffectCorridorFact"
-CALL_SIDE_EFFECT_ANCHOR_FACT_KIND = "CallSideEffectAnchorFact"
+OBSERVABLE_MEMORY_DEF_FACT_TYPE = "ObservableMemoryDefFact"
+SCALAR_PROMOTION_FACT_TYPE = "ScalarPromotionFact"
+MUST_ALIAS_FACT_TYPE = "MustAliasFact"
+MAY_ALIAS_FACT_TYPE = "MayAliasFact"
+SCALAR_REPLACEMENT_FACT_TYPE = "ScalarReplacementFact"
+SYMBOLIC_EXPRESSION_FACT_TYPE = "SymbolicExpressionFact"
+LOOP_PREDICATE_VALUE_FACT_TYPE = "LoopPredicateValueFact"
+CALL_RETURN_VALUE_FACT_TYPE = "CallReturnValueFact"
+INDUCTION_VARIABLE_FACT_TYPE = "InductionVariableFact"
+MATERIALIZATION_POINT_FACT_TYPE = "MaterializationPointFact"
+OBSERVABLE_OUTPUT_FACT_TYPE = "ObservableOutputFact"
+MEMORY_USE_FACT_TYPE = "MemoryUseFact"
+MEMORY_PHI_FACT_TYPE = "MemoryPhiFact"
+POINTS_TO_FACT_TYPE = "PointsToFact"
+RETURN_VALUE_FACT_TYPE = "ReturnValueFact"
+STATE_WRITE_FACT_TYPE = "StateWriteFact"
+STATE_TRANSITION_FACT_TYPE = "StateTransitionFact"
+EFFECT_PATH_FACT_TYPE = "EffectPathFact"
+CALL_EFFECT_SUMMARY_FACT_TYPE = "CallEffectSummaryFact"
 
-GENERIC_CARRIER_FACT_KINDS = frozenset({
-    OBSERVABLE_STORE_FACT_KIND,
-    CARRIER_STORE_PROMOTION_FACT_KIND,
-    SAME_CARRIER_ALIAS_FACT_KIND,
-    LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
-    EXPRESSION_CARRIER_FACT_KIND,
-    LOOP_PREDICATE_CARRIER_FACT_KIND,
-    CALL_RESULT_CARRIER_FACT_KIND,
-    INDUCTION_CARRIER_FACT_KIND,
-    TERMINAL_MATERIALIZATION_FACT_KIND,
-    STATE_VARIABLE_WRITE_FACT_KIND,
-    STATE_TRANSITION_CARRIER_FACT_KIND,
-    SIDE_EFFECT_CORRIDOR_FACT_KIND,
-    CALL_SIDE_EFFECT_ANCHOR_FACT_KIND,
+VALUE_FLOW_FACT_TYPES = frozenset({
+    OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+    SCALAR_PROMOTION_FACT_TYPE,
+    MUST_ALIAS_FACT_TYPE,
+    MAY_ALIAS_FACT_TYPE,
+    SCALAR_REPLACEMENT_FACT_TYPE,
+    SYMBOLIC_EXPRESSION_FACT_TYPE,
+    LOOP_PREDICATE_VALUE_FACT_TYPE,
+    CALL_RETURN_VALUE_FACT_TYPE,
+    INDUCTION_VARIABLE_FACT_TYPE,
+    MATERIALIZATION_POINT_FACT_TYPE,
+    OBSERVABLE_OUTPUT_FACT_TYPE,
+    MEMORY_USE_FACT_TYPE,
+    MEMORY_PHI_FACT_TYPE,
+    POINTS_TO_FACT_TYPE,
+    RETURN_VALUE_FACT_TYPE,
+    STATE_WRITE_FACT_TYPE,
+    STATE_TRANSITION_FACT_TYPE,
+    EFFECT_PATH_FACT_TYPE,
+    CALL_EFFECT_SUMMARY_FACT_TYPE,
 })
 
 _SOURCE_PROVEN_KINDS = frozenset({
@@ -62,36 +74,36 @@ _SOURCE_PROVEN_KINDS = frozenset({
 _TOKEN_WIDTH_RE = re.compile(r"(?P<token>(?:%var_[0-9A-Fa-f]+|v\d+))\.(?P<size>\d+)")
 
 
-def project_carrier_fact_families(
+def project_value_flow_facts(
     observations: Iterable[FactObservation],
 ) -> tuple[FactObservation, ...]:
-    """Project producer observations into concrete generic carrier facts."""
+    """Project producer observations into concrete value-flow facts."""
 
     projected: list[FactObservation] = []
     for observation in observations:
-        if observation.kind in GENERIC_CARRIER_FACT_KINDS:
+        if observation.kind in VALUE_FLOW_FACT_TYPES:
             projected.append(observation)
             continue
-        if observation.kind == "OllvmSemanticCarrierFact":
+        if observation.kind == "OllvmValueFlowEvidence":
             projected.extend(_project_ollvm_oracle_fact(observation))
             continue
         projected.extend(_project_source_fact(observation))
     return tuple(projected)
 
 
-def is_generic_carrier_fact(fact: object, kind: str | None = None) -> bool:
-    """Return true when *fact* is one of the concrete carrier families."""
+def is_value_flow_fact(fact: object, kind: str | None = None) -> bool:
+    """Return true when *fact* is one of the concrete value-flow families."""
 
     fact_kind = str(getattr(fact, "kind", "") or "")
     if kind is not None:
         return fact_kind == kind
-    return fact_kind in GENERIC_CARRIER_FACT_KINDS
+    return fact_kind in VALUE_FLOW_FACT_TYPES
 
 
-def production_carrier_fact(fact: object, kind: str) -> bool:
-    """Return true when *fact* is a production-proven concrete carrier row."""
+def production_value_flow_fact(fact: object, kind: str) -> bool:
+    """Return true when *fact* is a production-proven value-flow row."""
 
-    if not is_generic_carrier_fact(fact, kind):
+    if not is_value_flow_fact(fact, kind):
         return False
     payload = getattr(fact, "payload", None)
     if not isinstance(payload, dict):
@@ -100,7 +112,7 @@ def production_carrier_fact(fact: object, kind: str) -> bool:
 
 
 def exact_source_identity(fact: object) -> JsonMapping:
-    """Return the serializable source identity for a concrete carrier fact."""
+    """Return the serializable source identity for a value-flow fact."""
 
     payload = getattr(fact, "payload", None)
     if not isinstance(payload, dict):
@@ -127,7 +139,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
         )
         return (_make_fact(
             observation,
-            kind=INDUCTION_CARRIER_FACT_KIND,
+            kind=INDUCTION_VARIABLE_FACT_TYPE,
             semantic_key=f"induction:{storage_kind}:{storage_identity}",
             storage_kind=storage_kind,
             storage_identity=storage_identity,
@@ -150,7 +162,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
         )
         return (_make_fact(
             observation,
-            kind=LOOP_PREDICATE_CARRIER_FACT_KIND,
+            kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
             semantic_key=f"loop_predicate:{storage_kind}:{storage_identity}",
             storage_kind=storage_kind,
             storage_identity=storage_identity,
@@ -169,60 +181,152 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             payload,
             ("return_slot_stkoff",),
         )
-        return (_make_fact(
-            observation,
-            kind=TERMINAL_MATERIALIZATION_FACT_KIND,
-            semantic_key=f"terminal_return:{storage_kind}:{storage_identity}",
-            storage_kind=storage_kind,
-            storage_identity=storage_identity,
-            expression_class=_return_expression_class(payload),
-            observable_effect="return_value",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "carrier_class": payload.get("carrier_class"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=MATERIALIZATION_POINT_FACT_TYPE,
+                semantic_key=f"terminal_return:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class=_return_expression_class(payload),
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "carrier_class": payload.get("carrier_class"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=MEMORY_USE_FACT_TYPE,
+                semantic_key=f"return_slot_use:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class="return_slot_use",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "source_signature": payload.get("source_signature"),
+                    "carrier_class": payload.get("carrier_class"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=RETURN_VALUE_FACT_TYPE,
+                semantic_key=f"return_value:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class=_return_expression_class(payload),
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "source_signature": payload.get("source_signature"),
+                    "carrier_class": payload.get("carrier_class"),
+                    "upstream_writer_block_serial": payload.get("upstream_writer_block_serial"),
+                    "upstream_writer_insn_index": payload.get("upstream_writer_insn_index"),
+                },
+            ),
+        )
 
     if observation.kind == "ReturnFrontierFact":
         producer_ids = _producer_fact_ids(
             observation,
             extra_ids=_string_list(payload.get("carrier_fact_ids")),
         )
-        return (_make_fact(
-            observation,
-            kind=TERMINAL_MATERIALIZATION_FACT_KIND,
-            semantic_key=f"terminal_return_frontier:{payload.get('return_block', 'unknown')}",
-            storage_kind="block",
-            storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
-            expression_class="return_frontier",
-            observable_effect="return_value",
-            producer_fact_ids=producer_ids,
-            producer_kinds=(observation.kind, "ReturnCarrierFact"),
-            source_identity=_source_identity(observation, producer_ids=producer_ids),
-            details={
-                "source_ontology": observation.kind,
-                "frontier_blocks": payload.get("frontier_blocks"),
-            },
-        ),)
+        source_identity = _source_identity(observation, producer_ids=producer_ids)
+        return (
+            _make_fact(
+                observation,
+                kind=MATERIALIZATION_POINT_FACT_TYPE,
+                semantic_key=f"terminal_return_frontier:{payload.get('return_block', 'unknown')}",
+                storage_kind="block",
+                storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
+                expression_class="return_frontier",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                producer_kinds=(observation.kind, "ReturnCarrierFact"),
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "frontier_blocks": payload.get("frontier_blocks"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=MEMORY_PHI_FACT_TYPE,
+                semantic_key=f"return_frontier_phi:{payload.get('return_block', 'unknown')}",
+                storage_kind="block",
+                storage_identity=f"return_block:{payload.get('return_block', 'unknown')}",
+                expression_class="return_frontier_merge",
+                observable_effect="return_value",
+                producer_fact_ids=producer_ids,
+                producer_kinds=(observation.kind, "ReturnCarrierFact"),
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "frontier_blocks": payload.get("frontier_blocks"),
+                    "writer_blocks": payload.get("writer_blocks"),
+                    "carrier_semantic_keys": payload.get("carrier_semantic_keys"),
+                },
+            ),
+        )
 
     if observation.kind == "TerminalByteEmitterFact":
-        return (_make_fact(
-            observation,
-            kind=OBSERVABLE_STORE_FACT_KIND,
-            semantic_key=f"observable_store:{payload.get('destination_buffer_expression', 'unknown')}",
-            storage_kind="memory_expression",
-            storage_identity=str(payload.get("destination_buffer_expression") or "unknown"),
-            expression_class="byte_transform",
-            observable_effect="byte_store",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "byte_index": payload.get("byte_index"),
-            },
-        ),)
+        destination = str(payload.get("destination_buffer_expression") or "unknown")
+        return (
+            _make_fact(
+                observation,
+                kind=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+                semantic_key=f"observable_store:{destination}",
+                storage_kind="memory_expression",
+                storage_identity=destination,
+                expression_class="byte_transform",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_index": payload.get("byte_index"),
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=POINTS_TO_FACT_TYPE,
+                semantic_key=f"points_to:{destination}",
+                storage_kind="memory_expression",
+                storage_identity=destination,
+                expression_class="destination_points_to",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_index": payload.get("byte_index"),
+                    "destination_buffer_expression": destination,
+                },
+            ),
+            _make_fact(
+                observation,
+                kind=OBSERVABLE_OUTPUT_FACT_TYPE,
+                semantic_key=f"observable_output:{destination}",
+                storage_kind="memory_expression",
+                storage_identity=destination,
+                expression_class="byte_output",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_index": payload.get("byte_index"),
+                    "destination_buffer_expression": destination,
+                },
+            ),
+        )
 
     if observation.kind == "ByteEmitCorridorFact":
         producer_ids = _producer_fact_ids(
@@ -231,7 +335,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
         )
         return (_make_fact(
             observation,
-            kind=SIDE_EFFECT_CORRIDOR_FACT_KIND,
+            kind=EFFECT_PATH_FACT_TYPE,
             semantic_key=f"side_effect_corridor:{'|'.join(_string_list(payload.get('destinations'))) or 'unknown'}",
             storage_kind="memory_expression",
             storage_identity="|".join(_string_list(payload.get("destinations"))) or "unknown",
@@ -253,7 +357,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
         )
         return (_make_fact(
             observation,
-            kind=STATE_VARIABLE_WRITE_FACT_KIND,
+            kind=STATE_WRITE_FACT_TYPE,
             semantic_key=f"state_write:{storage_kind}:{storage_identity}",
             storage_kind=storage_kind,
             storage_identity=storage_identity,
@@ -276,7 +380,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
         )
         return (_make_fact(
             observation,
-            kind=STATE_TRANSITION_CARRIER_FACT_KIND,
+            kind=STATE_TRANSITION_FACT_TYPE,
             semantic_key=f"state_transition:{storage_identity}",
             storage_kind="state_variable_identity",
             storage_identity=storage_identity,
@@ -294,7 +398,7 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
     if observation.kind == "CallAnchorFact":
         return (_make_fact(
             observation,
-            kind=CALL_SIDE_EFFECT_ANCHOR_FACT_KIND,
+            kind=CALL_EFFECT_SUMMARY_FACT_TYPE,
             semantic_key=f"call_anchor:{payload.get('call_target', 'unknown')}",
             storage_kind="call_destination",
             storage_identity=str(payload.get("call_target") or "unknown"),
@@ -333,7 +437,7 @@ def _project_ollvm_oracle_fact(
             _ollvm_exact_fact(
                 observation,
                 exact=exact,
-                kind=OBSERVABLE_STORE_FACT_KIND,
+                kind=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
                 semantic_key=f"observable_store:token:{token}",
                 expression_class="output_store_carrier_proof",
                 observable_effect="output_store",
@@ -345,7 +449,7 @@ def _project_ollvm_oracle_fact(
             _ollvm_exact_fact(
                 observation,
                 exact=exact,
-                kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+                kind=SCALAR_PROMOTION_FACT_TYPE,
                 semantic_key=f"carrier_store_promotion:token:{token}",
                 expression_class="carrier_store_promotion_proof",
                 observable_effect="output_store",
@@ -354,27 +458,54 @@ def _project_ollvm_oracle_fact(
                 role=role,
                 extra_details=extra_details,
             ),
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=OBSERVABLE_OUTPUT_FACT_TYPE,
+                semantic_key=f"observable_output:token:{token}",
+                expression_class="output_store_carrier_proof",
+                observable_effect="output_store",
+                proof_family="observable_output_store_carrier",
+                producer_ids=producer_ids,
+                role=role,
+                extra_details=extra_details,
+            ),
         )
 
     if role == "LOCAL_WORKING_POINTER":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
-            semantic_key=f"local_storage_scalarization:token:{token}",
-            expression_class="local_storage_scalarization_proof",
-            observable_effect="none",
-            proof_family="local_pointer_storage_scalarization",
-            producer_ids=producer_ids,
-            role=role,
-            extra_details=_ollvm_local_scalarization_details(payload),
-        ),)
+        local_details = _ollvm_local_scalarization_details(payload)
+        return (
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=SCALAR_REPLACEMENT_FACT_TYPE,
+                semantic_key=f"local_storage_scalarization:token:{token}",
+                expression_class="local_storage_scalarization_proof",
+                observable_effect="none",
+                proof_family="local_pointer_storage_scalarization",
+                producer_ids=producer_ids,
+                role=role,
+                extra_details=local_details,
+            ),
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=MAY_ALIAS_FACT_TYPE,
+                semantic_key=f"may_alias:token:{token}",
+                expression_class="local_pointer_alias_set",
+                observable_effect="none",
+                proof_family="local_pointer_alias_evidence",
+                producer_ids=producer_ids,
+                role=role,
+                extra_details=local_details,
+            ),
+        )
 
     if role == "INDIRECT_STORE_CANDIDATE":
         return (_ollvm_exact_fact(
             observation,
             exact=exact,
-            kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+            kind=SCALAR_PROMOTION_FACT_TYPE,
             semantic_key=f"carrier_store_promotion:token:{token}",
             expression_class="carrier_store_promotion_proof",
             observable_effect="output_store",
@@ -387,7 +518,7 @@ def _project_ollvm_oracle_fact(
         return (_ollvm_exact_fact(
             observation,
             exact=exact,
-            kind=LOOP_PREDICATE_CARRIER_FACT_KIND,
+            kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
             semantic_key=f"loop_predicate:token:{token}",
             expression_class="loop_predicate_carrier_proof",
             observable_effect="none",
@@ -401,7 +532,7 @@ def _project_ollvm_oracle_fact(
         return (_ollvm_exact_fact(
             observation,
             exact=exact,
-            kind=CALL_RESULT_CARRIER_FACT_KIND,
+            kind=CALL_RETURN_VALUE_FACT_TYPE,
             semantic_key=f"call_result:token:{token}",
             expression_class="call_result",
             observable_effect="branch_predicate",
@@ -424,7 +555,7 @@ def _project_ollvm_oracle_fact(
             facts.append(_ollvm_exact_fact(
                 observation,
                 exact=exact,
-                kind=LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
+                kind=SCALAR_REPLACEMENT_FACT_TYPE,
                 semantic_key=f"local_storage_scalarization:token:{token}",
                 expression_class="local_storage_scalarization_proof",
                 observable_effect="none",
@@ -437,7 +568,7 @@ def _project_ollvm_oracle_fact(
             _ollvm_exact_fact(
                 observation,
                 exact=exact,
-                kind=EXPRESSION_CARRIER_FACT_KIND,
+                kind=SYMBOLIC_EXPRESSION_FACT_TYPE,
                 semantic_key=f"expression_carrier:token:{token}",
                 expression_class="semantic_expression_carrier_proof",
                 observable_effect="none",
@@ -448,7 +579,7 @@ def _project_ollvm_oracle_fact(
             _ollvm_exact_fact(
                 observation,
                 exact=exact,
-                kind=CARRIER_STORE_PROMOTION_FACT_KIND,
+                kind=SCALAR_PROMOTION_FACT_TYPE,
                 semantic_key=f"carrier_store_promotion:token:{token}",
                 expression_class="carrier_store_promotion_proof",
                 observable_effect="carrier_store",
@@ -588,7 +719,7 @@ def _ollvm_same_carrier_alias_fact(
     }
     return _make_fact(
         observation,
-        kind=SAME_CARRIER_ALIAS_FACT_KIND,
+        kind=MUST_ALIAS_FACT_TYPE,
         semantic_key=f"same_carrier_alias:{carrier_token}:{','.join(alias_tokens)}",
         storage_kind="token_pair",
         storage_identity=f"{carrier_token}->{','.join(alias_tokens)}",
@@ -915,23 +1046,29 @@ def _hex(value: int | None) -> str | None:
 
 
 __all__ = [
-    "CALL_RESULT_CARRIER_FACT_KIND",
-    "CALL_SIDE_EFFECT_ANCHOR_FACT_KIND",
-    "CARRIER_STORE_PROMOTION_FACT_KIND",
-    "EXPRESSION_CARRIER_FACT_KIND",
-    "GENERIC_CARRIER_FACT_KINDS",
-    "INDUCTION_CARRIER_FACT_KIND",
+    "CALL_RETURN_VALUE_FACT_TYPE",
+    "CALL_EFFECT_SUMMARY_FACT_TYPE",
+    "SCALAR_PROMOTION_FACT_TYPE",
+    "SYMBOLIC_EXPRESSION_FACT_TYPE",
+    "VALUE_FLOW_FACT_TYPES",
+    "INDUCTION_VARIABLE_FACT_TYPE",
     "LIFECYCLE_PRODUCTION_PROVEN",
-    "LOCAL_STORAGE_SCALARIZATION_FACT_KIND",
-    "LOOP_PREDICATE_CARRIER_FACT_KIND",
-    "OBSERVABLE_STORE_FACT_KIND",
-    "SAME_CARRIER_ALIAS_FACT_KIND",
-    "SIDE_EFFECT_CORRIDOR_FACT_KIND",
-    "STATE_TRANSITION_CARRIER_FACT_KIND",
-    "STATE_VARIABLE_WRITE_FACT_KIND",
-    "TERMINAL_MATERIALIZATION_FACT_KIND",
+    "SCALAR_REPLACEMENT_FACT_TYPE",
+    "LOOP_PREDICATE_VALUE_FACT_TYPE",
+    "MAY_ALIAS_FACT_TYPE",
+    "MEMORY_PHI_FACT_TYPE",
+    "MEMORY_USE_FACT_TYPE",
+    "OBSERVABLE_MEMORY_DEF_FACT_TYPE",
+    "OBSERVABLE_OUTPUT_FACT_TYPE",
+    "POINTS_TO_FACT_TYPE",
+    "RETURN_VALUE_FACT_TYPE",
+    "MUST_ALIAS_FACT_TYPE",
+    "EFFECT_PATH_FACT_TYPE",
+    "STATE_TRANSITION_FACT_TYPE",
+    "STATE_WRITE_FACT_TYPE",
+    "MATERIALIZATION_POINT_FACT_TYPE",
     "exact_source_identity",
-    "is_generic_carrier_fact",
-    "production_carrier_fact",
-    "project_carrier_fact_families",
+    "is_value_flow_fact",
+    "production_value_flow_fact",
+    "project_value_flow_facts",
 ]

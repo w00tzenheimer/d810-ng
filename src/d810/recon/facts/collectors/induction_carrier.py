@@ -384,10 +384,16 @@ def _iter_writeback_tail_updates(
                     break
 
 
-class InductionCarrierFactCollector:
-    """Observe direct stack-variable induction updates across maturities."""
+class InductionVariableFactCollector:
+    """Observe direct stack-variable induction updates across maturities.
 
-    name = "InductionCarrierFactCollector"
+    Canonical collector class name for induction-variable source evidence.
+    Raw observations still serialize as ``InductionCarrierFact`` because that
+    is the source ontology produced by this collector; projected value-flow
+    facts serialize as ``InductionVariableFact``.
+    """
+
+    name = "InductionVariableFactCollector"
     fact_kinds = frozenset({"InductionCarrierFact"})
     maturities = _TARGET_MATURITIES
 

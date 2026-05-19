@@ -77,10 +77,10 @@ from d810.recon.flow.terminal_tail_priors import (
 from d810.recon.facts.collectors import (
     ByteEmitCorridorFactCollector,
     CallAnchorFactCollector,
-    InductionCarrierFactCollector,
-    LoopCarrierFactCollector,
-    OllvmSemanticCarrierFactCollector,
-    ReturnCarrierFactCollector,
+    InductionVariableFactCollector,
+    LoopPredicateValueFactCollector,
+    OllvmValueFlowEvidenceCollector,
+    ReturnSlotFactCollector,
     ReturnFrontierFactCollector,
     StateTransitionAnchorFactCollector,
     StateWriteAnchorFactCollector,
@@ -1142,10 +1142,10 @@ class D810Manager:
                 AnalysisPhase(),
                 self._recon_phase._store,
             )
-            self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
-            self._recon_runtime.register_fact_collector(LoopCarrierFactCollector())
-            self._recon_runtime.register_fact_collector(OllvmSemanticCarrierFactCollector())
-            self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(InductionVariableFactCollector())
+            self._recon_runtime.register_fact_collector(LoopPredicateValueFactCollector())
+            self._recon_runtime.register_fact_collector(OllvmValueFlowEvidenceCollector())
+            self._recon_runtime.register_fact_collector(ReturnSlotFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
             self._recon_runtime.register_fact_collector(CallAnchorFactCollector())

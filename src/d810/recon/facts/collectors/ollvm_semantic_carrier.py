@@ -338,11 +338,16 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
                 )
 
 
-class OllvmSemanticCarrierFactCollector:
-    """Observe OLLVM semantic-carrier evidence without changing behavior."""
+class OllvmValueFlowEvidenceCollector:
+    """Observe OLLVM value-flow evidence without changing behavior.
 
-    name = "OllvmSemanticCarrierFactCollector"
-    fact_kinds = frozenset({"OllvmSemanticCarrierFact"})
+    Canonical class name for OLLVM-specific value-flow evidence. New
+    observations emit ``"OllvmValueFlowEvidence"`` so raw profile evidence no
+    longer uses carrier-era serialized terminology.
+    """
+
+    name = "OllvmValueFlowEvidenceCollector"
+    fact_kinds = frozenset({"OllvmValueFlowEvidence"})
     maturities = _TARGET_MATURITIES
 
     def collect(
@@ -398,7 +403,7 @@ class OllvmSemanticCarrierFactCollector:
             observations.append(
                 FactObservation(
                     fact_id=fact_id,
-                    kind="OllvmSemanticCarrierFact",
+                    kind="OllvmValueFlowEvidence",
                     semantic_key=semantic_key,
                     maturity=maturity_text,
                     phase=phase,
@@ -418,4 +423,6 @@ class OllvmSemanticCarrierFactCollector:
         return tuple(observations)
 
 
-__all__ = ["OllvmSemanticCarrierFactCollector"]
+__all__ = [
+    "OllvmValueFlowEvidenceCollector",
+]
