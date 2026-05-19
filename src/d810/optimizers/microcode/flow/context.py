@@ -6,6 +6,7 @@ from d810.core.typing import TYPE_CHECKING, Callable
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.recon.flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
@@ -257,10 +258,11 @@ class FlowMaturityContext:
             return self._dispatcher_analysis
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._dispatcher_analysis_error = exc
+            maturity_name = maturity_to_string(self.maturity)
             logger.warning(
-                "Dispatcher analysis failed for 0x%x at maturity %d: %s",
+                "Dispatcher analysis failed for 0x%x at maturity %s: %s",
                 self.func_ea,
-                self.maturity,
+                maturity_name,
                 exc,
             )
             return None
@@ -318,10 +320,11 @@ class FlowMaturityContext:
             return self._profile_stats
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._profile_stats_error = exc
+            maturity_name = maturity_to_string(self.maturity)
             logger.warning(
-                "Profile stats failed for 0x%x at maturity %d: %s",
+                "Profile stats failed for 0x%x at maturity %s: %s",
                 self.func_ea,
-                self.maturity,
+                maturity_name,
                 exc,
             )
             return None
