@@ -76,7 +76,7 @@ HODUR_BASELINES = [
     pytest.param(
         "hodur_func",
         "example_libobfuscated.json",
-        {"statements": 38, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 7},
+        {"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
         id="hodur_func",
     ),
     pytest.param(
