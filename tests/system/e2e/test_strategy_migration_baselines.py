@@ -1,4 +1,4 @@
-"""Characterization baselines for extracted engine-wrapper migrations.
+"""Retired characterization baselines for extracted engine-wrapper migrations.
 
 These tests compare the legacy rule path against the extracted engine-wrapper
 path on real libobfuscated fixtures. The expectations intentionally lock the
@@ -7,6 +7,10 @@ current behavior rather than claiming full parity.
 When a non-parity case fails, first check the primary correctness gate for that
 fixture. If the primary gate still passes and no semantic oracle regressed, this
 test usually needs a characterization refresh, not an optimizer repair.
+
+The legacy-off ablation branch intentionally removes the legacy side of this
+comparison. Keeping this class as a gate would compare the engine to itself or
+to stale expectations. Use the primary fixture gates instead.
 """
 
 from __future__ import annotations
@@ -21,6 +25,14 @@ import idaapi
 from d810.testing.runner import (
     _resolve_test_project_index,
     get_func_ea,
+)
+
+
+pytestmark = pytest.mark.skip(
+    reason=(
+        "legacy-vs-engine migration characterization is obsolete in the "
+        "legacy-unflatteners-off ablation; use primary fixture gates"
+    )
 )
 
 

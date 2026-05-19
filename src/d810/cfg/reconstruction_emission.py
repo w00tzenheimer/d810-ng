@@ -115,6 +115,100 @@ def _resolve_candidate_horizon_old_target(
     return None
 
 
+def _conditional_state_write_passthrough_redirect(
+    *,
+    candidate: object,
+    raw_candidates: list,
+    flow_graph,
+    dispatcher_serial: int,
+    target_entry: int,
+    existing_modifications: list,
+) -> RedirectGoto | None:
+    horizon_block = int(getattr(candidate, "horizon_block", -1))
+    source_block = getattr(getattr(candidate, "edge", None), "source_anchor", None)
+    source_block = getattr(source_block, "block_serial", None)
+    ordered_path = tuple(
+        int(serial)
+        for serial in getattr(getattr(candidate, "edge", None), "ordered_path", ()) or ()
+    )
+
+    blocked_site_blocks = {horizon_block}
+    if source_block is not None:
+        blocked_site_blocks.add(int(source_block))
+
+    def _one_way_dispatcher_tail(block_serial: int) -> tuple[int, int] | None:
+        if block_serial in blocked_site_blocks:
+            return None
+        get_block = getattr(flow_graph, "get_block", None)
+        if not callable(get_block):
+            return None
+        block = get_block(block_serial)
+        if block is None or int(getattr(block, "nsucc", 0)) != 1:
+            return None
+        old_target = int(tuple(getattr(block, "succs", ()) or ())[0])
+        if old_target != int(dispatcher_serial) or old_target == int(target_entry):
+            return None
+        return int(block_serial), old_target
+
+    site = getattr(candidate, "site", None)
+    site_block = getattr(site, "block_serial", None)
+    selected_tail: tuple[int, int] | None = None
+    if site_block is not None:
+        site_block = int(site_block)
+        if site_block in ordered_path:
+            selected_tail = _one_way_dispatcher_tail(site_block)
+
+    if selected_tail is None and ordered_path:
+        try:
+            horizon_index = ordered_path.index(horizon_block)
+        except ValueError:
+            horizon_index = -1
+        tail_path = (
+            ordered_path[horizon_index + 1 :]
+            if horizon_index >= 0
+            else ordered_path
+        )
+        for path_block in reversed(tail_path):
+            selected_tail = _one_way_dispatcher_tail(int(path_block))
+            if selected_tail is not None:
+                break
+
+    if selected_tail is None:
+        return None
+
+    site_block, old_target = selected_tail
+
+    sibling_targets = set()
+    for other in raw_candidates:
+        other_site = getattr(getattr(other, "site", None), "block_serial", None)
+        other_path = tuple(
+            int(serial)
+            for serial in getattr(getattr(other, "edge", None), "ordered_path", ()) or ()
+        )
+        if (
+            other_site is not None
+            and int(other_site) == site_block
+        ) or site_block in other_path:
+            sibling_targets.add(int(getattr(other, "target_entry")))
+    if len(sibling_targets) > 1:
+        return None
+
+    for modification in existing_modifications:
+        if not isinstance(modification, (RedirectGoto, RedirectBranch)):
+            continue
+        if int(modification.from_serial) != site_block:
+            continue
+        if int(modification.new_target) == int(target_entry):
+            return None
+        return None
+
+    return RedirectGoto(
+        from_serial=site_block,
+        old_target=old_target,
+        new_target=int(target_entry),
+    )
+
+
 def _collect_zero_state_write_modifications(
     candidates: tuple[object, ...] | list[object],
     *,
@@ -140,6 +234,122 @@ def _collect_zero_state_write_modifications(
         ),
         existing_modifications=existing_modifications,
     )
+
+
+def _preserve_branch_local_state_write_joins(
+    *,
+    modifications: list,
+    flow_graph,
+    dispatcher_serial: int,
+    owned_blocks: set[int],
+    owned_edges: set[tuple[int, int]],
+) -> None:
+    """Keep branch-local side-effect arms joined to their state-write tail.
+
+    A conditional state transition can look like this before lowering:
+
+    ``source -> side_effect -> state_write_tail -> dispatcher``
+    ``source -> state_write_tail -> dispatcher``
+
+    The source branch can safely redirect the direct arm from
+    ``state_write_tail`` to the semantic target, but a separate
+    passthrough edit may also try to redirect ``side_effect`` straight
+    back to the dispatcher/current state.  That makes the source-level
+    branch semantically exclusive: the side-effect arm no longer reaches
+    the next handler after the call.
+
+    When the original CFG proves this exact branch-local join shape,
+    replace the side-effect bypass with a tail redirect:
+
+    ``state_write_tail -> semantic_target``
+    """
+
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return
+
+    branch_redirects_by_old: dict[int, list[RedirectBranch]] = defaultdict(list)
+    existing_redirect_sources: set[int] = set()
+    for modification in modifications:
+        if isinstance(modification, RedirectBranch):
+            branch_redirects_by_old[int(modification.old_target)].append(modification)
+            existing_redirect_sources.add(int(modification.from_serial))
+        elif isinstance(modification, RedirectGoto):
+            existing_redirect_sources.add(int(modification.from_serial))
+
+    remove_indexes: set[int] = set()
+    additions: list[RedirectGoto] = []
+    for index, modification in enumerate(tuple(modifications)):
+        if not isinstance(modification, RedirectGoto):
+            continue
+        if int(modification.new_target) != int(dispatcher_serial):
+            continue
+
+        side_effect_block = int(modification.from_serial)
+        join_block = int(modification.old_target)
+        branch_redirects = branch_redirects_by_old.get(join_block, ())
+        if len(branch_redirects) != 1:
+            continue
+        branch_redirect = branch_redirects[0]
+        semantic_target = int(branch_redirect.new_target)
+        if join_block in existing_redirect_sources:
+            continue
+
+        side_effect_snapshot = get_block(side_effect_block)
+        join_snapshot = get_block(join_block)
+        source_snapshot = get_block(int(branch_redirect.from_serial))
+        if (
+            side_effect_snapshot is None
+            or join_snapshot is None
+            or source_snapshot is None
+        ):
+            continue
+        if (
+            int(getattr(side_effect_snapshot, "nsucc", 0)) != 1
+            or int(tuple(getattr(side_effect_snapshot, "succs", ()) or ())[0])
+            != join_block
+        ):
+            continue
+        if (
+            int(getattr(join_snapshot, "nsucc", 0)) != 1
+            or int(tuple(getattr(join_snapshot, "succs", ()) or ())[0])
+            != int(dispatcher_serial)
+        ):
+            continue
+        source_succs = {
+            int(succ) for succ in getattr(source_snapshot, "succs", ()) or ()
+        }
+        if source_succs != {side_effect_block, join_block}:
+            continue
+
+        remove_indexes.add(index)
+        additions.append(
+            RedirectGoto(
+                from_serial=join_block,
+                old_target=int(dispatcher_serial),
+                new_target=semantic_target,
+            )
+        )
+        owned_blocks.add(join_block)
+        owned_edges.add((join_block, semantic_target))
+        owned_edges.discard((side_effect_block, int(dispatcher_serial)))
+        logger.info(
+            "RECON EXEC: preserved branch-local state-write join "
+            "source=blk[%d] side_effect=blk[%d] join=blk[%d] target=blk[%d]",
+            int(branch_redirect.from_serial),
+            side_effect_block,
+            join_block,
+            semantic_target,
+        )
+
+    if not remove_indexes:
+        return
+    modifications[:] = [
+        modification
+        for index, modification in enumerate(modifications)
+        if index not in remove_indexes
+    ]
+    modifications.extend(additions)
 
 
 def _is_conditional_transition(candidate) -> bool:
@@ -1043,12 +1253,62 @@ def execute_primary_reconstruction_modifications(
                     existing_modifications=modifications,
                 )
             )
+            site_passthrough_candidate_ids: set[int] = set()
+            for candidate in accepted_candidates:
+                site_passthrough = _conditional_state_write_passthrough_redirect(
+                    candidate=candidate,
+                    raw_candidates=raw_candidates,
+                    flow_graph=flow_graph,
+                    dispatcher_serial=dispatcher_serial,
+                    target_entry=int(candidate.target_entry),
+                    existing_modifications=modifications,
+                )
+                if site_passthrough is None:
+                    continue
+                veto_reason = None
+                if callable(conditional_redirect_veto):
+                    try:
+                        veto_reason = conditional_redirect_veto(
+                            modification=site_passthrough,
+                            candidate=candidate,
+                            source_block=int(site_passthrough.from_serial),
+                            old_target=int(site_passthrough.old_target),
+                            target_block=int(site_passthrough.new_target),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "RECON EXEC: paired state-write passthrough veto "
+                            "callback raised",
+                            exc_info=True,
+                        )
+                        veto_reason = None
+                if veto_reason:
+                    logger.warning(
+                        "RECON EXEC: paired state-write passthrough redirect "
+                        "vetoed blk[%s] -> blk[%s] old=blk[%s] reason=%s",
+                        getattr(site_passthrough, "from_serial", "?"),
+                        getattr(site_passthrough, "new_target", "?"),
+                        getattr(site_passthrough, "old_target", "?"),
+                        veto_reason,
+                    )
+                    continue
+                modifications.append(site_passthrough)
+                site_passthrough_candidate_ids.add(id(candidate))
+                owned_blocks.add(int(site_passthrough.from_serial))
+                owned_edges.add(
+                    (
+                        int(site_passthrough.from_serial),
+                        int(site_passthrough.new_target),
+                    )
+                )
             for candidate in accepted_candidates:
                 conditional_results.append(
                     ConditionalArmExecutionResult(
                         candidate=candidate,
                         redirect_count=1,
-                        passthrough_count=0,
+                        passthrough_count=(
+                            1 if id(candidate) in site_passthrough_candidate_ids else 0
+                        ),
                     )
                 )
             continue
@@ -1197,6 +1457,50 @@ def execute_primary_reconstruction_modifications(
                 continue
             effective_passthrough_modifications.append(modification)
         modifications.extend(effective_passthrough_modifications)
+        site_passthrough = _conditional_state_write_passthrough_redirect(
+            candidate=candidate,
+            raw_candidates=raw_candidates,
+            flow_graph=flow_graph,
+            dispatcher_serial=dispatcher_serial,
+            target_entry=int(candidate.target_entry),
+            existing_modifications=modifications,
+        )
+        if site_passthrough is not None:
+            veto_reason = None
+            if callable(conditional_redirect_veto):
+                try:
+                    veto_reason = conditional_redirect_veto(
+                        modification=site_passthrough,
+                        candidate=candidate,
+                        source_block=int(site_passthrough.from_serial),
+                        old_target=int(site_passthrough.old_target),
+                        target_block=int(site_passthrough.new_target),
+                    )
+                except Exception:
+                    logger.debug(
+                        "RECON EXEC: state-write passthrough veto callback raised",
+                        exc_info=True,
+                    )
+                    veto_reason = None
+            if veto_reason:
+                logger.warning(
+                    "RECON EXEC: state-write passthrough redirect vetoed "
+                    "blk[%s] -> blk[%s] old=blk[%s] reason=%s",
+                    getattr(site_passthrough, "from_serial", "?"),
+                    getattr(site_passthrough, "new_target", "?"),
+                    getattr(site_passthrough, "old_target", "?"),
+                    veto_reason,
+                )
+            else:
+                modifications.append(site_passthrough)
+                effective_passthrough_modifications.append(site_passthrough)
+                owned_blocks.add(int(site_passthrough.from_serial))
+                owned_edges.add(
+                    (
+                        int(site_passthrough.from_serial),
+                        int(site_passthrough.new_target),
+                    )
+                )
         conditional_results.append(
             ConditionalArmExecutionResult(
                 candidate=candidate,
@@ -1477,6 +1781,14 @@ def execute_primary_reconstruction_modifications(
         owned_edges.add(
             (int(shared_result.shared_block), _SUB7FFD_POLL_SUFFIX_BASE_TARGET)
         )
+
+    _preserve_branch_local_state_write_joins(
+        modifications=modifications,
+        flow_graph=flow_graph,
+        dispatcher_serial=dispatcher_serial,
+        owned_blocks=owned_blocks,
+        owned_edges=owned_edges,
+    )
 
     return PrimaryReconstructionExecutionResult(
         conditional_results=tuple(conditional_results),

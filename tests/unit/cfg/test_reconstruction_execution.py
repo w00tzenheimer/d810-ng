@@ -762,6 +762,170 @@ class TestExecutePrimaryReconstructionModifications:
         assert result.conditional_results[0].redirect_count == 1
         assert result.conditional_results[0].passthrough_count == 1
 
+    def test_conditional_candidate_preserves_branch_local_state_write_join(self) -> None:
+        flow_blocks = {
+            12: SimpleNamespace(serial=12, preds=(11,), succs=(13, 14), npred=1, nsucc=2),
+            13: SimpleNamespace(serial=13, preds=(12,), succs=(14,), npred=1, nsucc=1),
+            14: SimpleNamespace(serial=14, preds=(12, 13), succs=(6,), npred=2, nsucc=1),
+            16: SimpleNamespace(serial=16, preds=(), succs=(), npred=0, nsucc=0),
+        }
+        flow_graph = SimpleNamespace(get_block=lambda serial: flow_blocks.get(int(serial)))
+        candidate = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=12,
+            target_entry=16,
+            ordered_path=(12, 14),
+            branch_arm=1,
+            state_const=0xC6685257,
+            target_state=0xB92456DE,
+            site_block_serial=14,
+        )
+        node_by_key = {candidate.edge.source_key: SimpleNamespace(entry_anchor=12)}
+        modifications: list[object] = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+
+        result = execute_primary_reconstruction_modifications(
+            raw_candidates=[candidate],
+            flow_graph=flow_graph,
+            node_by_key=node_by_key,
+            dispatcher_serial=6,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+        )
+
+        assert modifications == [
+            RedirectBranch(from_serial=12, old_target=14, new_target=16),
+            RedirectGoto(from_serial=14, old_target=6, new_target=16),
+        ]
+        assert owned_blocks == {12, 14}
+        assert owned_edges == {(12, 16), (14, 16)}
+        assert result.conditional_results[0].redirect_count == 1
+        assert result.conditional_results[0].passthrough_count == 1
+
+    def test_conditional_candidate_finds_state_write_join_from_ordered_path(self) -> None:
+        flow_blocks = {
+            12: SimpleNamespace(serial=12, preds=(11,), succs=(13, 14), npred=1, nsucc=2),
+            13: SimpleNamespace(serial=13, preds=(12,), succs=(14,), npred=1, nsucc=1),
+            14: SimpleNamespace(serial=14, preds=(12, 13), succs=(6,), npred=2, nsucc=1),
+            16: SimpleNamespace(serial=16, preds=(), succs=(), npred=0, nsucc=0),
+        }
+        flow_graph = SimpleNamespace(get_block=lambda serial: flow_blocks.get(int(serial)))
+        candidate = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=12,
+            target_entry=16,
+            ordered_path=(12, 14),
+            branch_arm=1,
+            state_const=0xC6685257,
+            target_state=0xB92456DE,
+        )
+        node_by_key = {candidate.edge.source_key: SimpleNamespace(entry_anchor=12)}
+        modifications: list[object] = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+
+        result = execute_primary_reconstruction_modifications(
+            raw_candidates=[candidate],
+            flow_graph=flow_graph,
+            node_by_key=node_by_key,
+            dispatcher_serial=6,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+        )
+
+        assert modifications == [
+            RedirectBranch(from_serial=12, old_target=14, new_target=16),
+            RedirectGoto(from_serial=14, old_target=6, new_target=16),
+        ]
+        assert owned_blocks == {12, 14}
+        assert owned_edges == {(12, 16), (14, 16)}
+        assert result.conditional_results[0].redirect_count == 1
+        assert result.conditional_results[0].passthrough_count == 1
+
+    def test_paired_conditional_preserves_branch_local_state_write_join(self) -> None:
+        flow_blocks = {
+            12: SimpleNamespace(serial=12, preds=(11,), succs=(13, 14), npred=1, nsucc=2),
+            13: SimpleNamespace(serial=13, preds=(12,), succs=(14,), npred=1, nsucc=1),
+            14: SimpleNamespace(serial=14, preds=(12, 13), succs=(6,), npred=2, nsucc=1),
+            16: SimpleNamespace(serial=16, preds=(), succs=(), npred=0, nsucc=0),
+        }
+        flow_graph = SimpleNamespace(get_block=lambda serial: flow_blocks.get(int(serial)))
+        arm0 = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=12,
+            target_entry=13,
+            ordered_path=(12, 13),
+            branch_arm=0,
+            state_const=0xC6685257,
+            target_state=0xAAAAAAAA,
+        )
+        arm1 = _candidate(
+            emission_mode="conditional_arm",
+            horizon_block=12,
+            target_entry=16,
+            ordered_path=(12, 14),
+            branch_arm=1,
+            state_const=0xC6685257,
+            target_state=0xB92456DE,
+        )
+        node_by_key = {arm0.edge.source_key: SimpleNamespace(entry_anchor=12)}
+        modifications: list[object] = []
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = set()
+
+        result = execute_primary_reconstruction_modifications(
+            raw_candidates=[arm0, arm1],
+            flow_graph=flow_graph,
+            node_by_key=node_by_key,
+            dispatcher_serial=6,
+            modifications=modifications,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+        )
+
+        assert modifications == [
+            RedirectBranch(from_serial=12, old_target=14, new_target=16),
+            RedirectGoto(from_serial=14, old_target=6, new_target=16),
+        ]
+        assert owned_blocks == {12, 14}
+        assert owned_edges == {(12, 13), (12, 16), (14, 16)}
+        assert tuple(result.conditional_results) and sum(
+            item.passthrough_count for item in result.conditional_results
+        ) == 1
+
+    def test_postprocess_replaces_branch_local_state_write_bypass(self) -> None:
+        flow_blocks = {
+            12: SimpleNamespace(serial=12, preds=(11,), succs=(13, 14), npred=1, nsucc=2),
+            13: SimpleNamespace(serial=13, preds=(12,), succs=(14,), npred=1, nsucc=1),
+            14: SimpleNamespace(serial=14, preds=(12, 13), succs=(6,), npred=2, nsucc=1),
+            16: SimpleNamespace(serial=16, preds=(), succs=(), npred=0, nsucc=0),
+        }
+        flow_graph = SimpleNamespace(get_block=lambda serial: flow_blocks.get(int(serial)))
+        modifications: list[object] = [
+            RedirectGoto(from_serial=13, old_target=14, new_target=6),
+            RedirectBranch(from_serial=12, old_target=14, new_target=16),
+        ]
+        owned_blocks: set[int] = set()
+        owned_edges: set[tuple[int, int]] = {(13, 6), (12, 16)}
+
+        exec_mod._preserve_branch_local_state_write_joins(
+            modifications=modifications,
+            flow_graph=flow_graph,
+            dispatcher_serial=6,
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+        )
+
+        assert modifications == [
+            RedirectBranch(from_serial=12, old_target=14, new_target=16),
+            RedirectGoto(from_serial=14, old_target=6, new_target=16),
+        ]
+        assert owned_blocks == {14}
+        assert owned_edges == {(12, 16), (14, 16)}
+
     def test_direct_conditional_passthrough_veto_preserves_owned_edge(
         self, monkeypatch
     ) -> None:

@@ -297,6 +297,31 @@ def _state_dispatcher_map(
     )
 
 
+def _conditional_chain_state_dispatcher_map(
+    *,
+    dispatcher_entry: int,
+    state: int,
+    target: int,
+) -> StateDispatcherMap:
+    return StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=target,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="jnz_fallthrough",
+                source=DispatcherType.CONDITIONAL_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=dispatcher_entry,
+        dispatcher_blocks=frozenset({dispatcher_entry}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+    )
+
+
 def _switch_return_fact(source_state: int, exit_block: int):
     return switch_case_transition_analysis.SwitchCaseTransitionFact(
         fact_id=f"tigress_switch:case={source_state}:return",
@@ -2703,6 +2728,114 @@ def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_ga
     assert detection.planning_blocker == "dispatcher_cache_detected_but_collector_found_none"
 
 
+def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    dispatch_map = replace(
+        dispatch_map,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+        rows=tuple(
+            replace(row, source=DispatcherType.CONDITIONAL_CHAIN)
+            for row in dispatch_map.rows
+        ),
+    )
+    calls = []
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[99],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _extract_state_dispatcher_map(_mba, *, dispatcher_entry_block=None, **_kwargs):
+        calls.append(dispatcher_entry_block)
+        if dispatcher_entry_block is not None:
+            return None
+        return dispatch_map
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "extract_state_dispatcher_map_from_mba",
+        _extract_state_dispatcher_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert calls == [99, None]
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == ()
+    assert detection.analysis_dispatchers == (99,)
+    assert detection.state_dispatcher_entries == (13,)
+    assert detection.dispatcher_shape == "conditional_chain"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ("equality_chain",)
+    assert detection.planning_blocker is None
+
+
+def test_default_ollvm_profile_prefers_switch_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _unexpected_equality_map(*_args, **_kwargs):
+        raise AssertionError("switch-table map should be preferred")
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_tigress_switch_state_dispatcher_maps",
+        lambda *_args: (dispatch_map,),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_ollvm_state_dispatcher_maps",
+        _unexpected_equality_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert detection.detected is True
+    assert detection.state_dispatcher_entries == (21,)
+    assert detection.dispatcher_shape == "switch_table"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ()
+    assert detection.planning_blocker is None
+
+
 def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
     monkeypatch,
 ) -> None:
@@ -3128,6 +3261,17 @@ def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map()
     assert family._primary_dispatcher_entry_serial(detection) == 23
 
 
+def test_emulated_dispatcher_family_primary_entry_uses_analysis_root_for_conditional_chain() -> None:
+    family = EmulatedDispatcherStrategyFamily()
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="conditional_chain",
+        state_dispatcher_entries=(3, 7, 10),
+        analysis_dispatchers=(2, 3, 6, 7, 10),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 2
+
+
 def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     monkeypatch,
 ) -> None:
@@ -3235,6 +3379,123 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     assert switch_fact_calls == [(mba, dispatch_map, "tigress_switch")]
 
 
+def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_analysis_root(
+    monkeypatch,
+) -> None:
+    suffix_a = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=3,
+        state=0x10,
+        target=4,
+    )
+    suffix_b = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=7,
+        state=0x20,
+        target=8,
+    )
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="ollvm_state_map",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            state_dispatcher_map_factory=lambda *_args: (),
+        )
+    )
+    mba = SimpleNamespace(
+        qty=9,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+    )
+    flow_graph = _flow_graph_with_conditional_shape()
+    seen_preheader_entries = []
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "analyze_bst_dispatcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("map-backed conditional chain should use exact rows")
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_detect_state_var_stkoff",
+        lambda *_args, **_kwargs: (0x3C, None),
+    )
+
+    def _fake_find_pre_header_state(_mba, dispatcher_entry, state_var_stkoff):
+        seen_preheader_entries.append((dispatcher_entry, state_var_stkoff))
+        return 1, 0x10
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_find_pre_header_state",
+        _fake_find_pre_header_state,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "recover_dynamic_state_write_transitions",
+        lambda **kwargs: kwargs["transition_result"],
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(nodes=(), edges=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_linearized_state_program",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            variant_name="semantic_reference_like",
+            lines=(),
+            nodes=(),
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "render_linearized_state_program",
+        lambda _program: "",
+    )
+
+    artifact, context = family._build_phase_artifact(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_maps=(suffix_a, suffix_b),
+            state_dispatcher_entries=(3, 7),
+            analysis_dispatchers=(2, 3, 6, 7),
+            dispatcher_shape="conditional_chain",
+            state_transport="state_dispatcher_map",
+            state_constants=(0x10, 0x20),
+        ),
+        flow_graph=flow_graph,
+    )
+
+    assert artifact is not None
+    assert context is not None
+    assert seen_preheader_entries == [(2, 0x3C)]
+    assert artifact.dispatcher_entry_serial == 2
+    assert artifact.pre_header_serial == 1
+    assert artifact.initial_state == 0x10
+    assert artifact.bst_node_blocks == (2, 3, 7)
+    assert artifact.handler_state_map == ((4, 0x10), (8, 0x20))
+    assert context.state_dispatcher_map is not None
+    assert context.state_dispatcher_map.dispatcher_entry_block == 2
+    assert context.state_dispatcher_map.dispatcher_blocks == frozenset({2, 3, 7})
+
+
 def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=2),
@@ -3314,6 +3575,292 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
     assert modifications == (
         RedirectGoto(from_serial=1, old_target=2, new_target=5),
         RedirectGoto(from_serial=5, old_target=2, new_target=7),
+    )
+
+
+def test_switch_transition_facts_lower_guard_reentry_redirect() -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily()
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=3,
+            pre_header_serial=None,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+        ),
+    )
+
+    assert modifications == (
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+    )
+    assert blockers == ("tigress_switch_transition_initial_redirect_unproven",)
+
+
+def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None:
+    terminal_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=7:unresolved:direct_target_not_in_switch_rows",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=7,
+        case_entry_block=13,
+        next_states=(0xFF,),
+        reason="direct_target_not_in_switch_rows",
+    )
+    conditional_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=1:unresolved:conditional_case_transition_unresolved",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=1,
+        case_entry_block=5,
+        next_states=(2, 3),
+        reason="conditional_case_transition_unresolved",
+    )
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_visible_state_not_lowered",
+    ))
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+            "tigress_switch_transition_initial_redirect_unproven",
+        ),
+        facts=(terminal_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+        ),
+        facts=(conditional_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_source_not_owned",
+    ))
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_conditional_untrusted",
+    ))
+
+
+def test_switch_transition_partial_lowering_records_partial_rewrite_reasons(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=tigress_switch_dispatcher_profile(
+            allow_incomplete_switch_transition_facts=True,
+        ),
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+        switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (
+            EmulatedDispatcherPhaseArtifact(
+                dispatcher_entry_serial=3,
+                pre_header_serial=None,
+            ),
+            phase_context,
+        ),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_state_dag_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+
+    snapshot = family.build_snapshot(
+        _fake_mba(),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_constants=(0x10, 0x20),
+            state_dispatcher_entries=(3,),
+        ),
+    )
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "tigress_switch_transition_facts"
+    assert metadata.rejection_reasons == ()
+    assert metadata.partial_rewrite_reasons == (
+        "tigress_switch_transition_initial_redirect_unproven",
+    )
+    assert metadata.is_partial is True
+    modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
+    assert modifications == (
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+    )
+    assert all(getattr(mod, "from_serial", None) not in {2, 3} for mod in modifications)
+
+
+def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    loop_recovery_modifications = (
+        RedirectGoto(from_serial=5, old_target=6, new_target=7),
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=tigress_switch_dispatcher_profile(
+            allow_incomplete_switch_transition_facts=True,
+        ),
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+        switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (
+            EmulatedDispatcherPhaseArtifact(
+                dispatcher_entry_serial=3,
+                pre_header_serial=None,
+            ),
+            phase_context,
+        ),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_state_dag_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_loop_recovery_modifications",
+        lambda *_args, **_kwargs: (loop_recovery_modifications, ()),
+    )
+
+    snapshot = family.build_snapshot(
+        _fake_mba(),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_constants=(0x10, 0x20),
+            collector_dispatchers=(object(),),
+            collector_dispatcher_entries=(3,),
+            state_dispatcher_entries=(3,),
+        ),
+    )
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "dispatcher_loop_recovery"
+    assert metadata.rejection_reasons == ()
+    assert metadata.partial_rewrite_reasons == ()
+    assert metadata.is_partial is False
+    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
+        loop_recovery_modifications
     )
 
 
@@ -3648,6 +4195,81 @@ def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
     assert proofs[0]["proof_kind"] == BranchOwnershipProofKind.UNRESOLVED.value
     assert proofs[0]["source_block"] == 5
     assert proofs[0]["branch_arm"] == 0
+
+
+def test_guarded_entry_setup_pre_header_region_allows_guard_returns() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (2, 3), (0,)),
+            2: _snapshot(2, (), (1,)),
+            3: _snapshot(3, (4, 5), (1,)),
+            4: _snapshot(4, (), (3,)),
+            5: _snapshot(5, (6,), (3,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (6,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == (0, 1, 2, 3, 4, 5)
+
+
+def test_guarded_entry_setup_pre_header_region_rejects_handler_entry_leak() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (5, 7), (0,)),
+            5: _snapshot(5, (6,), (1,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (1, 6)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == ()
 
 
 def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:
@@ -4543,6 +5165,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "rejected_fathers": 0,
         "candidate_kinds": (),
         "rejection_reasons": (),
+        "partial_rewrite_reasons": (),
         "candidate_records": (),
         "phase_artifact": None,
         "selected_lowering_mode": None,
@@ -5821,7 +6444,7 @@ class TestEmulatedDispatcherManagedContext:
             ),
         )
 
-    def test_approov_multistate_cluster_grouping_experiment(
+    def test_approov_multistate_cluster_grouping_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -5830,43 +6453,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for cluster grouping experiment"
+            "libclang required for cluster grouping engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                    captured["final_maturity"] = int(blk.mba.maturity)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, clustered: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -5883,153 +6476,16 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _clustered_execute(snapshot, planned, **kwargs):
-                modifications = extract_emulated_dispatcher_fallback_modifications(
-                    snapshot.flow_graph
-                )
-                records = extract_emulated_dispatcher_candidate_records(
-                    snapshot.flow_graph
-                )
-                captured["candidate_records"] = tuple(asdict(record) for record in records)
-
-                grouped: dict[tuple[str, ...], list[EmulatedDispatcherCandidateRecord]] = {}
-                for record in records:
-                    if record.cluster_candidate:
-                        grouped.setdefault(record.cluster_key, []).append(record)
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-                # create_standalone_block() inserts at the current stop-block
-                # serial and shifts the stop block to the new tail.
-                next_serial = int(snapshot.mba.qty) - 1
-                consumed_indexes: set[int] = set()
-                cluster_payloads: list[tuple[str, ...]] = []
-
-                for cluster_key in sorted(grouped):
-                    cluster = sorted(grouped[cluster_key], key=lambda item: item.father_serial)
-                    anchor = cluster[0]
-                    followers = cluster[1:]
-                    anchor_mods = tuple(
-                        modifications[index]
-                        for index in anchor.selected_modification_indexes
-                    )
-                    anchor_mod = next(
-                        (
-                            mod
-                            for mod in anchor_mods
-                            if isinstance(mod, (InsertBlock, RedirectGoto))
-                        ),
-                        None,
-                    )
-                    instructions = ()
-                    if isinstance(anchor_mod, InsertBlock):
-                        instructions = anchor_mod.instructions
-                    elif isinstance(anchor_mod, RedirectGoto):
-                        instructions = ()
-                    else:
-                        raise AssertionError(
-                            f"Unexpected clustered modification in experiment: {anchor_mods}"
-                        )
-                    for mod in anchor_mods:
-                        if isinstance(mod, ZeroStateWrite):
-                            modifier.queue_zero_state_write(
-                                int(mod.block_serial),
-                                int(mod.insn_ea),
-                                description=(
-                                    f"cluster anchor zero state write "
-                                    f"{mod.block_serial}@{mod.insn_ea:#x}"
-                                ),
-                            )
-                        elif mod is not anchor_mod:
-                            raise AssertionError(
-                                f"Unexpected paired clustered modification in experiment: {mod}"
-                            )
-                    cluster_payloads.append(anchor.payload_signature)
-                    modifier.queue_create_and_redirect(
-                        source_block_serial=int(anchor.father_serial),
-                        final_target_serial=int(anchor.target_serial),
-                        instructions_to_copy=list(instructions),
-                        expected_serial=next_serial,
-                        description=f"cluster anchor {anchor.father_serial}->{anchor.target_serial}",
-                    )
-                    consumed_indexes.update(anchor.selected_modification_indexes)
-                    for follower in followers:
-                        modifier.queue_goto_change(
-                            block_serial=int(follower.father_serial),
-                            new_target=next_serial,
-                            description=f"cluster follower {follower.father_serial}->{next_serial}",
-                        )
-                        consumed_indexes.update(follower.selected_modification_indexes)
-                    next_serial += 1
-
-                for record in records:
-                    if any(idx in consumed_indexes for idx in record.selected_modification_indexes):
-                        continue
-                    idx = record.selected_modification_indexes[0]
-                    mod = modifications[idx]
-                    if isinstance(mod, InsertBlock):
-                        modifier.queue_create_and_redirect(
-                            source_block_serial=int(mod.pred_serial),
-                            final_target_serial=int(mod.succ_serial),
-                            instructions_to_copy=list(mod.instructions),
-                            expected_serial=next_serial,
-                            description=f"standalone insert {mod.pred_serial}->{mod.succ_serial}",
-                        )
-                        next_serial += 1
-                    elif isinstance(mod, RedirectGoto):
-                        modifier.queue_goto_change(
-                            block_serial=int(mod.from_serial),
-                            new_target=int(mod.new_target),
-                            description=f"standalone redirect {mod.from_serial}->{mod.new_target}",
-                        )
-                    elif isinstance(mod, ZeroStateWrite):
-                        modifier.queue_zero_state_write(
-                            int(mod.block_serial),
-                            int(mod.insn_ea),
-                            description=(
-                                f"standalone zero state write "
-                                f"{mod.block_serial}@{mod.insn_ea:#x}"
-                            ),
-                        )
-                    else:
-                        raise AssertionError(f"Unexpected modification in experiment: {mod}")
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["cluster_payloads"] = tuple(cluster_payloads)
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
             def _wrapped_execute(snapshot, planned, **kwargs):
-                if not clustered:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
+                executed = original_execute(snapshot, planned, **kwargs)
+                captured["candidate_records"] = tuple(
+                    asdict(record)
+                    for record in extract_emulated_dispatcher_candidate_records(
+                        snapshot.flow_graph
                     )
-                    captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                    return executed
-                return _clustered_execute(snapshot, planned, **kwargs)
+                )
+                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
+                return executed
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -6049,46 +6505,41 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(clustered=False)
-        experimental_code, experimental_capture = _run_engine(clustered=True)
+        current_code, current_capture = _run_engine()
 
         current_payloads = tuple(
             tuple(record["payload_signature"])
             for record in current_capture["candidate_records"]
             if record["cluster_candidate"]
         )
-        experimental_payloads = tuple(experimental_capture.get("cluster_payloads", ()))
-
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(
             current_capture["final_flow_graph"],
             payload_signatures=current_payloads,
         )
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"],
-            payload_signatures=experimental_payloads,
-        )
+        cluster_groups: dict[tuple[str, ...], list[int]] = {}
+        for record in current_capture["candidate_records"]:
+            if record["cluster_candidate"]:
+                cluster_groups.setdefault(record["cluster_key"], []).append(
+                    record["father_serial"]
+                )
 
         summary = {
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "cluster_groups": {
+                key: tuple(sorted(value)) for key, value in cluster_groups.items()
+            },
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_ENGINE_CONTRACT", summary)
 
         assert current_capture["candidate_records"]
-        assert experimental_capture["candidate_records"]
         assert current_shape["payload_blocks"]
-        assert experimental_shape["payload_blocks"]
+        assert sorted(
+            tuple(sorted(fathers)) for fathers in cluster_groups.values()
+        ) == [(2, 6), (7, 11)]
 
-    def test_approov_multistate_handler_subgraph_experiment(
+    def test_approov_multistate_handler_subgraph_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -6097,42 +6548,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for handler-subgraph experiment"
+            "libclang required for handler-subgraph engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, experiment: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -6149,7 +6571,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _handler_execute(snapshot, planned, **kwargs):
+            def _wrapped_execute(snapshot, planned, **kwargs):
                 records = extract_emulated_dispatcher_candidate_records(
                     snapshot.flow_graph
                 )
@@ -6157,102 +6579,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["phase_role_map"] = _summarize_approov_multistate_phase_roles(
                     records
                 )
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-
-                modifier.queue_zero_state_write(
-                    2,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=2,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_goto_change(
-                    2,
-                    9,
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    6,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=6,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_goto_change(
-                    6,
-                    9,
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    10,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=10,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_update"],
-                    ),
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_goto_change(
-                    10,
-                    5,
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_conditional_target_change(
-                    9,
-                    12,
-                    description="phase1 header taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    5,
-                    12,
-                    description="phase1 update taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    12,
-                    12,
-                    description="phase2 taken -> phase2 self loop",
-                )
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
-            def _wrapped_execute(snapshot, planned, **kwargs):
-                if not experiment:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
-                    )
-                    return executed
-                return _handler_execute(snapshot, planned, **kwargs)
+                return original_execute(snapshot, planned, **kwargs)
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -6272,29 +6599,17 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(experiment=False)
-        experimental_code, experimental_capture = _run_engine(experiment=True)
+        current_code, current_capture = _run_engine()
 
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(current_capture["final_flow_graph"])
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"]
-        )
 
         summary = {
-            "phase_role_map": experimental_capture["phase_role_map"],
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "phase_role_map": current_capture["phase_role_map"],
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_ENGINE_CONTRACT", summary)
 
         assert summary["phase_role_map"]["phase1_header"] == (
             (2, 9, ("InsertBlock",)),

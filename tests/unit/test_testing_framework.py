@@ -7,6 +7,7 @@ from d810.testing.assertions import (
     assert_contains,
     assert_not_contains,
     assert_code_changed,
+    assert_regex_contains,
 )
 
 
@@ -49,6 +50,7 @@ class TestDeobfuscationCase:
             expected_code="int foo() { return 1; }",
             acceptable_patterns=["return 1", "return 0x1"],
             deobfuscated_contains=["return"],
+            deobfuscated_regexes=[r"return\s+1"],
             deobfuscated_not_contains=["0xDEADBEEF"],
             required_rules=["Rule1", "Rule2"],
             expected_rules=["Rule3"],
@@ -61,6 +63,7 @@ class TestDeobfuscationCase:
         assert case.project == "custom_project.json"
         assert len(case.obfuscated_contains) == 2
         assert len(case.required_rules) == 2
+        assert case.deobfuscated_regexes == [r"return\s+1"]
 
 
 class TestBinaryOverride:
@@ -179,6 +182,21 @@ class TestAssertNotContains:
         """Test that empty pattern list does nothing."""
         code = "int foo() { return 0xDEADBEEF; }"
         assert_not_contains(code, [])  # Should not raise
+
+
+class TestAssertRegexContains:
+    """Tests for assert_regex_contains."""
+
+    def test_all_regexes_match(self):
+        """Test success when all regex patterns match."""
+        code = "if ( v6 )\n    *(_BYTE *)(v7 + v6) = 0;"
+        assert_regex_contains(code, [r"\*\(_BYTE \*\)\([^)]*\) = 0;"])
+
+    def test_missing_regex_raises(self):
+        """Test that missing regex raises AssertionError."""
+        code = "int foo() { return 42; }"
+        with pytest.raises(AssertionError, match="Missing required regex patterns"):
+            assert_regex_contains(code, [r"\*\(_BYTE \*\)\([^)]*\) = 0;"])
 
 
 class TestAssertCodeChanged:

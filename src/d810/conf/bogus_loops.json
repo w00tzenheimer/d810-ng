@@ -11,22 +11,22 @@
         },
         {
             "name": "UnflattenerSwitchCase",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
             "name": "UnflattenerTigressIndirect",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
             "name": "BadWhileLoop",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {
             "name": "Unflattener",
-            "is_activated": true,
+            "is_activated": false,
             "config": {
                 "max_passes": 5,
                 "min_dispatcher_internal_block": 2,

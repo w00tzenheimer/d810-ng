@@ -1246,33 +1246,33 @@
     },
     {
       "name": "UnflattenerSwitchCase",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
     },
     {
       "name": "UnflattenerTigressIndirect",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
     },
     {
       "name": "UnflattenerFakeJump",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {
       "name": "BadWhileLoop",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
     },
     {
       "name": "Unflattener",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "max_passes": 3,
         "maturities": [
