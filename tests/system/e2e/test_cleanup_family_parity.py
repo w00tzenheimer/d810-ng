@@ -16,7 +16,15 @@ from tests.system.e2e.test_approov_engine_wrapper_baselines import (
 )
 
 
-pytestmark = [pytest.mark.e2e]
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.skip(
+        reason=(
+            "legacy cleanup parity is obsolete in the legacy-unflatteners-off "
+            "ablation; use primary cleanup-family engine gates"
+        )
+    ),
+]
 
 
 CLEANUP_FAMILY_RULE = "SimpleFlatteningCleanupUnflattener"

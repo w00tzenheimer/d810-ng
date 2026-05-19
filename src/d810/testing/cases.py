@@ -37,6 +37,7 @@ class BinaryOverride:
     expected_code: Optional[str] = None
     acceptable_patterns: Optional[list[str]] = None
     deobfuscated_contains: Optional[list[str]] = None
+    deobfuscated_regexes: Optional[list[str]] = None
     deobfuscated_not_contains: Optional[list[str]] = None
 
     # Override rule assertions
@@ -85,6 +86,7 @@ class DeobfuscationCase:
         expected_code: The exact expected deobfuscated code (normalized).
         acceptable_patterns: Alternative patterns that indicate successful deobfuscation.
         deobfuscated_contains: Patterns that MUST be present after deobfuscation.
+        deobfuscated_regexes: Regex patterns that MUST match after deobfuscation.
         deobfuscated_not_contains: Patterns that MUST NOT be present after deobfuscation.
 
         required_rules: Rules that MUST fire during deobfuscation (test fails if not).
@@ -119,6 +121,7 @@ class DeobfuscationCase:
     expected_code: Optional[str] = None
     acceptable_patterns: list[str] = field(default_factory=list)
     deobfuscated_contains: list[str] = field(default_factory=list)
+    deobfuscated_regexes: list[str] = field(default_factory=list)
     deobfuscated_not_contains: list[str] = field(default_factory=list)
 
     # Rule assertions
@@ -194,6 +197,11 @@ class DeobfuscationCase:
                 override.deobfuscated_contains
                 if override.deobfuscated_contains is not None
                 else self.deobfuscated_contains
+            ),
+            deobfuscated_regexes=(
+                override.deobfuscated_regexes
+                if override.deobfuscated_regexes is not None
+                else self.deobfuscated_regexes
             ),
             deobfuscated_not_contains=(
                 override.deobfuscated_not_contains

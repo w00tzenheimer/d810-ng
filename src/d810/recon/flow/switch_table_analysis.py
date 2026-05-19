@@ -211,6 +211,174 @@ def _maturity_label(mba: object) -> str:
     return str(value)
 
 
+def _block_successors(block: object) -> tuple[int, ...]:
+    try:
+        return tuple(int(block.succ(index)) for index in range(int(block.nsucc())))
+    except Exception:
+        return ()
+
+
+def _block_predecessors(block: object) -> tuple[int, ...]:
+    try:
+        return tuple(int(block.pred(index)) for index in range(int(block.npred())))
+    except Exception:
+        return ()
+
+
+def _conditional_jump_opcodes() -> frozenset[int]:
+    try:
+        import ida_hexrays  # type: ignore[import-untyped]
+
+        return frozenset(
+            int(getattr(ida_hexrays, name))
+            for name in (
+                "m_jnz",
+                "m_jz",
+                "m_ja",
+                "m_jae",
+                "m_jb",
+                "m_jbe",
+                "m_jg",
+                "m_jge",
+                "m_jl",
+                "m_jle",
+            )
+            if getattr(ida_hexrays, name, None) is not None
+        )
+    except Exception:
+        return frozenset(range(43, 53))
+
+
+def _mop_const_value(mop: object | None) -> int | None:
+    if mop is None:
+        return None
+    nnn = getattr(mop, "nnn", None)
+    if nnn is not None:
+        value = getattr(nnn, "value", None)
+        if value is not None:
+            return int(value)
+    value = getattr(mop, "value", None)
+    if value is not None:
+        return int(value)
+    return None
+
+
+def _mop_contains_stkoff(
+    mop: object | None,
+    state_var_stkoff: int,
+    mba: object,
+    *,
+    visited: set[int] | None = None,
+) -> bool:
+    if mop is None:
+        return False
+    if visited is None:
+        visited = set()
+    identity = id(mop)
+    if identity in visited:
+        return False
+    visited.add(identity)
+
+    stack_ref = getattr(mop, "s", None)
+    if stack_ref is not None and getattr(stack_ref, "off", None) == state_var_stkoff:
+        return True
+    if getattr(mop, "stkoff", None) == state_var_stkoff:
+        return True
+
+    lvar_ref = getattr(mop, "l", None)
+    lvar_idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
+    if lvar_idx is not None:
+        try:
+            if mba.vars[int(lvar_idx)].location.stkoff() == state_var_stkoff:
+                return True
+        except Exception:
+            pass
+
+    for attr in ("a", "d", "l", "r"):
+        child = getattr(mop, attr, None)
+        if child is not None and _mop_contains_stkoff(
+            child,
+            state_var_stkoff,
+            mba,
+            visited=visited,
+        ):
+            return True
+    return False
+
+
+def _guard_compares_state_to_terminal(
+    mba: object,
+    block: object,
+    *,
+    state_var_stkoff: int,
+    case_values: frozenset[int],
+) -> bool:
+    tail = getattr(block, "tail", None)
+    if tail is None:
+        return False
+    opcode = getattr(tail, "opcode", None)
+    if opcode not in _conditional_jump_opcodes():
+        return False
+
+    left = getattr(tail, "l", None)
+    right = getattr(tail, "r", None)
+    left_is_state = _mop_contains_stkoff(left, state_var_stkoff, mba)
+    right_is_state = _mop_contains_stkoff(right, state_var_stkoff, mba)
+    if left_is_state == right_is_state:
+        return False
+    const_mop = right if left_is_state else left
+    const_value = _mop_const_value(const_mop)
+    if const_value is None:
+        return False
+    return (int(const_value) & 0xFFFFFFFFFFFFFFFF) not in case_values
+
+
+def find_switch_loop_guard_blocks(
+    mba: object,
+    dispatcher_serial: int,
+    *,
+    state_var_stkoff: int,
+    case_values: frozenset[int],
+) -> frozenset[int]:
+    """Return loop guards that route into a switch-table dispatcher.
+
+    Source-level ``while (state != terminal) switch (state)`` shapes have two
+    dispatcher blocks in microcode: a two-way loop guard and the ``m_jtbl``
+    table.  Only accept a predecessor guard when it compares the same state
+    variable against a terminal value outside the exact switch rows.
+    """
+
+    try:
+        dispatcher = mba.get_mblock(int(dispatcher_serial))
+    except Exception:
+        return frozenset()
+    if dispatcher is None:
+        return frozenset()
+
+    guards: set[int] = set()
+    for pred_serial in _block_predecessors(dispatcher):
+        try:
+            pred_block = mba.get_mblock(int(pred_serial))
+        except Exception:
+            pred_block = None
+        if pred_block is None:
+            continue
+        succs = _block_successors(pred_block)
+        if (
+            len(succs) == 2
+            and int(dispatcher_serial) in succs
+            and len(_block_predecessors(pred_block)) >= 2
+            and _guard_compares_state_to_terminal(
+                mba,
+                pred_block,
+                state_var_stkoff=state_var_stkoff,
+                case_values=case_values,
+            )
+        ):
+            guards.add(int(pred_serial))
+    return frozenset(guards)
+
+
 def _observe_state_dispatcher_map(
     mba: object,
     dispatch_map: StateDispatcherMap,
@@ -277,7 +445,20 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
             )
             continue
 
-        dispatcher_blocks = frozenset({serial})
+        case_values = frozenset(
+            int(case_value) & 0xFFFFFFFFFFFFFFFF
+            for case_value, _target in cases
+            if case_value is not None
+        )
+        dispatcher_blocks = frozenset({
+            serial,
+            *find_switch_loop_guard_blocks(
+                mba,
+                serial,
+                state_var_stkoff=stkoff,
+                case_values=case_values,
+            ),
+        })
         state_dispatcher_map = build_state_dispatcher_map_from_cases(
             cases=cases,
             dispatcher_serial=serial,

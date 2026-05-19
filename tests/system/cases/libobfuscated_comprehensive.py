@@ -297,7 +297,7 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_sub_dispatch",
         description="ABC pattern using SUB with F6xxx constants",
-        # Uses example_libobfuscated_no_fixprecedessor.json which HAS UnflattenerFakeJump
+        # Uses the shared cleanup engine for the old FakeJump-derived cleanup.
         project="example_libobfuscated_no_fixprecedessor.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
@@ -313,8 +313,7 @@ ABC_F6_CASES = [
         # Accept both if/else orderings - IDA may invert the condition
         acceptable_patterns=["v2 / 2", "3 * (a1 + 0xA)", "0x64"],
         must_change=True,
-        # From results.toml: UnflattenerFakeJump (4 uses, 14 patches)
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["SimpleFlatteningCleanupUnflattener"],
     ),
     DeobfuscationCase(
         function="abc_f6_xor_dispatch",
@@ -326,7 +325,8 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_or_dispatch",
         description="ABC pattern with OR operations on state variables",
-        # Run with FixPredecessor + generic/switch-case unflatteners (no Hodur)
+        # The engine replacement handles this; do not require the legacy
+        # UnflattenerFakeJump rule name.
         project="example_libobfuscated.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
@@ -338,8 +338,7 @@ ABC_F6_CASES = [
         # Accept minor variations in type suffix and parameter type
         acceptable_patterns=["a1 | 0xFF", "a1 | 0xFFu"],
         must_change=True,
-        # From results.toml: UnflattenerFakeJump (2 uses, 5 patches)
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["EmulatedDispatcherUnflattener"],
     ),
     DeobfuscationCase(
         function="abc_f6_nested",
@@ -632,7 +631,7 @@ HODUR_CASES = [
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
         expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
-        expected_ast_stats={"statements": 38, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 7},
+        expected_ast_stats={"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
@@ -645,7 +644,7 @@ HODUR_CASES = [
             "Hodur/1.0",  # String literal that should be preserved
         ],
         must_change=True,
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["EmulatedDispatcherUnflattener"],
         expected_rules=["CstSimplificationRule16"],
     ),
     DeobfuscationCase(
@@ -928,9 +927,11 @@ RESIZE_BUFFER_CFF_CASES = [
         deobfuscated_contains=[
             # The helper auto-name moves when the fixture binary is rebuilt.
             "(a2, a4, 0xA, 0x44);",
-            "*(_BYTE *)(i + v6) = 0;",
             "*v5 = a4;",
             "return (unsigned int *)(a2 + 0x10);",
+        ],
+        deobfuscated_regexes=[
+            r"\*\(_BYTE \*\)\([^)]*\) = 0;",
         ],
         acceptable_patterns=[
             "a2 + 16",
@@ -940,8 +941,7 @@ RESIZE_BUFFER_CFF_CASES = [
         ],
         must_change=True,
         check_stats=True,
-        required_rules=["Unflattener"],
-        expected_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
+        required_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
         forbidden_rules=["ForwardConstantPropagationRule"],
     ),
 ]

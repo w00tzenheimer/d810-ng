@@ -903,7 +903,7 @@
   "blk_rules": [
     {
       "name": "Unflattener",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "maturities": [
           "MMAT_CALLS",
@@ -914,7 +914,7 @@
     },
     {
       "name": "UnflattenerFakeJump",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {

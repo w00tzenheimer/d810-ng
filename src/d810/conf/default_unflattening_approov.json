@@ -905,7 +905,7 @@
       },
       {
         "name": "UnflattenerSwitchCase",
-        "is_activated": true,
+        "is_activated": false,
         "config": {}
       },
       {
@@ -915,7 +915,7 @@
       },
       {
         "name": "BadWhileLoop",
-        "is_activated":true,
+        "is_activated":false,
         "config":{
           "min_comparison_value": 2
         }

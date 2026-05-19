@@ -1782,90 +1782,158 @@ def _detect_state_var_stkoff(
 
     mop_S_type = getattr(idaapi, "mop_S", None)
     mop_r_type = getattr(idaapi, "mop_r", None)
-
-    blk = mba.get_mblock(dispatcher_entry_serial)
-    if blk is None:
-        if diag_lines is not None:
-            diag_lines.append(f"_detect_stkoff: blk[{dispatcher_entry_serial}] is None")
-        return _return(None)
-
-    tail = getattr(blk, "tail", None)
-    if tail is None:
-        if diag_lines is not None:
-            diag_lines.append(f"_detect_stkoff: blk[{dispatcher_entry_serial}] has no tail")
-        return _return(None)
-
-    left = getattr(tail, "l", None)
-    if left is None:
-        if diag_lines is not None:
-            diag_lines.append(f"_detect_stkoff: tail has no .l operand")
-        return _return(None)
-
-    mop_type = getattr(left, "t", None)
-    if diag_lines is not None:
-        diag_lines.append(
-            f"_detect_stkoff: blk[{dispatcher_entry_serial}] tail opcode={tail.opcode}"
-            f" left.t={mop_type} (mop_S={mop_S_type}, mop_r={mop_r_type})"
-        )
-
-    # Direct stack variable (mop_S)
-    if mop_type == mop_S_type:
-        s = getattr(left, "s", None)
-        if s is not None:
-            off = getattr(s, "off", None)
-            if off is not None:
-                if diag_lines is not None:
-                    diag_lines.append(f"_detect_stkoff: mop_S hit -> stkoff=0x{off:x}")
-                return _return(off, None)
-
-    # Register (mop_r) — try to find underlying stack variable
-    if mop_type == mop_r_type:
-        reg = getattr(left, "r", None)
-        if diag_lines is not None:
-            diag_lines.append(f"_detect_stkoff: mop_r register={reg}")
-        # Walk instructions in the block looking for m_mov from mop_S to this reg
-        insn = blk.head
-        while insn is not None:
-            d = getattr(insn, "d", None)
-            if d is not None and getattr(d, "t", None) == mop_r_type and getattr(d, "r", None) == reg:
-                src = getattr(insn, "l", None)
-                if src is not None and getattr(src, "t", None) == mop_S_type:
-                    s = getattr(src, "s", None)
-                    if s is not None:
-                        off = getattr(s, "off", None)
-                        if off is not None:
-                            if diag_lines is not None:
-                                diag_lines.append(f"_detect_stkoff: found m_mov mop_S(0x{off:x}) -> reg{reg}")
-                            return _return(off, None)
-            insn = getattr(insn, "next", None)
-        if diag_lines is not None:
-            diag_lines.append(f"_detect_stkoff: no mop_S source found for reg{reg} in blk[{dispatcher_entry_serial}]")
-
-    # Local variable (mop_l) — promoted stack var at higher maturity levels
     mop_l_type = getattr(idaapi, "mop_l", None)
-    if mop_type == mop_l_type:
-        lref = getattr(left, "l", None)
-        if lref is not None:
-            idx = getattr(lref, "idx", None)
-            if diag_lines is not None:
-                diag_lines.append(f"_detect_stkoff: mop_l lvar idx={idx}")
-            if idx is not None:
-                try:
-                    lvar = mba.vars[idx]
-                    loc = lvar.location
-                    off = loc.stkoff()
-                    if diag_lines is not None:
-                        diag_lines.append(
-                            f"_detect_stkoff: mop_l lvar[{idx}] location.stkoff()=0x{off:x}"
-                        )
-                    return _return(off, idx)
-                except Exception as e:
-                    if diag_lines is not None:
-                        diag_lines.append(f"_detect_stkoff: mop_l lvar[{idx}] stkoff failed: {e}")
+    mop_b_type = getattr(idaapi, "mop_b", None)
+    mop_n_type = getattr(idaapi, "mop_n", None)
 
-    if diag_lines is not None:
-        diag_lines.append(f"_detect_stkoff: FAILED - unhandled operand type {mop_type}")
-    return _return(None)
+    def _block_ref(mop) -> Optional[int]:
+        for attr in ("block_ref", "block_num", "b"):
+            value = getattr(mop, attr, None)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _detect_from_operand(blk, mop, *, block_serial: int):
+        mop_type = getattr(mop, "t", None)
+
+        # Direct stack variable (mop_S)
+        if mop_type == mop_S_type:
+            s = getattr(mop, "s", None)
+            if s is not None:
+                off = getattr(s, "off", None)
+                if off is not None:
+                    if diag_lines is not None:
+                        diag_lines.append(f"_detect_stkoff: mop_S hit -> stkoff=0x{off:x}")
+                    return off, None
+
+        # Register (mop_r) — try to find underlying stack variable.
+        if mop_type == mop_r_type:
+            reg = getattr(mop, "r", None)
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: mop_r register={reg}")
+            insn = getattr(blk, "head", None)
+            while insn is not None:
+                d = getattr(insn, "d", None)
+                if (
+                    d is not None
+                    and getattr(d, "t", None) == mop_r_type
+                    and getattr(d, "r", None) == reg
+                ):
+                    src = getattr(insn, "l", None)
+                    if src is not None and getattr(src, "t", None) == mop_S_type:
+                        s = getattr(src, "s", None)
+                        if s is not None:
+                            off = getattr(s, "off", None)
+                            if off is not None:
+                                if diag_lines is not None:
+                                    diag_lines.append(
+                                        f"_detect_stkoff: found m_mov mop_S(0x{off:x}) -> reg{reg}"
+                                    )
+                                return off, None
+                insn = getattr(insn, "next", None)
+            if diag_lines is not None:
+                diag_lines.append(
+                    f"_detect_stkoff: no mop_S source found for reg{reg} in blk[{block_serial}]"
+                )
+
+        # Local variable (mop_l) — promoted stack var at higher maturity levels.
+        if mop_type == mop_l_type:
+            lref = getattr(mop, "l", None)
+            if lref is not None:
+                idx = getattr(lref, "idx", None)
+                if diag_lines is not None:
+                    diag_lines.append(f"_detect_stkoff: mop_l lvar idx={idx}")
+                if idx is not None:
+                    try:
+                        lvar = mba.vars[idx]
+                        loc = lvar.location
+                        off = loc.stkoff()
+                        if diag_lines is not None:
+                            diag_lines.append(
+                                f"_detect_stkoff: mop_l lvar[{idx}] location.stkoff()=0x{off:x}"
+                            )
+                        return off, idx
+                    except Exception as e:
+                        if diag_lines is not None:
+                            diag_lines.append(
+                                f"_detect_stkoff: mop_l lvar[{idx}] stkoff failed: {e}"
+                            )
+
+        return None, None
+
+    def _candidate_operands(tail) -> tuple:
+        left = getattr(tail, "l", None)
+        right = getattr(tail, "r", None)
+        if left is None:
+            return () if right is None else (right,)
+        if right is not None and getattr(left, "t", None) == mop_n_type:
+            return (right, left)
+        if right is None:
+            return (left,)
+        return (left, right)
+
+    def _detect_from_block(block_serial: int, visited: Set[int]):
+        if block_serial in visited:
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] cycle while following mop_b")
+            return None, None
+        visited.add(block_serial)
+
+        blk = mba.get_mblock(block_serial)
+        if blk is None:
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] is None")
+            return None, None
+
+        tail = getattr(blk, "tail", None)
+        if tail is None:
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] has no tail")
+            return None, None
+
+        operands = _candidate_operands(tail)
+        if not operands:
+            if diag_lines is not None:
+                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] tail has no operands")
+            return None, None
+
+        if diag_lines is not None:
+            operand_types = tuple(getattr(mop, "t", None) for mop in operands)
+            diag_lines.append(
+                f"_detect_stkoff: blk[{block_serial}] tail opcode={tail.opcode}"
+                f" operand.t={operand_types} (mop_S={mop_S_type}, mop_r={mop_r_type},"
+                f" mop_l={mop_l_type}, mop_b={mop_b_type})"
+            )
+
+        for mop in operands:
+            mop_type = getattr(mop, "t", None)
+            if mop_type == mop_b_type:
+                target_serial = _block_ref(mop)
+                if diag_lines is not None:
+                    diag_lines.append(
+                        f"_detect_stkoff: mop_b block reference -> blk[{target_serial}]"
+                    )
+                if target_serial is None:
+                    continue
+                detected = _detect_from_block(int(target_serial), visited)
+                if detected[0] is not None:
+                    return detected
+                continue
+            detected = _detect_from_operand(blk, mop, block_serial=block_serial)
+            if detected[0] is not None:
+                return detected
+
+        if diag_lines is not None:
+            raw_types = tuple(getattr(mop, "t", None) for mop in operands)
+            diag_lines.append(f"_detect_stkoff: FAILED - unhandled operand types {raw_types}")
+        return None, None
+
+    stkoff, lvar_idx = _detect_from_block(int(dispatcher_entry_serial), set())
+    return _return(stkoff, lvar_idx)
 
 
 # -----------------------------------------------------------------------------

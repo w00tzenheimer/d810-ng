@@ -1137,6 +1137,41 @@ def _switch_fact_trusted_proof_kind(fact: object, expected_kind: str) -> bool:
     return str(proof_kind) == expected_kind
 
 
+_SWITCH_TRANSITION_PARTIAL_BLOCKER_ALLOWLIST = frozenset({
+    "tigress_switch_transition_fact_unresolved",
+    "tigress_switch_transition_initial_redirect_unproven",
+    "tigress_switch_transition_visible_state_not_lowered",
+})
+
+
+def _switch_transition_blockers_allow_partial_lowering(
+    blockers: tuple[str, ...],
+    *,
+    facts: tuple[object, ...] = (),
+) -> bool:
+    """Return whether switch fact blockers are nonfatal for partial lowering."""
+
+    if any(
+        str(blocker) not in _SWITCH_TRANSITION_PARTIAL_BLOCKER_ALLOWLIST
+        for blocker in blockers
+    ):
+        return False
+
+    if "tigress_switch_transition_fact_unresolved" not in blockers:
+        return True
+
+    unresolved_facts = tuple(
+        fact for fact in facts
+        if _switch_fact_transition_kind_name(fact) == "UNRESOLVED"
+    )
+    return bool(unresolved_facts) and all(
+        str(getattr(fact, "reason", ""))
+        == "direct_target_not_in_switch_rows"
+        for fact in unresolved_facts
+    )
+
+
+
 def _ordered_path_predecessor(
     ordered_path: tuple[int, ...],
     source: int,
@@ -1148,6 +1183,56 @@ def _ordered_path_predecessor(
     if source_index <= 0:
         return None
     return int(ordered_path[source_index - 1])
+
+
+def _switch_dispatcher_reentry_targets(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_entry: int,
+    dispatcher_blocks: frozenset[int],
+    facts: tuple[object, ...],
+) -> frozenset[int]:
+    """Return blocks that state exits may re-enter before the switch table.
+
+    A C ``while (state != terminal) switch (state)`` lowers to a two-block
+    dispatcher shape: handler state-write exits go back to the loop guard, and
+    the guard jumps into the actual ``m_jtbl`` block.  The exact
+    ``StateDispatcherMap`` correctly names the ``m_jtbl`` entry as the table,
+    but transition rewrites must claim the state-write edge to the guard.
+    """
+
+    map_dispatcher_blocks = {int(block) for block in dispatcher_blocks}
+    targets = {int(dispatcher_entry)}
+    exit_blocks: set[int] = set()
+    for fact in facts:
+        exit_block = _switch_fact_exit_block(fact)
+        if exit_block is not None:
+            exit_blocks.add(int(exit_block))
+        for arm_exit in _switch_fact_arm_exit_blocks(fact):
+            if arm_exit is not None:
+                exit_blocks.add(int(arm_exit))
+
+    candidate_guards: set[int] = set()
+    for source in exit_blocks:
+        block = flow_graph.get_block(source)
+        if block is None or block.nsucc != 1:
+            continue
+        target = int(block.succs[0])
+        if target == int(dispatcher_entry):
+            continue
+        if target not in map_dispatcher_blocks:
+            continue
+        target_block = flow_graph.get_block(target)
+        if (
+            target_block is not None
+            and target_block.nsucc == 2
+            and int(dispatcher_entry) in tuple(int(succ) for succ in target_block.succs)
+        ):
+            candidate_guards.add(target)
+
+    if len(candidate_guards) == 1:
+        targets.update(candidate_guards)
+    return frozenset(targets)
 
 
 def _ollvm_state_dispatcher_maps(
@@ -1174,11 +1259,34 @@ def _ollvm_state_dispatcher_maps(
             )
             if dispatch_map is not None:
                 maps.append(dispatch_map)
+        if not maps:
+            dispatch_map = extract_state_dispatcher_map_from_mba(mba)
+            if dispatch_map is not None:
+                maps.append(dispatch_map)
     else:
         dispatch_map = extract_state_dispatcher_map_from_mba(mba)
         if dispatch_map is not None:
             maps.append(dispatch_map)
     return tuple(maps)
+
+
+def _ollvm_state_dispatcher_map_fallback(
+    mba: object,
+    analysis: object,
+    collector_dispatchers: tuple[object, ...],
+) -> tuple[StateDispatcherMap, ...]:
+    """Recover exact dispatcher rows when the legacy OLLVM collector is empty."""
+
+    if collector_dispatchers:
+        return ()
+    switch_maps = _tigress_switch_state_dispatcher_maps(
+        mba,
+        analysis,
+        collector_dispatchers,
+    )
+    if switch_maps:
+        return switch_maps
+    return _ollvm_state_dispatcher_maps(mba, analysis, collector_dispatchers)
 
 
 def _tigress_switch_state_dispatcher_maps(
@@ -1317,6 +1425,83 @@ def _entry_to_pre_header_corridor(
     return ()
 
 
+def _guarded_entry_setup_pre_header_region(
+    flow_graph: FlowGraph,
+    *,
+    pre_header_serial: int,
+    dispatcher_entry_serial: int,
+    forbidden_serials: set[int] | frozenset[int] = frozenset(),
+    max_blocks: int = 128,
+) -> tuple[int, ...]:
+    """Prove a guarded setup region from function entry to dispatcher preheader.
+
+    Some state-machine dispatchers start after ordinary function setup: input
+    validation, allocation, logging, or other source-level guards may return
+    before the dispatcher loop.  That shape is not the straight deterministic
+    entry corridor handled by :func:`_entry_to_pre_header_corridor`, but it is
+    still safe for phase reconstruction when the setup region is closed: every
+    path from function entry either reaches the dispatcher preheader or exits,
+    and no path enters the dispatcher/handler-owned region before the proven
+    preheader.  Lowering then preserves the setup region and only rewires the
+    preheader's dispatcher edge to the initial semantic handler.
+    """
+
+    entry_serial = int(flow_graph.entry_serial)
+    pre_header = int(pre_header_serial)
+    dispatcher_entry = int(dispatcher_entry_serial)
+    forbidden = {int(serial) for serial in forbidden_serials}
+    forbidden.add(dispatcher_entry)
+
+    pre_header_block = flow_graph.get_block(pre_header)
+    if (
+        pre_header_block is None
+        or pre_header_block.nsucc != 1
+        or pre_header_block.succs != (dispatcher_entry,)
+        or pre_header in forbidden
+    ):
+        return ()
+
+    visited: set[int] = set()
+    active: set[int] = set()
+    reached_pre_header = False
+
+    def _walk(serial: int) -> bool:
+        nonlocal reached_pre_header
+        serial = int(serial)
+        if len(visited) > max_blocks:
+            return False
+        if serial in forbidden:
+            return False
+        if serial == pre_header:
+            reached_pre_header = True
+            return True
+        if serial in active:
+            return False
+        if serial in visited:
+            return True
+
+        block = flow_graph.get_block(serial)
+        if block is None:
+            return False
+        visited.add(serial)
+        active.add(serial)
+        try:
+            for succ in tuple(int(succ) for succ in block.succs):
+                if succ == dispatcher_entry:
+                    return False
+                if succ not in flow_graph.blocks:
+                    return False
+                if not _walk(succ):
+                    return False
+        finally:
+            active.discard(serial)
+        return True
+
+    if not _walk(entry_serial) or not reached_pre_header:
+        return ()
+    return tuple(sorted((*visited, pre_header)))
+
+
 def _recover_initial_state_from_entry_corridor(
     flow_graph: FlowGraph,
     *,
@@ -1369,13 +1554,28 @@ def _merge_compatible_state_dispatcher_maps(
         None,
     )
     if primary is None:
-        return None
+        if not maps:
+            return None
+        # Equality-chain extraction can produce one exact map per suffix
+        # compare block.  The semantic dispatcher root may be a wider range
+        # block from the generic dispatcher analysis, not one of those exact
+        # suffix maps.  Keep the exact rows, but anchor the merged phase map
+        # to the caller-proven root so pre-header and cleanup planning consume
+        # the whole dispatcher, not just a suffix island.
+        if any(
+            str(getattr(dispatch_map.source, "name", ""))
+            != "CONDITIONAL_CHAIN"
+            for dispatch_map in maps
+        ):
+            return None
+        primary = maps[0]
 
     rows_by_state: dict[int, StateDispatcherRow] = {
         int(row.state_const) & 0xFFFFFFFFFFFFFFFF: row
         for row in primary.rows
     }
     dispatcher_blocks = set(int(block) for block in primary.dispatcher_blocks)
+    dispatcher_blocks.add(int(dispatcher_entry_serial))
     skipped_conflicts = 0
     skipped_incompatible = 0
 
@@ -1436,7 +1636,7 @@ def _merge_compatible_state_dispatcher_maps(
         rows=tuple(
             rows_by_state[state] for state in sorted(rows_by_state)
         ),
-        dispatcher_entry_block=int(primary.dispatcher_entry_block),
+        dispatcher_entry_block=int(dispatcher_entry_serial),
         dispatcher_blocks=frozenset(dispatcher_blocks),
         state_var_stkoff=primary.state_var_stkoff,
         state_var_lvar_idx=primary.state_var_lvar_idx,
@@ -4536,6 +4736,9 @@ def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
         state_transport="father_history_emulation",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
+        allow_incomplete_switch_transition_facts=True,
+        state_dispatcher_map_factory=_ollvm_state_dispatcher_map_fallback,
+        switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
         post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
         fact_observation_factory=collect_ollvm_profile_fact_observations,
         branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
@@ -4827,6 +5030,15 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if state_dispatcher_maps:
             analysis_type = str(state_dispatcher_maps[0].source.name).lower()
         detected = bool(analysis_dispatchers or collector_entries or state_dispatcher_entries)
+        state_transport = self._profile.state_transport
+        provenance_hints = self._profile.provenance_hints
+        if state_dispatcher_entries and not collector_entries:
+            state_transport = "state_dispatcher_map"
+            first_source = str(getattr(state_dispatcher_maps[0].source, "name", ""))
+            if first_source == "CONDITIONAL_CHAIN":
+                provenance_hints = tuple(
+                    dict.fromkeys((*provenance_hints, "equality_chain"))
+                )
 
         planning_blocker = None
         if analysis_dispatchers and not collector_entries and not state_dispatcher_entries:
@@ -4840,9 +5052,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             state_dispatcher_entries=state_dispatcher_entries,
             analysis_dispatchers=analysis_dispatchers,
             dispatcher_shape=analysis_type if detected else "none",
-            state_transport=self._profile.state_transport if detected else "none",
+            state_transport=state_transport if detected else "none",
             lowering_mode=self._profile.lowering_mode if detected else "none",
-            provenance_hints=self._profile.provenance_hints if detected else (),
+            provenance_hints=provenance_hints if detected else (),
             state_constants=tuple(sorted(state_constants)),
             planning_blocker=planning_blocker,
         )
@@ -5293,6 +5505,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         # this fallback on the original function-entry preheader; residual
         # corridors are handled by the narrower reconstruction collector.
         entry_serial = int(flow_graph.entry_serial)
+        handler_entries = {
+            int(serial)
+            for serial, _state in getattr(phase_artifact, "handler_state_map", ())
+        }
+        bst_node_blocks = {
+            int(serial) for serial in getattr(phase_artifact, "bst_node_blocks", ())
+        }
         is_entry_corridor_pre_header = bool(
             _entry_to_pre_header_corridor(
                 flow_graph,
@@ -5300,10 +5519,19 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 dispatcher_entry_serial=dispatcher_entry,
             )
         )
+        is_guarded_entry_setup_pre_header = bool(
+            _guarded_entry_setup_pre_header_region(
+                flow_graph,
+                pre_header_serial=pre_header,
+                dispatcher_entry_serial=dispatcher_entry,
+                forbidden_serials=handler_entries | bst_node_blocks,
+            )
+        )
         if (
             pre_header != entry_serial
             and entry_serial not in pre_header_block.preds
             and not is_entry_corridor_pre_header
+            and not is_guarded_entry_setup_pre_header
         ):
             return (), ("phase_state_dag_pre_header_not_function_entry",)
 
@@ -5854,6 +6082,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return (), ("phase_reconstruction_pre_header_not_dispatcher_pred",)
 
         entry_serial = int(flow_graph.entry_serial)
+        handler_entries = {
+            int(serial)
+            for serial, _state in getattr(phase_artifact, "handler_state_map", ())
+        }
+        bst_node_blocks = {
+            int(serial) for serial in getattr(phase_artifact, "bst_node_blocks", ())
+        }
         is_residual_phase = False
         residual_has_terminal_frontier = False
         is_entry_corridor_pre_header = bool(
@@ -5863,18 +6098,20 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 dispatcher_entry_serial=dispatcher_entry,
             )
         )
+        is_guarded_entry_setup_pre_header = bool(
+            _guarded_entry_setup_pre_header_region(
+                flow_graph,
+                pre_header_serial=pre_header,
+                dispatcher_entry_serial=dispatcher_entry,
+                forbidden_serials=handler_entries | bst_node_blocks,
+            )
+        )
         if (
             pre_header != entry_serial
             and entry_serial not in pre_header_block.preds
             and not is_entry_corridor_pre_header
+            and not is_guarded_entry_setup_pre_header
         ):
-            handler_entries = {
-                int(serial)
-                for serial, _state in getattr(phase_artifact, "handler_state_map", ())
-            }
-            bst_node_blocks = {
-                int(serial) for serial in getattr(phase_artifact, "bst_node_blocks", ())
-            }
             is_handler_residual = (
                 pre_header in handler_entries and pre_header not in bst_node_blocks
             )
@@ -6750,6 +6987,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         self,
         detection: EmulatedDispatcherDetection,
     ) -> int | None:
+        if (
+            detection.dispatcher_shape == "conditional_chain"
+            and detection.state_dispatcher_entries
+            and detection.analysis_dispatchers
+        ):
+            return int(detection.analysis_dispatchers[0])
         if detection.state_dispatcher_entries:
             return int(detection.state_dispatcher_entries[0])
         for dispatcher_info in detection.collector_dispatchers:
@@ -7054,13 +7297,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         phase_artifact: EmulatedDispatcherPhaseArtifact | None,
         phase_context: EmulatedDispatcherPhaseContext | None,
     ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
-        if self._profile.name != "tigress_switch":
-            return (), ("tigress_switch_transition_not_profile",)
         if phase_artifact is None or phase_context is None:
             return (), ("tigress_switch_transition_missing_artifact",)
         dispatch_map = getattr(phase_context, "state_dispatcher_map", None)
         if not isinstance(dispatch_map, StateDispatcherMap):
             return (), ("tigress_switch_transition_missing_dispatcher_map",)
+        if (
+            self._profile.name != "tigress_switch"
+            and str(getattr(dispatch_map.source, "name", "")) != "SWITCH_TABLE"
+        ):
+            return (), ("tigress_switch_transition_not_profile",)
         facts = tuple(getattr(phase_context, "switch_case_transition_facts", ()) or ())
         if not facts:
             return (), ("tigress_switch_transition_missing_facts",)
@@ -7082,6 +7328,14 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             for row in dispatch_map.rows
             if getattr(row, "row_kind", "handler") == "handler"
         }
+        reentry_targets = _switch_dispatcher_reentry_targets(
+            flow_graph,
+            dispatcher_entry=dispatcher_entry,
+            dispatcher_blocks=frozenset(
+                int(block) for block in dispatch_map.dispatcher_blocks
+            ),
+            facts=facts,
+        )
 
         def _add_redirect(
             source: int,
@@ -7095,10 +7349,14 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             if source_block is None:
                 blockers["tigress_switch_transition_source_missing"] += 1
                 return False
-            if source_block.succs != (dispatcher_entry,):
+            if source_block.nsucc != 1:
                 blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
                 return False
-            if target == dispatcher_entry or target not in flow_graph.blocks:
+            old_target = int(source_block.succs[0])
+            if old_target not in reentry_targets:
+                blockers["tigress_switch_transition_source_not_dispatcher_pred"] += 1
+                return False
+            if target in reentry_targets or target not in flow_graph.blocks:
                 blockers["tigress_switch_transition_target_not_handler"] += 1
                 return False
             if source == target:
@@ -7125,7 +7383,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 modifications.append(
                     RedirectGoto(
                         from_serial=source,
-                        old_target=dispatcher_entry,
+                        old_target=old_target,
                         new_target=target,
                     )
                 )
@@ -7133,7 +7391,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 modifications.append(
                     EdgeRedirectViaPredSplit(
                         src_block=source,
-                        old_target=dispatcher_entry,
+                        old_target=old_target,
                         new_target=target,
                         via_pred=via_pred,
                     )
@@ -7170,7 +7428,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             if (
                 initial_target is not None
                 and pre_header_block is not None
-                and pre_header_block.succs == (dispatcher_entry,)
+                and pre_header_block.nsucc == 1
+                and int(pre_header_block.succs[0]) in reentry_targets
                 and int(initial_target) in flow_graph.blocks
             ):
                 initial_redirect_proven = _add_redirect(pre_header, int(initial_target))
@@ -7259,6 +7518,22 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             blockers["tigress_switch_transition_visible_state_not_lowered"] += 1
 
         if not modifications:
+            self._logger.debug(
+                "Tigress switch transition found no edits; reentry_targets=%s facts=%s blockers=%s",
+                tuple(sorted(reentry_targets)),
+                tuple(
+                    (
+                        _switch_fact_transition_kind_name(fact),
+                        _switch_fact_source_state(fact),
+                        _switch_fact_exit_block(fact),
+                        _switch_fact_next_states(fact),
+                        _switch_fact_arm_exit_blocks(fact),
+                    )
+                    for fact in facts
+                ),
+                ", ".join(f"{reason}={count}" for reason, count in blockers.most_common())
+                or "none",
+            )
             if blockers:
                 return (), tuple(sorted(blockers))
             return (), ("tigress_switch_transition_no_direct_candidates",)
@@ -8301,7 +8576,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
         switch_transition_modifications: tuple[GraphModification, ...] = ()
         switch_transition_blockers: tuple[str, ...] = ()
-        if mba.maturity >= ida_hexrays.MMAT_GLBOPT1 and self._profile.name == "tigress_switch":
+        if (
+            mba.maturity >= ida_hexrays.MMAT_GLBOPT1
+            and detection.dispatcher_shape == "switch_table"
+        ):
             switch_transition_modifications, switch_transition_blockers = (
                 self._collect_tigress_switch_transition_modifications(
                     flow_graph=flow_graph,
@@ -8376,14 +8654,30 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_modifications = fallback_modifications
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
+        selected_partial_rewrite_reasons: tuple[str, ...] = ()
+        switch_transition_partial_allowed = (
+            self._profile.allow_incomplete_switch_transition_facts
+            and _switch_transition_blockers_allow_partial_lowering(
+                switch_transition_blockers,
+                facts=tuple(
+                    getattr(phase_context, "switch_case_transition_facts", ()) or ()
+                ),
+            )
+        )
         switch_transition_selectable = bool(switch_transition_modifications) and (
             not switch_transition_blockers
-            or self._profile.allow_incomplete_switch_transition_facts
+            or switch_transition_partial_allowed
         )
         if self._profile.prefer_switch_transition_facts and switch_transition_selectable:
             selected_modifications = switch_transition_modifications
             selected_lowering_mode = "tigress_switch_transition_facts"
-            selected_blockers = switch_transition_blockers
+            selected_blockers = (
+                () if switch_transition_partial_allowed else switch_transition_blockers
+            )
+            if switch_transition_partial_allowed:
+                selected_partial_rewrite_reasons = tuple(
+                    sorted(set(switch_transition_blockers))
+                )
         elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
             selected_modifications = phase_reconstruction_modifications
             selected_lowering_mode = "state_region_reconstruction"
@@ -8392,10 +8686,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = state_dag_modifications
             selected_lowering_mode = "state_dag_recovery"
             selected_blockers = ()
-        elif switch_transition_modifications and not switch_transition_blockers:
+        elif switch_transition_selectable:
             selected_modifications = switch_transition_modifications
             selected_lowering_mode = "tigress_switch_transition_facts"
-            selected_blockers = ()
+            selected_blockers = (
+                () if switch_transition_partial_allowed else switch_transition_blockers
+            )
+            if switch_transition_partial_allowed:
+                selected_partial_rewrite_reasons = tuple(
+                    sorted(set(switch_transition_blockers))
+                )
         elif not selected_modifications and phase_reconstruction_blockers:
             selected_blockers = phase_reconstruction_blockers
         elif not selected_modifications and state_dag_blockers:
@@ -8410,10 +8710,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_modifications = ()
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = loop_recovery_blockers
+            selected_partial_rewrite_reasons = ()
         if loop_recovery_modifications and not loop_recovery_blockers:
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = ()
+            selected_partial_rewrite_reasons = ()
         if (
             semantic_carrier_modifications
             and not selected_modifications
@@ -8447,6 +8749,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             rejected_fathers=len(fallback_blockers),
             candidate_kinds=tuple(type(mod).__name__ for mod in selected_modifications),
             rejection_reasons=tuple(sorted(set(selected_blockers))),
+            partial_rewrite_reasons=selected_partial_rewrite_reasons,
             candidate_records=candidate_records,
             phase_artifact=phase_artifact,
             selected_lowering_mode=selected_lowering_mode,
