@@ -43,7 +43,11 @@ from d810.hexrays.mutation.cfg_verify import (
 from d810.hexrays.mutation.cfg_mutations import (
     update_blk_successor)
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
+from d810.hexrays.utils.hexrays_formatters import (
+    dump_microcode_for_debug,
+    format_minsn_t,
+    maturity_to_string,
+)
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
@@ -1261,9 +1265,9 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             # Gate: maturity filter — normal operation, not a bypass.
             if unflat_logger.debug_on:
                 unflat_logger.debug(
-                    "Gate skipped [maturity_filter]: %s at maturity %d not in %s",
+                    "Gate skipped [maturity_filter]: %s at maturity %s not in %s",
                     self.__class__.__name__,
-                    self.cur_maturity,
+                    maturity_to_string(self.cur_maturity),
                     self.maturities,
                 )
             return False
