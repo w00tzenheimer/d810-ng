@@ -115,9 +115,23 @@ class TestProjectContextIntegration:
             with state.for_project("example_libobfuscated.json") as ctx:
                 original_count = len(ctx.active_blk_rules)
 
-                # Chain multiple removals
-                ctx.remove_rule("UnflattenerFakeJump") \
-                   .remove_rule("ForwardConstantPropagationRule")
+                active_rule_names = {rule.name for rule in ctx.active_blk_rules}
+                removable_rules = [
+                    name
+                    for name in (
+                        "ForwardConstantPropagationRule",
+                        "EmulatedDispatcherUnflattener",
+                    )
+                    if name in active_rule_names
+                ]
+                assert len(removable_rules) >= 2
+
+                # Chain multiple active removals. Some ablation configs already
+                # disable legacy rules, so do not count inactive removals.
+                ctx.remove_rule(removable_rules[0]).remove_rule(removable_rules[1])
 
                 # Should have removed 2 rules
-                assert len(ctx.active_blk_rules) <= original_count - 2
+                assert len(ctx.active_blk_rules) == original_count - 2
+                remaining_rule_names = {rule.name for rule in ctx.active_blk_rules}
+                assert removable_rules[0] not in remaining_rule_names
+                assert removable_rules[1] not in remaining_rule_names
