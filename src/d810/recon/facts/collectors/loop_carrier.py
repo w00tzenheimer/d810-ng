@@ -216,8 +216,9 @@ class LoopPredicateValueFactCollector:
     """Observe loop predicates whose carrier writer is outside the loop SCC.
 
     Canonical collector class name for loop-predicate source evidence.
-    ``LoopCarrierFactCollector`` is preserved as an import alias only;
-    projected value-flow facts serialize as ``LoopPredicateValueFact``.
+    Raw observations still serialize as ``LoopCarrierFact`` because that is the
+    source ontology produced by this collector; projected value-flow facts
+    serialize as ``LoopPredicateValueFact``.
     """
 
     name = "LoopPredicateValueFactCollector"
@@ -368,8 +369,4 @@ class LoopPredicateValueFactCollector:
         return tuple(observations)
 
 
-__all__ = ["LoopCarrierFactCollector", "LoopPredicateValueFactCollector"]
-
-
-# Legacy class name kept as an alias during the value-flow rename.
-LoopCarrierFactCollector = LoopPredicateValueFactCollector
+__all__ = ["LoopPredicateValueFactCollector"]

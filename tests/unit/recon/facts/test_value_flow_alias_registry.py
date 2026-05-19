@@ -70,7 +70,14 @@ def test_source_observation_can_project_to_multiple_canonical_families():
     }
     assert set(vf.canonical_fact_types("TerminalByteEmitterFact")) >= {
         vf.OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+        vf.OBSERVABLE_OUTPUT_FACT_TYPE,
         vf.POINTS_TO_FACT_TYPE,
+    }
+    assert set(vf.canonical_fact_types("LocalPointerMayAliasFact")) == {
+        vf.MAY_ALIAS_FACT_TYPE,
+    }
+    assert set(vf.canonical_fact_types("ObservableOutputStoreFact")) == {
+        vf.OBSERVABLE_OUTPUT_FACT_TYPE,
     }
     assert vf.canonical_fact_type("ReturnCarrierFact") is None
 
@@ -129,15 +136,9 @@ def test_dataclass_is_frozen():
         sample.canonical_fact_type = "Mutated"  # type: ignore[misc]
 
 
-def test_registry_lookup_table_handles_all_canonical_and_legacy_keys():
+def test_registry_lookup_table_handles_all_canonical_and_accepted_alias_keys():
     canonical = set(vf.all_canonical_fact_types())
     aliases = vf.all_accepted_kind_aliases()
     # The registry must answer for every canonical and accepted alias key.
     for key in canonical | aliases:
         assert vf.canonical_fact_types(key)
-
-
-def test_compatibility_legacy_alias_helpers_remain_thin_wrappers():
-    assert vf.all_legacy_kinds() == vf.all_accepted_kind_aliases()
-    for fact_type in vf.VALUE_FLOW_FACT_TYPES:
-        assert vf.legacy_kinds_for(fact_type) == vf.accepted_kind_aliases_for(fact_type)

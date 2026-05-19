@@ -2,21 +2,17 @@
 from __future__ import annotations
 
 from d810.recon.facts.collectors.induction_carrier import (
-    InductionCarrierFactCollector,
     InductionVariableFactCollector,
 )
 from d810.recon.facts.collectors.byte_emit_corridor import ByteEmitCorridorFactCollector
 from d810.recon.facts.collectors.call_anchor import CallAnchorFactCollector
 from d810.recon.facts.collectors.loop_carrier import (
-    LoopCarrierFactCollector,
     LoopPredicateValueFactCollector,
 )
 from d810.recon.facts.collectors.ollvm_semantic_carrier import (
-    OllvmSemanticCarrierFactCollector,
     OllvmValueFlowEvidenceCollector,
 )
 from d810.recon.facts.collectors.return_carrier import (
-    ReturnCarrierFactCollector,
     ReturnSlotFactCollector,
     ReturnValueFactCollector,
 )
@@ -35,13 +31,9 @@ from d810.recon.facts.collectors.zero_blob import ZeroBlobFactCollector
 __all__ = [
     "ByteEmitCorridorFactCollector",
     "CallAnchorFactCollector",
-    "InductionCarrierFactCollector",
     "InductionVariableFactCollector",
-    "LoopCarrierFactCollector",
     "LoopPredicateValueFactCollector",
-    "OllvmSemanticCarrierFactCollector",
     "OllvmValueFlowEvidenceCollector",
-    "ReturnCarrierFactCollector",
     "ReturnFrontierFactCollector",
     "ReturnSlotFactCollector",
     "ReturnValueFactCollector",

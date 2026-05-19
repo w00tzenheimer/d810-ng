@@ -315,8 +315,10 @@ as follows:
 |carrier fact|value-flow fact|
 |carrier|abstract location|
 |`ObservableStoreFact` (kind)|`ObservableMemoryDefFact` (type)|
+|observable output store evidence|`ObservableOutputFact` (type)|
 |`CarrierStorePromotionFact` (kind)|`ScalarPromotionFact` (type)|
 |`SameCarrierAliasFact` (kind)|`MustAliasFact` (type)|
+|local pointer alias-set evidence|`MayAliasFact` (type)|
 |`LocalStorageScalarizationFact` (kind)|`ScalarReplacementFact` (type)|
 |`ExpressionCarrierFact` (kind)|`SymbolicExpressionFact` (type)|
 |`LoopPredicateCarrierFact` (kind)|`LoopPredicateValueFact` (type)|
@@ -336,9 +338,10 @@ as follows:
 |`ReturnCarrierFactCollector`|`ReturnSlotFactCollector`; `ReturnValueFactCollector` projects the same Hodur evidence into `ReturnValueFact`|
 |`OllvmSemanticCarrierFactCollector`|`OllvmValueFlowEvidenceCollector`|
 
-The carrier-era collector class names remain importable as compatibility
-aliases, but runtime registration and new raw OLLVM evidence use the
-canonical collector names.
+The carrier-era collector class names and ``d810.recon.facts.carrier`` import
+shim are removed. Raw source observations may still use source-ontology names
+such as ``ReturnCarrierFact`` because those are producer evidence rows, not
+projected value-flow rows.
 
 See the Phase 0 inventory under ``.tmp/terminology_rename/`` for the
 full glossary, term definitions (materialization point, ModRef,
