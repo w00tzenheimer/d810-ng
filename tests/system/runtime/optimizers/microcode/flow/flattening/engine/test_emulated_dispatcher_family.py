@@ -3611,6 +3611,104 @@ def test_switch_transition_partial_lowering_records_waived_proof_obligations(mon
     assert all(getattr(mod, "from_serial", None) not in {2, 3} for mod in modifications)
 
 
+def test_loop_recovery_override_clears_switch_waived_proof_obligations(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    loop_recovery_modifications = (
+        RedirectGoto(from_serial=5, old_target=6, new_target=7),
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=tigress_switch_dispatcher_profile(
+            allow_incomplete_switch_transition_facts=True,
+        ),
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+        switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (
+            EmulatedDispatcherPhaseArtifact(
+                dispatcher_entry_serial=3,
+                pre_header_serial=None,
+            ),
+            phase_context,
+        ),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_state_dag_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_loop_recovery_modifications",
+        lambda *_args, **_kwargs: (loop_recovery_modifications, ()),
+    )
+
+    snapshot = family.build_snapshot(
+        _fake_mba(),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_constants=(0x10, 0x20),
+            collector_dispatchers=(object(),),
+            collector_dispatcher_entries=(3,),
+            state_dispatcher_entries=(3,),
+        ),
+    )
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "dispatcher_loop_recovery"
+    assert metadata.rejection_reasons == ()
+    assert metadata.waived_proof_obligations == ()
+    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
+        loop_recovery_modifications
+    )
+
+
 def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:
     dispatch_map = StateDispatcherMap(
         rows=(
