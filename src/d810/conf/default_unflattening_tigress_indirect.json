@@ -4,7 +4,7 @@
   "blk_rules": [
     {
       "name": "UnflattenerTigressIndirect",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "goto_table_info": {
           "0x1800175c0": {

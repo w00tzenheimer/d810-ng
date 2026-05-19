@@ -918,7 +918,7 @@
     "blk_rules": [
         {
             "name": "UnflattenerSwitchCase",
-            "is_activated": true,
+            "is_activated": false,
             "config": {}
         },
         {

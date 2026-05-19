@@ -631,7 +631,7 @@ HODUR_CASES = [
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
         expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
-        expected_ast_stats={"statements": 38, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 7},
+        expected_ast_stats={"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
@@ -644,7 +644,7 @@ HODUR_CASES = [
             "Hodur/1.0",  # String literal that should be preserved
         ],
         must_change=True,
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["EmulatedDispatcherUnflattener"],
         expected_rules=["CstSimplificationRule16"],
     ),
     DeobfuscationCase(
