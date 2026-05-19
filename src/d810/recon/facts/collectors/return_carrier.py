@@ -286,7 +286,11 @@ class ReturnSlotFactCollector:
         return tuple(observations)
 
 
-__all__ = ["ReturnCarrierFactCollector"]
+__all__ = [
+    "ReturnCarrierFactCollector",
+    "ReturnSlotFactCollector",
+    "ReturnValueFactCollector",
+]
 
 
 class ReturnValueFactCollector:
@@ -300,7 +304,14 @@ class ReturnValueFactCollector:
     """
 
     name = "ReturnValueFactCollector"
-    fact_kinds = frozenset({"ReturnValueFact"})
+    # Empty until a real producer lands. The placeholder emits nothing,
+    # and an unregistered fact-kind string in ``fact_kinds`` would confuse
+    # the diagnostic alias registry which canonicalizes observed kinds.
+    # When a real ``ReturnValueFact`` producer is added, register the
+    # canonical fact type in
+    # :mod:`d810.recon.facts.value_flow.alias_registry` first, then
+    # populate this set.
+    fact_kinds: frozenset[str] = frozenset()
     maturities = _TARGET_MATURITIES
 
     def collect(

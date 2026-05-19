@@ -370,7 +370,7 @@ class LoopPredicateValueFactCollector:
         return tuple(observations)
 
 
-__all__ = ["LoopCarrierFactCollector"]
+__all__ = ["LoopCarrierFactCollector", "LoopPredicateValueFactCollector"]
 
 
 # Legacy class name kept as an alias during the value-flow rename.
