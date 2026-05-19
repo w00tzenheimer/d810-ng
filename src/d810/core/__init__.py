@@ -97,6 +97,9 @@ from .descriptors import (
 # Project management
 from .project import ProjectManager, ProjectContext
 
+# Provider-neutral phase contract
+from .provider_phase import ProviderPhase, ProviderPhaseSnapshot
+
 # Persistence (SQLite storage)
 from .persistence import (
     SQLiteOptimizationStorage,
@@ -105,8 +108,6 @@ from .persistence import (
     NetnodeCorruptError,
     create_optimization_storage,
     FunctionFingerprint,
-    ProviderPhase,
-    ProviderPhaseSnapshot,
     CachedResult,
     FunctionRuleConfig,
 )

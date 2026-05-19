@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import d810.recon.facts.runtime as facts_runtime_module
+from d810.core import ProviderPhaseSnapshot
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
 from d810.recon.facts import (
@@ -16,6 +17,14 @@ from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 _MATURITY_LOCOPT = _MATURITY_VALUES["MMAT_LOCOPT"]
 _MATURITY_CALLS = _MATURITY_VALUES["MMAT_CALLS"]
 _MATURITY_GLBOPT1 = _MATURITY_VALUES["MMAT_GLBOPT1"]
+
+
+def _phase(level: int, friendly: str | None = None) -> ProviderPhaseSnapshot:
+    return ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=int(level),
+        friendly_provider_level=friendly or f"MMAT_{int(level)}",
+    )
 
 _TEST_REF = SnapshotRef(
     key="fact-runtime-test",
@@ -82,7 +91,7 @@ def test_capture_persists_collector_observations_when_snapshot_is_available() ->
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
         snapshot=_TEST_REF,
     )
@@ -108,7 +117,7 @@ def test_capture_persists_collector_mappings() -> None:
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=4,
+        provider_phase=_phase(4),
         snapshot=_TEST_REF,
     )
 
@@ -130,7 +139,7 @@ def test_capture_summary_log_uses_maturity_name(monkeypatch) -> None:
     runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=_MATURITY_CALLS,
+        provider_phase=_phase(_MATURITY_CALLS, "MMAT_CALLS"),
         phase="pre_d810",
     )
 
@@ -167,9 +176,9 @@ def test_validated_view_accumulates_observations_and_filters_stale_mappings() ->
     runtime.register(_Collector())
     runtime.register(_StaleMappingCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
     active_before = runtime.validated_view(0x401000, 1)
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     active_after = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(active_before.observations) == 1
@@ -203,8 +212,8 @@ def test_validated_view_is_historically_scoped() -> None:
     runtime.register(_Collector())
     runtime.register(_LateStaleMappingCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=3, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(3), phase="pre_d810")
 
     calls_view = runtime.validated_view(0x401000, "MMAT_2")
     glbopt1_view = runtime.validated_view(0x401000, "MMAT_3")
@@ -241,8 +250,8 @@ def test_induction_fact_absence_creates_identity_lost_mapping() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_InductionCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     calls_view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(calls_view.observations) == 1
@@ -263,8 +272,8 @@ def test_induction_does_not_infer_loss_when_collector_did_not_run() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_Collector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     calls_view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert calls_view.mappings == ()
@@ -320,8 +329,8 @@ def test_induction_identity_lost_is_per_fact_id_not_semantic_key() -> None:
     runtime.register(_InitialCollector())
     runtime.register(_PartialSurvivalCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert [mapping.source_fact_id for mapping in view.mappings] == ["induction:blk11"]
@@ -372,8 +381,8 @@ def test_induction_fact_remaps_on_stable_block_mop_continuity() -> None:
     runtime.register(_InitialCollector())
     runtime.register(_RemappedCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -431,8 +440,8 @@ def test_induction_fact_remaps_on_stable_source_ea_mop_continuity() -> None:
     runtime.register(_InitialCollector())
     runtime.register(_RemappedCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -495,11 +504,11 @@ def test_induction_source_ea_semantic_mismatch_is_contradicted() -> None:
     runtime.register(_PriorCollector())
     runtime.register(_CurrentCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=2,
+        provider_phase=_phase(2),
         phase="pre_d810",
         snapshot=_TEST_REF,
     )
@@ -558,7 +567,7 @@ def test_induction_conflict_records_incompatible_same_block_mop_identity() -> No
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
         snapshot=_TEST_REF,
     )
@@ -616,11 +625,11 @@ def test_induction_prior_current_semantic_mismatch_is_contradicted() -> None:
     runtime.register(_PriorCollector())
     runtime.register(_CurrentCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
     summary = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=2,
+        provider_phase=_phase(2),
         phase="pre_d810",
         snapshot=_TEST_REF,
     )
@@ -664,10 +673,10 @@ def test_induction_identity_lost_mapping_is_not_duplicated() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_InductionCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     first_mapping_count = len(runtime.validated_view(0x401000, "MMAT_2").mappings)
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="post_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="post_d810")
     second_mapping_count = len(runtime.validated_view(0x401000, "MMAT_2").mappings)
 
     assert first_mapping_count == 1
@@ -721,8 +730,8 @@ def test_return_carrier_fact_gets_identity_lost_mapping() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_ReturnCarrierCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(_Target(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(_Target(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -765,8 +774,8 @@ def test_return_carrier_does_not_infer_loss_when_collector_did_not_run() -> None
     runtime = FactLifecycleRuntime()
     runtime.register(_ReturnCarrierCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert view.mappings == ()
@@ -807,8 +816,8 @@ def test_terminal_byte_emitter_fact_gets_identity_lost_mapping() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_ByteEmitterCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -854,8 +863,8 @@ def test_terminal_byte_emitter_does_not_infer_loss_when_collector_did_not_run() 
     runtime = FactLifecycleRuntime()
     runtime.register(_ByteEmitterCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert view.mappings == ()
@@ -922,8 +931,8 @@ def test_terminal_byte_emitter_fact_remaps_on_stable_source_ea_mop() -> None:
     runtime.register(_InitialCollector())
     runtime.register(_CurrentCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -972,8 +981,8 @@ def test_generic_structural_fact_gets_identity_lost_mapping_when_collector_ran()
     runtime.register(_InitialCollector())
     runtime.register(_EmptyCurrentCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -1030,8 +1039,8 @@ def test_generic_structural_fact_remaps_on_stable_source_ea_mop() -> None:
     runtime.register(_InitialCollector())
     runtime.register(_CurrentCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
@@ -1068,8 +1077,8 @@ def test_generic_structural_fact_does_not_emit_loss_when_collector_did_not_run()
     runtime = FactLifecycleRuntime()
     runtime.register(_InitialCollector())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=1, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=2, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert view.mappings == ()
@@ -1160,8 +1169,8 @@ def test_state_write_anchor_rewrite_emits_state_const_rewritten_mapping() -> Non
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(glbopt1, "MMAT_GLBOPT1"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
 
     rewrite_mappings = [
@@ -1226,8 +1235,8 @@ def test_state_write_anchor_same_const_does_not_emit_rewrite() -> None:
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(glbopt1, "MMAT_GLBOPT1"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
 
     assert not any(
@@ -1279,8 +1288,8 @@ def test_state_write_anchor_same_ea_const_changed_emits_rewrite() -> None:
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(glbopt1, "MMAT_GLBOPT1"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
 
     rewrites = [
@@ -1373,8 +1382,8 @@ def test_state_write_anchor_ea_changed_canonical_stkoff_emits_rewrite() -> None:
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(calls, "MMAT_CALLS"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_CALLS")
 
     rewrites = [
@@ -1458,8 +1467,8 @@ def test_state_write_anchor_fallback_ignores_different_block() -> None:
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(calls, "MMAT_CALLS"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_CALLS")
 
     rewrites = [
@@ -1542,8 +1551,8 @@ def test_state_write_anchor_fallback_skips_non_canonical_stkoff() -> None:
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=calls, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(calls, "MMAT_CALLS"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_CALLS")
 
     rewrites = [
@@ -1585,8 +1594,8 @@ def test_state_write_anchor_absent_at_later_maturity_emits_identity_lost() -> No
     runtime.register(_Pre())
     runtime.register(_Post())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
-    runtime.capture(object(), func_ea=0x401000, maturity=glbopt1, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(glbopt1, "MMAT_GLBOPT1"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_GLBOPT1")
 
     lost = [m for m in view.mappings if m.status is FactStatus.IDENTITY_LOST]
@@ -1625,7 +1634,7 @@ def test_validated_fact_view_state_write_anchors_for_block() -> None:
     runtime = FactLifecycleRuntime()
     runtime.register(_Pre())
 
-    runtime.capture(object(), func_ea=0x401000, maturity=locopt, phase="pre_d810")
+    runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(locopt, "MMAT_LOCOPT"), phase="pre_d810")
     view = runtime.validated_view(0x401000, "MMAT_LOCOPT")
 
     blk100 = view.state_write_anchors_for_block(100)
@@ -1649,13 +1658,13 @@ def test_capture_does_not_dedupe_before_snapshot_backed_capture() -> None:
     no_snapshot = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="instruction_pre_d810",
     )
     with_snapshot = runtime.capture(
         object(),
         func_ea=0x401000,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
         snapshot=_TEST_REF,
     )

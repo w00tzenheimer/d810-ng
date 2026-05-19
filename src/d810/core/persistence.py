@@ -52,6 +52,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810.core.provider_phase import ProviderPhase, ProviderPhaseSnapshot
 from d810.core.typing import (
     Any,
     Dict,
@@ -66,24 +67,6 @@ from d810.core.typing import (
 from .logging import getLogger
 
 logger = getLogger(__name__)
-
-
-@runtime_checkable
-class ProviderPhase(Protocol):
-    """Optimization-provider phase identifier supplied by an adapter layer."""
-
-    provider_name: str
-    provider_level: int
-    friendly_provider_level: str
-
-
-@dataclass(frozen=True)
-class ProviderPhaseSnapshot:
-    """Concrete provider phase value for callers that need one."""
-
-    provider_name: str
-    provider_level: int
-    friendly_provider_level: str
 
 
 @dataclass

@@ -13,6 +13,7 @@ import idaapi
 
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
 from d810.hexrays.mutation.cfg_verify import safe_verify
@@ -25,6 +26,8 @@ from d810.hexrays.utils.hexrays_formatters import (
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.mba.backend_registry import get_egglog_provider
+
+HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
 
 # ---------------------------------------------------------------------------
 # hash_minsn: Cython fast path with pure-Python fallback
@@ -381,14 +384,19 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             mba_ea,
                         )
             if self._recon_phase is not None:
+                provider_phase = ProviderPhaseSnapshot(
+                    provider_name=HEXRAYS_MICROCODE_PROVIDER,
+                    provider_level=int(new_maturity),
+                    friendly_provider_level=maturity_to_string(new_maturity),
+                )
                 try:
                     self._recon_phase.run_microcode_collectors(
-                        mba, func_ea=mba_ea, maturity=new_maturity
+                        mba, func_ea=mba_ea, provider_phase=provider_phase
                     )
                 except Exception:
-                    new_maturity_name = maturity_to_string(new_maturity)
                     optimizer_logger.exception(
-                        "ReconPhase failed at maturity %s", new_maturity_name
+                        "ReconPhase failed at maturity %s",
+                        provider_phase.friendly_provider_level,
                     )
                 if self._recon_runtime is not None:
                     try:
@@ -1089,9 +1097,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             mba_ea,
                         )
             if self._recon_phase is not None:
+                provider_phase = ProviderPhaseSnapshot(
+                    provider_name=HEXRAYS_MICROCODE_PROVIDER,
+                    provider_level=int(mba.maturity),
+                    friendly_provider_level=maturity_to_string(mba.maturity),
+                )
                 try:
                     self._recon_phase.run_microcode_collectors(
-                        mba, func_ea=mba_ea, maturity=mba.maturity
+                        mba, func_ea=mba_ea, provider_phase=provider_phase
                     )
                 except Exception:
                     optimizer_logger.exception("ReconPhase (block) failed")
@@ -1100,7 +1113,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         self._recon_runtime.capture_maturity_facts(
                             mba,
                             func_ea=mba_ea,
-                            maturity=mba.maturity,
+                            provider_phase=provider_phase,
                             phase="pre_d810",
                             snapshot=_pre_snap_ref,
                         )

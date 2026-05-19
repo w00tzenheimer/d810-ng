@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, create_autospec, patch
 
 import pytest
 
+from d810.core import ProviderPhaseSnapshot
 from d810.core import logging
 from d810.core.diag.schema import create_tables
 from d810.core.settings import configure_settings, reset_settings
@@ -27,6 +28,14 @@ from d810.recon.store import ReconStore
 _FUNC_EA = 0x401000
 _MATURITY = 5
 _SENTINEL_TARGET = object()
+
+
+def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhaseSnapshot:
+    return ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=level,
+        friendly_provider_level=friendly or f"MMAT_{level}",
+    )
 
 
 def _make_recon_result(
@@ -121,7 +130,7 @@ def test_collect_and_analyze_persists_hints() -> None:
     returned = rt.collect_and_analyze(
         _FUNC_EA,
         _SENTINEL_TARGET,
-        _MATURITY,
+        _phase(),
         persist_hints=True,
     )
 
@@ -129,7 +138,7 @@ def test_collect_and_analyze_persists_hints() -> None:
     mock_phase.run_microcode_collectors.assert_called_once_with(
         _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
-        maturity=_MATURITY,
+        provider_phase=_phase(),
     )
     mock_analysis.interpret.assert_called_once_with(
         func_ea=_FUNC_EA,
@@ -152,7 +161,7 @@ def test_collect_and_analyze_no_persist() -> None:
     returned = rt.collect_and_analyze(
         _FUNC_EA,
         _SENTINEL_TARGET,
-        _MATURITY,
+        _phase(),
         persist_hints=False,
     )
 
@@ -192,7 +201,7 @@ def test_fact_lifecycle_capture_can_be_disabled() -> None:
     summary = rt.capture_maturity_facts(
         object(),
         func_ea=_FUNC_EA,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
     )
 
@@ -208,13 +217,13 @@ def test_fact_lifecycle_capture_invokes_empty_registry_once() -> None:
     first = rt.capture_maturity_facts(
         object(),
         func_ea=_FUNC_EA,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
     )
     second = rt.capture_maturity_facts(
         object(),
         func_ea=_FUNC_EA,
-        maturity=1,
+        provider_phase=_phase(1),
         phase="pre_d810",
     )
 
@@ -277,7 +286,7 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
             summary = rt.capture_maturity_facts(
                 object(),
                 func_ea=_FUNC_EA,
-                maturity=_MATURITY,
+                provider_phase=_phase(),
                 phase="pre_d810",
                 snapshot=snap_ref,
             )
@@ -317,7 +326,7 @@ def test_validated_fact_view_is_exposed_from_runtime() -> None:
     rt.capture_maturity_facts(
         object(),
         func_ea=_FUNC_EA,
-        maturity=_MATURITY,
+        provider_phase=_phase(),
         phase="pre_d810",
     )
 
@@ -408,7 +417,7 @@ def test_load_or_analyze_cache_hit() -> None:
     returned = rt.load_or_analyze(
         _FUNC_EA,
         _SENTINEL_TARGET,
-        _MATURITY,
+        _phase(),
     )
 
     assert returned is cached_hints
@@ -431,7 +440,7 @@ def test_load_or_analyze_cache_miss() -> None:
     returned = rt.load_or_analyze(
         _FUNC_EA,
         _SENTINEL_TARGET,
-        _MATURITY,
+        _phase(),
         persist_hints=True,
     )
 
@@ -440,7 +449,7 @@ def test_load_or_analyze_cache_miss() -> None:
     mock_phase.run_microcode_collectors.assert_called_once_with(
         _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
-        maturity=_MATURITY,
+        provider_phase=_phase(),
     )
     mock_analysis.interpret.assert_called_once_with(
         func_ea=_FUNC_EA,
@@ -538,7 +547,7 @@ def test_collect_and_analyze_saves_recon_results() -> None:
     returned = rt.collect_and_analyze(
         _FUNC_EA,
         _SENTINEL_TARGET,
-        _MATURITY,
+        _phase(),
     )
 
     assert returned is hints
@@ -547,7 +556,7 @@ def test_collect_and_analyze_saves_recon_results() -> None:
     mock_phase.run_microcode_collectors.assert_called_once_with(
         _SENTINEL_TARGET,
         func_ea=_FUNC_EA,
-        maturity=_MATURITY,
+        provider_phase=_phase(),
     )
     # Both results are forwarded to the analysis phase.
     mock_analysis.interpret.assert_called_once_with(

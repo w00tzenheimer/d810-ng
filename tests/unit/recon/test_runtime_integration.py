@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
+from d810.core import ProviderPhaseSnapshot
 from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.models import DeobfuscationHints, ReconResult
@@ -21,6 +22,14 @@ from d810.recon.store import ReconStore
 _FUNC_EA = 0x401000
 _MATURITY = 5
 _SENTINEL_TARGET = object()
+
+
+def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhaseSnapshot:
+    return ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=level,
+        friendly_provider_level=friendly or f"MMAT_{level}",
+    )
 
 
 def _make_recon_result(
@@ -138,7 +147,7 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
 
     outcome = rt.apply_to_rule_scope(
         _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, maturity=_MATURITY,
+        target=_SENTINEL_TARGET, provider_phase=_phase(),
         persist_hints=True,
     )
 
@@ -150,7 +159,7 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
     # Verify full pipeline ran
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
     mock_phase.run_microcode_collectors.assert_called_once_with(
-        _SENTINEL_TARGET, func_ea=_FUNC_EA, maturity=_MATURITY,
+        _SENTINEL_TARGET, func_ea=_FUNC_EA, provider_phase=_phase(),
     )
     mock_analysis.interpret.assert_called_once_with(
         func_ea=_FUNC_EA, results=results, store=mock_store,
@@ -171,7 +180,7 @@ def test_apply_to_rule_scope_cached_hints() -> None:
 
     outcome = rt.apply_to_rule_scope(
         _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, maturity=_MATURITY,
+        target=_SENTINEL_TARGET, provider_phase=_phase(),
     )
 
     assert outcome.func_ea == _FUNC_EA
@@ -193,7 +202,7 @@ def test_apply_to_rule_scope_no_hints_available() -> None:
 
     outcome = rt.apply_to_rule_scope(
         _FUNC_EA, mock_rule_scope,
-        target=None, maturity=None,
+        target=None, provider_phase=None,
     )
 
     assert outcome.func_ea == _FUNC_EA
@@ -219,7 +228,7 @@ def test_outcome_records_source_correctly() -> None:
     mock_rule_scope.apply_hints.return_value = apply_result
 
     cached_outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope, target=None, maturity=None,
+        _FUNC_EA, mock_rule_scope, target=None, provider_phase=None,
     )
     assert cached_outcome.source == "cached"
 
@@ -231,7 +240,7 @@ def test_outcome_records_source_correctly() -> None:
 
     analyzed_outcome = rt.apply_to_rule_scope(
         _FUNC_EA, mock_rule_scope,
-        target=_SENTINEL_TARGET, maturity=_MATURITY,
+        target=_SENTINEL_TARGET, provider_phase=_phase(),
     )
     assert analyzed_outcome.source == "analyzed"
 
@@ -239,6 +248,6 @@ def test_outcome_records_source_correctly() -> None:
     mock_store.load_hints.return_value = None
 
     unavailable_outcome = rt.apply_to_rule_scope(
-        _FUNC_EA, mock_rule_scope, target=None, maturity=None,
+        _FUNC_EA, mock_rule_scope, target=None, provider_phase=None,
     )
     assert unavailable_outcome.source == "unavailable"

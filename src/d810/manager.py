@@ -17,10 +17,15 @@ except ImportError:
     cProfile = None  # type: ignore[assignment]
 
 from d810.backends.mba.ida import adapt_rules
-from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, typing
+from d810.core import (
+    MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE,
+    typing,
+)
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter, SingletonMeta
@@ -803,10 +808,15 @@ class D810Manager:
             return
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            provider_phase = ProviderPhaseSnapshot(
+                provider_name="hexrays_microcode",
+                provider_level=int(maturity),
+                friendly_provider_level=_maturity_name(int(maturity)),
+            )
             self._recon_runtime.capture_maturity_facts(
                 mba,
                 func_ea=func_ea,
-                maturity=int(maturity),
+                provider_phase=provider_phase,
                 phase="post_d810",
                 snapshot=snapshot,
             )
@@ -1564,6 +1574,8 @@ class D810Manager:
             def _fact_view_provider(func_ea: int, maturity: int | str):
                 if self._recon_runtime is None:
                     return None
+                if isinstance(maturity, int):
+                    maturity = _maturity_name(maturity)
                 return self._recon_runtime.validated_fact_view(func_ea, maturity)
 
             passes.append(
