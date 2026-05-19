@@ -297,7 +297,7 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_sub_dispatch",
         description="ABC pattern using SUB with F6xxx constants",
-        # Uses example_libobfuscated_no_fixprecedessor.json which HAS UnflattenerFakeJump
+        # Uses the shared cleanup engine for the old FakeJump-derived cleanup.
         project="example_libobfuscated_no_fixprecedessor.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
@@ -313,8 +313,7 @@ ABC_F6_CASES = [
         # Accept both if/else orderings - IDA may invert the condition
         acceptable_patterns=["v2 / 2", "3 * (a1 + 0xA)", "0x64"],
         must_change=True,
-        # From results.toml: UnflattenerFakeJump (4 uses, 14 patches)
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["SimpleFlatteningCleanupUnflattener"],
     ),
     DeobfuscationCase(
         function="abc_f6_xor_dispatch",
