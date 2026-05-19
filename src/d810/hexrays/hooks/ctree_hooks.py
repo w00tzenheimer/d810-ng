@@ -9,10 +9,12 @@ from __future__ import annotations
 import abc
 
 from d810.core import getLogger, typing
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
 from d810.core.stats import OptimizationStatistics
 
 logger = getLogger("D810.optimizer")
+HEXRAYS_CTREE_PROVIDER = "hexrays_ctree"
 
 # ---------------------------------------------------------------------------
 # IDA imports are optional for testing.
@@ -148,16 +150,21 @@ class CtreeOptimizerManager:
         # _recon_phase is None - guarded for zero overhead when disabled).
         if self._recon_phase is not None:
             func_ea = int(getattr(cfunc, "entry_ea", 0) or 0)
+            provider_phase = ProviderPhaseSnapshot(
+                provider_name=HEXRAYS_CTREE_PROVIDER,
+                provider_level=int(new_maturity),
+                friendly_provider_level=_ctree_maturity_to_string(new_maturity),
+            )
             try:
                 self._recon_phase.run_ctree_collectors(
                     cfunc,
                     func_ea=func_ea,
-                    maturity=new_maturity,
+                    provider_phase=provider_phase,
                 )
             except Exception:
-                new_maturity_name = _ctree_maturity_to_string(new_maturity)
                 logger.exception(
-                    "ReconPhase (ctree) failed at maturity %s", new_maturity_name
+                    "ReconPhase (ctree) failed at maturity %s",
+                    provider_phase.friendly_provider_level,
                 )
             if self._recon_runtime is not None:
                 try:

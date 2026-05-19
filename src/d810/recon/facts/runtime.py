@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.provider_phase import ProviderPhase
 from d810.core.settings import get_settings
 from d810.core.typing import Any, Callable, Protocol, runtime_checkable
-from d810.recon.maturity import microcode_maturity_text
 from d810.recon.facts.model import (
     FactConflict,
     FactMapping,
@@ -135,8 +135,10 @@ class FactLifecycleRuntime:
         return FactCollectionResult(observations=tuple(result))
 
     @staticmethod
-    def _maturity_text(maturity: int) -> str:
-        return microcode_maturity_text(maturity)
+    def _maturity_text(maturity: int | str) -> str:
+        if isinstance(maturity, str):
+            return maturity
+        return f"MMAT_{int(maturity)}"
 
     @staticmethod
     def _maturity_rank(maturity: int | str) -> int:
@@ -228,7 +230,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
-        maturity: int,
+        maturity_text: str,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
     ) -> tuple[tuple[FactMapping, ...], tuple[FactConflict, ...]]:
@@ -253,7 +255,6 @@ class FactLifecycleRuntime:
 
         mappings: list[FactMapping] = []
         conflicts: list[FactConflict] = []
-        maturity_text = self._maturity_text(maturity)
         maturity_rank = self._maturity_rank(maturity_text)
         existing_mapping_keys = {
             (
@@ -544,7 +545,7 @@ class FactLifecycleRuntime:
         func_ea: int,
         *,
         target: Any,
-        maturity: int,
+        maturity_text: str,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
     ) -> tuple[FactMapping, ...]:
@@ -553,7 +554,6 @@ class FactLifecycleRuntime:
             for observation in current_observations
             if observation.kind == "ReturnCarrierFact"
         }
-        maturity_text = self._maturity_text(maturity)
         maturity_rank = self._maturity_rank(maturity_text)
         existing_mapping_keys = {
             (
@@ -649,7 +649,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
-        maturity: int,
+        maturity_text: str,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
     ) -> tuple[FactMapping, ...]:
@@ -665,7 +665,6 @@ class FactLifecycleRuntime:
             if key is not None:
                 current_by_continuity.setdefault(key, []).append(observation)
 
-        maturity_text = self._maturity_text(maturity)
         maturity_rank = self._maturity_rank(maturity_text)
         existing_mapping_keys = {
             (
@@ -769,7 +768,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
-        maturity: int,
+        maturity_text: str,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
         ran_fact_kinds: frozenset[str],
@@ -790,7 +789,6 @@ class FactLifecycleRuntime:
             if key is not None:
                 current_by_continuity.setdefault(key, []).append(observation)
 
-        maturity_text = self._maturity_text(maturity)
         maturity_rank = self._maturity_rank(maturity_text)
         existing_mapping_keys = {
             (
@@ -988,7 +986,7 @@ class FactLifecycleRuntime:
         self,
         func_ea: int,
         *,
-        maturity: int,
+        maturity_text: str,
         current_observations: tuple[FactObservation, ...],
         current_mappings: tuple[FactMapping, ...],
     ) -> tuple[FactMapping, ...]:
@@ -1040,7 +1038,6 @@ class FactLifecycleRuntime:
             func_ea, current_observations
         )
 
-        maturity_text = self._maturity_text(maturity)
         maturity_rank = self._maturity_rank(maturity_text)
         existing_mapping_keys = {
             (
@@ -1243,10 +1240,12 @@ class FactLifecycleRuntime:
         target: Any,
         *,
         func_ea: int,
-        maturity: int,
+        provider_phase: ProviderPhase,
         phase: str = "pre_d810",
         snapshot: Any = None,
     ) -> FactCaptureSummary:
+        maturity = int(provider_phase.provider_level)
+        maturity_text = str(provider_phase.friendly_provider_level)
         settings = get_settings()
         if not settings.fact_lifecycle:
             return FactCaptureSummary(
@@ -1270,7 +1269,6 @@ class FactLifecycleRuntime:
                 reason="already-fired",
             )
         self._fired.add(dedupe_key)
-        maturity_text = self._maturity_text(maturity)
 
         observations: list[FactObservation] = []
         mappings: list[FactMapping] = []
@@ -1308,7 +1306,7 @@ class FactLifecycleRuntime:
         if "InductionCarrierFact" in ran_fact_kinds:
             derived_mappings, derived_conflicts = self._derive_induction_lifecycle(
                 func_ea,
-                maturity=maturity,
+                maturity_text=maturity_text,
                 current_observations=tuple(observations),
                 current_mappings=tuple(mappings),
             )
@@ -1317,7 +1315,7 @@ class FactLifecycleRuntime:
             return_carrier_mappings = self._derive_return_carrier_lifecycle(
                 func_ea,
                 target=target,
-                maturity=maturity,
+                maturity_text=maturity_text,
                 current_observations=tuple(observations),
                 current_mappings=(*tuple(mappings), *derived_mappings),
             )
@@ -1325,7 +1323,7 @@ class FactLifecycleRuntime:
         if "TerminalByteEmitterFact" in ran_fact_kinds:
             terminal_byte_mappings = self._derive_terminal_byte_emitter_lifecycle(
                 func_ea,
-                maturity=maturity,
+                maturity_text=maturity_text,
                 current_observations=tuple(observations),
                 current_mappings=(
                     *tuple(mappings),
@@ -1335,7 +1333,7 @@ class FactLifecycleRuntime:
             )
         generic_mappings = self._derive_generic_lifecycle(
             func_ea,
-            maturity=maturity,
+            maturity_text=maturity_text,
             current_observations=tuple(observations),
             current_mappings=(
                 *tuple(mappings),
@@ -1349,7 +1347,7 @@ class FactLifecycleRuntime:
         if "StateWriteAnchorFact" in ran_fact_kinds:
             state_write_mappings = self._derive_state_write_anchor_lifecycle(
                 func_ea,
-                maturity=maturity,
+                maturity_text=maturity_text,
                 current_observations=tuple(observations),
                 current_mappings=(
                     *tuple(mappings),
@@ -1395,7 +1393,7 @@ class FactLifecycleRuntime:
                     self._persistence_callback is not None,
                 )
 
-        view = self.validated_view(func_ea, maturity)
+        view = self.validated_view(func_ea, maturity_text)
         logger.info(
             "FACT_VIEW func=0x%x maturity=%s phase=%s observations=%d "
             "active=%d mappings=%d stale=%d",

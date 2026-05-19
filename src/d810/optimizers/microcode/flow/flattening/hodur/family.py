@@ -980,7 +980,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
             maturity = getattr(mba, "maturity", 0)
-            return runtime.validated_fact_view(func_ea, maturity)
+            return runtime.validated_fact_view(func_ea, maturity_to_string(maturity))
         except Exception:
             return None
 

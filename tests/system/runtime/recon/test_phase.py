@@ -2,8 +2,17 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
+from d810.core import ProviderPhaseSnapshot
 from d810.recon.models import ReconResult
 from d810.recon.phase import ALL_MATURITIES, ReconPhase
+
+
+def _phase(level: int, friendly: str | None = None) -> ProviderPhaseSnapshot:
+    return ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=level,
+        friendly_provider_level=friendly or f"MMAT_{level}",
+    )
 
 
 class FakeCollector:
@@ -66,7 +75,9 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
 
         assert len(collector.call_log) == 1
         assert collector.call_log[0] == (0x401000, 5)
@@ -76,7 +87,9 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()  # maturities = {5, 10}
         phase.register(collector)
 
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=99)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(99)
+        )
 
         assert len(collector.call_log) == 0
 
@@ -85,7 +98,9 @@ class TestReconPhaseRunIfNeeded:
         collector = AllMaturityCollector()
         phase.register(collector)
 
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=99)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(99)
+        )
 
         assert collector.call_log == [(0x401000, 99)]
 
@@ -94,7 +109,9 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector({"block_count": 7})
         phase.register(collector)
 
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
 
         loaded = store.load_recon_results(func_ea=0x401000, maturity=5)
         assert len(loaded) == 1
@@ -106,9 +123,13 @@ class TestReconPhaseRunIfNeeded:
         phase.register(collector)
 
         # First call - should fire
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
         # Second call same maturity - should NOT fire again
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
 
         assert len(collector.call_log) == 1
 
@@ -117,9 +138,13 @@ class TestReconPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
         phase.reset(func_ea=0x401000)
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
 
         assert len(collector.call_log) == 2
 
@@ -138,5 +163,7 @@ class TestReconPhaseRunIfNeeded:
         phase.register(good)
 
         # Should not raise; broken collector is skipped, good one fires
-        phase.run_microcode_collectors(None, func_ea=0x401000, maturity=5)
+        phase.run_microcode_collectors(
+            None, func_ea=0x401000, provider_phase=_phase(5)
+        )
         assert len(good.call_log) == 1

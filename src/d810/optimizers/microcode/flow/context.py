@@ -188,9 +188,12 @@ class FlowMaturityContext:
         """Return the validated fact view for this function, if available."""
         if self._fact_view_provider is None:
             return None
+        maturity_value: int | str = self.maturity if maturity is None else maturity
+        if isinstance(maturity_value, int):
+            maturity_value = maturity_to_string(maturity_value)
         return self._fact_view_provider(
             self.func_ea,
-            self.maturity if maturity is None else maturity,
+            maturity_value,
         )
 
     def report_fact_consumers(
