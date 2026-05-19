@@ -23,11 +23,12 @@ Public surface:
 """
 from __future__ import annotations
 
-from d810.recon.facts.carrier import (
+from d810.recon.facts.value_flow.projection import (
+    LIFECYCLE_PRODUCTION_PROVEN,
     exact_source_identity,
-    is_generic_carrier_fact as is_value_flow_fact,
-    production_carrier_fact as production_value_flow_fact,
-    project_carrier_fact_families as project_value_flow_facts,
+    is_value_flow_fact,
+    production_value_flow_fact,
+    project_value_flow_facts,
 )
 from d810.recon.facts.value_flow.call_effect_summary import (
     CALL_EFFECT_SUMMARY_FACT_TYPE,
@@ -45,11 +46,15 @@ from d810.recon.facts.value_flow.loop_predicate_value import (
 from d810.recon.facts.value_flow.materialization_point import (
     MATERIALIZATION_POINT_FACT_TYPE,
 )
+from d810.recon.facts.value_flow.may_alias import MAY_ALIAS_FACT_TYPE
 from d810.recon.facts.value_flow.memory_phi import MEMORY_PHI_FACT_TYPE
 from d810.recon.facts.value_flow.memory_use import MEMORY_USE_FACT_TYPE
 from d810.recon.facts.value_flow.must_alias import MUST_ALIAS_FACT_TYPE
 from d810.recon.facts.value_flow.observable_memory_def import (
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+)
+from d810.recon.facts.value_flow.observable_output import (
+    OBSERVABLE_OUTPUT_FACT_TYPE,
 )
 from d810.recon.facts.value_flow.points_to import POINTS_TO_FACT_TYPE
 from d810.recon.facts.value_flow.return_value import RETURN_VALUE_FACT_TYPE
@@ -72,12 +77,10 @@ from d810.recon.facts.value_flow.alias_registry import (
     accepted_kind_aliases_for,
     all_accepted_kind_aliases,
     all_canonical_fact_types,
-    all_legacy_kinds,
     canonical_fact_type,
     canonical_fact_types,
     display_name_for,
     industry_term_for,
-    legacy_kinds_for,
     producer_ontology_for,
 )
 
@@ -85,12 +88,14 @@ VALUE_FLOW_FACT_TYPES = frozenset({
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
     SCALAR_PROMOTION_FACT_TYPE,
     MUST_ALIAS_FACT_TYPE,
+    MAY_ALIAS_FACT_TYPE,
     SCALAR_REPLACEMENT_FACT_TYPE,
     SYMBOLIC_EXPRESSION_FACT_TYPE,
     LOOP_PREDICATE_VALUE_FACT_TYPE,
     CALL_RETURN_VALUE_FACT_TYPE,
     INDUCTION_VARIABLE_FACT_TYPE,
     MATERIALIZATION_POINT_FACT_TYPE,
+    OBSERVABLE_OUTPUT_FACT_TYPE,
     MEMORY_PHI_FACT_TYPE,
     MEMORY_USE_FACT_TYPE,
     STATE_WRITE_FACT_TYPE,
@@ -109,11 +114,14 @@ __all__ = [
     "FactTypeAlias",
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
+    "LIFECYCLE_PRODUCTION_PROVEN",
     "MATERIALIZATION_POINT_FACT_TYPE",
+    "MAY_ALIAS_FACT_TYPE",
     "MEMORY_PHI_FACT_TYPE",
     "MEMORY_USE_FACT_TYPE",
     "MUST_ALIAS_FACT_TYPE",
     "OBSERVABLE_MEMORY_DEF_FACT_TYPE",
+    "OBSERVABLE_OUTPUT_FACT_TYPE",
     "POINTS_TO_FACT_TYPE",
     "RETURN_VALUE_FACT_TYPE",
     "SCALAR_PROMOTION_FACT_TYPE",
@@ -125,14 +133,12 @@ __all__ = [
     "accepted_kind_aliases_for",
     "all_accepted_kind_aliases",
     "all_canonical_fact_types",
-    "all_legacy_kinds",
     "canonical_fact_type",
     "canonical_fact_types",
     "display_name_for",
     "exact_source_identity",
     "industry_term_for",
     "is_value_flow_fact",
-    "legacy_kinds_for",
     "producer_ontology_for",
     "production_value_flow_fact",
     "project_value_flow_facts",

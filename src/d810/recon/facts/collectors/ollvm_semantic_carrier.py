@@ -341,10 +341,9 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
 class OllvmValueFlowEvidenceCollector:
     """Observe OLLVM value-flow evidence without changing behavior.
 
-    Canonical class name for OLLVM-specific value-flow evidence. The legacy
-    class name ``OllvmSemanticCarrierFactCollector`` is preserved as an import
-    alias only. New observations emit ``"OllvmValueFlowEvidence"`` so raw
-    profile evidence no longer uses carrier-era serialized terminology.
+    Canonical class name for OLLVM-specific value-flow evidence. New
+    observations emit ``"OllvmValueFlowEvidence"`` so raw profile evidence no
+    longer uses carrier-era serialized terminology.
     """
 
     name = "OllvmValueFlowEvidenceCollector"
@@ -425,10 +424,5 @@ class OllvmValueFlowEvidenceCollector:
 
 
 __all__ = [
-    "OllvmSemanticCarrierFactCollector",
     "OllvmValueFlowEvidenceCollector",
 ]
-
-
-# Legacy class name kept as an alias during the value-flow rename.
-OllvmSemanticCarrierFactCollector = OllvmValueFlowEvidenceCollector

@@ -388,8 +388,9 @@ class InductionVariableFactCollector:
     """Observe direct stack-variable induction updates across maturities.
 
     Canonical collector class name for induction-variable source evidence.
-    ``InductionCarrierFactCollector`` remains available as an import alias
-    only; projected value-flow facts serialize as ``InductionVariableFact``.
+    Raw observations still serialize as ``InductionCarrierFact`` because that
+    is the source ontology produced by this collector; projected value-flow
+    facts serialize as ``InductionVariableFact``.
     """
 
     name = "InductionVariableFactCollector"
@@ -568,8 +569,3 @@ class InductionVariableFactCollector:
                 )
             )
         return tuple(observations)
-
-
-# Legacy class name kept as an alias during the value-flow rename. Phase 4
-# class rename is mechanical; the same object answers to both spellings.
-InductionCarrierFactCollector = InductionVariableFactCollector

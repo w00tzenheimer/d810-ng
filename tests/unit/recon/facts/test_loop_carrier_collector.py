@@ -1,10 +1,10 @@
-"""Tests for LoopCarrierFactCollector."""
+"""Tests for LoopPredicateValueFactCollector."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import LoopCarrierFactCollector
+from d810.recon.facts.collectors import LoopPredicateValueFactCollector
 from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 from d810.recon.facts.model import FactObservation, ValidatedFactView
 
@@ -59,7 +59,7 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
 
 
 def _collect(target: object) -> tuple[FactObservation, ...]:
-    return LoopCarrierFactCollector().collect(
+    return LoopPredicateValueFactCollector().collect(
         target,
         func_ea=0x180012df0,
         maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],

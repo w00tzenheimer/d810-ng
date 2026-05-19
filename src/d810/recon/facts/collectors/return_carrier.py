@@ -26,9 +26,9 @@ from d810.recon.facts.collectors.induction_carrier import (
     _iter_instruction_views,
     _maturity_name,
 )
-from d810.recon.facts.carrier import (
+from d810.recon.facts.value_flow import (
     RETURN_VALUE_FACT_TYPE,
-    project_carrier_fact_families,
+    project_value_flow_facts,
 )
 from d810.recon.facts.model import FactObservation
 
@@ -172,8 +172,9 @@ class ReturnSlotFactCollector:
     into canonical return-value value-flow facts when a caller wants the
     normalized family directly.
 
-    ``ReturnCarrierFactCollector`` is preserved as an import alias only.
-    Projected value-flow facts serialize as ``MaterializationPointFact``,
+    Raw observations still serialize as ``ReturnCarrierFact`` because that is
+    the source ontology produced by this collector. Projected value-flow facts
+    serialize as ``MaterializationPointFact``,
     ``MemoryUseFact``, and ``ReturnValueFact``.
     """
 
@@ -290,7 +291,6 @@ class ReturnSlotFactCollector:
 
 
 __all__ = [
-    "ReturnCarrierFactCollector",
     "ReturnSlotFactCollector",
     "ReturnValueFactCollector",
 ]
@@ -320,15 +320,10 @@ class ReturnValueFactCollector:
         maturity: int,
         phase: str,
     ) -> tuple[FactObservation, ...]:
-        projected = project_carrier_fact_families(self._slot_collector.collect(
+        projected = project_value_flow_facts(self._slot_collector.collect(
             target,
             func_ea=func_ea,
             maturity=maturity,
             phase=phase,
         ))
         return tuple(fact for fact in projected if fact.kind == RETURN_VALUE_FACT_TYPE)
-
-
-# Legacy class name kept as an alias during the value-flow rename. The
-# current slot-based collector logic lives in ReturnSlotFactCollector.
-ReturnCarrierFactCollector = ReturnSlotFactCollector

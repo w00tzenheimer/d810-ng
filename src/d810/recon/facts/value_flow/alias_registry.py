@@ -32,11 +32,15 @@ from d810.recon.facts.value_flow.loop_predicate_value import (
 from d810.recon.facts.value_flow.materialization_point import (
     MATERIALIZATION_POINT_FACT_TYPE,
 )
+from d810.recon.facts.value_flow.may_alias import MAY_ALIAS_FACT_TYPE
 from d810.recon.facts.value_flow.memory_phi import MEMORY_PHI_FACT_TYPE
 from d810.recon.facts.value_flow.memory_use import MEMORY_USE_FACT_TYPE
 from d810.recon.facts.value_flow.must_alias import MUST_ALIAS_FACT_TYPE
 from d810.recon.facts.value_flow.observable_memory_def import (
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+)
+from d810.recon.facts.value_flow.observable_output import (
+    OBSERVABLE_OUTPUT_FACT_TYPE,
 )
 from d810.recon.facts.value_flow.points_to import POINTS_TO_FACT_TYPE
 from d810.recon.facts.value_flow.return_value import RETURN_VALUE_FACT_TYPE
@@ -70,13 +74,6 @@ class FactTypeAlias:
     industry_term: str
     producer_ontology: str
 
-    @property
-    def legacy_kinds(self) -> tuple[str, ...]:
-        """Compatibility spelling for callers not yet renamed."""
-
-        return self.accepted_kind_aliases
-
-
 FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
     FactTypeAlias(
         canonical_fact_type=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
@@ -98,6 +95,13 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
         display_name="Must-alias",
         industry_term="Alias-analysis MustAlias",
         producer_ontology="OLLVM accumulator same-carrier alias proofs.",
+    ),
+    FactTypeAlias(
+        canonical_fact_type=MAY_ALIAS_FACT_TYPE,
+        accepted_kind_aliases=("LocalPointerMayAliasFact",),
+        display_name="May-alias",
+        industry_term="Alias-analysis MayAlias",
+        producer_ontology="OLLVM local-pointer alias-set evidence.",
     ),
     FactTypeAlias(
         canonical_fact_type=SCALAR_REPLACEMENT_FACT_TYPE,
@@ -140,6 +144,13 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
         display_name="Materialization point",
         industry_term="Materialization point (return value, output exposure)",
         producer_ontology="Hodur ReturnCarrierFact and ReturnFrontierFact terminals.",
+    ),
+    FactTypeAlias(
+        canonical_fact_type=OBSERVABLE_OUTPUT_FACT_TYPE,
+        accepted_kind_aliases=("ObservableOutputStoreFact", "TerminalByteEmitterFact"),
+        display_name="Observable output",
+        industry_term="Observable output value event / externally visible sink",
+        producer_ontology="Hodur TerminalByteEmitter and OLLVM output-store evidence.",
     ),
     FactTypeAlias(
         canonical_fact_type=MEMORY_USE_FACT_TYPE,
@@ -255,12 +266,6 @@ def accepted_kind_aliases_for(fact_type: str) -> tuple[str, ...]:
     return () if alias is None else alias.accepted_kind_aliases
 
 
-def legacy_kinds_for(fact_type: str) -> tuple[str, ...]:
-    """Compatibility spelling for :func:`accepted_kind_aliases_for`."""
-
-    return accepted_kind_aliases_for(fact_type)
-
-
 def display_name_for(fact_type: str) -> str | None:
     """Return the canonical display name for *fact_type*."""
 
@@ -298,23 +303,15 @@ def all_accepted_kind_aliases() -> frozenset[str]:
     )
 
 
-def all_legacy_kinds() -> frozenset[str]:
-    """Compatibility spelling for :func:`all_accepted_kind_aliases`."""
-
-    return all_accepted_kind_aliases()
-
-
 __all__ = [
     "FACT_TYPE_ALIAS_REGISTRY",
     "FactTypeAlias",
     "accepted_kind_aliases_for",
     "all_accepted_kind_aliases",
     "all_canonical_fact_types",
-    "all_legacy_kinds",
     "canonical_fact_type",
     "canonical_fact_types",
     "display_name_for",
     "industry_term_for",
-    "legacy_kinds_for",
     "producer_ontology_for",
 ]

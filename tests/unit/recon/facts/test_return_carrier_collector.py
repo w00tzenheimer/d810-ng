@@ -1,10 +1,10 @@
-"""Tests for ReturnCarrierFactCollector."""
+"""Tests for ReturnSlotFactCollector."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import ReturnCarrierFactCollector
+from d810.recon.facts.collectors import ReturnSlotFactCollector
 from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 
 
@@ -59,7 +59,7 @@ def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
 
 
 def test_collects_return_slot_identity_carrier() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(
@@ -96,7 +96,7 @@ def test_collects_return_slot_identity_carrier() -> None:
 
 
 def test_collects_protected_non_carrier_return_writer_candidate() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(
@@ -128,7 +128,7 @@ def test_collects_protected_non_carrier_return_writer_candidate() -> None:
 
 
 def test_collects_constant_or_offset_return() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(
@@ -162,7 +162,7 @@ def test_collects_constant_or_offset_return() -> None:
 
 
 def test_classifies_non_mov_stack_arithmetic_as_computed_return() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(
@@ -195,7 +195,7 @@ def test_classifies_non_mov_stack_arithmetic_as_computed_return() -> None:
 
 
 def test_ignores_return_slot_writes_without_return_register_read() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(_insn()),
@@ -208,7 +208,7 @@ def test_ignores_return_slot_writes_without_return_register_read() -> None:
 
 
 def test_ignores_non_return_slot_write() -> None:
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
         _target(
@@ -237,7 +237,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
     IDA's CALLS phase folds the chain into a sub-instruction operand
     tree.
     """
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     # Upstream MBA producer at insn 0:
     #   add (9*(%var_40 & %var_228)), (0x15*(~%var_228 & ((%var_660+%var_650) ^ %var_658))), %var_7C8
@@ -315,7 +315,7 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
     snapshot (e.g. it's an arg slot or comes from an earlier untracked
     block), the upstream payload fields must stay absent rather than
     populated with ``None``."""
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
 
     carrier = _insn(
         index=0,
@@ -447,7 +447,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         254: [late_writer],               # function-wide LAST writer; not the reaching def
     })
 
-    collector = ReturnCarrierFactCollector()
+    collector = ReturnSlotFactCollector()
     facts = collector.collect(
         target,
         func_ea=0x180012cf0,
