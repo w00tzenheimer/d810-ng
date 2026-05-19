@@ -5821,7 +5821,7 @@ class TestEmulatedDispatcherManagedContext:
             ),
         )
 
-    def test_approov_multistate_cluster_grouping_experiment(
+    def test_approov_multistate_cluster_grouping_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -5830,43 +5830,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for cluster grouping experiment"
+            "libclang required for cluster grouping engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                    captured["final_maturity"] = int(blk.mba.maturity)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, clustered: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -5883,153 +5853,16 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _clustered_execute(snapshot, planned, **kwargs):
-                modifications = extract_emulated_dispatcher_fallback_modifications(
-                    snapshot.flow_graph
-                )
-                records = extract_emulated_dispatcher_candidate_records(
-                    snapshot.flow_graph
-                )
-                captured["candidate_records"] = tuple(asdict(record) for record in records)
-
-                grouped: dict[tuple[str, ...], list[EmulatedDispatcherCandidateRecord]] = {}
-                for record in records:
-                    if record.cluster_candidate:
-                        grouped.setdefault(record.cluster_key, []).append(record)
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-                # create_standalone_block() inserts at the current stop-block
-                # serial and shifts the stop block to the new tail.
-                next_serial = int(snapshot.mba.qty) - 1
-                consumed_indexes: set[int] = set()
-                cluster_payloads: list[tuple[str, ...]] = []
-
-                for cluster_key in sorted(grouped):
-                    cluster = sorted(grouped[cluster_key], key=lambda item: item.father_serial)
-                    anchor = cluster[0]
-                    followers = cluster[1:]
-                    anchor_mods = tuple(
-                        modifications[index]
-                        for index in anchor.selected_modification_indexes
-                    )
-                    anchor_mod = next(
-                        (
-                            mod
-                            for mod in anchor_mods
-                            if isinstance(mod, (InsertBlock, RedirectGoto))
-                        ),
-                        None,
-                    )
-                    instructions = ()
-                    if isinstance(anchor_mod, InsertBlock):
-                        instructions = anchor_mod.instructions
-                    elif isinstance(anchor_mod, RedirectGoto):
-                        instructions = ()
-                    else:
-                        raise AssertionError(
-                            f"Unexpected clustered modification in experiment: {anchor_mods}"
-                        )
-                    for mod in anchor_mods:
-                        if isinstance(mod, ZeroStateWrite):
-                            modifier.queue_zero_state_write(
-                                int(mod.block_serial),
-                                int(mod.insn_ea),
-                                description=(
-                                    f"cluster anchor zero state write "
-                                    f"{mod.block_serial}@{mod.insn_ea:#x}"
-                                ),
-                            )
-                        elif mod is not anchor_mod:
-                            raise AssertionError(
-                                f"Unexpected paired clustered modification in experiment: {mod}"
-                            )
-                    cluster_payloads.append(anchor.payload_signature)
-                    modifier.queue_create_and_redirect(
-                        source_block_serial=int(anchor.father_serial),
-                        final_target_serial=int(anchor.target_serial),
-                        instructions_to_copy=list(instructions),
-                        expected_serial=next_serial,
-                        description=f"cluster anchor {anchor.father_serial}->{anchor.target_serial}",
-                    )
-                    consumed_indexes.update(anchor.selected_modification_indexes)
-                    for follower in followers:
-                        modifier.queue_goto_change(
-                            block_serial=int(follower.father_serial),
-                            new_target=next_serial,
-                            description=f"cluster follower {follower.father_serial}->{next_serial}",
-                        )
-                        consumed_indexes.update(follower.selected_modification_indexes)
-                    next_serial += 1
-
-                for record in records:
-                    if any(idx in consumed_indexes for idx in record.selected_modification_indexes):
-                        continue
-                    idx = record.selected_modification_indexes[0]
-                    mod = modifications[idx]
-                    if isinstance(mod, InsertBlock):
-                        modifier.queue_create_and_redirect(
-                            source_block_serial=int(mod.pred_serial),
-                            final_target_serial=int(mod.succ_serial),
-                            instructions_to_copy=list(mod.instructions),
-                            expected_serial=next_serial,
-                            description=f"standalone insert {mod.pred_serial}->{mod.succ_serial}",
-                        )
-                        next_serial += 1
-                    elif isinstance(mod, RedirectGoto):
-                        modifier.queue_goto_change(
-                            block_serial=int(mod.from_serial),
-                            new_target=int(mod.new_target),
-                            description=f"standalone redirect {mod.from_serial}->{mod.new_target}",
-                        )
-                    elif isinstance(mod, ZeroStateWrite):
-                        modifier.queue_zero_state_write(
-                            int(mod.block_serial),
-                            int(mod.insn_ea),
-                            description=(
-                                f"standalone zero state write "
-                                f"{mod.block_serial}@{mod.insn_ea:#x}"
-                            ),
-                        )
-                    else:
-                        raise AssertionError(f"Unexpected modification in experiment: {mod}")
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["cluster_payloads"] = tuple(cluster_payloads)
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
             def _wrapped_execute(snapshot, planned, **kwargs):
-                if not clustered:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
+                executed = original_execute(snapshot, planned, **kwargs)
+                captured["candidate_records"] = tuple(
+                    asdict(record)
+                    for record in extract_emulated_dispatcher_candidate_records(
+                        snapshot.flow_graph
                     )
-                    captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                    return executed
-                return _clustered_execute(snapshot, planned, **kwargs)
+                )
+                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
+                return executed
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -6049,46 +5882,41 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(clustered=False)
-        experimental_code, experimental_capture = _run_engine(clustered=True)
+        current_code, current_capture = _run_engine()
 
         current_payloads = tuple(
             tuple(record["payload_signature"])
             for record in current_capture["candidate_records"]
             if record["cluster_candidate"]
         )
-        experimental_payloads = tuple(experimental_capture.get("cluster_payloads", ()))
-
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(
             current_capture["final_flow_graph"],
             payload_signatures=current_payloads,
         )
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"],
-            payload_signatures=experimental_payloads,
-        )
+        cluster_groups: dict[tuple[str, ...], list[int]] = {}
+        for record in current_capture["candidate_records"]:
+            if record["cluster_candidate"]:
+                cluster_groups.setdefault(record["cluster_key"], []).append(
+                    record["father_serial"]
+                )
 
         summary = {
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "cluster_groups": {
+                key: tuple(sorted(value)) for key, value in cluster_groups.items()
+            },
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_ENGINE_CONTRACT", summary)
 
         assert current_capture["candidate_records"]
-        assert experimental_capture["candidate_records"]
         assert current_shape["payload_blocks"]
-        assert experimental_shape["payload_blocks"]
+        assert sorted(
+            tuple(sorted(fathers)) for fathers in cluster_groups.values()
+        ) == [(2, 6), (7, 11)]
 
-    def test_approov_multistate_handler_subgraph_experiment(
+    def test_approov_multistate_handler_subgraph_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -6097,42 +5925,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for handler-subgraph experiment"
+            "libclang required for handler-subgraph engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, experiment: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -6149,7 +5948,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _handler_execute(snapshot, planned, **kwargs):
+            def _wrapped_execute(snapshot, planned, **kwargs):
                 records = extract_emulated_dispatcher_candidate_records(
                     snapshot.flow_graph
                 )
@@ -6157,102 +5956,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["phase_role_map"] = _summarize_approov_multistate_phase_roles(
                     records
                 )
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-
-                modifier.queue_zero_state_write(
-                    2,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=2,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_goto_change(
-                    2,
-                    9,
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    6,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=6,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_goto_change(
-                    6,
-                    9,
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    10,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=10,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_update"],
-                    ),
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_goto_change(
-                    10,
-                    5,
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_conditional_target_change(
-                    9,
-                    12,
-                    description="phase1 header taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    5,
-                    12,
-                    description="phase1 update taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    12,
-                    12,
-                    description="phase2 taken -> phase2 self loop",
-                )
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
-            def _wrapped_execute(snapshot, planned, **kwargs):
-                if not experiment:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
-                    )
-                    return executed
-                return _handler_execute(snapshot, planned, **kwargs)
+                return original_execute(snapshot, planned, **kwargs)
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -6272,29 +5976,17 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(experiment=False)
-        experimental_code, experimental_capture = _run_engine(experiment=True)
+        current_code, current_capture = _run_engine()
 
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(current_capture["final_flow_graph"])
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"]
-        )
 
         summary = {
-            "phase_role_map": experimental_capture["phase_role_map"],
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "phase_role_map": current_capture["phase_role_map"],
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_ENGINE_CONTRACT", summary)
 
         assert summary["phase_role_map"]["phase1_header"] == (
             (2, 9, ("InsertBlock",)),
