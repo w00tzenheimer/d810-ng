@@ -1,25 +1,31 @@
-"""Tests for concrete generic carrier fact families."""
+"""Tests for concrete value-flow fact families."""
 from __future__ import annotations
 
 import pytest
 
-from d810.recon.facts.carrier import (
-    CALL_RESULT_CARRIER_FACT_KIND,
-    CARRIER_STORE_PROMOTION_FACT_KIND,
-    EXPRESSION_CARRIER_FACT_KIND,
-    INDUCTION_CARRIER_FACT_KIND,
+from d810.recon.facts.value_flow import (
+    CALL_RETURN_VALUE_FACT_TYPE,
+    SCALAR_PROMOTION_FACT_TYPE,
+    SYMBOLIC_EXPRESSION_FACT_TYPE,
+    INDUCTION_VARIABLE_FACT_TYPE,
     LIFECYCLE_PRODUCTION_PROVEN,
-    LOCAL_STORAGE_SCALARIZATION_FACT_KIND,
-    LOOP_PREDICATE_CARRIER_FACT_KIND,
-    OBSERVABLE_STORE_FACT_KIND,
-    SAME_CARRIER_ALIAS_FACT_KIND,
-    SIDE_EFFECT_CORRIDOR_FACT_KIND,
-    STATE_TRANSITION_CARRIER_FACT_KIND,
-    STATE_VARIABLE_WRITE_FACT_KIND,
-    TERMINAL_MATERIALIZATION_FACT_KIND,
-    CALL_SIDE_EFFECT_ANCHOR_FACT_KIND,
-    production_carrier_fact,
-    project_carrier_fact_families,
+    SCALAR_REPLACEMENT_FACT_TYPE,
+    LOOP_PREDICATE_VALUE_FACT_TYPE,
+    MEMORY_PHI_FACT_TYPE,
+    MEMORY_USE_FACT_TYPE,
+    MAY_ALIAS_FACT_TYPE,
+    OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+    OBSERVABLE_OUTPUT_FACT_TYPE,
+    POINTS_TO_FACT_TYPE,
+    RETURN_VALUE_FACT_TYPE,
+    MUST_ALIAS_FACT_TYPE,
+    EFFECT_PATH_FACT_TYPE,
+    STATE_TRANSITION_FACT_TYPE,
+    STATE_WRITE_FACT_TYPE,
+    MATERIALIZATION_POINT_FACT_TYPE,
+    CALL_EFFECT_SUMMARY_FACT_TYPE,
+    production_value_flow_fact,
+    project_value_flow_facts,
 )
 from d810.recon.facts.model import FactObservation
 
@@ -63,7 +69,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
     )
     ollvm_output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ARG_OUTPUT_STORE_CANDIDATE",
             "carrier_token": "%var_30",
@@ -76,25 +82,25 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
         confidence=0.78,
     )
 
-    projected = project_carrier_fact_families((hodur_byte_store, ollvm_output_store))
-    observable = [fact for fact in projected if fact.kind == OBSERVABLE_STORE_FACT_KIND]
+    projected = project_value_flow_facts((hodur_byte_store, ollvm_output_store))
+    observable = [fact for fact in projected if fact.kind == OBSERVABLE_MEMORY_DEF_FACT_TYPE]
 
     assert len(observable) == 2
     assert {
         fact.payload["producer_kinds"][0] for fact in observable
-    } == {"TerminalByteEmitterFact", "OllvmSemanticCarrierFact"}
-    assert all(production_carrier_fact(fact, OBSERVABLE_STORE_FACT_KIND) for fact in observable)
+    } == {"TerminalByteEmitterFact", "OllvmValueFlowEvidence"}
+    assert all(production_value_flow_fact(fact, OBSERVABLE_MEMORY_DEF_FACT_TYPE) for fact in observable)
     assert all(fact.payload["lifecycle_status"] == LIFECYCLE_PRODUCTION_PROVEN for fact in observable)
     assert "capabilities" not in observable[0].payload
 
 
 @pytest.mark.parametrize(
-    ("kind", "payload", "expected_kind"),
+    ("kind", "payload", "expected_kinds"),
     [
         (
             "InductionCarrierFact",
             {"dest_stkoff": 0x30, "step": 1, "insn_index": 2},
-            INDUCTION_CARRIER_FACT_KIND,
+            {INDUCTION_VARIABLE_FACT_TYPE},
         ),
         (
             "LoopCarrierFact",
@@ -103,7 +109,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "predicate_instruction_index": 4,
                 "classification": "LOOP_CARRIER_WRITER_OUTSIDE_SCC",
             },
-            LOOP_PREDICATE_CARRIER_FACT_KIND,
+            {LOOP_PREDICATE_VALUE_FACT_TYPE},
         ),
         (
             "ReturnCarrierFact",
@@ -111,8 +117,11 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "return_slot_stkoff": 0x8,
                 "carrier_class": "stack_identity_carrier",
                 "insn_index": 5,
+                "source_signature": "%var_20.8",
+                "upstream_writer_block_serial": 17,
+                "upstream_writer_insn_index": 2,
             },
-            TERMINAL_MATERIALIZATION_FACT_KIND,
+            {MATERIALIZATION_POINT_FACT_TYPE, MEMORY_USE_FACT_TYPE, RETURN_VALUE_FACT_TYPE},
         ),
         (
             "ReturnFrontierFact",
@@ -120,8 +129,9 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "return_block": 99,
                 "carrier_fact_ids": ["return-carrier-1"],
                 "frontier_blocks": [70, 80],
+                "writer_blocks": [55, 56],
             },
-            TERMINAL_MATERIALIZATION_FACT_KIND,
+            {MATERIALIZATION_POINT_FACT_TYPE, MEMORY_PHI_FACT_TYPE},
         ),
         (
             "TerminalByteEmitterFact",
@@ -130,7 +140,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "byte_index": 2,
                 "insn_index": 3,
             },
-            OBSERVABLE_STORE_FACT_KIND,
+            {OBSERVABLE_MEMORY_DEF_FACT_TYPE, POINTS_TO_FACT_TYPE, OBSERVABLE_OUTPUT_FACT_TYPE},
         ),
         (
             "ByteEmitCorridorFact",
@@ -139,7 +149,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "member_fact_ids": ["byte-2"],
                 "byte_indexes": [2],
             },
-            SIDE_EFFECT_CORRIDOR_FACT_KIND,
+            {EFFECT_PATH_FACT_TYPE},
         ),
         (
             "StateWriteAnchorFact",
@@ -148,7 +158,7 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "state_const_hex": "0x0000000042",
                 "instruction_index": 6,
             },
-            STATE_VARIABLE_WRITE_FACT_KIND,
+            {STATE_WRITE_FACT_TYPE},
         ),
         (
             "StateTransitionAnchorFact",
@@ -158,36 +168,82 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "next_state_const_hex": "0x00000002",
                 "instruction_index": 7,
             },
-            STATE_TRANSITION_CARRIER_FACT_KIND,
+            {STATE_TRANSITION_FACT_TYPE},
         ),
         (
             "CallAnchorFact",
             {"call_target": "strncmp", "call_kind": "direct_call", "insn_index": 8},
-            CALL_SIDE_EFFECT_ANCHOR_FACT_KIND,
+            {CALL_EFFECT_SUMMARY_FACT_TYPE},
         ),
     ],
 )
 def test_projects_existing_source_fact_families_to_generic_families(
     kind: str,
     payload: dict[str, object],
-    expected_kind: str,
+    expected_kinds: set[str],
 ) -> None:
     concrete = _fact(fact_id=f"{kind}:1", kind=kind, payload=payload)
 
-    (projected,) = project_carrier_fact_families((concrete,))
+    projected = project_value_flow_facts((concrete,))
+    projected_by_kind = {fact.kind: fact for fact in projected}
 
-    assert projected.kind == expected_kind
-    assert projected.payload["producer_fact_ids"][0] == concrete.fact_id
-    assert projected.payload["expression_class"]
-    assert projected.payload["observable_effect"] is not None
-    assert projected.payload["source_identity"]["producer_kind"] == kind
-    assert "capabilities" not in projected.payload
+    assert expected_kinds <= set(projected_by_kind)
+    for projected_fact in projected_by_kind.values():
+        assert projected_fact.payload["producer_fact_ids"][0] == concrete.fact_id
+        assert projected_fact.payload["expression_class"]
+        assert projected_fact.payload["observable_effect"] is not None
+        assert projected_fact.payload["source_identity"]["producer_kind"] == kind
+        assert "capabilities" not in projected_fact.payload
+
+
+def test_hodur_return_and_byte_evidence_project_to_standard_value_flow_families() -> None:
+    """Hodur-backed producers already supply MemoryUse/Phi/PointsTo/ReturnValue."""
+
+    return_slot = _fact(
+        fact_id="return-carrier",
+        kind="ReturnCarrierFact",
+        payload={
+            "return_slot_stkoff": 0x8,
+            "carrier_class": "stack_identity_carrier",
+            "source_signature": "%var_20.8",
+            "upstream_writer_block_serial": 17,
+            "upstream_writer_insn_index": 2,
+        },
+    )
+    return_frontier = _fact(
+        fact_id="return-frontier",
+        kind="ReturnFrontierFact",
+        payload={
+            "return_block": 99,
+            "carrier_fact_ids": ["return-carrier"],
+            "frontier_blocks": [70, 80],
+            "writer_blocks": [55, 56],
+        },
+    )
+    byte_emit = _fact(
+        fact_id="byte-emit",
+        kind="TerminalByteEmitterFact",
+        payload={
+            "destination_buffer_expression": "[ds:v51+2]",
+            "byte_index": 2,
+            "insn_index": 3,
+        },
+    )
+
+    projected = project_value_flow_facts((return_slot, return_frontier, byte_emit))
+    kinds = {fact.kind for fact in projected}
+
+    assert MEMORY_USE_FACT_TYPE in kinds
+    assert MEMORY_PHI_FACT_TYPE in kinds
+    assert POINTS_TO_FACT_TYPE in kinds
+    assert RETURN_VALUE_FACT_TYPE in kinds
+    assert OBSERVABLE_OUTPUT_FACT_TYPE in kinds
 
 
 def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
     ollvm_output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ARG_OUTPUT_STORE_CANDIDATE",
             "carrier_token": "%var_30",
@@ -197,13 +253,13 @@ def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
         source_ea=None,
     )
 
-    assert project_carrier_fact_families((ollvm_output_store,)) == ()
+    assert project_value_flow_facts((ollvm_output_store,)) == ()
 
 
 def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
     output_store = _fact(
         fact_id="ollvm-output-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOCAL_WORKING_STORE_CANDIDATE",
             "carrier_token": "%var_390",
@@ -216,20 +272,23 @@ def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
         confidence=0.78,
     )
 
-    projected = project_carrier_fact_families((output_store,))
+    projected = project_value_flow_facts((output_store,))
     by_kind = {fact.kind: fact for fact in projected}
 
-    assert OBSERVABLE_STORE_FACT_KIND in by_kind
-    assert CARRIER_STORE_PROMOTION_FACT_KIND in by_kind
-    assert production_carrier_fact(by_kind[OBSERVABLE_STORE_FACT_KIND], OBSERVABLE_STORE_FACT_KIND)
-    assert production_carrier_fact(by_kind[CARRIER_STORE_PROMOTION_FACT_KIND], CARRIER_STORE_PROMOTION_FACT_KIND)
-    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["source_identity"]["source_ea_hex"] == "0x000000018000f00d"
-    assert by_kind[CARRIER_STORE_PROMOTION_FACT_KIND].payload["details"]["proof_family"] == (
+    assert OBSERVABLE_MEMORY_DEF_FACT_TYPE in by_kind
+    assert SCALAR_PROMOTION_FACT_TYPE in by_kind
+    assert OBSERVABLE_OUTPUT_FACT_TYPE in by_kind
+    assert production_value_flow_fact(by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE], OBSERVABLE_MEMORY_DEF_FACT_TYPE)
+    assert production_value_flow_fact(by_kind[SCALAR_PROMOTION_FACT_TYPE], SCALAR_PROMOTION_FACT_TYPE)
+    assert production_value_flow_fact(by_kind[OBSERVABLE_OUTPUT_FACT_TYPE], OBSERVABLE_OUTPUT_FACT_TYPE)
+    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["source_identity"]["source_ea_hex"] == "0x000000018000f00d"
+    assert by_kind[SCALAR_PROMOTION_FACT_TYPE].payload["details"]["proof_family"] == (
         "observable_output_store_carrier_promotion"
     )
-    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["anchor_locator"]["requires_live_revalidation"] is True
-    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["anchor_locator"]["instruction_text_sha1"]
-    assert by_kind[OBSERVABLE_STORE_FACT_KIND].payload["storage_overlap_proof"]["partial_overlap"] is False
+    assert by_kind[OBSERVABLE_OUTPUT_FACT_TYPE].payload["observable_effect"] == "output_store"
+    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"]["requires_live_revalidation"] is True
+    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"]["instruction_text_sha1"]
+    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["storage_overlap_proof"]["partial_overlap"] is False
 
 
 @pytest.mark.parametrize(
@@ -241,7 +300,7 @@ def test_exact_arg_and_local_store_candidates_keep_carrier_store_promotion(
 ) -> None:
     output_store = _fact(
         fact_id=f"ollvm-store-{role}",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": role,
             "carrier_token": "%var_390",
@@ -254,16 +313,17 @@ def test_exact_arg_and_local_store_candidates_keep_carrier_store_promotion(
         confidence=0.78,
     )
 
-    kinds = {fact.kind for fact in project_carrier_fact_families((output_store,))}
+    kinds = {fact.kind for fact in project_value_flow_facts((output_store,))}
 
-    assert OBSERVABLE_STORE_FACT_KIND in kinds
-    assert CARRIER_STORE_PROMOTION_FACT_KIND in kinds
+    assert OBSERVABLE_MEMORY_DEF_FACT_TYPE in kinds
+    assert SCALAR_PROMOTION_FACT_TYPE in kinds
+    assert OBSERVABLE_OUTPUT_FACT_TYPE in kinds
 
 
 def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -279,7 +339,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
     )
     loop_index = _fact(
         fact_id="ollvm-loop-index",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOOP_INDEX_CARRIER",
             "carrier_token": "%var_398",
@@ -292,7 +352,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
     )
     indirect_store = _fact(
         fact_id="ollvm-indirect-store",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "INDIRECT_STORE_CANDIDATE",
             "carrier_token": "%var_390",
@@ -304,23 +364,45 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
         source_ea=0x18000F300,
     )
 
-    kinds = {fact.kind for fact in project_carrier_fact_families((
+    kinds = {fact.kind for fact in project_value_flow_facts((
         accumulator,
         loop_index,
         indirect_store,
     ))}
 
-    assert EXPRESSION_CARRIER_FACT_KIND in kinds
-    assert LOCAL_STORAGE_SCALARIZATION_FACT_KIND in kinds
-    assert SAME_CARRIER_ALIAS_FACT_KIND in kinds
-    assert LOOP_PREDICATE_CARRIER_FACT_KIND in kinds
-    assert CARRIER_STORE_PROMOTION_FACT_KIND in kinds
+    assert SYMBOLIC_EXPRESSION_FACT_TYPE in kinds
+    assert SCALAR_REPLACEMENT_FACT_TYPE in kinds
+    assert MUST_ALIAS_FACT_TYPE in kinds
+    assert LOOP_PREDICATE_VALUE_FACT_TYPE in kinds
+    assert SCALAR_PROMOTION_FACT_TYPE in kinds
+
+
+def test_local_working_pointer_emits_may_alias_evidence() -> None:
+    local_pointer = _fact(
+        fact_id="ollvm-local-pointer",
+        kind="OllvmValueFlowEvidence",
+        payload={
+            "role": "LOCAL_WORKING_POINTER",
+            "carrier_token": "%var_390",
+            "local_base_token": "%var_18",
+            "instruction_index": 6,
+            "instruction_ea": 0x18000F111,
+            "instruction_dstr": "mov &(%var_18).8, %var_390.8",
+        },
+        source_block=10,
+        source_ea=0x18000F111,
+    )
+
+    kinds = {fact.kind for fact in project_value_flow_facts((local_pointer,))}
+
+    assert MAY_ALIAS_FACT_TYPE in kinds
+    assert SCALAR_REPLACEMENT_FACT_TYPE in kinds
 
 
 def test_accumulator_without_local_base_does_not_emit_scalarization_authority() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator-no-base",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -333,17 +415,17 @@ def test_accumulator_without_local_base_does_not_emit_scalarization_authority() 
         source_ea=0x18000F123,
     )
 
-    projected = project_carrier_fact_families((accumulator,))
+    projected = project_value_flow_facts((accumulator,))
     kinds = {fact.kind for fact in projected}
 
-    assert LOCAL_STORAGE_SCALARIZATION_FACT_KIND not in kinds
-    assert EXPRESSION_CARRIER_FACT_KIND in kinds
+    assert SCALAR_REPLACEMENT_FACT_TYPE not in kinds
+    assert SYMBOLIC_EXPRESSION_FACT_TYPE in kinds
 
 
 def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
     loop_index = _fact(
         fact_id="ollvm-loop-index",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "LOOP_INDEX_CARRIER",
             "carrier_token": "%var_398",
@@ -356,17 +438,17 @@ def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
         source_ea=0x18000F200,
     )
 
-    projected = project_carrier_fact_families((loop_index,))
+    projected = project_value_flow_facts((loop_index,))
     kinds = {fact.kind for fact in projected}
 
-    assert LOOP_PREDICATE_CARRIER_FACT_KIND in kinds
-    assert LOCAL_STORAGE_SCALARIZATION_FACT_KIND not in kinds
+    assert LOOP_PREDICATE_VALUE_FACT_TYPE in kinds
+    assert SCALAR_REPLACEMENT_FACT_TYPE not in kinds
 
 
 def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
@@ -380,10 +462,10 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
         source_ea=0x18000F123,
     )
 
-    projected = project_carrier_fact_families((accumulator,))
+    projected = project_value_flow_facts((accumulator,))
     scalarization = [
         fact for fact in projected
-        if fact.kind == LOCAL_STORAGE_SCALARIZATION_FACT_KIND
+        if fact.kind == SCALAR_REPLACEMENT_FACT_TYPE
     ]
 
     assert len(scalarization) == 1
@@ -397,7 +479,7 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
 def test_call_result_oracle_fact_becomes_concrete_call_result_family() -> None:
     compare = _fact(
         fact_id="ollvm-password-result",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         payload={
             "role": "PASSWORD_COMPARE_RESULT",
             "carrier_token": "%var_58",
@@ -409,9 +491,9 @@ def test_call_result_oracle_fact_becomes_concrete_call_result_family() -> None:
         source_ea=0x18000F123,
     )
 
-    (projected,) = project_carrier_fact_families((compare,))
+    (projected,) = project_value_flow_facts((compare,))
 
-    assert projected.kind == CALL_RESULT_CARRIER_FACT_KIND
+    assert projected.kind == CALL_RETURN_VALUE_FACT_TYPE
     assert projected.payload["storage_identity"] == "%var_58"
     assert projected.payload["expression_class"] == "call_result"
 
@@ -428,8 +510,8 @@ def test_projection_is_idempotent_for_existing_generic_fact() -> None:
         source_block=42,
         source_ea=0x180015005,
     )
-    (generic_fact,) = project_carrier_fact_families((source,))
+    generic_facts = project_value_flow_facts((source,))
 
-    (projected_again,) = project_carrier_fact_families((generic_fact,))
+    projected_again = project_value_flow_facts(generic_facts)
 
-    assert projected_again is generic_fact
+    assert projected_again == generic_facts

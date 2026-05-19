@@ -150,7 +150,7 @@ def _carrier_fact(
 ):
     return FactObservation(
         fact_id=f"ollvm:{role}:{token}:blk={block}",
-        kind="OllvmSemanticCarrierFact",
+        kind="OllvmValueFlowEvidence",
         semantic_key=f"ollvm_carrier:{role}:{token}",
         maturity="MMAT_CALLS",
         phase="pre_d810",

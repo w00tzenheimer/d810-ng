@@ -127,7 +127,7 @@ def _query_ollvm_carrier_facts(
     *,
     func_ea_hex: str | None = None,
 ) -> OllvmCarrierFactSummary:
-    where = "WHERE kind='OllvmSemanticCarrierFact'"
+    where = "WHERE kind='OllvmValueFlowEvidence'"
     params: list[object] = []
     if func_ea_hex:
         where += " AND lower(func_ea_hex)=lower(?)"

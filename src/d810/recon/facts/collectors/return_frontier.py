@@ -1,6 +1,6 @@
 """Return-frontier fact collector.
 
-ReturnCarrierFact records individual return-slot writes.  This collector records
+ReturnSlotFact records individual return-slot writes.  This collector records
 the local return frontier that consumes those carriers: terminal block, nearby
 predecessor path, and carrier writers found on that path.
 """
@@ -13,7 +13,7 @@ from d810.recon.facts.collectors.induction_carrier import (
     _MATURITY_VALUES,
     _maturity_name,
 )
-from d810.recon.facts.collectors.return_carrier import ReturnCarrierFactCollector
+from d810.recon.facts.collectors.return_carrier import ReturnSlotFactCollector
 from d810.recon.facts.collectors.terminal_byte_emitter import (
     _BlockView,
     _block_metadata,
@@ -76,7 +76,7 @@ class ReturnFrontierFactCollector:
     maturities = _TARGET_MATURITIES
 
     def __init__(self) -> None:
-        self._carrier_collector = ReturnCarrierFactCollector()
+        self._carrier_collector = ReturnSlotFactCollector()
 
     def collect(
         self,
