@@ -297,6 +297,31 @@ def _state_dispatcher_map(
     )
 
 
+def _conditional_chain_state_dispatcher_map(
+    *,
+    dispatcher_entry: int,
+    state: int,
+    target: int,
+) -> StateDispatcherMap:
+    return StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=target,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="jnz_fallthrough",
+                source=DispatcherType.CONDITIONAL_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=dispatcher_entry,
+        dispatcher_blocks=frozenset({dispatcher_entry}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+    )
+
+
 def _switch_return_fact(source_state: int, exit_block: int):
     return switch_case_transition_analysis.SwitchCaseTransitionFact(
         fact_id=f"tigress_switch:case={source_state}:return",
@@ -3236,6 +3261,17 @@ def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map()
     assert family._primary_dispatcher_entry_serial(detection) == 23
 
 
+def test_emulated_dispatcher_family_primary_entry_uses_analysis_root_for_conditional_chain() -> None:
+    family = EmulatedDispatcherStrategyFamily()
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="conditional_chain",
+        state_dispatcher_entries=(3, 7, 10),
+        analysis_dispatchers=(2, 3, 6, 7, 10),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 2
+
+
 def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     monkeypatch,
 ) -> None:
@@ -3341,6 +3377,123 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     assert context.state_dispatcher_map is dispatch_map
     assert context.switch_case_transition_facts == (switch_fact,)
     assert switch_fact_calls == [(mba, dispatch_map, "tigress_switch")]
+
+
+def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_analysis_root(
+    monkeypatch,
+) -> None:
+    suffix_a = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=3,
+        state=0x10,
+        target=4,
+    )
+    suffix_b = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=7,
+        state=0x20,
+        target=8,
+    )
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="ollvm_state_map",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            state_dispatcher_map_factory=lambda *_args: (),
+        )
+    )
+    mba = SimpleNamespace(
+        qty=9,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+    )
+    flow_graph = _flow_graph_with_conditional_shape()
+    seen_preheader_entries = []
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "analyze_bst_dispatcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("map-backed conditional chain should use exact rows")
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_detect_state_var_stkoff",
+        lambda *_args, **_kwargs: (0x3C, None),
+    )
+
+    def _fake_find_pre_header_state(_mba, dispatcher_entry, state_var_stkoff):
+        seen_preheader_entries.append((dispatcher_entry, state_var_stkoff))
+        return 1, 0x10
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_find_pre_header_state",
+        _fake_find_pre_header_state,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "recover_dynamic_state_write_transitions",
+        lambda **kwargs: kwargs["transition_result"],
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(nodes=(), edges=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_linearized_state_program",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            variant_name="semantic_reference_like",
+            lines=(),
+            nodes=(),
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "render_linearized_state_program",
+        lambda _program: "",
+    )
+
+    artifact, context = family._build_phase_artifact(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_maps=(suffix_a, suffix_b),
+            state_dispatcher_entries=(3, 7),
+            analysis_dispatchers=(2, 3, 6, 7),
+            dispatcher_shape="conditional_chain",
+            state_transport="state_dispatcher_map",
+            state_constants=(0x10, 0x20),
+        ),
+        flow_graph=flow_graph,
+    )
+
+    assert artifact is not None
+    assert context is not None
+    assert seen_preheader_entries == [(2, 0x3C)]
+    assert artifact.dispatcher_entry_serial == 2
+    assert artifact.pre_header_serial == 1
+    assert artifact.initial_state == 0x10
+    assert artifact.bst_node_blocks == (2, 3, 7)
+    assert artifact.handler_state_map == ((4, 0x10), (8, 0x20))
+    assert context.state_dispatcher_map is not None
+    assert context.state_dispatcher_map.dispatcher_entry_block == 2
+    assert context.state_dispatcher_map.dispatcher_blocks == frozenset({2, 3, 7})
 
 
 def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
