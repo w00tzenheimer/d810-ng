@@ -326,7 +326,8 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_or_dispatch",
         description="ABC pattern with OR operations on state variables",
-        # Run with FixPredecessor + generic/switch-case unflatteners (no Hodur)
+        # The engine replacement handles this; do not require the legacy
+        # UnflattenerFakeJump rule name.
         project="example_libobfuscated.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
@@ -338,8 +339,7 @@ ABC_F6_CASES = [
         # Accept minor variations in type suffix and parameter type
         acceptable_patterns=["a1 | 0xFF", "a1 | 0xFFu"],
         must_change=True,
-        # From results.toml: UnflattenerFakeJump (2 uses, 5 patches)
-        required_rules=["UnflattenerFakeJump"],
+        required_rules=["EmulatedDispatcherUnflattener"],
     ),
     DeobfuscationCase(
         function="abc_f6_nested",
@@ -928,9 +928,11 @@ RESIZE_BUFFER_CFF_CASES = [
         deobfuscated_contains=[
             # The helper auto-name moves when the fixture binary is rebuilt.
             "(a2, a4, 0xA, 0x44);",
-            "*(_BYTE *)(i + v6) = 0;",
             "*v5 = a4;",
             "return (unsigned int *)(a2 + 0x10);",
+        ],
+        deobfuscated_regexes=[
+            r"\*\(_BYTE \*\)\([^)]*\) = 0;",
         ],
         acceptable_patterns=[
             "a2 + 16",
@@ -940,8 +942,7 @@ RESIZE_BUFFER_CFF_CASES = [
         ],
         must_change=True,
         check_stats=True,
-        required_rules=["Unflattener"],
-        expected_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
+        required_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
         forbidden_rules=["ForwardConstantPropagationRule"],
     ),
 ]
