@@ -2703,6 +2703,114 @@ def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_ga
     assert detection.planning_blocker == "dispatcher_cache_detected_but_collector_found_none"
 
 
+def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    dispatch_map = replace(
+        dispatch_map,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+        rows=tuple(
+            replace(row, source=DispatcherType.CONDITIONAL_CHAIN)
+            for row in dispatch_map.rows
+        ),
+    )
+    calls = []
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[99],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _extract_state_dispatcher_map(_mba, *, dispatcher_entry_block=None, **_kwargs):
+        calls.append(dispatcher_entry_block)
+        if dispatcher_entry_block is not None:
+            return None
+        return dispatch_map
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "extract_state_dispatcher_map_from_mba",
+        _extract_state_dispatcher_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert calls == [99, None]
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == ()
+    assert detection.analysis_dispatchers == (99,)
+    assert detection.state_dispatcher_entries == (13,)
+    assert detection.dispatcher_shape == "conditional_chain"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ("equality_chain",)
+    assert detection.planning_blocker is None
+
+
+def test_default_ollvm_profile_prefers_switch_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _unexpected_equality_map(*_args, **_kwargs):
+        raise AssertionError("switch-table map should be preferred")
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_tigress_switch_state_dispatcher_maps",
+        lambda *_args: (dispatch_map,),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_ollvm_state_dispatcher_maps",
+        _unexpected_equality_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert detection.detected is True
+    assert detection.state_dispatcher_entries == (21,)
+    assert detection.dispatcher_shape == "switch_table"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ()
+    assert detection.planning_blocker is None
+
+
 def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
     monkeypatch,
 ) -> None:
@@ -3317,6 +3425,100 @@ def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
     )
 
 
+def test_switch_transition_facts_lower_guard_reentry_redirect() -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily()
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=3,
+            pre_header_serial=None,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+        ),
+    )
+
+    assert modifications == (
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+    )
+    assert blockers == ("tigress_switch_transition_initial_redirect_unproven",)
+
+
+def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None:
+    terminal_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=7:unresolved:direct_target_not_in_switch_rows",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=7,
+        case_entry_block=13,
+        next_states=(0xFF,),
+        reason="direct_target_not_in_switch_rows",
+    )
+    conditional_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=1:unresolved:conditional_case_transition_unresolved",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=1,
+        case_entry_block=5,
+        next_states=(2, 3),
+        reason="conditional_case_transition_unresolved",
+    )
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_visible_state_not_lowered",
+    ))
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+            "tigress_switch_transition_initial_redirect_unproven",
+        ),
+        facts=(terminal_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+        ),
+        facts=(conditional_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_source_not_owned",
+    ))
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_conditional_untrusted",
+    ))
+
+
 def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:
     dispatch_map = StateDispatcherMap(
         rows=(
@@ -3648,6 +3850,81 @@ def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
     assert proofs[0]["proof_kind"] == BranchOwnershipProofKind.UNRESOLVED.value
     assert proofs[0]["source_block"] == 5
     assert proofs[0]["branch_arm"] == 0
+
+
+def test_guarded_entry_setup_pre_header_region_allows_guard_returns() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (2, 3), (0,)),
+            2: _snapshot(2, (), (1,)),
+            3: _snapshot(3, (4, 5), (1,)),
+            4: _snapshot(4, (), (3,)),
+            5: _snapshot(5, (6,), (3,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (6,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == (0, 1, 2, 3, 4, 5)
+
+
+def test_guarded_entry_setup_pre_header_region_rejects_handler_entry_leak() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (5, 7), (0,)),
+            5: _snapshot(5, (6,), (1,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (1, 6)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == ()
 
 
 def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:

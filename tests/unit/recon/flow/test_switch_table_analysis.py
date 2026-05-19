@@ -4,7 +4,94 @@ from __future__ import annotations
 from d810.recon.flow.dispatcher_detection import DispatcherType
 from d810.recon.flow.switch_table_analysis import (
     build_state_dispatcher_map_from_cases,
+    find_switch_loop_guard_blocks,
 )
+
+
+class _FakeBlock:
+    def __init__(self, *, preds=(), succs=(), tail=None):
+        self._preds = tuple(preds)
+        self._succs = tuple(succs)
+        self.tail = tail
+
+    def npred(self):
+        return len(self._preds)
+
+    def pred(self, index):
+        return self._preds[index]
+
+    def nsucc(self):
+        return len(self._succs)
+
+    def succ(self, index):
+        return self._succs[index]
+
+
+class _FakeMba:
+    def __init__(self, blocks):
+        self._blocks = dict(blocks)
+
+    def get_mblock(self, serial):
+        return self._blocks.get(serial)
+
+
+class _FakeStackRef:
+    def __init__(self, off):
+        self.off = off
+
+
+class _FakeConst:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeMop:
+    def __init__(self, *, stkoff=None, value=None):
+        if stkoff is not None:
+            self.s = _FakeStackRef(stkoff)
+        if value is not None:
+            self.nnn = _FakeConst(value)
+
+
+class _FakeTail:
+    def __init__(self, left, right, opcode=43):
+        self.opcode = opcode
+        self.l = left
+        self.r = right
+
+
+def test_find_switch_loop_guard_blocks_finds_while_guard():
+    guard_tail = _FakeTail(_FakeMop(stkoff=0x10), _FakeMop(value=0xFF))
+    mba = _FakeMba({
+        2: _FakeBlock(preds=(0, 6), succs=(3, 9), tail=guard_tail),
+        3: _FakeBlock(preds=(2, 6), succs=(4, 5)),
+        6: _FakeBlock(succs=(3,)),
+        9: _FakeBlock(),
+    })
+
+    assert find_switch_loop_guard_blocks(
+        mba,
+        3,
+        state_var_stkoff=0x10,
+        case_values=frozenset({0, 1, 2, 3, 4, 5, 6, 7}),
+    ) == frozenset({2})
+
+
+def test_find_switch_loop_guard_blocks_rejects_unrelated_branch():
+    branch_tail = _FakeTail(_FakeMop(stkoff=0x20), _FakeMop(value=0xFF))
+    mba = _FakeMba({
+        2: _FakeBlock(preds=(0, 6), succs=(3, 9), tail=branch_tail),
+        3: _FakeBlock(preds=(2, 6), succs=(4, 5)),
+        6: _FakeBlock(succs=(3,)),
+        9: _FakeBlock(),
+    })
+
+    assert find_switch_loop_guard_blocks(
+        mba,
+        3,
+        state_var_stkoff=0x10,
+        case_values=frozenset({0, 1, 2, 3, 4, 5, 6, 7}),
+    ) == frozenset()
 
 
 class TestBuildStateDispatcherMapFromCases:
