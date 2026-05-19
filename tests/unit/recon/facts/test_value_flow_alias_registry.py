@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from d810.recon.facts import value_flow as vf
-from d810.recon.facts.carrier import GENERIC_CARRIER_FACT_KINDS
 from d810.recon.facts.value_flow.alias_registry import (
     FACT_TYPE_ALIAS_REGISTRY,
     FactTypeAlias,
@@ -22,10 +21,7 @@ def test_registry_covers_every_canonical_fact_type():
 def test_legacy_kinds_round_trip_through_canonical():
     """Every legacy serialized kind normalizes to a canonical fact type."""
 
-    # The legacy serialized kinds in Phase 1+2 still equal the canonical
-    # string values, so the legacy set equals the canonical set during the
-    # transition.
-    assert vf.all_legacy_kinds() == GENERIC_CARRIER_FACT_KINDS
+    assert vf.all_legacy_kinds().isdisjoint(vf.VALUE_FLOW_FACT_TYPES)
 
     for alias in FACT_TYPE_ALIAS_REGISTRY:
         for legacy in alias.legacy_kinds:
@@ -53,9 +49,7 @@ def test_legacy_kinds_for_returns_tuple_for_known_canonical():
         legacy = vf.legacy_kinds_for(fact_type)
         assert isinstance(legacy, tuple)
         assert len(legacy) >= 1
-        # During Phase 3 every canonical type currently has its own
-        # serialized value as the sole legacy entry.
-        assert fact_type in legacy
+        assert fact_type not in legacy
 
 
 def test_legacy_kinds_for_unknown_returns_empty():

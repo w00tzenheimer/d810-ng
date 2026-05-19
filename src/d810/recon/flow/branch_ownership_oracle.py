@@ -716,7 +716,7 @@ def _normalized_carrier_facts(
         if kind in VALUE_FLOW_FACT_TYPES:
             normalized.append(fact)
             continue
-        if kind != "OllvmSemanticCarrierFact":
+        if kind != "OllvmValueFlowEvidence":
             continue
         if not all(
             hasattr(fact, attr)

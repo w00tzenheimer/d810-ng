@@ -1,11 +1,9 @@
-"""Phase 1 acceptance tests for the value-flow terminology rename.
+"""Acceptance tests for the value-flow terminology rename.
 
 These tests verify that the canonical ``d810.recon.facts.value_flow``
 package exposes the rename surface required by
 ``docs/plans/2026-05-18-value-flow-terminology-rename-design.md`` while
-preserving every legacy carrier-named import path.
-
-Phase 1 is additive: no behavior change, no serialized-kind change.
+preserving the carrier-named import shim.
 """
 from __future__ import annotations
 
@@ -34,21 +32,21 @@ CANONICAL_TO_LEGACY = {
 
 
 @pytest.mark.parametrize("canonical_name,legacy_name", sorted(CANONICAL_TO_LEGACY.items()))
-def test_canonical_constant_matches_legacy_value(canonical_name, legacy_name):
-    """Each canonical *_FACT_TYPE alias preserves the legacy *_FACT_KIND value."""
+def test_canonical_constant_matches_compat_import_value(canonical_name, legacy_name):
+    """Carrier-era constant names now resolve to canonical serialized values."""
 
     assert getattr(vf, canonical_name) == getattr(carrier_mod, legacy_name)
 
 
 def test_canonical_constants_exposed_from_both_modules():
-    """Phase 1 keeps both spellings importable from carrier and value_flow."""
+    """Both spellings are importable from carrier and value_flow."""
 
     for canonical_name in CANONICAL_TO_LEGACY:
         assert getattr(vf, canonical_name) == getattr(carrier_mod, canonical_name)
 
 
 def test_value_flow_fact_types_matches_generic_carrier_fact_kinds():
-    """The canonical type-set equals the legacy kind-set during Phase 1."""
+    """The canonical type-set is exposed from both package surfaces."""
 
     assert vf.VALUE_FLOW_FACT_TYPES == carrier_mod.GENERIC_CARRIER_FACT_KINDS
     assert isinstance(vf.VALUE_FLOW_FACT_TYPES, frozenset)
@@ -87,7 +85,7 @@ def _induction_observation() -> FactObservation:
 
 
 def test_projection_idempotent_under_canonical_alias():
-    """``project_value_flow_facts`` is idempotent (Phase 1 acceptance)."""
+    """``project_value_flow_facts`` is idempotent."""
 
     obs = _induction_observation()
     first = vf.project_value_flow_facts((obs,))
@@ -135,23 +133,23 @@ def test_per_family_submodule_imports_resolve_to_canonical_value():
         CALL_EFFECT_SUMMARY_FACT_TYPE,
     )
 
-    assert OBSERVABLE_MEMORY_DEF_FACT_TYPE == "ObservableStoreFact"
-    assert MUST_ALIAS_FACT_TYPE == "SameCarrierAliasFact"
-    assert SCALAR_PROMOTION_FACT_TYPE == "CarrierStorePromotionFact"
-    assert SCALAR_REPLACEMENT_FACT_TYPE == "LocalStorageScalarizationFact"
-    assert SYMBOLIC_EXPRESSION_FACT_TYPE == "ExpressionCarrierFact"
-    assert LOOP_PREDICATE_VALUE_FACT_TYPE == "LoopPredicateCarrierFact"
-    assert CALL_RETURN_VALUE_FACT_TYPE == "CallResultCarrierFact"
-    assert INDUCTION_VARIABLE_FACT_TYPE == "GenericInductionCarrierFact"
-    assert MATERIALIZATION_POINT_FACT_TYPE == "TerminalMaterializationFact"
-    assert STATE_WRITE_FACT_TYPE == "StateVariableWriteFact"
-    assert STATE_TRANSITION_FACT_TYPE == "StateTransitionCarrierFact"
-    assert EFFECT_PATH_FACT_TYPE == "SideEffectCorridorFact"
-    assert CALL_EFFECT_SUMMARY_FACT_TYPE == "CallSideEffectAnchorFact"
+    assert OBSERVABLE_MEMORY_DEF_FACT_TYPE == "ObservableMemoryDefFact"
+    assert MUST_ALIAS_FACT_TYPE == "MustAliasFact"
+    assert SCALAR_PROMOTION_FACT_TYPE == "ScalarPromotionFact"
+    assert SCALAR_REPLACEMENT_FACT_TYPE == "ScalarReplacementFact"
+    assert SYMBOLIC_EXPRESSION_FACT_TYPE == "SymbolicExpressionFact"
+    assert LOOP_PREDICATE_VALUE_FACT_TYPE == "LoopPredicateValueFact"
+    assert CALL_RETURN_VALUE_FACT_TYPE == "CallReturnValueFact"
+    assert INDUCTION_VARIABLE_FACT_TYPE == "InductionVariableFact"
+    assert MATERIALIZATION_POINT_FACT_TYPE == "MaterializationPointFact"
+    assert STATE_WRITE_FACT_TYPE == "StateWriteFact"
+    assert STATE_TRANSITION_FACT_TYPE == "StateTransitionFact"
+    assert EFFECT_PATH_FACT_TYPE == "EffectPathFact"
+    assert CALL_EFFECT_SUMMARY_FACT_TYPE == "CallEffectSummaryFact"
 
 
-def test_legacy_imports_remain_working():
-    """Phase 1 must not break the legacy carrier import path."""
+def test_carrier_import_shim_remains_working():
+    """The carrier module remains an import shim for migrated constants."""
 
     from d810.recon.facts.carrier import (
         CALL_RESULT_CARRIER_FACT_KIND,
@@ -173,6 +171,6 @@ def test_legacy_imports_remain_working():
 
     assert OBSERVABLE_STORE_FACT_KIND in GENERIC_CARRIER_FACT_KINDS
     assert callable(project_carrier_fact_families)
-    # Spot check: a single legacy constant points at the same value as its
-    # canonical alias.
+    # Spot check: a carrier-era constant name points at the canonical
+    # serialized value.
     assert CALL_RESULT_CARRIER_FACT_KIND == vf.CALL_RETURN_VALUE_FACT_TYPE

@@ -167,14 +167,11 @@ class ReturnSlotFactCollector:
     class :class:`ReturnValueFactCollector` is reserved for facts about
     the recovered semantic value once a producer exists.
 
-    The legacy class name ``ReturnCarrierFactCollector`` is preserved as
-    an alias at the end of this module. The serialized
-    ``FactObservation.kind`` value stays ``"ReturnCarrierFact"`` so old
-    diag SQLite snapshots remain queryable via the Phase 3 alias
-    registry.
+    ``ReturnCarrierFactCollector`` is preserved as an import alias only.
+    Projected value-flow facts serialize as ``MaterializationPointFact``.
     """
 
-    name = "ReturnCarrierFactCollector"
+    name = "ReturnSlotFactCollector"
     fact_kinds = frozenset({"ReturnCarrierFact"})
     maturities = _TARGET_MATURITIES
 

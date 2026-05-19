@@ -341,17 +341,14 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
 class OllvmValueFlowEvidenceCollector:
     """Observe OLLVM value-flow evidence without changing behavior.
 
-    Canonical class name (value-flow rename Phase 4). The legacy class
-    name ``OllvmSemanticCarrierFactCollector`` is preserved as an alias
-    at the end of this module. The serialized ``FactObservation.kind``
-    value stays ``"OllvmSemanticCarrierFact"`` so old diag SQLite
-    snapshots remain queryable via the Phase 3 alias registry. This
-    collector remains fixture/oracle evidence per ADR-12; it is not the
-    generic value-flow ontology.
+    Canonical class name for OLLVM-specific value-flow evidence. The legacy
+    class name ``OllvmSemanticCarrierFactCollector`` is preserved as an import
+    alias only. New observations emit ``"OllvmValueFlowEvidence"`` so raw
+    profile evidence no longer uses carrier-era serialized terminology.
     """
 
-    name = "OllvmSemanticCarrierFactCollector"
-    fact_kinds = frozenset({"OllvmSemanticCarrierFact"})
+    name = "OllvmValueFlowEvidenceCollector"
+    fact_kinds = frozenset({"OllvmValueFlowEvidence"})
     maturities = _TARGET_MATURITIES
 
     def collect(
@@ -407,7 +404,7 @@ class OllvmValueFlowEvidenceCollector:
             observations.append(
                 FactObservation(
                     fact_id=fact_id,
-                    kind="OllvmSemanticCarrierFact",
+                    kind="OllvmValueFlowEvidence",
                     semantic_key=semantic_key,
                     maturity=maturity_text,
                     phase=phase,

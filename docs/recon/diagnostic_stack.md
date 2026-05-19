@@ -300,12 +300,11 @@ at least one secondary case (likely the byte-counter).
 ## Vocabulary: value-flow facts and historical names
 
 The fact ontology described above is the **value-flow** family per
-``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``. Code
-symbols and serialized fact-kind strings still use the older
-"carrier" vocabulary; the diagnostic alias registry at
-``d810.recon.facts.value_flow.alias_registry`` normalizes raw
-``FactObservation.kind`` values into canonical fact types at query
-time.
+``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``. New
+projected value-flow facts use canonical serialized
+``FactObservation.kind`` values. The diagnostic alias registry at
+``d810.recon.facts.value_flow.alias_registry`` still records historical
+carrier-era names for reading archived diagnostics and old notes.
 
 When reading older code paths, diag SQL, or archived notes, translate
 as follows:
@@ -332,10 +331,9 @@ as follows:
 |`ReturnCarrierFactCollector`|`ReturnSlotFactCollector` (with `ReturnValueFactCollector` reserved for value-recovery facts)|
 |`OllvmSemanticCarrierFactCollector`|`OllvmValueFlowEvidenceCollector`|
 
-The legacy collector class names remain importable as compatibility
-aliases. The serialized ``FactObservation.kind`` values stay at their
-historical strings; old diag SQLite snapshots therefore remain
-queryable through the canonical surface without rewrites.
+The carrier-era collector class names remain importable as compatibility
+aliases, but runtime registration and new raw OLLVM evidence use the
+canonical collector names.
 
 See the Phase 0 inventory under ``.tmp/terminology_rename/`` for the
 full glossary, term definitions (materialization point, ModRef,
