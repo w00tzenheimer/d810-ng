@@ -427,7 +427,10 @@ class OllvmValueFlowEvidenceCollector:
         return tuple(observations)
 
 
-__all__ = ["OllvmSemanticCarrierFactCollector"]
+__all__ = [
+    "OllvmSemanticCarrierFactCollector",
+    "OllvmValueFlowEvidenceCollector",
+]
 
 
 # Legacy class name kept as an alias during the value-flow rename.

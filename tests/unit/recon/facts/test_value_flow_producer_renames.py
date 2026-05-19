@@ -57,7 +57,11 @@ def test_return_slot_collector_alias_matches_legacy():
     # without a second migration when a real producer is added.
     placeholder = ReturnValueFactCollector()
     assert placeholder.collect(None, func_ea=0, maturity=0, phase="pre_d810") == ()
-    assert ReturnValueFactCollector.fact_kinds == frozenset({"ReturnValueFact"})
+    # fact_kinds stays empty until a real producer lands and the canonical
+    # ReturnValueFact type is registered in the alias registry. An
+    # unregistered fact-kind string would confuse the diagnostic
+    # canonicalization layer.
+    assert ReturnValueFactCollector.fact_kinds == frozenset()
 
 
 def test_ollvm_value_flow_evidence_collector_alias_matches_legacy():
@@ -73,3 +77,34 @@ def test_ollvm_value_flow_evidence_collector_alias_matches_legacy():
         OllvmValueFlowEvidenceCollector.fact_kinds
         == frozenset({"OllvmSemanticCarrierFact"})
     )
+
+
+def test_collector_module_all_exposes_canonical_and_legacy_names():
+    """`from module import *` must see both spellings.
+
+    The per-collector __all__ lists were initially defined with the
+    legacy carrier-era name only. Star imports and API tooling that
+    walks __all__ would then silently miss the canonical Phase 4
+    classes. This test pins both spellings in __all__ for every
+    renamed module.
+    """
+
+    from d810.recon.facts.collectors import (
+        loop_carrier,
+        ollvm_semantic_carrier,
+        return_carrier,
+    )
+
+    assert set(loop_carrier.__all__) >= {
+        "LoopCarrierFactCollector",
+        "LoopPredicateValueFactCollector",
+    }
+    assert set(ollvm_semantic_carrier.__all__) >= {
+        "OllvmSemanticCarrierFactCollector",
+        "OllvmValueFlowEvidenceCollector",
+    }
+    assert set(return_carrier.__all__) >= {
+        "ReturnCarrierFactCollector",
+        "ReturnSlotFactCollector",
+        "ReturnValueFactCollector",
+    }
