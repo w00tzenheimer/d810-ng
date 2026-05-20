@@ -8,13 +8,6 @@ files:
   - "src/d810/recon/**/*.py"
   - "src/d810/cfg/**/*.py"
 
-ignores:
-  # Existing TYPE_CHECKING-only annotation bridges. Move shared annotation
-  # types lower over time; do not add runtime imports here.
-  - "src/d810/cfg/reorder_blocks_planning.py"
-  - "src/d810/recon/outcome.py"
-  - "src/d810/recon/flow/terminal_corridor_discovery.py"
-
 message: |
   Lower layers must not import optimizer runtime modules.
 

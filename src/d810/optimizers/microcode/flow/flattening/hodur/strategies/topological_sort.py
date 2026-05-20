@@ -105,9 +105,22 @@ class TopologicalSortStrategy:
         snapshot: AnalysisSnapshot,
     ) -> ReorderBlocks | None:
         """Compatibility wrapper over :mod:`d810.cfg.reorder_blocks_planning`."""
+        bst_result = snapshot.bst_result
+        if bst_result is None:
+            return None
         return plan_reorder_blocks(
             snapshot,
-            resolve_target_entry=resolve_target_via_bst,
+            resolve_target_entry=lambda state: resolve_target_via_bst(
+                bst_result,
+                state,
+            ),
+            handler_entry_state_map=(
+                getattr(bst_result, "handler_state_map", {}) or {}
+            ),
+            dispatcher_blocks=frozenset(
+                int(block)
+                for block in (getattr(bst_result, "bst_node_blocks", ()) or ())
+            ),
         )
 
     # ------------------------------------------------------------------
