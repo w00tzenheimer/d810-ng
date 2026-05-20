@@ -50,6 +50,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationPredFix,
     collect_live_single_iteration_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
+    TailGotoMergeCandidate,
+    collect_tail_goto_merge_candidates,
+)
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
 )
@@ -274,6 +278,7 @@ class SimpleFlatteningCleanupDetection:
         BadWhileLoopDependencyDiagnostic, ...
     ] = ()
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
+    tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -288,6 +293,7 @@ class SimpleFlatteningCleanupDetection:
             or self.bad_while_loop_duplicate_replay_candidates
             or self.bad_while_loop_trampoline_isolation_candidates
             or self.fix_predecessor_branch_arm_fixes
+            or self.tail_goto_merges
         )
 
     @property
@@ -330,6 +336,7 @@ class SimpleFlatteningCleanupDetection:
             f"{len(self.bad_while_loop_conditional_redirect_proofs)}"
             f" fix_predecessor_branch_arm="
             f"{len(self.fix_predecessor_branch_arm_fixes)}"
+            f" tail_goto_merge={len(self.tail_goto_merges)}"
         )
 
 
@@ -619,6 +626,20 @@ class LiveSimpleFlatteningCleanupBackend:
                     exc_info=True,
                 )
 
+        tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
+        try:
+            if maturity in self.allowed_maturities:
+                tail_goto_merges = collect_tail_goto_merge_candidates(
+                    IDAIRTranslator().lift(mba)
+                )
+        except Exception as exc:
+            errors.append(f"tail_goto_merge:{type(exc).__name__}")
+            if logger is not None:
+                logger.debug(
+                    "Failed to collect tail-goto merge cleanup candidates",
+                    exc_info=True,
+                )
+
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
@@ -643,6 +664,7 @@ class LiveSimpleFlatteningCleanupBackend:
             fix_predecessor_branch_arm_fixes=tuple(
                 fix_predecessor_branch_arm_fixes
             ),
+            tail_goto_merges=tuple(tail_goto_merges),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,

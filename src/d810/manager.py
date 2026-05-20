@@ -1540,8 +1540,8 @@ class D810Manager:
           mba.verify(True) rejects the inconsistent state at MMAT_GLBOPT2.
         - BlockMergeTransform: same reason - emits NopInstructions on trailing
           gotos, which leaves dangling edges that fail verification at
-          MMAT_GLBOPT2. The BlockMerger rule runs the transform at the legacy
-          flow-rule maturities instead.
+          MMAT_GLBOPT2. The cleanup-family tail-goto merge strategy owns this
+          NOP cleanup in project flow-rule configuration instead.
 
         OpaqueJumpFixerPass and FakeJumpFixerPass are also excluded -
         they require pre-computed fix dicts from the legacy analysis side.

@@ -1300,7 +1300,7 @@ class TestIDAIntegration:
 class TestExecutionPolicyGuard:
     """Safety regressions for the ExecutionPolicy NOP-only gate.
 
-    When execution_policy=NOP_CLEANUP_RELAXED:
+    When execution_policy is one of the relaxed NOP cleanup policies:
     - Plans containing only PatchNopInstructions must pass the step-type guard and
       reach the modifier (the guard must NOT reject them).
     - Plans containing any structural step (redirect, duplicate, insert, etc.) must
@@ -1374,3 +1374,65 @@ class TestExecutionPolicyGuard:
             "NOP-only plan must not be rejected by the step-type guard; "
             "modifier should have been created"
         )
+
+    def test_nop_relaxed_skips_pre_cleanup_post_contract(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """NOP cleanup must reach optimize_local before live post-contract checks."""
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        class _ExplodingContract:
+            def verify(self, *_args, **_kwargs):
+                raise AssertionError("post contract must not run before cleanup")
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        backend = IDAIRTranslator(contract=_ExplodingContract())
+        nop_plan = PatchPlan(
+            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+            execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
+        )
+
+        assert backend.lower(nop_plan, object()) == 1
+        assert len(created) == 1
+        apply_calls = [call for call in created[0].calls if call[0] == "apply"]
+        assert len(apply_calls) == 1
+        assert apply_calls[0][1]["post_apply_hook"] is None
+        assert apply_calls[0][1]["run_optimize_local"] is True
+
+    def test_nop_merge_blocks_relaxed_uses_deep_cleanup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        backend = IDAIRTranslator()
+        nop_plan = PatchPlan(
+            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+            execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
+        )
+
+        assert backend.lower(nop_plan, object()) == 1
+        apply_calls = [call for call in created[0].calls if call[0] == "apply"]
+        assert len(apply_calls) == 1
+        assert apply_calls[0][1]["run_deep_cleaning"] is True
+        assert apply_calls[0][1]["run_optimize_local"] is False

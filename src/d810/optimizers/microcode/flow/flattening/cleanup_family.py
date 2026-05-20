@@ -64,6 +64,12 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     extract_single_iteration_fixes,
     serialize_single_iteration_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
+    TAIL_GOTO_MERGE_METADATA_KEY,
+    TailGotoMergeStrategy,
+    extract_tail_goto_merge_candidates,
+    serialize_tail_goto_merge_candidates,
+)
 
 family_logger = getLogger("D810.unflat.cleanup_family")
 
@@ -109,6 +115,8 @@ class SimpleFlatteningCleanupMetadata:
     bad_while_loop_dependency_diagnostics: int = 0
     collected_fix_predecessor_branch_arm_fixes: int = 0
     selected_fix_predecessor_branch_arm_fixes: int = 0
+    collected_tail_goto_merges: int = 0
+    selected_tail_goto_merges: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -129,6 +137,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             SingleIterationStrategy(),
             BadWhileLoopStrategy(),
             FixPredecessorBranchArmStrategy(),
+            TailGotoMergeStrategy(),
         ]
 
     @property
@@ -218,6 +227,10 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                     detection.fix_predecessor_branch_arm_fixes
                 )
             )
+        if detection.tail_goto_merges:
+            metadata[TAIL_GOTO_MERGE_METADATA_KEY] = (
+                serialize_tail_goto_merge_candidates(detection.tail_goto_merges)
+            )
 
         graph_with_candidates = FlowGraph(
             blocks=flow_graph.blocks,
@@ -284,6 +297,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 graph_with_candidates,
             )
         )
+        selected_tail_goto_merges = extract_tail_goto_merge_candidates(
+            graph_with_candidates
+        )
 
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
             selected_fake_jump_fixes
@@ -324,6 +340,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] = (
             serialize_fix_predecessor_branch_arm_fixes(candidate_branch_arm_fixes)
         )
+        metadata[TAIL_GOTO_MERGE_METADATA_KEY] = (
+            serialize_tail_goto_merge_candidates(selected_tail_goto_merges)
+        )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
@@ -341,6 +360,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 or selected_bad_while_loop_duplicate_replay_candidates
                 or selected_bad_while_loop_trampoline_isolation_candidates
                 or selected_branch_arm_modifications
+                or selected_tail_goto_merges
             ),
             collection_errors=detection.collection_errors,
             collected_bad_while_loop_edits=(
@@ -388,6 +408,8 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             selected_fix_predecessor_branch_arm_fixes=len(
                 selected_branch_arm_modifications
             ),
+            collected_tail_goto_merges=len(detection.tail_goto_merges),
+            selected_tail_goto_merges=len(selected_tail_goto_merges),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,

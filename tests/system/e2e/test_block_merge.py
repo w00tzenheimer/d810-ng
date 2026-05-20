@@ -1,6 +1,6 @@
-"""System tests for the BlockMerger flow optimization rule.
+"""System tests for cleanup-family tail-goto block merge.
 
-Tests that the BlockMerger rule correctly identifies and merges blocks
+Tests that cleanup-family block merge correctly identifies and merges blocks
 connected by unconditional gotos in real IDA Pro microcode.
 
 These tests require IDA Pro with Hex-Rays decompiler and exercise the
@@ -8,7 +8,7 @@ optimizer against real binaries -- no mocks.
 
 Sample requirements:
     A binary containing functions with redundant goto chains that the
-    BlockMerger should simplify. The libobfuscated sample contains
+    block-merge cleanup should simplify. The libobfuscated sample contains
     OLLVM-flattened functions whose unflattening produces mergeable
     goto chains.
 """
@@ -34,14 +34,14 @@ def _get_default_binary() -> str:
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
-# BlockMerger fires as a cleanup pass after unflattening.  When the
+# Cleanup-family block merge fires after unflattening.  When the
 # unflattener resolves a flattened switch-dispatch, it leaves behind
-# small blocks connected by m_goto instructions.  BlockMerger now delegates
-# to BlockMergeTransform, which emits primitive NopInstructions so IDA can
-# merge the blocks.
+# small blocks connected by m_goto instructions.  The tail-goto merge
+# strategy emits primitive NopInstructions so IDA can merge the blocks.
 #
-# We verify this indirectly: if BlockMerger is active, the deobfuscated
-# code should be cleaner (fewer goto artifacts) than without it.
+# Runtime tests cover exact fallthrough eligibility. These e2e cases keep the
+# default OLLVM project path covered so the cleanup-family registration does not
+# destabilize real decompilation.
 # ---------------------------------------------------------------------------
 
 BLOCK_MERGE_CASES = [
@@ -49,24 +49,22 @@ BLOCK_MERGE_CASES = [
         function="test_function_ollvm_fla_bcf_sub",
         description=(
             "OLLVM FLA+BCF+SUB function produces many small blocks after "
-            "unflattening.  BlockMerger should fire to clean up goto chains."
+            "unflattening. Cleanup-family block merge must stay safe in this path."
         ),
         project="default_unflattening_ollvm.json",
         must_change=True,
         check_stats=True,
-        expected_rules=["BlockMerger"],
         deobfuscated_not_contains=["JUMPOUT"],
     ),
     DeobfuscationCase(
         function="tigress_minmaxarray",
         description=(
             "Tigress-flattened function.  After unflattening, redundant "
-            "goto blocks should be merged by BlockMerger."
+            "goto cleanup eligibility is handled by the cleanup-family runtime."
         ),
         project="default_unflattening_ollvm.json",
         must_change=True,
         check_stats=True,
-        expected_rules=["BlockMerger"],
     ),
 ]
 
@@ -80,12 +78,12 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     return ida_database
 
 
-class TestBlockMerger:
-    """System tests for BlockMerger using real IDA Pro decompilation.
+class TestCleanupFamilyBlockMerge:
+    """System tests for block-merge cleanup using real IDA Pro decompilation.
 
-    BlockMerger identifies blocks whose only exit is an unconditional
-    goto to a block with a single predecessor and NOPs the goto so IDA
-    merges them.  These tests verify the rule fires on real obfuscated
+    The tail-goto merge strategy identifies blocks whose only exit is an
+    unconditional goto to a block with a single predecessor and NOPs the goto
+    so IDA merges them. These tests verify the cleanup family fires on real
     binaries and produces cleaner output.
     """
 
@@ -103,7 +101,7 @@ class TestBlockMerger:
         capture_stats,
         load_expected_stats,
     ):
-        """Verify BlockMerger fires and cleans up goto chains."""
+        """Verify block-merge cleanup fires and cleans up goto chains."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,
@@ -123,31 +121,41 @@ class TestBlockMerger:
 # real ida_hexrays constants.
 # ---------------------------------------------------------------------------
 
-class TestBlockMergerAttributes:
-    """Verify BlockMerger class-level attributes with real IDA constants."""
+class TestCleanupFamilyBlockMergeAttributes:
+    """Verify cleanup-family rule attributes with real IDA constants."""
 
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
-        # NAME is not overridden; .name property returns __class__.__name__
-        assert BlockMerger().name == "BlockMerger"
+        from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
+            SimpleFlatteningCleanupUnflattener,
+        )
+        assert SimpleFlatteningCleanupUnflattener().name == (
+            "SimpleFlatteningCleanupUnflattener"
+        )
 
     @pytest.mark.ida_required
-    def test_description_mentions_merge_or_split(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
-        desc = BlockMerger.DESCRIPTION.lower()
-        assert "split" in desc or "merge" in desc
+    def test_description_mentions_cleanup(self, libobfuscated_setup):
+        from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
+            SimpleFlatteningCleanupUnflattener,
+        )
+        desc = SimpleFlatteningCleanupUnflattener.DESCRIPTION.lower()
+        assert "cleanup" in desc
 
     @pytest.mark.ida_required
-    def test_uses_deferred_cfg_false(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
-        assert BlockMerger.USES_DEFERRED_CFG is False
+    def test_uses_deferred_cfg_true(self, libobfuscated_setup):
+        from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
+            SimpleFlatteningCleanupUnflattener,
+        )
+        assert SimpleFlatteningCleanupUnflattener.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
     def test_safe_maturities_contains_real_constants(self, libobfuscated_setup):
         import ida_hexrays
-        from d810.optimizers.microcode.flow.flattening.block_merge import BlockMerger
-        assert ida_hexrays.MMAT_CALLS in BlockMerger.SAFE_MATURITIES
-        assert ida_hexrays.MMAT_GLBOPT1 in BlockMerger.SAFE_MATURITIES
+        from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
+            SimpleFlatteningCleanupUnflattener,
+        )
+        assert ida_hexrays.MMAT_GLBOPT1 in (
+            SimpleFlatteningCleanupUnflattener.DEFAULT_UNFLATTENING_MATURITIES
+        )

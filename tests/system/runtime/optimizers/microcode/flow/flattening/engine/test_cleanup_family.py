@@ -5,13 +5,21 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateAndRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
     InsertBlock,
+    NopInstructions,
     RedirectGoto,
 )
 from d810.cfg.materialization_payload import (
@@ -19,11 +27,13 @@ from d810.cfg.materialization_payload import (
     CapturedBlockBodySummary,
 )
 from d810.cfg.plan import (
+    ExecutionPolicy,
     LegacyBlockOperation,
     PatchConditionalRedirect,
     PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
+    PatchNopInstructions,
     compile_patch_plan,
 )
 from d810.optimizers.microcode.flow.flattening import (
@@ -105,6 +115,13 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationPredFix,
     extract_single_iteration_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
+    TAIL_GOTO_MERGE_METADATA_KEY,
+    TailGotoMergeCandidate,
+    TailGotoMergeStrategy,
+    collect_tail_goto_merge_candidates,
+    extract_tail_goto_merge_candidates,
+)
 from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
     SimpleFlatteningCleanupUnflattener,
 )
@@ -121,7 +138,12 @@ def _block(
 ) -> BlockSnapshot:
     insn_snapshots = ()
     if tail_target is not None:
-        target_mop = MopSnapshot(t=7, size=4, block_ref=tail_target)
+        target_mop = MopSnapshot(
+            t=7,
+            size=4,
+            block_ref=tail_target,
+            kind=OperandKind.BLOCK,
+        )
         insn_snapshots = (
             InsnSnapshot(
                 opcode=0x200,
@@ -129,6 +151,7 @@ def _block(
                 operands=(target_mop,),
                 operand_slots=(("d", target_mop),),
                 d=target_mop,
+                kind=InsnKind.GOTO,
             ),
         )
     return BlockSnapshot(
@@ -167,6 +190,9 @@ def _cleanup_flow_graph() -> FlowGraph:
             61: _block(61, (60,), (), start_ea=0x401061),
             62: _block(62, (60,), (), start_ea=0x401062),
             63: _block(63, (60,), (), start_ea=0x401063),
+            70: _block(70, (71,), (), start_ea=0x401070, tail_target=71),
+            71: _block(71, (72,), (70,), start_ea=0x401071),
+            72: _block(72, (), (71,), block_type=2, start_ea=0x401072),
         },
         entry_serial=0,
         func_ea=0x401000,
@@ -287,6 +313,7 @@ def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
         "single_iteration",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
+        "tail_goto_merge",
     ]
 
 
@@ -401,6 +428,13 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert conditional_proof.ref_block == 44
     assert conditional_proof.verdict is CleanupProofVerdict.UNSAFE
     assert detection.bad_while_loop_follow_up == (bad_while_loop_follow_up,)
+    assert detection.tail_goto_merges == (
+        TailGotoMergeCandidate(
+            block_serial=70,
+            successor_serial=71,
+            insn_ea=0x5000 + 70,
+        ),
+    )
     assert detection.collection_errors == ()
     assert calls["fake_jump"][0] is mba
     assert calls["fake_jump"][1]["max_nb_block"] == 100
@@ -922,12 +956,18 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
             fallthrough_target=45,
         ),
     )
+    tail_goto_merge = TailGotoMergeCandidate(
+        block_serial=70,
+        successor_serial=71,
+        insn_ea=0x5000 + 70,
+    )
     backend = _FakeBackend(
         SimpleFlatteningCleanupDetection(
             fake_jump_fixes=(fake_jump_fix,),
             single_iteration_fixes=single_iteration_fixes,
             bad_while_loop_edits=bad_while_loop_edits,
             bad_while_loop_follow_up=bad_while_loop_follow_up,
+            tail_goto_merges=(tail_goto_merge,),
             maturity=ida_hexrays.MMAT_GLBOPT1,
             func_ea=0x401000,
         )
@@ -949,6 +989,9 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (
         bad_while_loop_follow_up
     )
+    assert extract_tail_goto_merge_candidates(snapshot.flow_graph) == (
+        tail_goto_merge,
+    )
     assert snapshot.state_machine is None
     assert snapshot.state_summary == StateModelSummary(
         state_constants=frozenset(),
@@ -963,6 +1006,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         "single_iteration",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
+        "tail_goto_merge",
     )
     assert metadata.collected_fake_jump_fixes == 1
     assert metadata.selected_fake_jump_fixes == 1
@@ -972,6 +1016,8 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.selected_bad_while_loop_edits == 3
     assert metadata.deferred_bad_while_loop_edits == 0
     assert metadata.bad_while_loop_follow_up == 1
+    assert metadata.collected_tail_goto_merges == 1
+    assert metadata.selected_tail_goto_merges == 1
     assert metadata.planning_ready is True
 
     fragment = BadWhileLoopStrategy().plan(snapshot)
@@ -991,6 +1037,78 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         )
         for step in patch_plan.steps
     )
+
+
+def test_tail_goto_merge_strategy_emits_relaxed_nop_cleanup() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x401000),
+            1: _block(1, (2,), (0,), start_ea=0x401001, tail_target=2),
+            2: _block(2, (), (1,), block_type=2, start_ea=0x401002),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    candidate = TailGotoMergeCandidate(
+        block_serial=1,
+        successor_serial=2,
+        insn_ea=0x5000 + 1,
+    )
+    assert collect_tail_goto_merge_candidates(cfg) == (candidate,)
+
+    backend = _FakeBackend(
+        SimpleFlatteningCleanupDetection(
+            tail_goto_merges=(candidate,),
+            maturity=ida_hexrays.MMAT_CALLS,
+            func_ea=0x401000,
+        )
+    )
+    family = SimpleFlatteningCleanupFamily(
+        backend=backend,
+        cfg_translator=_FakeTranslator(cfg),
+    )
+    snapshot = family.build_snapshot(_fake_mba(), family.detect(_fake_mba()))
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+
+    assert metadata.planning_ready is True
+    assert metadata.collected_tail_goto_merges == 1
+    assert metadata.selected_tail_goto_merges == 1
+    assert extract_tail_goto_merge_candidates(snapshot.flow_graph) == (candidate,)
+
+    fragment = TailGotoMergeStrategy().plan(snapshot)
+    assert fragment is not None
+    assert fragment.modifications == [
+        NopInstructions(block_serial=1, insn_eas=(0x5001,))
+    ]
+    assert fragment.metadata["execution_policy"] == "nop_merge_blocks_relaxed"
+    assert fragment.metadata[TAIL_GOTO_MERGE_METADATA_KEY] == [
+        {"block_serial": 1, "successor_serial": 2, "insn_ea": 0x5001}
+    ]
+
+    patch_plan = compile_patch_plan(
+        fragment.modifications,
+        snapshot.flow_graph,
+        execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
+    )
+    assert patch_plan.execution_policy is ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED
+    assert patch_plan.steps == (
+        PatchNopInstructions(block_serial=1, insn_eas=(0x5001,)),
+    )
+
+
+def test_tail_goto_merge_rejects_non_fallthrough_successor() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x401000),
+            1: _block(1, (3,), (0,), start_ea=0x401001, tail_target=3),
+            2: _block(2, (), (), block_type=2, start_ea=0x401002),
+            3: _block(3, (), (1,), block_type=2, start_ea=0x401003),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    assert collect_tail_goto_merge_candidates(cfg) == ()
 
 
 def test_simple_cleanup_family_selects_and_plans_direct_side_effect_replay() -> None:

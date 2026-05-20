@@ -28,10 +28,14 @@ class ExecutionPolicy(str, Enum):
     NOP_CLEANUP_RELAXED: Only NOP-kind steps allowed. Tolerates transient
         verify failure (INTERR 50846) without rollback. Used exclusively by
         StateConstantReturnFixupStrategy for stale feeder cleanup.
+    NOP_MERGE_BLOCKS_RELAXED: Only NOP-kind steps allowed. Runs the backend
+        merge-block cleanup before native verify so tail-goto NOP cleanup can
+        let Hex-Rays coalesce linear blocks.
     """
 
     STRICT = "strict"
     NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
+    NOP_MERGE_BLOCKS_RELAXED = "nop_merge_blocks_relaxed"
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
