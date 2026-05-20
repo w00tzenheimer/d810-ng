@@ -105,6 +105,7 @@ class AnalysisSnapshot:
     dispatcher_cache: object | None = None  # opaque object; family-specific concrete type
     bst_result: object | None = None
     bst_dispatcher_serial: int = -1
+    dispatcher_blocks: frozenset[int] = field(default_factory=frozenset)
     handler_graph: dict = field(default_factory=dict)
     reachability: ReachabilityInfo | None = None
     state_write_provenance: dict = field(default_factory=dict)
@@ -158,6 +159,10 @@ class AnalysisSnapshot:
         return _coerce_state_constants(
             getattr(self.state_machine, "state_constants", None)
         )
+
+    @property
+    def dispatcher_serial(self) -> int:
+        return int(self.bst_dispatcher_serial)
 
     @property
     def handler_count(self) -> int:

@@ -27,8 +27,8 @@ def _flow_graph(block_kinds: dict[int, BlockKind]) -> FlowGraph:
 
 
 def test_compute_reorder_blocks_returns_none_without_state_machine():
-    snapshot = SimpleNamespace(state_machine=None, bst_result=None, mba=None)
-    assert compute_reorder_blocks(snapshot, resolve_target_entry=lambda bst, state: None) is None
+    snapshot = SimpleNamespace(state_machine=None, flow_graph=None)
+    assert compute_reorder_blocks(snapshot, resolve_target_entry=lambda state: None) is None
 
 
 def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
@@ -51,7 +51,6 @@ def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
     )
     snapshot = SimpleNamespace(
         state_machine=state_machine,
-        bst_result=bst_result,
         flow_graph=_flow_graph(
             {
                 10: BlockKind.ONE_WAY,
@@ -64,7 +63,9 @@ def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
 
     result = compute_reorder_blocks(
         snapshot,
-        resolve_target_entry=lambda bst_result, state: {2: 200, 3: 300}.get(state),
+        resolve_target_entry=lambda state: {2: 200, 3: 300}.get(state),
+        handler_entry_state_map=bst_result.handler_state_map,
+        dispatcher_blocks=bst_result.bst_node_blocks,
     )
     assert result is not None
     assert result.dfs_block_order == (10, 11, 20, 30)

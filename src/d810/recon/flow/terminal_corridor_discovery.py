@@ -10,18 +10,13 @@ from d810.cfg.flow.terminal_frontier import (
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
 from d810.recon.flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
     find_terminal_exit_target_snapshot,
 )
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
-
-if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
-        AnalysisSnapshot,
-    )
 
 
 class CarrierSourceKind(str, enum.Enum):
@@ -126,17 +121,37 @@ class TerminalCorridorDiscoveryResult:
     failure_reason: str | None = None
 
 
-def _collect_state_machine_blocks(state_machine: object | None) -> set[int]:
+class _StateMachineHandlerLike(Protocol):
+    check_block: int
+    handler_blocks: Sequence[int]
+
+
+class _StateMachineLike(Protocol):
+    handlers: Mapping[int, _StateMachineHandlerLike]
+    state_var: object | None
+
+
+class _TerminalCorridorSnapshot(Protocol):
+    flow_graph: object | None
+    state_machine: _StateMachineLike | None
+    dispatcher_serial: int
+    detector: object | None
+    dispatcher_blocks: AbstractSet[int]
+    mba: object | None
+    state_constants: AbstractSet[int]
+
+
+def _collect_state_machine_blocks(state_machine: _StateMachineLike | None) -> set[int]:
     if state_machine is None:
         return set()
     blocks: set[int] = set()
-    for handler in getattr(state_machine, "handlers", {}).values():
+    for handler in state_machine.handlers.values():
         blocks.add(int(handler.check_block))
         blocks.update(int(serial) for serial in handler.handler_blocks)
     return blocks
 
 
-def resolve_state_var_stkoff(snapshot: AnalysisSnapshot) -> int | None:
+def resolve_state_var_stkoff(snapshot: _TerminalCorridorSnapshot) -> int | None:
     """Resolve the state variable stack offset from a snapshot."""
 
     state_var_stkoff: int | None = None
@@ -164,7 +179,7 @@ def _resolve_pre_header_serial(
     flow_graph,
     *,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    dispatcher_blocks: set[int],
 ) -> int | None:
     blk0 = flow_graph.get_block(0)
     if blk0 is None or blk0.nsucc != 1:
@@ -172,7 +187,7 @@ def _resolve_pre_header_serial(
     succ0 = blk0.succs[0] if blk0.succs else None
     if succ0 is None:
         return None
-    if succ0 == dispatcher_serial or succ0 in bst_node_blocks:
+    if succ0 == dispatcher_serial or succ0 in dispatcher_blocks:
         return 0
     return None
 
@@ -653,14 +668,12 @@ def discover_shared_corridor(
 
 
 def discover_terminal_corridor_group(
-    snapshot: AnalysisSnapshot,
+    snapshot: _TerminalCorridorSnapshot,
     *,
     anchor_note: str,
 ) -> TerminalCorridorDiscoveryResult:
     if snapshot.flow_graph is None:
         return TerminalCorridorDiscoveryResult(None, "missing_flow_graph")
-    if snapshot.bst_result is None:
-        return TerminalCorridorDiscoveryResult(None, "missing_bst_result")
     if snapshot.state_machine is None:
         return TerminalCorridorDiscoveryResult(None, "missing_state_machine")
 
@@ -669,14 +682,17 @@ def discover_terminal_corridor_group(
         return TerminalCorridorDiscoveryResult(None, "state_var_stkoff is None")
 
     flow_graph = snapshot.flow_graph
-    dispatcher_serial = int(snapshot.bst_dispatcher_serial)
-    bst_result = snapshot.bst_result
+    dispatcher_serial = int(snapshot.dispatcher_serial)
+    if dispatcher_serial < 0:
+        return TerminalCorridorDiscoveryResult(None, "missing_bst_result")
     state_machine = snapshot.state_machine
 
-    bst_node_blocks: set[int] = set(getattr(bst_result, "bst_node_blocks", set()) or set())
-    bst_node_blocks.add(dispatcher_serial)
+    dispatcher_blocks: set[int] = set(
+        int(block) for block in snapshot.dispatcher_blocks
+    )
+    dispatcher_blocks.add(dispatcher_serial)
 
-    handlers = getattr(state_machine, "handlers", {}) or {}
+    handlers = state_machine.handlers
     if not handlers:
         return TerminalCorridorDiscoveryResult(None, "no handlers in state machine")
 
@@ -704,10 +720,10 @@ def discover_terminal_corridor_group(
     pre_header_serial = _resolve_pre_header_serial(
         flow_graph,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_node_blocks,
+        dispatcher_blocks=dispatcher_blocks,
     )
     full_infra = frozenset(
-        bst_node_blocks
+        dispatcher_blocks
         | {dispatcher_serial}
         | set(suffix_serials)
         | ({pre_header_serial} if pre_header_serial is not None else set())

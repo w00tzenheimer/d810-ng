@@ -445,6 +445,12 @@ class HodurStrategyFamily(CFFStrategyFamily):
             dispatcher_cache=dispatcher_cache,
             bst_result=bst_result,
             bst_dispatcher_serial=bst_dispatcher_serial,
+            dispatcher_blocks=frozenset(
+                int(block)
+                for block in (
+                    getattr(bst_result, "bst_node_blocks", set()) or set()
+                )
+            ),
             reachability=reachability,
             maturity=mba.maturity,
             pass_number=self._pass_number,

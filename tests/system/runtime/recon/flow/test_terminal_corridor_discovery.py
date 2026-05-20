@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
 from d810.recon.flow.terminal_corridor_discovery import (
     CarrierSourceKind,
     CorridorRecommendation,
@@ -133,12 +132,13 @@ def test_discover_terminal_corridor_group_collects_shared_frontier():
             2: SimpleNamespace(check_block=11, handler_blocks=(11,)),
         },
     )
-    snapshot = AnalysisSnapshot(
+    snapshot = SimpleNamespace(
         mba=None,
         state_machine=state_machine,
         detector=None,
-        bst_result=SimpleNamespace(bst_node_blocks=set()),
-        bst_dispatcher_serial=2,
+        dispatcher_blocks=frozenset(),
+        dispatcher_serial=2,
+        state_constants=frozenset(),
         flow_graph=flow_graph,
     )
 
@@ -156,3 +156,81 @@ def test_discover_terminal_corridor_group_collects_shared_frontier():
         "unit-test-anchor",
         "unit-test-anchor",
     )
+
+
+def test_discover_terminal_corridor_group_rejects_missing_dispatcher_evidence():
+    flow_graph = _FakeFlowGraph(
+        (
+            _FakeBlock(10, (20,), ()),
+            _FakeBlock(11, (20,), ()),
+            _FakeBlock(20, (30,), (10, 11)),
+            _FakeBlock(30, (40,), (20,)),
+            _FakeBlock(40, (), (30,), tail_opcode=ida_hexrays.m_ret, block_type=1),
+        )
+    )
+    state_machine = SimpleNamespace(
+        state_var=_FakeStateVar(0x10),
+        state_constants=set(),
+        handlers={
+            1: SimpleNamespace(check_block=10, handler_blocks=(10,)),
+            2: SimpleNamespace(check_block=11, handler_blocks=(11,)),
+        },
+    )
+    snapshot = SimpleNamespace(
+        mba=None,
+        state_machine=state_machine,
+        detector=None,
+        dispatcher_blocks=frozenset(),
+        dispatcher_serial=-1,
+        state_constants=frozenset(),
+        flow_graph=flow_graph,
+    )
+
+    result = discover_terminal_corridor_group(
+        snapshot,
+        anchor_note="unit-test-anchor",
+    )
+
+    assert result.group is None
+    assert result.failure_reason == "missing_bst_result"
+
+
+def test_discover_terminal_corridor_group_excludes_dispatcher_block_set():
+    flow_graph = _FakeFlowGraph(
+        (
+            _FakeBlock(2, (10,), (), block_type=4),
+            _FakeBlock(9, (20,), (), block_type=4),
+            _FakeBlock(10, (20,), (2,)),
+            _FakeBlock(11, (20,), (), tail_opcode=ida_hexrays.m_goto),
+            _FakeBlock(20, (30,), (9, 10, 11)),
+            _FakeBlock(30, (40,), (20,)),
+            _FakeBlock(40, (), (30,), tail_opcode=ida_hexrays.m_ret, block_type=1),
+        )
+    )
+    state_machine = SimpleNamespace(
+        state_var=_FakeStateVar(0x10),
+        state_constants=set(),
+        handlers={
+            1: SimpleNamespace(check_block=10, handler_blocks=(10,)),
+            2: SimpleNamespace(check_block=11, handler_blocks=(11,)),
+        },
+    )
+    snapshot = SimpleNamespace(
+        mba=None,
+        state_machine=state_machine,
+        detector=None,
+        dispatcher_blocks=frozenset({2, 9}),
+        dispatcher_serial=2,
+        state_constants=frozenset(),
+        flow_graph=flow_graph,
+    )
+
+    result = discover_terminal_corridor_group(
+        snapshot,
+        anchor_note="unit-test-anchor",
+    )
+
+    assert result.failure_reason is None
+    assert result.group is not None
+    assert result.group.full_infra >= frozenset({2, 9})
+    assert result.group.anchors == (10, 11)

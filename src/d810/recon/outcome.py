@@ -12,14 +12,7 @@ and diagnostic purposes.
 """
 from __future__ import annotations
 
-from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.context import FlowGateDecision
-    from d810.optimizers.microcode.flow.flattening.engine.provenance import (
-        PipelineProvenance,
-    )
-    from d810.recon.runtime import ReconOutcome
+from d810.core.typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -68,13 +61,30 @@ class ConsumerOutcomeReport(Protocol):
         ...
 
 
+class _ReconOutcomeLike(Protocol):
+    func_ea: int
+    hints: object | None
+    apply_result: object | None
+    source: str
+
+
+class _PipelineProvenanceLike(Protocol):
+    input_summary: object | None
+    rows: object
+    accepted_count: int
+
+
+class _FlowGateDecisionLike(Protocol):
+    allowed: bool
+
+
 class RuleScopeOutcomeAdapter:
     """Adapter exposing :class:`ReconOutcome` as a :class:`ConsumerOutcomeReport`.
 
     Wraps the rule-scope consumer's outcome without modifying it.
     """
 
-    def __init__(self, outcome: ReconOutcome) -> None:
+    def __init__(self, outcome: _ReconOutcomeLike) -> None:
         self._outcome = outcome
 
     @property
@@ -125,7 +135,7 @@ class PlannerOutcomeAdapter:
     Wraps the Hodur planner's provenance ledger without modifying it.
     """
 
-    def __init__(self, provenance: PipelineProvenance, func_ea: int) -> None:
+    def __init__(self, provenance: _PipelineProvenanceLike, func_ea: int) -> None:
         self._provenance = provenance
         self._func_ea = func_ea
 
@@ -168,7 +178,12 @@ class FlowGateOutcomeAdapter:
     Wraps the flow-context gate decision without modifying it.
     """
 
-    def __init__(self, decision: FlowGateDecision, func_ea: int, gate_name: str = "flow_gate") -> None:
+    def __init__(
+        self,
+        decision: _FlowGateDecisionLike,
+        func_ea: int,
+        gate_name: str = "flow_gate",
+    ) -> None:
         self._decision = decision
         self._func_ea = func_ea
         self._gate_name = gate_name

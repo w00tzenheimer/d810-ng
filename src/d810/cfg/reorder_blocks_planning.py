@@ -2,23 +2,49 @@
 from __future__ import annotations
 
 from d810.core import logging
-from d810.core.typing import TYPE_CHECKING, Callable
+from d810.core.typing import (
+    AbstractSet,
+    Callable,
+    Iterable,
+    Mapping,
+    Protocol,
+    Sequence,
+)
 
 from d810.cfg.flowgraph import BlockKind
 from d810.cfg.graph_modification import ReorderBlocks
 
-if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
-        AnalysisSnapshot,
-    )
-
 logger = logging.getLogger("D810.cfg.reorder_blocks_planning")
 
 
+class _HandlerLike(Protocol):
+    check_block: int | None
+    handler_blocks: Sequence[int]
+
+
+class _TransitionLike(Protocol):
+    from_block: int
+    to_state: int
+    is_conditional: bool
+
+
+class _StateMachineLike(Protocol):
+    initial_state: int | None
+    handlers: Mapping[int, _HandlerLike]
+    transitions: Iterable[_TransitionLike]
+
+
+class _ReorderPlanningSnapshot(Protocol):
+    state_machine: _StateMachineLike | None
+    flow_graph: object | None
+
+
 def compute_reorder_blocks(
-    snapshot: "AnalysisSnapshot",
+    snapshot: _ReorderPlanningSnapshot,
     *,
-    resolve_target_entry: Callable[[object, int], int | None],
+    resolve_target_entry: Callable[[int], int | None],
+    handler_entry_state_map: Mapping[int, int] | None = None,
+    dispatcher_blocks: AbstractSet[int] | None = None,
 ) -> ReorderBlocks | None:
     """Compute a :class:`ReorderBlocks` modification from the snapshot."""
     sm = snapshot.state_machine
@@ -27,37 +53,28 @@ def compute_reorder_blocks(
     if sm.initial_state is None:
         return None
 
-    bst_result = snapshot.bst_result
-    if bst_result is None:
-        return None
-
-    handler_state_map: dict[int, int] = getattr(
-        bst_result, "handler_state_map", {}
-    ) or {}
-    if not handler_state_map:
-        return None
-
-    range_map: dict[int, tuple[int | None, int | None]] = getattr(
-        bst_result, "handler_range_map", {}
-    ) or {}
-
     initial_state = sm.initial_state
     assert initial_state is not None
 
-    entry_to_state: dict[int, int] = {
-        serial: state for serial, state in handler_state_map.items()
-    }
+    entry_to_state: dict[int, int] = (
+        {
+            int(serial): int(state)
+            for serial, state in handler_entry_state_map.items()
+        }
+        if handler_entry_state_map is not None
+        else {}
+    )
+    if not entry_to_state:
+        for state, handler in sm.handlers.items():
+            check_block = handler.check_block
+            if check_block is not None:
+                entry_to_state[int(check_block)] = int(state)
+            handler_blocks = handler.handler_blocks or ()
+            if handler_blocks:
+                entry_to_state.setdefault(int(handler_blocks[0]), int(state))
 
     def _resolve_entry(to_state: int) -> int | None:
-        target = resolve_target_entry(bst_result, to_state)
-        if target is not None:
-            return target
-        for serial, (low, high) in range_map.items():
-            lo = low if low is not None else 0
-            hi = high if high is not None else 0xFFFFFFFF
-            if lo <= to_state <= hi:
-                return serial
-        return None
+        return resolve_target_entry(to_state)
 
     visited_states: set[int] = set()
     dfs_block_order: list[int] = []
@@ -86,6 +103,8 @@ def compute_reorder_blocks(
             if target_entry is None:
                 continue
             target_state = entry_to_state.get(target_entry)
+            if target_state is None and trans.to_state in sm.handlers:
+                target_state = trans.to_state
             if target_state is None:
                 continue
             if trans.is_conditional:
@@ -110,10 +129,10 @@ def compute_reorder_blocks(
 
     non_2way_serials: tuple[int, ...] = ()
     two_way_serials: tuple[int, ...] = ()
-    flow_graph = getattr(snapshot, "flow_graph", None)
-    bst_blocks: frozenset[int] = (
-        frozenset(bst_result.bst_node_blocks)
-        if bst_result is not None and bst_result.bst_node_blocks
+    flow_graph = snapshot.flow_graph
+    dispatcher_block_set: frozenset[int] = (
+        frozenset(int(block) for block in dispatcher_blocks)
+        if dispatcher_blocks is not None
         else frozenset()
     )
     if flow_graph is not None:
@@ -124,7 +143,10 @@ def compute_reorder_blocks(
             blk = get_block(serial) if callable(get_block) else None
             if blk is None:
                 continue
-            if getattr(blk, "kind", BlockKind.UNKNOWN) == BlockKind.TWO_WAY and serial not in bst_blocks:
+            if (
+                getattr(blk, "kind", BlockKind.UNKNOWN) == BlockKind.TWO_WAY
+                and serial not in dispatcher_block_set
+            ):
                 _two_way.append(serial)
             else:
                 _non_2way.append(serial)
