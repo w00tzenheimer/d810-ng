@@ -197,7 +197,7 @@ def main() -> int:
     # Step 4: Update hodur/unflattener.py (TODO - manual step)
     print("\nStep 4: Manual step required")
     print("  Update hodur/unflattener.py to use strategy pattern")
-    print("  See ARCHITECTURE_PLAN.md for details")
+    print("  See docs/ARCHITECTURE_PLAN.md for details")
 
     print("-" * 60)
     if dry_run:

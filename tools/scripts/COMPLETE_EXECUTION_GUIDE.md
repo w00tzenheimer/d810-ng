@@ -174,7 +174,7 @@ After all phases:
 
 ### Documentation
 - [ ] `ARCHITECTURE.md` updated
-- [ ] `ARCHITECTURE_PLAN.md` exists
+- [ ] `docs/ARCHITECTURE_PLAN.md` exists
 - [ ] Deprecation notices in place
 
 ---
@@ -275,7 +275,7 @@ grep "class UnflatteningPlanner" src/d810/optimizers/microcode/flow/flattening/p
 
 If you encounter issues not covered here:
 
-1. Check `ARCHITECTURE_PLAN.md` for detailed design
+1. Check `docs/ARCHITECTURE_PLAN.md` for detailed design
 2. Review codemod source code for expected behavior
 3. Run codemods in dry-run mode to see what they would do
 4. Check git history for recent changes
