@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     HintAdjustment,
     PlannerCandidate,
     PlannerDecision,
     PlannerDecisionReason,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
@@ -299,7 +299,7 @@ class TestPlannerDecision:
 
     def test_all_reasons_mapped(self) -> None:
         """Every PlannerDecisionReason must produce a valid DecisionRecord."""
-        from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+        from d810.optimizers.microcode.flow.flattening.engine.planner import (
             _REASON_TO_CODE,
             _REASON_TO_PHASE,
         )

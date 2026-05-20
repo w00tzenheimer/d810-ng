@@ -22,6 +22,9 @@ from d810.evaluator.hexrays_microcode.forward_dataflow import (
     build_constant_entry_state,
     run_forward_fixpoint_on_mba,
 )
+from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    recognize_derived_xor_dispatcher_models,
+)
 from d810.hexrays.ir.mop_utils import (
     _VALID_MOP_SIZES)
 from d810.hexrays.ir.mop_utils import (
@@ -184,6 +187,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(
             default_missing=TOP
         )
+        self._derived_xor_owned_mbas: weakref.WeakKeyDictionary = (
+            weakref.WeakKeyDictionary()
+        )
+        self._derived_xor_owned_functions: set[int] = set()
 
     @typing.override
     def configure(self, kwargs):
@@ -194,17 +201,15 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     def optimize(self, blk: ida_hexrays.mblock_t):
         if logger.debug_on:
             logger.debug(
-                "[FCP] optimize() called at maturity=%d (%s) blk=%d",
-                blk.mba.maturity if blk.mba else -1,
+                "[FCP] optimize() called at maturity=%s blk=%d",
                 maturity_to_string(blk.mba.maturity) if blk.mba else "?",
                 blk.serial,
             )
         if self.current_maturity not in self.maturities:
             if logger.debug_on:
                 logger.debug(
-                    "maturity is %s (%d), expecting one of: %s",
+                    "maturity is %s, expecting one of: %s",
                     maturity_to_string(self.current_maturity),
-                    self.current_maturity,
                     ", ".join(map(maturity_to_string, self.maturities)),
                 )
             return 0
@@ -238,6 +243,34 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     maturity_to_string(self.current_maturity),
                     self.current_maturity,
                 )
+            return 0
+
+        func_ea = self._mba_function_ea(mba)
+        if (
+            self._derived_xor_owned_mbas.get(mba)
+            or (func_ea is not None and func_ea in self._derived_xor_owned_functions)
+        ):
+            logger.info(
+                "Skipping %s for previously recognized derived-XOR dispatcher-owned function",
+                self.__class__.__name__,
+            )
+            self._seen[mba] = (
+                self.current_maturity,
+                self.current_generation,
+            )
+            return 0
+        if recognize_derived_xor_dispatcher_models(mba=mba):
+            self._derived_xor_owned_mbas[mba] = True
+            if func_ea is not None:
+                self._derived_xor_owned_functions.add(func_ea)
+            logger.info(
+                "Skipping %s for derived-XOR dispatcher-owned function",
+                self.__class__.__name__,
+            )
+            self._seen[mba] = (
+                self.current_maturity,
+                self.current_generation,
+            )
             return 0
         # Gate: skip FCP at MMAT_CALLS for UNKNOWN-dispatcher functions.
         # At this early maturity the dispatcher CFG is unresolved, so FCP
@@ -277,6 +310,26 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             self.current_generation,
         )  # remember we've run
         return nb_changes
+
+    @staticmethod
+    def _mba_function_ea(mba: ida_hexrays.mba_t) -> typing.Optional[int]:
+        """Return a stable function identity for cross-maturity ownership gates."""
+        for attr_name in ("entry_ea", "maturity_entry_ea"):
+            try:
+                value = int(getattr(mba, attr_name, 0) or 0)
+            except Exception:
+                continue
+            if value not in (0, int(getattr(idaapi, "BADADDR", -1))):
+                return value
+        try:
+            entry_blk = mba.get_mblock(0)
+            if entry_blk is not None:
+                value = int(getattr(entry_blk, "start", 0) or 0)
+                if value not in (0, int(getattr(idaapi, "BADADDR", -1))):
+                    return value
+        except Exception:
+            pass
+        return None
 
     def _run_on_function(self, mba: ida_hexrays.mba_t) -> int:
         """
@@ -336,9 +389,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """
         if logger.debug_on:
             logger.debug(
-                "[FCP] _slow_run_on_function: %d blocks, maturity=%d (%s)",
+                "[FCP] _slow_run_on_function: %d blocks, maturity=%s",
                 mba.qty,
-                mba.maturity,
                 maturity_to_string(mba.maturity),
             )
         IN, _ = self._slow_dataflow(mba)
@@ -523,9 +575,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """Merge SCCP-discovered constants into a block's const map.
 
         For each operand used in *blk* that SCCP resolved to a constant,
-        add the constant to *consts* if the variable is not already ``Const``
-        there (i.e. SCCP can only *add* knowledge, never override what the
-        simple GEN/KILL dataflow already found).
+        add the constant to *consts* unless simple GEN/KILL already proved a
+        concrete constant.  SCCP is allowed to refine ``TOP`` conflicts because
+        dispatcher recovery often needs the CFG-aware lattice to recover a
+        state carrier after a merge.  Profiles with known pre-recovery carrier
+        hazards disable FCP explicitly instead of weakening this refinement.
 
         The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
         operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
@@ -711,13 +765,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             is_shift_amount=(ins.opcode in _SHIFT_OPCODES),
         ):
             changed = True
-        # stx destination address is also an input
-        if (
-            ins.opcode == ida_hexrays.m_stx
-            and ins.d
-            and self._slow_process_operand(ins.d, env)
-        ):
-            changed = True
+        # Do not fold the destination address of m_stx.  The d operand is a
+        # memory address, not a scalar assignment target.  On unresolved
+        # dispatcher CFGs, folding a pointer carrier here can turn a shared
+        # terminal store into MEMORY[0].
         # m_call: args are in ins.d (mop_f); substitute constants into them
         if (
             ins.opcode == ida_hexrays.m_call
@@ -901,13 +952,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             return None
         if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
             return get_stack_var_name(d)
-        if ins.opcode != ida_hexrays.m_stx:
-            return None
-        if d.t == ida_hexrays.mop_S:
-            return get_stack_var_name(d)
-        base, off = extract_base_and_offset(d)
-        if base and (base_name := get_stack_var_name(base)):
-            return f"{base_name}+{off:X}" if off else base_name
         return None
 
     # is instruction a constant store into stack?
@@ -920,11 +964,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}
         ):
             return True
-        if ins.opcode == ida_hexrays.m_stx:
-            if ins.d and ins.d.t == ida_hexrays.mop_S:
-                return True
-            base, _ = extract_base_and_offset(ins.d) if ins.d else (None, 0)
-            return base is not None
+        if (
+            ins.opcode == ida_hexrays.m_stx
+            and ins.d
+            and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}
+        ):
+            return True
         return False
 
     # extract (var,(value,size)) for constant assignment
@@ -937,10 +982,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             var = get_stack_var_name(ins.d)
         elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
             var = get_stack_var_name(ins.d)
-        else:
-            base, off = extract_base_and_offset(ins.d)
-            if base and (base_name := get_stack_var_name(base)):
-                var = f"{base_name}+{off:X}" if off else base_name
         return (var, (value, size)) if var else None
 
 

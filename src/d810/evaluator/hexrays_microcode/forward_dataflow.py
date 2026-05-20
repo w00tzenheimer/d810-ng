@@ -465,20 +465,13 @@ def _get_written_var_name(ins: object) -> Optional[str]:
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import extract_base_and_offset, get_stack_var_name
+    from d810.hexrays.ir.mop_utils import get_stack_var_name
 
     d = ins.d  # type: ignore[attr-defined]
     if d is None:
         return None
     if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
         return get_stack_var_name(d)
-    if ins.opcode != ida_hexrays.m_stx:  # type: ignore[attr-defined]
-        return None
-    if d.t == ida_hexrays.mop_S:
-        return get_stack_var_name(d)
-    base, off = extract_base_and_offset(d)
-    if base and (base_name := get_stack_var_name(base)):
-        return f"{base_name}+{off:X}" if off else base_name
     return None
 
 
@@ -489,8 +482,6 @@ def _is_constant_stack_assignment(ins: object) -> bool:
     except ImportError:
         return False
 
-    from d810.hexrays.ir.mop_utils import extract_base_and_offset
-
     if ins.l is None or ins.l.t != ida_hexrays.mop_n:  # type: ignore[attr-defined]
         return False
     if (
@@ -499,11 +490,12 @@ def _is_constant_stack_assignment(ins: object) -> bool:
         and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}  # type: ignore[attr-defined]
     ):
         return True
-    if ins.opcode == ida_hexrays.m_stx:  # type: ignore[attr-defined]
-        if ins.d and ins.d.t == ida_hexrays.mop_S:  # type: ignore[attr-defined]
-            return True
-        base, _ = extract_base_and_offset(ins.d) if ins.d else (None, 0)  # type: ignore[attr-defined]
-        return base is not None
+    if (
+        ins.opcode == ida_hexrays.m_stx  # type: ignore[attr-defined]
+        and ins.d  # type: ignore[attr-defined]
+        and ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}  # type: ignore[attr-defined]
+    ):
+        return True
     return False
 
 
@@ -516,7 +508,7 @@ def _extract_assignment(
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import extract_base_and_offset, get_stack_var_name
+    from d810.hexrays.ir.mop_utils import get_stack_var_name
 
     if not _is_constant_stack_assignment(ins):
         return None
@@ -526,10 +518,6 @@ def _extract_assignment(
         var = get_stack_var_name(ins.d)  # type: ignore[attr-defined]
     elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:  # type: ignore[attr-defined]
         var = get_stack_var_name(ins.d)  # type: ignore[attr-defined]
-    else:
-        base, off = extract_base_and_offset(ins.d)  # type: ignore[attr-defined]
-        if base and (base_name := get_stack_var_name(base)):
-            var = f"{base_name}+{off:X}" if off else base_name
     return (var, (value, size)) if var else None
 
 

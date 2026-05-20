@@ -1088,7 +1088,7 @@
     },
     {
       "name": "UnflattenerSwitchCase",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": null
       }
@@ -1100,7 +1100,7 @@
     },
     {
       "name": "UnflattenerTigressIndirect",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "goto_table_info": {
           "0x1839": {
@@ -1119,12 +1119,17 @@
     },
     {
       "name": "UnflattenerFakeJump",
+      "is_activated": false,
+      "config": {}
+    },
+    {
+      "name": "SimpleFlatteningCleanupUnflattener",
       "is_activated": true,
       "config": {}
     },
     {
       "name": "BadWhileLoop",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "min_dispatcher_comparison_value": 2,
         "dump_intermediate_microcode": null
@@ -1132,7 +1137,7 @@
     },
     {
       "name": "Unflattener",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "whitelisted_functions": [
           "0x1de2"

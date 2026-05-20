@@ -6,6 +6,8 @@ patterns in deobfuscation testing.
 
 from __future__ import annotations
 
+import re
+
 from d810.core.typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
@@ -75,6 +77,25 @@ def assert_not_contains(
         raise AssertionError(
             f"Forbidden patterns found in {context}:\n"
             f"  Found: {found}\n"
+            f"  Code:\n{_indent(code)}"
+        )
+
+
+def assert_regex_contains(
+    code: str,
+    patterns: list[str],
+    context: str = "code",
+) -> None:
+    """Assert that code matches each regex pattern."""
+    if not patterns:
+        return
+
+    missing = [p for p in patterns if re.search(p, code) is None]
+
+    if missing:
+        raise AssertionError(
+            f"Missing required regex patterns in {context}:\n"
+            f"  Missing: {missing}\n"
             f"  Code:\n{_indent(code)}"
         )
 

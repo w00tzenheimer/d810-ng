@@ -1,0 +1,156 @@
+{
+  "binary": "hexrays_structuring_lab.dll",
+  "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+  "case_id": "badwhile_direct_triangle_case",
+  "cfg_validation": {
+    "accepted_maturity": "MMAT_LOCOPT",
+    "block_count_by_maturity": {
+      "MMAT_GENERATED": 9,
+      "MMAT_LOCOPT": 9,
+      "MMAT_PREOPTIMIZED": 9
+    },
+    "body_opcode_signatures_by_relative_start": {
+      "0x0": [
+        9,
+        9,
+        21,
+        9,
+        4,
+        4,
+        33,
+        31,
+        4,
+        43
+      ],
+      "0x26": [
+        33,
+        30,
+        33,
+        31,
+        29,
+        44
+      ],
+      "0x2c": [
+        35,
+        30,
+        13,
+        33,
+        31,
+        29,
+        9,
+        4,
+        55
+      ],
+      "0x37": [
+        9,
+        35,
+        30,
+        33,
+        31,
+        29,
+        44
+      ],
+      "0x4a": [
+        21,
+        4,
+        4,
+        33,
+        31,
+        29,
+        9,
+        4,
+        55
+      ],
+      "0x57": [
+        4,
+        25,
+        26,
+        33,
+        31,
+        29,
+        9,
+        4
+      ],
+      "0x60": [
+        4
+      ]
+    },
+    "case_cond_instruction_opcodes": [
+      9,
+      35,
+      30,
+      33,
+      31,
+      29,
+      44
+    ],
+    "case_cond_npred": 2,
+    "case_cond_nsucc": 2,
+    "case_cond_pred_relative_start_eas": [
+      "0x0",
+      "0x26"
+    ],
+    "case_cond_relative_start_ea": "0x37",
+    "case_cond_serial": 4,
+    "case_cond_succ_relative_start_eas": [
+      "0x4a",
+      "0x57"
+    ],
+    "case_cond_type": "BLT_2WAY",
+    "dispatcher_instruction_opcodes": [
+      33,
+      30,
+      33,
+      31,
+      29,
+      44
+    ],
+    "dispatcher_npred": 1,
+    "dispatcher_nsucc": 2,
+    "dispatcher_pred_relative_start_eas": [
+      "0x0"
+    ],
+    "dispatcher_relative_start_ea": "0x26",
+    "dispatcher_serial": 2,
+    "dispatcher_succ_relative_start_eas": [
+      "0x2c",
+      "0x37"
+    ],
+    "dispatcher_type": "BLT_2WAY",
+    "father_instruction_opcodes": [
+      9,
+      9,
+      21,
+      9,
+      4,
+      4,
+      33,
+      31,
+      4,
+      43
+    ],
+    "father_npred": 1,
+    "father_nsucc": 2,
+    "father_pred_relative_start_eas": [
+      "0x0"
+    ],
+    "father_relative_start_ea": "0x0",
+    "father_serial": 1,
+    "father_succ_relative_start_eas": [
+      "0x26",
+      "0x37"
+    ],
+    "father_to_case_intermediate_one_way_blocks": [],
+    "father_type": "BLT_2WAY",
+    "status": "passed"
+  },
+  "commands": {
+    "dump": "python3 -m tools.hexrays_structuring_lab command badwhile_direct_triangle_case",
+    "validate_cfg": "python3 -m tools.hexrays_structuring_lab validate-cfg badwhile_direct_triangle_case"
+  },
+  "compiler_flags": [
+    "-O0"
+  ],
+  "schema_version": 1,
+  "status": "compiled_cfg_validated"
+}

@@ -9,7 +9,7 @@ silently translating arguments.
 
 Use one of:
 
-    ./tools/cff_debug.py returns
+    ./tools/d810cli.py returns
     PYTHONPATH=src python -m d810.diagnostics return-ledger --db DB [--dump DUMP]
 
 The full implementation now lives in ``src/d810/diagnostics/return_ledger.py``
@@ -27,7 +27,7 @@ to avoid silently running stale logic.
 
 Use one of:
 
-  ./tools/cff_debug.py returns
+  ./tools/d810cli.py returns
   PYTHONPATH=src python -m d810.diagnostics return-ledger --db DB [--dump DUMP]
 
 See docs/debug-tooling-migration.md for the full migration table.

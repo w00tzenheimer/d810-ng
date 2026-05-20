@@ -25,25 +25,6 @@ class _FakeFlowGraph:
         return self._blocks.get(serial)
 
 
-class _FakeMBlock:
-    def __init__(self, succs: tuple[int, ...]):
-        self._succs = succs
-
-    def nsucc(self) -> int:
-        return len(self._succs)
-
-    def succ(self, index: int) -> int:
-        return self._succs[index]
-
-
-class _FakeMBA:
-    def __init__(self, mapping: dict[int, _FakeMBlock]):
-        self._mapping = mapping
-
-    def get_mblock(self, serial: int):
-        return self._mapping.get(serial)
-
-
 def test_pts_execution_adds_return_fallthrough_fix_and_group():
     builder = ModificationBuilder(
         block_nsucc_map={10: 1, 11: 1, 19: 1},
@@ -77,10 +58,10 @@ def test_dtl_execution_builds_clone_materializer_site():
         block_nsucc_map={10: 1},
         block_succ_map={10: (40,)},
     )
-    mba = _FakeMBA({10: _FakeMBlock((40,))})
+    flow_graph = _FakeFlowGraph((_FakeFlowBlock(10, (40,), ()),))
 
     plan = plan_direct_terminal_lowering_execution(
-        mba=mba,
+        flow_graph=flow_graph,
         builder=builder,
         anchors=(10,),
         shared_entry_serial=40,

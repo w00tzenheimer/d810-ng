@@ -1,17 +1,20 @@
 """Redirect residual dispatcher feeders into dominating exact-node heads."""
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.semantic_region_lowering import (
-    _collect_semantic_entry_by_label,
-    _collect_semantic_successors_by_state,
+from d810.cfg.residual_target_resolution import (
+    collect_owned_exact_sources,
+    collect_supported_exact_entries,
+    is_structured_conditional_path_feeder,
+    is_supplemental_feeder_bypass,
+    resolve_frontier_target_entry,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.cfg.semantic_conditional_lowering import (
+    collect_exact_conditional_alias_sites,
+    is_straight_line_handoff,
+)
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -19,14 +22,13 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     _SUB7FFD_FUNC_EA,
-    _is_straight_line_handoff,
     build_semantic_exact_round_summary,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+    accepts_exact_sub7ffd_glbopt1,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     collect_exact_conditional_sites,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
-    collect_exact_conditional_alias_sites,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
     collect_exact_conditional_fork_sites,
@@ -50,295 +52,39 @@ from d810.recon.flow.target_entry_resolution import (
 )
 from d810.recon.flow.state_machine_analysis import can_reach_return_snapshot
 from d810.recon.flow.state_machine_analysis import find_last_state_write_site_snapshot
-from d810.recon.flow.residual_handoff_resolution import (
-    resolve_effective_target_entry as resolve_effective_residual_target_entry,
-    resolve_singleton_state_write_value,
+from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+    HexRaysResidualFrontierEvidenceBackend,
+    ResidualFrontierEvidenceBackend,
 )
 
 logger = logging.getLogger(
     "D810.hodur.strategy.exact_node_frontier_bypass",
     logging.DEBUG,
 )
+_RESIDUAL_FRONTIER_EVIDENCE_BACKEND: ResidualFrontierEvidenceBackend = (
+    HexRaysResidualFrontierEvidenceBackend()
+)
 
 
-def _resolve_semantic_reference_alias_entry(
-    dag,
-    semantic_reference_program,
-    *,
-    pred_serial: int,
-    state_value: int,
-) -> int | None:
-    """Resolve a raw alias state through the semantic reference program."""
-    semantic_successors_by_state = _collect_semantic_successors_by_state(
-        semantic_reference_program
-    )
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
-        semantic_reference_program
-    )
-    if not semantic_successors_by_state or not semantic_entry_by_label:
-        return None
-
-    relevant_edges = [
-        edge
-        for edge in getattr(dag, "edges", ()) or ()
-        if getattr(edge, "target_state", None) is not None
-        and (int(getattr(edge, "target_state")) & 0xFFFFFFFF) == (int(state_value) & 0xFFFFFFFF)
-        and int(pred_serial) in tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-    ]
-    if not relevant_edges:
-        return None
-
-    source_sites: set[tuple[int, int | None]] = set()
-    for edge in relevant_edges:
-        source_state = getattr(getattr(edge, "source_key", None), "state_const", None)
-        if source_state is None:
-            continue
-        source_anchor = getattr(edge, "source_anchor", None)
-        source_block = getattr(source_anchor, "block_serial", None)
-        source_sites.add(
-            (
-                int(source_state) & 0xFFFFFFFF,
-                None if source_block is None else int(source_block),
-            )
-        )
-
-    for source_state, source_block in source_sites:
-        semantic_labels = tuple(semantic_successors_by_state.get(source_state, ()))
-        if not semantic_labels:
-            continue
-        source_edges = [
-            edge
-            for edge in getattr(dag, "edges", ()) or ()
-            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
-            and (int(getattr(getattr(edge, "source_key", None), "state_const")) & 0xFFFFFFFF) == source_state
-            and (
-                source_block is None
-                or int(
-                    getattr(getattr(edge, "source_anchor", None), "block_serial", -1)
-                )
-                == source_block
-            )
-        ]
-        matched_labels: set[str] = set()
-        unmatched_alias_edges: list[object] = []
-        for edge in source_edges:
-            target_state_attr = getattr(edge, "target_state", None)
-            if target_state_attr is None:
-                continue
-            target_state_value = int(target_state_attr) & 0xFFFFFFFF
-            direct_label = f"STATE_{target_state_value:08X}"
-            if direct_label in semantic_labels:
-                matched_labels.add(direct_label)
-            else:
-                unmatched_alias_edges.append(edge)
-        unmatched_labels = [
-            label for label in semantic_labels if label not in matched_labels
-        ]
-        if len(unmatched_alias_edges) != 1 or len(unmatched_labels) != 1:
-            continue
-        alias_edge = unmatched_alias_edges[0]
-        ordered_path = tuple(int(node) for node in getattr(alias_edge, "ordered_path", ()) or ())
-        if int(pred_serial) not in ordered_path:
-            continue
-        target_entry = semantic_entry_by_label.get(unmatched_labels[0])
-        if target_entry is not None and int(target_entry) != int(pred_serial):
-            return int(target_entry)
-    return None
-
-
-def _resolve_frontier_target_entry(
-    dag,
-    *,
-    pred_serial: int,
-    state_value: int,
-    dispatcher_model,
-    bst_blocks: set[int],
-    semantic_reference_program: object | None,
-    state_var_stkoff: int | None,
-    mba: object | None,
-) -> tuple[int | None, int | None]:
-    """Resolve the best semantic entry for a residual feeder state write."""
-    raw_state = int(state_value) & 0xFFFFFFFF
-    exact_dispatch_target = dispatcher_exact_state_target(
-        raw_state,
-        dispatcher=dispatcher_model,
-    )
-    residual_effective_target = None
-    synthetic_target_entry = supplemental_selected_entry_for_state(
-        dag,
-        raw_state,
-    )
-    if (
-        dispatcher_model is not None
-        and state_var_stkoff is not None
-        and mba is not None
-    ):
-        synthetic_edge = SimpleNamespace(
-            source_anchor=SimpleNamespace(block_serial=int(pred_serial), branch_arm=None),
-            source_key=SimpleNamespace(state_const=None),
-            target_key=None,
-            target_state=raw_state,
-            target_label=f"STATE_{raw_state:08X}",
-            target_entry_anchor=synthetic_target_entry,
-            ordered_path=(int(pred_serial),),
-        )
-        residual_effective_target = resolve_effective_residual_target_entry(
-            dag,
-            synthetic_edge,
-            bst_node_blocks=bst_blocks,
-            state_var_stkoff=int(state_var_stkoff),
-            dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
-            dispatcher=dispatcher_model,
-            mba=mba,
-        )
-    exact_dag_entry = resolve_exact_dag_entry_for_state(
-        dag,
-        raw_state,
-        dispatcher_region=bst_blocks,
-    )
-    direct_semantic_entry = resolve_semantic_reference_entry_for_state(
-        raw_state,
-        semantic_reference_program=semantic_reference_program,
-        dispatcher_region=bst_blocks,
-    )
-    target_entry = resolve_dag_entry_for_state(
-        dag,
-        raw_state,
-        bst_node_blocks=bst_blocks,
-    )
-    normalized_alias_entry = resolve_normalized_alias_entry_for_state(
-        dag,
-        raw_state,
-        source_block=int(pred_serial),
-        bst_node_blocks=bst_blocks,
-    )
-    semantic_alias_entry = _resolve_semantic_reference_alias_entry(
-        dag,
-        semantic_reference_program,
-        pred_serial=int(pred_serial),
-        state_value=raw_state,
-    )
-    if (
-        residual_effective_target is not None
-        and int(residual_effective_target) != int(pred_serial)
-    ):
-        target_entry = int(residual_effective_target)
-    if (
-        residual_effective_target is None
-        and exact_dag_entry is not None
-        and int(exact_dag_entry) != int(pred_serial)
-    ):
-        target_entry = int(exact_dag_entry)
-    if (
-        residual_effective_target is None
-        and
-        direct_semantic_entry is not None
-        and int(direct_semantic_entry) != int(pred_serial)
-    ):
-        target_entry = int(direct_semantic_entry)
-    if (
-        residual_effective_target is None
-        and
-        semantic_alias_entry is not None
-        and semantic_alias_entry != int(pred_serial)
-        and semantic_alias_entry != target_entry
-    ):
-        target_entry = int(semantic_alias_entry)
-    preferred_alias_entry = normalized_alias_entry
-    if (
-        preferred_alias_entry is not None
-        and preferred_alias_entry != int(pred_serial)
-        and (
-            target_entry is None
-            or int(target_entry) == int(pred_serial)
-            or (
-                exact_dispatch_target is not None
-                and int(target_entry) == int(exact_dispatch_target)
-            )
-        )
-    ):
-        target_entry = int(preferred_alias_entry)
-    if (
-        target_entry is None
-        or int(target_entry) in bst_blocks
-        or int(target_entry) == int(pred_serial)
-    ):
-        target_entry = supplemental_selected_entry_for_state(
-            dag,
-            raw_state,
-        )
-    if target_entry is not None:
-        target_entry = int(target_entry)
-    return (
-        None if exact_dispatch_target is None else int(exact_dispatch_target),
-        target_entry,
-    )
-
-
-def _collect_supported_exact_entries(round_summary, flow_graph, *, bst_blocks: set[int]) -> set[int]:
-    """Return exact-node entry blocks that are safe BST bypass targets."""
-    supported_entries = {
+def _collect_exact_source_blocks(round_summary, flow_graph) -> set[int]:
+    """Return exact-node source blocks already recognized by exact lowerers."""
+    source_blocks = {
         int(site.source_block)
         for site in collect_exact_conditional_sites(round_summary, flow_graph)
     }
-    supported_entries.update(
+    source_blocks.update(
         int(site.source_block)
         for site in collect_exact_conditional_alias_sites(round_summary, flow_graph)
     )
-    supported_entries.update(
+    source_blocks.update(
         int(site.source_block)
         for site in collect_exact_conditional_fork_sites(round_summary, flow_graph)
     )
-    supported_entries.update(
+    source_blocks.update(
         int(site.source_block)
         for site in collect_exact_conditional_bridge_sites(round_summary, flow_graph)
     )
-    for plannable in getattr(round_summary, "plannable_edges", ()):
-        edge = getattr(plannable, "edge", None)
-        if edge is None or not _is_straight_line_handoff(edge):
-            continue
-        target_state = getattr(edge, "target_state", None)
-        if target_state is None:
-            continue
-        target_entry = resolve_dag_entry_for_state(
-            round_summary.dag,
-            int(target_state) & 0xFFFFFFFF,
-            bst_node_blocks=bst_blocks,
-        )
-        if target_entry is None or int(target_entry) in bst_blocks:
-            continue
-        supported_entries.add(int(target_entry))
-    return supported_entries
-
-
-def _collect_owned_exact_sources(round_summary, flow_graph) -> set[int]:
-    """Return source blocks already owned by earlier exact-node lowerers."""
-    owned_sources = {
-        int(site.source_block)
-        for site in collect_exact_conditional_sites(round_summary, flow_graph)
-    }
-    owned_sources.update(
-        int(site.source_block)
-        for site in collect_exact_conditional_alias_sites(round_summary, flow_graph)
-    )
-    owned_sources.update(
-        int(site.source_block)
-        for site in collect_exact_conditional_fork_sites(round_summary, flow_graph)
-    )
-    owned_sources.update(
-        int(site.source_block)
-        for site in collect_exact_conditional_bridge_sites(round_summary, flow_graph)
-    )
-    for plannable in getattr(round_summary, "plannable_edges", ()):
-        edge = getattr(plannable, "edge", None)
-        if edge is None or not _is_straight_line_handoff(edge):
-            continue
-        source_anchor = getattr(edge, "source_anchor", None)
-        source_block = getattr(source_anchor, "block_serial", None)
-        if source_block is None:
-            continue
-        owned_sources.add(int(source_block))
-    return owned_sources
+    return source_blocks
 
 
 def _collect_trivial_frontier_zero_state_write_modification(
@@ -384,90 +130,6 @@ def _collect_trivial_frontier_zero_state_write_modification(
     return setup.builder.zero_state_write(int(source_block), insn_ea)
 
 
-def _is_supplemental_feeder_bypass(
-    *,
-    flow_graph,
-    pred_serial: int,
-    pred_block,
-    state_value: int,
-    exact_dispatch_target: int | None,
-    target_entry: int,
-    bst_blocks: set[int],
-    supported_entries: set[int],
-    owned_exact_sources: set[int],
-    terminal_source_owned_blocks: set[int],
-    terminal_protected_blocks: set[int],
-    dag,
-) -> bool:
-    """Return whether a residual dispatcher feeder is safe for supplemental bypass.
-
-    This path exists for synthetic corridor/feed blocks that still write one
-    semantic state and jump back into the dispatcher, but whose resolved DAG
-    entry was not part of the first-wave exact-head inventory.
-    """
-    pred_serial = int(pred_serial)
-    target_entry = int(target_entry)
-    if target_entry in bst_blocks or target_entry in supported_entries:
-        return False
-    if pred_serial == target_entry:
-        return False
-    if pred_serial in terminal_source_owned_blocks or pred_serial in terminal_protected_blocks:
-        return False
-    if pred_serial in owned_exact_sources:
-        return False
-    if int(getattr(pred_block, "nsucc", 0)) != 1:
-        return False
-    succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
-    if len(succs) != 1:
-        return False
-    if not (
-        state_has_semantic_support(dag, int(state_value) & 0xFFFFFFFF)
-        or (
-            exact_dispatch_target is not None
-            and int(exact_dispatch_target) != int(target_entry)
-        )
-        or can_reach_return_snapshot(flow_graph, int(target_entry))
-    ):
-        return False
-    return True
-
-
-def _is_structured_conditional_path_feeder(
-    dag,
-    *,
-    pred_serial: int,
-    state_value: int,
-) -> bool:
-    """Return whether ``pred_serial`` is the feeder row for a conditional path.
-
-    If the live DAG already models a conditional semantic edge as
-    ``source_head -> feeder_row -> target_entry``, then the structured-region
-    lowerer should own that source arm. Redirecting the feeder row itself keeps
-    the flattened encoding alive and competes with the source-arm rewrite.
-    """
-
-    raw_state = int(state_value) & 0xFFFFFFFF
-    pred_serial = int(pred_serial)
-    for edge in getattr(dag, "edges", ()) or ():
-        target_state = getattr(edge, "target_state", None)
-        if target_state is None or (int(target_state) & 0xFFFFFFFF) != raw_state:
-            continue
-        source_anchor = getattr(edge, "source_anchor", None)
-        if getattr(source_anchor, "branch_arm", None) is None:
-            continue
-        ordered_path = tuple(
-            int(block) for block in getattr(edge, "ordered_path", ()) or ()
-        )
-        if len(ordered_path) < 2:
-            continue
-        if int(ordered_path[0]) == pred_serial:
-            continue
-        if int(ordered_path[1]) != pred_serial:
-            continue
-        return True
-    return False
-
-
 @algorithm_metadata(
     algorithm_id="hodur.exact_node_frontier_bypass",
     family="semantic_exact_node_lowering",
@@ -502,10 +164,10 @@ class ExactNodeFrontierBypassStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot) -> bool:
-        mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
-            return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        if not accepts_exact_sub7ffd_glbopt1(
+            snapshot,
+            expected_entry_ea=_SUB7FFD_FUNC_EA,
+        ):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None
@@ -526,12 +188,12 @@ class ExactNodeFrontierBypassStrategy:
         assert state_machine is not None
         assert mba is not None
 
-        state_var = getattr(state_machine, "state_var", None)
-        if state_var is None or getattr(state_var, "t", None) != ida_hexrays.mop_S:
+        state_variable = _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_state_variable(
+            state_machine=state_machine,
+        )
+        if state_variable is None:
             return None
-        state_var_stkoff = getattr(getattr(state_var, "s", None), "off", None)
-        if state_var_stkoff is None:
-            return None
+        state_var_stkoff = int(state_variable.stkoff)
 
         bst_blocks = {
             int(block)
@@ -550,12 +212,19 @@ class ExactNodeFrontierBypassStrategy:
         if not residual_preds:
             return None
 
-        supported_entries = _collect_supported_exact_entries(
+        exact_source_blocks = _collect_exact_source_blocks(round_summary, flow_graph)
+        supported_entries = collect_supported_exact_entries(
             round_summary,
-            flow_graph,
+            exact_source_blocks=exact_source_blocks,
             bst_blocks=bst_blocks,
+            is_straight_line_handoff_fn=is_straight_line_handoff,
+            resolve_dag_entry_for_state_fn=resolve_dag_entry_for_state,
         )
-        owned_exact_sources = _collect_owned_exact_sources(round_summary, flow_graph)
+        owned_exact_sources = collect_owned_exact_sources(
+            round_summary,
+            exact_source_blocks=exact_source_blocks,
+            is_straight_line_handoff_fn=is_straight_line_handoff,
+        )
         terminal_source_owned_blocks = {
             int(block) for block in getattr(round_summary, "terminal_source_owned_blocks", ()) or ()
         }
@@ -585,30 +254,51 @@ class ExactNodeFrontierBypassStrategy:
                 skipped_non_dispatcher_edge += 1
                 continue
 
-            state_value = resolve_singleton_state_write_value(
-                mba,
-                int(pred_serial),
-                state_var_stkoff=int(state_var_stkoff),
+            state_write = (
+                _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_singleton_state_write(
+                    mba,
+                    int(pred_serial),
+                    state_variable=state_variable,
+                )
             )
-            if state_value is None:
+            if state_write is None:
                 skipped_no_state += 1
                 continue
-            if _is_structured_conditional_path_feeder(
+            state_value = int(state_write.state_value) & 0xFFFFFFFF
+            if is_structured_conditional_path_feeder(
                 round_summary.dag,
                 pred_serial=int(pred_serial),
-                state_value=int(state_value) & 0xFFFFFFFF,
+                state_value=state_value,
             ):
                 skipped_structured_conditional_feeder += 1
                 continue
-            exact_dispatch_target, target_entry = _resolve_frontier_target_entry(
+            raw_state = state_value
+            residual_effective_evidence = (
+                _RESIDUAL_FRONTIER_EVIDENCE_BACKEND.resolve_residual_effective_target(
+                    round_summary.dag,
+                    pred_serial=int(pred_serial),
+                    state_value=raw_state,
+                    dispatcher_model=dispatcher_model,
+                    bst_node_blocks=bst_blocks,
+                    state_variable=state_variable,
+                    mba=mba,
+                )
+            )
+            residual_effective_target = residual_effective_evidence.target_entry
+            exact_dispatch_target, target_entry = resolve_frontier_target_entry(
                 round_summary.dag,
                 pred_serial=int(pred_serial),
-                state_value=int(state_value) & 0xFFFFFFFF,
+                state_value=raw_state,
                 dispatcher_model=dispatcher_model,
                 bst_blocks=bst_blocks,
                 semantic_reference_program=getattr(round_summary, "semantic_reference_program", None),
-                state_var_stkoff=int(state_var_stkoff),
-                mba=mba,
+                residual_effective_target=residual_effective_target,
+                dispatcher_exact_state_target_fn=dispatcher_exact_state_target,
+                supplemental_selected_entry_for_state_fn=supplemental_selected_entry_for_state,
+                resolve_exact_dag_entry_for_state_fn=resolve_exact_dag_entry_for_state,
+                resolve_semantic_reference_entry_for_state_fn=resolve_semantic_reference_entry_for_state,
+                resolve_dag_entry_for_state_fn=resolve_dag_entry_for_state,
+                resolve_normalized_alias_entry_for_state_fn=resolve_normalized_alias_entry_for_state,
             )
             if (
                 target_entry is None
@@ -618,7 +308,7 @@ class ExactNodeFrontierBypassStrategy:
                 skipped_unsupported_entry += 1
                 continue
 
-            allow_supplemental_bypass = _is_supplemental_feeder_bypass(
+            allow_supplemental_bypass = is_supplemental_feeder_bypass(
                 flow_graph=flow_graph,
                 pred_serial=int(pred_serial),
                 pred_block=pred_block,
@@ -631,6 +321,8 @@ class ExactNodeFrontierBypassStrategy:
                 terminal_source_owned_blocks=terminal_source_owned_blocks,
                 terminal_protected_blocks=terminal_protected_blocks,
                 dag=round_summary.dag,
+                state_has_semantic_support_fn=state_has_semantic_support,
+                can_reach_return_fn=can_reach_return_snapshot,
             )
             if int(pred_serial) in owned_exact_sources:
                 skipped_owned_source += 1

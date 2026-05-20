@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -22,14 +22,14 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     PlanFragment,
     StageResult,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
     PlannerCandidate,
     PlannerDecision,
     PlannerDecisionReason,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,

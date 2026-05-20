@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.provider_phase import ProviderPhase
 from d810.recon.store import get_recon_writer
 from d810.core.typing import TYPE_CHECKING, Any
 
@@ -85,7 +86,11 @@ class ReconAnalysisRuntime:
         >>> phase = ReconPhase(store=store)
         >>> analysis = AnalysisPhase()
         >>> rt = ReconAnalysisRuntime(phase, analysis, store)
-        >>> hints = rt.load_or_analyze(func_ea=0x401000, target=None, maturity=5)
+        >>> hints = rt.load_or_analyze(
+        ...     func_ea=0x401000,
+        ...     target=None,
+        ...     provider_phase=provider_phase,
+        ... )
     """
 
     def __init__(
@@ -256,7 +261,7 @@ class ReconAnalysisRuntime:
         self,
         func_ea: int,
         target: Any,
-        maturity: int,
+        provider_phase: ProviderPhase,
         *,
         persist_hints: bool = True,
     ) -> DeobfuscationHints:
@@ -265,18 +270,19 @@ class ReconAnalysisRuntime:
         Args:
             func_ea: Function effective address.
             target: Live ``mba_t`` passed through to collectors.
-            maturity: Current microcode maturity level.
+            provider_phase: Current provider phase supplied by the adapter.
             persist_hints: When True, save the resulting hints to the store.
 
         Returns:
             DeobfuscationHints summarising the classification and recommendations.
         """
+        maturity_text = str(provider_phase.friendly_provider_level)
         results = self._phase.run_microcode_collectors(
-            target, func_ea=func_ea, maturity=maturity,
+            target, func_ea=func_ea, provider_phase=provider_phase,
         )
         logger.debug(
-            "collect_and_analyze: func=0x%x maturity=%d collectors_fired=%d",
-            func_ea, maturity, len(results),
+            "collect_and_analyze: func=0x%x maturity=%s collectors_fired=%d",
+            func_ea, maturity_text, len(results),
         )
 
         hints = self._analysis.interpret(
@@ -308,7 +314,7 @@ class ReconAnalysisRuntime:
         target: Any,
         *,
         func_ea: int,
-        maturity: int,
+        provider_phase: ProviderPhase,
         phase: str = "pre_d810",
         snapshot: "SnapshotRef | None" = None,
     ) -> FactCaptureSummary:
@@ -322,7 +328,7 @@ class ReconAnalysisRuntime:
         return self._fact_lifecycle.capture(
             target,
             func_ea=func_ea,
-            maturity=maturity,
+            provider_phase=provider_phase,
             phase=phase,
             snapshot=snapshot,
         )
@@ -460,7 +466,7 @@ class ReconAnalysisRuntime:
         self,
         func_ea: int,
         target: Any,
-        maturity: int,
+        provider_phase: ProviderPhase,
         *,
         persist_hints: bool = True,
     ) -> DeobfuscationHints:
@@ -477,7 +483,7 @@ class ReconAnalysisRuntime:
         Args:
             func_ea: Function effective address.
             target: Live ``mba_t`` passed through to collectors.
-            maturity: Current microcode maturity level.
+            provider_phase: Current provider phase supplied by the adapter.
             persist_hints: When True and collection runs, save resulting hints.
 
         Returns:
@@ -492,7 +498,7 @@ class ReconAnalysisRuntime:
             return existing
 
         return self.collect_and_analyze(
-            func_ea, target, maturity, persist_hints=persist_hints,
+            func_ea, target, provider_phase, persist_hints=persist_hints,
         )
 
     def apply_to_rule_scope(
@@ -500,7 +506,7 @@ class ReconAnalysisRuntime:
         func_ea: int,
         rule_scope: RuleScopeService,
         target: Any = None,
-        maturity: int | None = None,
+        provider_phase: ProviderPhase | None = None,
         *,
         persist_hints: bool = True,
     ) -> ReconOutcome:
@@ -514,7 +520,7 @@ class ReconAnalysisRuntime:
             workflows where the hook wiring is not active.
 
         Checks the store for cached hints first. When a cache miss occurs
-        and *target* / *maturity* are provided, runs collectors and analysis.
+        and *target* / *provider_phase* are provided, runs collectors and analysis.
         If hints are resolved, they are applied to *rule_scope* via
         ``apply_hints()``.
 
@@ -522,7 +528,7 @@ class ReconAnalysisRuntime:
             func_ea: Function effective address.
             rule_scope: Consumer rule-scope service (not stored).
             target: Live ``mba_t`` for collectors (may be ``None``).
-            maturity: Current microcode maturity level (may be ``None``).
+            provider_phase: Current provider phase (may be ``None``).
             persist_hints: When True and collection runs, save resulting hints.
 
         Returns:
@@ -541,9 +547,9 @@ class ReconAnalysisRuntime:
                 "(type=%s confidence=%.2f)",
                 func_ea, hints.obfuscation_type, hints.confidence,
             )
-        elif target is not None and maturity is not None:
+        elif target is not None and provider_phase is not None:
             hints = self.collect_and_analyze(
-                func_ea, target, maturity, persist_hints=persist_hints,
+                func_ea, target, provider_phase, persist_hints=persist_hints,
             )
             source = "analyzed"
             logger.info(
@@ -554,7 +560,7 @@ class ReconAnalysisRuntime:
         else:
             logger.info(
                 "apply_to_rule_scope: func=0x%x no hints available "
-                "(no cached hints and no target/maturity provided)",
+                "(no cached hints and no target/provider_phase provided)",
                 func_ea,
             )
 

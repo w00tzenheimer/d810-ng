@@ -37,6 +37,10 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.state_write_cleanup import (
+    StateWriteCleanupRequest,
+    state_write_cleanup_to_graph_modification,
+)
 
 
 def snapshot_block_nsucc_map(snapshot: object) -> dict[int, int]:
@@ -237,6 +241,12 @@ class ModificationBuilder:
     def zero_state_write(self, source_block: int, instruction_ea: int) -> ZeroStateWrite:
         return ZeroStateWrite(block_serial=source_block, insn_ea=instruction_ea)
 
+    def state_write_cleanup(
+        self,
+        request: StateWriteCleanupRequest,
+    ) -> GraphModification:
+        return state_write_cleanup_to_graph_modification(request)
+
     def promote_operand_to_scalar(
         self,
         source_block: int,
@@ -262,12 +272,14 @@ class ModificationBuilder:
         *,
         fallthrough_target: int,
         ref_block: int | None = None,
+        old_target_serial: int | None = None,
     ) -> CreateConditionalRedirect:
         return CreateConditionalRedirect(
             source_block=source_block,
             ref_block=source_block if ref_block is None else ref_block,
             conditional_target=conditional_target,
             fallthrough_target=fallthrough_target,
+            old_target_serial=old_target_serial,
         )
 
     def edge_redirect(

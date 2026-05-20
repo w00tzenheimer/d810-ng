@@ -4,10 +4,11 @@
 # BAD:  print(f"result = {result}")
 # GOOD: logger.debug("debug value: %s", x)
 # GOOD: logger.info("result = %s", result)
+# GOOD: write_output(get_output(args), report_text)
 #
 # Rationale:
-# - print() bypasses d810's MDC-aware logging entirely
-# - Output goes to stdout with no maturity/phase context
+# - print() bypasses d810's logging entirely
+# - Intentional CLI report output should use --output
 # - IDA's output window may not capture stdout reliably
 # - Logger output goes through D810Logger with structured context
 #
@@ -15,20 +16,14 @@
 
 id: no-print-statement
 language: python
-severity: warning
+severity: error
 
 files:
   - "src/d810/**/*.py"
 
 ignores:
   - "src/d810/_vendor/**"
-  - "src/d810/ui/testbed.py"
-  - "src/d810/hexrays/hexrays_helpers.py"   # demo/example function with showcase prints
-  - "src/d810/core/tracker_components.py"   # __main__ benchmark runner
-  - "src/d810/core/descriptors.py"          # dead code marker (print never reached)
   - "src/d810/mba/backends/egglog_backend.py"  # __main__ dev runner
-  - "src/d810/core/cymode.py"                  # startup messages before logging is initialized
-  - "src/d810/hexrays/microcode_dump.py"       # CLI dump tool — intentional stdout/stderr output
   - "src/d810/qt_shim.py"                      # pre-logging startup error (before logger available)
 
 message: |
@@ -41,6 +36,8 @@ message: |
     logger.info("done")             # replaces print("done")
 
   print() bypasses MDC context and may not appear in IDA's output window.
+  For intentional CLI stdout, add --output and write through
+  d810.diagnostics.output.write_output(...).
   Exception: print(..., file=sys.stderr) is allowed for CLI error output.
 
 rule:
@@ -60,3 +57,6 @@ note: |
 
   Use % formatting (not f-strings) in logger calls for lazy evaluation —
   the string is only formatted if the log level is active.
+
+  For diagnostics CLI output, add --output with
+  d810.diagnostics.output.add_output_argument(...) and write to that stream.

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import os
 
 from d810.cfg.flow.edit_simulator import project_post_state
+from d810.cfg.flowgraph import InsnKind
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -1118,12 +1119,7 @@ def _is_shared_condition_clone_block(block: object, state_stkoff: int) -> bool:
     if len(insns) < 2:
         return False
     tail = insns[-1]
-    opcode = getattr(tail, "opcode", None)
-    try:
-        tail_opcode = int(opcode)
-    except (TypeError, ValueError):
-        return False
-    if tail_opcode not in _equality_jump_opcodes():
+    if getattr(tail, "kind", InsnKind.UNKNOWN) != InsnKind.EQUALITY_JUMP:
         return False
     for insn in insns[:-1]:
         if not _is_dispatcher_state_mov(insn, state_stkoff):
@@ -1132,12 +1128,7 @@ def _is_shared_condition_clone_block(block: object, state_stkoff: int) -> bool:
 
 
 def _is_dispatcher_state_mov(insn: object, state_stkoff: int) -> bool:
-    opcode = getattr(insn, "opcode", None)
-    try:
-        opcode_int = int(opcode)
-    except (TypeError, ValueError):
-        return False
-    if opcode_int not in _mov_opcodes():
+    if getattr(insn, "kind", InsnKind.UNKNOWN) != InsnKind.MOV:
         return False
     dest = getattr(insn, "d", None)
     src = getattr(insn, "l", None)
@@ -1592,8 +1583,7 @@ def _equality_compare_constant(block: object) -> int | None:
         tail = insns[-1] if insns else None
     if tail is None:
         return None
-    opcode = getattr(tail, "opcode", None)
-    if opcode is None or int(opcode) not in _equality_jump_opcodes():
+    if getattr(tail, "kind", InsnKind.UNKNOWN) != InsnKind.EQUALITY_JUMP:
         return None
 
     left = getattr(tail, "l", None)
@@ -1660,16 +1650,10 @@ def _dispatcher_state_stkoff(flow_graph: object, dispatcher_serial: int) -> int 
 
 def _state_write_constant(block: object, state_stkoff: int) -> int | None:
     for insn in reversed(tuple(getattr(block, "insn_snapshots", ()) or ())):
-        opcode = getattr(insn, "opcode", None)
-        if opcode is None:
+        insn_kind = getattr(insn, "kind", InsnKind.UNKNOWN)
+        if insn_kind == InsnKind.GOTO:
             continue
-        try:
-            opcode_int = int(opcode)
-        except (TypeError, ValueError):
-            continue
-        if opcode_int in _goto_opcodes():
-            continue
-        if opcode_int not in _mov_opcodes():
+        if insn_kind != InsnKind.MOV:
             continue
         dest = getattr(insn, "d", None)
         src = getattr(insn, "l", None)
@@ -1689,37 +1673,6 @@ def _state_write_constant(block: object, state_stkoff: int) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
-
-
-def _mov_opcodes() -> frozenset[int]:
-    try:
-        import ida_hexrays  # type: ignore
-
-        return frozenset({int(getattr(ida_hexrays, "m_mov"))})
-    except Exception:
-        return frozenset({4})
-
-
-def _goto_opcodes() -> frozenset[int]:
-    try:
-        import ida_hexrays  # type: ignore
-
-        return frozenset({int(getattr(ida_hexrays, "m_goto"))})
-    except Exception:
-        return frozenset({55})
-
-
-def _equality_jump_opcodes() -> frozenset[int]:
-    try:
-        import ida_hexrays  # type: ignore
-
-        return frozenset({
-            int(getattr(ida_hexrays, "m_jnz")),
-            int(getattr(ida_hexrays, "m_jz")),
-        })
-    except Exception:
-        # The local test stubs and cfg invariant fallback use these values.
-        return frozenset({4, 5})
 
 
 def _singleton_interval_for_state(
@@ -1920,6 +1873,11 @@ def _replace_or_add_redirect(
             new_target=desired_target,
         )
     elif desired_target in succs:
+        if choice.edge_kind not in {
+            "BST_INTERVAL_PROVEN_FRONTIER",
+            "SAME_DAG_SCC_FRONTIER",
+        }:
+            return None
         mod = InsertBlock(
             pred_serial=source,
             old_target_serial=observed_target,

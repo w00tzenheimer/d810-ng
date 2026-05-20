@@ -1,0 +1,19 @@
+{
+  "description": "Validation profile for the legacy Tigress indirect jump-table unflattener",
+  "ins_rules": [],
+  "blk_rules": [
+    {
+      "name": "UnflattenerTigressIndirect",
+      "is_activated": false,
+      "config": {
+        "goto_table_info": {
+          "0x1800175c0": {
+            "stack_table_offset": "0x70",
+            "table_address": "0x180019f10",
+            "table_nb_elt": 37
+          }
+        }
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ from d810.core.typing import TYPE_CHECKING, Callable
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.recon.flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
@@ -16,6 +17,7 @@ from d810.recon.flow.dispatcher_detection import (
 )
 from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
+from d810.recon.function_priors import FunctionAnalysisPriors
 
 if TYPE_CHECKING:
     from d810.recon.facts.model import FactConsumerRecord, ValidatedFactView
@@ -128,6 +130,9 @@ class FlowMaturityContext:
         self._fact_consumer_callback: (
             Callable[[int, tuple["FactConsumerRecord", ...]], int] | None
         ) = None
+        self._function_priors_provider: (
+            Callable[[int], FunctionAnalysisPriors] | None
+        ) = None
         self._terminal_boundary_blocks: set[int] | None = None
 
     @property
@@ -183,9 +188,12 @@ class FlowMaturityContext:
         """Return the validated fact view for this function, if available."""
         if self._fact_view_provider is None:
             return None
+        maturity_value: int | str = self.maturity if maturity is None else maturity
+        if isinstance(maturity_value, int):
+            maturity_value = maturity_to_string(maturity_value)
         return self._fact_view_provider(
             self.func_ea,
-            self.maturity if maturity is None else maturity,
+            maturity_value,
         )
 
     def report_fact_consumers(
@@ -196,6 +204,24 @@ class FlowMaturityContext:
         if not records or self._fact_consumer_callback is None:
             return 0
         return self._fact_consumer_callback(self.func_ea, records)
+
+    def set_function_priors_provider(
+        self,
+        provider: Callable[[int], FunctionAnalysisPriors] | None,
+    ) -> None:
+        """Attach the project/test supplied function-priors provider."""
+        self._function_priors_provider = provider
+
+    def function_analysis_priors(
+        self,
+        func_ea: int | None = None,
+    ) -> FunctionAnalysisPriors:
+        """Return explicit project/test priors for this function."""
+        if self._function_priors_provider is None:
+            return FunctionAnalysisPriors()
+        return self._function_priors_provider(
+            self.func_ea if func_ea is None else int(func_ea)
+        )
 
     def refresh_mba(self, mba: ida_hexrays.mba_t) -> None:
         self.mba = mba
@@ -235,10 +261,11 @@ class FlowMaturityContext:
             return self._dispatcher_analysis
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._dispatcher_analysis_error = exc
+            maturity_name = maturity_to_string(self.maturity)
             logger.warning(
-                "Dispatcher analysis failed for 0x%x at maturity %d: %s",
+                "Dispatcher analysis failed for 0x%x at maturity %s: %s",
                 self.func_ea,
-                self.maturity,
+                maturity_name,
                 exc,
             )
             return None
@@ -296,10 +323,11 @@ class FlowMaturityContext:
             return self._profile_stats
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._profile_stats_error = exc
+            maturity_name = maturity_to_string(self.maturity)
             logger.warning(
-                "Profile stats failed for 0x%x at maturity %d: %s",
+                "Profile stats failed for 0x%x at maturity %s: %s",
                 self.func_ea,
-                self.maturity,
+                maturity_name,
                 exc,
             )
             return None

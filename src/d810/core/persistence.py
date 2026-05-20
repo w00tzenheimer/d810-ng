@@ -17,18 +17,23 @@ Architecture:
 
 Usage:
     storage = SQLiteOptimizationStorage("analysis.db")
+    phase = ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=5,
+        friendly_provider_level="MMAT_GLBOPT1",
+    )
 
     # Save results
     storage.save_result(
         function_addr=0x401000,
         fingerprint=fingerprint,
-        maturity=5,
+        provider_phase=phase,
         changes=42,
         patches=[...]
     )
 
     # Load results
-    result = storage.load_result(0x401000, maturity=5)
+    result = storage.load_result(0x401000, provider_phase=phase)
 
     # Configure per-function rules
     storage.set_function_rules(
@@ -47,6 +52,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810.core.provider_phase import ProviderPhase, ProviderPhaseSnapshot
 from d810.core.typing import (
     Any,
     Dict,
@@ -83,7 +89,9 @@ class CachedResult:
     """Cached optimization result for a function."""
 
     function_addr: int
-    maturity: int
+    provider_name: str
+    provider_level: int
+    friendly_provider_level: str
     changes_made: int
     patches: List[Dict[str, Any]]
     timestamp: float
@@ -130,12 +138,12 @@ class SupportsOptimizationStorage(Protocol):
         self,
         function_addr: int,
         fingerprint: FunctionFingerprint,
-        maturity: int,
+        provider_phase: ProviderPhase,
         changes: int,
         patches: List[Dict[str, Any]],
     ) -> None: ...
     def load_result(
-        self, function_addr: int, maturity: int
+        self, function_addr: int, provider_phase: ProviderPhase
     ) -> Optional[CachedResult]: ...
     def set_function_rules(
         self,
@@ -521,8 +529,12 @@ class NetnodeOptimizationStorage:
         self._kv[self._STATE_KEY] = self._state
 
     @staticmethod
-    def _result_key(function_addr: int, maturity: int) -> str:
-        return f"{int(function_addr)}:{int(maturity)}"
+    def _result_key(function_addr: int, provider_phase: ProviderPhase) -> str:
+        return (
+            f"{int(function_addr)}:"
+            f"{str(provider_phase.provider_name)}:"
+            f"{int(provider_phase.provider_level)}"
+        )
 
     @staticmethod
     def _func_key(function_addr: int) -> str:
@@ -558,16 +570,18 @@ class NetnodeOptimizationStorage:
         self,
         function_addr: int,
         fingerprint: FunctionFingerprint,
-        maturity: int,
+        provider_phase: ProviderPhase,
         changes: int,
         patches: List[Dict[str, Any]],
     ) -> None:
         self.save_fingerprint(fingerprint)
-        key = self._result_key(function_addr, maturity)
+        key = self._result_key(function_addr, provider_phase)
         now = time.time()
         self._state["results"][key] = {
             "function_addr": int(function_addr),
-            "maturity": int(maturity),
+            "provider_name": str(provider_phase.provider_name),
+            "provider_level": int(provider_phase.provider_level),
+            "friendly_provider_level": str(provider_phase.friendly_provider_level),
             "changes_made": int(changes),
             "fingerprint": fingerprint.bytes_hash,
             "timestamp": now,
@@ -575,22 +589,27 @@ class NetnodeOptimizationStorage:
         self._state["patches"][key] = list(patches)
         self._flush_state()
         logger.info(
-            "Saved optimization result for %x at maturity %d: %d changes, %d patches",
+            "Saved optimization result for %x at %s phase %s: %d changes, %d patches",
             function_addr,
-            maturity,
+            provider_phase.provider_name,
+            provider_phase.friendly_provider_level,
             changes,
             len(patches),
         )
 
-    def load_result(self, function_addr: int, maturity: int) -> Optional[CachedResult]:
-        key = self._result_key(function_addr, maturity)
+    def load_result(
+        self, function_addr: int, provider_phase: ProviderPhase
+    ) -> Optional[CachedResult]:
+        key = self._result_key(function_addr, provider_phase)
         result = self._state["results"].get(key)
         if not result:
             return None
         patches = list(self._state["patches"].get(key, []))
         return CachedResult(
             function_addr=int(result["function_addr"]),
-            maturity=int(result["maturity"]),
+            provider_name=str(result["provider_name"]),
+            provider_level=int(result["provider_level"]),
+            friendly_provider_level=str(result["friendly_provider_level"]),
             changes_made=int(result["changes_made"]),
             patches=patches,
             timestamp=float(result["timestamp"]),
@@ -774,12 +793,18 @@ class SQLiteOptimizationStorage:
         >>>
         >>> # Check if we have cached results
         >>> if storage.has_valid_cache(func_addr, current_hash):
-        ...     result = storage.load_result(func_addr, maturity)
+        ...     result = storage.load_result(func_addr, provider_phase)
         ...     apply_cached_patches(result.patches)
         ... else:
         ...     # Run optimization
         ...     changes = run_optimization(mba)
-        ...     storage.save_result(func_addr, fingerprint, maturity, changes, patches)
+        ...     storage.save_result(
+        ...         func_addr,
+        ...         fingerprint,
+        ...         provider_phase,
+        ...         changes,
+        ...         patches,
+        ...     )
         >>>
         >>> # Configure rules for specific function
         >>> storage.set_function_rules(
@@ -799,6 +824,105 @@ class SQLiteOptimizationStorage:
         self.conn: Optional[sqlite3.Connection] = None
         self._init_database()
         logger.info(f"Optimization storage initialized: {self.db_path}")
+
+    @staticmethod
+    def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> Set[str]:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return {str(row["name"]) for row in cursor.fetchall()}
+
+    def _migrate_provider_phase_schema(self, cursor: sqlite3.Cursor) -> None:
+        legacy_level_column = "maturity"
+
+        result_columns = self._table_columns(cursor, "results")
+        if (
+            legacy_level_column in result_columns
+            and "provider_level" not in result_columns
+        ):
+            cursor.execute("ALTER TABLE results RENAME TO results_legacy_phase")
+            cursor.execute(
+                """
+                CREATE TABLE results (
+                    function_addr INTEGER NOT NULL,
+                    provider_name TEXT NOT NULL,
+                    provider_level INTEGER NOT NULL,
+                    friendly_provider_level TEXT NOT NULL,
+                    changes_made INTEGER NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    PRIMARY KEY (function_addr, provider_name, provider_level),
+                    FOREIGN KEY (function_addr) REFERENCES functions(address)
+                )
+            """
+            )
+            cursor.execute(
+                f"""
+                INSERT OR REPLACE INTO results
+                (
+                    function_addr,
+                    provider_name,
+                    provider_level,
+                    friendly_provider_level,
+                    changes_made,
+                    fingerprint,
+                    timestamp
+                )
+                SELECT
+                    function_addr,
+                    'hexrays_microcode',
+                    {legacy_level_column},
+                    CAST({legacy_level_column} AS TEXT),
+                    changes_made,
+                    fingerprint,
+                    timestamp
+                FROM results_legacy_phase
+            """
+            )
+            cursor.execute("DROP TABLE results_legacy_phase")
+
+        patch_columns = self._table_columns(cursor, "patches")
+        if (
+            legacy_level_column in patch_columns
+            and "provider_level" not in patch_columns
+        ):
+            cursor.execute("ALTER TABLE patches RENAME TO patches_legacy_phase")
+            cursor.execute(
+                """
+                CREATE TABLE patches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    function_addr INTEGER NOT NULL,
+                    provider_name TEXT NOT NULL,
+                    provider_level INTEGER NOT NULL,
+                    patch_type TEXT NOT NULL,
+                    patch_data TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY (function_addr) REFERENCES functions(address)
+                )
+            """
+            )
+            cursor.execute(
+                f"""
+                INSERT INTO patches
+                (
+                    id,
+                    function_addr,
+                    provider_name,
+                    provider_level,
+                    patch_type,
+                    patch_data,
+                    created_at
+                )
+                SELECT
+                    id,
+                    function_addr,
+                    'hexrays_microcode',
+                    {legacy_level_column},
+                    patch_type,
+                    patch_data,
+                    created_at
+                FROM patches_legacy_phase
+            """
+            )
+            cursor.execute("DROP TABLE patches_legacy_phase")
 
     def _init_database(self) -> None:
         """Initialize the database schema."""
@@ -843,7 +967,8 @@ class SQLiteOptimizationStorage:
             CREATE TABLE IF NOT EXISTS patches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 function_addr INTEGER NOT NULL,
-                maturity INTEGER NOT NULL,
+                provider_name TEXT NOT NULL,
+                provider_level INTEGER NOT NULL,
                 patch_type TEXT NOT NULL,  -- 'redirect_edge', 'insert_block', etc.
                 patch_data TEXT NOT NULL,  -- JSON
                 created_at REAL NOT NULL,
@@ -879,15 +1004,19 @@ class SQLiteOptimizationStorage:
             """
             CREATE TABLE IF NOT EXISTS results (
                 function_addr INTEGER NOT NULL,
-                maturity INTEGER NOT NULL,
+                provider_name TEXT NOT NULL,
+                provider_level INTEGER NOT NULL,
+                friendly_provider_level TEXT NOT NULL,
                 changes_made INTEGER NOT NULL,
                 fingerprint TEXT NOT NULL,
                 timestamp REAL NOT NULL,
-                PRIMARY KEY (function_addr, maturity),
+                PRIMARY KEY (function_addr, provider_name, provider_level),
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
             )
         """
         )
+
+        self._migrate_provider_phase_schema(cursor)
 
         # Active rule inference table: single persisted selector overlay
         cursor.execute(
@@ -910,14 +1039,14 @@ class SQLiteOptimizationStorage:
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_patches_function
-            ON patches(function_addr, maturity)
+            ON patches(function_addr, provider_name, provider_level)
         """
         )
 
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_results_function
-            ON results(function_addr, maturity)
+            ON results(function_addr, provider_name, provider_level)
         """
         )
 
@@ -993,7 +1122,7 @@ class SQLiteOptimizationStorage:
         self,
         function_addr: int,
         fingerprint: FunctionFingerprint,
-        maturity: int,
+        provider_phase: ProviderPhase,
         changes: int,
         patches: List[Dict[str, Any]],
     ) -> None:
@@ -1002,7 +1131,7 @@ class SQLiteOptimizationStorage:
         Args:
             function_addr: Function address.
             fingerprint: Function fingerprint.
-            maturity: Maturity level.
+            provider_phase: Provider-specific optimization phase.
             changes: Number of changes made.
             patches: List of patch descriptions.
         """
@@ -1019,16 +1148,39 @@ class SQLiteOptimizationStorage:
         cursor.execute(
             """
             INSERT OR REPLACE INTO results
-            (function_addr, maturity, changes_made, fingerprint, timestamp)
-            VALUES (?, ?, ?, ?, ?)
+            (
+                function_addr,
+                provider_name,
+                provider_level,
+                friendly_provider_level,
+                changes_made,
+                fingerprint,
+                timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (function_addr, maturity, changes, fingerprint.bytes_hash, timestamp),
+            (
+                function_addr,
+                provider_phase.provider_name,
+                provider_phase.provider_level,
+                provider_phase.friendly_provider_level,
+                changes,
+                fingerprint.bytes_hash,
+                timestamp,
+            ),
         )
 
-        # Delete old patches for this function/maturity combo
+        # Delete old patches for this function/provider phase combo
         cursor.execute(
-            "DELETE FROM patches WHERE function_addr = ? AND maturity = ?",
-            (function_addr, maturity),
+            """
+            DELETE FROM patches
+            WHERE function_addr = ? AND provider_name = ? AND provider_level = ?
+        """,
+            (
+                function_addr,
+                provider_phase.provider_name,
+                provider_phase.provider_level,
+            ),
         )
 
         # Save new patches
@@ -1036,12 +1188,20 @@ class SQLiteOptimizationStorage:
             cursor.execute(
                 """
                 INSERT INTO patches
-                (function_addr, maturity, patch_type, patch_data, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                (
+                    function_addr,
+                    provider_name,
+                    provider_level,
+                    patch_type,
+                    patch_data,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
                     function_addr,
-                    maturity,
+                    provider_phase.provider_name,
+                    provider_phase.provider_level,
                     patch.get("type", "unknown"),
                     json.dumps(patch),
                     timestamp,
@@ -1051,15 +1211,19 @@ class SQLiteOptimizationStorage:
         self.conn.commit()
         logger.info(
             f"Saved optimization result for {function_addr:x} "
-            f"at maturity {maturity}: {changes} changes, {len(patches)} patches"
+            f"at {provider_phase.provider_name} phase "
+            f"{provider_phase.friendly_provider_level}: "
+            f"{changes} changes, {len(patches)} patches"
         )
 
-    def load_result(self, function_addr: int, maturity: int) -> Optional[CachedResult]:
+    def load_result(
+        self, function_addr: int, provider_phase: ProviderPhase
+    ) -> Optional[CachedResult]:
         """Load cached optimization result.
 
         Args:
             function_addr: Function address.
-            maturity: Maturity level.
+            provider_phase: Provider-specific optimization phase.
 
         Returns:
             Cached result if found, None otherwise.
@@ -1072,11 +1236,18 @@ class SQLiteOptimizationStorage:
         # Load result
         cursor.execute(
             """
-            SELECT changes_made, fingerprint, timestamp
+            SELECT
+                changes_made,
+                fingerprint,
+                timestamp
             FROM results
-            WHERE function_addr = ? AND maturity = ?
+            WHERE function_addr = ? AND provider_name = ? AND provider_level = ?
         """,
-            (function_addr, maturity),
+            (
+                function_addr,
+                provider_phase.provider_name,
+                provider_phase.provider_level,
+            ),
         )
 
         row = cursor.fetchone()
@@ -1088,22 +1259,29 @@ class SQLiteOptimizationStorage:
             """
             SELECT patch_type, patch_data
             FROM patches
-            WHERE function_addr = ? AND maturity = ?
+            WHERE function_addr = ? AND provider_name = ? AND provider_level = ?
             ORDER BY id
         """,
-            (function_addr, maturity),
+            (
+                function_addr,
+                provider_phase.provider_name,
+                provider_phase.provider_level,
+            ),
         )
 
         patches = [json.loads(r["patch_data"]) for r in cursor.fetchall()]
 
         logger.info(
             f"Loaded cached result for {function_addr:x} "
-            f"at maturity {maturity}: {row['changes_made']} changes"
+            f"at {provider_phase.provider_name} phase "
+            f"{provider_phase.friendly_provider_level}: {row['changes_made']} changes"
         )
 
         return CachedResult(
             function_addr=function_addr,
-            maturity=maturity,
+            provider_name=provider_phase.provider_name,
+            provider_level=provider_phase.provider_level,
+            friendly_provider_level=provider_phase.friendly_provider_level,
             changes_made=row["changes_made"],
             patches=patches,
             timestamp=row["timestamp"],

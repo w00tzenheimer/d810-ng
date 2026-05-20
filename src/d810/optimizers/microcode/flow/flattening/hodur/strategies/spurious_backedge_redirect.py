@@ -21,16 +21,17 @@ from __future__ import annotations
 
 import os
 
-from d810.cfg.backedge_classifier import parse_var_tokens
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.cfg.spurious_backedge_redirect import (
-    SpuriousRedirectPlan,
     plan_spurious_backedge_redirects,
 )
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.evaluator.hexrays_microcode.live_analysis_backend import (
+    HexRaysLiveAnalysisBackend,
+)
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -38,7 +39,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
@@ -49,18 +50,7 @@ logger = logging.getLogger(
 __all__ = ["SpuriousBackedgeRedirectStrategy"]
 
 _GATE_ENV = "D810_HODUR_ENABLE_SPURIOUS_REDIRECT"
-
-# Map mblock_t.type integer to symbolic name. Defined once here to avoid
-# pulling in ida_hexrays for a constant table.
-_MBLOCK_TYPE_NAMES = {
-    0: "BLT_NONE",
-    1: "BLT_STOP",
-    2: "BLT_0WAY",
-    3: "BLT_1WAY",
-    4: "BLT_2WAY",
-    5: "BLT_NWAY",
-    6: "BLT_XTRN",
-}
+_LIVE_ANALYSIS_BACKEND = HexRaysLiveAnalysisBackend()
 
 
 class SpuriousBackedgeRedirectStrategy:
@@ -90,8 +80,26 @@ class SpuriousBackedgeRedirectStrategy:
             return None
 
         mba = snapshot.mba
-        block_succs, block_types = _build_succ_and_type_maps(mba)
-        block_writes, block_predicate_reads = _build_write_and_read_maps(mba)
+        topology_evidence = _LIVE_ANALYSIS_BACKEND.collect_block_topology(mba)
+        predicate_evidence = (
+            _LIVE_ANALYSIS_BACKEND.collect_predicate_read_write_evidence(mba)
+        )
+        block_succs = {
+            int(evidence.serial): tuple(int(succ) for succ in evidence.succs)
+            for evidence in topology_evidence
+        }
+        block_types = {
+            int(evidence.serial): str(evidence.block_type)
+            for evidence in topology_evidence
+        }
+        block_writes = {
+            int(evidence.block_serial): frozenset(evidence.writes)
+            for evidence in predicate_evidence
+        }
+        block_predicate_reads = {
+            int(evidence.block_serial): frozenset(evidence.predicate_reads)
+            for evidence in predicate_evidence
+        }
 
         # Pre-plan topology snapshot.
         sccs_before = compute_live_cfg_sccs(block_succs)
@@ -179,98 +187,3 @@ class SpuriousBackedgeRedirectStrategy:
                 "smoke_test": True,
             },
         )
-
-
-def _build_succ_and_type_maps(mba) -> tuple[
-    dict[int, tuple[int, ...]],
-    dict[int, str],
-]:
-    """Walk live mba and extract (block_succs, block_types) maps."""
-    succs: dict[int, tuple[int, ...]] = {}
-    types: dict[int, str] = {}
-    qty = int(getattr(mba, "qty", 0))
-    for i in range(qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        nsucc = int(blk.nsucc())
-        succs[i] = tuple(int(blk.succ(j)) for j in range(nsucc))
-        types[i] = _MBLOCK_TYPE_NAMES.get(int(blk.type), f"type_{int(blk.type)}")
-    return succs, types
-
-
-_CONDITIONAL_JUMP_LEADING_WORDS = frozenset({
-    "jcnd", "jnz", "jz", "jae", "jb", "ja", "jbe",
-    "jg", "jge", "jl", "jle", "jtbl",
-})
-
-_UNCONDITIONAL_JUMP_LEADING_WORDS = frozenset({"goto", "ijmp", "ret"})
-
-_JUMP_LEADING_WORDS = (
-    _CONDITIONAL_JUMP_LEADING_WORDS | _UNCONDITIONAL_JUMP_LEADING_WORDS
-)
-
-
-def _leading_opcode(text: str) -> str:
-    stripped = (text or "").lstrip()
-    if not stripped:
-        return ""
-    end = 0
-    while end < len(stripped) and not stripped[end].isspace():
-        end += 1
-    return stripped[:end].lower()
-
-
-def _build_write_and_read_maps(mba) -> tuple[
-    dict[int, frozenset[str]],
-    dict[int, frozenset[str]],
-]:
-    """Extract per-block writes and tail-predicate reads as %var_HEX tokens.
-
-    Writes: union of "destination" tokens across non-jump instructions.
-    The dstr rendering convention is ``src..., dst`` so the last
-    ``%var_HEX`` token in the line is the destination — except for jump
-    instructions where there is no destination var (``@target`` is a
-    label).
-
-    Predicate reads: ALL ``%var_HEX`` tokens from the tail instruction
-    when the tail is a conditional jump. For unconditional goto and
-    non-jump tails the result is empty.
-    """
-    writes: dict[int, frozenset[str]] = {}
-    reads: dict[int, frozenset[str]] = {}
-    qty = int(getattr(mba, "qty", 0))
-    for i in range(qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        block_writes: set[str] = set()
-        tail_text: str | None = None
-        insn = blk.head
-        while insn is not None:
-            try:
-                text = insn._print()
-            except Exception:
-                text = ""
-            opcode = _leading_opcode(text)
-            tail_text = text
-            if opcode in _JUMP_LEADING_WORDS:
-                # Jumps don't write any var.
-                insn = insn.next
-                continue
-            tokens = parse_var_tokens(text)
-            if tokens:
-                # Destination is the LAST %var token in dstr.
-                dest = max(tokens, key=lambda t: text.rfind(t))
-                block_writes.add(dest)
-            insn = insn.next
-        writes[i] = frozenset(block_writes)
-        if tail_text is None:
-            reads[i] = frozenset()
-            continue
-        tail_opcode = _leading_opcode(tail_text)
-        if tail_opcode in _CONDITIONAL_JUMP_LEADING_WORDS:
-            reads[i] = parse_var_tokens(tail_text)
-        else:
-            reads[i] = frozenset()
-    return writes, reads

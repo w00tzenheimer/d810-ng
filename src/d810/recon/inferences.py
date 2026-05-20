@@ -31,7 +31,9 @@ def unflattening_inference(hints: Any) -> list[RuleDelta]:
 
     Confidence-gated: only suppresses ``ConstantFolding`` at >= 0.7
     confidence because constant folding interferes with dispatcher state
-    resolution during unflattening.
+    resolution during unflattening.  ForwardConstantPropagationRule is not
+    suppressed globally; profiles with known pre-recovery FCP hazards disable it
+    explicitly so Approov-style engine-wrapper recovery can still use FCP.
 
     Args:
         hints: ``DeobfuscationHints`` (duck-typed to avoid circular import).

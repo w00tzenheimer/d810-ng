@@ -19,6 +19,7 @@ from d810.core.diag.snapshot import (
     snapshot_fact_consumers,
     snapshot_fact_mappings,
     snapshot_fact_observations,
+    snapshot_state_dispatcher_rows,
 )
 from d810.recon.facts import (
     FactConflict,
@@ -53,6 +54,25 @@ class TestChainCommand:
         assert "blk[131]@0x180014852" in out
         assert "blk[174]@synthetic" in out
         assert "blk[176]@synthetic" in out
+
+    def test_chain_writes_to_output_file(
+        self,
+        loaded_db_path: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ):
+        output = tmp_path / "chain.txt"
+        rc = main([
+            "chain",
+            "--db",
+            str(loaded_db_path),
+            "--output",
+            str(output),
+            "131",
+        ])
+        assert rc == 0
+        assert capsys.readouterr().out == ""
+        assert "blk[131]@0x180014852" in output.read_text()
 
     def test_chain_shows_hop_ok(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
         rc = main(["chain", "--db", str(loaded_db_path), "131", "174"])
@@ -487,6 +507,99 @@ class TestStateTransitionBstResolutionsCommand:
         ).fetchone()
         conn.close()
         assert row[0] == 0
+
+
+class TestStateTransitionDispatchResolutionsCommand:
+    def _make_dispatch_resolution_db(self, tmp_path: Path) -> Path:
+        db_path = tmp_path / "dispatch.sqlite3"
+        conn = sqlite3.connect(str(db_path))
+        create_tables(conn)
+        conn.execute(
+            """
+            INSERT INTO snapshots
+                (id, label, func_ea_hex, func_ea_i64,
+                 maturity, phase, block_count, timestamp)
+            VALUES (1, 'MMAT_LOCOPT_pre_d810', '0x180012df0',
+                    0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO snapshots
+                (id, label, func_ea_hex, func_ea_i64,
+                 maturity, phase, block_count, timestamp)
+            VALUES (2, 'MMAT_GLBOPT1_post_d810', '0x180012df0',
+                    0x180012df0, 'MMAT_GLBOPT1', 'post_d810', 0, 1.0)
+            """
+        )
+        payload = {
+            "source_block_serial": 100,
+            "source_state_const": 0x89407346,
+            "source_state_const_hex": "0x89407346",
+            "successor_kind": "branch",
+            "state_var_stkoff_hex": "0x3c",
+        }
+        conn.execute(
+            """
+            INSERT INTO fact_observations
+                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
+                 semantic_key, maturity, phase, confidence,
+                 source_block, source_ea_hex, source_ea_i64,
+                 block_fingerprint, mop_signature, payload, evidence)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                1,
+                "0x180012df0",
+                0x180012DF0,
+                "state_transition_anchor:blk=100",
+                "StateTransitionAnchorFact",
+                "state_transition_anchor:blk=100",
+                "MMAT_LOCOPT",
+                "pre_d810",
+                0.85,
+                100,
+                None,
+                None,
+                None,
+                None,
+                json.dumps(payload),
+                "[]",
+            ),
+        )
+        snapshot_state_dispatcher_rows(
+            conn,
+            2,
+            [{"state_const": 0x89407346, "target_block": 76}],
+            dispatcher_entry_block=5,
+            dispatcher_kind="CONDITIONAL_CHAIN",
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_persists_by_default(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        db_path = self._make_dispatch_resolution_db(tmp_path)
+
+        rc = main([
+            "state-transition-dispatch-resolutions",
+            "--db",
+            str(db_path),
+        ])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "persisted=True" in out
+        assert "rows=1" in out
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT resolved_next_block_serial "
+            "FROM state_transition_dispatch_resolutions"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 76
 
 
 class TestFactCommands:

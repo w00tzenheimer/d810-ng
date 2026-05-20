@@ -6,11 +6,9 @@ as DeobfuscationCase dataclasses in tests/system/cases/libobfuscated_comprehensi
 Coverage Goal: 100% coverage of src/d810/optimizers/microcode package
 
 Test Organization:
-- TestCoreDeobfuscation: Core tests that must always pass
 - TestUnflatteningRules: Control flow unflattening patterns
 - TestInstructionRules: MBA and constant folding patterns
 - TestExceptionPaths: Edge cases and exception paths
-- TestSmoke: Quick smoke tests for CI
 
 Override binary via environment variable:
     D810_TEST_BINARY=libobfuscated.dll pytest tests/system/e2e/test_libdeobfuscated_dsl.py
@@ -25,9 +23,6 @@ import idaapi
 
 from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import (
-    ALL_CASES,
-    CORE_CASES,
-    SMOKE_CASES,
     UNFLATTENING_CASES,
     INSTRUCTION_CASES,
     EXCEPTION_PATH_CASES,
@@ -41,10 +36,11 @@ from tests.system.cases.libobfuscated_comprehensive import (
     NESTED_DISPATCHER_CASES,
     OLLVM_CASES,
     TIGRESS_CASES,
+    TIGRESS_ENGINE_CASES,
     UNWRAP_LOOPS_CASES,
     WHILE_SWITCH_CASES,
+    HARDENED_OLLVM_COND_CHAIN_CASES,
     RESIZE_BUFFER_CFF_CASES,
-    TOTAL_FUNCTION_COUNT,
 )
 
 
@@ -62,40 +58,6 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
-
-
-class TestCoreDeobfuscation:
-    """Core deobfuscation tests that must always pass.
-
-    These test the most important and well-established patterns:
-    - MBA simplification (XOR, OR, AND, NEG)
-    - Tigress unflattening
-    - OLLVM unflattening
-    - Hodur unflattening
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", CORE_CASES, ids=lambda c: c.test_id)
-    def test_core_deobfuscation(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """Core deobfuscation patterns that must work."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
 
 
 class TestMBASimplification:
@@ -349,6 +311,33 @@ class TestTigressPatterns:
         )
 
 
+class TestTigressEnginePatterns:
+    """Replacement-readiness gates for Tigress through the shared engine profile."""
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", TIGRESS_ENGINE_CASES, ids=lambda c: c.test_id)
+    def test_tigress_engine_patterns(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """Tigress switch-table state machines through EmulatedDispatcherUnflattener."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
 class TestHodurPatterns:
     """Tests for Hodur C2 malware patterns.
 
@@ -409,6 +398,38 @@ class TestLoopPatterns:
         )
 
 
+class TestHardenedConditionalChains:
+    """Tests for hardened OLLVM conditional-chain state machines.
+
+    These cases use table-backed state constants and binary-search dispatch, so
+    they are owned by the whole-dispatcher reconstruction path rather than the
+    predecessor-local conditional-jump fixup.
+    """
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", HARDENED_OLLVM_COND_CHAIN_CASES, ids=lambda c: c.test_id)
+    def test_hardened_conditional_chains(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """Hardened conditional-chain dispatcher patterns."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
 class TestExceptionPaths:
     """Tests for exception and edge case handling.
 
@@ -449,7 +470,7 @@ class TestResizeBufferCFF:
     - OLLVM Control-Flow Flattening (CFF) with nested while(1) loops
     - Opaque constant table with MBA expressions
     - FoldReadonlyDataRule with fold_writable_constants
-    - FixPredecessorOfConditionalJumpBlock for conditional chain dispatch
+    - active whole-dispatcher unflattening for conditional chain dispatch
     """
 
     binary_name = _get_default_binary()
@@ -466,69 +487,6 @@ class TestResizeBufferCFF:
         load_expected_stats,
     ):
         """Buffer resize with OLLVM CFF patterns."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
-
-
-class TestSmoke:
-    """Quick smoke tests for CI validation.
-
-    Uses minimal subset of cases for fast feedback.
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", SMOKE_CASES, ids=lambda c: c.test_id)
-    def test_smoke(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """Quick smoke tests."""
-        run_deobfuscation_test(
-            case=case,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_stats,
-            load_expected_stats=load_expected_stats,
-        )
-
-
-class TestAllCases:
-    """Run all test cases for comprehensive coverage.
-
-    Total cases: {TOTAL_FUNCTION_COUNT}
-
-    Use this for full coverage testing:
-        pytest tests/system/e2e/test_libdeobfuscated_dsl.py::TestAllCases -v --cov=src/d810/optimizers/microcode
-    """
-
-    binary_name = _get_default_binary()
-
-    @pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
-    def test_all(
-        self,
-        case,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        capture_stats,
-        load_expected_stats,
-    ):
-        """All deobfuscation patterns."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,

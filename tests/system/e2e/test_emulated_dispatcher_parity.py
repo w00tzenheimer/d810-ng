@@ -1,4 +1,4 @@
-"""Focused parity checks for the emulated-dispatcher engine family."""
+"""Focused checks for the emulated-dispatcher engine family."""
 
 from __future__ import annotations
 
@@ -70,11 +70,11 @@ def _decompile_with_engine_wrapper_profile(
 
 
 class TestEmulatedDispatcherParity:
-    """Parity checks for the emulated-dispatcher engine-wrapper profile."""
+    """Focused checks for the emulated-dispatcher engine-wrapper profile."""
 
     binary_name = _get_default_binary()
 
-    def test_approov_vm_dispatcher_engine_wrapper_matches_legacy(
+    def test_approov_vm_dispatcher_engine_wrapper_matches_project_and_emits_guard(
         self,
         libobfuscated_setup,
         d810_state,
@@ -97,16 +97,19 @@ class TestEmulatedDispatcherParity:
                 pseudocode_to_string,
                 engine_wrappers_only=False,
             )
-            code_after, fired_rules, gap_summary = _decompile_with_engine_wrapper_profile(
+            code_after, _fired_rules, gap_summary = _decompile_with_engine_wrapper_profile(
                 state,
                 func_ea,
                 pseudocode_to_string,
                 project_name="default_unflattening_approov.json",
             )
 
-        assert code_comparator.are_equivalent(code_after, legacy_code), (
-            "approov_vm_dispatcher still diverges from legacy under the isolated "
-            "engine-wrapper profile; "
-            f"fired_rules={fired_rules}; "
-            f"dispatcher_observation={gap_summary}"
-        )
+        assert code_after != code_before
+        assert code_comparator.are_equivalent(code_after, legacy_code)
+        assert "while (" not in code_after
+        assert "qword_18001D320 |= 0xF6A20uLL;" in code_after
+        assert "if ( (_DWORD)qword_18001D320 == 0xF6A20 )" in code_after
+        assert "dword_18001D318 = a1;" in code_after
+        assert "dword_18001D318 += a1;" in code_after
+        assert "qword_18001D320 |= 0x40uLL;" in code_after
+        assert gap_summary is not None

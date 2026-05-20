@@ -473,7 +473,7 @@
     },
     {
       "name": "Or_FactorRule_1",
-      "is_activated": true,
+      "is_activated": false,
       "config": {}
     },
     {
@@ -904,13 +904,11 @@
       }
     },
     {
-      "name": "Unflattener",
+      "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
       "config": {
-        "max_calls_entry_preds": 24,
-        "max_calls_exit_blocks": 24,
-        "defer_calls_on_conditional_entry_father": true,
-        "log_calls_layout_signals": true
+        "profile": "state_dispatcher_map",
+        "enable_terminal_payload_materialization": true
       }
     },
     {
@@ -922,6 +920,15 @@
       "name": "JumpFixer",
       "is_activated": true,
       "config": {
+        "preserve_z3_discarded_side_effects": true,
+        "preserve_z3_discarded_side_effect_depth": 3,
+        "preserve_z3_discarded_side_effect_constants": [
+          "0xE8CF9C3E",
+          "0x173063C1",
+          "0xCD536960",
+          "0x32AC969F",
+          "0x259CF55E"
+        ],
         "enabled_rules": [
           "CompareConstantRule1",
           "CompareConstantRule2",

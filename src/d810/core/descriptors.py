@@ -223,7 +223,7 @@ def coroutine(
         try:
             await gen.asend(None)  # type: ignore
         except StopAsyncIteration:
-            print("StopAsyncIteration")  # Doesn't print
+            pass
         return gen
 
     return calls_asend

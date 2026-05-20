@@ -15,10 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from d810.core import logging
 from d810.core.typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import ida_hexrays
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -347,11 +350,13 @@ def benchmark_mop_set(n_iterations: int = 10000) -> dict:
 
 
 if __name__ == "__main__":
-    print("BlockInfo copy benchmark:")
-    print(benchmark_block_info_copy())
+    logging.configure_loggers(".tmp/logs/tracker_benchmark")
 
-    print("\nCachedBlockPath benchmark:")
-    print(benchmark_cached_path())
+    logger.info("BlockInfo copy benchmark:")
+    logger.info("%s", benchmark_block_info_copy())
 
-    print("\nMopSet benchmark:")
-    print(benchmark_mop_set())
+    logger.info("CachedBlockPath benchmark:")
+    logger.info("%s", benchmark_cached_path())
+
+    logger.info("MopSet benchmark:")
+    logger.info("%s", benchmark_mop_set())

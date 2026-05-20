@@ -1,12 +1,268 @@
-"""Pure semantic target-resolution helpers for cfg lowering."""
+"""Backend-neutral residual dispatcher frontier target resolution.
 
+The routines here classify residual dispatcher feeders and choose semantic
+frontier targets from DAG/CFG evidence.  They intentionally accept callback
+resolvers from the caller instead of importing recon or backend modules; Hodur
+keeps strategy ordering, live state-write extraction, and modification emission.
+"""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from d810.cfg.dag_index import build_dag_node_maps
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
+)
+from d810.core.typing import Callable, Iterable
+
+
+__all__ = [
+    "collect_owned_exact_sources",
+    "collect_supported_exact_entries",
+    "BstConditionalTail",
+    "BstGotoTail",
+    "DispatcherTrampolineSkipDecision",
+    "dispatcher_exact_state_target",
+    "dispatcher_has_exact_state_row",
+    "is_raw_state_label",
+    "is_structured_conditional_path_feeder",
+    "is_supplemental_feeder_bypass",
+    "resolve_dispatcher_trampoline_skip_candidate",
+    "resolve_nonexact_dispatch_target",
+    "resolve_normalized_alias_entry_for_state",
+    "resolve_owner_semantic_entry_for_blocks",
+    "resolve_frontier_target_entry",
+    "resolve_semantic_reference_alias_entry",
+    "walk_bst_dispatcher",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class BstGotoTail:
+    """Backend-neutral view of a BST goto tail."""
+
+    target: int
+
+
+@dataclass(frozen=True, slots=True)
+class BstConditionalTail:
+    """Backend-neutral view of a BST conditional tail."""
+
+    opcode: int
+    rhs_value: int
+    rhs_size: int
+    taken_target: int
+    successors: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherTrampolineSkipDecision:
+    """Backend-neutral decision for a residual dispatcher trampoline source."""
+
+    source_block: int
+    old_target: int
+    target_block: int | None = None
+    state_value: int | None = None
+    rejection_reason: str | None = None
+
+    @property
+    def is_admitted(self) -> bool:
+        return self.rejection_reason is None and self.target_block is not None
+
+
+def _reject_trampoline_skip(
+    *,
+    source_block: int,
+    old_target: int,
+    reason: str,
+    state_value: int | None = None,
+    target_block: int | None = None,
+) -> DispatcherTrampolineSkipDecision:
+    return DispatcherTrampolineSkipDecision(
+        source_block=int(source_block),
+        old_target=int(old_target),
+        target_block=None if target_block is None else int(target_block),
+        state_value=None if state_value is None else int(state_value),
+        rejection_reason=reason,
+    )
+
+
+def resolve_dispatcher_trampoline_skip_candidate(
+    *,
+    source_block: int,
+    bst_root: int,
+    bst_blocks: set[int],
+    nsucc: int,
+    goto_target: int | None,
+    direct_use_def_veto: bool,
+    state_value_fn: Callable[[], int | None],
+    target_for_state_fn: Callable[[int], int | None],
+    target_exists_fn: Callable[[int], bool],
+    block_count: int | None = None,
+) -> DispatcherTrampolineSkipDecision:
+    """Resolve one residual trampoline source into an admissible redirect.
+
+    The caller supplies backend-specific reads through callbacks.  The shared
+    cfg layer owns the ordering and safety contract: source must not be a BST
+    node, prior direct use-def vetoes win, source must be a one-way goto to the
+    BST root, a state write must resolve through the BST to a live non-BST,
+    non-self target, and the target must be in range when a block count is
+    available.
+    """
+    source_block = int(source_block)
+    bst_root = int(bst_root)
+    bst_block_set = {int(block) for block in bst_blocks}
+    if source_block in bst_block_set:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_is_bst",
+        )
+    if direct_use_def_veto:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="direct_use_def_veto",
+        )
+    if int(nsucc) != 1:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_not_1way",
+        )
+    if goto_target is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="source_not_goto",
+        )
+    if int(goto_target) != bst_root:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="goto_not_bst_root",
+            target_block=int(goto_target),
+        )
+
+    state_value = state_value_fn()
+    if state_value is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="state_write_missing",
+        )
+    state_value = int(state_value)
+
+    target_block = target_for_state_fn(state_value)
+    if target_block is None:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="bst_walk_unresolved",
+            state_value=state_value,
+        )
+    target_block = int(target_block)
+    if target_block in bst_block_set:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_is_bst",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if target_block == source_block:
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_is_source",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if block_count is not None and not (0 <= target_block < int(block_count)):
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_out_of_range",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    if not target_exists_fn(target_block):
+        return _reject_trampoline_skip(
+            source_block=source_block,
+            old_target=bst_root,
+            reason="target_missing",
+            state_value=state_value,
+            target_block=target_block,
+        )
+    return DispatcherTrampolineSkipDecision(
+        source_block=source_block,
+        old_target=bst_root,
+        target_block=target_block,
+        state_value=state_value,
+    )
 
 
 def _node_kind_name(node: object) -> str:
     return str(getattr(getattr(node, "kind", None), "name", "") or getattr(node, "kind", "") or "")
+
+
+def walk_bst_dispatcher(
+    *,
+    root: int,
+    bst_blocks: set[int],
+    state_value: int,
+    tail_for_block_fn: Callable[[int], BstGotoTail | BstConditionalTail | None],
+    is_conditional_taken_fn: Callable[[int, int, int, int], bool | None],
+    max_steps: int = 64,
+) -> int | None:
+    """Walk a BST dispatcher for ``state_value`` until a non-BST block.
+
+    The cfg layer owns the target-resolution algorithm, while the caller owns
+    backend-specific tail decoding and conditional semantics.  This keeps the
+    shared resolver free of Hex-Rays objects but lets Hodur reuse the exact
+    same walk it historically performed over live ``mblock_t`` tails.
+    """
+    current = int(root)
+    visited: set[int] = set()
+    for _ in range(max_steps):
+        if current in visited:
+            return None
+        visited.add(current)
+        if current not in bst_blocks:
+            return current
+
+        tail = tail_for_block_fn(current)
+        if tail is None:
+            return None
+        if isinstance(tail, BstGotoTail):
+            current = int(tail.target)
+            continue
+
+        taken = is_conditional_taken_fn(
+            int(tail.opcode),
+            int(state_value),
+            int(tail.rhs_value),
+            int(tail.rhs_size),
+        )
+        if taken is None:
+            return None
+        if taken:
+            current = int(tail.taken_target)
+            continue
+
+        fallthrough = next(
+            (
+                int(successor)
+                for successor in tail.successors
+                if int(successor) != int(tail.taken_target)
+            ),
+            None,
+        )
+        if fallthrough is None:
+            fallthrough = current + 1
+        current = fallthrough
+    return None
 
 
 def dispatcher_has_exact_state_row(
@@ -479,11 +735,331 @@ def resolve_nonexact_dispatch_target(
     return None
 
 
-__all__ = [
-    "dispatcher_exact_state_target",
-    "dispatcher_has_exact_state_row",
-    "is_raw_state_label",
-    "resolve_nonexact_dispatch_target",
-    "resolve_normalized_alias_entry_for_state",
-    "resolve_owner_semantic_entry_for_blocks",
-]
+def resolve_semantic_reference_alias_entry(
+    dag: object,
+    semantic_reference_program: object | None,
+    *,
+    pred_serial: int,
+    state_value: int,
+) -> int | None:
+    """Resolve a raw alias state through the semantic reference program."""
+    semantic_successors_by_state = collect_semantic_successors_by_state(
+        semantic_reference_program
+    )
+    semantic_entry_by_label = collect_semantic_entry_by_label(
+        semantic_reference_program
+    )
+    if not semantic_successors_by_state or not semantic_entry_by_label:
+        return None
+
+    relevant_edges = [
+        edge
+        for edge in getattr(dag, "edges", ()) or ()
+        if getattr(edge, "target_state", None) is not None
+        and (int(getattr(edge, "target_state")) & 0xFFFFFFFF) == (int(state_value) & 0xFFFFFFFF)
+        and int(pred_serial) in tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+    ]
+    if not relevant_edges:
+        return None
+
+    source_sites: set[tuple[int, int | None]] = set()
+    for edge in relevant_edges:
+        source_state = getattr(getattr(edge, "source_key", None), "state_const", None)
+        if source_state is None:
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = getattr(source_anchor, "block_serial", None)
+        source_sites.add(
+            (
+                int(source_state) & 0xFFFFFFFF,
+                None if source_block is None else int(source_block),
+            )
+        )
+
+    for source_state, source_block in source_sites:
+        semantic_labels = tuple(semantic_successors_by_state.get(source_state, ()))
+        if not semantic_labels:
+            continue
+        source_edges = [
+            edge
+            for edge in getattr(dag, "edges", ()) or ()
+            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
+            and (int(getattr(getattr(edge, "source_key", None), "state_const")) & 0xFFFFFFFF) == source_state
+            and (
+                source_block is None
+                or int(
+                    getattr(getattr(edge, "source_anchor", None), "block_serial", -1)
+                )
+                == source_block
+            )
+        ]
+        matched_labels: set[str] = set()
+        unmatched_alias_edges: list[object] = []
+        for edge in source_edges:
+            target_state_attr = getattr(edge, "target_state", None)
+            if target_state_attr is None:
+                continue
+            target_state_value = int(target_state_attr) & 0xFFFFFFFF
+            direct_label = f"STATE_{target_state_value:08X}"
+            if direct_label in semantic_labels:
+                matched_labels.add(direct_label)
+            else:
+                unmatched_alias_edges.append(edge)
+        unmatched_labels = [
+            label for label in semantic_labels if label not in matched_labels
+        ]
+        if len(unmatched_alias_edges) != 1 or len(unmatched_labels) != 1:
+            continue
+        alias_edge = unmatched_alias_edges[0]
+        ordered_path = tuple(int(node) for node in getattr(alias_edge, "ordered_path", ()) or ())
+        if int(pred_serial) not in ordered_path:
+            continue
+        target_entry = semantic_entry_by_label.get(unmatched_labels[0])
+        if target_entry is not None and int(target_entry) != int(pred_serial):
+            return int(target_entry)
+    return None
+
+
+def resolve_frontier_target_entry(
+    dag: object,
+    *,
+    pred_serial: int,
+    state_value: int,
+    dispatcher_model: object | None,
+    bst_blocks: set[int],
+    semantic_reference_program: object | None,
+    dispatcher_exact_state_target_fn: Callable[..., int | None],
+    supplemental_selected_entry_for_state_fn: Callable[..., int | None],
+    resolve_exact_dag_entry_for_state_fn: Callable[..., int | None],
+    resolve_semantic_reference_entry_for_state_fn: Callable[..., int | None],
+    resolve_dag_entry_for_state_fn: Callable[..., int | None],
+    resolve_normalized_alias_entry_for_state_fn: Callable[..., int | None],
+    residual_effective_target: int | None = None,
+    resolve_semantic_reference_alias_entry_fn: Callable[..., int | None] = resolve_semantic_reference_alias_entry,
+) -> tuple[int | None, int | None]:
+    """Resolve the best semantic entry for a residual feeder state write."""
+    raw_state = int(state_value) & 0xFFFFFFFF
+    exact_dispatch_target = dispatcher_exact_state_target_fn(
+        raw_state,
+        dispatcher=dispatcher_model,
+    )
+    synthetic_target_entry = supplemental_selected_entry_for_state_fn(
+        dag,
+        raw_state,
+    )
+    exact_dag_entry = resolve_exact_dag_entry_for_state_fn(
+        dag,
+        raw_state,
+        dispatcher_region=bst_blocks,
+    )
+    direct_semantic_entry = resolve_semantic_reference_entry_for_state_fn(
+        raw_state,
+        semantic_reference_program=semantic_reference_program,
+        dispatcher_region=bst_blocks,
+    )
+    target_entry = resolve_dag_entry_for_state_fn(
+        dag,
+        raw_state,
+        bst_node_blocks=bst_blocks,
+    )
+    normalized_alias_entry = resolve_normalized_alias_entry_for_state_fn(
+        dag,
+        raw_state,
+        source_block=int(pred_serial),
+        bst_node_blocks=bst_blocks,
+    )
+    semantic_alias_entry = resolve_semantic_reference_alias_entry_fn(
+        dag,
+        semantic_reference_program,
+        pred_serial=int(pred_serial),
+        state_value=raw_state,
+    )
+    if (
+        residual_effective_target is not None
+        and int(residual_effective_target) != int(pred_serial)
+    ):
+        target_entry = int(residual_effective_target)
+    if (
+        residual_effective_target is None
+        and exact_dag_entry is not None
+        and int(exact_dag_entry) != int(pred_serial)
+    ):
+        target_entry = int(exact_dag_entry)
+    if (
+        residual_effective_target is None
+        and
+        direct_semantic_entry is not None
+        and int(direct_semantic_entry) != int(pred_serial)
+    ):
+        target_entry = int(direct_semantic_entry)
+    if (
+        residual_effective_target is None
+        and
+        semantic_alias_entry is not None
+        and semantic_alias_entry != int(pred_serial)
+        and semantic_alias_entry != target_entry
+    ):
+        target_entry = int(semantic_alias_entry)
+    preferred_alias_entry = normalized_alias_entry
+    if (
+        preferred_alias_entry is not None
+        and preferred_alias_entry != int(pred_serial)
+        and (
+            target_entry is None
+            or int(target_entry) == int(pred_serial)
+            or (
+                exact_dispatch_target is not None
+                and int(target_entry) == int(exact_dispatch_target)
+            )
+        )
+    ):
+        target_entry = int(preferred_alias_entry)
+    if (
+        target_entry is None
+        or int(target_entry) in bst_blocks
+        or int(target_entry) == int(pred_serial)
+    ):
+        target_entry = supplemental_selected_entry_for_state_fn(
+            dag,
+            raw_state,
+        )
+    if target_entry is not None:
+        target_entry = int(target_entry)
+    return (
+        None if exact_dispatch_target is None else int(exact_dispatch_target),
+        target_entry,
+    )
+
+
+def collect_supported_exact_entries(
+    round_summary: object,
+    *,
+    exact_source_blocks: Iterable[int],
+    bst_blocks: set[int],
+    is_straight_line_handoff_fn: Callable[[object], bool],
+    resolve_dag_entry_for_state_fn: Callable[..., int | None],
+) -> set[int]:
+    """Return exact-node entry blocks that are safe BST bypass targets."""
+    supported_entries = {int(source_block) for source_block in exact_source_blocks}
+    for plannable in getattr(round_summary, "plannable_edges", ()):
+        edge = getattr(plannable, "edge", None)
+        if edge is None or not is_straight_line_handoff_fn(edge):
+            continue
+        target_state = getattr(edge, "target_state", None)
+        if target_state is None:
+            continue
+        target_entry = resolve_dag_entry_for_state_fn(
+            round_summary.dag,
+            int(target_state) & 0xFFFFFFFF,
+            bst_node_blocks=bst_blocks,
+        )
+        if target_entry is None or int(target_entry) in bst_blocks:
+            continue
+        supported_entries.add(int(target_entry))
+    return supported_entries
+
+
+def collect_owned_exact_sources(
+    round_summary: object,
+    *,
+    exact_source_blocks: Iterable[int],
+    is_straight_line_handoff_fn: Callable[[object], bool],
+) -> set[int]:
+    """Return source blocks already owned by earlier exact-node lowerers."""
+    owned_sources = {int(source_block) for source_block in exact_source_blocks}
+    for plannable in getattr(round_summary, "plannable_edges", ()):
+        edge = getattr(plannable, "edge", None)
+        if edge is None or not is_straight_line_handoff_fn(edge):
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = getattr(source_anchor, "block_serial", None)
+        if source_block is None:
+            continue
+        owned_sources.add(int(source_block))
+    return owned_sources
+
+
+def is_supplemental_feeder_bypass(
+    *,
+    flow_graph: object,
+    pred_serial: int,
+    pred_block: object,
+    state_value: int,
+    exact_dispatch_target: int | None,
+    target_entry: int,
+    bst_blocks: set[int],
+    supported_entries: set[int],
+    owned_exact_sources: set[int],
+    terminal_source_owned_blocks: set[int],
+    terminal_protected_blocks: set[int],
+    dag: object,
+    state_has_semantic_support_fn: Callable[..., bool],
+    can_reach_return_fn: Callable[[object, int], bool],
+) -> bool:
+    """Return whether a residual dispatcher feeder is safe for supplemental bypass.
+
+    This path exists for synthetic corridor/feed blocks that still write one
+    semantic state and jump back into the dispatcher, but whose resolved DAG
+    entry was not part of the first-wave exact-head inventory.
+    """
+    pred_serial = int(pred_serial)
+    target_entry = int(target_entry)
+    if target_entry in bst_blocks or target_entry in supported_entries:
+        return False
+    if pred_serial == target_entry:
+        return False
+    if pred_serial in terminal_source_owned_blocks or pred_serial in terminal_protected_blocks:
+        return False
+    if pred_serial in owned_exact_sources:
+        return False
+    if int(getattr(pred_block, "nsucc", 0)) != 1:
+        return False
+    succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+    if len(succs) != 1:
+        return False
+    if not (
+        state_has_semantic_support_fn(dag, int(state_value) & 0xFFFFFFFF)
+        or (
+            exact_dispatch_target is not None
+            and int(exact_dispatch_target) != int(target_entry)
+        )
+        or can_reach_return_fn(flow_graph, int(target_entry))
+    ):
+        return False
+    return True
+
+
+def is_structured_conditional_path_feeder(
+    dag: object,
+    *,
+    pred_serial: int,
+    state_value: int,
+) -> bool:
+    """Return whether ``pred_serial`` is the feeder row for a conditional path.
+
+    If the live DAG already models a conditional semantic edge as
+    ``source_head -> feeder_row -> target_entry``, then the structured-region
+    lowerer should own that source arm. Redirecting the feeder row itself keeps
+    the flattened encoding alive and competes with the source-arm rewrite.
+    """
+
+    raw_state = int(state_value) & 0xFFFFFFFF
+    pred_serial = int(pred_serial)
+    for edge in getattr(dag, "edges", ()) or ():
+        target_state = getattr(edge, "target_state", None)
+        if target_state is None or (int(target_state) & 0xFFFFFFFF) != raw_state:
+            continue
+        source_anchor = getattr(edge, "source_anchor", None)
+        if getattr(source_anchor, "branch_arm", None) is None:
+            continue
+        ordered_path = tuple(
+            int(block) for block in getattr(edge, "ordered_path", ()) or ()
+        )
+        if len(ordered_path) < 2:
+            continue
+        if int(ordered_path[0]) == pred_serial:
+            continue
+        if int(ordered_path[1]) != pred_serial:
+            continue
+        return True
+    return False

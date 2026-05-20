@@ -3,7 +3,11 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE, append_mop_if_not_in_list
-from d810.evaluator.hexrays_microcode.tracker import MopHistory, MopTracker
+from d810.evaluator.hexrays_microcode.tracker import (
+    MopHistory,
+    MopTracker,
+    remove_segment_registers,
+)
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.generic import (
     GenericDispatcherBlockInfo,
@@ -28,6 +32,18 @@ class TigressIndirectDispatcherInfo(GenericDispatcherInfo):
         self.mop_compared = self._get_comparison_info(blk)
         self.entry_block = TigressIndirectDispatcherBlockInfo(blk)
         self.entry_block.parse()
+        self.entry_block.use_list = remove_segment_registers(
+            self.entry_block.use_list,
+            accept_debug_dstr=True,
+        )
+        self.entry_block.use_before_def_list = remove_segment_registers(
+            self.entry_block.use_before_def_list,
+            accept_debug_dstr=True,
+        )
+        self.entry_block.assume_def_list = remove_segment_registers(
+            self.entry_block.assume_def_list,
+            accept_debug_dstr=True,
+        )
         for used_mop in self.entry_block.use_list:
             append_mop_if_not_in_list(used_mop, self.entry_block.assume_def_list)
         self.dispatcher_internal_blocks.append(self.entry_block)

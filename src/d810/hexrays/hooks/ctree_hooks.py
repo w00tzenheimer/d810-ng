@@ -9,15 +9,52 @@ from __future__ import annotations
 import abc
 
 from d810.core import getLogger, typing
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
 from d810.core.stats import OptimizationStatistics
 
 logger = getLogger("D810.optimizer")
+HEXRAYS_CTREE_PROVIDER = "hexrays_ctree"
 
 # ---------------------------------------------------------------------------
 # IDA imports are optional for testing.
 # ---------------------------------------------------------------------------
 import ida_hexrays
+
+_CTREE_MATURITY_NAMES = (
+    "CMAT_ZERO",
+    "CMAT_BUILT",
+    "CMAT_TRANS1",
+    "CMAT_NICE",
+    "CMAT_TRANS2",
+    "CMAT_CPA",
+    "CMAT_TRANS3",
+    "CMAT_CASTED",
+    "CMAT_FINAL",
+)
+_CTREE_MATURITY_FALLBACKS = {
+    0: "CMAT_ZERO",
+    1: "CMAT_BUILT",
+    2: "CMAT_TRANS1",
+    3: "CMAT_NICE",
+    4: "CMAT_TRANS2",
+    5: "CMAT_CPA",
+    6: "CMAT_TRANS3",
+    7: "CMAT_CASTED",
+    8: "CMAT_FINAL",
+    60: "CMAT_FINAL",
+}
+
+
+def _ctree_maturity_to_string(maturity: int) -> str:
+    maturity_value = int(maturity)
+    for name in _CTREE_MATURITY_NAMES:
+        value = getattr(ida_hexrays, name, None)
+        if value is not None and int(value) == maturity_value:
+            return name
+    return _CTREE_MATURITY_FALLBACKS.get(
+        maturity_value, f"Unknown ctree maturity: {maturity_value}"
+    )
 
 
 class CtreeOptimizationRule(Registrant, abc.ABC):
@@ -113,15 +150,21 @@ class CtreeOptimizerManager:
         # _recon_phase is None - guarded for zero overhead when disabled).
         if self._recon_phase is not None:
             func_ea = int(getattr(cfunc, "entry_ea", 0) or 0)
+            provider_phase = ProviderPhaseSnapshot(
+                provider_name=HEXRAYS_CTREE_PROVIDER,
+                provider_level=int(new_maturity),
+                friendly_provider_level=_ctree_maturity_to_string(new_maturity),
+            )
             try:
                 self._recon_phase.run_ctree_collectors(
                     cfunc,
                     func_ea=func_ea,
-                    maturity=new_maturity,
+                    provider_phase=provider_phase,
                 )
             except Exception:
                 logger.exception(
-                    "ReconPhase (ctree) failed at maturity %d", new_maturity
+                    "ReconPhase (ctree) failed at maturity %s",
+                    provider_phase.friendly_provider_level,
                 )
             if self._recon_runtime is not None:
                 try:

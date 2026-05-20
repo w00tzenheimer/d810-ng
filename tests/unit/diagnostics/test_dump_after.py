@@ -142,6 +142,19 @@ def test_cli_emits_line_numbers_with_dash_n(tmp_path: Path):
     assert "8: __int64 hodur_func()" in result.stdout
 
 
+def test_cli_writes_after_body_to_output_file(tmp_path: Path):
+    dump = _make_dump(tmp_path, "\n".join(SAMPLE_DUMP) + "\n")
+    output = tmp_path / "after.txt"
+
+    result = _run_cli(str(dump), "--output", str(output))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    text = output.read_text()
+    assert "__int64 hodur_func()" in text
+    assert "return 0;" in text
+
+
 def test_cli_reports_missing_marker_with_exit_code_one(tmp_path: Path):
     dump = _make_dump(tmp_path, "no marker here\n")
     result = _run_cli(str(dump))

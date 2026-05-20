@@ -14,13 +14,14 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
+    InsertBlock,
     NopInstructions,
     RedirectGoto,
 )
-from d810.cfg.plan import PatchPlan
-from d810.optimizers.microcode.flow.flattening.hodur import executor as _executor_mod
-from d810.optimizers.microcode.flow.flattening.hodur.executor import TransactionalExecutor
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.cfg.plan import PatchPlan, compile_patch_plan
+from d810.optimizers.microcode.flow.flattening.engine import executor as _executor_mod
+from d810.optimizers.microcode.flow.flattening.engine.executor import TransactionalExecutor
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -264,6 +265,76 @@ def test_cycle_filter_preserves_non_redirect_modifications():
     assert removed_count == 1
 
 
+def test_backend_filter_rejects_edge_split_and_coupled_insert_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from d810.hexrays.mutation import deferred_modifier
+
+    class _LiveMBA:
+        qty = 64
+
+        def get_mblock(self, serial: int):  # noqa: ANN001
+            raise AssertionError(f"unexpected live block probe for {serial}")
+
+    class _FakeModifier:
+        def __init__(self, _mba: object) -> None:
+            pass
+
+        def _check_edge_split_trampoline_preconditions(self, **kwargs) -> bool:  # noqa: ANN003
+            assert kwargs["validate_new_target"] is False
+            return False
+
+    monkeypatch.setattr(
+        deferred_modifier,
+        "DeferredGraphModifier",
+        _FakeModifier,
+    )
+
+    cfg = FlowGraph(
+        blocks={
+            1: _block(1, (2,), ()),
+            2: _block(2, (3,), (1,)),
+            3: _block(3, (4,), (2, 5)),
+            4: _block(4, (), (3,)),
+            5: _block(5, (3,), ()),
+        },
+        entry_serial=1,
+        func_ea=0,
+    )
+    safe_mod = RedirectGoto(from_serial=1, old_target=2, new_target=4)
+    coupled_insert = InsertBlock(
+        pred_serial=5,
+        succ_serial=4,
+        instructions=(),
+        old_target_serial=3,
+    )
+    rejected_split = EdgeRedirectViaPredSplit(
+        src_block=3,
+        old_target=4,
+        new_target=4,
+        via_pred=2,
+    )
+    modifications = [safe_mod, coupled_insert, rejected_split]
+    patch_plan = compile_patch_plan(modifications, cfg)
+
+    executor = TransactionalExecutor(
+        mba=_LiveMBA(),
+        translator=_FakeTranslator(pre_cfg=cfg),
+    )
+
+    filtered, filtered_plan, removed_count = (
+        executor._filter_backend_unsupported_modifications(
+            cfg,
+            modifications,
+            patch_plan,
+        )
+    )
+
+    assert filtered == [safe_mod]
+    assert filtered_plan.planner_modifications == (safe_mod,)
+    assert removed_count == 2
+
+
 def test_executor_runs_cfg_contract_pre_and_post(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         _executor_mod, "should_apply_bulk_cfg_modifications",
@@ -329,7 +400,7 @@ def test_executor_rejects_cfg_contract_pre_failures(monkeypatch: pytest.MonkeyPa
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
     from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(
@@ -385,7 +456,7 @@ def test_executor_rejects_projected_cfg_contract_failures(monkeypatch: pytest.Mo
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.ida_contract import CfgContractViolationError
+    from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
     from d810.cfg.contracts.report import InvariantViolation
 
     cfg = FlowGraph(
@@ -534,7 +605,7 @@ def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
         _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
-    from d810.optimizers.microcode.flow.flattening.hodur.strategy import StageResult
+    from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
 
     cfg = FlowGraph(
         blocks={

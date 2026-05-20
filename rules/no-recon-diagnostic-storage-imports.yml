@@ -1,0 +1,44 @@
+# Keep recon runtime/proof modules from becoming diagnostic storage/query code.
+#
+# Recon may emit domain observations through d810.recon.observability and may
+# own recon-local behavior/data stores. Generic SQLite use is allowed for those
+# stores; SQLite diagnostic persistence, active diag DB access, and post-hoc
+# diag DB query helpers belong in d810.core.diag or d810.diagnostics.
+
+id: no-recon-diagnostic-storage-imports
+language: python
+severity: error
+
+files:
+  - "src/d810/recon/**/*.py"
+
+message: |
+  Recon modules must not import diagnostic storage APIs directly.
+
+  Use d810.recon.observability to emit in-memory domain observations. Recon-local
+  behavior/data stores are allowed, but persisted diagnostic DB access belongs
+  in d810.core.diag or d810.diagnostics.
+
+rule:
+  any:
+    - pattern: import d810.core.diag
+    - pattern: import d810.core.diag.$MOD
+    - pattern: from d810.core.diag import $$$
+    - pattern: from d810.core.diag.$MOD import $$$
+    - pattern: from d810.core.observability import get_active_diag_conn
+    - pattern: from d810.core.observability import get_active_diag_conn as $ALIAS
+    - pattern: sqlite3.connect($DB_PATH)
+    - pattern: $CONN.execute($SQL, $$$)
+    - pattern: $CONN.execute($SQL)
+    - pattern: $CONN.executescript($SQL)
+constraints:
+  DB_PATH:
+    regex: "(diag|snapshot|d810_logs|fact_observations)"
+  SQL:
+    regex: "(snapshots|fact_observations|blocks|instructions|dag_edges|dag_nodes|dag_node_blocks|modifications|rendered_program|diag)"
+
+note: |
+  Runtime behavior must use in-memory recon/cfg evidence, not persisted diag DB
+  rows. Diagnostic DB rows are an observability/query surface only. Recon-local
+  stores such as d810.recon.store and d810.recon.artifacts are behavior/data
+  stores, not diagnostic DB storage.

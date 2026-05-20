@@ -1,0 +1,33 @@
+# Keep pure CFG planning/model modules backend-neutral.
+#
+# CFG modules should consume FlowGraph/BlockSnapshot/caller-provided summaries.
+
+id: no-live-hexrays-in-pure-cfg
+language: python
+severity: error
+
+files:
+  - "src/d810/cfg/**/*.py"
+
+message: |
+  Pure CFG modules must not import live IDA/Hex-Rays APIs directly.
+
+  Keep CFG planning backend-neutral. Put live MBA/Hex-Rays reads in adapter,
+  contract, emission, or materialization backend modules.
+
+rule:
+  any:
+    - pattern: import idaapi
+    - pattern: import ida_hexrays
+    - pattern: import idc
+    - pattern: import idautils
+    - pattern: import ida_$MOD
+    - pattern: from idaapi import $$$
+    - pattern: from ida_hexrays import $$$
+    - pattern: from idc import $$$
+    - pattern: from idautils import $$$
+    - pattern: from ida_$MOD import $$$
+
+note: |
+  If a CFG proof needs live Hex-Rays state, introduce a backend/adapter and
+  pass the summarized evidence into cfg.

@@ -1154,22 +1154,50 @@ def duplicate_histories(
     return total_nb_duplication, total_nb_change
 
 
-def get_segment_register_indexes(mop_list: list[ida_hexrays.mop_t]) -> list[int]:
+_SEGMENT_REGISTER_NAMES = frozenset(("ds.2", "cs.2", "es.2", "ss.2"))
+
+
+def _formatted_mop_is_segment_register(formatted_mop: str) -> bool:
+    stripped = formatted_mop.strip()
+    if stripped in _SEGMENT_REGISTER_NAMES:
+        return True
+    marker = " dstr="
+    if marker not in stripped:
+        return False
+    dstr = stripped.rsplit(marker, 1)[1]
+    if dstr.endswith(">"):
+        dstr = dstr[:-1]
+    return dstr in _SEGMENT_REGISTER_NAMES
+
+
+def get_segment_register_indexes(
+    mop_list: list[ida_hexrays.mop_t],
+    *,
+    accept_debug_dstr: bool = False,
+) -> list[int]:
     # This is a very dirty and probably buggy
     segment_register_indexes = []
     for i, mop in enumerate(mop_list):
         if mop.t == ida_hexrays.mop_r:
             formatted_mop = format_mop_t(mop)
-            if formatted_mop in ["ds.2", "cs.2", "es.2", "ss.2"]:
+            if formatted_mop in _SEGMENT_REGISTER_NAMES or (
+                accept_debug_dstr
+                and _formatted_mop_is_segment_register(formatted_mop)
+            ):
                 segment_register_indexes.append(i)
     return segment_register_indexes
 
 
 def remove_segment_registers(
     mop_list: list[ida_hexrays.mop_t],
+    *,
+    accept_debug_dstr: bool = False,
 ) -> list[ida_hexrays.mop_t]:
     # TODO: instead of doing that, we should add the segment registers to the (global?) emulation environment
-    segment_register_indexes = get_segment_register_indexes(mop_list)
+    segment_register_indexes = get_segment_register_indexes(
+        mop_list,
+        accept_debug_dstr=accept_debug_dstr,
+    )
     if len(segment_register_indexes) == 0:
         return mop_list
     new_mop_list = []

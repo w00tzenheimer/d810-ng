@@ -7,7 +7,7 @@ with the same argument shape (``--diag-db``, ``--recon-db``, ``--log``,
 ``--func-ea``, ``--snapshot-id``, ``--format``, ``--output``,
 ``--list-snapshots``, etc.). To use the new command directly:
 
-    ./tools/cff_debug.py residual-worksheet [--diag-db DB] [--log LOG] [--format FMT] [--output PATH]
+    ./tools/d810cli.py residual-worksheet [--diag-db DB] [--log LOG] [--format FMT] [--output PATH]
     PYTHONPATH=src python -m d810.diagnostics residual-worksheet --diag-db DB ...
 
 The full correlation logic (block + rendered-program + DAG +

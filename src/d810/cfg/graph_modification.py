@@ -23,6 +23,8 @@ These frozen types map to DeferredGraphModifier modification types:
 - CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
 - DuplicateBlock     -> (future use, backend currently warns/skips)
 - DuplicateAndRedirect -> (multi-pred duplication, maps to N x BLOCK_DUPLICATE_AND_REDIRECT)
+- DuplicateReplayAndRedirect -> duplicate per predecessor, replay captured body, redirect
+- CloneConditionalAsGoto -> CLONE_CONDITIONAL_AS_GOTO
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
 - RemoveEdge         -> (future use, not yet in DeferredGraphModifier)
 - NopInstructions    -> BLOCK_NOP_INSNS
@@ -48,6 +50,7 @@ from d810.core import logging
 
 # Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
+from d810.cfg.materialization_payload import CapturedBlockBody
 
 
 # Construction tracer for graph mods. When
@@ -230,6 +233,7 @@ class CreateConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    old_target_serial: int | None = None
     instructions: tuple[InsnSnapshot, ...] = ()
 
 
@@ -253,11 +257,69 @@ class DuplicateBlock:
 
 
 @dataclass(frozen=True)
+class CloneConditionalAsGoto:
+    """Clone a 2-way conditional block as a 1-way goto for one predecessor.
+
+    This models the legacy FixPredecessor apply shape exactly:
+
+    1. clone ``source_block``
+    2. clear inherited clone predecessors
+    3. convert the clone to a goto targeting ``goto_target``
+    4. redirect ``pred_serial`` from ``source_block`` to the clone
+
+    It is intentionally distinct from ``RedirectGoto`` and ``DuplicateBlock``.
+    The source conditional block remains conditional, while only the selected
+    predecessor is redirected through the clone.
+    """
+
+    source_block: int
+    pred_serial: int
+    goto_target: int
+    reason: str = "fix_predecessor_clone_as_goto"
+
+
+@dataclass(frozen=True)
+class CloneConditionalAsGotoFromBranchArm:
+    """Clone a 2-way conditional block as a goto for one branch arm of a 2-way predecessor.
+
+    Sibling of :class:`CloneConditionalAsGoto` for the case where the
+    predecessor is itself a 2-way conditional whose explicit branch arm
+    targets ``source_block``.  The legacy FixPredecessor live rule already
+    redirects this shape via ``change_2way_block_conditional_successor``;
+    this primitive captures the same intent as a backend-neutral graph
+    modification so the engine path can execute it without going through
+    the legacy clone+redirect helper.
+
+    Steps mirror ``CloneConditionalAsGoto``:
+
+    1. clone ``source_block``
+    2. clear inherited clone predecessors
+    3. convert the clone to a goto targeting ``goto_target``
+    4. redirect the specified arm of ``pred_serial`` from ``source_block``
+       to the clone
+
+    ``pred_arm`` is ``1`` when the explicit conditional arm of the predecessor
+    points at ``source_block``, and ``0`` when the fallthrough arm does.  The
+    legacy live rule only redirects ``arm == 1`` (the conditional arm); for
+    ``arm == 0`` the legacy path bails out and orphans the clone.  Callers
+    that need to preserve that exact bail behaviour should plan only the
+    ``arm == 1`` records.
+    """
+
+    source_block: int
+    pred_serial: int
+    pred_arm: int
+    goto_target: int
+    reason: str = "fix_predecessor_clone_as_goto_from_branch_arm"
+
+
+@dataclass(frozen=True)
 class InsertBlock:
     """Insert a new block between pred and succ with given instructions.
 
     Maps to DeferredGraphModifier's BLOCK_CREATE_WITH_REDIRECT.
-    Creates a new intermediate block containing the specified instructions
+    Creates a new intermediate block containing either legacy instruction
+    snapshots or a backend-owned captured body
     and redirects pred -> new_block -> succ. By default, the existing edge
     being replaced is assumed to be ``pred -> succ``; callers may override
     that with ``old_target_serial`` when the new block should redirect a
@@ -266,7 +328,8 @@ class InsertBlock:
     Attributes:
         pred_serial: Predecessor block serial (edge source).
         succ_serial: Final successor block serial for the inserted block.
-        instructions: Tuple of instruction snapshots to place in new block.
+        instructions: Legacy tuple of instruction snapshots to place in new block.
+        captured_body: Opaque backend-owned body to place in the new block.
         old_target_serial: Existing successor edge being replaced. When unset,
             defaults to ``succ_serial``.
 
@@ -282,8 +345,9 @@ class InsertBlock:
     """
     pred_serial: int
     succ_serial: int
-    instructions: tuple[InsnSnapshot, ...]
+    instructions: tuple[InsnSnapshot, ...] = ()
     old_target_serial: int | None = None
+    captured_body: CapturedBlockBody | None = None
 
 
 @dataclass(frozen=True)
@@ -510,6 +574,36 @@ class DuplicateAndRedirect:
 
 
 @dataclass(frozen=True)
+class DuplicateReplayEntry:
+    """Per-predecessor replay placement for a shared-source duplicate group."""
+
+    pred_serial: int
+    target_serial: int
+    captured_body: CapturedBlockBody
+
+
+@dataclass(frozen=True)
+class DuplicateReplayAndRedirect:
+    """Duplicate a shared source and replay copied side effects per predecessor.
+
+    This is intentionally separate from ``InsertBlock`` and
+    ``DuplicateAndRedirect``.  A duplicate-group copied-side-effect path has
+    topology ``pred_i -> shared_source -> dispatcher`` and must become
+    ``pred_i -> source/clone_i -> replay_insert_i -> target_i``.
+    ``InsertBlock(shared_source -> target)`` cannot express distinct
+    per-predecessor targets; ``InsertBlock(pred_i -> target)`` would skip the
+    shared source body; ``DuplicateBlock`` preserves that body but has no replay
+    payload; and ``DuplicateAndRedirect`` carries no replay payload and still has
+    legacy lowering.  This primitive keeps the composite rewrite atomic at the
+    neutral graph layer.
+    """
+
+    source_serial: int
+    dispatcher_entry: int
+    per_pred_replays: tuple[DuplicateReplayEntry, ...]
+
+
+@dataclass(frozen=True)
 class PhaseCycleLowering:
     """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
 
@@ -576,7 +670,10 @@ GraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
+    DuplicateReplayAndRedirect,
     PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
@@ -597,7 +694,11 @@ __all__ = [
     "EdgeRedirectViaPredSplit",
     "CreateConditionalRedirect",
     "DuplicateBlock",
+    "CloneConditionalAsGoto",
+    "CloneConditionalAsGotoFromBranchArm",
     "DuplicateAndRedirect",
+    "DuplicateReplayEntry",
+    "DuplicateReplayAndRedirect",
     "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",

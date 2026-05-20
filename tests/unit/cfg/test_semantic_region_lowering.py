@@ -6,8 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 from d810.cfg.semantic_region_lowering import (
-    _collect_semantic_entry_by_label,
-    _collect_semantic_successors_by_state,
     _merge_region_contract_semantic_successors_by_state,
     _synthesize_missing_conditional_exit_sites,
     build_region_contract_fallback_lowering,
@@ -15,6 +13,10 @@ from d810.cfg.semantic_region_lowering import (
     build_region_preferred_conditional_lowering,
     collect_admissible_region_lowering_sites,
     override_exit_sites_with_child_region_entries,
+)
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
 )
 from d810.recon.flow.linearized_state_dag import StateNodeKind
 
@@ -3807,14 +3809,6 @@ def test_collect_admissible_region_lowering_sites_remaps_mislabeled_internal_sit
     assert by_source[0x6107F8EC].edge.target_label == "STATE_474EEEBB"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "aspirational: branch-exit synthesis from semantic contract not "
-        "yet implemented; introduced in 88371e2a wip snapshot. Related: "
-        "uee-xipv"
-    ),
-    strict=False,
-)
 def test_collect_admissible_region_lowering_sites_synthesizes_missing_branch_exit_sites_from_semantic_contract():
     region = SimpleNamespace(
         region_name="branch_region",
@@ -4077,14 +4071,6 @@ def test_collect_admissible_region_lowering_sites_infers_semantic_successor_from
     assert sites[0].successor_state_value == 0x474EEEBB
 
 
-@pytest.mark.xfail(
-    reason=(
-        "aspirational: stale-semantic-label de-dup after recanonicalization "
-        "not yet implemented; introduced in 88371e2a wip snapshot. Related: "
-        "uee-xipv"
-    ),
-    strict=False,
-)
 def test_collect_admissible_region_lowering_sites_recanonicalizes_stale_semantic_label_after_child_target_normalization():
     region = SimpleNamespace(
         region_name="branch_region",
@@ -4193,7 +4179,7 @@ def test_collect_semantic_entry_by_label_indexes_raw_and_state_forms():
         )
     )
 
-    entries = _collect_semantic_entry_by_label(semantic_reference_program)
+    entries = collect_semantic_entry_by_label(semantic_reference_program)
 
     assert entries["0x474EEEBB_fallback"] == 14
     assert entries["STATE_474EEEBB_fallback"] == 14
@@ -4217,7 +4203,7 @@ def test_collect_semantic_successors_by_state_accepts_raw_state_node_labels():
         ),
     )
 
-    successors = _collect_semantic_successors_by_state(semantic_reference_program)
+    successors = collect_semantic_successors_by_state(semantic_reference_program)
 
     assert successors[0x6107F8EC] == (
         "STATE_474EEEBB_fallback",
@@ -4242,7 +4228,7 @@ def test_collect_semantic_successors_by_state_accepts_block_suffixed_state_label
         ),
     )
 
-    successors = _collect_semantic_successors_by_state(semantic_reference_program)
+    successors = collect_semantic_successors_by_state(semantic_reference_program)
 
     assert successors[0x11CD1DA3] == ("STATE_4E69F350",)
 
@@ -4269,7 +4255,7 @@ def test_collect_semantic_successors_by_state_accumulates_multiple_same_state_bl
         ),
     )
 
-    successors = _collect_semantic_successors_by_state(semantic_reference_program)
+    successors = collect_semantic_successors_by_state(semantic_reference_program)
 
     assert successors[0x11CD1DA3] == (
         "STATE_11CD1DA3__blk_217",
@@ -4296,7 +4282,7 @@ def test_collect_semantic_entry_by_label_canonicalizes_block_suffixed_state_labe
         lines=(),
     )
 
-    entries = _collect_semantic_entry_by_label(semantic_reference_program)
+    entries = collect_semantic_entry_by_label(semantic_reference_program)
 
     assert entries["STATE_6107F8EC"] == 15
     assert entries["STATE_474EEEBB"] == 68

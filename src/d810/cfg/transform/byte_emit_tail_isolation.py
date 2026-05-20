@@ -915,8 +915,8 @@ def execute_terminal_tail_cascade_egress_lowering(
     *,
     plan_rows: Iterable[Any],
     adapter,
-    byte_indices: Iterable[int] = (1, 2, 5),
-    split_byte_indices: Iterable[int] = (3,),
+    byte_indices: Iterable[int] = (),
+    split_byte_indices: Iterable[int] = (),
 ) -> TerminalTailCascadeEgressLoweringReport:
     """Lower safe planner rows for the terminal byte-tail cascade.
 
@@ -965,7 +965,9 @@ def execute_terminal_tail_cascade_egress_lowering(
         try:
             split_serial = adapter.split_block_at_tail_jcnd(int(row.source_block))
         except Exception as exc:  # noqa: BLE001 - adapter boundary
-            skipped.append(f"byte{int(byte_index)}:split_failed:{type(exc).__name__}")
+            skipped.append(
+                f"byte{int(byte_index)}:split_failed:{type(exc).__name__}:{exc}"
+            )
             continue
         splits.append(int(split_serial))
         applied.append(int(byte_index))

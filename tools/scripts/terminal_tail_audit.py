@@ -5,7 +5,7 @@ Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics terminal-tail-audit``
 with the same argument shape. To use the new command directly:
 
-    ./tools/cff_debug.py byte-audit
+    ./tools/d810cli.py byte-audit
     PYTHONPATH=src python -m d810.diagnostics terminal-tail-audit --db DB [--show-edges] [--localize]
 
 The full implementation now lives in ``src/d810/diagnostics/terminal_tail_audit.py``

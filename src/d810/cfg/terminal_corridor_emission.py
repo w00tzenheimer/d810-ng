@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import ida_hexrays
-
+from d810.cfg.flowgraph import InsnKind
 from d810.cfg.graph_modification import (
     DirectTerminalLoweringKind,
     DirectTerminalLoweringSite,
@@ -49,7 +48,7 @@ def plan_private_terminal_suffix_execution(
             if (
                 pred_blk is not None
                 and pred_blk.nsucc == 1
-                and pred_blk.tail_opcode != ida_hexrays.m_goto
+                and getattr(pred_blk, "tail_kind", InsnKind.UNKNOWN) != InsnKind.GOTO
             ):
                 modifications.append(
                     builder.convert_to_goto(
@@ -84,16 +83,18 @@ def plan_private_terminal_suffix_execution(
 
 def _prove_and_classify_anchor(
     *,
-    mba: object,
+    flow_graph: object,
     anchor_serial: int,
     shared_entry_serial: int,
     return_block_serial: int,
     suffix_serials: tuple[int, ...],
 ) -> DirectTerminalLoweringSite | None:
-    anchor_blk = mba.get_mblock(anchor_serial)
-    if anchor_blk is None or anchor_blk.nsucc() != 1:
+    get_block = getattr(flow_graph, "get_block", None)
+    anchor_blk = get_block(anchor_serial) if callable(get_block) else None
+    if anchor_blk is None or getattr(anchor_blk, "nsucc", 0) != 1:
         return None
-    if anchor_blk.succ(0) != shared_entry_serial:
+    succs = tuple(int(succ) for succ in getattr(anchor_blk, "succs", ()) or ())
+    if len(succs) != 1 or succs[0] != int(shared_entry_serial):
         return None
 
     interior_serials = tuple(
@@ -111,7 +112,7 @@ def _prove_and_classify_anchor(
 
 def plan_direct_terminal_lowering_execution(
     *,
-    mba: object,
+    flow_graph: object,
     builder,
     anchors: tuple[int, ...],
     shared_entry_serial: int,
@@ -121,7 +122,7 @@ def plan_direct_terminal_lowering_execution(
     sites: list[DirectTerminalLoweringSite] = []
     for anchor_serial in anchors:
         site = _prove_and_classify_anchor(
-            mba=mba,
+            flow_graph=flow_graph,
             anchor_serial=int(anchor_serial),
             shared_entry_serial=int(shared_entry_serial),
             return_block_serial=int(return_block_serial),

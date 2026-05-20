@@ -32,7 +32,10 @@ surface.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from d810.cfg.flowgraph import InsnKind, OperandKind
 
 # Loop-bound mask values seen on OLLVM-style flattened functions where the
 # bound expression is ``(state & mask)`` with mask in
@@ -74,6 +77,80 @@ def _safe_int_attr(obj, attr: str, default: int = -1) -> int:
         return default
 
 
+InsnKindClassifier = Callable[[object], InsnKind | None]
+OperandKindClassifier = Callable[[object], OperandKind | None]
+
+
+def _insn_kind(
+    insn: object,
+    classifier: InsnKindClassifier | None = None,
+) -> InsnKind:
+    kind = getattr(insn, "kind", InsnKind.UNKNOWN)
+    if isinstance(kind, InsnKind) and kind is not InsnKind.UNKNOWN:
+        return kind
+    if classifier is not None:
+        try:
+            classified = classifier(insn)
+        except Exception:
+            classified = None
+        if isinstance(classified, InsnKind):
+            return classified
+    return InsnKind.UNKNOWN
+
+
+def _operand_kind(
+    mop: object | None,
+    classifier: OperandKindClassifier | None = None,
+) -> OperandKind:
+    if mop is None:
+        return OperandKind.EMPTY
+    kind = getattr(mop, "kind", OperandKind.UNKNOWN)
+    if isinstance(kind, OperandKind) and kind is not OperandKind.UNKNOWN:
+        return kind
+    if classifier is not None:
+        try:
+            classified = classifier(mop)
+        except Exception:
+            classified = None
+        if isinstance(classified, OperandKind):
+            return classified
+    return OperandKind.UNKNOWN
+
+
+def _operand_stkoff(
+    mop: object | None,
+    classifier: OperandKindClassifier | None = None,
+) -> int | None:
+    if _operand_kind(mop, classifier) != OperandKind.STACK:
+        return None
+    for attr_path in (("stkoff",), ("s", "off")):
+        cur = mop
+        try:
+            for attr in attr_path:
+                cur = getattr(cur, attr)
+            return int(cur)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _operand_const_value(
+    mop: object | None,
+    classifier: OperandKindClassifier | None = None,
+) -> int | None:
+    if _operand_kind(mop, classifier) != OperandKind.NUMBER:
+        return None
+    for attr_path in (("value",), ("nnn", "value")):
+        cur = mop
+        try:
+            for attr in attr_path:
+                cur = getattr(cur, attr)
+            return int(cur) & 0xFFFFFFFFFFFFFFFF
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _iter_block_insns(blk):
     insn = getattr(blk, "head", None)
     while insn is not None:
@@ -81,39 +158,31 @@ def _iter_block_insns(blk):
         insn = getattr(insn, "next", None)
 
 
-def _extract_const_mask_from_binop(sub_insn, *, mop_n: int) -> int | None:
+def _extract_const_mask_from_binop(
+    sub_insn,
+    *,
+    operand_kind_classifier: OperandKindClassifier | None = None,
+) -> int | None:
     """Return the constant operand of a 2-operand sub-instruction whose
     other operand is non-const, or ``None``."""
     l = getattr(sub_insn, "l", None)
     r = getattr(sub_insn, "r", None)
     if l is None or r is None:
         return None
-    try:
-        lt = int(l.t)
-        rt = int(r.t)
-    except (AttributeError, TypeError):
-        return None
-    if rt == mop_n and lt != mop_n:
-        try:
-            return int(r.nnn.value) & 0xFFFFFFFFFFFFFFFF
-        except (AttributeError, TypeError):
-            return None
-    if lt == mop_n and rt != mop_n:
-        try:
-            return int(l.nnn.value) & 0xFFFFFFFFFFFFFFFF
-        except (AttributeError, TypeError):
-            return None
+    l_const = _operand_const_value(l, operand_kind_classifier)
+    r_const = _operand_const_value(r, operand_kind_classifier)
+    if r_const is not None and l_const is None:
+        return r_const
+    if l_const is not None and r_const is None:
+        return l_const
     return None
 
 
 def _detect_constant_mask_writer(
     insn,
     *,
-    m_xdu: int,
-    m_and: int,
-    mop_n: int,
-    mop_S: int,
-    mop_d: int,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> int | None:
     """If ``insn`` writes a stkvar with a constant-mask expression
     ``(X & K)`` where ``K`` is a recognized loop-bound mask, return the
@@ -124,36 +193,31 @@ def _detect_constant_mask_writer(
     * ``m_xdu(mop_d(m_and X K)), %B``  -- mask-and-extend.
     * ``m_and X K, %B``                -- direct mask write.
     """
-    op = _safe_int_attr(insn, "opcode")
     d = getattr(insn, "d", None)
-    if d is None:
-        return None
-    try:
-        if int(d.t) != mop_S:
-            return None
-        dest_stkoff = int(d.s.off)
-    except (AttributeError, TypeError):
+    dest_stkoff = _operand_stkoff(d, operand_kind_classifier)
+    if dest_stkoff is None:
         return None
 
-    if op == m_xdu:
+    if _insn_kind(insn, insn_kind_classifier) == InsnKind.XDU:
         l = getattr(insn, "l", None)
-        if l is None:
-            return None
-        try:
-            if int(l.t) != mop_d:
-                return None
-        except (AttributeError, TypeError):
+        if _operand_kind(l, operand_kind_classifier) != OperandKind.SUBINSN:
             return None
         sub = getattr(l, "d", None)
-        if sub is None or _safe_int_attr(sub, "opcode") != m_and:
+        if sub is None or _insn_kind(sub, insn_kind_classifier) != InsnKind.AND:
             return None
-        mask = _extract_const_mask_from_binop(sub, mop_n=mop_n)
+        mask = _extract_const_mask_from_binop(
+            sub,
+            operand_kind_classifier=operand_kind_classifier,
+        )
         if mask is None or mask not in _LOOP_BOUND_MASKS:
             return None
         return dest_stkoff
 
-    if op == m_and:
-        mask = _extract_const_mask_from_binop(insn, mop_n=mop_n)
+    if _insn_kind(insn, insn_kind_classifier) == InsnKind.AND:
+        mask = _extract_const_mask_from_binop(
+            insn,
+            operand_kind_classifier=operand_kind_classifier,
+        )
         if mask is None or mask not in _LOOP_BOUND_MASKS:
             return None
         return dest_stkoff
@@ -165,82 +229,55 @@ def _operand_reads_stkoff(
     mop,
     target_stkoff: int,
     *,
-    mop_S: int,
-    mop_d: int,
-    m_xdu: int,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> bool:
     """True iff ``mop`` reads stkoff ``target_stkoff`` -- either
     directly as ``mop_S`` or wrapped in ``m_xdu`` inside a ``mop_d``."""
     if mop is None:
         return False
-    try:
-        t = int(mop.t)
-    except (AttributeError, TypeError):
-        return False
-    if t == mop_S:
-        try:
-            return int(mop.s.off) == int(target_stkoff)
-        except (AttributeError, TypeError):
-            return False
-    if t == mop_d:
+    if _operand_kind(mop, operand_kind_classifier) == OperandKind.STACK:
+        return _operand_stkoff(mop, operand_kind_classifier) == int(target_stkoff)
+    if _operand_kind(mop, operand_kind_classifier) == OperandKind.SUBINSN:
         sub = getattr(mop, "d", None)
-        if sub is None or _safe_int_attr(sub, "opcode") != m_xdu:
+        if sub is None or _insn_kind(sub, insn_kind_classifier) != InsnKind.XDU:
             return False
         l = getattr(sub, "l", None)
-        if l is None:
-            return False
-        try:
-            if int(l.t) != mop_S:
-                return False
-            return int(l.s.off) == int(target_stkoff)
-        except (AttributeError, TypeError):
-            return False
+        return _operand_stkoff(l, operand_kind_classifier) == int(target_stkoff)
     return False
 
 
 def _extract_counter_advance(
     mop,
     *,
-    mop_n: int,
-    mop_S: int,
-    mop_d: int,
-    m_add: int,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> int | None:
     """If ``mop`` is ``m_add(stkvar, small_const)`` (in either order),
     return the stkoff of the counter; else ``None``."""
     if mop is None:
         return None
-    try:
-        if int(mop.t) != mop_d:
-            return None
-    except (AttributeError, TypeError):
+    if _operand_kind(mop, operand_kind_classifier) != OperandKind.SUBINSN:
         return None
     sub = getattr(mop, "d", None)
-    if sub is None or _safe_int_attr(sub, "opcode") != m_add:
+    if sub is None or _insn_kind(sub, insn_kind_classifier) != InsnKind.ADD:
         return None
     l = getattr(sub, "l", None)
     r = getattr(sub, "r", None)
     if l is None or r is None:
         return None
-    try:
-        lt = int(l.t)
-        rt = int(r.t)
-    except (AttributeError, TypeError):
-        return None
     counter_stkoff: int | None = None
     delta: int | None = None
-    if lt == mop_S and rt == mop_n:
-        try:
-            counter_stkoff = int(l.s.off)
-            delta = int(r.nnn.value) & 0xFFFFFFFFFFFFFFFF
-        except (AttributeError, TypeError):
-            return None
-    elif lt == mop_n and rt == mop_S:
-        try:
-            counter_stkoff = int(r.s.off)
-            delta = int(l.nnn.value) & 0xFFFFFFFFFFFFFFFF
-        except (AttributeError, TypeError):
-            return None
+    l_stkoff = _operand_stkoff(l, operand_kind_classifier)
+    r_stkoff = _operand_stkoff(r, operand_kind_classifier)
+    l_const = _operand_const_value(l, operand_kind_classifier)
+    r_const = _operand_const_value(r, operand_kind_classifier)
+    if l_stkoff is not None and r_const is not None:
+        counter_stkoff = l_stkoff
+        delta = r_const
+    elif l_const is not None and r_stkoff is not None:
+        counter_stkoff = r_stkoff
+        delta = l_const
     if counter_stkoff is None or delta is None:
         return None
     if delta not in _COUNTER_ADVANCE_DELTAS:
@@ -251,6 +288,9 @@ def _extract_counter_advance(
 def detect_loop_bound_writer_redirect(
     mba,
     source_block_serial: int,
+    *,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> LoopBoundWriterDiagnostic | None:
     """Inspect ``mba`` and return a diagnostic iff the source block
     matches the loop-bound-writer pattern (all four conjunctive
@@ -265,19 +305,6 @@ def detect_loop_bound_writer_redirect(
     """
     if mba is None:
         return None
-    try:
-        import ida_hexrays
-    except ImportError:
-        return None
-
-    m_xdu = getattr(ida_hexrays, "m_xdu", -1)
-    m_and = getattr(ida_hexrays, "m_and", -1)
-    m_jnz = getattr(ida_hexrays, "m_jnz", -1)
-    m_jz = getattr(ida_hexrays, "m_jz", -1)
-    m_add = getattr(ida_hexrays, "m_add", -1)
-    mop_n = getattr(ida_hexrays, "mop_n", -1)
-    mop_S = getattr(ida_hexrays, "mop_S", -1)
-    mop_d = getattr(ida_hexrays, "mop_d", -1)
 
     qty = _safe_int_attr(mba, "qty", 0)
     if qty <= 0:
@@ -298,11 +325,8 @@ def detect_loop_bound_writer_redirect(
     for insn in _iter_block_insns(source_blk):
         candidate = _detect_constant_mask_writer(
             insn,
-            m_xdu=m_xdu,
-            m_and=m_and,
-            mop_n=mop_n,
-            mop_S=mop_S,
-            mop_d=mop_d,
+            insn_kind_classifier=insn_kind_classifier,
+            operand_kind_classifier=operand_kind_classifier,
         )
         if candidate is None:
             continue
@@ -326,13 +350,8 @@ def detect_loop_bound_writer_redirect(
             continue
         for ins in _iter_block_insns(blk):
             d = getattr(ins, "d", None)
-            if d is None:
-                continue
-            try:
-                if int(d.t) == mop_S and int(d.s.off) == bound_stkoff:
-                    return None  # another writer to B exists
-            except (AttributeError, TypeError):
-                continue
+            if _operand_stkoff(d, operand_kind_classifier) == bound_stkoff:
+                return None  # another writer to B exists
 
     # Conditions (3) + (4): some block reads B via m_jnz/m_jz, with the
     # other operand having ``counter + small_const`` shape.
@@ -344,18 +363,23 @@ def detect_loop_bound_writer_redirect(
         if blk is None:
             continue
         for ins in _iter_block_insns(blk):
-            op = _safe_int_attr(ins, "opcode")
-            if op != m_jnz and op != m_jz:
+            if _insn_kind(ins, insn_kind_classifier) != InsnKind.EQUALITY_JUMP:
                 continue
             a = getattr(ins, "l", None)
             b = getattr(ins, "r", None)
             if a is None or b is None:
                 continue
             a_is_b = _operand_reads_stkoff(
-                a, bound_stkoff, mop_S=mop_S, mop_d=mop_d, m_xdu=m_xdu,
+                a,
+                bound_stkoff,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
             b_is_b = _operand_reads_stkoff(
-                b, bound_stkoff, mop_S=mop_S, mop_d=mop_d, m_xdu=m_xdu,
+                b,
+                bound_stkoff,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
             other = None
             if a_is_b and not b_is_b:
@@ -365,7 +389,9 @@ def detect_loop_bound_writer_redirect(
             if other is None:
                 continue
             counter_stkoff = _extract_counter_advance(
-                other, mop_n=mop_n, mop_S=mop_S, mop_d=mop_d, m_add=m_add,
+                other,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
             if counter_stkoff is None:
                 continue
@@ -413,32 +439,25 @@ class LoopCounterWritebackDiagnostic:
     advance_ea: int
 
 
-def _operand_is_constant(mop, *, mop_n: int) -> bool:
-    if mop is None:
-        return False
-    try:
-        return int(mop.t) == mop_n
-    except (AttributeError, TypeError):
-        return False
+def _operand_is_constant(
+    mop,
+    classifier: OperandKindClassifier | None = None,
+) -> bool:
+    return _operand_kind(mop, classifier) == OperandKind.NUMBER
 
 
-def _operand_temp_or_stkvar_kind(mop, *, mop_l: int, mop_S: int) -> bool:
-    if mop is None:
-        return False
-    try:
-        t = int(mop.t)
-    except (AttributeError, TypeError):
-        return False
-    return t == mop_l or t == mop_S
+def _operand_temp_or_stkvar_kind(
+    mop,
+    classifier: OperandKindClassifier | None = None,
+) -> bool:
+    return _operand_kind(mop, classifier) in {OperandKind.LVAR, OperandKind.STACK}
 
 
 def _find_writeback_to_stkvar(
     blk,
     *,
-    m_mov: int,
-    mop_n: int,
-    mop_l: int,
-    mop_S: int,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> int | None:
     """If ``blk`` contains an ``m_mov src -> mop_S(K)`` whose ``src`` is
     a temp/stkvar (NOT a constant), return ``K``; else ``None``.
@@ -448,25 +467,18 @@ def _find_writeback_to_stkvar(
     initialisation.
     """
     for insn in _iter_block_insns(blk):
-        if _safe_int_attr(insn, "opcode") != m_mov:
+        if _insn_kind(insn, insn_kind_classifier) != InsnKind.MOV:
             continue
         d = getattr(insn, "d", None)
         l = getattr(insn, "l", None)
-        if d is None or l is None:
+        dest_stkoff = _operand_stkoff(d, operand_kind_classifier)
+        if dest_stkoff is None or l is None:
             continue
-        try:
-            if int(d.t) != mop_S:
-                continue
-        except (AttributeError, TypeError):
+        if _operand_is_constant(l, operand_kind_classifier):
             continue
-        if _operand_is_constant(l, mop_n=mop_n):
+        if not _operand_temp_or_stkvar_kind(l, operand_kind_classifier):
             continue
-        if not _operand_temp_or_stkvar_kind(l, mop_l=mop_l, mop_S=mop_S):
-            continue
-        try:
-            return int(d.s.off)
-        except (AttributeError, TypeError):
-            continue
+        return int(dest_stkoff)
     return None
 
 
@@ -474,8 +486,7 @@ def _is_counter_advance_add(
     insn,
     counter_stkoff: int,
     *,
-    mop_n: int,
-    mop_S: int,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> bool:
     """True iff ``insn`` is ``m_add mop_S(counter_stkoff) + small_const``
     (in either operand order) where the constant delta is in
@@ -484,31 +495,23 @@ def _is_counter_advance_add(
     r = getattr(insn, "r", None)
     if l is None or r is None:
         return False
-    try:
-        lt = int(l.t)
-        rt = int(r.t)
-    except (AttributeError, TypeError):
-        return False
-    if lt == mop_S and rt == mop_n:
-        try:
-            if int(l.s.off) != counter_stkoff:
-                return False
-            return (int(r.nnn.value) & 0xFFFFFFFFFFFFFFFF) in _COUNTER_ADVANCE_DELTAS
-        except (AttributeError, TypeError):
-            return False
-    if lt == mop_n and rt == mop_S:
-        try:
-            if int(r.s.off) != counter_stkoff:
-                return False
-            return (int(l.nnn.value) & 0xFFFFFFFFFFFFFFFF) in _COUNTER_ADVANCE_DELTAS
-        except (AttributeError, TypeError):
-            return False
+    l_stkoff = _operand_stkoff(l, operand_kind_classifier)
+    r_stkoff = _operand_stkoff(r, operand_kind_classifier)
+    l_const = _operand_const_value(l, operand_kind_classifier)
+    r_const = _operand_const_value(r, operand_kind_classifier)
+    if l_stkoff == counter_stkoff and r_const is not None:
+        return r_const in _COUNTER_ADVANCE_DELTAS
+    if r_stkoff == counter_stkoff and l_const is not None:
+        return l_const in _COUNTER_ADVANCE_DELTAS
     return False
 
 
 def detect_loop_counter_writeback_tail(
     mba,
     tail_block_serial: int,
+    *,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> LoopCounterWritebackDiagnostic | None:
     """Inspect ``mba`` and return a diagnostic iff ``tail_block_serial``
     is the writeback tail of a loop-carried counter (all four
@@ -524,19 +527,6 @@ def detect_loop_counter_writeback_tail(
     """
     if mba is None:
         return None
-    try:
-        import ida_hexrays
-    except ImportError:
-        return None
-
-    m_mov = getattr(ida_hexrays, "m_mov", -1)
-    m_add = getattr(ida_hexrays, "m_add", -1)
-    m_jnz = getattr(ida_hexrays, "m_jnz", -1)
-    m_jz = getattr(ida_hexrays, "m_jz", -1)
-    mop_n = getattr(ida_hexrays, "mop_n", -1)
-    mop_l = getattr(ida_hexrays, "mop_l", -1)
-    mop_S = getattr(ida_hexrays, "mop_S", -1)
-    mop_d = getattr(ida_hexrays, "mop_d", -1)
 
     qty = _safe_int_attr(mba, "qty", 0)
     if qty <= 0:
@@ -552,7 +542,9 @@ def detect_loop_counter_writeback_tail(
     # Condition (1): tail block has an m_mov writeback to some stkoff K
     # whose source is a temp/stkvar (loop-carried), not a constant.
     counter_stkoff = _find_writeback_to_stkvar(
-        tail_blk, m_mov=m_mov, mop_n=mop_n, mop_l=mop_l, mop_S=mop_S,
+        tail_blk,
+        insn_kind_classifier=insn_kind_classifier,
+        operand_kind_classifier=operand_kind_classifier,
     )
     if counter_stkoff is None:
         return None
@@ -570,18 +562,21 @@ def detect_loop_counter_writeback_tail(
         if blk is None:
             continue
         for ins in _iter_block_insns(blk):
-            op = _safe_int_attr(ins, "opcode")
-            if op != m_jnz and op != m_jz:
+            if _insn_kind(ins, insn_kind_classifier) != InsnKind.EQUALITY_JUMP:
                 continue
             a = getattr(ins, "l", None)
             b = getattr(ins, "r", None)
             if a is None or b is None:
                 continue
             adv_a = _extract_counter_advance(
-                a, mop_n=mop_n, mop_S=mop_S, mop_d=mop_d, m_add=m_add,
+                a,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
             adv_b = _extract_counter_advance(
-                b, mop_n=mop_n, mop_S=mop_S, mop_d=mop_d, m_add=m_add,
+                b,
+                insn_kind_classifier=insn_kind_classifier,
+                operand_kind_classifier=operand_kind_classifier,
             )
             other = None
             if adv_a == counter_stkoff and adv_b != counter_stkoff:
@@ -590,11 +585,8 @@ def detect_loop_counter_writeback_tail(
                 other = a
             if other is None:
                 continue
-            try:
-                if int(other.t) != mop_S:
-                    continue
-                bound_stkoff = int(other.s.off)
-            except (AttributeError, TypeError):
+            bound_stkoff = _operand_stkoff(other, operand_kind_classifier)
+            if bound_stkoff is None:
                 continue
             ea = _safe_int_attr(ins, "ea")
             if ea < 0:
@@ -617,10 +609,12 @@ def detect_loop_counter_writeback_tail(
         if blk is None:
             continue
         for ins in _iter_block_insns(blk):
-            if _safe_int_attr(ins, "opcode") != m_add:
+            if _insn_kind(ins, insn_kind_classifier) != InsnKind.ADD:
                 continue
             if not _is_counter_advance_add(
-                ins, counter_stkoff, mop_n=mop_n, mop_S=mop_S,
+                ins,
+                counter_stkoff,
+                operand_kind_classifier=operand_kind_classifier,
             ):
                 continue
             ea = _safe_int_attr(ins, "ea")
@@ -650,7 +644,13 @@ def detect_loop_counter_writeback_tail(
 _VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
 
 
-def collect_const_var_refs_in_block(mba, block_serial: int) -> frozenset[str]:
+def collect_const_var_refs_in_block(
+    mba,
+    block_serial: int,
+    *,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
+) -> frozenset[str]:
     """Return the set of ``%var_NNN`` name tokens written via
     ``m_mov #const, %var_NNN`` in the given block.
 
@@ -664,16 +664,6 @@ def collect_const_var_refs_in_block(mba, block_serial: int) -> frozenset[str]:
     (missing block, missing instructions, bad opcodes, parse errors).
     """
     if mba is None:
-        return frozenset()
-    try:
-        import ida_hexrays  # local import for the lazy IDA-runtime guard
-    except ImportError:
-        return frozenset()
-    try:
-        m_mov = int(getattr(ida_hexrays, "m_mov"))
-        mop_n = int(getattr(ida_hexrays, "mop_n"))
-        mop_S = int(getattr(ida_hexrays, "mop_S"))
-    except (AttributeError, TypeError):
         return frozenset()
     try:
         serial = int(block_serial)
@@ -691,16 +681,16 @@ def collect_const_var_refs_in_block(mba, block_serial: int) -> frozenset[str]:
 
     found: set[str] = set()
     for insn in _iter_block_insns(blk):
-        if _safe_int_attr(insn, "opcode") != m_mov:
+        if _insn_kind(insn, insn_kind_classifier) != InsnKind.MOV:
             continue
         l = getattr(insn, "l", None)
         d = getattr(insn, "d", None)
         if l is None or d is None:
             continue
-        try:
-            if int(l.t) != mop_n or int(d.t) != mop_S:
-                continue
-        except (AttributeError, TypeError):
+        if (
+            _operand_kind(l, operand_kind_classifier) != OperandKind.NUMBER
+            or _operand_kind(d, operand_kind_classifier) != OperandKind.STACK
+        ):
             continue
         # Parse %var_NNN from the destination's dstr so the result
         # matches the ReturnCarrierFact upstream_writer_var_refs format.

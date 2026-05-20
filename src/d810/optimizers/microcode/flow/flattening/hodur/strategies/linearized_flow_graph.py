@@ -15,11 +15,13 @@ import os
 
 import ida_hexrays
 
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
     simulate_edits,
 )
+from d810.cfg.plan import compile_patch_plan
 from d810.cfg.dag_redirect_emission import (
     emit_dag_redirect,
 )
@@ -50,7 +52,6 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     build_linearized_flow_graph_planning_context,
     execute_linearized_flow_graph_planning,
 )
-from d810.cfg.plan import compile_patch_plan
 from d810.cfg.semantic_region_lowering import (
     build_region_contract_fallback_lowering,
     build_region_preferred_direct_lowering,
@@ -72,7 +73,7 @@ from d810.cfg.residual_dispatcher_handoff_emission import (
 )
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.core.typing import TYPE_CHECKING
+from d810.core.typing import TYPE_CHECKING, AbstractSet
 
 from d810.cfg.modification_builder import (
     ModificationBuilder,
@@ -80,12 +81,32 @@ from d810.cfg.modification_builder import (
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties import (
+    DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
+    HodurLiveMicrocodePropertiesBackend,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_backend import (
+    AssignmentMapHandoffTargetRequest,
+    DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND,
+    EffectiveTargetEntryRequest,
+    ImmediateHandoffTargetRequest,
+    LinearizedFlowGraphHandoffResolutionBackend,
+    ProjectedPathTailTargetRequest,
+    ProjectedSnapshotHandoffTargetRequest,
+    SynthesizedHandoffTargetRequest,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    HodurProjectedTopologyBackend,
+    ProjectedTopologyBackend,
+)
 from d810.recon.flow.residual_handoff_resolution import (
     has_live_exact_residual_handoff_with_valranges,
     is_semantic_handoff_redirect,
-    resolve_effective_target_entry,
     resolve_singleton_state_write_value,
-    resolve_synthesized_handoff_target,
 )
 from d810.recon.flow.graph_reachability import (
     collect_dispatcher_predecessors,
@@ -164,14 +185,10 @@ from d810.recon.flow.residual_alias_discovery import (
 from d810.recon.flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
-    resolve_assignment_map_handoff_target,
     resolve_contextual_dag_entry_for_state,
     resolve_cover_fallback_entry_for_state,
     resolve_dag_entry_for_state,
-    resolve_immediate_handoff_target,
     resolve_normalized_alias_entry_for_state,
-    resolve_projected_snapshot_handoff_target,
-    resolve_projected_path_tail_target,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
 )
@@ -189,10 +206,11 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
-    check_redirect_severs_use_def,
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
+    HexRaysUseDefSafetyBackend,
+    UseDefSafetyBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -213,7 +231,6 @@ from d810.recon.flow.state_machine_analysis import (
     build_mba_view_from_flow_graph,
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
-    run_snapshot_constant_fixpoint,
 )
 from d810.cfg.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
@@ -248,11 +265,76 @@ if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
         DispatcherStateMachine,
     )
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
 logger = logging.getLogger("D810.hodur.strategy.linearized_flow_graph", logging.DEBUG)
+
+
+class _StrategyProjectedTopologyBackend(HodurProjectedTopologyBackend):
+    """Strategy-local seam for tests that patch historical topology helpers."""
+
+    def build_projected_mba(self, flow_graph: object) -> object:
+        return build_mba_view_from_flow_graph(flow_graph)
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        return project_post_state(
+            base_flow_graph,
+            compile_patch_plan(modifications, base_flow_graph),
+        )
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        *,
+        dispatcher_entry_serial: int,
+        state_var_stkoff: int | None,
+        pre_header_serial: int | None,
+        initial_state: int | None,
+        handler_range_map: dict | None,
+        bst_node_blocks: tuple[int, ...],
+        diagnostics: tuple[object, ...],
+        dispatcher: object | None,
+        mba: object | None,
+        prefer_local_corridors: bool = True,
+        corrected_dag_out: list[object] | None = None,
+    ) -> object:
+        return build_live_linearized_state_dag_from_graph(
+            current_flow_graph,
+            transition_result,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+            pre_header_serial=pre_header_serial,
+            initial_state=initial_state,
+            handler_range_map=handler_range_map or {},
+            bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+            diagnostics=tuple(diagnostics or ()),
+            dispatcher=dispatcher,
+            mba=mba,
+            prefer_local_corridors=prefer_local_corridors,
+            corrected_dag_out=corrected_dag_out,
+        )
+
+
+_USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
+_LIVE_MICROCODE_PROPERTIES: HodurLiveMicrocodePropertiesBackend = (
+    DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    _StrategyProjectedTopologyBackend()
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
+_HANDOFF_RESOLUTION_BACKEND: LinearizedFlowGraphHandoffResolutionBackend = (
+    DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND
+)
 
 
 def _lfg_bounded_postprocess_enabled() -> bool:
@@ -261,6 +343,77 @@ def _lfg_bounded_postprocess_enabled() -> bool:
 
 def _lfg_use_def_veto_enabled() -> bool:
     return os.environ.get("D810_HCC_USE_DEF_VETO", "1").strip() != "0"
+
+
+def _filter_lfg_use_def_vetoes(
+    modifications: tuple[object, ...],
+    *,
+    enabled: bool,
+    mba: object | None,
+    flow_graph: FlowGraph,
+    state_var_stkoff: int,
+    backend: UseDefSafetyBackend = _USE_DEF_SAFETY_BACKEND,
+) -> tuple[object, ...]:
+    if not enabled or mba is None:
+        return modifications
+
+    use_def_filtered_modifications = []
+    vetoed_use_def_count = 0
+    for modification in modifications:
+        if not isinstance(modification, RedirectGoto):
+            use_def_filtered_modifications.append(modification)
+            continue
+        try:
+            violations = backend.redirect_use_def_violations(
+                modification,
+                mba,
+                flow_graph,
+            )
+        except Exception:
+            logger.debug(
+                "LFG DAG: bounded postprocess use-def veto check raised for %r",
+                modification,
+                exc_info=True,
+            )
+            use_def_filtered_modifications.append(modification)
+            continue
+        if not violations:
+            use_def_filtered_modifications.append(modification)
+            continue
+        real_violations = tuple(
+            violation
+            for violation in violations
+            if int(violation.var_stkoff) != int(state_var_stkoff)
+        )
+        if not real_violations:
+            use_def_filtered_modifications.append(modification)
+            logger.info(
+                "LFG DAG: bounded postprocess use-def warning ignored"
+                " for %r because only state-variable dispatcher uses"
+                " would be severed",
+                modification,
+            )
+            continue
+        details = "; ".join(
+            f"var_stk[{violation.var_stkoff:#x}]@blk[{violation.use_block}]"
+            for violation in real_violations[:8]
+        )
+        if len(real_violations) > 8:
+            details = f"{details}; ..."
+        logger.warning(
+            "LFG DAG: bounded postprocess use-def vetoed %r orphaned_uses=%d details=%s",
+            modification,
+            len(real_violations),
+            details,
+        )
+        vetoed_use_def_count += 1
+    if vetoed_use_def_count:
+        logger.info(
+            "LFG DAG: bounded postprocess use-def veto filtered %d redirect(s)",
+            vetoed_use_def_count,
+        )
+        return tuple(use_def_filtered_modifications)
+    return modifications
 
 
 def _accepted_region_site_signature(site: object) -> tuple[int, int, int, int, tuple[int, ...]]:
@@ -1125,6 +1278,15 @@ class LinearizedFlowGraphStrategy:
     _applied: set[tuple[int, int]] = set()  # (func_ea, maturity) already processed
     _last_successful_residual_dispatcher_pred_counts: dict[tuple[int, int], int] = {}
     _same_count_exact_rerun_used: set[tuple[int, int]] = set()
+    _projected_topology_backend: ProjectedTopologyBackend = (
+        _PROJECTED_TOPOLOGY_BACKEND
+    )
+    _constant_fixpoint_backend: ConstantFixpointBackend = (
+        _CONSTANT_FIXPOINT_BACKEND
+    )
+    _handoff_resolution_backend: LinearizedFlowGraphHandoffResolutionBackend = (
+        _HANDOFF_RESOLUTION_BACKEND
+    )
 
     @staticmethod
     def _resolve_state_var_stkoff(
@@ -1176,7 +1338,9 @@ class LinearizedFlowGraphStrategy:
                 continue
             if tuple(getattr(block, "preds", ())) != ():
                 continue
-            if getattr(block, "block_type", None) == ida_hexrays.BLT_2WAY:
+            if _LIVE_MICROCODE_PROPERTIES.is_two_way_block_type(
+                getattr(block, "block_type", None)
+            ):
                 continue
             succs = tuple(getattr(block, "succs", ()))
             if len(succs) != 1:
@@ -1214,22 +1378,150 @@ class LinearizedFlowGraphStrategy:
     _resolve_cover_fallback_entry_for_state = staticmethod(
         resolve_cover_fallback_entry_for_state
     )
-    _resolve_projected_path_tail_target = staticmethod(
-        resolve_projected_path_tail_target
-    )
-    _resolve_immediate_handoff_target = staticmethod(
-        resolve_immediate_handoff_target
-    )
-    _resolve_projected_snapshot_handoff_target = staticmethod(
-        resolve_projected_snapshot_handoff_target
-    )
-    _resolve_assignment_map_handoff_target = staticmethod(
-        resolve_assignment_map_handoff_target
-    )
-    _resolve_synthesized_handoff_target = staticmethod(
-        resolve_synthesized_handoff_target
-    )
-    _resolve_effective_target_entry = staticmethod(resolve_effective_target_entry)
+
+    @classmethod
+    def _resolve_projected_path_tail_target(
+        cls,
+        dag: object,
+        *,
+        source_block: int,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None = None,
+        predecessor_hints: tuple[int, ...] | None = None,
+        require_predecessor_match: bool = False,
+    ) -> tuple[int | None, int] | None:
+        response = cls._handoff_resolution_backend.resolve_projected_path_tail_target(
+            ProjectedPathTailTargetRequest(
+                dag=dag,
+                source_block=source_block,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+                predecessor_hints=predecessor_hints,
+                require_predecessor_match=require_predecessor_match,
+            )
+        )
+        return response.target
+
+    @classmethod
+    def _resolve_immediate_handoff_target(
+        cls,
+        dag: object,
+        mba: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher_lookup: object | None,
+        dispatcher: object | None = None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_immediate_handoff_target(
+            ImmediateHandoffTargetRequest(
+                dag=dag,
+                mba=mba,
+                block_serial=block_serial,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+            )
+        )
+        return response.target
+
+    @classmethod
+    def _resolve_projected_snapshot_handoff_target(
+        cls,
+        dag: object,
+        flow_graph: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+    ) -> tuple[int, int] | None:
+        response = (
+            cls._handoff_resolution_backend.resolve_projected_snapshot_handoff_target(
+                ProjectedSnapshotHandoffTargetRequest(
+                    dag=dag,
+                    flow_graph=flow_graph,
+                    block_serial=block_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    bst_node_blocks=bst_node_blocks,
+                    dispatcher=dispatcher,
+                )
+            )
+        )
+        return response.target
+
+    @classmethod
+    def _resolve_assignment_map_handoff_target(
+        cls,
+        dag: object,
+        state_machine: object | None,
+        block_serial: int,
+        *,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_assignment_map_handoff_target(
+            AssignmentMapHandoffTargetRequest(
+                dag=dag,
+                state_machine=state_machine,
+                block_serial=block_serial,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+            )
+        )
+        return response.target
+
+    @classmethod
+    def _resolve_synthesized_handoff_target(
+        cls,
+        dag: object,
+        mba: object,
+        block_serial: int,
+        *,
+        state_var_stkoff: int | None,
+        bst_node_blocks: AbstractSet[int],
+        dispatcher: object | None,
+        via_pred: int | None = None,
+    ) -> tuple[int, int] | None:
+        response = cls._handoff_resolution_backend.resolve_synthesized_handoff_target(
+            SynthesizedHandoffTargetRequest(
+                dag=dag,
+                mba=mba,
+                block_serial=block_serial,
+                state_var_stkoff=state_var_stkoff,
+                bst_node_blocks=bst_node_blocks,
+                dispatcher=dispatcher,
+                via_pred=via_pred,
+            )
+        )
+        return response.target
+
+    @classmethod
+    def _resolve_effective_target_entry(
+        cls,
+        dag: object,
+        edge: object,
+        *,
+        bst_node_blocks: AbstractSet[int],
+        state_var_stkoff: int | None,
+        dispatcher_lookup: object | None,
+        dispatcher: object | None,
+        mba: object,
+    ) -> int | None:
+        response = cls._handoff_resolution_backend.resolve_effective_target_entry(
+            EffectiveTargetEntryRequest(
+                dag=dag,
+                edge=edge,
+                bst_node_blocks=bst_node_blocks,
+                state_var_stkoff=state_var_stkoff,
+                dispatcher_lookup=dispatcher_lookup,
+                dispatcher=dispatcher,
+                mba=mba,
+            )
+        )
+        return response.target_entry
 
     @classmethod
     def _emit_residual_branch_anchor_handoff(
@@ -1326,9 +1618,9 @@ class LinearizedFlowGraphStrategy:
         effective_residual_preds = raw_residual_preds or residual_preds
         if not effective_residual_preds:
             logger.info(
-                "LFG: already applied for func 0x%X at maturity %d",
+                "LFG: already applied for func 0x%X at maturity %s",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
             )
             return False
         previous_residual_count = cls._last_successful_residual_dispatcher_pred_counts.get(key)
@@ -1346,9 +1638,9 @@ class LinearizedFlowGraphStrategy:
                 if consume_retry:
                     cls._same_count_exact_rerun_used.add(key)
                 logger.info(
-                    "LFG: allowing one same-count rerun for func 0x%X at maturity %d because live residual exact handoffs remain: %s",
+                    "LFG: allowing one same-count rerun for func 0x%X at maturity %s because live residual exact handoffs remain: %s",
                     func_ea,
-                    maturity,
+                    maturity_to_string(maturity),
                     effective_residual_preds,
                 )
                 return True
@@ -1360,17 +1652,17 @@ class LinearizedFlowGraphStrategy:
                 if consume_retry:
                     cls._same_count_exact_rerun_used.add(key)
                 logger.info(
-                    "LFG: allowing one exploratory same-count rerun for func 0x%X at maturity %d because residual dispatcher preds remain: %s",
+                    "LFG: allowing one exploratory same-count rerun for func 0x%X at maturity %s because residual dispatcher preds remain: %s",
                     func_ea,
-                    maturity,
+                    maturity_to_string(maturity),
                     effective_residual_preds,
                 )
                 return True
             logger.info(
-                "LFG: suppressing same-maturity rerun for func 0x%X at maturity %d "
+                "LFG: suppressing same-maturity rerun for func 0x%X at maturity %s "
                 "because residual dispatcher preds did not improve (%d -> %d)",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
                 previous_residual_count,
                 len(effective_residual_preds),
             )
@@ -1590,6 +1882,7 @@ class LinearizedFlowGraphStrategy:
         mba,
         dag_setup: LinearizedFlowGraphPlanSetup,
     ):
+        topology_backend = self._projected_topology_backend
         return build_linearized_flow_graph_planning_callbacks(
             snapshot=snapshot,
             state_machine=state_machine,
@@ -1597,11 +1890,8 @@ class LinearizedFlowGraphStrategy:
             mba=mba,
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
-            build_projected_mba=build_mba_view_from_flow_graph,
-            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                base_flow_graph,
-                compile_patch_plan(modifications, base_flow_graph),
-            ),
+            build_projected_mba=topology_backend.build_projected_mba,
+            project_flow_graph=topology_backend.project_flow_graph,
             resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=self._emit_dag_redirect,
@@ -1627,7 +1917,7 @@ class LinearizedFlowGraphStrategy:
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_live_dag=topology_backend.build_live_dag,
             build_transition_report=build_dispatcher_transition_report_from_graph,
             select_plannable_edges=select_plannable_dag_edges,
         )
@@ -1647,7 +1937,6 @@ class LinearizedFlowGraphStrategy:
         dispatcher: object | None,
         snapshot: object | None = None,
     ) -> LinearizedFlowGraphStructuredRegionResult:
-        del cls
         if state_var_stkoff is None:
             return LinearizedFlowGraphStructuredRegionResult(
                 accepted=False,
@@ -1662,12 +1951,12 @@ class LinearizedFlowGraphStrategy:
         # pass-entry flow_graph + state_var_stkoff; post-round CFG changes
         # don't alter state-constant propagation). Prefer the canonical
         # pass-entry value from snapshot.discovery when available, avoiding
-        # one run_snapshot_constant_fixpoint() call per region per round.
+        # one backend constant-fixpoint compute per region per round.
         ctx = getattr(snapshot, "discovery", None) if snapshot is not None else None
         constant_result = (
             ctx.constant_fixpoint
             if ctx is not None and ctx.constant_fixpoint is not None
-            else run_snapshot_constant_fixpoint(
+            else cls._constant_fixpoint_backend.compute(
                 flow_graph,
                 int(state_var_stkoff),
             )
@@ -2108,7 +2397,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
         mba = getattr(snapshot, "mba", None)
-        if mba is None or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1):
+        if not _LIVE_MICROCODE_PROPERTIES.has_maturity(mba, "global_opt_1"):
             return False
         return super().is_applicable(snapshot)
 
@@ -2121,6 +2410,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
         mba,
         dag_setup: LinearizedFlowGraphPlanSetup,
     ):
+        topology_backend = self._projected_topology_backend
         return build_linearized_flow_graph_planning_callbacks(
             snapshot=snapshot,
             state_machine=state_machine,
@@ -2128,11 +2418,8 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             mba=mba,
             setup=dag_setup,
             discover_round_summary=_round_ctx_probe_wrap(snapshot, build_linearized_dag_round_summary),
-            build_projected_mba=build_mba_view_from_flow_graph,
-            project_flow_graph=lambda base_flow_graph, modifications: project_post_state(
-                base_flow_graph,
-                compile_patch_plan(modifications, base_flow_graph),
-            ),
+            build_projected_mba=topology_backend.build_projected_mba,
+            project_flow_graph=topology_backend.project_flow_graph,
             resolve_redirect_safe_target_entry=self._resolve_redirect_safe_target_entry,
             resolve_initial_entry=resolve_dag_entry_for_state,
             emit_dag_redirect=lambda **kwargs: False,
@@ -2158,7 +2445,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
                 ),
             emit_residual_dispatcher_handoffs=self._emit_residual_dispatcher_handoffs,
             disconnect_bst_comparison_nodes=self._disconnect_bst_comparison_nodes,
-            build_live_dag=build_live_linearized_state_dag_from_graph,
+            build_live_dag=topology_backend.build_live_dag,
             build_transition_report=build_dispatcher_transition_report_from_graph,
             select_plannable_edges=select_plannable_dag_edges,
             include_synthetic_exact_regions=False,
@@ -2185,9 +2472,11 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         try:
-            projected_flow_graph = project_post_state(
-                flow_graph,
-                compile_patch_plan(modifications, flow_graph),
+            projected_flow_graph = (
+                self._projected_topology_backend.project_flow_graph(
+                    flow_graph,
+                    modifications,
+                )
             )
         except Exception as exc:
             logger.info(
@@ -2197,7 +2486,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         try:
-            projected_mba = build_mba_view_from_flow_graph(projected_flow_graph)
+            projected_mba = self._projected_topology_backend.build_projected_mba(
+                projected_flow_graph
+            )
         except Exception as exc:
             logger.info(
                 "LFG DAG: bounded postprocess skipped (projected_mba_failed=%s)",
@@ -2206,7 +2497,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             return dag_result
 
         corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             projected_flow_graph,
             dag_setup.transition_result,
             dispatcher_entry_serial=int(snapshot.bst_dispatcher_serial),
@@ -2225,7 +2516,7 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
         )
         corrected_dag = corrected_dag_out[0] if corrected_dag_out else dag
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             int(state_var_stkoff),
         )
@@ -2262,7 +2553,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             collect_terminal_family_report=collect_terminal_family_report,
             build_reconstruction_candidate=build_reconstruction_candidate,
             resolve_effective_target_entry=self._resolve_effective_target_entry,
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=(
+                self._projected_topology_backend.build_projected_mba
+            ),
             discover_residual_alias_overrides_fn=discover_residual_alias_overrides,
         )
 
@@ -2308,63 +2601,13 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             )
             appended_modifications = filtered_appended_modifications
 
-        if _lfg_use_def_veto_enabled() and mba is not None:
-            use_def_filtered_modifications = []
-            vetoed_use_def_count = 0
-            for modification in appended_modifications:
-                if not isinstance(modification, RedirectGoto):
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                try:
-                    violations = check_redirect_severs_use_def(
-                        modification,
-                        mba,
-                        flow_graph,
-                    )
-                except Exception:
-                    logger.debug(
-                        "LFG DAG: bounded postprocess use-def veto check raised for %r",
-                        modification,
-                        exc_info=True,
-                    )
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                if not violations:
-                    use_def_filtered_modifications.append(modification)
-                    continue
-                real_violations = tuple(
-                    violation
-                    for violation in violations
-                    if int(violation.var_stkoff) != int(state_var_stkoff)
-                )
-                if not real_violations:
-                    use_def_filtered_modifications.append(modification)
-                    logger.info(
-                        "LFG DAG: bounded postprocess use-def warning ignored"
-                        " for %r because only state-variable dispatcher uses"
-                        " would be severed",
-                        modification,
-                    )
-                    continue
-                details = "; ".join(
-                    f"var_stk[{violation.var_stkoff:#x}]@blk[{violation.use_block}]"
-                    for violation in real_violations[:8]
-                )
-                if len(real_violations) > 8:
-                    details = f"{details}; ..."
-                logger.warning(
-                    "LFG DAG: bounded postprocess use-def vetoed %r orphaned_uses=%d details=%s",
-                    modification,
-                    len(real_violations),
-                    details,
-                )
-                vetoed_use_def_count += 1
-            if vetoed_use_def_count:
-                logger.info(
-                    "LFG DAG: bounded postprocess use-def veto filtered %d redirect(s)",
-                    vetoed_use_def_count,
-                )
-                appended_modifications = tuple(use_def_filtered_modifications)
+        appended_modifications = _filter_lfg_use_def_vetoes(
+            appended_modifications,
+            enabled=_lfg_use_def_veto_enabled(),
+            mba=mba,
+            flow_graph=flow_graph,
+            state_var_stkoff=state_var_stkoff,
+        )
 
         modifications = [
             *modifications[:original_modification_count],
@@ -2439,7 +2682,9 @@ class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
             mba=mba,
             redirected_blocks=redirected_blocks,
             collect_residual_dispatcher_predecessors=cls._collect_residual_dispatcher_predecessors,
-            build_projected_mba=build_mba_view_from_flow_graph,
+            build_projected_mba=(
+                cls._projected_topology_backend.build_projected_mba
+            ),
             collect_residual_source_handoff_facts=collect_residual_source_handoff_facts,
             iter_residual_prefix_handoffs=iter_residual_prefix_handoffs,
             can_rewrite_shared_suffix_family_fallback=can_rewrite_shared_suffix_family_fallback,

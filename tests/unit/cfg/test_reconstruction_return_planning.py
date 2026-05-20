@@ -183,7 +183,7 @@ class TestPlanReconstructionReturnModifications:
         assert [entry.tag for entry in result.log_entries] == ["redirect_artifact"]
         assert result.skipped_entries == ()
 
-    def test_bypasses_artifact_arm0_when_already_wired_to_return_corridor(self):
+    def test_preserves_artifact_arm0_writer_when_already_wired_to_return_corridor(self):
         flow_graph = _DummyFlowGraph({
             10: ((4,), (40, 6)),
             40: ((10,), (50,)),
@@ -212,9 +212,9 @@ class TestPlanReconstructionReturnModifications:
         )
 
         assert result.modifications == (
-            RedirectBranch(from_serial=10, old_target=40, new_target=50),
+            RedirectGoto(from_serial=40, old_target=50, new_target=20),
         )
-        assert [entry.tag for entry in result.log_entries] == ["wire_2way"]
+        assert [entry.tag for entry in result.log_entries] == ["redirect_artifact"]
         logged_edges = [
             (
                 entry.source_block,
@@ -225,7 +225,7 @@ class TestPlanReconstructionReturnModifications:
             for entry in result.log_entries
         ]
         assert logged_edges == [
-            (10, 0, 50, 40),
+            (40, None, 20, None),
         ]
         assert result.skipped_entries == ()
 

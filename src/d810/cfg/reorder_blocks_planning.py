@@ -4,17 +4,11 @@ from __future__ import annotations
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING, Callable
 
+from d810.cfg.flowgraph import BlockKind
 from d810.cfg.graph_modification import ReorderBlocks
 
-try:
-    import ida_hexrays as _ida_hexrays
-
-    _BLT_2WAY: int | None = _ida_hexrays.BLT_2WAY
-except ImportError:
-    _BLT_2WAY = None
-
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
@@ -116,20 +110,21 @@ def compute_reorder_blocks(
 
     non_2way_serials: tuple[int, ...] = ()
     two_way_serials: tuple[int, ...] = ()
-    mba = snapshot.mba
+    flow_graph = getattr(snapshot, "flow_graph", None)
     bst_blocks: frozenset[int] = (
         frozenset(bst_result.bst_node_blocks)
         if bst_result is not None and bst_result.bst_node_blocks
         else frozenset()
     )
-    if mba is not None and _BLT_2WAY is not None:
+    if flow_graph is not None:
         _non_2way: list[int] = []
         _two_way: list[int] = []
+        get_block = getattr(flow_graph, "get_block", None)
         for serial in dfs_block_order:
-            blk = mba.get_mblock(serial)
+            blk = get_block(serial) if callable(get_block) else None
             if blk is None:
                 continue
-            if blk.type == _BLT_2WAY and serial not in bst_blocks:
+            if getattr(blk, "kind", BlockKind.UNKNOWN) == BlockKind.TWO_WAY and serial not in bst_blocks:
                 _two_way.append(serial)
             else:
                 _non_2way.append(serial)
@@ -137,10 +132,8 @@ def compute_reorder_blocks(
         two_way_serials = tuple(_two_way)
     else:
         logger.warning(
-            "TopologicalSort: cannot filter BLT_2WAY blocks "
-            "(mba=%s, _BLT_2WAY=%s), non_2way_serials over-estimated",
-            mba,
-            _BLT_2WAY,
+            "TopologicalSort: cannot filter BLT_2WAY blocks without a FlowGraph, "
+            "non_2way_serials over-estimated",
         )
         non_2way_serials = tuple(dfs_block_order)
 

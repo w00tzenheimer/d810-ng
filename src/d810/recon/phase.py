@@ -9,6 +9,7 @@ imports. This module is fully unit-testable.
 from __future__ import annotations
 
 from d810.core.logging import getLogger
+from d810.core.provider_phase import ProviderPhase
 from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.recon.models import ReconResult
@@ -56,15 +57,18 @@ class ReconPhase:
         >>> store = ReconStore("/tmp/recon.db")
         >>> phase = ReconPhase(store=store)
         >>> phase.register(CFGShapeCollector())
-        >>> phase.run_microcode_collectors(mba, func_ea=0x401000, maturity=5)
+        >>> phase.run_microcode_collectors(
+        ...     mba, func_ea=0x401000, provider_phase=provider_phase,
+        ... )
     """
 
     def __init__(self, store: ReconStore) -> None:
         self._store = store
         self._collectors: list[ReconCollector] = []
-        # Per-function set of maturities already processed.
-        # Key: func_ea, Value: set of maturity ints already fired.
-        self._fired: dict[int, set[int]] = {}
+        # Per-function set of provider levels already processed.
+        # Ctree collection uses a tagged key so microcode and ctree passes at
+        # the same provider level do not block each other.
+        self._fired: dict[int, set[int | tuple[int, str]]] = {}
 
     @property
     def collector_count(self) -> int:
@@ -97,18 +101,20 @@ class ReconPhase:
         target: Any,
         *,
         func_ea: int,
-        maturity: int,
+        provider_phase: ProviderPhase,
     ) -> list[ReconResult]:
-        """Dispatch all microcode collectors registered for ``maturity``.
+        """Dispatch all microcode collectors registered for ``provider_phase``.
 
         Protected by a per-(func_ea, maturity) guard so each collector fires
         at most once per decompilation pass.
 
         :param target: Live ``mba_t`` (passed through to collectors).
         :param func_ea: Function EA.
-        :param maturity: Current microcode maturity level.
+        :param provider_phase: Current provider phase supplied by the adapter.
         :return: List of ``ReconResult`` produced this call (may be empty).
         """
+        maturity = int(provider_phase.provider_level)
+        maturity_text = str(provider_phase.friendly_provider_level)
         fired_maturities = self._fired.setdefault(func_ea, set())
         if maturity in fired_maturities:
             return []
@@ -129,8 +135,8 @@ class ReconPhase:
                 results.append(result)
             except Exception:
                 logger.exception(
-                    "ReconCollector '%s' failed at func=0x%x maturity=%d",
-                    collector.name, func_ea, maturity,
+                    "ReconCollector '%s' failed at func=0x%x maturity=%s",
+                    collector.name, func_ea, maturity_text,
                 )
 
         fired_maturities.add(maturity)
@@ -141,12 +147,14 @@ class ReconPhase:
         target: Any,
         *,
         func_ea: int,
-        maturity: int,
+        provider_phase: ProviderPhase,
     ) -> list[ReconResult]:
-        """Dispatch all ctree collectors registered for ``maturity``."""
+        """Dispatch all ctree collectors registered for ``provider_phase``."""
+        maturity = int(provider_phase.provider_level)
+        maturity_text = str(provider_phase.friendly_provider_level)
         fired_maturities = self._fired.setdefault(func_ea, set())
         ctree_key = (maturity, "ctree")
-        if ctree_key in fired_maturities:  # type: ignore[operator]
+        if ctree_key in fired_maturities:
             return []
 
         results: list[ReconResult] = []
@@ -163,9 +171,9 @@ class ReconPhase:
                 results.append(result)
             except Exception:
                 logger.exception(
-                    "ReconCollector '%s' (ctree) failed at func=0x%x maturity=%d",
-                    collector.name, func_ea, maturity,
+                    "ReconCollector '%s' (ctree) failed at func=0x%x maturity=%s",
+                    collector.name, func_ea, maturity_text,
                 )
 
-        fired_maturities.add(ctree_key)  # type: ignore[arg-type]
+        fired_maturities.add(ctree_key)
         return results

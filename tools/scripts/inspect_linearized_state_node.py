@@ -6,7 +6,7 @@ This file forwards to ``python -m d810.diagnostics inspect-state-node``
 with the same argument shape (``--db DB --state STATE [--dump DUMP]
 [--context N]``). To use the new command directly:
 
-    ./tools/cff_debug.py state STATE [--db DB] [--dump DUMP] [--context N]
+    ./tools/d810cli.py state STATE [--db DB] [--dump DUMP] [--context N]
     PYTHONPATH=src python -m d810.diagnostics inspect-state-node --db DB --state STATE [--dump DUMP] [--context N]
 
 The SQL + AFTER pseudocode correlation logic now lives in

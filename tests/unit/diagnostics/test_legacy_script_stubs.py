@@ -44,9 +44,9 @@ def _subprocess_env() -> dict:
         ("gate_audit.py", "gate-audit"),
         ("reconcile_dispatcher_redirects.py", "redirect-reconcile"),
         ("terminal_tail_cascade_egress_plan.py", "cascade-egress-plan"),
-        ("region_oracle.py", "region-diff"),
         ("extract_after_pseudocode.py", "dump-after"),
         ("inspect_linearized_state_node.py", "inspect-state-node"),
+        ("tigress_indirect_state_transfer_map.py", "indirect-transfer-map"),
     ],
 )
 def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
@@ -76,9 +76,9 @@ def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
         "gate_audit.py",
         "reconcile_dispatcher_redirects.py",
         "terminal_tail_cascade_egress_plan.py",
-        "region_oracle.py",
         "extract_after_pseudocode.py",
         "inspect_linearized_state_node.py",
+        "tigress_indirect_state_transfer_map.py",
     ],
 )
 def test_wrapper_stub_contains_no_legacy_implementation(script: str) -> None:
@@ -111,7 +111,7 @@ def test_return_family_ledger_stub_fails_with_replacement_message() -> None:
     )
     assert result.returncode == 2
     assert "[deprecated]" in result.stderr
-    assert "cff_debug.py returns" in result.stderr
+    assert "d810cli.py returns" in result.stderr
     assert "d810.diagnostics return-ledger" in result.stderr
 
 
@@ -156,11 +156,11 @@ def test_residual_dispatcher_worksheet_stub_contains_no_legacy_implementation() 
     assert "build_residual_dispatcher_worksheet" not in text
 
 
-def test_inspect_hodur_dump_sh_forwards_to_cff_debug_inspect(
+def test_inspect_hodur_dump_sh_forwards_to_d810cli_inspect(
     tmp_path: Path,
 ) -> None:
     """The bash stub must accept a positional dump file and forward to
-    `./tools/cff_debug.py inspect --dump <file>`."""
+    `./tools/d810cli.py inspect --dump <file>`."""
     if shutil.which("bash") is None:
         pytest.skip("bash not available")
     dump = tmp_path / "tiny.txt"
@@ -177,7 +177,7 @@ def test_inspect_hodur_dump_sh_forwards_to_cff_debug_inspect(
     # minimal dump (every probe just prints "(none)" if no match).
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert "[deprecated]" in result.stderr
-    assert "cff_debug.py inspect" in result.stderr
+    assert "d810cli.py inspect" in result.stderr
     # The forwarded command emits banner lines for each probe.
     assert "=== Gate Failures ===" in result.stdout
 

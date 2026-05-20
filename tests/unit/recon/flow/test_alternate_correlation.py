@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from d810.recon.flow.alternate_correlation import (
+from d810.diagnostics.alternate_correlation import (
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )

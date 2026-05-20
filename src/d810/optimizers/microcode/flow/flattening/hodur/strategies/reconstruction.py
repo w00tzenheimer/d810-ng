@@ -35,6 +35,11 @@ from d810.cfg.reconstruction_modification_planning import (
     plan_passthrough_reconstruction_modifications,
 )
 from d810.cfg.reconstruction_recording import RoundAcceptLedger
+from d810.hexrays.mutation.ir_translator import (
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     blk_label,
 )
@@ -42,6 +47,10 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
 from d810.cfg.graph_modification import (
     PrivateTerminalSuffix,
@@ -51,7 +60,7 @@ from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -59,6 +68,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    HodurProjectedTopologyBackend,
+    ProjectedTopologyBackend,
 )
 from d810.recon.flow.linearized_dag_round_discovery import (
     discover_structured_dag_regions,
@@ -69,14 +82,13 @@ from d810.recon.flow.linearized_state_dag import (
     ProgramCommentMode,
     ProgramRenderStrategy,
     RenderOrderStrategy,
-    build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
+    build_linearized_state_program,
 )
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.edge_metadata import make_edge_metadata
 from d810.recon.flow.edge_metadata import edge_kind_name
 from d810.recon.flow.full_coverage_chain_probe import log_chain_coverage
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_boundary_protected_shared_blocks,
@@ -149,6 +161,51 @@ from d810.recon.flow.reconstruction_diagnostics import (
 logger = logging.getLogger(
     "D810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
+)
+
+
+class _StrategyProjectedTopologyBackend(HodurProjectedTopologyBackend):
+    """Strategy-local seam for tests that monkeypatch the historical builder."""
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        *,
+        dispatcher_entry_serial: int,
+        state_var_stkoff: int | None,
+        pre_header_serial: int | None,
+        initial_state: int | None,
+        handler_range_map: dict | None,
+        bst_node_blocks: tuple[int, ...],
+        diagnostics: tuple[object, ...],
+        dispatcher: object | None,
+        mba: object | None,
+        prefer_local_corridors: bool = True,
+        corrected_dag_out: list[object] | None = None,
+    ) -> object:
+        return build_live_linearized_state_dag_from_graph(
+            current_flow_graph,
+            transition_result,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+            pre_header_serial=pre_header_serial,
+            initial_state=initial_state,
+            handler_range_map=handler_range_map or {},
+            bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+            diagnostics=tuple(diagnostics or ()),
+            dispatcher=dispatcher,
+            mba=mba,
+            prefer_local_corridors=prefer_local_corridors,
+            corrected_dag_out=corrected_dag_out,
+        )
+
+
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    _StrategyProjectedTopologyBackend()
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 __all__ = ["StateWriteReconstructionStrategy"]
@@ -362,6 +419,12 @@ class StateWriteReconstructionStrategy:
         self._cached_force_edge_direct_overrides_by_round: dict[
             tuple[int, int, tuple[int, int]], tuple[int, int, tuple[int, ...]]
         ] = {}
+        self._projected_topology_backend: ProjectedTopologyBackend = (
+            _PROJECTED_TOPOLOGY_BACKEND
+        )
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
 
     @property
     def name(self) -> str:
@@ -422,6 +485,8 @@ class StateWriteReconstructionStrategy:
             owned_blocks=owned_blocks,
             owned_edges=owned_edges,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         if not shared_result.accepted_candidates and not shared_result.rejected_candidates:
             return 0
@@ -509,7 +574,7 @@ class StateWriteReconstructionStrategy:
             strategy_name=self.name,
         )
         _corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             flow_graph,
             transition_result,
             dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
@@ -539,7 +604,7 @@ class StateWriteReconstructionStrategy:
         # .claude/notes/investigations/2026-04-23-sub_7ffd_lowering.md).
         log_chain_coverage(corrected_dag, context_label="SRW corrected_dag")
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             state_var_stkoff,
         )
@@ -569,16 +634,14 @@ class StateWriteReconstructionStrategy:
             )
             if cached_structured_regions:
                 logger.info(
-                    "RECON DAG: cached structured regions available for func=0x%X maturity=%d but deferred because the live pass could not rediscover them: names=%s",
+                    "RECON DAG: cached structured regions available for func=0x%X maturity=%s but deferred because the live pass could not rediscover them: names=%s",
                     cache_key[0],
-                    cache_key[1],
+                    maturity_to_string(cache_key[1]),
                     [str(region.region_name) for region in cached_structured_regions],
                 )
-        # Snapshot BEFORE building indexes so the diag DB has fact-
-        # backed evidence for any dag_edge_alternate_selection
-        # overrides; then re-derive indexes from the (possibly)
-        # overridden dag/corrected_dag so candidate generation sees
-        # the corrected edges.
+        # Snapshot for diagnostics, then apply selected-alternate overrides
+        # from the in-memory fact view so SQLite availability cannot affect
+        # behavior.
         _snapshot_result = snapshot_reconstruction_dag(
             logger,
             dag=dag,
@@ -586,15 +649,26 @@ class StateWriteReconstructionStrategy:
             strategy_name=self.name,
         )
         from d810.recon.flow.selected_alternate_edge_override import (
-            apply_selected_alternate_edge_overrides_from_diag,
+            apply_selected_alternate_edge_overrides,
+            derive_selected_alternate_edge_override_map,
         )
-        dag = apply_selected_alternate_edge_overrides_from_diag(
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        override_map = derive_selected_alternate_edge_override_map(
             dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
-        corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
+        dag = apply_selected_alternate_edge_overrides(
+            dag,
+            fact_view,
+            override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+        )
+        corrected_dag = apply_selected_alternate_edge_overrides(
             corrected_dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
 
         indexes = build_reconstruction_discovery_indexes(
@@ -812,6 +886,8 @@ class StateWriteReconstructionStrategy:
             owned_edges=owned_edges,
             force_clone_shared_blocks=force_clone_primary_shared_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(run)
         primary_probe_rejected_candidates = _collect_rejected_reconstruction_candidates(run)
@@ -932,10 +1008,12 @@ class StateWriteReconstructionStrategy:
                 node_by_key=node_by_key,
                 dispatcher_serial=dispatcher_serial,
                 modifications=modifications,
-                owned_blocks=owned_blocks,
-                owned_edges=owned_edges,
-                mba=mba,
-            )
+            owned_blocks=owned_blocks,
+            owned_edges=owned_edges,
+            mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
+        )
             fallback_accepted_candidates = _collect_accepted_reconstruction_candidates(
                 fallback_run
             )
@@ -1154,6 +1232,8 @@ class StateWriteReconstructionStrategy:
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results

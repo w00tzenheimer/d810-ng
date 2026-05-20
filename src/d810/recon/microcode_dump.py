@@ -68,11 +68,15 @@ from d810.recon.flow.linearized_state_dag import (
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
+from d810.recon.flow.dynamic_state_transition_recovery import (
+    recover_dynamic_state_write_transitions,
+)
 from d810.recon.flow.persisted_recon_dag import get_persisted_recon_dag
 from d810.recon.flow.transition_builder import _convert_bst_to_result
 from d810.recon.flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
+    build_dispatcher_transition_report_from_graph,
 )
 from d810.hexrays.utils.pseudocode_render import render_block
 
@@ -1087,7 +1091,7 @@ def dump_dispatcher_tree(
     if not handler_serials:
         sections.append("<no handlers found in BST>")
     else:
-        report = build_dispatcher_transition_report(
+        raw_report = build_dispatcher_transition_report(
             mba=mba,
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
@@ -1096,8 +1100,46 @@ def dump_dispatcher_tree(
             capture_diagnostics=True,
             max_diag_handlers=3,
         )
-        if report.diagnostics:
-            diag_section.extend(list(report.diagnostics))
+        if raw_report.diagnostics:
+            diag_section.extend(list(raw_report.diagnostics))
+
+        try:
+            bst_result = analyze_bst_dispatcher(
+                mba,
+                dispatcher_entry_serial,
+                state_var_stkoff=state_var_stkoff,
+                state_var_lvar_idx=state_var_lvar_idx,
+                max_depth=max_depth,
+            )
+            transition_result = _convert_bst_to_result(bst_result)
+            flow_graph = IDAIRTranslator().lift(mba)
+            known_states = set(
+                int(value) for value in bst_result.handler_state_map.values()
+            )
+            if bst_result.initial_state is not None:
+                known_states.add(int(bst_result.initial_state))
+            transition_result = recover_dynamic_state_write_transitions(
+                mba=mba,
+                flow_graph=flow_graph,
+                transition_result=transition_result,
+                dispatcher_entry_serial=dispatcher_entry_serial,
+                state_var_stkoff=state_var_stkoff,
+                known_states=known_states,
+            )
+            report = build_dispatcher_transition_report_from_graph(
+                flow_graph,
+                transition_result,
+                dispatcher_entry_serial=dispatcher_entry_serial,
+                state_var_stkoff=state_var_stkoff,
+                state_var_lvar_idx=state_var_lvar_idx,
+                pre_header_serial=bst_result.pre_header_serial,
+                initial_state=bst_result.initial_state,
+                handler_range_map=bst_result.handler_range_map,
+                bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
+            )
+        except Exception:
+            logger.warning("Failed to build recovered transition report", exc_info=True)
+            report = raw_report
 
         for row in report.rows:
             chain_str = f"chain={list(row.chain_preview)}" if row.chain_preview else ""
@@ -1157,6 +1199,17 @@ def _build_live_linearized_state_dag(
     )
     transition_result = _convert_bst_to_result(bst_result)
     flow_graph = IDAIRTranslator().lift(mba)
+    known_states = set(int(value) for value in bst_result.handler_state_map.values())
+    if bst_result.initial_state is not None:
+        known_states.add(int(bst_result.initial_state))
+    transition_result = recover_dynamic_state_write_transitions(
+        mba=mba,
+        flow_graph=flow_graph,
+        transition_result=transition_result,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        known_states=known_states,
+    )
     return build_live_linearized_state_dag_from_graph(
         flow_graph,
         transition_result,
@@ -1599,6 +1652,7 @@ def main_cli():
     """Command-line interface for microcode dump tool."""
     import argparse
     import sys
+    from pathlib import Path
 
     parser = argparse.ArgumentParser(
         description="Dump Hex-Rays microcode to JSON for debugging and analysis.",
@@ -1623,6 +1677,8 @@ Examples:
     parser.add_argument(
         "-o",
         "--output",
+        type=Path,
+        default=None,
         help="Output file path (default: stdout)",
     )
     parser.add_argument(
@@ -1670,19 +1726,22 @@ Examples:
         sys.exit(1)
 
     # Now import and map maturity constants (after IDA is loaded)
-
     maturity = STRING_TO_MATURITY_DICT[args.maturity]
 
     # Dump microcode
     try:
         json_output = dump_microcode_json(
             func_ea,
-            output_path=args.output,
             maturity=maturity,
             indent=args.indent,
         )
-        if not args.output:
-            print(json_output)
+        if args.output is None:
+            sys.stdout.write(json_output)
+            sys.stdout.write("\n")
+        else:
+            with args.output.open("w", encoding="utf-8") as output:
+                output.write(json_output)
+                output.write("\n")
     except Exception as e:
         print(f"Error dumping microcode: {e}", file=sys.stderr)
         sys.exit(1)

@@ -13,7 +13,7 @@ import pytest
 
 from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 
 
 def _make_cfg(
@@ -37,7 +37,7 @@ def _make_cfg(
 
 
 def _build_post_mod_adjacency_for_test(
-    pre_cfg: FlowGraph, mod: RedirectGoto
+    pre_cfg: FlowGraph, mod: RedirectGoto | RedirectBranch
 ) -> dict[int, list[int]]:
     """Mirror the private helper from use_def_dominance for unit testing."""
     adj = pre_cfg.as_adjacency_dict()
@@ -75,6 +75,18 @@ class TestPostModAdjacency:
         mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
         adj = _build_post_mod_adjacency_for_test(cfg, mod)
         assert adj[10] == [30]
+
+    def test_branch_redirect_replaces_only_selected_target(self) -> None:
+        cfg = _make_cfg([
+            (0, (10,), ()),
+            (10, (20, 30), (0,)),
+            (20, (), (10,)),
+            (30, (), (10,)),
+            (40, (), ()),
+        ])
+        mod = RedirectBranch(from_serial=10, old_target=30, new_target=40)
+        adj = _build_post_mod_adjacency_for_test(cfg, mod)
+        assert adj[10] == [20, 40]
 
 
 class TestDominanceAfterRedirect:
@@ -165,7 +177,7 @@ def test_severance_violation_dataclass_is_frozen(
     # is a *test-file* concession; the production module follows
     # CORE_INSTRUCTIONS' "no lazy imports" rule for source files.
     pytest.importorskip("ida_hexrays")
-    from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+    from d810.evaluator.hexrays_microcode.use_def_dominance import (
         SeveranceViolation,
     )
 

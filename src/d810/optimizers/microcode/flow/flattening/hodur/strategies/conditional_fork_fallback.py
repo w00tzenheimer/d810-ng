@@ -12,7 +12,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_FALLBACK,
     BenefitMetrics,
     OwnershipScope,
@@ -22,7 +22,7 @@ from d810.recon.flow.conditional_chain_resolution import (
     collect_conditional_fork_resolution_candidates,
 )
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

@@ -28,7 +28,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
 from d810.cfg.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_CLEANUP,
     OwnershipScope,
@@ -37,7 +37,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

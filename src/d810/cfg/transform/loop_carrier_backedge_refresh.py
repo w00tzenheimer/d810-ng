@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import os
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind
 from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.cfg.transform._base import FlowGraphTransform
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 
 logger = getLogger(__name__)
-
-_M_LDX_OPCODE = 2
-
 
 def _as_int(value: object) -> int | None:
     try:
@@ -57,7 +54,7 @@ def _insn_loads_stkoff(blk: BlockSnapshot, stkoff: int) -> bool:
     for insn in blk.insn_snapshots:
         dest = getattr(insn, "d", None)
         if (
-            int(getattr(insn, "opcode", -1)) == _M_LDX_OPCODE
+            getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.LOAD
             and dest is not None
             and getattr(dest, "stkoff", None) == stkoff
         ):

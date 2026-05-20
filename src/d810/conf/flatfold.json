@@ -1105,7 +1105,7 @@
   "blk_rules": [
     {
       "name": "ForwardConstantPropagationRule",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
@@ -1119,7 +1119,7 @@
     },
     {
       "name": "UnflattenerSwitchCase",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }
@@ -1153,7 +1153,7 @@
     },
     {
       "name": "Unflattener",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "max_calls_entry_preds": 24,
         "max_calls_exit_blocks": 24,
@@ -1163,14 +1163,19 @@
     },
     {
       "name": "BadWhileLoop",
-      "is_activated": true,
+      "is_activated": false,
       "config": {
         "min_dispatcher_comparison_value": 2
       }
     },
     {
-      "name": "FixPredecessorOfConditionalJumpBlock",
+      "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "FixPredecessorOfConditionalJumpBlock",
+      "is_activated": false,
       "config": {
         "dump_intermediate_microcode": false
       }

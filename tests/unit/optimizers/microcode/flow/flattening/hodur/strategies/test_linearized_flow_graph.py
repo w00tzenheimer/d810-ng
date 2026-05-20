@@ -2,10 +2,21 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto, ZeroStateWrite
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    constant_fixpoint_backend as constant_backend_module,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    lfg_handoff_resolution_backend as handoff_backend_module,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    projected_topology_backend as topology_backend_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     _build_narrow_branch_local_region_fallback_candidates,
@@ -16,8 +27,512 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
     _sanitize_progressive_topology_modifications,
     _match_accepted_region_sites,
     _filter_unsafe_preferred_region_lowering,
+    _filter_lfg_use_def_vetoes,
     _should_defer_transient_internal_region_site,
 )
+
+
+class _FakeProjectedTopologyBackend:
+    def __init__(self) -> None:
+        self.projected_mba_calls: list[object] = []
+        self.project_flow_graph_calls: list[tuple[object, object]] = []
+        self.live_dag_calls: list[tuple[object, object, dict]] = []
+
+    def build_projected_mba(self, flow_graph: object) -> object:
+        self.projected_mba_calls.append(flow_graph)
+        return SimpleNamespace(projected_from=flow_graph)
+
+    def project_flow_graph(
+        self,
+        base_flow_graph: object,
+        modifications: object,
+    ) -> object:
+        self.project_flow_graph_calls.append((base_flow_graph, modifications))
+        return SimpleNamespace(
+            projected_base=base_flow_graph,
+            projected_modifications=modifications,
+        )
+
+    def build_live_dag(
+        self,
+        current_flow_graph: object,
+        transition_result: object,
+        **kwargs,
+    ) -> object:
+        self.live_dag_calls.append((current_flow_graph, transition_result, kwargs))
+        return SimpleNamespace(nodes=(), edges=())
+
+
+def _empty_resolved_round_summary(dag: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        dag=dag,
+        semantic_reference_program=None,
+        structured_regions=(),
+        plannable_edges=(),
+        report_exit_handlers=frozenset(),
+        report_exit_owned_blocks=frozenset(),
+        terminal_source_keys=frozenset(),
+        terminal_source_handlers=frozenset(),
+        terminal_source_owned_blocks=frozenset(),
+        terminal_protected_blocks=frozenset(),
+        terminal_skipped=0,
+        unknown_skipped=0,
+    )
+
+
+def test_constant_fixpoint_backend_delegates_to_recon_helper(monkeypatch):
+    backend = constant_backend_module.HodurConstantFixpointBackend()
+    flow_graph = object()
+    seen = {}
+
+    def fake_constant_fixpoint(received_flow_graph, received_stkoff):
+        seen["flow_graph"] = received_flow_graph
+        seen["stkoff"] = received_stkoff
+        return "constant-result"
+
+    monkeypatch.setattr(
+        constant_backend_module,
+        "run_snapshot_constant_fixpoint",
+        fake_constant_fixpoint,
+    )
+
+    assert backend.compute(flow_graph, 0x7BC) == "constant-result"
+    assert seen == {"flow_graph": flow_graph, "stkoff": 0x7BC}
+
+
+def test_lfg_structured_region_uses_constant_fixpoint_backend(monkeypatch):
+    class _StopAfterConstantFixpoint(Exception):
+        pass
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph: object, state_var_stkoff: int) -> object:
+            assert flow_graph is expected_flow_graph
+            assert state_var_stkoff == 0x7BC
+            raise _StopAfterConstantFixpoint
+
+    expected_flow_graph = object()
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_constant_fixpoint_backend",
+        _FakeConstantFixpointBackend(),
+    )
+
+    with pytest.raises(_StopAfterConstantFixpoint):
+        lfg_module.LinearizedFlowGraphStrategy._emit_structured_region_reconstruction(
+            region=SimpleNamespace(internal_state_edges=()),
+            dag=SimpleNamespace(bst_node_blocks=(), nodes=(), edges=()),
+            semantic_reference_program=None,
+            structured_regions=(),
+            flow_graph=expected_flow_graph,
+            state=SimpleNamespace(),
+            state_var_stkoff=0x7BC,
+            dispatcher_serial=2,
+            dispatcher=None,
+            snapshot=SimpleNamespace(
+                discovery=SimpleNamespace(constant_fixpoint=None)
+            ),
+        )
+
+
+def test_lfg_handoff_resolution_backend_delegates_to_recon_helpers(monkeypatch):
+    backend = handoff_backend_module.HodurLinearizedFlowGraphHandoffResolutionBackend()
+    seen = {}
+
+    def fake_effective_target(
+        dag,
+        edge,
+        *,
+        bst_node_blocks,
+        state_var_stkoff,
+        dispatcher_lookup,
+        dispatcher,
+        mba,
+    ):
+        seen["effective"] = (
+            dag,
+            edge,
+            bst_node_blocks,
+            state_var_stkoff,
+            dispatcher_lookup,
+            dispatcher,
+            mba,
+        )
+        return 205
+
+    def fake_tail_target(
+        dag,
+        *,
+        source_block,
+        bst_node_blocks,
+        dispatcher,
+        predecessor_hints,
+        require_predecessor_match,
+    ):
+        seen["tail"] = (
+            dag,
+            source_block,
+            bst_node_blocks,
+            dispatcher,
+            predecessor_hints,
+            require_predecessor_match,
+        )
+        return (None, 20)
+
+    monkeypatch.setattr(
+        handoff_backend_module,
+        "resolve_effective_target_entry",
+        fake_effective_target,
+    )
+    monkeypatch.setattr(
+        handoff_backend_module,
+        "resolve_projected_path_tail_target",
+        fake_tail_target,
+    )
+
+    effective_response = backend.resolve_effective_target_entry(
+        handoff_backend_module.EffectiveTargetEntryRequest(
+            dag="dag",
+            edge="edge",
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
+        )
+    )
+    tail_response = backend.resolve_projected_path_tail_target(
+        handoff_backend_module.ProjectedPathTailTargetRequest(
+            dag="dag",
+            source_block=10,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
+        )
+    )
+
+    assert effective_response == handoff_backend_module.EffectiveTargetEntryResponse(
+        target_entry=205
+    )
+    assert tail_response == handoff_backend_module.ProjectedPathTailTargetResponse(
+        target=(None, 20)
+    )
+    assert seen == {
+        "effective": ("dag", "edge", {2}, 0x7BC, "lookup", "dispatcher", "mba"),
+        "tail": ("dag", 10, {2}, "dispatcher", (9,), True),
+    }
+
+
+def test_lfg_target_resolution_hooks_use_handoff_backend(monkeypatch):
+    seen = {}
+
+    class _FakeHandoffResolutionBackend:
+        def resolve_effective_target_entry(self, request):
+            seen["effective"] = request
+            return handoff_backend_module.EffectiveTargetEntryResponse(
+                target_entry=205
+            )
+
+        def resolve_projected_path_tail_target(self, request):
+            seen["tail"] = request
+            return handoff_backend_module.ProjectedPathTailTargetResponse(
+                target=(None, 20)
+            )
+
+        def resolve_immediate_handoff_target(self, request):
+            seen["immediate"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(17, 20))
+
+        def resolve_projected_snapshot_handoff_target(self, request):
+            seen["snapshot"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(18, 20))
+
+        def resolve_assignment_map_handoff_target(self, request):
+            seen["assignment"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(19, 20))
+
+        def resolve_synthesized_handoff_target(self, request):
+            seen["synthesized"] = request
+            return handoff_backend_module.HandoffTargetResponse(target=(21, 20))
+
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_handoff_resolution_backend",
+        _FakeHandoffResolutionBackend(),
+    )
+
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_effective_target_entry(
+            "dag",
+            "edge",
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
+        )
+        == 205
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_projected_path_tail_target(
+            "dag",
+            source_block=10,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
+        )
+        == (None, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_immediate_handoff_target(
+            "dag",
+            "mba",
+            11,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+        )
+        == (17, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_projected_snapshot_handoff_target(
+            "dag",
+            "flow-graph",
+            12,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        )
+        == (18, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_assignment_map_handoff_target(
+            "dag",
+            "state-machine",
+            13,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        )
+        == (19, 20)
+    )
+    assert (
+        lfg_module.LinearizedFlowGraphStrategy._resolve_synthesized_handoff_target(
+            "dag",
+            "mba",
+            14,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            via_pred=8,
+        )
+        == (21, 20)
+    )
+
+    assert seen == {
+        "effective": handoff_backend_module.EffectiveTargetEntryRequest(
+            dag="dag",
+            edge="edge",
+            bst_node_blocks=frozenset({2}),
+            state_var_stkoff=0x7BC,
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+            mba="mba",
+        ),
+        "tail": handoff_backend_module.ProjectedPathTailTargetRequest(
+            dag="dag",
+            source_block=10,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            predecessor_hints=(9,),
+            require_predecessor_match=True,
+        ),
+        "immediate": handoff_backend_module.ImmediateHandoffTargetRequest(
+            dag="dag",
+            mba="mba",
+            block_serial=11,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher_lookup="lookup",
+            dispatcher="dispatcher",
+        ),
+        "snapshot": handoff_backend_module.ProjectedSnapshotHandoffTargetRequest(
+            dag="dag",
+            flow_graph="flow-graph",
+            block_serial=12,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        ),
+        "assignment": handoff_backend_module.AssignmentMapHandoffTargetRequest(
+            dag="dag",
+            state_machine="state-machine",
+            block_serial=13,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+        ),
+        "synthesized": handoff_backend_module.SynthesizedHandoffTargetRequest(
+            dag="dag",
+            mba="mba",
+            block_serial=14,
+            state_var_stkoff=0x7BC,
+            bst_node_blocks=frozenset({2}),
+            dispatcher="dispatcher",
+            via_pred=8,
+        ),
+    }
+
+
+def test_projected_topology_backend_delegates_to_recon_helpers(monkeypatch):
+    backend = topology_backend_module.HodurProjectedTopologyBackend()
+    flow_graph = object()
+    transition_result = object()
+    seen_live_dag_kwargs = {}
+    seen_projection = {}
+    compiled_plan = object()
+    projected_flow_graph = object()
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "build_mba_view_from_flow_graph",
+        lambda projected_flow_graph: ("projected-mba", projected_flow_graph),
+    )
+    def fake_compile_patch_plan(modifications, base_flow_graph):
+        seen_projection["compile"] = (modifications, base_flow_graph)
+        return compiled_plan
+
+    def fake_project_post_state(base_flow_graph, patch_plan):
+        seen_projection["project"] = (base_flow_graph, patch_plan)
+        return projected_flow_graph
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "compile_patch_plan",
+        fake_compile_patch_plan,
+    )
+    monkeypatch.setattr(
+        topology_backend_module,
+        "project_post_state",
+        fake_project_post_state,
+    )
+
+    def fake_build_live_dag(current_flow_graph, received_transition_result, **kwargs):
+        seen_live_dag_kwargs.update(kwargs)
+        return (current_flow_graph, received_transition_result, kwargs)
+
+    monkeypatch.setattr(
+        topology_backend_module,
+        "build_live_linearized_state_dag_from_graph",
+        fake_build_live_dag,
+    )
+
+    assert backend.build_projected_mba(flow_graph) == ("projected-mba", flow_graph)
+    assert backend.project_flow_graph(flow_graph, ("mod",)) is projected_flow_graph
+    assert seen_projection == {
+        "compile": (("mod",), flow_graph),
+        "project": (flow_graph, compiled_plan),
+    }
+
+    dag = backend.build_live_dag(
+        flow_graph,
+        transition_result,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x7BC,
+        pre_header_serial=None,
+        initial_state=0x6107F8EC,
+        handler_range_map=None,
+        bst_node_blocks=(9, 2),
+        diagnostics=(),
+        dispatcher=None,
+        mba="mba-view",
+    )
+
+    assert dag[0] is flow_graph
+    assert dag[1] is transition_result
+    assert seen_live_dag_kwargs["handler_range_map"] == {}
+    assert seen_live_dag_kwargs["bst_node_blocks"] == (2, 9)
+    assert seen_live_dag_kwargs["mba"] == "mba-view"
+
+
+def test_lfg_planning_callbacks_use_projected_topology_backend(monkeypatch):
+    backend = _FakeProjectedTopologyBackend()
+    monkeypatch.setattr(
+        lfg_module.LinearizedFlowGraphStrategy,
+        "_projected_topology_backend",
+        backend,
+    )
+
+    def fake_round_summary(**kwargs):
+        dag = kwargs["build_live_dag"](
+            kwargs["current_flow_graph"],
+            kwargs["transition_result"],
+            dispatcher_entry_serial=kwargs["dispatcher_serial"],
+            state_var_stkoff=kwargs["state_var_stkoff"],
+            pre_header_serial=kwargs["pre_header_serial"],
+            initial_state=kwargs["initial_state"],
+            handler_range_map=kwargs["handler_range_map"],
+            bst_node_blocks=kwargs["bst_node_blocks"],
+            diagnostics=kwargs["diagnostics"],
+            dispatcher=kwargs["dispatcher"],
+            mba=kwargs["mba"],
+            prefer_local_corridors=True,
+        )
+        return _empty_resolved_round_summary(dag)
+
+    monkeypatch.setattr(
+        lfg_module,
+        "build_linearized_dag_round_summary",
+        fake_round_summary,
+    )
+
+    strategy = lfg_module.LinearizedFlowGraphStrategy()
+    snapshot = SimpleNamespace(bst_dispatcher_serial=2, discovery=None)
+    state_machine = SimpleNamespace(initial_state=0x6107F8EC, handlers={})
+    transition_result = SimpleNamespace()
+    flow_graph = SimpleNamespace(blocks={})
+    setup = lfg_module.LinearizedFlowGraphPlanSetup(
+        builder=object(),
+        state_var_stkoff=0x7BC,
+        dispatcher=None,
+        blocked_sources=frozenset(),
+        dispatcher_region=frozenset({2}),
+        bst_node_blocks=frozenset({2}),
+        original_blocks=frozenset(),
+        transition_result=transition_result,
+        pre_header_serial=None,
+        projectable=True,
+        round_limit=3,
+    )
+    callbacks = strategy._build_planning_callbacks(
+        snapshot=snapshot,
+        state_machine=state_machine,
+        bst_result=SimpleNamespace(
+            handler_range_map={},
+            diagnostics=(),
+            dispatcher=None,
+        ),
+        mba=object(),
+        dag_setup=setup,
+    )
+
+    projected_mba = callbacks.build_projected_mba(flow_graph)
+    projected_flow_graph = callbacks.project_flow_graph(flow_graph, ("mod",))
+    round_summary = callbacks.build_round_summary(flow_graph, projected_mba)
+
+    assert projected_mba.projected_from is flow_graph
+    assert projected_flow_graph.projected_base is flow_graph
+    assert projected_flow_graph.projected_modifications == ("mod",)
+    assert round_summary.dag.nodes == ()
+    assert backend.projected_mba_calls == [flow_graph]
+    assert backend.project_flow_graph_calls == [(flow_graph, ("mod",))]
+    assert len(backend.live_dag_calls) == 1
+    live_flow_graph, live_transition_result, live_kwargs = backend.live_dag_calls[0]
+    assert live_flow_graph is flow_graph
+    assert live_transition_result is transition_result
+    assert live_kwargs["dispatcher_entry_serial"] == 2
+    assert live_kwargs["state_var_stkoff"] == 0x7BC
+    assert live_kwargs["mba"] is projected_mba
 
 
 def test_collect_structured_region_zero_state_write_modifications_emits_path_tail_cleanup(monkeypatch):
@@ -341,6 +856,68 @@ def test_collect_trivial_redirect_tail_zero_state_write_modifications_skips_nont
     )
 
     assert mods == ()
+
+
+def test_filter_lfg_use_def_vetoes_uses_backend_and_drops_real_violations():
+    first = RedirectGoto(from_serial=16, old_target=2, new_target=66)
+    second = RedirectGoto(from_serial=17, old_target=2, new_target=202)
+    cleanup = ZeroStateWrite(block_serial=17, insn_ea=0x180012EEC)
+
+    class FakeUseDefBackend:
+        def __init__(self):
+            self.calls = []
+
+        def redirect_use_def_violations(self, modification, live_function, pre_cfg):
+            self.calls.append((modification, live_function, pre_cfg))
+            if modification is first:
+                return (SimpleNamespace(var_stkoff=0x40, use_block=81),)
+            if modification is second:
+                return (SimpleNamespace(var_stkoff=0x7BC, use_block=82),)
+            return ()
+
+    backend = FakeUseDefBackend()
+    mba = object()
+    flow_graph = object()
+
+    filtered = _filter_lfg_use_def_vetoes(
+        (first, second, cleanup),
+        enabled=True,
+        mba=mba,
+        flow_graph=flow_graph,
+        state_var_stkoff=0x7BC,
+        backend=backend,
+    )
+
+    assert filtered == (second, cleanup)
+    assert backend.calls == [
+        (first, mba, flow_graph),
+        (second, mba, flow_graph),
+    ]
+
+
+def test_filter_lfg_use_def_vetoes_skips_backend_when_disabled():
+    redirect = RedirectGoto(from_serial=16, old_target=2, new_target=66)
+
+    class FailingBackend:
+        def redirect_use_def_violations(self, modification, live_function, pre_cfg):
+            raise AssertionError("backend should not be called")
+
+    assert _filter_lfg_use_def_vetoes(
+        (redirect,),
+        enabled=False,
+        mba=object(),
+        flow_graph=object(),
+        state_var_stkoff=0x7BC,
+        backend=FailingBackend(),
+    ) == (redirect,)
+    assert _filter_lfg_use_def_vetoes(
+        (redirect,),
+        enabled=True,
+        mba=None,
+        flow_graph=object(),
+        state_var_stkoff=0x7BC,
+        backend=FailingBackend(),
+    ) == (redirect,)
 
 
 def test_filter_unsafe_preferred_region_lowering_rejects_conditional_arm_when_write_horizon_is_later(

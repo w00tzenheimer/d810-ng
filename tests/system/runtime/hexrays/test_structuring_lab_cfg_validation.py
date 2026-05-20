@@ -176,6 +176,67 @@ CONDITIONAL_SHELL_BODY_OPCODE_SIGNATURES = {
     "0x84": [55],
     "0x86": [55],
 }
+BADWHILE_TRIANGLE_CASES = {
+    "badwhile_direct_triangle_case": {
+        "function": "hexrays_lab_badwhile_direct_triangle_case_asm",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "badwhile_direct_triangle_case.json"
+        ),
+        "variant": "direct",
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "shape": "father -> dispatcher -> case_cond and father -> case_cond",
+            "edge_predicates": [
+                "father has direct successors dispatcher and case_cond",
+                "dispatcher has case_cond as a direct successor",
+                "case_cond has BLT_2WAY type with nsucc == 2",
+                "case_cond direct predecessors include father and dispatcher",
+                "father -> case_cond is a direct edge with no one-way trampoline",
+            ],
+        },
+    },
+    "badwhile_trampoline_triangle_case": {
+        "function": "hexrays_lab_badwhile_trampoline_triangle_case_asm",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "badwhile_trampoline_triangle_case.json"
+        ),
+        "variant": "trampoline",
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "shape": "father -> tri_trampoline -> case_cond and father -> dispatcher -> case_cond",
+            "edge_predicates": [
+                "father has direct successors dispatcher and tri_trampoline",
+                "tri_trampoline has nsucc == 1 and reaches case_cond",
+                "tri_trampoline is minimal/goto-like",
+                "dispatcher has case_cond as a direct successor",
+                "case_cond has BLT_2WAY type with nsucc == 2",
+                "case_cond does not list father as a direct predecessor",
+            ],
+        },
+    },
+    "badwhile_duplicate_group_triangle": {
+        "function": "hexrays_lab_badwhile_duplicate_group_triangle_asm",
+        "output_json": (
+            ".tmp/hexrays_structuring_lab/cfg_validation/"
+            "badwhile_duplicate_group_triangle.json"
+        ),
+        "variant": "duplicate_group",
+        "expected": {
+            "accepted_maturity": EXPECTED_MATURITY,
+            "shape": "pred_a/pred_b -> shared -> dispatcher -> case_cond with direct pred_a/pred_b -> case_cond edges",
+            "edge_predicates": [
+                "shared has exactly two direct predecessors",
+                "pred_a and pred_b both have direct successors shared and case_cond",
+                "shared has dispatcher as its only direct successor",
+                "dispatcher has case_cond as a direct successor",
+                "case_cond has BLT_2WAY type with nsucc == 2",
+                "case_cond direct predecessors include pred_a, pred_b, and dispatcher",
+            ],
+        },
+    },
+}
 TERMINAL_TAIL_REF_EXPECTED_BLOCK_COUNT = 22
 TERMINAL_TAIL_REF_GUARD_RELATIVE_STARTS = [
     "0x0",
@@ -539,6 +600,13 @@ CASE_DEFAULTS = {
         "output_json": CONDITIONAL_SHELL_OUTPUT_JSON,
     },
 }
+CASE_DEFAULTS.update({
+    case_id: {
+        "function": case["function"],
+        "output_json": case["output_json"],
+    }
+    for case_id, case in BADWHILE_TRIANGLE_CASES.items()
+})
 CASE_DEFAULTS.update({
     case_id: {
         "function": case["function"],
@@ -1028,6 +1096,376 @@ def _conditional_shell_signature(
         for block in shell_succ_blocks
     ]
     return signature
+
+
+def _blocks_by_serial(
+    blocks: list[dict[str, object]],
+) -> dict[int, dict[str, object]]:
+    return {
+        int(block["serial"]): block for block in blocks
+    }
+
+
+def _successor_blocks(
+    block: dict[str, object],
+    blocks_by_serial: dict[int, dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        blocks_by_serial[int(serial)]
+        for serial in block["succs"]
+        if int(serial) in blocks_by_serial
+    ]
+
+
+def _predecessor_blocks(
+    block: dict[str, object],
+    blocks_by_serial: dict[int, dict[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        blocks_by_serial[int(serial)]
+        for serial in block["preds"]
+        if int(serial) in blocks_by_serial
+    ]
+
+
+def _has_successor(
+    block: dict[str, object],
+    target: dict[str, object],
+) -> bool:
+    return int(target["serial"]) in [int(serial) for serial in block["succs"]]
+
+
+def _is_conditional_case_block(block: dict[str, object]) -> bool:
+    return block["type"] == "BLT_2WAY" and block["nsucc"] == 2
+
+
+def _is_minimal_goto_like_one_way(block: dict[str, object]) -> bool:
+    return (
+        block["type"] == "BLT_1WAY"
+        and block["nsucc"] == 1
+        and not block["call_targets"]
+        and (
+            block["instruction_count"] == 0
+            or block["instruction_opcodes"] in ([], [55])
+        )
+    )
+
+
+def _relative_start_list(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> list[str | None]:
+    return [
+        _relative_ea(block["start_ea"], func_ea)
+        for block in blocks
+    ]
+
+
+def _badwhile_role_fields(
+    role: str,
+    block: dict[str, object],
+    *,
+    blocks_by_serial: dict[int, dict[str, object]],
+    func_ea: int,
+) -> dict[str, object]:
+    pred_blocks = _predecessor_blocks(block, blocks_by_serial)
+    succ_blocks = _successor_blocks(block, blocks_by_serial)
+    return {
+        role: block,
+        f"{role}_serial": block["serial"],
+        f"{role}_relative_start_ea": _relative_ea(
+            block["start_ea"],
+            func_ea,
+        ),
+        f"{role}_pred_relative_start_eas": _relative_start_list(
+            pred_blocks,
+            func_ea=func_ea,
+        ),
+        f"{role}_succ_relative_start_eas": _relative_start_list(
+            succ_blocks,
+            func_ea=func_ea,
+        ),
+    }
+
+
+def _badwhile_base_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+    variant: str,
+    roles: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    blocks_by_serial = _blocks_by_serial(blocks)
+    body_blocks = [
+        block for block in blocks
+        if block["instruction_count"] != 0
+    ]
+    signature: dict[str, object] = {
+        "variant": variant,
+        "block_count": len(blocks),
+        "body_relative_start_eas": _relative_start_list(
+            body_blocks,
+            func_ea=func_ea,
+        ),
+        "body_opcode_signatures_by_relative_start": {
+            str(_relative_ea(block["start_ea"], func_ea)): block[
+                "instruction_opcodes"
+            ]
+            for block in body_blocks
+        },
+        "body_opcode_names_by_relative_start": {
+            str(_relative_ea(block["start_ea"], func_ea)): block[
+                "instruction_opcode_names"
+            ]
+            for block in body_blocks
+        },
+        "blocks": blocks,
+    }
+    for role, block in roles.items():
+        signature.update(_badwhile_role_fields(
+            role,
+            block,
+            blocks_by_serial=blocks_by_serial,
+            func_ea=func_ea,
+        ))
+    return signature
+
+
+def _one_way_intermediates_between(
+    source: dict[str, object],
+    target: dict[str, object],
+    *,
+    blocks_by_serial: dict[int, dict[str, object]],
+    func_ea: int,
+) -> list[dict[str, object]]:
+    target_serial = int(target["serial"])
+    intermediates = []
+    for succ in _successor_blocks(source, blocks_by_serial):
+        if int(succ["serial"]) == target_serial:
+            continue
+        if (
+            succ["type"] == "BLT_1WAY"
+            and succ["nsucc"] == 1
+            and int(succ["succs"][0]) == target_serial
+        ):
+            intermediates.append({
+                "serial": succ["serial"],
+                "relative_start_ea": _relative_ea(
+                    succ["start_ea"],
+                    func_ea,
+                ),
+                "instruction_opcodes": succ["instruction_opcodes"],
+            })
+    return intermediates
+
+
+def _badwhile_direct_triangle_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    blocks_by_serial = _blocks_by_serial(blocks)
+    for case_cond in blocks:
+        if not _is_conditional_case_block(case_cond):
+            continue
+        case_pred_blocks = _predecessor_blocks(case_cond, blocks_by_serial)
+        for father in case_pred_blocks:
+            if (
+                father["type"] != "BLT_2WAY"
+                or father["nsucc"] != 2
+                or not _has_successor(father, case_cond)
+            ):
+                continue
+            for dispatcher in _successor_blocks(father, blocks_by_serial):
+                if int(dispatcher["serial"]) == int(case_cond["serial"]):
+                    continue
+                if (
+                    dispatcher["type"] != "BLT_2WAY"
+                    or dispatcher["nsucc"] != 2
+                    or not _has_successor(dispatcher, case_cond)
+                    or int(dispatcher["serial"]) not in case_cond["preds"]
+                ):
+                    continue
+                if sorted(int(serial) for serial in case_cond["preds"]) != sorted([
+                    int(father["serial"]),
+                    int(dispatcher["serial"]),
+                ]):
+                    continue
+                signature = _badwhile_base_signature(
+                    blocks,
+                    func_ea=func_ea,
+                    variant="direct",
+                    roles={
+                        "father": father,
+                        "dispatcher": dispatcher,
+                        "case_cond": case_cond,
+                    },
+                )
+                signature["father_to_case_intermediate_one_way_blocks"] = (
+                    _one_way_intermediates_between(
+                        father,
+                        case_cond,
+                        blocks_by_serial=blocks_by_serial,
+                        func_ea=func_ea,
+                    )
+                )
+                return signature
+    return None
+
+
+def _badwhile_trampoline_triangle_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    blocks_by_serial = _blocks_by_serial(blocks)
+    for case_cond in blocks:
+        if not _is_conditional_case_block(case_cond):
+            continue
+        case_pred_blocks = _predecessor_blocks(case_cond, blocks_by_serial)
+        for trampoline in case_pred_blocks:
+            if (
+                not _is_minimal_goto_like_one_way(trampoline)
+                or not _has_successor(trampoline, case_cond)
+            ):
+                continue
+            trampoline_pred_blocks = _predecessor_blocks(
+                trampoline,
+                blocks_by_serial,
+            )
+            if len(trampoline_pred_blocks) != 1:
+                continue
+            father = trampoline_pred_blocks[0]
+            if (
+                father["type"] != "BLT_2WAY"
+                or father["nsucc"] != 2
+                or int(father["serial"]) in case_cond["preds"]
+                or not _has_successor(father, trampoline)
+            ):
+                continue
+            for dispatcher in case_pred_blocks:
+                if int(dispatcher["serial"]) == int(trampoline["serial"]):
+                    continue
+                if (
+                    dispatcher["type"] != "BLT_2WAY"
+                    or dispatcher["nsucc"] != 2
+                    or not _has_successor(father, dispatcher)
+                    or not _has_successor(dispatcher, case_cond)
+                ):
+                    continue
+                if sorted(int(serial) for serial in case_cond["preds"]) != sorted([
+                    int(trampoline["serial"]),
+                    int(dispatcher["serial"]),
+                ]):
+                    continue
+                signature = _badwhile_base_signature(
+                    blocks,
+                    func_ea=func_ea,
+                    variant="trampoline",
+                    roles={
+                        "father": father,
+                        "trampoline": trampoline,
+                        "dispatcher": dispatcher,
+                        "case_cond": case_cond,
+                    },
+                )
+                signature["case_cond_has_father_direct_pred"] = (
+                    int(father["serial"]) in case_cond["preds"]
+                )
+                signature["trampoline_is_minimal_goto_like"] = (
+                    _is_minimal_goto_like_one_way(trampoline)
+                )
+                return signature
+    return None
+
+
+def _badwhile_duplicate_group_triangle_signature(
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    blocks_by_serial = _blocks_by_serial(blocks)
+    for case_cond in blocks:
+        if not _is_conditional_case_block(case_cond):
+            continue
+        case_pred_blocks = _predecessor_blocks(case_cond, blocks_by_serial)
+        for dispatcher in case_pred_blocks:
+            if (
+                dispatcher["type"] != "BLT_2WAY"
+                or dispatcher["nsucc"] != 2
+                or not _has_successor(dispatcher, case_cond)
+            ):
+                continue
+            for shared in _predecessor_blocks(dispatcher, blocks_by_serial):
+                if (
+                    shared["type"] != "BLT_1WAY"
+                    or shared["npred"] != 2
+                    or shared["nsucc"] != 1
+                    or not _has_successor(shared, dispatcher)
+                ):
+                    continue
+                pred_blocks = _predecessor_blocks(shared, blocks_by_serial)
+                if len(pred_blocks) != 2:
+                    continue
+                if not all(
+                    pred["type"] == "BLT_2WAY"
+                    and pred["nsucc"] == 2
+                    and _has_successor(pred, shared)
+                    and _has_successor(pred, case_cond)
+                    for pred in pred_blocks
+                ):
+                    continue
+                expected_case_preds = sorted(
+                    [int(dispatcher["serial"])]
+                    + [int(pred["serial"]) for pred in pred_blocks]
+                )
+                if (
+                    sorted(int(serial) for serial in case_cond["preds"])
+                    != expected_case_preds
+                ):
+                    continue
+                pred_blocks = sorted(
+                    pred_blocks,
+                    key=lambda block: int(block["serial"]),
+                )
+                signature = _badwhile_base_signature(
+                    blocks,
+                    func_ea=func_ea,
+                    variant="duplicate_group",
+                    roles={
+                        "pred_a": pred_blocks[0],
+                        "pred_b": pred_blocks[1],
+                        "shared": shared,
+                        "dispatcher": dispatcher,
+                        "case_cond": case_cond,
+                    },
+                )
+                signature["duplicate_pred_relative_start_eas"] = [
+                    signature["pred_a_relative_start_ea"],
+                    signature["pred_b_relative_start_ea"],
+                ]
+                return signature
+    return None
+
+
+def _badwhile_triangle_signature(
+    case_id: str,
+    blocks: list[dict[str, object]],
+    *,
+    func_ea: int,
+) -> dict[str, object] | None:
+    variant = BADWHILE_TRIANGLE_CASES[case_id]["variant"]
+    if variant == "direct":
+        return _badwhile_direct_triangle_signature(blocks, func_ea=func_ea)
+    if variant == "trampoline":
+        return _badwhile_trampoline_triangle_signature(blocks, func_ea=func_ea)
+    if variant == "duplicate_group":
+        return _badwhile_duplicate_group_triangle_signature(
+            blocks,
+            func_ea=func_ea,
+        )
+    raise AssertionError(f"unknown BadWhileLoop triangle variant: {variant}")
 
 
 def _terminal_tail_candidate_signature(
@@ -1692,7 +2130,172 @@ def _matches_conditional_shell_fixture(
     )
 
 
+def _matches_badwhile_direct_triangle_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    father = signature["father"]
+    dispatcher = signature["dispatcher"]
+    case_cond = signature["case_cond"]
+    assert isinstance(father, dict)
+    assert isinstance(dispatcher, dict)
+    assert isinstance(case_cond, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == signature["block_count"]
+        and father["type"] == "BLT_2WAY"
+        and father["nsucc"] == 2
+        and sorted(int(serial) for serial in father["succs"])
+        == sorted([
+            int(dispatcher["serial"]),
+            int(case_cond["serial"]),
+        ])
+        and dispatcher["type"] == "BLT_2WAY"
+        and dispatcher["nsucc"] == 2
+        and int(case_cond["serial"]) in dispatcher["succs"]
+        and case_cond["type"] == "BLT_2WAY"
+        and case_cond["nsucc"] == 2
+        and sorted(int(serial) for serial in case_cond["preds"])
+        == sorted([
+            int(father["serial"]),
+            int(dispatcher["serial"]),
+        ])
+        and signature["father_to_case_intermediate_one_way_blocks"] == []
+    )
+
+
+def _matches_badwhile_trampoline_triangle_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    father = signature["father"]
+    trampoline = signature["trampoline"]
+    dispatcher = signature["dispatcher"]
+    case_cond = signature["case_cond"]
+    assert isinstance(father, dict)
+    assert isinstance(trampoline, dict)
+    assert isinstance(dispatcher, dict)
+    assert isinstance(case_cond, dict)
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == signature["block_count"]
+        and father["type"] == "BLT_2WAY"
+        and father["nsucc"] == 2
+        and sorted(int(serial) for serial in father["succs"])
+        == sorted([
+            int(trampoline["serial"]),
+            int(dispatcher["serial"]),
+        ])
+        and trampoline["type"] == "BLT_1WAY"
+        and trampoline["nsucc"] == 1
+        and int(trampoline["succs"][0]) == int(case_cond["serial"])
+        and signature["trampoline_is_minimal_goto_like"] is True
+        and dispatcher["type"] == "BLT_2WAY"
+        and dispatcher["nsucc"] == 2
+        and int(case_cond["serial"]) in dispatcher["succs"]
+        and case_cond["type"] == "BLT_2WAY"
+        and case_cond["nsucc"] == 2
+        and sorted(int(serial) for serial in case_cond["preds"])
+        == sorted([
+            int(trampoline["serial"]),
+            int(dispatcher["serial"]),
+        ])
+        and signature["case_cond_has_father_direct_pred"] is False
+    )
+
+
+def _matches_badwhile_duplicate_group_triangle_fixture(
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    if signature is None:
+        return False
+    pred_a = signature["pred_a"]
+    pred_b = signature["pred_b"]
+    shared = signature["shared"]
+    dispatcher = signature["dispatcher"]
+    case_cond = signature["case_cond"]
+    assert isinstance(pred_a, dict)
+    assert isinstance(pred_b, dict)
+    assert isinstance(shared, dict)
+    assert isinstance(dispatcher, dict)
+    assert isinstance(case_cond, dict)
+    pred_serials = [int(pred_a["serial"]), int(pred_b["serial"])]
+    return (
+        maturity_name == EXPECTED_MATURITY
+        and block_count == signature["block_count"]
+        and all(
+            pred["type"] == "BLT_2WAY"
+            and pred["nsucc"] == 2
+            and sorted(int(serial) for serial in pred["succs"])
+            == sorted([
+                int(shared["serial"]),
+                int(case_cond["serial"]),
+            ])
+            for pred in (pred_a, pred_b)
+        )
+        and shared["type"] == "BLT_1WAY"
+        and shared["npred"] == 2
+        and shared["nsucc"] == 1
+        and sorted(int(serial) for serial in shared["preds"])
+        == sorted(pred_serials)
+        and int(shared["succs"][0]) == int(dispatcher["serial"])
+        and dispatcher["type"] == "BLT_2WAY"
+        and dispatcher["nsucc"] == 2
+        and int(case_cond["serial"]) in dispatcher["succs"]
+        and case_cond["type"] == "BLT_2WAY"
+        and case_cond["nsucc"] == 2
+        and sorted(int(serial) for serial in case_cond["preds"])
+        == sorted(pred_serials + [int(dispatcher["serial"])])
+    )
+
+
+def _matches_badwhile_triangle_fixture(
+    case_id: str,
+    signature: dict[str, object] | None,
+    *,
+    block_count: int,
+    maturity_name: str,
+) -> bool:
+    variant = BADWHILE_TRIANGLE_CASES[case_id]["variant"]
+    if variant == "direct":
+        return _matches_badwhile_direct_triangle_fixture(
+            signature,
+            block_count=block_count,
+            maturity_name=maturity_name,
+        )
+    if variant == "trampoline":
+        return _matches_badwhile_trampoline_triangle_fixture(
+            signature,
+            block_count=block_count,
+            maturity_name=maturity_name,
+        )
+    if variant == "duplicate_group":
+        return _matches_badwhile_duplicate_group_triangle_fixture(
+            signature,
+            block_count=block_count,
+            maturity_name=maturity_name,
+        )
+    raise AssertionError(f"unknown BadWhileLoop triangle variant: {variant}")
+
+
 def _case_expected(case_id: str) -> dict[str, object]:
+    badwhile_case = BADWHILE_TRIANGLE_CASES.get(case_id)
+    if badwhile_case is not None:
+        expected = badwhile_case["expected"]
+        assert isinstance(expected, dict)
+        return expected
+
     terminal_tail_case = TERMINAL_TAIL_CASES.get(case_id)
     if terminal_tail_case is not None:
         expected = terminal_tail_case["expected"]
@@ -1956,6 +2559,22 @@ def _case_match(
         signature = _conditional_shell_signature(blocks, func_ea=func_ea)
         candidates = [signature] if signature is not None else []
         if _matches_conditional_shell_fixture(
+            signature,
+            block_count=int(mba.qty),
+            maturity_name=maturity_name,
+        ):
+            return signature, candidates
+        return None, candidates
+
+    if case_id in BADWHILE_TRIANGLE_CASES:
+        signature = _badwhile_triangle_signature(
+            case_id,
+            blocks,
+            func_ea=func_ea,
+        )
+        candidates = [signature] if signature is not None else []
+        if _matches_badwhile_triangle_fixture(
+            case_id,
             signature,
             block_count=int(mba.qty),
             maturity_name=maturity_name,
@@ -2279,3 +2898,43 @@ class TestHexraysStructuringLabCfgValidation:
                 assert len(guards) == 6
                 assert [guard["type"] for guard in guards] == ["BLT_2WAY"] * 6
                 assert return_epilogue["npred"] == 7
+        elif case_id in BADWHILE_TRIANGLE_CASES:
+            signature = observed["accepted_signature"]
+            assert isinstance(signature, dict)
+            case_cond = signature["case_cond"]
+            dispatcher = signature["dispatcher"]
+            assert isinstance(case_cond, dict)
+            assert isinstance(dispatcher, dict)
+            assert case_cond["type"] == "BLT_2WAY"
+            assert case_cond["nsucc"] == 2
+            assert int(case_cond["serial"]) in dispatcher["succs"]
+            variant = BADWHILE_TRIANGLE_CASES[case_id]["variant"]
+            if variant == "direct":
+                father = signature["father"]
+                assert isinstance(father, dict)
+                assert int(case_cond["serial"]) in father["succs"]
+                assert signature[
+                    "father_to_case_intermediate_one_way_blocks"
+                ] == []
+            if variant == "trampoline":
+                father = signature["father"]
+                trampoline = signature["trampoline"]
+                assert isinstance(father, dict)
+                assert isinstance(trampoline, dict)
+                assert int(case_cond["serial"]) not in father["succs"]
+                assert int(trampoline["serial"]) in father["succs"]
+                assert trampoline["nsucc"] == 1
+                assert int(trampoline["succs"][0]) == int(case_cond["serial"])
+                assert signature["case_cond_has_father_direct_pred"] is False
+                assert signature["trampoline_is_minimal_goto_like"] is True
+            if variant == "duplicate_group":
+                pred_a = signature["pred_a"]
+                pred_b = signature["pred_b"]
+                shared = signature["shared"]
+                assert isinstance(pred_a, dict)
+                assert isinstance(pred_b, dict)
+                assert isinstance(shared, dict)
+                assert shared["npred"] == 2
+                for pred in (pred_a, pred_b):
+                    assert int(shared["serial"]) in pred["succs"]
+                    assert int(case_cond["serial"]) in pred["succs"]

@@ -8,10 +8,9 @@ the abstract observability interface; recon never imports the backend.
 Event names follow the past-tense ``<thing>Observed`` convention.
 Emit helpers follow the ``observe_<thing>`` convention.
 
-Read-side queries that drive runtime behaviour go through the
-explicitly-documented behaviour bridge in
-:mod:`d810.recon.flow.selected_alternate_edge_override`, not through
-this module.
+Read-side queries that drive runtime behaviour should consume
+in-memory fact views or runtime evidence directly, not diagnostic
+subscribers or SQLite sinks.
 
 See:
     docs/diag-observability-boundary.md
@@ -29,6 +28,7 @@ from d810.core.observability import (
 # The recon facade re-exports the recon-relevant types so call sites
 # don't have to know where they live.
 from d810.core.observability_events import (
+    BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
     BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
     DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
@@ -40,6 +40,9 @@ from d810.core.observability_events import (
     ModificationsObserved as ModificationsObserved,
     ReachabilityObserved as ReachabilityObserved,
     RenderedProgramObserved as RenderedProgramObserved,
+    StateDispatcherRowsObserved as StateDispatcherRowsObserved,
+    StateTransitionDispatchResolutionsObserved as StateTransitionDispatchResolutionsObserved,
+    SwitchCaseTransitionFactsObserved as SwitchCaseTransitionFactsObserved,
 )
 from d810.core.observability_models import (
     DagEdge as DagEdge,
@@ -98,6 +101,60 @@ def observe_bst_interval_dispatcher(
             int(dispatcher_entry_block)
             if dispatcher_entry_block is not None else None
         ),
+        rows=tuple(rows),
+    ))
+
+
+def observe_state_dispatcher_rows(
+    *,
+    func_ea: int,
+    maturity: str,
+    dispatcher_entry_block: int | None,
+    dispatcher_kind: str,
+    rows,
+) -> None:
+    """Publish exact state-dispatcher rows."""
+    _emit(StateDispatcherRowsObserved(
+        func_ea=int(func_ea),
+        maturity=str(maturity),
+        dispatcher_entry_block=(
+            int(dispatcher_entry_block)
+            if dispatcher_entry_block is not None else None
+        ),
+        dispatcher_kind=str(dispatcher_kind),
+        rows=tuple(rows),
+    ))
+
+
+def observe_state_transition_dispatch_resolutions(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish exact state-dispatcher transition resolution rows."""
+    _emit(StateTransitionDispatchResolutionsObserved(
+        snapshot=snapshot,
+        rows=tuple(rows),
+    ))
+
+
+def observe_switch_case_transition_facts(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish switch-table case transition facts."""
+    _emit(SwitchCaseTransitionFactsObserved(
+        snapshot=snapshot,
+        rows=tuple(rows),
+    ))
+
+
+def observe_branch_ownership_proofs(
+    snapshot: SnapshotRef,
+    rows,
+) -> None:
+    """Publish conditional branch ownership proof rows."""
+    _emit(BranchOwnershipProofsObserved(
+        snapshot=snapshot,
         rows=tuple(rows),
     ))
 
@@ -217,6 +274,10 @@ def diagnostics_enabled() -> bool:
             ModificationsObserved,
             RenderedProgramObserved,
             ReachabilityObserved,
+            StateDispatcherRowsObserved,
+            StateTransitionDispatchResolutionsObserved,
+            SwitchCaseTransitionFactsObserved,
+            BranchOwnershipProofsObserved,
         )
     )
 
@@ -224,6 +285,7 @@ def diagnostics_enabled() -> bool:
 __all__ = [
     # Event dataclasses
     "BstIntervalDispatcherObserved",
+    "BranchOwnershipProofsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
@@ -234,6 +296,9 @@ __all__ = [
     "ModificationsObserved",
     "ReachabilityObserved",
     "RenderedProgramObserved",
+    "StateDispatcherRowsObserved",
+    "StateTransitionDispatchResolutionsObserved",
+    "SwitchCaseTransitionFactsObserved",
     # Neutral model types (kept here for backward compatibility)
     "DagEdge",
     "DagNode",
@@ -243,6 +308,10 @@ __all__ = [
     "diagnostics_enabled",
     "observe_dag",
     "observe_bst_interval_dispatcher",
+    "observe_state_dispatcher_rows",
+    "observe_state_transition_dispatch_resolutions",
+    "observe_switch_case_transition_facts",
+    "observe_branch_ownership_proofs",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",

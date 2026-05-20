@@ -8,9 +8,18 @@ import os
 import sqlite3
 from unittest.mock import patch
 
+import pytest
+
 from d810.cfg.state_dag_key import StateDagNodeKey
 from d810.core.diag.schema import create_tables
 from d810.core.observability import SnapshotRef
+from d810.core.settings import reset_settings
+from d810.recon.facts.model import (
+    FactMapping,
+    FactObservation,
+    FactStatus,
+    ValidatedFactView,
+)
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
@@ -21,6 +30,9 @@ from d810.recon.flow.linearized_state_dag import (
     StateRedirectAnchor,
 )
 from d810.recon.flow.selected_alternate_edge_override import (
+    apply_selected_alternate_edge_overrides,
+)
+from d810.diagnostics.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides_from_diag,
 )
 
@@ -32,6 +44,14 @@ _TEST_SNAP = SnapshotRef(
     maturity="MMAT_GLBOPT1",
     phase="pre_d810",
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("D810_FACT_LIFECYCLE", raising=False)
+    reset_settings()
+    yield
+    reset_settings()
 
 
 @contextlib.contextmanager
@@ -56,6 +76,8 @@ def _make_node(
     entry: int,
     label: str | None = None,
     kind: StateNodeKind = StateNodeKind.EXACT,
+    owned_blocks: tuple[int, ...] = (),
+    shared_suffix_blocks: tuple[int, ...] = (),
 ) -> StateDagNode:
     return StateDagNode(
         key=StateDagNodeKey(
@@ -65,9 +87,9 @@ def _make_node(
         state_label=label or f"STATE_{state_const:08X}",
         handler_serial=entry,
         entry_anchor=entry,
-        owned_blocks=(),
+        owned_blocks=owned_blocks,
         exclusive_blocks=(),
-        shared_suffix_blocks=(),
+        shared_suffix_blocks=shared_suffix_blocks,
         local_segments=(),
         local_edges=(),
     )
@@ -253,16 +275,19 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
 
 def _make_byte5_dag() -> LinearizedStateDag:
     nodes = (
-        _make_node(state_const=0x385BBE2D, entry=100),
-        _make_node(state_const=0x63D54755, entry=21),
+        _make_node(state_const=0x385BBE2D, entry=100, owned_blocks=(100,)),
+        _make_node(state_const=0x63D54755, entry=21, owned_blocks=(21,)),
         _make_node(
             state_const=0x3873BC53, entry=101,
             kind=StateNodeKind.RANGE_BACKED,
+            owned_blocks=(101, 102, 103, 104),
+            shared_suffix_blocks=(100,),
         ),
-        _make_node(state_const=0x10743C4C, entry=158),
+        _make_node(state_const=0x10743C4C, entry=158, owned_blocks=(158,)),
         _make_node(
             state_const=0x6107F8EC, entry=15,
             kind=StateNodeKind.RANGE_BACKED,
+            owned_blocks=(217,),
         ),
     )
     edges = (
@@ -271,19 +296,118 @@ def _make_byte5_dag() -> LinearizedStateDag:
             tgt_state=0x63D54755, tgt_entry=21,
             source_block=100,
         ),
+        _make_edge(
+            src_state=0x3873BC53, src_entry=101,
+            tgt_state=0x10743C4C, tgt_entry=158,
+            source_block=101,
+        ),
+        _make_edge(
+            src_state=0x10743C4C, src_entry=158,
+            tgt_state=0x6107F8EC, tgt_entry=15,
+            source_block=158,
+        ),
     )
     return _make_dag(nodes, edges)
 
 
-def test_no_op_when_env_disabled() -> None:
+def _make_byte5_fact_view() -> ValidatedFactView:
+    observations = (
+        FactObservation(
+            fact_id="byte5",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte5",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=0.9,
+            source_block=101,
+            payload={
+                "destination_block": 101,
+                "block_serial": 101,
+                "byte_index": 5,
+                "corridor_role": "terminal_tail",
+            },
+        ),
+        FactObservation(
+            fact_id="byte6",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte6",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=0.9,
+            source_block=217,
+            payload={
+                "destination_block": 217,
+                "block_serial": 217,
+                "byte_index": 6,
+                "corridor_role": "terminal_tail",
+            },
+        ),
+    )
+    mappings = (
+        FactMapping(
+            source_fact_id="anchor:100",
+            source_maturity="MMAT_LOCOPT",
+            target_maturity="MMAT_GLBOPT1",
+            status=FactStatus.STATE_CONST_REWRITTEN,
+            confidence=0.9,
+            payload={
+                "block_serial": 100,
+                "original_const_hex": "0x000000005a21d9db",
+                "rewritten_const_hex": "0x0000000063d54755",
+                "from_maturity": "MMAT_LOCOPT",
+                "to_maturity": "MMAT_GLBOPT1",
+            },
+        ),
+        FactMapping(
+            source_fact_id="anchor:21",
+            source_maturity="MMAT_LOCOPT",
+            target_maturity="MMAT_GLBOPT1",
+            status=FactStatus.STATE_CONST_REWRITTEN,
+            confidence=0.9,
+            payload={
+                "block_serial": 21,
+                "original_const_hex": "0x000000004f000000",
+                "rewritten_const_hex": "0x0000000063d54755",
+                "from_maturity": "MMAT_LOCOPT",
+                "to_maturity": "MMAT_GLBOPT1",
+            },
+        ),
+    )
+    return ValidatedFactView(
+        maturity="MMAT_GLBOPT1",
+        observations=observations,
+        mappings=mappings,
+    )
+
+
+def test_no_op_when_setting_disabled() -> None:
     conn = sqlite3.connect(":memory:")
     create_tables(conn)
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
-    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": ""}, clear=False), \
+    with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "0"}, clear=False), \
             _bridge_resolves_to(conn, 1):
+        reset_settings()
         result = apply_selected_alternate_edge_overrides_from_diag(dag, _TEST_SNAP)
     assert result is dag
+
+
+def test_pure_replaces_byte5_collapsed_edge_from_fact_view() -> None:
+    dag = _make_byte5_dag()
+    new_dag = apply_selected_alternate_edge_overrides(
+        dag,
+        _make_byte5_fact_view(),
+    )
+
+    assert new_dag is not dag
+    overridden = [
+        e for e in new_dag.edges
+        if e.source_key.state_const == 0x385BBE2D
+    ]
+    assert len(overridden) == 1
+    edge = overridden[0]
+    assert edge.target_state == 0x6107F8EC
+    assert edge.target_entry_anchor == 15
 
 
 def test_no_op_when_diag_missing() -> None:

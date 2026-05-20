@@ -1,13 +1,13 @@
 # Debug tooling migration
 
 Living index of the **post-hoc diagnostic surface**. The goal is to make
-`tools/cff_debug.py` the single human-facing debug front door while keeping
+`tools/d810cli.py` the single human-facing debug front door while keeping
 real parsing / report logic in `d810.diagnostics` with unit tests.
 
 ## Architecture rule (do not violate)
 
 ```text
-tools/cff_debug.py = workflow orchestration + path/default convenience
+tools/d810cli.py = workflow orchestration + path/default convenience
 d810.diagnostics   = tested diagnostic parsers, DB queries, reports
 d810.core.diag     = capture-time substrate (schema, snapshot writers,
                      mba/cfg provenance serializers, session lifecycle)
@@ -24,19 +24,19 @@ Invocation: `python -m d810.diagnostics ...` (the legacy
 
 ## Command map
 
-| old script / tool | new diag command | new cff_debug wrapper | status |
+| old script / tool | new diag command | new d810cli wrapper | status |
 |-|-|-|-|
-| `tools/scripts/extract_after_pseudocode.py` | `python -m d810.diagnostics dump-after` | `cff_debug.py after` | stubbed; forwards via `execvpe` |
-| `tools/scripts/inspect_hodur_dump.sh` | (none -- bash) | `cff_debug.py inspect` | stubbed; bash forwards to `cff_debug.py inspect --dump $1` |
-| `tools/scripts/inspect_linearized_state_node.py` | `python -m d810.diagnostics inspect-state-node` | `cff_debug.py state` | stubbed; forwards via `execvpe` |
-| HCC byte-cascade tracer log | `python -m d810.diagnostics hcc-byte-cascade-trace` | `cff_debug.py trace` | done (commit `9165c1b3`) |
-| `tools/scripts/terminal_tail_audit.py` | `python -m d810.diagnostics terminal-tail-audit` | `cff_debug.py byte-audit` | stubbed; forwards via `execvpe` |
-| `tools/scripts/gate_audit.py` | `python -m d810.diagnostics gate-audit` | `cff_debug.py gates` | stubbed; forwards via `execvpe` |
-| `tools/scripts/reconcile_dispatcher_redirects.py` | `python -m d810.diagnostics redirect-reconcile` | `cff_debug.py reconcile` | stubbed; forwards via `execvpe` |
-| `tools/scripts/return_family_ledger.py` | `python -m d810.diagnostics return-ledger` | `cff_debug.py returns` | stubbed (failing); legacy CLI does not map cleanly |
-| `tools/scripts/region_oracle.py` | `python -m d810.diagnostics region-diff` (also `region-shape`, `terminal-tail-dce`) | `cff_debug.py oracle` | stubbed; forwards via `execvpe` |
-| `tools/scripts/terminal_tail_cascade_egress_plan.py` | `python -m d810.diagnostics cascade-egress-plan` | `cff_debug.py egress-plan` | stubbed; forwards via `execvpe` |
-| `tools/residual_dispatcher_worksheet.py` | `python -m d810.diagnostics residual-worksheet` | `cff_debug.py residual-worksheet` | stubbed; forwards via `execvpe` |
+| `tools/scripts/extract_after_pseudocode.py` | `python -m d810.diagnostics dump-after` | `d810cli.py after` | stubbed; forwards via `execvpe` |
+| `tools/scripts/inspect_hodur_dump.sh` | (none -- bash) | `d810cli.py inspect` | stubbed; bash forwards to `d810cli.py inspect --dump $1` |
+| `tools/scripts/inspect_linearized_state_node.py` | `python -m d810.diagnostics inspect-state-node` | `d810cli.py state` | stubbed; forwards via `execvpe` |
+| HCC byte-cascade tracer log | `python -m d810.diagnostics hcc-byte-cascade-trace` | `d810cli.py trace` | done (commit `9165c1b3`) |
+| `tools/scripts/terminal_tail_audit.py` | `python -m d810.diagnostics terminal-tail-audit` | `d810cli.py byte-audit` | stubbed; forwards via `execvpe` |
+| `tools/scripts/gate_audit.py` | `python -m d810.diagnostics gate-audit` | `d810cli.py gates` | stubbed; forwards via `execvpe` |
+| `tools/scripts/reconcile_dispatcher_redirects.py` | `python -m d810.diagnostics redirect-reconcile` | `d810cli.py reconcile` | stubbed; forwards via `execvpe` |
+| `tools/scripts/return_family_ledger.py` | `python -m d810.diagnostics return-ledger` | `d810cli.py returns` | stubbed (failing); legacy CLI does not map cleanly |
+| `tools/scripts/region_oracle.py` | `python -m d810.diagnostics region-diff` (also `region-shape`, `terminal-tail-dce`) | `d810cli.py oracle` | stubbed; forwards via `execvpe` |
+| `tools/scripts/terminal_tail_cascade_egress_plan.py` | `python -m d810.diagnostics cascade-egress-plan` | `d810cli.py egress-plan` | stubbed; forwards via `execvpe` |
+| `tools/residual_dispatcher_worksheet.py` | `python -m d810.diagnostics residual-worksheet` | `d810cli.py residual-worksheet` | stubbed; forwards via `execvpe` |
 
 ## Intentionally unmigrated tools
 
@@ -49,7 +49,7 @@ not fit the `d810.diagnostics` (DB / log / parser / report) shape.
 | `tools/reconstruction_contribution.py` | experiment runner | Drives multiple Docker decompile runs with different env gates and compares outputs. Not a query over persisted artifacts. |
 | `tools/sub7ffd_tail_corridor_prover.py` | proof / lab tool | Z3-based tail-corridor invariant prover (and optional Triton). Specialized lab tool, not a generic diagnostic. |
 
-If a `cff_debug.py` orchestration wrapper is ever added for either tool,
+If a `d810cli.py` orchestration wrapper is ever added for either tool,
 it must remain orchestration-only -- no parsing or report logic in
 `d810.diagnostics`.
 
@@ -65,7 +65,7 @@ it must remain orchestration-only -- no parsing or report logic in
 3. Add unit tests under `tests/unit/diagnostics/test_<name>.py`. Use
    synthetic sqlite fixtures or text inputs; do not require a real diag
    DB.
-4. Add a wrapper subcommand in `tools/cff_debug.py` that resolves
+4. Add a wrapper subcommand in `tools/d810cli.py` that resolves
    worktree paths, locates latest dump/log/DB, passes defaults like
    function/project, calls `python -m d810.diagnostics`, and prints
    paths. Wrapper must NOT contain SQL or log parsing.
@@ -81,7 +81,7 @@ it must remain orchestration-only -- no parsing or report logic in
 ## Acceptance criteria per migration
 
 - `python -m d810.diagnostics --help` lists the new subcommand.
-- `./tools/cff_debug.py <wrapper> --help` works.
+- `./tools/d810cli.py <wrapper> --help` works.
 - `tests/unit/diagnostics/test_<name>.py` runs green.
 - Import-linter remains clean.
 - No HCC / unflattening behaviour changes.

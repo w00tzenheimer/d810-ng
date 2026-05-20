@@ -16,9 +16,19 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
     CreateConditionalRedirect,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -28,14 +38,23 @@ from d810.cfg.graph_modification import (
 from d810.cfg.plan import (
     ExecutionPolicy,
     PatchDuplicateBlock,
+    PatchDuplicateReplayEntry,
+    PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    VirtualBlockId,
     compile_patch_plan,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.mutation.ir_translator import (
+    _block_kind_from_hexrays,
+    _insn_kind_from_hexrays,
+    _operand_kind_from_hexrays,
+)
 
 
 _DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
@@ -72,6 +91,17 @@ def _cfg() -> FlowGraph:
     )
 
 
+def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
+    assert _block_kind_from_hexrays(ida_hexrays.BLT_2WAY) == BlockKind.TWO_WAY
+    assert _block_kind_from_hexrays(ida_hexrays.BLT_1WAY) == BlockKind.ONE_WAY
+    assert _insn_kind_from_hexrays(ida_hexrays.m_goto) == InsnKind.GOTO
+    assert _insn_kind_from_hexrays(ida_hexrays.m_jnz) == InsnKind.EQUALITY_JUMP
+    assert _insn_kind_from_hexrays(ida_hexrays.m_jcnd) == InsnKind.COND_JUMP
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_b) == OperandKind.BLOCK
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_n) == OperandKind.NUMBER
+    assert _operand_kind_from_hexrays(ida_hexrays.mop_S) == OperandKind.STACK
+
+
 def _conditional_duplicate_cfg() -> FlowGraph:
     return FlowGraph(
         blocks={
@@ -99,6 +129,25 @@ def _conditional_duplicate_cfg() -> FlowGraph:
         },
         entry_serial=44,
         func_ea=0,
+    )
+
+
+def _captured_body(
+    source_serial: int = 45,
+    *,
+    contains_call: bool = False,
+) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
+    return CapturedBlockBody(
+        backend_id="hexrays.insn_snapshot",
+        capture_id=f"translator-test:{source_serial}",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(source_serial,),
+            instruction_count=len(instructions),
+            source_eas=frozenset(),
+            contains_call=contains_call,
+        ),
+        payload=instructions,
     )
 
 
@@ -315,6 +364,7 @@ class _FakeDeferredGraphModifier:
         ref_blk_serial: int,
         conditional_target_serial: int,
         fallthrough_target_serial: int,
+        old_target_serial: int | None = None,
         instructions_to_copy: tuple[object, ...] | list[object] | None = None,
         expected_conditional_serial: int | None = None,
         expected_fallthrough_serial: int | None = None,
@@ -327,6 +377,7 @@ class _FakeDeferredGraphModifier:
                 ref_blk_serial,
                 conditional_target_serial,
                 fallthrough_target_serial,
+                old_target_serial,
                 tuple(instructions_to_copy or ()),
                 expected_conditional_serial,
                 expected_fallthrough_serial,
@@ -380,6 +431,54 @@ class _FakeDeferredGraphModifier:
                 fallthrough_target,
                 expected_serial,
                 expected_secondary_serial,
+                description,
+            )
+        )
+
+    def queue_duplicate_replay_and_redirect(
+        self,
+        *,
+        source_block_serial: int,
+        dispatcher_entry_serial: int,
+        per_pred_replays: tuple,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "duplicate_replay",
+                source_block_serial,
+                dispatcher_entry_serial,
+                tuple(
+                    (
+                        pred,
+                        target,
+                        replay_serial,
+                        clone_serial,
+                        len(instructions),
+                    )
+                    for pred, target, replay_serial, clone_serial, instructions
+                    in per_pred_replays
+                ),
+                description,
+            )
+        )
+
+    def queue_clone_conditional_as_goto(
+        self,
+        *,
+        source_block_serial: int,
+        pred_serial: int,
+        goto_target_serial: int,
+        expected_serial: int | None = None,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "clone_conditional_as_goto",
+                source_block_serial,
+                pred_serial,
+                goto_target_serial,
+                expected_serial,
                 description,
             )
         )
@@ -724,6 +823,7 @@ class TestIDAIntegration:
                     ref_block=45,
                     conditional_target=199,
                     fallthrough_target=2,
+                    old_target_serial=45,
                     instructions=instructions,
                 )
             ],
@@ -735,7 +835,16 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_conditional"
-        assert created[0].calls[0][1:8] == (44, 45, 201, 2, instructions, 199, 200)
+        assert created[0].calls[0][1:9] == (
+            44,
+            45,
+            201,
+            2,
+            45,
+            instructions,
+            199,
+            200,
+        )
 
     def test_lower_applies_insert_block_patch_plan(
         self,
@@ -814,6 +923,112 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
         assert created[0].calls[0][1:8] == (45, 44, 200, None, None, 199, None)
+
+    def test_lower_applies_duplicate_replay_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                DuplicateReplayAndRedirect(
+                    source_serial=45,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        DuplicateReplayEntry(
+                            pred_serial=44,
+                            target_serial=199,
+                            captured_body=_captured_body(45),
+                        ),
+                        DuplicateReplayEntry(
+                            pred_serial=122,
+                            target_serial=199,
+                            captured_body=_captured_body(45),
+                        ),
+                    ),
+                )
+            ],
+            _cfg(),
+        )
+
+        assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "duplicate_replay"
+        assert created[0].calls[0][1:3] == (45, 2)
+        assert created[0].calls[0][3] == (
+            (44, 202, 199, None, 1),
+            (122, 202, 200, 201, 1),
+        )
+
+    def test_lower_rejects_call_captured_duplicate_replay_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = PatchPlan(
+            steps=(
+                PatchDuplicateReplayAndRedirect(
+                    source_serial=45,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        PatchDuplicateReplayEntry(
+                            pred_serial=44,
+                            target_serial=199,
+                            replay_block_id=VirtualBlockId("duplicate_replay", 0),
+                            replay_serial=200,
+                            captured_body=_captured_body(45, contains_call=True),
+                        ),
+                        PatchDuplicateReplayEntry(
+                            pred_serial=122,
+                            target_serial=199,
+                            replay_block_id=VirtualBlockId("duplicate_replay", 1),
+                            replay_serial=201,
+                            captured_body=_captured_body(45),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 0
+        assert created == []
 
     def test_lower_applies_conditional_duplicate_block_patch_plan(
         self,
@@ -895,6 +1110,47 @@ class TestIDAIntegration:
         assert created[0].calls[0][0] == "duplicate_block"
         assert created[0].calls[0][1:8] == (45, 44, None, 201, 3, 199, 200)
 
+    def test_lower_applies_clone_conditional_as_goto_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                CloneConditionalAsGoto(
+                    source_block=45,
+                    pred_serial=44,
+                    goto_target=2,
+                    reason="fix predecessor simple case",
+                )
+            ],
+            _conditional_duplicate_cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "clone_conditional_as_goto"
+        assert created[0].calls[0][1:5] == (45, 44, 2, 199)
+        assert "fix predecessor simple case" in created[0].calls[0][5]
+
     def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -962,6 +1218,45 @@ class TestIDAIntegration:
             ],
             _cfg(),
         )
+
+        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
+
+        assert count == 0
+        assert created == []
+
+    def test_lower_rejects_call_captured_patch_insert_block_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                InsertBlock(
+                    pred_serial=45,
+                    succ_serial=199,
+                    captured_body=_captured_body(45, contains_call=True),
+                )
+            ],
+            _cfg(),
+        )
+
+        assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
         count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000))
 

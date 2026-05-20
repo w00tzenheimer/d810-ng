@@ -705,6 +705,420 @@ def snapshot_bst_interval_dispatcher_rows(
     conn.commit()
 
 
+def snapshot_state_dispatcher_rows(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+    *,
+    dispatcher_entry_block: int | None = None,
+    dispatcher_kind: str | None = None,
+    maturity: str | None = None,
+) -> None:
+    """Persist exact state-constant dispatcher rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM state_dispatcher_rows WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        state_const = _mapping_value(row, "state_const")
+        target = _mapping_value(row, "target_block")
+        if target is None:
+            target = _mapping_value(row, "target")
+        if state_const is None or target is None:
+            continue
+        try:
+            state_i = (
+                int(state_const, 0)
+                if isinstance(state_const, str) else int(state_const)
+            )
+            target_i = int(target, 0) if isinstance(target, str) else int(target)
+        except (TypeError, ValueError):
+            continue
+        state_hex, state_i64 = _dual(state_i)
+        row_dispatcher_entry = _mapping_value(
+            row, "dispatcher_entry_block", dispatcher_entry_block
+        )
+        row_compare_block = _mapping_value(row, "compare_block")
+        dispatcher_kind_value = _mapping_value(
+            row, "dispatcher_kind",
+            _mapping_value(row, "source", dispatcher_kind),
+        )
+        if hasattr(dispatcher_kind_value, "name"):
+            dispatcher_kind_value = dispatcher_kind_value.name
+        row_branch_kind = _mapping_value(row, "branch_kind")
+        state_row_kind = _mapping_value(row, "row_kind")
+        confidence = _mapping_value(row, "confidence", 1.0)
+        payload = {
+            "state_const": state_hex,
+            "target": target_i,
+            "compare_block": row_compare_block,
+            "branch_kind": row_branch_kind,
+            "dispatcher_kind": str(
+                dispatcher_kind_value or dispatcher_kind or "unknown"
+            ),
+            "row_kind": state_row_kind,
+        }
+        row_payload = _mapping_value(row, "payload")
+        if isinstance(row_payload, MappingABC):
+            payload = {**payload, **dict(row_payload)}
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            state_hex,
+            state_i64,
+            target_i,
+            (
+                int(row_dispatcher_entry)
+                if row_dispatcher_entry is not None else None
+            ),
+            int(row_compare_block) if row_compare_block is not None else None,
+            str(dispatcher_kind_value or dispatcher_kind or "unknown"),
+            str(row_branch_kind) if row_branch_kind is not None else None,
+            maturity,
+            float(confidence),
+            _json_text(payload, payload),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    snapshot_state_transition_dispatch_resolutions_from_latest_facts(
+        conn,
+        snapshot_id,
+        resolution_kind="state_dispatcher_row",
+        resolution_maturity=maturity,
+    )
+    conn.commit()
+
+
+def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    *,
+    resolution_kind: str = "state_dispatcher_row",
+    resolution_maturity: str | None = None,
+) -> int:
+    """Persist exact dispatcher transition resolutions from DB facts.
+
+    This is diagnostic-only glue. ``StateTransitionAnchorFact`` and
+    ``StateWriteAnchorFact`` rows are already persisted in ``fact_observations``;
+    when exact state-dispatcher rows land later, this composes those facts into
+    ``state_transition_dispatch_resolutions`` so diagnostics can answer which
+    transition facts are resolvable without requiring a separate CLI pass.
+    """
+    snap_row = conn.execute(
+        "SELECT func_ea_hex, maturity FROM snapshots WHERE id=?",
+        (int(snapshot_id),),
+    ).fetchone()
+    if snap_row is None:
+        return 0
+    func_ea_hex = str(snap_row[0])
+    maturity_name = str(resolution_maturity or snap_row[1] or "unknown")
+    fact_snapshot_row = conn.execute(
+        """
+        SELECT snapshot_id
+        FROM fact_observations
+        WHERE func_ea_hex=?
+          AND snapshot_id <= ?
+          AND kind='StateTransitionAnchorFact'
+        GROUP BY snapshot_id
+        ORDER BY snapshot_id DESC
+        LIMIT 1
+        """,
+        (func_ea_hex, int(snapshot_id)),
+    ).fetchone()
+    if fact_snapshot_row is None:
+        return 0
+    fact_snapshot_id = int(fact_snapshot_row[0])
+
+    state_to_target: dict[int, int] = {}
+    dispatcher_blocks: set[int] = set()
+    row_data = conn.execute(
+        """
+        SELECT state_const_i64, target_block, dispatcher_entry_block,
+               compare_block, branch_kind
+        FROM state_dispatcher_rows
+        WHERE snapshot_id=?
+        ORDER BY row_index
+        """,
+        (int(snapshot_id),),
+    ).fetchall()
+    for state_i64, target_block, dispatcher_entry, compare_block, branch_kind in row_data:
+        state_to_target[int(state_i64) & _MASK64] = int(target_block)
+        if dispatcher_entry is not None:
+            dispatcher_blocks.add(int(dispatcher_entry))
+        if (
+            compare_block is not None
+            and str(branch_kind or "") != "handler_state_map"
+        ):
+            dispatcher_blocks.add(int(compare_block))
+    if not state_to_target:
+        return 0
+
+    write_lookup = _state_write_lookup_for_snapshot(conn, fact_snapshot_id)
+    rows = []
+    for fact_id, payload_json in conn.execute(
+        """
+        SELECT fact_id, payload
+        FROM fact_observations
+        WHERE snapshot_id=?
+          AND kind='StateTransitionAnchorFact'
+        ORDER BY fact_id
+        """,
+        (fact_snapshot_id,),
+    ).fetchall():
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except (TypeError, ValueError):
+            continue
+        source_block = payload.get("source_block_serial")
+        source_const = _int_from_any(payload.get("source_state_const"))
+        source_const_hex = payload.get("source_state_const_hex")
+        successor_kind = payload.get("successor_kind")
+        stkoff_key = str(payload.get("state_var_stkoff_hex", "")).lower()
+        if source_block is None or source_const is None or source_const_hex is None:
+            continue
+        target_block: int | None = None
+        next_const: int | None = None
+        next_const_hex: str | None = None
+        if successor_kind != "branch":
+            reason = (
+                f"successor_kind={successor_kind}; "
+                "not a dispatcher-bound transition"
+            )
+        else:
+            target_block = state_to_target.get(source_const & _MASK64)
+            if target_block is None:
+                reason = "state_not_in_dispatcher_map"
+            elif target_block in dispatcher_blocks:
+                reason = "target_is_dispatcher_block"
+                target_block = None
+            else:
+                next_const = write_lookup.get((int(target_block), stkoff_key))
+                if next_const is None:
+                    next_const = write_lookup.get((int(target_block), ""))
+                if next_const is not None:
+                    next_const &= _MASK64
+                    next_const_hex = f"0x{next_const:016x}"
+                reason = "resolved_exact_state"
+        rows.append({
+            "fact_id": str(fact_id),
+            "source_block_serial": int(source_block),
+            "source_state_const_hex": str(source_const_hex),
+            "resolved_next_block_serial": target_block,
+            "resolved_next_state_const_hex": next_const_hex,
+            "resolved_next_state_const_u64": next_const,
+            "resolution_kind": str(resolution_kind),
+            "resolution_reason": reason,
+            "resolution_maturity": maturity_name,
+        })
+    if not rows:
+        return 0
+    snapshot_state_transition_dispatch_resolutions(conn, snapshot_id, rows)
+    return len(rows)
+
+
+def _state_write_lookup_for_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+) -> dict[tuple[int, str], int]:
+    lookup: dict[tuple[int, str], int] = {}
+    for (payload_json,) in conn.execute(
+        """
+        SELECT payload
+        FROM fact_observations
+        WHERE snapshot_id=?
+          AND kind='StateWriteAnchorFact'
+        """,
+        (int(snapshot_id),),
+    ).fetchall():
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except (TypeError, ValueError):
+            continue
+        block_serial = _int_from_any(payload.get("block_serial"))
+        state_const = _int_from_any(payload.get("state_const_u64"))
+        if state_const is None:
+            state_const = _int_from_any(payload.get("state_const"))
+        if block_serial is None or state_const is None:
+            continue
+        stkoff_key = str(payload.get("state_var_stkoff_hex", "")).lower()
+        lookup.setdefault((int(block_serial), stkoff_key), int(state_const))
+        lookup.setdefault((int(block_serial), ""), int(state_const))
+    return lookup
+
+
+def _int_from_any(value: object | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            return int(value, 0)
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def snapshot_state_transition_dispatch_resolutions(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist generic dispatcher resolution rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM state_transition_dispatch_resolutions WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows_by_key = {}
+    for row in rows:
+        fact_id = _mapping_value(row, "fact_id")
+        source_block = _mapping_value(row, "source_block_serial")
+        source_const_hex = _mapping_value(row, "source_state_const_hex")
+        resolution_kind = _mapping_value(row, "resolution_kind")
+        resolution_reason = _mapping_value(row, "resolution_reason")
+        resolution_maturity = _mapping_value(row, "resolution_maturity")
+        if (
+            fact_id is None
+            or source_block is None
+            or source_const_hex is None
+            or resolution_kind is None
+            or resolution_reason is None
+            or resolution_maturity is None
+        ):
+            continue
+        db_row = (
+            int(snapshot_id),
+            str(fact_id),
+            int(source_block),
+            str(source_const_hex),
+            _mapping_value(row, "resolved_next_block_serial"),
+            _mapping_value(row, "resolved_next_state_const_hex"),
+            _mapping_value(row, "resolved_next_state_const_u64"),
+            str(resolution_kind),
+            str(resolution_reason),
+            str(resolution_maturity),
+        )
+        db_rows_by_key[(int(snapshot_id), str(fact_id), str(resolution_kind))] = (
+            db_row
+        )
+    db_rows = tuple(db_rows_by_key.values())
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_transition_dispatch_resolutions VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_switch_case_transition_facts(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist switch-table case transition facts for a snapshot."""
+    conn.execute(
+        "DELETE FROM switch_case_transition_facts WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        fact_id = _mapping_value(row, "fact_id")
+        transition_kind = _mapping_value(row, "transition_kind")
+        reason = _mapping_value(row, "reason")
+        if fact_id is None or transition_kind is None or reason is None:
+            continue
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            str(fact_id),
+            _mapping_value(row, "source_state_hex"),
+            _mapping_value(row, "source_state_i64"),
+            _mapping_value(row, "case_entry_block"),
+            str(transition_kind),
+            _mapping_value(row, "next_state_a_hex"),
+            _mapping_value(row, "next_state_a_i64"),
+            _mapping_value(row, "next_state_b_hex"),
+            _mapping_value(row, "next_state_b_i64"),
+            _mapping_value(row, "return_value"),
+            _mapping_value(row, "proof_kind"),
+            1 if bool(_mapping_value(row, "trusted", False)) else 0,
+            str(reason),
+            _mapping_value(row, "profile_name"),
+            _mapping_value(row, "dispatcher_entry"),
+            _mapping_value(row, "target_block"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO switch_case_transition_facts VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
+def snapshot_branch_ownership_proofs(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist branch ownership proof rows for a snapshot."""
+    conn.execute(
+        "DELETE FROM branch_ownership_proofs WHERE snapshot_id=?",
+        (snapshot_id,),
+    )
+    db_rows = []
+    for row_index, row in enumerate(rows):
+        proof_id = _mapping_value(row, "proof_id")
+        proof_kind = _mapping_value(row, "proof_kind")
+        reason = _mapping_value(row, "reason")
+        oracle_kind = _mapping_value(row, "oracle_kind")
+        if (
+            proof_id is None
+            or proof_kind is None
+            or reason is None
+            or oracle_kind is None
+        ):
+            continue
+        source_state_hex, source_state_i64 = _dual(
+            _int_from_any(_mapping_value(row, "source_state"))
+        )
+        target_state_hex, target_state_i64 = _dual(
+            _int_from_any(_mapping_value(row, "target_state"))
+        )
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            str(proof_id),
+            str(proof_kind),
+            1 if bool(_mapping_value(row, "trusted", False)) else 0,
+            str(reason),
+            _mapping_value(row, "source_block"),
+            _mapping_value(row, "branch_arm"),
+            source_state_hex,
+            source_state_i64,
+            target_state_hex,
+            target_state_i64,
+            _mapping_value(row, "target_entry"),
+            _mapping_value(row, "predicate_block"),
+            _mapping_value(row, "dispatcher_entry_block"),
+            str(oracle_kind),
+            _json_text(_mapping_value(row, "evidence"), {}),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO branch_ownership_proofs VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
+    conn.commit()
+
+
 def snapshot_watch_transition(
     conn: sqlite3.Connection,
     *,

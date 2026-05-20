@@ -26,6 +26,10 @@ from d810.recon.facts.collectors.induction_carrier import (
     _iter_instruction_views,
     _maturity_name,
 )
+from d810.recon.facts.value_flow import (
+    RETURN_VALUE_FACT_TYPE,
+    project_value_flow_facts,
+)
 from d810.recon.facts.model import FactObservation
 
 
@@ -150,7 +154,7 @@ def _carrier_class(insn: _InstructionView) -> str:
     opcode = insn.opcode_name.lower()
     text = insn.dstr.lower()
     if "xdu" in opcode or text.lstrip().startswith("xdu"):
-        return "state_guard_artifact_candidate"
+        return "protected_non_carrier_return_writer_candidate"
     if opcode in {"m_mov", "op_4"} and insn.src_l_stkoff is not None:
         return "stack_identity_carrier"
     if insn.src_l_value is not None or insn.src_r_value is not None:
@@ -158,10 +162,23 @@ def _carrier_class(insn: _InstructionView) -> str:
     return "computed_return"
 
 
-class ReturnCarrierFactCollector:
-    """Observe return-slot carrier writes across maturities."""
+class ReturnSlotFactCollector:
+    """Observe return-slot writes across maturities.
 
-    name = "ReturnCarrierFactCollector"
+    Canonical class name (value-flow rename Phase 4). Tracks the storage
+    slot used to communicate a function's return value at the ABI
+    boundary (e.g. ``%var_8.8`` for stack-returned aggregates). The peer
+    class :class:`ReturnValueFactCollector` projects those observations
+    into canonical return-value value-flow facts when a caller wants the
+    normalized family directly.
+
+    Raw observations still serialize as ``ReturnCarrierFact`` because that is
+    the source ontology produced by this collector. Projected value-flow facts
+    serialize as ``MaterializationPointFact``,
+    ``MemoryUseFact``, and ``ReturnValueFact``.
+    """
+
+    name = "ReturnSlotFactCollector"
     fact_kinds = frozenset({"ReturnCarrierFact"})
     maturities = _TARGET_MATURITIES
 
@@ -273,4 +290,40 @@ class ReturnCarrierFactCollector:
         return tuple(observations)
 
 
-__all__ = ["ReturnCarrierFactCollector"]
+__all__ = [
+    "ReturnSlotFactCollector",
+    "ReturnValueFactCollector",
+]
+
+
+class ReturnValueFactCollector:
+    """Collect canonical facts about the recovered return value.
+
+    Distinct from :class:`ReturnSlotFactCollector`, which records facts
+    about the storage slot. This collector reuses the same Hodur
+    return-slot evidence and returns only the normalized ``ReturnValueFact``
+    projection.
+    """
+
+    name = "ReturnValueFactCollector"
+    fact_kinds: frozenset[str] = frozenset({RETURN_VALUE_FACT_TYPE})
+    maturities = _TARGET_MATURITIES
+
+    def __init__(self) -> None:
+        self._slot_collector = ReturnSlotFactCollector()
+
+    def collect(
+        self,
+        target: object,
+        *,
+        func_ea: int,
+        maturity: int,
+        phase: str,
+    ) -> tuple[FactObservation, ...]:
+        projected = project_value_flow_facts(self._slot_collector.collect(
+            target,
+            func_ea=func_ea,
+            maturity=maturity,
+            phase=phase,
+        ))
+        return tuple(fact for fact in projected if fact.kind == RETURN_VALUE_FACT_TYPE)

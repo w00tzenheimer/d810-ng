@@ -209,8 +209,10 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     if not getattr(self, "_fence_logged_glbopt1", False):
                         optimizer_logger.info(
                             "FENCE_INSN_OPT_AT_GLBOPT1 active for %s"
-                            " (maturity=%d, env=%r)",
-                            type(self).__name__, _maturity, _fence_env,
+                            " (maturity=%s, env=%r)",
+                            type(self).__name__,
+                            maturity_to_string(_maturity),
+                            _fence_env,
                         )
                         self._fence_logged_glbopt1 = True
                     return None

@@ -29,7 +29,8 @@ Strategy
      execute primary → execute shared-group → postprocess.
 
   2. **Region collapse** -- detect maximal linear DAG regions (via
-     ``detect_chains`` / ``_detect_dag_regions`` / ``_compose_region``)
+     ``detect_chains`` / ``detect_linear_transition_regions`` /
+     ``_compose_region``)
      and emit ONE ``InsertBlock`` per region containing the composed
      bodies of every handler in that region.  Within a single block,
      def→use dominance is trivially preserved (instruction order =
@@ -72,7 +73,6 @@ Prerequisites: ``[]`` -- this strategy IS the linearizer.
 """
 from __future__ import annotations
 
-import enum
 import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
@@ -101,6 +101,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody
 from d810.cfg.mod_claims import collect_mod_claims
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.cfg.reconstruction_emission import (
@@ -111,10 +112,29 @@ from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.cfg.reconstruction_recording import RoundAcceptLedger
+from d810.cfg.semantic_region_entry import (
+    EntryEligibility,
+    SemanticEntryCandidate,
+    resolve_semantic_entry_candidate as _resolve_semantic_entry_candidate,
+)
+from d810.cfg.semantic_region_admission import (
+    RawRegionInfo as _RawRegionInfo,
+    classify_source_covered_by_other_region as _classify_source_covered_by_other_region,
+    classify_yes_handlers_subclass as _classify_yes_handlers_subclass,
+    find_cover_regions as _find_cover_regions,
+)
 from d810.cfg.state_edge_pair import state_edge_pair
-from d810.hexrays.mutation.ir_translator import capture_insn_snapshot
-from d810.hexrays.mutation.insn_snapshot_materializer import (
-    validate_insn_snapshots,
+from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
+    HexRaysInstructionCaptureBackend,
+    InsertBlockCallAuditBackend,
+)
+from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
+    DefinitionRescueBackend,
+    HexRaysDefinitionRescueBackend,
+)
+from d810.hexrays.mutation.ir_translator import (
+    classify_live_insn_kind,
+    classify_live_operand_kind,
 )
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     CumulativePlannerView,
@@ -122,9 +142,32 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PlannerContextContribution,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND,
+    HandlerChainLiveTopologyBackend,
+    LiveBlockTopologyProbe,
+    LiveOneWaySuccessorProbe,
+    LiveTopologyRegionEntryBlockView,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_materialization_capture_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND,
+    HandlerChainMaterializationCaptureBackend,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_topology_walk_backend import (
+    DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND,
+    HandlerChainTopologyWalkBackend,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
@@ -134,22 +177,23 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
 from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
-    check_redirect_severs_use_def,
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
+    HexRaysUseDefSafetyBackend,
+    UseDefSafetyBackend,
 )
-from d810.evaluator.hexrays_microcode.chains import (
-    find_reaching_defs_for_stkvar,
-)
-from d810.evaluator.hexrays_microcode.sccp import run_sccp
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
     PlanFragment,
 )
+from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
+    append_protected_non_carrier_return_writer_direct_lowerings,
+)
 from d810.recon.flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
 )
+from d810.recon.flow.dag_region_detection import detect_linear_transition_regions
 from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
 from d810.recon.flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
@@ -168,7 +212,6 @@ from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
     SemanticEdgeKind,
     StateDagNode,
-    build_live_linearized_state_dag_from_graph,
     detect_side_effect_corridors,
 )
 from d810.recon.flow.narrow_branch_local_discovery import (
@@ -206,9 +249,11 @@ from d810.recon.flow.return_corridor_discovery import (
 from d810.recon.flow.shared_group_bucketing import (
     group_candidates_by_shared_block,
 )
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
+)
+from d810.recon.flow.terminal_byte_evidence import (
+    collect_terminal_tail_byte_source_eas,
 )
 from d810.recon.flow.transition_builder import (
     build_transition_result_from_state_machine,
@@ -222,6 +267,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(
     "D810.hodur.strategy.handler_chain_composer",
     logging.DEBUG,
+)
+_HEX_RAYS_CAPTURE_BACKEND = HexRaysInstructionCaptureBackend()
+_USE_DEF_SAFETY_BACKEND: UseDefSafetyBackend = HexRaysUseDefSafetyBackend()
+_DEFINITION_RESCUE_BACKEND: DefinitionRescueBackend = (
+    HexRaysDefinitionRescueBackend()
+)
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
+_LIVE_TOPOLOGY_BACKEND: HandlerChainLiveTopologyBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND
+)
+_TOPOLOGY_WALK_BACKEND: HandlerChainTopologyWalkBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND
+)
+_MATERIALIZATION_CAPTURE_BACKEND: HandlerChainMaterializationCaptureBackend = (
+    DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND
 )
 
 
@@ -428,70 +493,12 @@ class HandlerChainCandidate:
     state_values: tuple[int, ...]
     """State constants attached to each handler in the region (informational)."""
 
-
-# Opcodes that abort composition because their effects are hard to
-# preserve in a relocated InsertBlock body.
-_FORBIDDEN_COMPOSITION_OPCODES: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_call,
-        ida_hexrays.m_icall,
-        ida_hexrays.m_ret,
-        ida_hexrays.m_ext,
-        ida_hexrays.m_jtbl,
-        ida_hexrays.m_ijmp,
-    }
-)
-
-
-# uee-b7ze Step 2: refinement of _FORBIDDEN_COMPOSITION_OPCODES into:
-#   - _CLOSING_FORBIDDEN: structurally-positional opcodes that genuinely
-#     close a block (return/branch tables/external/indirect jumps).  These
-#     never become opaque-call anchors.
-#   - _CALL_FORBIDDEN: side-effecting call opcodes.  When a region's
-#     anchor block contains EXACTLY one of these, it is a candidate to
-#     become an "opaque call anchor": the original block stays in the
-#     CFG (calls untouched), and surrounding flow rewires AROUND it.
-_CLOSING_FORBIDDEN: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_ret,
-        ida_hexrays.m_jtbl,
-        ida_hexrays.m_ijmp,
-        ida_hexrays.m_ext,
-    }
-)
-
-_CALL_FORBIDDEN: frozenset[int] = frozenset(
-    {
-        ida_hexrays.m_call,
-        ida_hexrays.m_icall,
-    }
-)
+    captured_body: CapturedBlockBody | None = None
+    """Opaque backend-owned body for materializing the composed instructions."""
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip() == "1"
-
-
-def _block_contains_call_opcode(mba: object, serial: int) -> bool:
-    """Return whether ``serial`` currently contains an m_call/m_icall."""
-    try:
-        blk = mba.get_mblock(int(serial))  # type: ignore[attr-defined]
-    except Exception:
-        return False
-    if blk is None:
-        return False
-    try:
-        cur = blk.head
-    except Exception:
-        return False
-    while cur is not None:
-        try:
-            if int(cur.opcode) in _CALL_FORBIDDEN:
-                return True
-            cur = cur.next
-        except Exception:
-            return False
-    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,6 +521,7 @@ class _CaptureResult:
 
     kind: str
     snapshots: tuple[InsnSnapshot, ...] | None = None
+    body: CapturedBlockBody | None = None
     abort_reason: str | None = None
     call_ea: int | None = None
     is_indirect: bool | None = None
@@ -538,447 +546,11 @@ class _WalkBackResult:
     prepended_chunks: tuple[_WalkBackChunk, ...]
 
 
-# ---------------------------------------------------------------------------
-# Logging-only DAG-edge-driven entry resolver (uee-b7ze Step 1).
-#
-# This resolver runs alongside the existing physical-CFG-predecessor splice
-# (``_resolve_first_pred``) and emits a structured ``REGION_LOWERING_CANDIDATE``
-# log line per detected region.  It DOES NOT change emission behavior --
-# ``InsertBlock.pred_serial`` continues to come from ``_resolve_first_pred``.
-#
-# Goal: collect data on (a) how often the new resolver agrees with the old
-# one, (b) how often ``source_covered_by_other_region`` triggers, and (c) the
-# per-eligibility distribution.  Step 2 (call-barrier segmentation) is OUT
-# OF SCOPE here.
-# ---------------------------------------------------------------------------
-
-
-class EntryEligibility(str, enum.Enum):
-    """Why a region head's semantic incoming edge is/isn't usable as a splice.
-
-    Logging-only.  No emission decision currently consumes this enum.
-    """
-
-    NO_TRANSITION_INCOMING = "NO_TRANSITION_INCOMING"
-    MULTIPLE_DISTINCT_SPLICE_SOURCES = "MULTIPLE_DISTINCT_SPLICE_SOURCES"
-    SOURCE_DEAD = "SOURCE_DEAD"
-    SOURCE_INSIDE_REGION = "SOURCE_INSIDE_REGION"
-    SOURCE_NOT_1WAY = "SOURCE_NOT_1WAY"
-    SOURCE_OLD_TARGET_UNREADABLE = "SOURCE_OLD_TARGET_UNREADABLE"
-    UNCONDITIONAL_1WAY = "UNCONDITIONAL_1WAY"
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticEntryCandidate:
-    """Logging-only candidate for splicing a region via its DAG TRANSITION edge.
-
-    Fields:
-        head_state: ``state_const`` of the region head node (or 0 if absent).
-        head_entry: Entry anchor block serial of the region head node.
-        splice_source_block: The unique TRANSITION source block (when
-            classification reaches the per-source check), else ``None``.
-        splice_old_target: Existing single successor of ``splice_source_block``
-            (the outgoing edge that would be replaced), else ``None``.
-        transition_source_blocks: All distinct TRANSITION source blocks for
-            edges incoming to the region head, ordered ascending.
-        nontransition_source_blocks: All distinct non-TRANSITION (e.g.
-            CONDITIONAL_TRANSITION) source blocks for edges incoming to the
-            region head, ordered ascending.  Informational only -- never
-            blocks ``UNCONDITIONAL_1WAY`` classification.
-        eligibility: The classification (see ``EntryEligibility``).
-        reason: Human-readable explanation of the classification.
-    """
-
-    head_state: int
-    head_entry: int
-    splice_source_block: int | None
-    splice_old_target: int | None
-    transition_source_blocks: tuple[int, ...]
-    nontransition_source_blocks: tuple[int, ...]
-    eligibility: EntryEligibility
-    reason: str
-
-
-def _resolve_semantic_entry_candidate(
-    *,
-    dag: LinearizedStateDag,
-    region_head_node: StateDagNode,
-    region_anchors: frozenset[int],
-    mba: object,
-) -> SemanticEntryCandidate:
-    """Logging-only resolver for the semantic incoming edge of a region.
-
-    Algorithm (per spec):
-      1. Collect all ``dag.edges`` where ``target_key == region_head_node.key``.
-      2. Partition by ``edge.kind``: TRANSITION vs everything else.
-      3. If no TRANSITION edges -> ``NO_TRANSITION_INCOMING``.
-      4. Group TRANSITION edges by source block (using
-         ``edge.source_anchor.block_serial`` -- there is no separate
-         ``source_block`` field on the edge dataclass).  If multiple distinct
-         source blocks -> ``MULTIPLE_DISTINCT_SPLICE_SOURCES``.
-      5. With a single source block:
-           - ``mba.get_mblock(source_block)``; if ``None`` -> ``SOURCE_DEAD``
-           - if ``source_block in region_anchors`` -> ``SOURCE_INSIDE_REGION``
-           - if ``nsucc() != 1`` -> ``SOURCE_NOT_1WAY``
-           - else: read ``succ(0)`` as ``splice_old_target``; on any failure
-             -> ``SOURCE_OLD_TARGET_UNREADABLE``.  Otherwise:
-             ``UNCONDITIONAL_1WAY``.
-
-    Conditional-kind edges are NEVER allowed to block ``UNCONDITIONAL_1WAY``.
-    They appear in ``nontransition_source_blocks`` for diagnostics only.
-    """
-    head_key = region_head_node.key
-    head_state = int(getattr(head_key, "state_const", 0) or 0)
-    head_entry = int(region_head_node.entry_anchor)
-
-    transition_sources: list[int] = []
-    nontransition_sources: list[int] = []
-    for edge in dag.edges:
-        if edge.target_key != head_key:
-            continue
-        try:
-            src = int(edge.source_anchor.block_serial)
-        except Exception:
-            continue
-        if edge.kind is SemanticEdgeKind.TRANSITION:
-            transition_sources.append(src)
-        else:
-            nontransition_sources.append(src)
-
-    transition_unique = tuple(sorted(set(transition_sources)))
-    nontransition_unique = tuple(sorted(set(nontransition_sources)))
-
-    if not transition_unique:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=None,
-            splice_old_target=None,
-            transition_source_blocks=(),
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.NO_TRANSITION_INCOMING,
-            reason="no TRANSITION edges target region head",
-        )
-
-    if len(transition_unique) > 1:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=None,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.MULTIPLE_DISTINCT_SPLICE_SOURCES,
-            reason=(
-                "TRANSITION edges to region head originate from "
-                f"{len(transition_unique)} distinct source blocks"
-            ),
-        )
-
-    splice_source = int(transition_unique[0])
-
-    src_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, splice_source)
-    if src_blk is None:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_DEAD,
-            reason=f"mba.get_mblock({splice_source}) returned None",
-        )
-
-    if splice_source in region_anchors:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_INSIDE_REGION,
-            reason=f"source block blk[{splice_source}] is itself a region anchor",
-        )
-
-    try:
-        nsucc = int(src_blk.nsucc())  # type: ignore[attr-defined]
-    except Exception:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_NOT_1WAY,
-            reason=f"blk[{splice_source}].nsucc() raised",
-        )
-
-    if nsucc != 1:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_NOT_1WAY,
-            reason=f"blk[{splice_source}].nsucc()={nsucc}, expected 1",
-        )
-
-    try:
-        old_target = int(src_blk.succ(0))  # type: ignore[attr-defined]
-    except Exception:
-        return SemanticEntryCandidate(
-            head_state=head_state,
-            head_entry=head_entry,
-            splice_source_block=splice_source,
-            splice_old_target=None,
-            transition_source_blocks=transition_unique,
-            nontransition_source_blocks=nontransition_unique,
-            eligibility=EntryEligibility.SOURCE_OLD_TARGET_UNREADABLE,
-            reason=f"blk[{splice_source}].succ(0) raised",
-        )
-
-    return SemanticEntryCandidate(
-        head_state=head_state,
-        head_entry=head_entry,
-        splice_source_block=splice_source,
-        splice_old_target=old_target,
-        transition_source_blocks=transition_unique,
-        nontransition_source_blocks=nontransition_unique,
-        eligibility=EntryEligibility.UNCONDITIONAL_1WAY,
-        reason="single TRANSITION source is a 1-way block; semantic splice eligible",
-    )
-
-
 def _format_blk_list(serials: tuple[int, ...]) -> str:
     """Render ``(1, 2, 3)`` as ``[blk[1], blk[2], blk[3]]``."""
     if not serials:
         return "[]"
     return "[" + ", ".join(f"blk[{int(s)}]" for s in serials) + "]"
-
-
-# ---------------------------------------------------------------------------
-# Pre-compose raw-region table (uee-b7ze A0).
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class _RawRegionInfo:
-    """Best-effort observation about one raw region.
-
-    Built once per ``detect_chains()`` invocation, BEFORE any region is
-    handed to ``_compose_region``.  Fields that depend on the live mba may
-    be ``None`` if the corresponding probe failed -- this object never
-    aborts collection of the rest.
-
-    ``composed_candidate`` carries the result of speculatively running
-    ``_compose_region`` on this region.  When non-None, this region is
-    "compose-viable" -- i.e. it has a usable physical predecessor, a
-    resolvable exit successor, and a clean composable body.  This is the
-    sole gate consulted by ``_classify_yes_handlers_subclass`` to decide
-    whether a covering region (R1) is fit to be the front half of a
-    fusion pair.  It does NOT depend on R1's ``SemanticEntryCandidate``
-    eligibility flavor.
-    """
-
-    region_nodes: tuple[StateDagNode, ...]
-    head_node: StateDagNode
-    tail_node: StateDagNode
-    head_anchor: int
-    tail_anchor: int
-    region_anchors: frozenset[int]
-    old_physical_pred: int | None
-    proposed_exit: int | None
-    candidate: SemanticEntryCandidate
-    composed_candidate: "HandlerChainCandidate | None" = None
-    # uee-b7ze Step 2 (call-barrier segmentation): when one of the
-    # region's anchor blocks contains exactly one m_call/m_icall and
-    # otherwise has a clean composable body, record it here as
-    # ``(block_serial, call_ea, is_indirect)``.  Phase A populates this
-    # for diagnostics; Phase B (gated on
-    # ``HCC_CALL_BARRIER_ENABLED``) consumes it to emit RedirectGoto
-    # pairs that wire flow AROUND the anchor without relocating the
-    # call instruction.
-    opaque_call_anchor: tuple[int, int, bool] | None = None
-    # Body shape diagnostics for the opaque-call anchor.  Populated only
-    # when ``opaque_call_anchor`` is set.  ``pre_call_count`` and
-    # ``post_call_count`` are the captured composable instruction counts
-    # before and after the call.  ``shape`` is "SIMPLE_1WAY_OUT" when
-    # the candidate satisfies the Phase B prerequisites, "OTHER"
-    # otherwise.
-    opaque_call_pre_count: int | None = None
-    opaque_call_post_count: int | None = None
-    opaque_call_shape: str | None = None
-
-
-def _classify_source_covered_by_other_region(
-    *,
-    self_info: _RawRegionInfo,
-    raw_region_table: tuple[_RawRegionInfo, ...],
-) -> tuple[str, tuple[str, ...]]:
-    """Return ``(label, all_reasons)`` cross-referenced against ALL raw regions.
-
-    Computes coverage of the candidate's ``splice_source_block`` against the
-    complete raw region set built during the pre-pass (NOT just regions
-    iterated earlier).  Three independent reasons can apply:
-
-      * ``YES_HANDLERS``       -- source appears in another region's
-        ``region_anchors`` (i.e. another region's ``handlers=`` list).
-      * ``YES_PHYSICAL_PRED``  -- source equals another region's
-        ``old_physical_pred`` (i.e. another region's planned ``pred=``).
-      * ``YES_COLLISION``      -- another region's
-        ``candidate.splice_source_block`` equals this region's source
-        (two semantic candidates claim the same source -- the second
-        replacer would have stale ``old_target``).
-
-    The returned ``label`` is the most-significant single matching reason
-    using order ``COLLISION > HANDLERS > PHYSICAL_PRED``.  ``all_reasons``
-    contains every matching reason in that priority order.
-    """
-    src = self_info.candidate.splice_source_block
-    if src is None:
-        return ("NO", ())
-    src_int = int(src)
-    self_id = id(self_info)
-
-    has_collision = False
-    has_handlers = False
-    has_physical_pred = False
-    for other in raw_region_table:
-        if id(other) == self_id:
-            continue
-        other_src = other.candidate.splice_source_block
-        if other_src is not None and int(other_src) == src_int:
-            has_collision = True
-        if src_int in other.region_anchors:
-            has_handlers = True
-        if (
-            other.old_physical_pred is not None
-            and src_int == int(other.old_physical_pred)
-        ):
-            has_physical_pred = True
-
-    reasons: list[str] = []
-    if has_collision:
-        reasons.append("YES_COLLISION")
-    if has_handlers:
-        reasons.append("YES_HANDLERS")
-    if has_physical_pred:
-        reasons.append("YES_PHYSICAL_PRED")
-    if not reasons:
-        return ("NO", ())
-    return (reasons[0], tuple(reasons))
-
-
-# ---------------------------------------------------------------------------
-# YES_HANDLERS sub-classification (uee-b7ze Step 1+2).
-# ---------------------------------------------------------------------------
-def _find_cover_regions(
-    *,
-    self_info: _RawRegionInfo,
-    raw_region_table: tuple[_RawRegionInfo, ...],
-) -> tuple[_RawRegionInfo, ...]:
-    """Return raw-region records whose ``region_anchors`` contain
-    ``self_info``'s splice source.
-
-    Used to drive ``yes_handlers_subclass`` classification.
-    """
-    src = self_info.candidate.splice_source_block
-    if src is None:
-        return ()
-    src_int = int(src)
-    self_id = id(self_info)
-    covers: list[_RawRegionInfo] = []
-    for other in raw_region_table:
-        if id(other) == self_id:
-            continue
-        if src_int in other.region_anchors:
-            covers.append(other)
-    return tuple(covers)
-
-
-def _classify_yes_handlers_subclass(
-    *,
-    self_info: _RawRegionInfo,
-    raw_region_table: tuple[_RawRegionInfo, ...],
-) -> str | None:
-    """Classify a YES_HANDLERS region into one of four sub-categories.
-
-    Relaxed rule (revised in continuation patch): the cover-region
-    ``R1``'s eligibility flavor is irrelevant -- the only thing that
-    matters is whether ``R1`` actually produces a valid composed
-    ``HandlerChainCandidate`` under current HCC rules.  If R1 composes,
-    R1 has a usable physical pred + exit, which is all fusion needs.
-
-    Returns one of:
-      * ``"FUSABLE_LINEAR"``       -- exactly one cover region R1 exists,
-        ``R1.composed_candidate`` is not None (R1 produced a valid
-        candidate), ``R1.proposed_exit == self.head_anchor``, R1 and
-        self do not share any handler anchors (no doubled-handler
-        cycle), and R1's splice source is not claimed by yet another
-        candidate.
-      * ``"FUSABLE_RECURSIVE"``    -- reserved for future patches; not
-        emitted by the current relaxed rule (recursive chain fusion is
-        out of scope).
-      * ``"NOT_FUSABLE_BRANCH"``   -- exactly one cover region R1 exists
-        but ``R1.proposed_exit`` does NOT equal ``self.head_anchor``.
-        R1 doesn't cleanly precede us; would require diamond reasoning.
-      * ``"CONFLICT"``             -- splice-source collision with another
-        candidate, handler-set overlap (cycle), R1 fails to compose,
-        multiple cover regions, or cover not findable.
-
-    Returns ``None`` only when ``self_info`` is not actually a
-    YES_HANDLERS candidate (caller invariant).
-    """
-    covers = _find_cover_regions(
-        self_info=self_info, raw_region_table=raw_region_table,
-    )
-    if not covers:
-        # YES_HANDLERS was set, but we can't reproduce the cover here.
-        # Treat as conflict (conservative).
-        return "CONFLICT"
-
-    # Multiple covers -> conflict.
-    if len(covers) > 1:
-        return "CONFLICT"
-
-    cover = covers[0]
-
-    # Compose-viability gate: R1 must have produced a valid candidate
-    # under the regular per-region pass.  Without a composed candidate,
-    # R1 has no usable pred/exit/body -- there is nothing to fuse with.
-    if cover.composed_candidate is None:
-        return "CONFLICT"
-
-    # Splice-source collision: another raw region claims the same
-    # ``splice_source_block`` as the cover.  This would race with the
-    # fused emission for the same physical pred edge.
-    cover_src = cover.candidate.splice_source_block
-    if cover_src is not None:
-        cover_src_int = int(cover_src)
-        for other in raw_region_table:
-            if id(other) == id(cover) or id(other) == id(self_info):
-                continue
-            other_src = other.candidate.splice_source_block
-            if other_src is not None and int(other_src) == cover_src_int:
-                return "CONFLICT"
-
-    # Handler-set overlap guard: R1.handlers and R2.handlers must be
-    # disjoint.  Overlap would produce a doubled handler in the fused
-    # output (a cycle in handler-anchor order).
-    if not self_info.region_anchors.isdisjoint(cover.region_anchors):
-        return "CONFLICT"
-
-    # Linear / branch distinction.  Cover's exit must land exactly at
-    # self's head for the fused composition to be a contiguous chain.
-    cover_exit = cover.proposed_exit
-    self_head = self_info.head_anchor
-    if cover_exit is not None and int(cover_exit) == int(self_head):
-        return "FUSABLE_LINEAR"
-
-    return "NOT_FUSABLE_BRANCH"
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +671,7 @@ def _classify_convergence_or_linear(
     dag: LinearizedStateDag,
     local_facts: DagLocalFacts,
     mba: object,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
 ) -> tuple[str, _ConvergencePlan | _TailExtensionPlan | None]:
     """Try ``FUSABLE_TAIL_EXTENSION`` first; on failure fall back.
 
@@ -1146,20 +719,20 @@ def _classify_convergence_or_linear(
         ) or "CONFLICT", None
     convergence = int(splice_source)
 
-    convergence_blk = HandlerChainComposerStrategy._safe_get_mblock(
-        mba, convergence,
+    convergence_topology = live_topology_backend.read_block_topology(
+        mba,
+        convergence,
     )
-    if convergence_blk is None:
+    if not convergence_topology.block_exists:
         return _classify_yes_handlers_subclass(
             self_info=self_info, raw_region_table=raw_region_table,
         ) or "CONFLICT", None
 
-    try:
-        npred = int(convergence_blk.npred())  # type: ignore[attr-defined]
-    except Exception:
+    if convergence_topology.npred is None:
         return _classify_yes_handlers_subclass(
             self_info=self_info, raw_region_table=raw_region_table,
         ) or "CONFLICT", None
+    npred = int(convergence_topology.npred)
 
     if npred < 2:
         # Single-pred shape -- defer entirely to the existing classifier.
@@ -1186,31 +759,27 @@ def _classify_convergence_or_linear(
     # Rules (3) + (4): every live pred must be inside the owning
     # state's local CFG AND cleanly redirectable.
     incoming: list[_ConvergenceIncomingEdge] = []
-    try:
-        pred_serials = [
-            int(convergence_blk.pred(i))  # type: ignore[attr-defined]
-            for i in range(npred)
-        ]
-    except Exception:
+    if convergence_topology.predecessors is None:
         return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+    pred_serials = tuple(
+        int(pred) for pred in convergence_topology.predecessors
+    )
 
     for p in pred_serials:
         if not _state_node_owns_block(
             local_facts=local_facts, owner=owner, block=p,
         ):
             return "CONVERGENCE_UNSUPPORTED_EXTERNAL_PRED", None
-        pred_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, p)
-        if pred_blk is None:
+        pred_topology = live_topology_backend.read_block_topology(mba, p)
+        if not pred_topology.block_exists:
             return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-        try:
-            pn = int(pred_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if pred_topology.nsucc is None:
             return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+        pn = int(pred_topology.nsucc)
         if pn == 1:
-            try:
-                s0 = int(pred_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if pred_topology.successors is None or not pred_topology.successors:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+            s0 = int(pred_topology.successors[0])
             if s0 != convergence:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
             incoming.append(
@@ -1223,15 +792,9 @@ def _classify_convergence_or_linear(
             )
             continue
         if pn == 2:
-            tail = getattr(pred_blk, "tail", None)
-            if tail is None:
+            if pred_topology.conditional_target is None:
                 return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-            try:
-                if not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
-                    return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
-                cond_target = int(tail.d.b)
-            except Exception:
-                return "CONVERGENCE_UNSUPPORTED_PRED_SHAPE", None
+            cond_target = int(pred_topology.conditional_target)
             if cond_target == convergence:
                 incoming.append(
                     _ConvergenceIncomingEdge(
@@ -1316,6 +879,7 @@ def _classify_yes_handlers_with_convergence(
     dag: LinearizedStateDag | None,
     local_facts: DagLocalFacts | None,
     mba: object | None,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
 ) -> str | None:
     """Wrapper that prefers convergence detection when ``dag``/``mba``/
     ``local_facts`` are all provided.  Falls back to the linear-only
@@ -1331,6 +895,7 @@ def _classify_yes_handlers_with_convergence(
         dag=dag,
         local_facts=local_facts,
         mba=mba,
+        live_topology_backend=live_topology_backend,
     )
     return label
 
@@ -1339,9 +904,8 @@ def _classify_yes_handlers_with_convergence(
 # uee-b7ze Step 2.1: refined opaque-call anchor classification + per-anchor
 # diagnostic context.  Helpers below do NOT change emission behavior; they
 # augment HCC_CALL_BARRIER_CANDIDATE / REGION_LOWERING_SUMMARY logs with
-# structured shape sub-labels and (when the diag DB is reachable at plan
-# time) per-anchor liveness across snapshots so the user can pinpoint the
-# earliest kill point for an anchor block.
+# structured shape sub-labels and optional diagnostics-layer snapshot context
+# so the user can pinpoint the earliest kill point for an anchor block.
 # ---------------------------------------------------------------------------
 
 # Refined opaque-call anchor shape labels. Priority order (most specific
@@ -1355,17 +919,6 @@ _OPAQUE_CALL_SHAPE_KEYS: tuple[str, ...] = (
     "OTHER",
 )
 
-# Snapshot labels we walk to compute the earliest kill point. Order is
-# pipeline-temporal: anchors disappearing at an earlier label than the
-# final IDA cleanup are dying inside our pipeline.
-_KILL_POINT_SNAPSHOT_ORDER: tuple[str, ...] = (
-    "maturity_MMAT_GLBOPT1_pre_d810",
-    "handler_chain_composer_post_apply",
-    "post_pipeline",
-    "maturity_MMAT_GLBOPT1_post_d810",
-)
-
-
 def _format_serial_list(items) -> str:
     """Render an iterable of ints as ``[blk[a], blk[b], ...]`` (sorted)."""
     try:
@@ -1377,6 +930,39 @@ def _format_serial_list(items) -> str:
     return "[" + ", ".join(f"blk[{s}]" for s in sorted_items) + "]"
 
 
+def _collect_anchor_snapshot_context_from_diagnostics(
+    *,
+    anchor_serial: int,
+) -> dict[str, object]:
+    """Collect DB-backed HCC anchor diagnostics without storage imports."""
+    fallback: dict[str, object] = {
+        "preds_pre_pipeline": "UNKNOWN",
+        "preds_post_hcc": "UNKNOWN",
+        "preds_post_pipeline": "UNKNOWN",
+        "succs_pre_pipeline": "UNKNOWN",
+        "succs_post_hcc": "UNKNOWN",
+        "succs_post_pipeline": "UNKNOWN",
+        "reachable_from_entry_post_pipeline": "UNKNOWN",
+        "survives_glbopt1_post_d810": "UNKNOWN",
+        "earliest_kill_point": "unknown",
+    }
+    try:
+        from importlib import import_module
+
+        module = import_module(
+            "d810.diagnostics.hcc_anchor_snapshot_context",
+        )
+        collector = getattr(module, "collect_anchor_snapshot_context")
+        context = collector(anchor_serial=anchor_serial)
+    except Exception:  # pragma: no cover - diagnostic best-effort
+        return fallback
+    if not isinstance(context, dict):
+        return fallback
+    merged = dict(fallback)
+    merged.update(context)
+    return merged
+
+
 def _refine_opaque_call_shape(
     *,
     base_shape: str,
@@ -1385,6 +971,10 @@ def _refine_opaque_call_shape(
     dag: LinearizedStateDag | None,
     local_facts: DagLocalFacts | None,
     mba: object | None,
+    live_topology_backend: HandlerChainLiveTopologyBackend,
+    materialization_capture_backend: (
+        HandlerChainMaterializationCaptureBackend | None
+    ) = None,
     state_var_stkoff: int | None = None,
 ) -> str:
     """Return ONE refined shape label for an opaque-call anchor.
@@ -1405,6 +995,11 @@ def _refine_opaque_call_shape(
     if opaque_call_anchor is None:
         return "OTHER"
     anchor_serial = int(opaque_call_anchor[0])
+    capture_backend = (
+        materialization_capture_backend
+        if materialization_capture_backend is not None
+        else _MATERIALIZATION_CAPTURE_BACKEND
+    )
 
     # CHAINED_CALL_ANCHOR: handler is the LAST node of a multi-node region
     # whose preceding nodes are all "composable" (no forbidden opcodes).
@@ -1417,16 +1012,11 @@ def _refine_opaque_call_shape(
             all_pre_composable = True
             for node in region_nodes[:-1]:
                 node_serial = int(node.entry_anchor)
-                node_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, node_serial,
-                )
-                if node_blk is None:
-                    all_pre_composable = False
-                    break
                 cap = (
-                    HandlerChainComposerStrategy
-                    ._capture_block_composable_instructions_v2(
-                        node_blk, state_var_stkoff=state_var_stkoff,
+                    capture_backend.capture_block_composable_instructions(
+                        mba,
+                        node_serial,
+                        state_var_stkoff=state_var_stkoff,
                     )
                 )
                 if cap.kind != "composable":
@@ -1453,17 +1043,28 @@ def _refine_opaque_call_shape(
     # whose conditional arms diverge into different states.
     try:
         if mba is not None:
-            anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
+            anchor_topology = live_topology_backend.read_block_topology(
                 mba, anchor_serial,
             )
-            if anchor_blk is not None and int(anchor_blk.nsucc()) == 1:
-                succ_serial = int(anchor_blk.succ(0))
-                succ_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, succ_serial,
+            if (
+                anchor_topology.block_exists
+                and anchor_topology.nsucc == 1
+                and anchor_topology.successors is not None
+                and len(anchor_topology.successors) == 1
+            ):
+                succ_serial = int(anchor_topology.successors[0])
+                succ_topology = live_topology_backend.read_block_topology(
+                    mba,
+                    succ_serial,
                 )
-                if succ_blk is not None and int(succ_blk.nsucc()) == 2:
-                    arm_a = int(succ_blk.succ(0))
-                    arm_b = int(succ_blk.succ(1))
+                if (
+                    succ_topology.block_exists
+                    and succ_topology.nsucc == 2
+                    and succ_topology.successors is not None
+                    and len(succ_topology.successors) == 2
+                ):
+                    arm_a = int(succ_topology.successors[0])
+                    arm_b = int(succ_topology.successors[1])
                     if arm_a != arm_b and dag is not None:
                         # Confirm the arms map to different DAG nodes
                         # (different downstream states).  Pure local
@@ -1488,158 +1089,19 @@ def _refine_opaque_call_shape(
     # ANCHOR_MULTI_PRED: handler block has npred() > 1 in the live CFG.
     try:
         if mba is not None:
-            anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
+            anchor_topology = live_topology_backend.read_block_topology(
                 mba, anchor_serial,
             )
-            if anchor_blk is not None and int(anchor_blk.npred()) > 1:
+            if (
+                anchor_topology.block_exists
+                and anchor_topology.npred is not None
+                and int(anchor_topology.npred) > 1
+            ):
                 return "ANCHOR_MULTI_PRED"
     except Exception:
         pass
 
     return "OTHER"
-
-
-def _open_diag_db_readonly() -> object | None:
-    """Return a sqlite3 Connection to a diag DB usable for cross-snapshot
-    queries, or ``None``.
-
-    The diag subsystem is per-decompilation: the active session's DB
-    only contains snapshots taken so far in this run, so ``post_pipeline``
-    / ``maturity_MMAT_GLBOPT1_post_d810`` from this run's GLBOPT1 plan
-    pass aren't there yet.  For "earliest kill point" diagnostics we
-    look at the most recent diag DB on disk that already has the full
-    snapshot timeline for the same function.
-
-    Falls back to ``None`` when no usable DB is found.
-    """
-    try:
-        from d810.core.settings import get_settings
-    except Exception:
-        return None
-    try:
-        if not get_settings().diag_snapshots:
-            return None
-    except Exception:
-        return None
-    # Walk DB files newest-first; pick the first one that has the
-    # late post-pipeline / GLBOPT1-post-d810 snapshots we need.
-    try:
-        import os as _os
-        import sqlite3 as _sqlite3
-        from pathlib import Path as _Path
-        log_dir = _Path(_os.path.expanduser("~/.idapro/logs/d810_logs"))
-        if not log_dir.exists():
-            return None
-        candidates = sorted(
-            log_dir.glob("*.diag.sqlite3"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        for path in candidates:
-            try:
-                conn = _sqlite3.connect(str(path))
-            except Exception:
-                continue
-            try:
-                has_post_pipeline = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("post_pipeline",),
-                ).fetchone()
-                has_glbopt1_post = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("maturity_MMAT_GLBOPT1_post_d810",),
-                ).fetchone()
-            except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                continue
-            if (
-                has_post_pipeline is not None
-                and has_glbopt1_post is not None
-            ):
-                return conn
-            try:
-                conn.close()
-            except Exception:
-                pass
-    except Exception:
-        return None
-    return None
-
-
-def _query_block_state_in_snapshot(
-    conn,
-    snapshot_label: str,
-    block_serial: int,
-) -> dict[str, object] | None:
-    """Return ``{'preds': [...], 'succs': [...], 'reachable_from_0': YES|NO}``
-    for ``block_serial`` in the latest snapshot with ``snapshot_label``,
-    or ``None`` when the snapshot is missing or the block is missing in
-    that snapshot.
-
-    Snapshot label resolution: prefer the highest snapshot id with the
-    given label (most recent run).  Reachability uses BFS over
-    ``blocks.succs`` JSON.
-    """
-    try:
-        row = conn.execute(
-            "SELECT id FROM snapshots WHERE label = ? ORDER BY id DESC LIMIT 1",
-            (snapshot_label,),
-        ).fetchone()
-    except Exception:
-        return None
-    if row is None:
-        return None
-    snapshot_id = int(row[0])
-    try:
-        blk_row = conn.execute(
-            "SELECT preds, succs FROM blocks WHERE snapshot_id = ? AND serial = ?",
-            (snapshot_id, block_serial),
-        ).fetchone()
-    except Exception:
-        return None
-    if blk_row is None:
-        return {"preds": None, "succs": None, "reachable_from_0": "NO"}
-    import json as _json
-    try:
-        preds = _json.loads(blk_row[0]) if blk_row[0] else []
-        succs = _json.loads(blk_row[1]) if blk_row[1] else []
-    except Exception:
-        preds, succs = [], []
-    # BFS from blk[0] over succs to determine reachability.
-    reachable = "UNKNOWN"
-    try:
-        all_rows = conn.execute(
-            "SELECT serial, succs FROM blocks WHERE snapshot_id = ?",
-            (snapshot_id,),
-        ).fetchall()
-        succ_map: dict[int, list[int]] = {}
-        for serial, succs_blob in all_rows:
-            try:
-                succ_map[int(serial)] = (
-                    _json.loads(succs_blob) if succs_blob else []
-                )
-            except Exception:
-                succ_map[int(serial)] = []
-        visited: set[int] = set()
-        stack = [0]
-        while stack:
-            cur = stack.pop()
-            if cur in visited:
-                continue
-            visited.add(cur)
-            for nxt in succ_map.get(cur, ()):
-                stack.append(int(nxt))
-        reachable = "YES" if int(block_serial) in visited else "NO"
-    except Exception:
-        reachable = "UNKNOWN"
-    return {
-        "preds": [int(p) for p in preds],
-        "succs": [int(s) for s in succs],
-        "reachable_from_0": reachable,
-    }
 
 
 def _collect_anchor_diag_context(
@@ -1699,85 +1161,12 @@ def _collect_anchor_diag_context(
         except Exception:
             pass
 
-    # Snapshot probes.
-    conn = _open_diag_db_readonly()
-    snapshot_results: dict[str, dict[str, object] | None] = {}
-    if conn is not None:
-        for label in _KILL_POINT_SNAPSHOT_ORDER:
-            try:
-                snapshot_results[label] = _query_block_state_in_snapshot(
-                    conn, label, anchor_serial,
-                )
-            except Exception:
-                snapshot_results[label] = None
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    def _fmt(label: str, key: str) -> str:
-        snap = snapshot_results.get(label)
-        if snap is None or snap.get(key) is None:
-            return "UNKNOWN"
-        return _format_serial_list(snap.get(key) or ())
-
-    pre_pipeline_lbl = "maturity_MMAT_GLBOPT1_pre_d810"
-    post_hcc_lbl = "handler_chain_composer_post_apply"
-    post_pipeline_lbl = "post_pipeline"
-    post_glbopt1_lbl = "maturity_MMAT_GLBOPT1_post_d810"
-
-    reach_post_pipeline = "UNKNOWN"
-    snap_post = snapshot_results.get(post_pipeline_lbl)
-    if snap_post is not None:
-        v = snap_post.get("reachable_from_0")
-        if isinstance(v, str):
-            reach_post_pipeline = v
-
-    survives_glbopt1 = "UNKNOWN"
-    snap_glbopt1 = snapshot_results.get(post_glbopt1_lbl)
-    if snap_glbopt1 is None:
-        survives_glbopt1 = "UNKNOWN"
-    else:
-        # Block missing at snapshot => preds=None, reachable_from_0=NO.
-        if snap_glbopt1.get("preds") is None:
-            survives_glbopt1 = "NO"
-        else:
-            survives_glbopt1 = "YES"
-
-    # earliest_kill_point: walk in pipeline-temporal order, first label
-    # where the block has been removed wins. ``preds is None`` is the
-    # canonical "missing in this snapshot" signal from
-    # ``_query_block_state_in_snapshot``.
-    earliest_kill_point = "NEVER"
-    if conn is None and not snapshot_results:
-        earliest_kill_point = "unknown"
-    else:
-        # Was the block alive in the FIRST snapshot at all?  If not,
-        # we cannot really declare a kill point.
-        first_snap = snapshot_results.get(_KILL_POINT_SNAPSHOT_ORDER[0])
-        if first_snap is None or first_snap.get("preds") is None:
-            earliest_kill_point = "unknown"
-        else:
-            for label in _KILL_POINT_SNAPSHOT_ORDER:
-                snap = snapshot_results.get(label)
-                if snap is None:
-                    # snapshot itself missing -> can't conclude
-                    continue
-                if snap.get("preds") is None:
-                    earliest_kill_point = label
-                    break
-
+    snapshot_context = _collect_anchor_snapshot_context_from_diagnostics(
+        anchor_serial=anchor_serial,
+    )
     return {
         "owning_states_via_local_facts": owning_descriptions,
-        "preds_pre_pipeline": _fmt(pre_pipeline_lbl, "preds"),
-        "preds_post_hcc": _fmt(post_hcc_lbl, "preds"),
-        "preds_post_pipeline": _fmt(post_pipeline_lbl, "preds"),
-        "succs_pre_pipeline": _fmt(pre_pipeline_lbl, "succs"),
-        "succs_post_hcc": _fmt(post_hcc_lbl, "succs"),
-        "succs_post_pipeline": _fmt(post_pipeline_lbl, "succs"),
-        "reachable_from_entry_post_pipeline": reach_post_pipeline,
-        "survives_glbopt1_post_d810": survives_glbopt1,
-        "earliest_kill_point": earliest_kill_point,
+        **snapshot_context,
     }
 
 
@@ -1788,6 +1177,7 @@ def _log_region_lowering_candidate(
     dag: LinearizedStateDag | None = None,
     local_facts: DagLocalFacts | None = None,
     mba: object | None = None,
+    live_topology_backend: HandlerChainLiveTopologyBackend = _LIVE_TOPOLOGY_BACKEND,
 ) -> None:
     """Emit the structured ``REGION_LOWERING_CANDIDATE`` log line.
 
@@ -1849,6 +1239,7 @@ def _log_region_lowering_candidate(
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=live_topology_backend,
             )
         except Exception:  # pragma: no cover - diagnostic only
             yes_handlers_subclass = None
@@ -1913,12 +1304,17 @@ def _log_region_lowering_candidate(
         block_outgoing_edge_label: str = "None"
         if mba is not None:
             try:
-                anchor_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                    mba, anchor_serial,
+                anchor_topology = live_topology_backend.read_block_topology(
+                    mba,
+                    int(anchor_serial),
                 )
-                if anchor_blk is not None and int(anchor_blk.nsucc()) >= 1:
+                if (
+                    anchor_topology.block_exists
+                    and anchor_topology.successors is not None
+                    and anchor_topology.successors
+                ):
                     block_outgoing_edge_label = (
-                        f"blk[{int(anchor_blk.succ(0))}]"
+                        f"blk[{int(anchor_topology.successors[0])}]"
                     )
             except Exception:  # pragma: no cover - diagnostic only
                 pass
@@ -1966,7 +1362,7 @@ def _log_region_lowering_candidate(
             "  call_type=%s\n"
             "  call_ea=0x%x\n"
             "  region_handlers=%s\n"
-            "  region_pred_via_resolve_first_pred=%s\n"
+            "  region_pred_via_live_topology=%s\n"
             "  region_succ_via_resolve_region_exit=%s\n"
             "  semantic_pred_source=%s\n"
             "  semantic_pred_eligibility=%s\n"
@@ -2049,6 +1445,7 @@ def _log_region_lowering_summary(
                     dag=dag,
                     local_facts=local_facts,
                     mba=mba,
+                    live_topology_backend=_LIVE_TOPOLOGY_BACKEND,
                 )
             except Exception:  # pragma: no cover - diagnostic only
                 sub = None
@@ -2242,260 +1639,21 @@ def _resolve_state_var_stkoff_loose(snapshot: "AnalysisSnapshot") -> int | None:
     return None
 
 
-def _collect_byte_evidence_eas(snapshot: object) -> frozenset[int]:
-    """Source EAs of every ``TerminalByteEmitterFact`` terminal-tail observation.
-
-    Mirrors the extraction used by ``ByteCascadeCoverageTracer`` so both
-    consumers see the same byte-emitter EA universe.  Returns an empty
-    frozenset when no fact view is attached (the production stub path).
-
-    Used by ``_compose_region`` to relax the composition's jcond-at-tail
-    refusal when the block carries a byte m_stx the materialised
-    InsertBlock body must preserve.
-    """
-    fact_view = (
-        getattr(snapshot, "diagnostic_fact_view", None)
-        or getattr(snapshot, "validated_fact_view", None)
-    )
-    if fact_view is None:
-        return frozenset()
-    out: set[int] = set()
-    for obs in getattr(fact_view, "active_observations", ()) or ():
-        if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
-            continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("corridor_role") != "terminal_tail":
-            continue
-        for candidate in (
-            payload.get("source_ea"),
-            payload.get("source_ea_hex"),
-            getattr(obs, "source_ea", None),
-            getattr(obs, "source_ea_hex", None),
-            getattr(obs, "source_ea_i64", None),
-        ):
-            if candidate is None:
-                continue
-            if isinstance(candidate, bool):
-                continue
-            if isinstance(candidate, int):
-                out.add(int(candidate))
-                continue
-            if isinstance(candidate, str):
-                text = candidate.strip()
-                if not text:
-                    continue
-                try:
-                    out.add(int(text, 16) if text.lower().startswith("0x") else int(text))
-                except (ValueError, TypeError):
-                    continue
-    return frozenset(out)
-
-
-def _find_live_def_insn(
-    mba: object,
-    region_anchor: int,
-    stkoff: int,
-    size: int,
-) -> object | None:
-    """Return the live ``minsn_t`` that defines ``(stkoff, size)`` reaching
-    ``region_anchor``, or None if no reaching def is recorded.
-
-    Walks IDA's UD chain for ``region_anchor`` and looks up the first
-    def site's instruction in the live MBA.  Read-only.
-    """
-    try:
-        defs = find_reaching_defs_for_stkvar(
-            mba, int(region_anchor), int(stkoff), int(size),
-        )
-    except Exception:
-        return None
-    if not defs:
-        return None
-    for def_site in defs:
-        try:
-            def_blk_serial = int(def_site.block_serial)
-            def_ea = int(def_site.ins_ea)
-        except Exception:
-            continue
-        try:
-            def_blk = mba.get_mblock(def_blk_serial)  # type: ignore[attr-defined]
-        except Exception:
-            continue
-        if def_blk is None:
-            continue
-        cur = getattr(def_blk, "head", None)
-        while cur is not None:
-            try:
-                cur_ea = int(getattr(cur, "ea", 0) or 0)
-            except Exception:
-                cur_ea = 0
-            if cur_ea == def_ea:
-                return cur
-            cur = getattr(cur, "next", None)
-    return None
-
-
-def _capture_transitive_def_chain(
+def _capture_transitive_def_chain_body(
     mba: object,
     region_anchor: int,
     initial_reads: set[tuple[int, int]],
     *,
     max_depth: int = 8,
     max_total: int = 64,
-) -> list["InsnSnapshot"] | None:
-    """Capture a topologically-ordered transitive def chain.
-
-    For each ``(stkoff, size)`` in ``initial_reads``, find a def reaching
-    ``region_anchor`` and recursively materialise the closure: every
-    stkvar read by a captured def is itself captured first.  The
-    returned list is ordered so a stkvar's def appears before any
-    captured instruction that reads it.
-
-    Returns ``None`` when any read cannot be resolved (no reaching def
-    in the live MBA, or recursion exceeds ``max_depth``/``max_total``).
-    Cycle-safe via a ``(stkoff, size)`` visited set; bottoms out
-    naturally when a def reads only constants, registers, or args.
-
-    Designed for prepending to a region's ``composed_instructions``: the
-    new InsertBlock then defines every stkvar it reads locally, so the
-    pred's strand can't cause IDA's def-use analysis to fold the body.
-    """
-    captured: dict[int, "InsnSnapshot"] = {}
-    capture_order: list[int] = []
-    visited: set[tuple[int, int]] = set()
-    in_progress: set[tuple[int, int]] = set()
-
-    def _resolve(stkoff: int, size: int, depth: int) -> bool:
-        key = (int(stkoff), int(size))
-        if key in visited:
-            return True
-        if key in in_progress:
-            # cycle: treat as resolved here; the outer def will be captured
-            return True
-        if depth > max_depth:
-            logger.info(
-                "HCC_DEF_PROBE depth-exceeded anchor=%d stkoff=0x%x size=%d depth=%d",
-                int(region_anchor), int(stkoff), int(size), depth,
-            )
-            return False
-        if len(capture_order) > max_total:
-            logger.info(
-                "HCC_DEF_PROBE max-total-exceeded anchor=%d stkoff=0x%x size=%d captured=%d",
-                int(region_anchor), int(stkoff), int(size), len(capture_order),
-            )
-            return False
-        in_progress.add(key)
-        # diagnostic: report what find_reaching_defs_for_stkvar returns.
-        try:
-            probe_defs = find_reaching_defs_for_stkvar(
-                mba, int(region_anchor), int(stkoff), int(size),
-            )
-        except Exception as exc:
-            probe_defs = None
-            logger.info(
-                "HCC_DEF_PROBE chain-raised anchor=%d stkoff=0x%x size=%d exc=%s",
-                int(region_anchor), int(stkoff), int(size), exc,
-            )
-        if not probe_defs:
-            # No internal def reaches the anchor for this stkvar.  Most
-            # often this means the slot is an argument / register-init
-            # value live throughout the function -- not an error.
-            # Mark visited and succeed without capture: any pred of the
-            # InsertBlock will see the same external slot.
-            logger.info(
-                "HCC_DEF_PROBE no-defs-external anchor=%d stkoff=0x%x size=%d"
-                " (treated as external input, no capture needed)",
-                int(region_anchor), int(stkoff), int(size),
-            )
-            visited.add(key)
-            in_progress.discard(key)
-            return True
-        logger.info(
-            "HCC_DEF_PROBE found anchor=%d stkoff=0x%x size=%d n_defs=%d sites=%s",
-            int(region_anchor), int(stkoff), int(size), len(probe_defs),
-            [(int(d.block_serial), hex(int(d.ins_ea))) for d in probe_defs[:5]],
-        )
-        insn = _find_live_def_insn(mba, region_anchor, stkoff, size)
-        if insn is None:
-            in_progress.discard(key)
-            return False
-        try:
-            def_ea = int(getattr(insn, "ea", 0) or 0)
-            opcode = int(insn.opcode)
-        except Exception:
-            in_progress.discard(key)
-            return False
-        # Walk this def's own stkvar reads (l, r, plus d for stores).
-        sub_reads: set[tuple[int, int]] = set()
-        _collect_stkvar_reads_from_mop(getattr(insn, "l", None), sub_reads)
-        _collect_stkvar_reads_from_mop(getattr(insn, "r", None), sub_reads)
-        d_op = getattr(insn, "d", None)
-        if d_op is not None:
-            try:
-                d_type = int(d_op.t)
-            except Exception:
-                d_type = -1
-            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
-                _collect_stkvar_reads_from_mop(d_op, sub_reads)
-        # Drop this def's own destination (it defines, doesn't read).
-        sub_reads.discard(key)
-        for sub_off, sub_sz in sorted(sub_reads):
-            if not _resolve(sub_off, sub_sz, depth + 1):
-                in_progress.discard(key)
-                return False
-        # All transitive deps resolved -- capture this def.
-        if def_ea not in captured:
-            try:
-                snap = capture_insn_snapshot(insn)
-            except Exception:
-                in_progress.discard(key)
-                return False
-            captured[def_ea] = snap
-            capture_order.append(def_ea)
-        visited.add(key)
-        in_progress.discard(key)
-        return True
-
-    for stkoff, size in sorted(initial_reads):
-        if not _resolve(int(stkoff), int(size), 0):
-            return None
-    return [captured[ea] for ea in capture_order]
-
-
-def _collect_stkvar_reads_from_mop(
-    mop: object,
-    reads: set[tuple[int, int]],
-) -> None:
-    """Recursively collect ``(stkoff, size)`` for every stkvar read in a mop_t.
-
-    Walks ``mop_S`` (direct stack read) and ``mop_d`` (sub-instruction)
-    operands.  Other mop kinds (``mop_n``, ``mop_r``, ``mop_b``, etc.)
-    do not contribute stkvar reads and are ignored.
-
-    Read-only; never mutates the mop_t or its sub-objects.
-    """
-    if mop is None:
-        return
-    try:
-        t = int(mop.t)
-    except Exception:
-        return
-    if t == ida_hexrays.mop_S:
-        s = getattr(mop, "s", None)
-        if s is None:
-            return
-        try:
-            reads.add((int(s.off), int(mop.size)))
-        except Exception:
-            return
-        return
-    if t == ida_hexrays.mop_d:
-        sub = getattr(mop, "d", None)
-        if sub is None:
-            return
-        _collect_stkvar_reads_from_mop(getattr(sub, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "r", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(sub, "d", None), reads)
+) -> CapturedBlockBody | None:
+    return _HEX_RAYS_CAPTURE_BACKEND.capture_transitive_def_chain(
+        mba,
+        region_anchor,
+        initial_reads,
+        max_depth=max_depth,
+        max_total=max_total,
+    )
 
 
 def _collect_stkvar_reads_in_block(
@@ -2503,69 +1661,10 @@ def _collect_stkvar_reads_in_block(
     *,
     skip_jcond_tail: bool = True,
 ) -> set[tuple[int, int]]:
-    """Return the ``(stkoff, size)`` set for every stkvar read in ``blk``.
-
-    Walks the live ``minsn_t`` stream.  Reads come from ``l`` and ``r``
-    operands universally; ``d`` contributes a read only when the opcode is
-    a memory store (``m_stx``, ``m_stm``) or when ``d`` itself is a
-    sub-instruction (``mop_d``).  This rule prevents
-    treating ``mov %src, %var_x.N`` destinations as fake reads.
-
-    With ``skip_jcond_tail`` (default True), a ``jcond`` instruction
-    halts collection -- mirroring the body capture's jcond-at-tail drop
-    so the precondition does not strand on operands whose only read
-    lives in a jcond the InsertBlock will not actually carry.
-    """
-    reads: set[tuple[int, int]] = set()
-    cur = getattr(blk, "head", None)
-    while cur is not None:
-        try:
-            opcode = int(cur.opcode)
-        except Exception:
-            opcode = -1
-        if skip_jcond_tail:
-            try:
-                if ida_hexrays.is_mcode_jcond(opcode):
-                    break
-            except Exception:
-                pass
-        _collect_stkvar_reads_from_mop(getattr(cur, "l", None), reads)
-        _collect_stkvar_reads_from_mop(getattr(cur, "r", None), reads)
-        d = getattr(cur, "d", None)
-        if d is not None:
-            try:
-                d_type = int(d.t)
-            except Exception:
-                d_type = -1
-            # m_stx is the only widely-available memory-store opcode whose
-            # 'd' operand is the source value (a read).  Other store opcodes
-            # (m_st1/m_stm in some SDKs) are covered transparently when their
-            # 'd' is a sub-instruction (mop_d case below).
-            if opcode == ida_hexrays.m_stx or d_type == ida_hexrays.mop_d:
-                _collect_stkvar_reads_from_mop(d, reads)
-        cur = getattr(cur, "next", None)
-    return reads
-
-
-def _is_state_write(insn: object, state_var_stkoff: int | None) -> bool:
-    """Return True if ``insn`` writes a state constant to the state var."""
-    if state_var_stkoff is None:
-        return False
-    try:
-        opcode = int(insn.opcode)
-    except Exception:
-        return False
-    if opcode != ida_hexrays.m_mov:
-        return False
-    dst = getattr(insn, "d", None)
-    if dst is None:
-        return False
-    try:
-        if dst.t != ida_hexrays.mop_S:
-            return False
-        return int(dst.s.off) == int(state_var_stkoff)
-    except Exception:
-        return False
+    return _HEX_RAYS_CAPTURE_BACKEND.collect_stkvar_reads_in_block(
+        blk,
+        skip_jcond_tail=skip_jcond_tail,
+    )
 
 
 def _block_has_non_state_payload(
@@ -2574,27 +1673,11 @@ def _block_has_non_state_payload(
     *,
     state_var_stkoff: int | None,
 ) -> bool:
-    """Return True when a block has real payload beyond state write/goto glue."""
-    try:
-        blk = mba.get_mblock(int(block_serial))
-    except Exception:
-        return False
-    if blk is None:
-        return False
-    insn = getattr(blk, "head", None)
-    while insn is not None:
-        try:
-            opcode = int(insn.opcode)
-        except Exception:
-            return True
-        if opcode in {ida_hexrays.m_nop, ida_hexrays.m_goto}:
-            insn = getattr(insn, "next", None)
-            continue
-        if _is_state_write(insn, state_var_stkoff):
-            insn = getattr(insn, "next", None)
-            continue
-        return True
-    return False
+    return _HEX_RAYS_CAPTURE_BACKEND.block_has_non_state_payload(
+        mba,
+        int(block_serial),
+        state_variable=state_var_stkoff,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2751,6 +1834,24 @@ class HandlerChainComposerStrategy:
         # body.  Stashed alongside ``_last_raw_region_table``.
         self._last_state_var_stkoff_for_call_barrier: int | None = None
         self._last_local_facts_for_call_barrier: DagLocalFacts | None = None
+        self._projected_topology_backend: ProjectedTopologyBackend = (
+            _PROJECTED_TOPOLOGY_BACKEND
+        )
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
+        self._live_topology_backend: HandlerChainLiveTopologyBackend = (
+            _LIVE_TOPOLOGY_BACKEND
+        )
+        self._topology_walk_backend: HandlerChainTopologyWalkBackend = (
+            _TOPOLOGY_WALK_BACKEND
+        )
+        self._materialization_capture_backend: HandlerChainMaterializationCaptureBackend = (
+            _MATERIALIZATION_CAPTURE_BACKEND
+        )
+        self._insert_block_call_audit_backend: InsertBlockCallAuditBackend = (
+            _HEX_RAYS_CAPTURE_BACKEND
+        )
         # Read-only diagnostic tracer; (re)constructed at the top of plan().
         self._byte_cascade_tracer: ByteCascadeCoverageTracer | None = None
 
@@ -2884,7 +1985,20 @@ class HandlerChainComposerStrategy:
                     candidate.succ_serial,
                 )
                 continue
-            reason = validate_insn_snapshots(candidate.composed_instructions)
+            candidate_body = candidate.captured_body
+            if candidate_body is None:
+                candidate_body = _HEX_RAYS_CAPTURE_BACKEND.body_from_snapshots(
+                    candidate.composed_instructions,
+                    source_blocks=candidate.handler_serials,
+                    capture_id=(
+                        "legacy-candidate:"
+                        + ",".join(str(int(serial)) for serial in candidate.handler_serials)
+                    ),
+                )
+                candidate = replace(candidate, captured_body=candidate_body)
+            reason = (
+                _HEX_RAYS_CAPTURE_BACKEND.validate_body(candidate_body)
+            )
             if reason is not None:
                 logger.warning(
                     "HandlerChainComposer: snapshot validation failed for"
@@ -2998,8 +2112,8 @@ class HandlerChainComposerStrategy:
                 InsertBlock(
                     pred_serial=pred_serial,
                     succ_serial=candidate.succ_serial,
-                    instructions=candidate.composed_instructions,
                     old_target_serial=old_target,
+                    captured_body=candidate.captured_body,
                 )
             )
             region_owned_blocks.update(candidate.handler_serials)
@@ -3158,12 +2272,13 @@ class HandlerChainComposerStrategy:
             # Reject mods that would collapse a return-frontier carrier-def
             # path before IDA's MMAT_GLBOPT1 copy-prop sweep can substitute
             # the lvar carrier identity into the return-slot store.
-            if (
-                os.environ.get(
-                    self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
-                ).strip()
-                == "1"
-            ):
+            if self._return_frontier_carrier_guard_enabled():
+                _discovery = getattr(snapshot, "discovery", None)
+                _artifact_priors = getattr(
+                    _discovery,
+                    "return_frontier_artifact_priors",
+                    None,
+                )
                 _swr_dag = swr_result.get("dag") if swr_result else None
                 _carrier_facts: tuple[ReturnFrontierCarrierFact, ...] = ()
                 if _swr_dag is not None:
@@ -3173,17 +2288,20 @@ class HandlerChainComposerStrategy:
                     )
                 if not _carrier_facts:
                     _carrier_facts = detect_return_frontier_carrier_facts(
-                        getattr(snapshot, "flow_graph", None)
+                        getattr(snapshot, "flow_graph", None),
+                        state_var_stkoff=filter_state_var_stkoff,
+                        artifact_priors=_artifact_priors,
                     )
                 if _carrier_facts:
                     for _f in _carrier_facts:
                         logger.info(
                             "RETURN_FRONTIER_CARRIER_GUARD: fact (SWR+region "
                             "path): ret=blk[%d] writer=blk[%d] "
-                            "carrier_lvar=%s|stkoff=%s "
+                            "classification=%s carrier_lvar=%s|stkoff=%s "
                             "path_blocks=%s",
                             _f.ret_block,
                             _f.writer_block,
+                            getattr(_f, "classification", "RETURN_CARRIER"),
                             (
                                 str(_f.carrier_lvar_idx)
                                 if _f.carrier_lvar_idx is not None
@@ -3200,6 +2318,13 @@ class HandlerChainComposerStrategy:
                         self._filter_carrier_shredding_mods(
                             combined_modifications,
                             _carrier_facts,
+                        )
+                    )
+                    combined_modifications = (
+                        append_protected_non_carrier_return_writer_direct_lowerings(
+                            combined_modifications,
+                            mba=snapshot.mba,
+                            carrier_facts=_carrier_facts,
                         )
                     )
             frontier_closure = plan_dag_authoritative_frontier_closure(
@@ -3434,12 +2559,13 @@ class HandlerChainComposerStrategy:
                 side_effect_corridors,
             )
         # Return-frontier carrier-shred guard (region-collapse path).
-        if (
-            os.environ.get(
-                self._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, ""
-            ).strip()
-            == "1"
-        ):
+        if self._return_frontier_carrier_guard_enabled():
+            _discovery = getattr(snapshot, "discovery", None)
+            _artifact_priors = getattr(
+                _discovery,
+                "return_frontier_artifact_priors",
+                None,
+            )
             _region_dag = swr_result.get("dag") if swr_result else None
             _carrier_facts2: tuple[ReturnFrontierCarrierFact, ...] = ()
             if _region_dag is not None:
@@ -3451,17 +2577,20 @@ class HandlerChainComposerStrategy:
                 )
             if not _carrier_facts2:
                 _carrier_facts2 = detect_return_frontier_carrier_facts(
-                    getattr(snapshot, "flow_graph", None)
+                    getattr(snapshot, "flow_graph", None),
+                    state_var_stkoff=_resolve_state_var_stkoff_loose(snapshot),
+                    artifact_priors=_artifact_priors,
                 )
             if _carrier_facts2:
                 for _f in _carrier_facts2:
                     logger.info(
                         "RETURN_FRONTIER_CARRIER_GUARD: fact (region-collapse "
                         "path): ret=blk[%d] writer=blk[%d] "
-                        "carrier_lvar=%s|stkoff=%s "
+                        "classification=%s carrier_lvar=%s|stkoff=%s "
                         "path_blocks=%s",
                         _f.ret_block,
                         _f.writer_block,
+                        getattr(_f, "classification", "RETURN_CARRIER"),
                         (
                             str(_f.carrier_lvar_idx)
                             if _f.carrier_lvar_idx is not None
@@ -3477,6 +2606,13 @@ class HandlerChainComposerStrategy:
                 filtered_modifications = self._filter_carrier_shredding_mods(
                     filtered_modifications,
                     _carrier_facts2,
+                )
+                filtered_modifications = (
+                    append_protected_non_carrier_return_writer_direct_lowerings(
+                        filtered_modifications,
+                        mba=snapshot.mba,
+                        carrier_facts=_carrier_facts2,
+                    )
                 )
         owned_blocks_combined = set(region_owned_blocks)
         owned_blocks_combined.update(call_barrier_owned_blocks)
@@ -3554,7 +2690,7 @@ class HandlerChainComposerStrategy:
             strategy_name=self.name,
         )
         _corrected_dag_out: list = []
-        dag = build_live_linearized_state_dag_from_graph(
+        dag = self._projected_topology_backend.build_live_dag(
             flow_graph,
             transition_result,
             dispatcher_entry_serial=snapshot.bst_dispatcher_serial,
@@ -3577,7 +2713,7 @@ class HandlerChainComposerStrategy:
             self._byte_cascade_tracer.seed_dag(dag)
             self._byte_cascade_tracer.seed_corrected_dag(corrected_dag)
 
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             state_var_stkoff,
         )
@@ -3586,8 +2722,9 @@ class HandlerChainComposerStrategy:
             int(getattr(mba, "entry_ea", 0) or 0),
             int(getattr(mba, "maturity", 0) or 0),
         )
-        # Snapshot + selected-alternate override BEFORE building
-        # indexes so candidate generation sees the corrected edges.
+        # Snapshot for diagnostics, then apply selected-alternate overrides
+        # from the in-memory fact view so SQLite availability cannot affect
+        # behavior.
         _snapshot_result = snapshot_reconstruction_dag(
             logger,
             dag=dag,
@@ -3595,15 +2732,26 @@ class HandlerChainComposerStrategy:
             strategy_name=self.name,
         )
         from d810.recon.flow.selected_alternate_edge_override import (
-            apply_selected_alternate_edge_overrides_from_diag,
+            apply_selected_alternate_edge_overrides,
+            derive_selected_alternate_edge_override_map,
         )
-        dag = apply_selected_alternate_edge_overrides_from_diag(
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+        override_map = derive_selected_alternate_edge_override_map(
             dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
-        corrected_dag = apply_selected_alternate_edge_overrides_from_diag(
+        dag = apply_selected_alternate_edge_overrides(
+            dag,
+            fact_view,
+            override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+        )
+        corrected_dag = apply_selected_alternate_edge_overrides(
             corrected_dag,
-            _snapshot_result.snap_ref,
+            fact_view,
+            override_map=override_map,
+            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
         )
 
         indexes = build_reconstruction_discovery_indexes(
@@ -3745,7 +2893,7 @@ class HandlerChainComposerStrategy:
                 target_entry_for_log = int(mod.new_target)
 
             try:
-                violations = check_redirect_severs_use_def(
+                violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                     mod,
                     mba,
                     candidate_flow_graph,
@@ -3784,7 +2932,7 @@ class HandlerChainComposerStrategy:
                 )
                 return None
             violations = real_violations
-            target_has_call = _block_contains_call_opcode(
+            target_has_call = _HEX_RAYS_CAPTURE_BACKEND.block_contains_call(
                 mba,
                 int(target_entry_for_log),
             )
@@ -3839,7 +2987,7 @@ class HandlerChainComposerStrategy:
             if target_npred <= 1:
                 return None
             try:
-                violations = check_redirect_severs_use_def(
+                violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                     modification,
                     mba,
                     flow_graph,
@@ -3907,6 +3055,8 @@ class HandlerChainComposerStrategy:
             ),
             conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         primary_probe_accepted_candidates = _collect_accepted_reconstruction_candidates(
             run
@@ -4024,6 +3174,8 @@ class HandlerChainComposerStrategy:
                 ),
                 conditional_redirect_veto=_veto_payload_intermediate_conditional_redirect,
                 mba=mba,
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
             for result in fallback_run.conditional_results:
                 candidate = result.candidate
@@ -4195,6 +3347,8 @@ class HandlerChainComposerStrategy:
             handler_entries=tuple(int(node.entry_anchor) for node in dag.nodes),
             compute_reachable_blocks=compute_reachable_blocks,
             mba=mba,
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
             force_clone_shared_blocks=frozenset(
                 int(result.shared_block)
                 for result in shared_group_results
@@ -4274,8 +3428,7 @@ class HandlerChainComposerStrategy:
             ),
         }
 
-    @staticmethod
-    def _assert_no_call_in_insert_blocks(modifications: list) -> None:
+    def _assert_no_call_in_insert_blocks(self, modifications: list) -> None:
         """uee-b7ze Step 2 (Phase C): audit ``InsertBlock`` bodies for calls.
 
         Step 2 must NEVER copy a call instruction into an InsertBlock
@@ -4289,12 +3442,26 @@ class HandlerChainComposerStrategy:
         for mod in modifications:
             if not isinstance(mod, InsertBlock):
                 continue
+            captured_body = getattr(mod, "captured_body", None)
+            if (
+                captured_body is not None
+                and self._insert_block_call_audit_backend.captured_body_contains_call(
+                    captured_body
+                )
+            ):
+                logger.error(
+                    "HCC_CALL_BARRIER_INVARIANT_VIOLATION:"
+                    " captured InsertBlock body contains call"
+                    " (block_serial=%d)",
+                    int(getattr(mod, "pred_serial", -1)),
+                )
+                raise AssertionError(
+                    "call leaked into InsertBlock captured body"
+                )
             for insn_snap in mod.instructions:
-                try:
-                    opcode = int(getattr(insn_snap, "opcode", -1))
-                except Exception:
-                    continue
-                if opcode in (ida_hexrays.m_call, ida_hexrays.m_icall):
+                if self._insert_block_call_audit_backend.instruction_snapshot_is_call(
+                    insn_snap
+                ):
                     logger.error(
                         "HCC_CALL_BARRIER_INVARIANT_VIOLATION:"
                         " m_call/m_icall ea=0x%x in InsertBlock body"
@@ -4357,7 +3524,7 @@ class HandlerChainComposerStrategy:
                 and int(mod.from_serial) in severance_veto_sources
             ):
                 try:
-                    violations = check_redirect_severs_use_def(
+                    violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                         mod,
                         mba,
                         flow_graph,
@@ -4625,11 +3792,15 @@ class HandlerChainComposerStrategy:
     # a return-frontier carrier-def path into a single-def/single-use
     # shape that downstream copy-prop will substitute, severing the lvar
     # carrier identity (e.g. ``return v49`` becoming ``return a5 + 0xD0``).
-    # Off by default until validated; flip on with
-    # ``D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=1``.
+    # Enabled by default; set ``D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE=0``
+    # to bisect carrier-guard effects.
     _RETURN_FRONTIER_CARRIER_PRESERVE_ENV = (
         "D810_HODUR_RETURN_FRONTIER_CARRIER_PRESERVE"
     )
+
+    @classmethod
+    def _return_frontier_carrier_guard_enabled(cls) -> bool:
+        return os.environ.get(cls._RETURN_FRONTIER_CARRIER_PRESERVE_ENV, "1").strip() != "0"
 
     @staticmethod
     def _filter_carrier_shredding_mods(
@@ -4666,6 +3837,13 @@ class HandlerChainComposerStrategy:
         line naming the offending mod and the protecting fact.
         """
         if not carrier_facts or not modifications:
+            return modifications
+        carrier_facts = tuple(
+            fact
+            for fact in carrier_facts
+            if getattr(fact, "classification", "RETURN_CARRIER") == "RETURN_CARRIER"
+        )
+        if not carrier_facts:
             return modifications
 
         # Build a per-fact membership index plus the union for fast first-
@@ -4756,6 +3934,7 @@ class HandlerChainComposerStrategy:
             fact = _matching_fact(offending_blocks)
             fact_repr = (
                 f"ret=blk[{fact.ret_block}] writer=blk[{fact.writer_block}] "
+                f"classification={getattr(fact, 'classification', 'RETURN_CARRIER')} "
                 f"carrier_lvar={fact.carrier_lvar_idx}|"
                 f"stkoff={fact.carrier_stkoff if fact.carrier_stkoff is None else hex(fact.carrier_stkoff)}"
                 if fact is not None
@@ -4779,8 +3958,8 @@ class HandlerChainComposerStrategy:
             )
         return kept
 
-    @staticmethod
     def _filter_payload_intermediate_redirects(
+        self,
         modifications: list,
         *,
         mba: object,
@@ -4805,6 +3984,18 @@ class HandlerChainComposerStrategy:
             for mod in modifications
             if isinstance(mod, RedirectGoto)
         }
+        claimed_topology_sources: set[int] = set()
+        insert_old_targets_by_source: dict[int, int] = {}
+        for mod in modifications:
+            if isinstance(mod, (RedirectGoto, RedirectBranch)):
+                claimed_topology_sources.add(int(mod.from_serial))
+            elif isinstance(mod, ConvertToGoto):
+                claimed_topology_sources.add(int(mod.block_serial))
+            elif isinstance(mod, InsertBlock):
+                source = int(mod.pred_serial)
+                claimed_topology_sources.add(source)
+                if mod.old_target_serial is not None:
+                    insert_old_targets_by_source[source] = int(mod.old_target_serial)
         for mod in modifications:
             if not isinstance(mod, RedirectBranch):
                 kept.append(mod)
@@ -4829,12 +4020,49 @@ class HandlerChainComposerStrategy:
             )
             if (old_target, int(mod.new_target)) in goto_pairs:
                 continue
-            try:
-                old_blk = mba.get_mblock(old_target)  # type: ignore[attr-defined]
-                old_nsucc = int(old_blk.nsucc()) if old_blk is not None else 0
-                old_succ = int(old_blk.succ(0)) if old_nsucc == 1 else -1
-            except Exception:
-                old_succ = -1
+            if old_target in claimed_topology_sources:
+                claimed_old_target = insert_old_targets_by_source.get(old_target)
+                if claimed_old_target is not None:
+                    kept.append(
+                        EdgeRedirectViaPredSplit(
+                            src_block=old_target,
+                            old_target=claimed_old_target,
+                            new_target=int(mod.new_target),
+                            via_pred=int(mod.from_serial),
+                            rule_priority=550,
+                        )
+                    )
+                    added_feeders.append(
+                        (old_target, claimed_old_target, int(mod.new_target))
+                    )
+                    logger.info(
+                        "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SPLIT"
+                        " source=blk[%d] old=blk[%d] target=blk[%d]"
+                        " via_pred=blk[%d] reason=old_target_region_claim",
+                        old_target,
+                        claimed_old_target,
+                        int(mod.new_target),
+                        int(mod.from_serial),
+                    )
+                    continue
+                logger.info(
+                    "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SKIPPED"
+                    " source=blk[%d] target=blk[%d]"
+                    " reason=old_target_already_claimed",
+                    old_target,
+                    int(mod.new_target),
+                )
+                continue
+            old_probe = self._read_live_one_way_successor(mba, old_target)
+            old_succ = (
+                int(old_probe.successor)
+                if (
+                    old_probe.block_exists
+                    and old_probe.nsucc == 1
+                    and old_probe.successor is not None
+                )
+                else -1
+            )
             if old_succ < 0:
                 logger.info(
                     "HCC_PAYLOAD_INTERMEDIATE_FEEDER_SKIPPED"
@@ -4889,7 +4117,7 @@ class HandlerChainComposerStrategy:
                 " composed bodies will retain state-var writes"
             )
 
-        regions = self._detect_dag_regions(dag)
+        regions = list(detect_linear_transition_regions(dag))
         logger.info(
             "HandlerChainComposer: detected %d region(s) from DAG"
             " (nodes=%d edges=%d)",
@@ -4905,7 +4133,7 @@ class HandlerChainComposerStrategy:
         # handler bodies (m_add + m_stx + jcond) materialise into the
         # emitted InsertBlock instead of being blanket-rejected and
         # leaving the m_stx for IDA's finalisation DCE.
-        byte_evidence_eas = _collect_byte_evidence_eas(snapshot)
+        byte_evidence_eas = collect_terminal_tail_byte_source_eas(snapshot)
 
         # BST analysis result -- the dispatcher tree built by recon.
         # ``_compose_region`` consults it when the natural splice pred
@@ -4948,6 +4176,7 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     local_facts=local_facts,
                     mba=mba,
+                    live_topology_backend=self._live_topology_backend,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic only
                 logger.warning(
@@ -5131,6 +4360,7 @@ class HandlerChainComposerStrategy:
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=self._live_topology_backend,
             )
             if label != "FUSABLE_TAIL_EXTENSION":
                 continue
@@ -5213,10 +4443,11 @@ class HandlerChainComposerStrategy:
             #     planned splice_old_target.
             splice_source_block = int(plan.convergence_block)
             splice_old_target_planned = int(plan.splice_old_target)
-            splice_blk = HandlerChainComposerStrategy._safe_get_mblock(
-                mba, splice_source_block,
+            splice_probe = self._read_live_one_way_successor(
+                mba,
+                splice_source_block,
             )
-            if splice_blk is None:
+            if not splice_probe.block_exists:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=splice_source_dead",
@@ -5224,9 +4455,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_nsucc = int(splice_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.nsucc is None:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=splice_source_no_longer_1way",
@@ -5234,6 +4463,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_nsucc = int(splice_probe.nsucc)
             if splice_nsucc != 1:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
@@ -5243,9 +4473,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_succ_live = int(splice_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.successor is None:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
                     " splice_source=blk[%d] reason=stale_old_target",
@@ -5253,6 +4481,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_succ_live = int(splice_probe.successor)
             if splice_succ_live != splice_old_target_planned:
                 logger.info(
                     "HCC_TAIL_EXTENSION_REJECTED head_states=(0x%08X, 0x%08X)"
@@ -5301,6 +4530,7 @@ class HandlerChainComposerStrategy:
                 succ_serial=int(plan.exit_target),
                 composed_instructions=body,
                 state_values=states,
+                captured_body=info.composed_candidate.captured_body,
             )
 
             per_candidate.append(tail_candidate)
@@ -5489,8 +4719,11 @@ class HandlerChainComposerStrategy:
 
             # Atomic guard 1: splice source still 1-way and pointing
             # at the planned old target.
-            splice_blk = self._safe_get_mblock(mba, splice_source)
-            if splice_blk is None:
+            splice_probe = self._read_live_one_way_successor(
+                mba,
+                splice_source,
+            )
+            if not splice_probe.block_exists:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_dead"
@@ -5499,9 +4732,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_nsucc = int(splice_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.nsucc is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_nsucc_unreadable",
@@ -5509,6 +4740,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_nsucc = int(splice_probe.nsucc)
             if splice_nsucc != 1:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5518,9 +4750,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                splice_live_succ = int(splice_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if splice_probe.successor is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=splice_source_succ_unreadable",
@@ -5528,6 +4758,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            splice_live_succ = int(splice_probe.successor)
             if splice_live_succ != splice_old_target:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5541,8 +4772,11 @@ class HandlerChainComposerStrategy:
 
             # Atomic guard 2: handler still 1-way and pointing at the
             # current dispatcher edge.
-            handler_blk = self._safe_get_mblock(mba, anchor_serial)
-            if handler_blk is None:
+            handler_probe = self._read_live_one_way_successor(
+                mba,
+                anchor_serial,
+            )
+            if not handler_probe.block_exists:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_dead",
@@ -5550,9 +4784,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                handler_nsucc = int(handler_blk.nsucc())  # type: ignore[attr-defined]
-            except Exception:
+            if handler_probe.nsucc is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_nsucc_unreadable",
@@ -5560,6 +4792,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            handler_nsucc = int(handler_probe.nsucc)
             if handler_nsucc != 1:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5569,9 +4802,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
-            try:
-                current_succ = int(handler_blk.succ(0))  # type: ignore[attr-defined]
-            except Exception:
+            if handler_probe.successor is None:
                 logger.info(
                     "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                     " head_state=0x%08X reason=handler_succ_unreadable",
@@ -5579,6 +4810,7 @@ class HandlerChainComposerStrategy:
                 )
                 rejected_count += 1
                 continue
+            current_succ = int(handler_probe.successor)
 
             # Skip no-op outbound: when the handler already points at
             # the next semantic target, we don't need an outbound
@@ -5603,7 +4835,7 @@ class HandlerChainComposerStrategy:
                     new_target=next_semantic_target,
                 )
                 try:
-                    severed_uses = check_redirect_severs_use_def(
+                    severed_uses = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
                         outbound_probe,
                         mba,
                         flow_graph,
@@ -5786,8 +5018,8 @@ class HandlerChainComposerStrategy:
         # Guard 3: stale-target verification on the splice source.
         # The semantic predecessor must still be 1-way and pointing at
         # ``splice_old_target``.  Mirrors tail-extension's stale guards.
-        src_blk = self._safe_get_mblock(mba, splice_source)
-        if src_blk is None:
+        src_probe = self._read_live_one_way_successor(mba, splice_source)
+        if not src_probe.block_exists:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_dead"
@@ -5795,15 +5027,14 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, splice_source,
             )
             return None
-        try:
-            src_nsucc = int(src_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if src_probe.nsucc is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_nsucc_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        src_nsucc = int(src_probe.nsucc)
         if src_nsucc != 1:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5812,15 +5043,14 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, src_nsucc,
             )
             return None
-        try:
-            src_live_succ = int(src_blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
+        if src_probe.successor is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_splice_source_succ_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        src_live_succ = int(src_probe.successor)
         if src_live_succ != splice_old_target:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5834,23 +5064,22 @@ class HandlerChainComposerStrategy:
         # Guard 4: stale-target verification on the call anchor's
         # outgoing edge.  Re-derive ``block_outgoing_edge`` from the
         # live mblock (the diagnostic field is captured at log time).
-        ca_blk = self._safe_get_mblock(mba, call_anchor_serial)
-        if ca_blk is None:
+        ca_probe = self._read_live_one_way_successor(mba, call_anchor_serial)
+        if not ca_probe.block_exists:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_dead",
                 anchor_serial, head_state,
             )
             return None
-        try:
-            ca_nsucc = int(ca_blk.nsucc())  # type: ignore[attr-defined]
-        except Exception:
+        if ca_probe.nsucc is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_nsucc_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        ca_nsucc = int(ca_probe.nsucc)
         if ca_nsucc != 1:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
@@ -5859,15 +5088,14 @@ class HandlerChainComposerStrategy:
                 anchor_serial, head_state, ca_nsucc,
             )
             return None
-        try:
-            ca_live_succ = int(ca_blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
+        if ca_probe.successor is None:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_call_anchor_succ_unreadable",
                 anchor_serial, head_state,
             )
             return None
+        ca_live_succ = int(ca_probe.successor)
         block_outgoing_edge = ca_live_succ
 
         # Guard 5: DAG-fact ownership lookup -- the call anchor must be
@@ -5894,23 +5122,27 @@ class HandlerChainComposerStrategy:
         # time, but we re-verify under the live mblock to guard against
         # post-classification drift.  Pre-anchor MUST NOT contain a
         # call (asserted again at the Phase C audit downstream).
-        pre_blk = self._safe_get_mblock(mba, pre_anchor_serial)
-        if pre_blk is None:
-            logger.info(
-                "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
-                " head_state=0x%08X reason=chained_pre_anchor_dead"
-                " pre_anchor=blk[%d]",
-                anchor_serial, head_state, pre_anchor_serial,
-            )
-            return None
         try:
-            cap_result = self._capture_block_composable_instructions_v2(
-                pre_blk, state_var_stkoff=state_var_stkoff,
+            cap_result = (
+                self._materialization_capture_backend
+                .capture_block_composable_instructions(
+                    mba,
+                    pre_anchor_serial,
+                    state_var_stkoff=state_var_stkoff,
+                )
             )
         except Exception:
             logger.info(
                 "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
                 " head_state=0x%08X reason=chained_pre_anchor_capture_raised"
+                " pre_anchor=blk[%d]",
+                anchor_serial, head_state, pre_anchor_serial,
+            )
+            return None
+        if cap_result.kind == "missing_block":
+            logger.info(
+                "HCC_CALL_BARRIER_REJECTED handler=blk[%d]"
+                " head_state=0x%08X reason=chained_pre_anchor_dead"
                 " pre_anchor=blk[%d]",
                 anchor_serial, head_state, pre_anchor_serial,
             )
@@ -6096,27 +5328,30 @@ class HandlerChainComposerStrategy:
         guarded_source_skip_redirect_info: tuple[int, int] | None = None
         if bst_only_override_applied:
             try:
-                bypass_blk = self._safe_get_mblock(mba, splice_source)
-                if bypass_blk is not None:
-                    bypass_cap = self._capture_block_composable_instructions_v2(
-                        bypass_blk, state_var_stkoff=state_var_stkoff,
+                bypass_cap = (
+                    self._materialization_capture_backend
+                    .capture_block_composable_instructions(
+                        mba,
+                        splice_source,
+                        state_var_stkoff=state_var_stkoff,
                     )
-                    if bypass_cap.kind == "composable":
-                        bypass_body = tuple(bypass_cap.snapshots or ())
-                        body = bypass_body + body
-                        logger.info(
-                            "HCC_CHAINED_BST_ONLY_BODY_EXTENDED"
-                            " bypass_handler=blk[%d] bypass_ninsns=%d"
-                            " new_total_ninsns=%d",
-                            splice_source, len(bypass_body), len(body),
-                        )
-                    else:
-                        logger.info(
-                            "HCC_CHAINED_BST_ONLY_BODY_NOT_EXTENDED"
-                            " bypass_handler=blk[%d] kind=%s -- defs may"
-                            " be missing; call may still be DCE'd",
-                            splice_source, bypass_cap.kind,
-                        )
+                )
+                if bypass_cap.kind == "composable":
+                    bypass_body = tuple(bypass_cap.snapshots or ())
+                    body = bypass_body + body
+                    logger.info(
+                        "HCC_CHAINED_BST_ONLY_BODY_EXTENDED"
+                        " bypass_handler=blk[%d] bypass_ninsns=%d"
+                        " new_total_ninsns=%d",
+                        splice_source, len(bypass_body), len(body),
+                    )
+                elif bypass_cap.kind != "missing_block":
+                    logger.info(
+                        "HCC_CHAINED_BST_ONLY_BODY_NOT_EXTENDED"
+                        " bypass_handler=blk[%d] kind=%s -- defs may"
+                        " be missing; call may still be DCE'd",
+                        splice_source, bypass_cap.kind,
+                    )
             except Exception:
                 logger.debug(
                     "HCC_CHAINED_BST_ONLY_BODY_EXTENDED: capture raised",
@@ -6160,37 +5395,12 @@ class HandlerChainComposerStrategy:
                             body,
                         ) = retargeted
                         try:
-                            guarded_blk = self._safe_get_mblock(
-                                mba, int(effective_splice_source)
-                            )
-                            guarded_npred = (
-                                int(guarded_blk.npred())  # type: ignore[attr-defined]
-                                if guarded_blk is not None else -1
-                            )
-                            if guarded_npred == 1:
-                                guard_pred = int(
-                                    guarded_blk.pred(0)  # type: ignore[attr-defined]
+                            guarded_source_skip_redirect_info = (
+                                self._resolve_guarded_source_skip_redirect(
+                                    mba=mba,
+                                    guarded_source=int(effective_splice_source),
                                 )
-                                guard_blk = self._safe_get_mblock(mba, guard_pred)
-                                guard_nsucc = (
-                                    int(guard_blk.nsucc())  # type: ignore[attr-defined]
-                                    if guard_blk is not None else -1
-                                )
-                                if guard_nsucc == 2:
-                                    guard_succs = (
-                                        int(guard_blk.succ(0)),  # type: ignore[attr-defined]
-                                        int(guard_blk.succ(1)),  # type: ignore[attr-defined]
-                                    )
-                                    if int(effective_splice_source) in guard_succs:
-                                        old_skip_target = (
-                                            guard_succs[1]
-                                            if guard_succs[0] == int(effective_splice_source)
-                                            else guard_succs[0]
-                                        )
-                                        guarded_source_skip_redirect_info = (
-                                            guard_pred,
-                                            int(old_skip_target),
-                                        )
+                            )
                         except Exception:
                             logger.debug(
                                 "HCC_CHAINED_GUARDED_SOURCE_SKIP_REDIRECT:"
@@ -6208,11 +5418,27 @@ class HandlerChainComposerStrategy:
         # succ = call anchor (preserves the call-bearing block in
         # place), old_target = the existing physical edge being
         # replaced (the dispatcher route).
+        captured_body = _HEX_RAYS_CAPTURE_BACKEND.body_from_snapshots(
+            tuple(body),
+            source_blocks=tuple(
+                sorted(
+                    {
+                        int(pre_anchor_serial),
+                        int(splice_source),
+                        int(effective_splice_source),
+                    }
+                )
+            ),
+            capture_id=(
+                f"chained-call:{int(effective_splice_source)}"
+                f"->{int(call_anchor_serial)}"
+            ),
+        )
         insert_mod = InsertBlock(
             pred_serial=effective_splice_source,
             succ_serial=call_anchor_serial,
-            instructions=body,
             old_target_serial=effective_old_target,
+            captured_body=captured_body,
         )
         emitted: list = [insert_mod]
 
@@ -6267,34 +5493,11 @@ class HandlerChainComposerStrategy:
         # not as another body copy, so the original call block remains an
         # anchor and the false arm preserves the surrounding CFG.
         guard_skip_redirect: RedirectBranch | None = None
-        try:
-            call_anchor_preds = tuple(int(pred) for pred in ca_blk.predset)
-        except Exception:
-            call_anchor_preds = ()
-        guard_preds: list[tuple[int, int]] = []
-        for pred_serial in call_anchor_preds:
-            pred_blk = self._safe_get_mblock(mba, pred_serial)
-            if pred_blk is None:
-                continue
-            try:
-                if int(pred_blk.nsucc()) != 2:  # type: ignore[attr-defined]
-                    continue
-                pred_succs = (
-                    int(pred_blk.succ(0)),  # type: ignore[attr-defined]
-                    int(pred_blk.succ(1)),  # type: ignore[attr-defined]
-                )
-            except Exception:
-                continue
-            if call_anchor_serial not in pred_succs:
-                continue
-            old_skip_target = (
-                pred_succs[1]
-                if pred_succs[0] == call_anchor_serial
-                else pred_succs[0]
-            )
-            if old_skip_target == outbound_target:
-                continue
-            guard_preds.append((pred_serial, old_skip_target))
+        guard_preds = self._collect_call_anchor_guard_skip_candidates(
+            mba=mba,
+            call_anchor_serial=call_anchor_serial,
+            outbound_target=outbound_target,
+        )
         if len(guard_preds) == 1:
             guard_pred, old_skip_target = guard_preds[0]
             # Fact-rooted gate: the chained-skip RedirectBranch attaches
@@ -6325,29 +5528,14 @@ class HandlerChainComposerStrategy:
                     except Exception:
                         _sites = ()
                     if _sites:
-                        try:
-                            _guard_blk = self._safe_get_mblock(
-                                mba, int(guard_pred)
+                        _is_state_flow = (
+                            self._materialization_capture_backend
+                            .block_mentions_text(
+                                mba,
+                                int(guard_pred),
+                                needle="%var_7BC",
                             )
-                        except Exception:
-                            _guard_blk = None
-                        _is_state_flow = False
-                        if _guard_blk is not None:
-                            _ins = getattr(_guard_blk, "head", None)
-                            while _ins is not None:
-                                _dstr = getattr(_ins, "dstr", None)
-                                _text: str | None = None
-                                if callable(_dstr):
-                                    try:
-                                        _text = _dstr()
-                                    except Exception:
-                                        _text = None
-                                elif isinstance(_dstr, str):
-                                    _text = _dstr
-                                if _text and "%var_7BC" in _text:
-                                    _is_state_flow = True
-                                    break
-                                _ins = getattr(_ins, "next", None)
+                        )
                         if _is_state_flow:
                             try:
                                 terminal_byte_emit_fact_id = (
@@ -6506,22 +5694,14 @@ class HandlerChainComposerStrategy:
         if local_facts is None:
             return ("ORPHANED_NO_COVER", {"reason": "no_local_facts"})
 
-        try:
-            src_blk = self._safe_get_mblock(mba, splice_source)
-        except Exception:
-            src_blk = None
-        if src_blk is None:
+        source_topology = self._read_live_block_topology(mba, splice_source)
+        if not source_topology.block_exists:
             return ("ORPHANED_NO_COVER", {
                 "reason": "splice_source_dead_in_mba",
             })
-        try:
-            npred = int(src_blk.npred())  # type: ignore[attr-defined]
-            live_preds = tuple(
-                int(src_blk.pred(i))  # type: ignore[attr-defined]
-                for i in range(npred)
-            )
-        except Exception:
-            live_preds = ()
+        live_preds = tuple(
+            int(pred) for pred in (source_topology.predecessors or ())
+        )
 
         if not live_preds:
             return ("ORPHANED_NO_COVER", {
@@ -6618,74 +5798,6 @@ class HandlerChainComposerStrategy:
             **common_detail,
         })
 
-    def _find_unique_const_writer_for_stkoff(
-        self,
-        mba: object,
-        target_stkoff: int,
-        *,
-        state_var_stkoff: int | None = None,
-    ) -> int | None:
-        """Scan all blocks for ``mov #const, %var[stkoff=target]``.
-
-        Return the unique block serial whose body contains a constant
-        m_mov targeting ``target_stkoff``, else ``None``.  Used by the
-        recursive body-extension pass: when an InsertBlock body has
-        an unresolved stkvar read, find the handler that constant-
-        writes that stkvar and prepend its composable body.
-
-        Skips matches on ``state_var_stkoff`` (the state variable
-        itself is filtered by capture and shouldn't be chased).
-        """
-        if (
-            state_var_stkoff is not None
-            and int(target_stkoff) == int(state_var_stkoff)
-        ):
-            return None
-        try:
-            qty = int(getattr(mba, "qty", 0))
-        except Exception:
-            return None
-        writers: list[int] = []
-        for serial in range(qty):
-            blk = self._safe_get_mblock(mba, serial)
-            if blk is None:
-                continue
-            try:
-                cur = blk.head
-            except Exception:
-                continue
-            block_writes_const = False
-            while cur is not None:
-                try:
-                    op = int(cur.opcode)
-                    if op == ida_hexrays.m_mov:
-                        d = cur.d
-                        l = cur.l
-                        if (
-                            d is not None
-                            and int(d.t) == ida_hexrays.mop_S
-                            and int(d.s.off) == int(target_stkoff)
-                            and l is not None
-                            and int(l.t) == ida_hexrays.mop_n
-                        ):
-                            block_writes_const = True
-                            break
-                except Exception:
-                    pass
-                try:
-                    cur = cur.next
-                except Exception:
-                    break
-            if block_writes_const:
-                writers.append(int(serial))
-                if len(writers) > 1:
-                    # Multiple distinct const-writers -> not unique;
-                    # bail early without scanning the rest.
-                    return None
-        if len(writers) == 1:
-            return writers[0]
-        return None
-
     def _try_retarget_to_guarded_walkback_source(
         self,
         *,
@@ -6751,8 +5863,8 @@ class HandlerChainComposerStrategy:
             )
             return None
 
-        writer_blk = self._safe_get_mblock(mba, writer_serial)
-        if writer_blk is None:
+        writer_topology = self._read_live_block_topology(mba, writer_serial)
+        if not writer_topology.block_exists:
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
                 " call_anchor=blk[%d] head_state=0x%08X"
@@ -6761,15 +5873,13 @@ class HandlerChainComposerStrategy:
             )
             return None
 
-        try:
-            writer_nsucc = int(writer_blk.nsucc())  # type: ignore[attr-defined]
-            writer_succ = int(writer_blk.succ(0))  # type: ignore[attr-defined]
-            writer_npred = int(writer_blk.npred())  # type: ignore[attr-defined]
-            writer_preds = tuple(
-                int(writer_blk.pred(i))  # type: ignore[attr-defined]
-                for i in range(writer_npred)
-            )
-        except Exception:
+        if (
+            writer_topology.nsucc is None
+            or writer_topology.npred is None
+            or writer_topology.successors is None
+            or writer_topology.predecessors is None
+            or not writer_topology.successors
+        ):
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
                 " call_anchor=blk[%d] head_state=0x%08X"
@@ -6777,6 +5887,11 @@ class HandlerChainComposerStrategy:
                 call_anchor_serial, head_state, writer_serial,
             )
             return None
+
+        writer_nsucc = int(writer_topology.nsucc)
+        writer_succ = int(writer_topology.successors[0])
+        writer_npred = int(writer_topology.npred)
+        writer_preds = tuple(int(pred) for pred in writer_topology.predecessors)
 
         if writer_nsucc != 1:
             logger.info(
@@ -6797,14 +5912,12 @@ class HandlerChainComposerStrategy:
             return None
 
         guard_pred = int(writer_preds[0])
-        guard_blk = self._safe_get_mblock(mba, guard_pred)
-        try:
-            guard_nsucc = (
-                int(guard_blk.nsucc())  # type: ignore[attr-defined]
-                if guard_blk is not None else -1
-            )
-        except Exception:
-            guard_nsucc = -1
+        guard_topology = self._read_live_block_topology(mba, guard_pred)
+        guard_nsucc = (
+            int(guard_topology.nsucc)
+            if guard_topology.block_exists and guard_topology.nsucc is not None
+            else -1
+        )
         if guard_nsucc != 2:
             logger.info(
                 "HCC_CHAINED_GUARDED_SOURCE_REJECTED"
@@ -6852,6 +5965,96 @@ class HandlerChainComposerStrategy:
         )
         return (writer_serial, writer_succ, stripped_body)
 
+    def _resolve_guarded_source_skip_redirect(
+        self,
+        *,
+        mba: object,
+        guarded_source: int,
+    ) -> tuple[int, int] | None:
+        guarded_topology = self._read_live_block_topology(
+            mba,
+            int(guarded_source),
+        )
+        guarded_npred = (
+            int(guarded_topology.npred)
+            if (
+                guarded_topology.block_exists
+                and guarded_topology.npred is not None
+            )
+            else -1
+        )
+        if guarded_npred != 1 or guarded_topology.predecessors is None:
+            return None
+
+        guard_pred = int(guarded_topology.predecessors[0])
+        guard_topology = self._read_live_block_topology(mba, guard_pred)
+        guard_nsucc = (
+            int(guard_topology.nsucc)
+            if guard_topology.block_exists and guard_topology.nsucc is not None
+            else -1
+        )
+        if (
+            guard_nsucc != 2
+            or guard_topology.successors is None
+            or len(guard_topology.successors) != 2
+        ):
+            return None
+
+        guard_succs = tuple(int(succ) for succ in guard_topology.successors)
+        guarded_source = int(guarded_source)
+        if guarded_source not in guard_succs:
+            return None
+        old_skip_target = (
+            guard_succs[1]
+            if guard_succs[0] == guarded_source
+            else guard_succs[0]
+        )
+        return (guard_pred, int(old_skip_target))
+
+    def _collect_call_anchor_guard_skip_candidates(
+        self,
+        *,
+        mba: object,
+        call_anchor_serial: int,
+        outbound_target: int,
+    ) -> list[tuple[int, int]]:
+        call_anchor_topology = self._read_live_block_topology(
+            mba,
+            int(call_anchor_serial),
+        )
+        if (
+            not call_anchor_topology.block_exists
+            or call_anchor_topology.predecessors is None
+        ):
+            return []
+
+        guard_preds: list[tuple[int, int]] = []
+        call_anchor_serial = int(call_anchor_serial)
+        outbound_target = int(outbound_target)
+        for pred_serial in tuple(
+            int(pred) for pred in call_anchor_topology.predecessors
+        ):
+            pred_topology = self._read_live_block_topology(mba, pred_serial)
+            if (
+                not pred_topology.block_exists
+                or pred_topology.nsucc != 2
+                or pred_topology.successors is None
+                or len(pred_topology.successors) != 2
+            ):
+                continue
+            pred_succs = tuple(int(succ) for succ in pred_topology.successors)
+            if call_anchor_serial not in pred_succs:
+                continue
+            old_skip_target = (
+                pred_succs[1]
+                if pred_succs[0] == call_anchor_serial
+                else pred_succs[0]
+            )
+            if old_skip_target == outbound_target:
+                continue
+            guard_preds.append((pred_serial, int(old_skip_target)))
+        return guard_preds
+
     def _walk_back_extend_body(
         self,
         *,
@@ -6872,7 +6075,7 @@ class HandlerChainComposerStrategy:
              ``body`` do not WRITE that stkoff.
           2. For each unresolved stkoff, locate the unique block whose
              composable body contains a constant m_mov to that stkoff
-             via :py:meth:`_find_unique_const_writer_for_stkoff`.
+             via the Hex-Rays capture backend.
           3. Capture each such writer's composable body and prepend.
 
         Stops at ``max_depth`` iterations or fixpoint.  Skips writers
@@ -6888,42 +6091,10 @@ class HandlerChainComposerStrategy:
         prepended_writers: set[int] = set()
         prepended_chunks: list[_WalkBackChunk] = []
         for iteration in range(max_depth):
-            # Compute (written, needed) sets across body.
-            written: set[int] = set()
-            needed: set[int] = set()
-            for snap in body:
-                for slot in (
-                    getattr(snap, "l", None),
-                    getattr(snap, "r", None),
-                ):
-                    if slot is None:
-                        continue
-                    try:
-                        slot_t = int(getattr(slot, "t", -1))
-                    except Exception:
-                        slot_t = -1
-                    if slot_t != ida_hexrays.mop_S:
-                        continue
-                    stkoff = getattr(slot, "stkoff", None)
-                    if stkoff is None:
-                        continue
-                    stkoff_int = int(stkoff)
-                    if stkoff_int not in written:
-                        needed.add(stkoff_int)
-                d = getattr(snap, "d", None)
-                if d is None:
-                    continue
-                try:
-                    d_t = int(getattr(d, "t", -1))
-                except Exception:
-                    d_t = -1
-                if d_t == ida_hexrays.mop_S:
-                    d_off = getattr(d, "stkoff", None)
-                    if d_off is not None:
-                        written.add(int(d_off))
-            if state_var_stkoff is not None:
-                needed.discard(int(state_var_stkoff))
-            unresolved = needed - written
+            unresolved = _HEX_RAYS_CAPTURE_BACKEND.collect_unresolved_stkvar_reads(
+                tuple(body),
+                state_variable=state_var_stkoff,
+            )
             if not unresolved:
                 break
             # Find unique writer for each unresolved stkoff and
@@ -6931,9 +6102,12 @@ class HandlerChainComposerStrategy:
             new_prepend: list = []
             iteration_resolved: set[int] = set()
             for target_stkoff in sorted(unresolved):
-                writer_serial = self._find_unique_const_writer_for_stkoff(
-                    mba, int(target_stkoff),
-                    state_var_stkoff=state_var_stkoff,
+                writer_serial = (
+                    _HEX_RAYS_CAPTURE_BACKEND.find_unique_const_writer_for_stkoff(
+                        mba,
+                        int(target_stkoff),
+                        state_variable=state_var_stkoff,
+                    )
                 )
                 if writer_serial is None:
                     continue
@@ -6943,12 +6117,14 @@ class HandlerChainComposerStrategy:
                     continue
                 if writer_serial in prepended_writers:
                     continue
-                writer_blk = self._safe_get_mblock(mba, writer_serial)
-                if writer_blk is None:
-                    continue
                 try:
-                    cap = self._capture_block_composable_instructions_v2(
-                        writer_blk, state_var_stkoff=state_var_stkoff,
+                    cap = (
+                        self._materialization_capture_backend
+                        .capture_block_composable_instructions(
+                            mba,
+                            writer_serial,
+                            state_var_stkoff=state_var_stkoff,
+                        )
                     )
                 except Exception:
                     continue
@@ -7064,66 +6240,23 @@ class HandlerChainComposerStrategy:
             "nearest_mapped_pred": None,
         }
 
-        # Compute reachable set from entry once for the run.
-        reachable_from_entry: set[int] = set()
-        try:
-            qty = int(getattr(mba, "qty", 0))
-        except Exception:
-            qty = 0
-        worklist: list[int] = [0] if qty > 0 else []
-        while worklist and len(reachable_from_entry) < qty + 4:
-            cur = worklist.pop()
-            if cur in reachable_from_entry:
-                continue
-            reachable_from_entry.add(cur)
-            cur_blk = self._safe_get_mblock(mba, cur)
-            if cur_blk is None:
-                continue
-            try:
-                nsucc = int(cur_blk.nsucc())  # type: ignore[attr-defined]
-                for i in range(nsucc):
-                    worklist.append(int(cur_blk.succ(i)))  # type: ignore[attr-defined]
-            except Exception:
-                continue
-
-        # BFS backward from splice_source.
-        seen: set[int] = set()
-        frontier: list[tuple[int, int]] = [(int(splice_source), 0)]
         nearest_mapped: int | None = None
-        while frontier:
-            block_serial, depth = frontier.pop(0)
-            if block_serial in seen:
-                continue
-            seen.add(block_serial)
-            blk = self._safe_get_mblock(mba, block_serial)
-            if blk is None:
+        corridor = self._topology_walk_backend.walk_backward_corridor(
+            mba,
+            int(splice_source),
+            max_depth=int(max_depth),
+            entry_serial=0,
+        )
+        for block_probe in corridor.blocks:
+            block_serial = int(block_probe.serial)
+            depth = int(block_probe.depth)
+            if not block_probe.block_exists:
                 out["blocks"].append({
                     "serial": block_serial,
                     "depth": depth,
                     "kind": "DEAD",
                 })
                 continue
-            try:
-                blk_type = int(blk.type)
-                npred = int(blk.npred())
-                nsucc = int(blk.nsucc())
-                preds = tuple(int(blk.pred(i)) for i in range(npred))
-                succs = tuple(int(blk.succ(i)) for i in range(nsucc))
-                tail_op = int(blk.tail.opcode) if blk.tail is not None else -1
-                tail_target = (
-                    int(blk.tail.d.b)
-                    if (blk.tail is not None
-                        and getattr(blk.tail, "d", None) is not None
-                        and getattr(blk.tail.d, "t", -1)
-                        == ida_hexrays.mop_b)
-                    else -1
-                )
-            except Exception:
-                blk_type = -1
-                preds = ()
-                succs = ()
-                tail_op = -1
-                tail_target = -1
 
             kind, kind_info = self._classify_corridor_block(
                 block_serial,
@@ -7144,7 +6277,7 @@ class HandlerChainComposerStrategy:
                 nearest_mapped = block_serial
 
             entry_dist = (
-                "REACHABLE" if block_serial in reachable_from_entry
+                "REACHABLE" if block_probe.entry_reachable
                 else "UNREACHABLE"
             )
 
@@ -7153,18 +6286,13 @@ class HandlerChainComposerStrategy:
                 "depth": depth,
                 "kind": kind,
                 "kind_info": kind_info,
-                "type": blk_type,
-                "preds": list(preds),
-                "succs": list(succs),
-                "tail_op": tail_op,
-                "tail_target": tail_target,
+                "type": int(block_probe.block_type),
+                "preds": list(block_probe.predecessors),
+                "succs": list(block_probe.successors),
+                "tail_op": int(block_probe.tail_opcode),
+                "tail_target": int(block_probe.tail_target),
                 "entry_reach": entry_dist,
             })
-
-            if depth < max_depth:
-                for p in preds:
-                    if p not in seen:
-                        frontier.append((p, depth + 1))
 
         out["nearest_mapped_pred"] = nearest_mapped
         return out
@@ -7310,8 +6438,8 @@ class HandlerChainComposerStrategy:
         # every writer in the range -- the DAG abstracts the range
         # into a single node keyed at one state value.  When the DAG
         # path yields zero edges (or too-few) and we have a
-        # ``bst_result``, scan the live MBA for state-var writes
-        # whose constant routes to ``splice_source`` per
+        # ``bst_result``, ask the Hex-Rays evidence adapter for
+        # state-var constant writes whose values route to ``splice_source`` per
         # ``resolve_target_via_bst``.  Each such writer is a
         # candidate semantic predecessor.  The validation pass below
         # is identical to the DAG path.
@@ -7328,73 +6456,33 @@ class HandlerChainComposerStrategy:
             except Exception:
                 _resolve_bst = None
             if _resolve_bst is not None:
-                try:
-                    qty = int(getattr(mba, "qty", 0))
-                except Exception:
-                    qty = 0
-                state_stkoff = int(state_var_stkoff)
-                scanned_writers = 0
-                for serial in range(qty):
-                    blk = self._safe_get_mblock(mba, serial)
-                    if blk is None:
-                        continue
+                state_writes = (
+                    self._materialization_capture_backend
+                    .collect_state_constant_writes(
+                        mba,
+                        state_variable=state_var_stkoff,
+                    )
+                )
+                for write in state_writes:
+                    const_val = int(write.state_value) & 0xFFFFFFFF
                     try:
-                        cur = blk.head
+                        routed_to = _resolve_bst(
+                            bst_result, const_val,
+                        )
                     except Exception:
-                        cur = None
-                    while cur is not None:
-                        try:
-                            opcode = int(cur.opcode)
-                            if opcode != ida_hexrays.m_mov:
-                                cur = cur.next
-                                continue
-                            d = cur.d
-                            l = cur.l
-                            if (
-                                d is None
-                                or int(d.t) != ida_hexrays.mop_S
-                                or l is None
-                                or int(l.t) != ida_hexrays.mop_n
-                            ):
-                                cur = cur.next
-                                continue
-                            try:
-                                d_off = int(d.s.off)
-                            except Exception:
-                                cur = cur.next
-                                continue
-                            if d_off != state_stkoff:
-                                cur = cur.next
-                                continue
-                            try:
-                                const_val = int(l.nnn.value) & 0xFFFFFFFF
-                            except Exception:
-                                cur = cur.next
-                                continue
-                            scanned_writers += 1
-                            try:
-                                routed_to = _resolve_bst(
-                                    bst_result, const_val,
-                                )
-                            except Exception:
-                                routed_to = None
-                            if (
-                                routed_to is not None
-                                and int(routed_to) == int(splice_source)
-                            ):
-                                bst_table_candidates.append({
-                                    "serial": int(serial),
-                                    "via": "bst_table_scan",
-                                    "edge_anchor_serial": -1,
-                                    "ordered_path": [int(serial)],
-                                    "written_state": int(const_val),
-                                })
-                        except Exception:
-                            pass
-                        try:
-                            cur = cur.next
-                        except Exception:
-                            break
+                        routed_to = None
+                    if (
+                        routed_to is not None
+                        and int(routed_to) == int(splice_source)
+                    ):
+                        bst_table_candidates.append({
+                            "serial": int(write.block_serial),
+                            "via": "bst_table_scan",
+                            "edge_anchor_serial": -1,
+                            "ordered_path": [int(write.block_serial)],
+                            "written_state": int(const_val),
+                        })
+                scanned_writers = len(state_writes)
                 info["bst_table_scanned_writers"] = scanned_writers
                 info["bst_table_candidate_count"] = (
                     len(bst_table_candidates)
@@ -7433,27 +6521,18 @@ class HandlerChainComposerStrategy:
             picked_via: str | None = None
             # Walk ordered_path right-to-left; pick first block that is
             # not BST/dispatcher and whose live succ(0) is dispatcher.
-            for blk_serial in reversed(ordered_path):
-                if blk_serial == int(dispatcher_serial):
-                    continue
-                if blk_serial in bst_node_blocks:
-                    continue
-                blk = self._safe_get_mblock(mba, blk_serial)
-                if blk is None:
-                    continue
-                try:
-                    nsucc = int(blk.nsucc())
-                    succ0 = int(blk.succ(0)) if nsucc >= 1 else -1
-                except Exception:
-                    nsucc = -1
-                    succ0 = -1
-                if nsucc != 1:
-                    continue
-                if succ0 != int(dispatcher_serial):
-                    continue
-                picked_serial = int(blk_serial)
+            exit_probe = (
+                self._topology_walk_backend
+                .deepest_dispatcher_exit_on_ordered_path(
+                    mba,
+                    ordered_path,
+                    dispatcher_serial=dispatcher_serial,
+                    excluded_blocks=bst_node_blocks,
+                )
+            )
+            if exit_probe.block_serial is not None:
+                picked_serial = int(exit_probe.block_serial)
                 picked_via = "ordered_path_walk"
-                break
             if picked_serial is None and anchor_serial >= 0:
                 # Fallback: use edge.source_anchor.block_serial directly,
                 # but still subject it to the validation pass below.
@@ -7494,8 +6573,8 @@ class HandlerChainComposerStrategy:
         rejections: list[dict] = []
         for c in candidates:
             cs = int(c["serial"])
-            blk = self._safe_get_mblock(mba, cs)
-            if blk is None:
+            candidate_probe = self._read_live_one_way_successor(mba, cs)
+            if not candidate_probe.block_exists:
                 rejections.append({**c, "rej": "block_dead"})
                 continue
             if cs in bst_node_blocks:
@@ -7504,12 +6583,15 @@ class HandlerChainComposerStrategy:
             if cs == int(dispatcher_serial):
                 rejections.append({**c, "rej": "is_dispatcher"})
                 continue
-            try:
-                nsucc = int(blk.nsucc())
-                succ0 = int(blk.succ(0)) if nsucc >= 1 else -1
-            except Exception:
+            if candidate_probe.nsucc is None:
                 rejections.append({**c, "rej": "succ_unreadable"})
                 continue
+            nsucc = int(candidate_probe.nsucc)
+            succ0 = (
+                int(candidate_probe.successor)
+                if candidate_probe.successor is not None
+                else -1
+            )
             if nsucc != 1:
                 rejections.append({**c, "rej": f"nsucc={nsucc}"})
                 continue
@@ -7532,30 +6614,12 @@ class HandlerChainComposerStrategy:
                 rejections.append({**c, "rej": "SEMANTIC_SOURCE_COVERED"})
                 continue
 
-            # Reachability from entry blk[0].  Bounded BFS.
-            try:
-                qty = int(getattr(mba, "qty", 0))
-            except Exception:
-                qty = 0
-            reach: set[int] = set()
-            wl: list[int] = [0] if qty > 0 else []
-            while wl and len(reach) < qty + 4:
-                cur = wl.pop()
-                if cur in reach:
-                    continue
-                reach.add(cur)
-                if cur == cs:
-                    break
-                cur_blk = self._safe_get_mblock(mba, cur)
-                if cur_blk is None:
-                    continue
-                try:
-                    cn = int(cur_blk.nsucc())
-                    for i in range(cn):
-                        wl.append(int(cur_blk.succ(i)))
-                except Exception:
-                    pass
-            if cs not in reach:
+            reachability = self._topology_walk_backend.reachable_from_entry(
+                mba,
+                cs,
+                entry_serial=0,
+            )
+            if not reachability.reachable:
                 rejections.append({**c, "rej": "unreachable_from_entry"})
                 continue
 
@@ -7633,6 +6697,7 @@ class HandlerChainComposerStrategy:
                 dag=dag,
                 local_facts=local_facts,
                 mba=mba,
+                live_topology_backend=self._live_topology_backend,
             )
             if label != "FUSABLE_LOCAL_CONVERGENCE":
                 continue
@@ -7711,6 +6776,7 @@ class HandlerChainComposerStrategy:
                         succ_serial=succ_serial,
                         composed_instructions=body,
                         state_values=states,
+                        captured_body=fused_candidate.captured_body,
                     )
                 )
                 claimed.add(
@@ -7942,8 +7008,8 @@ class HandlerChainComposerStrategy:
         """Build per-region observation records for the pre-compose log pass.
 
         For each raw region, compute every field needed to emit a log line
-        without depending on ``_compose_region``'s success.  ``_resolve_first_pred``
-        and ``_resolve_region_exit`` are best-effort here -- failures
+        without depending on ``_compose_region``'s success.  The live-topology
+        first-pred backend and ``_resolve_region_exit`` are best-effort -- failures
         produce ``None`` fields rather than aborting collection.
 
         Additionally, speculatively run ``_compose_region`` on every
@@ -7969,17 +7035,16 @@ class HandlerChainComposerStrategy:
 
             # Best-effort physical-pred probe.
             old_physical_pred: int | None = None
-            head_blk = self._safe_get_mblock(mba, head_anchor)
-            if head_blk is not None:
-                try:
-                    old_physical_pred = self._resolve_first_pred(
-                        mba=mba,
-                        blk=head_blk,
-                        region_anchors=region_anchors_set,
+            try:
+                old_physical_pred = (
+                    self._live_topology_backend.resolve_first_predecessor(
+                        mba,
                         first_anchor=head_anchor,
+                        region_anchors=region_anchors_set,
                     )
-                except Exception:
-                    old_physical_pred = None
+                )
+            except Exception:
+                old_physical_pred = None
 
             # Best-effort exit probe.
             proposed_exit: int | None = None
@@ -7996,7 +7061,11 @@ class HandlerChainComposerStrategy:
                     dag=dag,
                     region_head_node=head_node,
                     region_anchors=region_anchors,
-                    mba=mba,
+                    block_view=LiveTopologyRegionEntryBlockView(
+                        mba,
+                        self._live_topology_backend,
+                    ),
+                    transition_kind=SemanticEdgeKind.TRANSITION,
                 )
             except Exception as exc:  # pragma: no cover - diagnostic
                 logger.warning(
@@ -8053,12 +7122,14 @@ class HandlerChainComposerStrategy:
             opaque_call_shape: str | None = None
             for node in region_nodes:
                 anchor_serial = int(node.entry_anchor)
-                anchor_blk = self._safe_get_mblock(mba, anchor_serial)
-                if anchor_blk is None:
-                    continue
                 try:
-                    cap_result = self._capture_block_composable_instructions_v2(
-                        anchor_blk, state_var_stkoff=state_var_stkoff,
+                    cap_result = (
+                        self._materialization_capture_backend
+                        .capture_block_composable_instructions(
+                            mba,
+                            anchor_serial,
+                            state_var_stkoff=state_var_stkoff,
+                        )
                     )
                 except Exception:  # pragma: no cover - diagnostic
                     continue
@@ -8102,6 +7173,10 @@ class HandlerChainComposerStrategy:
                         dag=dag,
                         local_facts=local_facts,
                         mba=mba,
+                        live_topology_backend=self._live_topology_backend,
+                        materialization_capture_backend=(
+                            self._materialization_capture_backend
+                        ),
                         state_var_stkoff=state_var_stkoff,
                     )
                 except Exception:  # pragma: no cover - diagnostic only
@@ -8127,8 +7202,8 @@ class HandlerChainComposerStrategy:
             )
         return tuple(infos)
 
-    @staticmethod
     def _classify_opaque_call_shape(
+        self,
         *,
         mba: object,
         dag: LinearizedStateDag,
@@ -8152,15 +7227,11 @@ class HandlerChainComposerStrategy:
         if len(region_nodes) != 1:
             return "OTHER"
         # 2) handler is 1-way.
-        handler_blk = HandlerChainComposerStrategy._safe_get_mblock(
-            mba, handler_serial,
+        handler_probe = self._read_live_one_way_successor(
+            mba,
+            int(handler_serial),
         )
-        if handler_blk is None:
-            return "OTHER"
-        try:
-            if int(handler_blk.nsucc()) != 1:  # type: ignore[attr-defined]
-                return "OTHER"
-        except Exception:
+        if not handler_probe.block_exists or handler_probe.nsucc != 1:
             return "OTHER"
         # 3) sole TRANSITION inbound is UNCONDITIONAL_1WAY.
         if candidate.eligibility is not EntryEligibility.UNCONDITIONAL_1WAY:
@@ -8213,66 +7284,6 @@ class HandlerChainComposerStrategy:
                 return facts
         return _build_dag_local_facts(dag)
 
-    @staticmethod
-    def _detect_dag_regions(
-        dag: LinearizedStateDag,
-    ) -> list[tuple[StateDagNode, ...]]:
-        """Return maximal linear paths through the DAG."""
-        node_by_key = {node.key: node for node in dag.nodes}
-
-        out_by_src: dict[object, list[StateDagNode]] = defaultdict(list)
-        in_count: dict[object, int] = defaultdict(int)
-        for edge in dag.edges:
-            if edge.kind is not SemanticEdgeKind.TRANSITION:
-                continue
-            target_node: StateDagNode | None = None
-            if edge.target_key is not None:
-                target_node = node_by_key.get(edge.target_key)
-            if target_node is None:
-                continue
-            out_by_src[edge.source_key].append(target_node)
-            in_count[edge.target_key] = in_count.get(edge.target_key, 0) + 1
-
-        is_region_start: set[object] = set()
-        for node in dag.nodes:
-            n_in = in_count.get(node.key, 0)
-            if n_in != 1:
-                is_region_start.add(node.key)
-
-        visited: set[object] = set()
-        regions: list[tuple[StateDagNode, ...]] = []
-
-        ordered_nodes = sorted(
-            dag.nodes,
-            key=lambda n: (int(n.entry_anchor), str(n.state_label)),
-        )
-
-        for node in ordered_nodes:
-            if node.key in visited:
-                continue
-            if node.key not in is_region_start:
-                continue
-            path = [node]
-            visited.add(node.key)
-            cur = node
-            depth = 0
-            while depth < 4096:
-                outs = out_by_src.get(cur.key, [])
-                if len(outs) != 1:
-                    break
-                nxt = outs[0]
-                if in_count.get(nxt.key, 0) != 1:
-                    break
-                if nxt.key in visited:
-                    break
-                path.append(nxt)
-                visited.add(nxt.key)
-                cur = nxt
-                depth += 1
-            regions.append(tuple(path))
-
-        return regions
-
     def _compose_region(
         self,
         *,
@@ -8287,14 +7298,12 @@ class HandlerChainComposerStrategy:
             return None
 
         first_anchor = int(region_nodes[0].entry_anchor)
-        first_blk = self._safe_get_mblock(mba, first_anchor)
-        if first_blk is None:
+        if not self._live_topology_backend.block_exists(mba, first_anchor):
             return None
 
         region_anchors_set = {int(n.entry_anchor) for n in region_nodes}
-        pred_serial = self._resolve_first_pred(
-            mba=mba,
-            blk=first_blk,
+        pred_serial = self._live_topology_backend.resolve_first_predecessor(
+            mba,
             region_anchors=region_anchors_set,
             first_anchor=first_anchor,
         )
@@ -8322,31 +7331,37 @@ class HandlerChainComposerStrategy:
         # this composition path succeeds.
 
         composed: list[InsnSnapshot] = []
+        composed_bodies: list[CapturedBlockBody] = []
         handler_serials: list[int] = []
         state_values: list[int] = []
         for node in region_nodes:
             anchor = int(node.entry_anchor)
-            blk = self._safe_get_mblock(mba, anchor)
-            if blk is None:
+            cap_result = (
+                self._materialization_capture_backend
+                .capture_block_composable_instructions(
+                    mba,
+                    anchor,
+                    state_var_stkoff=state_var_stkoff,
+                    byte_evidence_eas=byte_evidence_eas,
+                )
+            )
+            if cap_result.kind == "missing_block":
                 logger.info(
                     "HandlerChainComposer: region node anchor=%d missing"
                     " in live mba; aborting region",
                     anchor,
                 )
                 return None
-            insns = self._capture_block_composable_instructions(
-                blk,
-                state_var_stkoff=state_var_stkoff,
-                byte_evidence_eas=byte_evidence_eas,
-            )
-            if insns is None:
+            if cap_result.kind != "composable" or cap_result.body is None:
                 logger.info(
                     "HandlerChainComposer: region node anchor=%d has"
                     " forbidden opcode; aborting region",
                     anchor,
                 )
                 return None
+            insns = list(cap_result.snapshots or ())
             composed.extend(insns)
+            composed_bodies.append(cap_result.body)
             handler_serials.append(anchor)
             state_values.append(0)
 
@@ -8364,32 +7379,29 @@ class HandlerChainComposerStrategy:
         if byte_evidence_eas:
             region_has_byte_evidence = False
             for node in region_nodes:
-                probe_blk = self._safe_get_mblock(
-                    mba, int(node.entry_anchor),
-                )
-                if probe_blk is None:
-                    continue
-                probe = getattr(probe_blk, "head", None)
-                while probe is not None:
-                    try:
-                        probe_ea = int(getattr(probe, "ea", 0) or 0)
-                    except Exception:
-                        probe_ea = 0
-                    if probe_ea and probe_ea in byte_evidence_eas:
-                        region_has_byte_evidence = True
-                        break
-                    probe = getattr(probe, "next", None)
-                if region_has_byte_evidence:
+                if (
+                    self._materialization_capture_backend
+                    .block_contains_byte_evidence(
+                        mba,
+                        int(node.entry_anchor),
+                        byte_evidence_eas=byte_evidence_eas,
+                    )
+                ):
+                    region_has_byte_evidence = True
                     break
             if region_has_byte_evidence:
                 all_reads: set[tuple[int, int]] = set()
                 for node in region_nodes:
-                    body_blk = self._safe_get_mblock(
-                        mba, int(node.entry_anchor),
+                    reads = (
+                        self._materialization_capture_backend
+                        .collect_stkvar_reads_in_block(
+                            mba,
+                            int(node.entry_anchor),
+                        )
                     )
-                    if body_blk is None:
+                    if reads is None:
                         continue
-                    all_reads.update(_collect_stkvar_reads_in_block(body_blk))
+                    all_reads.update(reads)
 
                 def _pred_covers_reads(pred: int) -> tuple[bool, list[tuple[int, int]]]:
                     missing: list[tuple[int, int]] = []
@@ -8397,7 +7409,7 @@ class HandlerChainComposerStrategy:
                         if size <= 0:
                             continue
                         try:
-                            defs = find_reaching_defs_for_stkvar(
+                            defs = _DEFINITION_RESCUE_BACKEND.reaching_defs_for_stkvar(
                                 mba, int(pred), int(stkoff), int(size),
                             )
                         except Exception:
@@ -8421,7 +7433,7 @@ class HandlerChainComposerStrategy:
                 if not covered and bst_result is not None and state_var_stkoff is not None:
                     state_var_size = 4
                     try:
-                        state_writers = find_reaching_defs_for_stkvar(
+                        state_writers = _DEFINITION_RESCUE_BACKEND.reaching_defs_for_stkvar(
                             mba,
                             int(first_anchor),
                             int(state_var_stkoff),
@@ -8476,10 +7488,13 @@ class HandlerChainComposerStrategy:
                     # regions see chain entries for reads that live in
                     # later handler blocks, not just the first.
                     tail_anchor = int(region_nodes[-1].entry_anchor)
-                    rescue_defs = _capture_transitive_def_chain(
+                    rescue_body = _capture_transitive_def_chain_body(
                         mba, tail_anchor, set(stranded),
                     )
-                    if rescue_defs is not None:
+                    if rescue_body is not None:
+                        rescue_defs = tuple(
+                            _HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(rescue_body)
+                        )
                         logger.info(
                             "HandlerChainComposer: byte-evidence region"
                             " first=%d pred=%d -- def-site chain captured"
@@ -8494,6 +7509,7 @@ class HandlerChainComposerStrategy:
                             [hex(s.ea) for s in rescue_defs],
                         )
                         composed = list(rescue_defs) + composed
+                        composed_bodies.insert(0, rescue_body)
                         covered = True
                         stranded = []
                     else:
@@ -8515,7 +7531,9 @@ class HandlerChainComposerStrategy:
                     if not self._sccp_overlay_attempted:
                         self._sccp_overlay_attempted = True
                         try:
-                            self._sccp_overlay_cache = run_sccp(mba)
+                            self._sccp_overlay_cache = (
+                                _DEFINITION_RESCUE_BACKEND.run_sccp_overlay(mba)
+                            )
                         except Exception as exc:  # pragma: no cover - diagnostic only
                             logger.warning(
                                 "HandlerChainComposer: SCCP overlay raised: %s",
@@ -8525,12 +7543,13 @@ class HandlerChainComposerStrategy:
                     overlay = self._sccp_overlay_cache
                     if overlay:
                         for stkoff, size in stranded:
-                            key = (
-                                ida_hexrays.mop_S,
-                                int(size),
-                                int(stkoff),
+                            sccp_val = (
+                                _DEFINITION_RESCUE_BACKEND.lookup_sccp_stkvar(
+                                    overlay,
+                                    stkoff=int(stkoff),
+                                    size=int(size),
+                                )
                             )
-                            sccp_val = overlay.get(key)
                             sccp_findings.append(
                                 (hex(stkoff), int(size), sccp_val)
                             )
@@ -8561,6 +7580,13 @@ class HandlerChainComposerStrategy:
             succ_serial=int(succ_serial),
             composed_instructions=tuple(composed),
             state_values=tuple(state_values),
+            captured_body=_HEX_RAYS_CAPTURE_BACKEND.combine_bodies(
+                tuple(composed_bodies),
+                capture_id=(
+                    "region:"
+                    + ",".join(str(int(serial)) for serial in handler_serials)
+                ),
+            ),
         )
 
     @staticmethod
@@ -8570,67 +7596,25 @@ class HandlerChainComposerStrategy:
         except Exception:
             return None
 
-    @staticmethod
-    def _resolve_first_pred(
-        *,
+    def _read_live_one_way_successor(
+        self,
         mba: object,
-        blk: object,
-        region_anchors: set[int],
-        first_anchor: int,
-    ) -> int | None:
-        """Pick the splice predecessor for the region's first handler.
+        serial: int,
+    ) -> LiveOneWaySuccessorProbe:
+        return self._live_topology_backend.read_one_way_successor(
+            mba,
+            int(serial),
+        )
 
-        Accepts 1-way preds and 2-way preds whose conditional (taken) arm
-        currently targets the region's first handler. Fallthrough-arm
-        edges and non-conditional 2-way tails are skipped because the
-        downstream backend cannot rewrite them via create-and-redirect
-        without violating physical adjacency invariants.
-        """
-        try:
-            n = int(blk.npred())  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        if n == 0:
-            return None
-        eligible: list[int] = []
-        try:
-            for i in range(n):
-                p = int(blk.pred(i))  # type: ignore[attr-defined]
-                if p in region_anchors:
-                    continue
-                pred_blk = HandlerChainComposerStrategy._safe_get_mblock(mba, p)
-                if pred_blk is None:
-                    continue
-                try:
-                    nsucc = int(pred_blk.nsucc())  # type: ignore[attr-defined]
-                except Exception:
-                    continue
-                if nsucc == 1:
-                    eligible.append(p)
-                    continue
-                if nsucc != 2:
-                    continue
-                # 2-way pred: only allow when the conditional arm
-                # (tail.d.b) currently targets the region's first
-                # handler. The fallthrough arm cannot be safely
-                # redirected via create-and-redirect.
-                tail = getattr(pred_blk, "tail", None)
-                if tail is None:
-                    continue
-                try:
-                    if not ida_hexrays.is_mcode_jcond(int(tail.opcode)):
-                        continue
-                    cond_target = int(tail.d.b)
-                except Exception:
-                    continue
-                if cond_target != int(first_anchor):
-                    continue
-                eligible.append(p)
-        except Exception:
-            return None
-        if not eligible:
-            return None
-        return min(eligible)
+    def _read_live_block_topology(
+        self,
+        mba: object,
+        serial: int,
+    ) -> LiveBlockTopologyProbe:
+        return self._live_topology_backend.read_block_topology(
+            mba,
+            int(serial),
+        )
 
     def _resolve_region_exit(
         self,
@@ -8649,15 +7633,19 @@ class HandlerChainComposerStrategy:
         if candidates:
             return min(candidates)
 
-        blk = self._safe_get_mblock(mba, int(last_node.entry_anchor))
-        if blk is None:
+        topology = self._read_live_block_topology(
+            mba,
+            int(last_node.entry_anchor),
+        )
+        if (
+            not topology.block_exists
+            or topology.nsucc is None
+            or topology.successors is None
+            or int(topology.nsucc) < 1
+            or not topology.successors
+        ):
             return None
-        try:
-            if int(blk.nsucc()) >= 1:  # type: ignore[attr-defined]
-                return int(blk.succ(0))  # type: ignore[attr-defined]
-        except Exception:
-            return None
-        return None
+        return int(topology.successors[0])
 
     @staticmethod
     def _capture_block_composable_instructions(
@@ -8668,8 +7656,8 @@ class HandlerChainComposerStrategy:
     ) -> list[InsnSnapshot] | None:
         """Walk ``blk.head`` and capture composable instructions, or None.
 
-        Legacy interface (preserves prior behavior): treats ANY opcode in
-        ``_FORBIDDEN_COMPOSITION_OPCODES`` (including m_call/m_icall) as a
+        Legacy interface (preserves prior behavior): treats any backend
+        forbidden composition opcode (including m_call/m_icall) as a
         composition refusal.  Phase A's call-barrier candidate
         classification uses :py:meth:`_capture_block_composable_instructions_v2`
         directly to distinguish closing-forbidden vs call-forbidden cases.
@@ -8725,122 +7713,25 @@ class HandlerChainComposerStrategy:
         is the materialisation path for byte-emitter handler blocks
         (m_add + m_stx + jcond), whose m_stx would otherwise be lost.
         """
-        block_has_byte_evidence = False
-        if byte_evidence_eas:
-            try:
-                probe = blk.head  # type: ignore[attr-defined]
-            except Exception:
-                probe = None
-            while probe is not None:
-                try:
-                    probe_ea = int(getattr(probe, "ea", 0) or 0)
-                except Exception:
-                    probe_ea = 0
-                if probe_ea and probe_ea in byte_evidence_eas:
-                    block_has_byte_evidence = True
-                    break
-                probe = getattr(probe, "next", None)
-        try:
-            insn = blk.head  # type: ignore[attr-defined]
-        except Exception:
-            return _CaptureResult(
-                kind="closing_abort",
-                abort_reason="blk_head_unreadable",
+        backend_result = (
+            _HEX_RAYS_CAPTURE_BACKEND.capture_block_composable_instructions_v2(
+                blk,
+                state_var_stkoff=state_var_stkoff,
+                byte_evidence_eas=byte_evidence_eas,
             )
-        snapshots: list[InsnSnapshot] = []
-        call_eas: list[tuple[int, bool]] = []  # (ea, is_indirect)
-        pre_call_count = 0
-        post_call_count = 0
-        seen_call = False
-        while insn is not None:
-            try:
-                opcode = int(insn.opcode)
-            except Exception:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="opcode_unreadable",
-                )
-            if opcode in (ida_hexrays.m_goto, ida_hexrays.m_nop):
-                insn = insn.next
-                continue
-            # Closing-forbidden opcodes: never become call anchors.
-            if opcode in _CLOSING_FORBIDDEN:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason=f"closing_forbidden_opcode={opcode}",
-                )
-            try:
-                if ida_hexrays.is_mcode_jcond(opcode):
-                    if (
-                        block_has_byte_evidence
-                        and getattr(insn, "next", None) is None
-                    ):
-                        # Byte-emitter handler block with jcond at tail:
-                        # drop the jcond from the composable body; the
-                        # InsertBlock's pred->succ wiring carries the
-                        # DAG-aligned next-state edge.
-                        break
-                    return _CaptureResult(
-                        kind="closing_abort",
-                        abort_reason=f"jcond_opcode={opcode}",
-                    )
-            except Exception:
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="jcond_check_raised",
-                )
-            # Side-effecting calls: record the EA but do not capture a
-            # snapshot for them (the call body stays in the original
-            # block; Phase B never copies it elsewhere).
-            if opcode in _CALL_FORBIDDEN:
-                try:
-                    call_ea = int(getattr(insn, "ea", 0))
-                except Exception:
-                    call_ea = 0
-                is_indirect = opcode == ida_hexrays.m_icall
-                call_eas.append((call_ea, is_indirect))
-                seen_call = True
-                insn = insn.next
-                continue
-            if _is_state_write(insn, state_var_stkoff):
-                insn = insn.next
-                continue
-            try:
-                snap = capture_insn_snapshot(insn)
-            except Exception as exc:
-                logger.warning(
-                    "HandlerChainComposer: capture_insn_snapshot failed at"
-                    " ea=0x%x opcode=%d: %s",
-                    int(getattr(insn, "ea", 0)),
-                    opcode,
-                    exc,
-                )
-                return _CaptureResult(
-                    kind="closing_abort",
-                    abort_reason="capture_snapshot_failed",
-                )
-            snapshots.append(snap)
-            if seen_call:
-                post_call_count += 1
-            else:
-                pre_call_count += 1
-            insn = insn.next
-        if not call_eas:
-            return _CaptureResult(
-                kind="composable",
-                snapshots=tuple(snapshots),
-            )
-        if len(call_eas) > 1:
-            return _CaptureResult(
-                kind="closing_abort",
-                abort_reason=f"multi_call_anchor_count={len(call_eas)}",
-            )
-        call_ea, is_indirect = call_eas[0]
+        )
+        snapshots = (
+            _HEX_RAYS_CAPTURE_BACKEND.snapshots_from_body(backend_result.body)
+            if backend_result.body is not None
+            else None
+        )
         return _CaptureResult(
-            kind="opaque_call_anchor",
-            snapshots=None,
-            call_ea=call_ea,
-            is_indirect=is_indirect,
-            pre_call_count=pre_call_count,
-            post_call_count=post_call_count,
+            kind=backend_result.kind,
+            snapshots=snapshots,
+            body=backend_result.body,
+            abort_reason=backend_result.abort_reason,
+            call_ea=backend_result.call_ea,
+            is_indirect=backend_result.is_indirect,
+            pre_call_count=backend_result.pre_call_count,
+            post_call_count=backend_result.post_call_count,
         )

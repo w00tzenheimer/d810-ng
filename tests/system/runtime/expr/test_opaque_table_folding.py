@@ -330,91 +330,75 @@ class TestMopTrackerResolvesGlobals:
         - Exercise tracker normalization + resolution together (not just one
           artificial operand in isolation).
 
-        Why this can skip on some snapshots:
-        - This test currently samples mop_v operands from one function at one
-          maturity (`global_const_xor_decrypt`, `MMAT_CALLS`).
-        - After `MopTracker` internal normalization, multiple candidate mops
-          can collapse into one unresolved memory entry.
-        - When unresolved count collapses to 1, the "mixed outcome" invariant
-          is no longer testable here, so the test is skipped by design.
-
-        Repro context seen in this repo:
-        - Recursive mop discovery is already enabled (`find_mop_v_operands` via
-          `ins.for_all_ops`), so this is not just a shallow traversal issue.
-        - Current snapshot often ends with:
-          initial_memory_unresolved == 1
-          and skip message:
-          "Not enough unresolved memory mops after tracker normalization (1)".
-
-        To remove this skip robustly, choose one:
-        1) Fixture route (preferred):
-           use/add a sample function or binary/maturity combination that
-           reliably yields >=2 unresolved memory mops post-normalization.
-        2) Harvest route:
-           broaden candidate collection across multiple functions and/or
-           maturities until >=2 unresolved memory mops are found.
-        3) Invariant route (weaker):
-           redefine this test to assert "no unresolved-count regression"
-           instead of "must resolve at least one from a mixed set".
-
-        Acceptance criteria for unskipping:
-        - Deterministically reaches >=2 unresolved memory mops before resolve.
-        - `try_resolve_memory_mops()` decreases unresolved count.
-        - Behavior is stable across supported binaries/platform snapshots.
+        The operand harvest intentionally spans several stable sample functions
+        and maturities. A single function/maturity can collapse to one memory
+        operand after MopTracker normalization, which makes the resolution
+        invariant impossible to exercise.
         """
-        # Use global_const_xor_decrypt which has multiple const table reads
-        func_ea = get_func_ea("global_const_xor_decrypt")
-        if func_ea == idaapi.BADADDR:
-            pytest.skip("global_const_xor_decrypt not found")
+        candidate_functions = (
+            "global_const_xor_decrypt",
+            "global_const_simple_lookup",
+            "hardened_cond_chain_simple",
+        )
+        candidate_maturities = (
+            ida_hexrays.MMAT_CALLS,
+            ida_hexrays.MMAT_GLBOPT1,
+        )
 
-        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_CALLS)
-        if mba is None:
-            pytest.skip("Failed to generate microcode")
-
-        mop_v_list = find_mop_v_operands(mba)
-        if len(mop_v_list) < 2:
-            pytest.skip("Need at least 2 mop_v operands for this test")
-
-        # Collect unique mop_v operands by (address,size) to avoid duplicates
-        unique_mops = []
+        selected = []
         seen = set()
-        for _, _, _, mop in mop_v_list:
-            key = (getattr(mop, "g", None), getattr(mop, "size", None))
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_mops.append(mop)
-            if len(unique_mops) >= 8:
-                break
+        kept_mbas = []
 
-        if len(unique_mops) < 2:
+        for func_name in candidate_functions:
+            func_ea = get_func_ea(func_name)
+            if func_ea == idaapi.BADADDR:
+                continue
+            for maturity in candidate_maturities:
+                mba = gen_microcode_at_maturity(func_ea, maturity)
+                if mba is None:
+                    continue
+                kept_mbas.append(mba)
+                for serial, _ins, op_name, mop in find_mop_v_operands(mba):
+                    key = (getattr(mop, "g", None), getattr(mop, "size", None))
+                    if key in seen or key[0] is None or key[1] is None:
+                        continue
+                    seen.add(key)
+                    selected.append((func_name, maturity, serial, op_name, mop))
+
+                    probe = MopTracker([entry[-1] for entry in selected])
+                    initial_probe = len(probe._memory_unresolved_mops)
+                    if initial_probe < 2:
+                        continue
+                    probe.try_resolve_memory_mops()
+                    if len(probe._memory_unresolved_mops) < initial_probe:
+                        break
+                else:
+                    continue
+                break
+            else:
+                continue
+            break
+
+        if len(selected) < 2:
             pytest.skip("Need at least 2 unique mop_v operands for this test")
 
-        # If the sampled operands have no obviously foldable candidate in this
-        # binary/maturity snapshot, this specific mixed-resolution assertion is
-        # not applicable.
-        rule = FoldReadonlyDataRule()
-        has_foldable_candidate = any(
-            rule._is_foldable_address(mop.g) for mop in unique_mops if hasattr(mop, "g")
-        )
-        if not has_foldable_candidate:
-            pytest.skip("No foldable mop_v candidate found in sampled operands")
-
-        mops = unique_mops
+        mops = [entry[-1] for entry in selected]
         tracker = MopTracker(mops)
 
         initial_memory_unresolved = len(tracker._memory_unresolved_mops)
-        # This skip protects a sample/precondition gap, not a crash:
-        # mixed-resolution behavior requires at least two unresolved memory
-        # mops *after* tracker normalization. If normalization collapses to one,
-        # there is no meaningful "some resolve, some stay unresolved" scenario
-        # to assert in this specific harness path.
         if initial_memory_unresolved < 2:
             pytest.skip(
                 "Not enough unresolved memory mops after tracker normalization "
                 f"({initial_memory_unresolved})"
             )
         print(f"\n  Initial memory_unresolved: {initial_memory_unresolved}")
+        print(
+            "  Selected mop_v operands: "
+            + ", ".join(
+                f"{func}@{maturity}:blk{serial}:{op}=0x{mop.g:x}/{mop.size}"
+                for func, maturity, serial, op, mop in selected
+            )
+        )
 
         tracker.try_resolve_memory_mops()
 
@@ -666,24 +650,21 @@ class TestIntegrationOpaqueTableFolding:
             fired_rules = state.stats.get_fired_rule_names()
             print(f"\n  Fired rules: {fired_rules}")
 
-            # =========================================================================
-            # CORRECTED BEHAVIOR (after fixing exit path issue):
-            #   void __fastcall hardened_cond_chain_simple(unsigned int a1)
-            #   {
-            #       dword_180015448 = 3 * a1 + 7;  // g_side_effect
-            #   }
+            # This test is primarily about writable opaque-table folding, but it
+            # also guards the terminal conditional-chain regression that used to
+            # hide behind a weak assertion set.  The accepted final form is IDA's
+            # collapsed equivalent of the manual unflattening:
             #
-            # WHAT d810 DOES CORRECTLY:
-            # 1. Eliminates opaque table references (g_opaque_table, dword_* lookups)
-            # 2. Eliminates state constants (0x1000, 0x2000, 0x4000, 0x5000, 0x6000, 0x7000)
-            # 3. Recovers correct computation (3 * a1 + 7)
-            # 4. Runtime harness may still retain a terminal while(1) wrapper
-            #    even when state constants and opaque-table transitions are gone.
+            #   v3 = a1;
+            #   v3 *= 3;
+            #   v3 += 7;
+            #   dword_18001D440 = v3;
+            #   return v3;
             #
-            # REMAINING LIMITATIONS:
-            # - Function signature: 'void ()' instead of expected return type
-            #   (this is IDA's doing, not d810's fault - the function doesn't return)
-            # =========================================================================
+            # Different decompile paths may print the return as either
+            # `return 3 * a1 + 7;` or `return (unsigned int)(3 * a1 + 7);`.
+            # Both are equivalent for the recovered unsigned-int expression, so
+            # assert the semantic shape instead of one renderer spelling.
 
             # Verify opaque table references eliminated
             assert "g_opaque_table" not in code, \
@@ -695,14 +676,19 @@ class TestIntegrationOpaqueTableFolding:
                 assert const not in code, \
                     f"State constant {const} should be eliminated"
 
-            # Verify computation recovered (3 * a1 + 7) or at least 3 * a1
-            assert "3 * a1" in code or "a1 * 3" in code, \
-                "Expected computation with parameter (3 * a1)"
+            code_lines = {line.strip() for line in code.splitlines()}
+            assert "dword_18001D440 = 3 * a1 + 7;" in code_lines, \
+                "Expected collapsed side-effect assignment: dword_18001D440 = 3 * a1 + 7"
+            assert (
+                "return 3 * a1 + 7;" in code_lines
+                or "return (unsigned int)(3 * a1 + 7);" in code_lines
+            ), "Expected collapsed return of the recovered expression"
 
-            # Verify side effect variable assignment present
-            # Note: The variable name will be IDA-generated (dword_*), not "g_side_effect"
-            assert " = " in code, \
-                "Expected side effect assignment"
+            assert "while" not in code.lower(), \
+                "Expected conditional-chain dispatcher to be fully removed"
+
+            assert "while ( 1 )\n        ;" not in code, \
+                "Unexpected terminal infinite loop after opaque-table folding"
 
             # Verify decompilation didn't crash and produced something
             assert len(code.strip()) > 0, \
