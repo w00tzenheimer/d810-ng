@@ -46,6 +46,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
+    legacy_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -2797,7 +2798,7 @@ def _build_approov_multistate_phase_cycle(role_map: dict[str, tuple[tuple[int, i
     )
 
 
-def test_default_ollvm_profile_uses_state_map_evidence(
+def test_implicit_profile_uses_state_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
@@ -2853,7 +2854,7 @@ def test_default_ollvm_profile_uses_state_map_evidence(
     assert detection.planning_blocker is None
 
 
-def test_default_ollvm_profile_prefers_switch_map_evidence(
+def test_implicit_profile_prefers_switch_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
@@ -3027,6 +3028,22 @@ def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
         assert type(resolver).__name__ == "_NoopDispatcherResolver"
         assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
         assert resolver.check_if_histories_are_resolved(None) is False
+
+
+def test_implicit_family_profile_does_not_use_father_history() -> None:
+    family = EmulatedDispatcherStrategyFamily()
+
+    assert family._profile.name == "ollvm_state_map"
+    assert family._profile.state_transport == "state_dispatcher_map"
+    assert type(family._profile.resolver_factory()).__name__ == "_NoopDispatcherResolver"
+
+
+def test_legacy_father_history_profile_is_explicit_opt_in() -> None:
+    profile = legacy_father_history_dispatcher_profile()
+
+    assert profile.name == "legacy_father_history"
+    assert profile.state_transport == "father_history_emulation"
+    assert profile.resolver_factory.__name__ == "OllvmFatherHistoryResolver"
 
 
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
@@ -3251,6 +3268,29 @@ def test_tigress_indirect_profile_can_materialize_targets(monkeypatch) -> None:
 
     assert calls == [config]
     assert rule._family._profile.name == "tigress_indirect"
+
+
+def test_emulated_dispatcher_unflattener_defaults_to_state_dispatcher_map() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({})
+
+    assert rule._family._profile.name == "ollvm_state_map"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+
+
+def test_emulated_dispatcher_unflattener_accepts_legacy_father_history_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({"profile": "legacy_father_history"})
+
+    assert rule._family._profile.name == "legacy_father_history"
+    assert rule._family._profile.state_transport == "father_history_emulation"
+
+
+def test_emulated_dispatcher_unflattener_rejects_unknown_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+
+    with pytest.raises(ValueError, match="Unknown EmulatedDispatcherUnflattener profile"):
+        rule.configure({"profile": "typo_state_map"})
 
 
 def test_emulated_dispatcher_unflattener_accepts_ollvm_materialization_guard() -> None:

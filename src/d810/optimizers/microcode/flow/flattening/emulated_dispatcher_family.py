@@ -187,7 +187,7 @@ __all__ = [
     "GenericDispatcherCollectorProtocol",
     "GenericDispatcherEngineProfile",
     "GenericDispatcherResolverProtocol",
-    "default_ollvm_dispatcher_profile",
+    "legacy_father_history_dispatcher_profile",
     "ollvm_state_dispatcher_map_profile",
     "tigress_indirect_dispatcher_profile",
     "tigress_switch_dispatcher_profile",
@@ -4735,11 +4735,11 @@ class GenericDispatcherEngineProfile:
         return fallthrough_serial
 
 
-def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
-    """Return the default OLLVM-backed dispatcher profile."""
+def legacy_father_history_dispatcher_profile() -> GenericDispatcherEngineProfile:
+    """Return the legacy OLLVM father-history dispatcher profile."""
 
     return GenericDispatcherEngineProfile(
-        name="ollvm",
+        name="legacy_father_history",
         collector_factory=OllvmDispatcherCollector,
         resolver_factory=OllvmFatherHistoryResolver,
         state_transport="father_history_emulation",
@@ -4759,15 +4759,15 @@ def ollvm_state_dispatcher_map_profile(
     enable_terminal_payload_materialization: bool = False,
     enable_phase_reorder: bool = False,
 ) -> GenericDispatcherEngineProfile:
-    """Return the recon-owned OLLVM equality-chain profile.
+    """Return the recon-owned OLLVM state-dispatcher-map profile.
 
-    OLLVM equality-chain dispatchers are now modelled through the neutral
-    ``StateDispatcherMap`` recon surface.  Keeping the legacy OLLVM collector
-    active here makes father-history emulation compete with the exact row map:
-    the collector can still find a broad dispatcher, but it cannot explain all
-    side effects and conditional states in large FLA+BCF samples.  That leaves
-    the family in the old "some fathers unresolved" posture and prevents the
-    phase-level recon paths from owning lowering.
+    OLLVM equality-chain and switch-table dispatchers are now modelled through
+    the neutral ``StateDispatcherMap`` recon surface.  Keeping the legacy OLLVM
+    collector active here makes father-history emulation compete with the exact
+    row map: the collector can still find a broad dispatcher, but it cannot
+    explain all side effects and conditional states in large FLA+BCF samples.
+    That leaves the family in the old "some fathers unresolved" posture and
+    prevents the phase-level recon paths from owning lowering.
 
     Use no-op collector/resolver objects so detection and lowering are driven
     by exact equality-chain rows plus transition facts.  If a future change
@@ -4781,10 +4781,12 @@ def ollvm_state_dispatcher_map_profile(
         resolver_factory=_NoopDispatcherResolver,
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
-        provenance_hints=("equality_chain",),
+        provenance_hints=(),
         enable_terminal_payload_materialization=enable_terminal_payload_materialization,
         enable_phase_reorder=enable_phase_reorder,
-        state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
+        allow_incomplete_switch_transition_facts=True,
+        state_dispatcher_map_factory=_ollvm_state_dispatcher_map_fallback,
+        switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
         post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
         fact_observation_factory=collect_ollvm_profile_fact_observations,
         branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
@@ -4871,7 +4873,7 @@ class EmulatedDispatcherDetection:
 
 
 class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
-    """Engine-family adapter over the legacy generic dispatcher collector."""
+    """Engine-family adapter over profile-composed dispatcher evidence."""
 
     def __init__(
         self,
@@ -4882,7 +4884,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
     ) -> None:
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._logger = logger or family_logger
-        self._profile = profile or default_ollvm_dispatcher_profile()
+        self._profile = profile or ollvm_state_dispatcher_map_profile()
         self._strategies = [
             DispatcherLoopRecoveryStrategy(),
             EmulatedDispatcherStrategy(),
