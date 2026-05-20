@@ -1538,9 +1538,10 @@ class D810Manager:
         - DeadBlockEliminationPass: emits NopInstructions which calls blk.make_nop().
           make_nop() removes the goto but does not update block type or edges, so
           mba.verify(True) rejects the inconsistent state at MMAT_GLBOPT2.
-          The legacy equivalent (BlockMerger) only runs at MMAT_CALLS/MMAT_GLBOPT1.
-        - BlockMergePass: same reason - emits NopInstructions on trailing gotos,
-          which leaves dangling edges that fail verification at MMAT_GLBOPT2.
+        - BlockMergeTransform: same reason - emits NopInstructions on trailing
+          gotos, which leaves dangling edges that fail verification at
+          MMAT_GLBOPT2. The BlockMerger rule runs the transform at the legacy
+          flow-rule maturities instead.
 
         OpaqueJumpFixerPass and FakeJumpFixerPass are also excluded -
         they require pre-computed fix dicts from the legacy analysis side.

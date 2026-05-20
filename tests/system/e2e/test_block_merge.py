@@ -36,8 +36,9 @@ def _get_default_binary() -> str:
 # ---------------------------------------------------------------------------
 # BlockMerger fires as a cleanup pass after unflattening.  When the
 # unflattener resolves a flattened switch-dispatch, it leaves behind
-# small blocks connected by m_goto instructions.  BlockMerger NOPs
-# those gotos so that IDA can merge the blocks.
+# small blocks connected by m_goto instructions.  BlockMerger now delegates
+# to BlockMergeTransform, which emits primitive NopInstructions so IDA can
+# merge the blocks.
 #
 # We verify this indirectly: if BlockMerger is active, the deobfuscated
 # code should be cleaner (fewer goto artifacts) than without it.

@@ -13,7 +13,6 @@ files:
 ignores:
   # Backend/materialization/emission and known legacy mutators.
   - "src/d810/optimizers/microcode/flow/flattening/abc_block_splitter.py"
-  - "src/d810/optimizers/microcode/flow/flattening/block_merge.py"
   - "src/d810/optimizers/microcode/flow/flattening/fix_pred_cond_jump_block.py"
   - "src/d810/optimizers/microcode/flow/flattening/hodur/unflattener.py"
   - "src/d810/optimizers/microcode/flow/flattening/services.py"
