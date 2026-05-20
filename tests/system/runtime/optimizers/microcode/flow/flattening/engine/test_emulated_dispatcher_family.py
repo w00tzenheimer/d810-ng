@@ -5063,11 +5063,11 @@ def test_emulated_dispatcher_family_inserts_safe_copies_before_conditional_targe
         ),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.get_all_possibles_values",
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
         lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.check_if_all_values_are_found",
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
         lambda _values: True,
     )
     monkeypatch.setattr(
@@ -5114,11 +5114,11 @@ def test_emulated_dispatcher_family_reuses_deferred_side_effects_after_calls(
         nextb=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.get_all_possibles_values",
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
         lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.check_if_all_values_are_found",
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
         lambda _values: True,
     )
     monkeypatch.setattr(
