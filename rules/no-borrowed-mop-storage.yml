@@ -13,13 +13,8 @@ id: no-borrowed-mop-storage
 language: python
 severity: error
 
-# Only scan source code, exclude tests and tools
 files:
   - "src/**/*.py"
-
-ignores:
-  - "tests/**"
-  - "tools/**"
 
 message: |
   Direct assignment of mop_t parameter to .mop attribute detected.

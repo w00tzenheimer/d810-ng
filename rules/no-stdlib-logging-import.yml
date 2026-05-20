@@ -23,7 +23,6 @@ files:
 ignores:
   - "src/d810/core/logging.py"
   - "src/d810/_vendor/**"
-  - "src/d810/mba/backends/egglog_backend.py"  # suppresses third-party egglog logger
   - "src/d810/ui/testbed.py"  # extends logging.Handler for UI log capture
 
 message: |
