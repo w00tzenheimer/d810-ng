@@ -44,7 +44,7 @@ from d810.recon.flow.return_frontier_carrier_audit import (
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
 from d810.recon.function_priors import FunctionAnalysisPriors
-from d810.optimizers.microcode.flow.flattening.rule_shell import (
+from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
 from d810.optimizers.microcode.handler import ConfigParam

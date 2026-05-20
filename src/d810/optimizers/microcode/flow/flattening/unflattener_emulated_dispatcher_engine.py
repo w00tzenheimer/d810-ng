@@ -27,7 +27,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     execute_family_pipeline,
     plan_family_pipeline,
 )
-from d810.optimizers.microcode.flow.flattening.rule_shell import (
+from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
