@@ -3101,6 +3101,17 @@ def test_ollvm_profile_supplies_carrier_facts_via_profile(monkeypatch) -> None:
     assert calls == [mba]
 
 
+def test_state_dispatcher_map_config_does_not_enable_predecessor_target_lowering() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "state_dispatcher_map",
+        "enable_predecessor_dispatcher_target_lowering": True,
+    })
+
+    assert rule._family._profile.name == "ollvm_state_map"
+    assert rule._family._profile.enable_predecessor_dispatcher_target_lowering is False
+
+
 def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate(
     monkeypatch,
 ) -> None:
@@ -3908,6 +3919,44 @@ def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatc
     assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
         loop_recovery_modifications
     )
+
+
+def test_predecessor_target_lowering_is_recon_only_until_safe_materialization(
+    monkeypatch,
+) -> None:
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            enable_predecessor_dispatcher_target_lowering=True,
+        )
+    )
+    calls = []
+    monkeypatch.setattr(
+        family,
+        "_collect_predecessor_dispatcher_target_candidates",
+        lambda **_kwargs: calls.append("called") or (("mod",), (), ()),
+    )
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    result = family._collect_lowering_candidates(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_entries=(4,),
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+        ),
+        flow_graph=_flow_graph_with_edge(),
+    )
+
+    assert result == ((), (), ())
+    assert calls == []
 
 
 def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:

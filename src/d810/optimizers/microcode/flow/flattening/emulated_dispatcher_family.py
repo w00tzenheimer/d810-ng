@@ -5084,14 +5084,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         tuple[EmulatedDispatcherCandidateRecord, ...],
     ]:
         if not detection.collector_dispatchers:
-            if not self._profile.enable_predecessor_dispatcher_target_lowering:
-                return (), (), ()
-            return self._collect_predecessor_dispatcher_target_candidates(
-                mba=mba,
-                phase_artifact=phase_artifact,
-                phase_context=phase_context,
-                flow_graph=flow_graph,
-            )
+            # PredecessorDispatcherTargetFact proves which handler a state
+            # reaches, but not that the raw predecessor edge is safe to
+            # rewrite.  Keep these facts diagnostic/recon evidence until a
+            # planner-owned split/clone materialization primitive can consume
+            # them without bypassing dispatcher-owned structure.
+            return (), (), ()
 
         resolver = self._make_resolver(mba, detection)
         scc_memberships = self._compute_scc_memberships(flow_graph)
