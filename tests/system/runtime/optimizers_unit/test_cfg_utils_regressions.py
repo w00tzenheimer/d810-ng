@@ -1,6 +1,7 @@
 """Regression tests for CFG mutation/verify safety guards.
 
-These tests run with lightweight fake IDA modules and focus on crash-prone CFG helpers:
+These tests use the real IDA/Hex-Rays Python modules with lightweight fake
+MBA/block objects and focus on crash-prone CFG helpers:
 1. ensure_child_has_an_unconditional_father() default-child handling
 2. create_block(is_0_way=True) goto cleanup
 """
@@ -8,9 +9,9 @@ These tests run with lightweight fake IDA modules and focus on crash-prone CFG h
 from __future__ import annotations
 
 import json
-import sys
 from types import SimpleNamespace
 
+import ida_hexrays
 import pytest
 
 
@@ -73,7 +74,11 @@ class _FakeBlock:
         return len(self.succset)
 
     def is_simple_goto_block(self) -> bool:
-        return self.nsucc() == 1 and self.tail is not None and self.tail.opcode == 55
+        return (
+            self.nsucc() == 1
+            and self.tail is not None
+            and self.tail.opcode == ida_hexrays.m_goto
+        )
 
     def mark_lists_dirty(self):
         self.marked_dirty += 1
@@ -83,74 +88,6 @@ class _FakeBlock:
 
     def make_nop(self, ins):
         self.nopped.append(ins)
-
-
-@pytest.fixture(autouse=True)
-def _mock_cfg_import_deps():
-    """Load cfg mutation/verify modules with minimal fake IDA/transitive deps."""
-    class _DummyHooks:
-        def hook(self):
-            return True
-
-        def unhook(self):
-            return True
-
-    mock_hexrays = SimpleNamespace(
-        BLT_0WAY=0,
-        BLT_1WAY=1,
-        BLT_2WAY=2,
-        MBL_GOTO=0x20,
-        m_goto=0x37,
-        m_ijmp=0x56,
-        Hexrays_Hooks=_DummyHooks,
-    )
-    mock_idaapi = SimpleNamespace()
-    mock_ida_pro = SimpleNamespace()
-
-    class _Printer:
-        def get_block_mc(self):
-            return ""
-
-    modules_to_mock = {
-        "ida_hexrays": mock_hexrays,
-        "idaapi": mock_idaapi,
-        "ida_pro": mock_ida_pro,
-        "d810.hexrays.utils.hexrays_formatters": SimpleNamespace(block_printer=lambda: _Printer()),
-        "d810.hexrays.utils.hexrays_helpers": SimpleNamespace(CONDITIONAL_JUMP_OPCODES=frozenset()),
-    }
-
-    # Ensure cfg mutation/verify imports against this fixture's module mocks.
-    popped = {}
-    for mod_name in (
-        "d810.hexrays.mutation.cfg_mutations",
-        "d810.hexrays.mutation.cfg_verify",
-        "d810.hexrays.ir.cfg_queries",
-        "d810.hexrays.utils.hexrays_formatters",
-        "d810.hexrays.utils.hexrays_helpers",
-    ):
-        if mod_name in sys.modules:
-            popped[mod_name] = sys.modules.pop(mod_name)
-
-    # Temporarily inject mock modules into sys.modules
-    original_modules = {}
-    for mod_name, mod_obj in modules_to_mock.items():
-        original_modules[mod_name] = sys.modules.get(mod_name)
-        sys.modules[mod_name] = mod_obj
-
-    try:
-        yield
-    finally:
-        # Restore original sys.modules state
-        for mod_name in modules_to_mock:
-            if original_modules[mod_name] is None:
-                sys.modules.pop(mod_name, None)
-            else:
-                sys.modules[mod_name] = original_modules[mod_name]
-
-        # Restore previously cached modules
-        for mod_name, mod in popped.items():
-            sys.modules[mod_name] = mod
-
 
 def test_ensure_child_skips_default_child_rewrite(monkeypatch):
     """Default-child path must not create helper blocks (orphan risk / INTERR 50856)."""
