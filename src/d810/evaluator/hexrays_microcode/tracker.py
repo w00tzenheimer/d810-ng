@@ -13,11 +13,6 @@ from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
-from d810.hexrays.mutation.cfg_mutations import (
-    change_1way_block_successor,
-    change_2way_block_conditional_successor,
-    duplicate_block,
-)
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     format_mop_t,
@@ -45,9 +40,6 @@ if TYPE_CHECKING:
 #
 # You can get the value of one of the searched mop by calling the get_mop_constant_value API of a MopHistory object.
 # Behind the scene, it will emulate all microcode instructions on the MopHistory path.
-#
-# Finally the duplicate_histories API can be used to duplicate microcode blocks so that for each microcode block,
-# the searched mops have only one possible values. For instance, this is a preliminary step used in code unflattening.
 
 
 logger = getLogger(__name__, "WARNING")
@@ -1016,142 +1008,6 @@ def get_block_with_multiple_predecessors(
                 return block, tmp_dict
             pred_blk = block
     return None, None
-
-
-def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, int]:
-    nb_duplication = 0
-    nb_change = 0
-    if (len(var_histories) == 0) or (len(var_histories[0].block_path) == 0):
-        return nb_duplication, nb_change
-    mba = var_histories[0].block_path[0].mba
-    block_to_duplicate, pred_dict = get_block_with_multiple_predecessors(var_histories)
-    if block_to_duplicate is None or pred_dict is None:
-        return nb_duplication, nb_change
-    logger.debug(
-        "Block to duplicate found: {0} with {1} successors".format(
-            block_to_duplicate.serial, block_to_duplicate.nsucc()
-        )
-    )
-    i = 0
-    for pred_serial, pred_history_group in pred_dict.items():
-        # We do not duplicate first group
-        if i >= 1:
-            logger.debug(
-                "  Before {0}: {1}".format(
-                    pred_serial,
-                    [
-                        var_history.block_serial_path
-                        for var_history in pred_history_group
-                    ],
-                )
-            )
-            pred_block = mba.get_mblock(pred_serial)
-            duplicated_blk_jmp, duplicated_blk_default = duplicate_block(
-                block_to_duplicate, verify=False
-            )
-            nb_duplication += 1 if duplicated_blk_jmp is not None else 0
-            nb_duplication += 1 if duplicated_blk_default is not None else 0
-            logger.debug(
-                "  Making {0} goto {1}".format(
-                    pred_block.serial, duplicated_blk_jmp.serial
-                )
-            )
-            if (pred_block.tail is None) or (
-                not ida_hexrays.is_mcode_jcond(pred_block.tail.opcode)
-            ):
-                if change_1way_block_successor(
-                    pred_block, duplicated_blk_jmp.serial, verify=False
-                ):
-                    nb_change += 1
-            else:
-                if block_to_duplicate.serial == pred_block.tail.d.b:
-                    if change_2way_block_conditional_successor(
-                        pred_block, duplicated_blk_jmp.serial, verify=False
-                    ):
-                        nb_change += 1
-                else:
-                    logger.warning(
-                        "pred %d is jcond but target %d is fallthrough (not cond target %d), "
-                        "skipping redirect",
-                        pred_block.serial,
-                        block_to_duplicate.serial,
-                        pred_block.tail.d.b,
-                    )
-
-            block_to_duplicate_default_successor = mba.get_mblock(
-                block_to_duplicate.nextb.serial
-            )
-            logger.debug("  Now, we fix var histories...")
-            for var_history in pred_history_group:
-                var_history.replace_block_in_path(
-                    block_to_duplicate, duplicated_blk_jmp
-                )
-                if block_to_duplicate.tail is not None and ida_hexrays.is_mcode_jcond(
-                    block_to_duplicate.tail.opcode
-                ):
-                    index_jump_block = get_blk_index(
-                        duplicated_blk_jmp, var_history.block_path
-                    )
-                    if index_jump_block + 1 < len(var_history.block_path):
-                        original_jump_block_successor = var_history.block_path[
-                            index_jump_block + 1
-                        ]
-                        if (
-                            original_jump_block_successor.serial
-                            == block_to_duplicate_default_successor.serial
-                        ):
-                            var_history.insert_block_in_path(
-                                duplicated_blk_default, index_jump_block + 1
-                            )
-        i += 1
-        logger.debug(
-            "  After {0}: {1}".format(
-                pred_serial,
-                [var_history.block_serial_path for var_history in pred_history_group],
-            )
-        )
-    for i, var_history in enumerate(var_histories):
-        logger.debug(
-            " internal_pass_end.{0}: {1}".format(i, var_history.block_serial_path)
-        )
-    return nb_duplication, nb_change
-
-
-def duplicate_histories(
-    var_histories: list[MopHistory],
-    max_nb_pass: int = 10,
-    max_seconds: float = 10.0,
-) -> tuple[int, int]:
-
-    cur_pass = 0
-    total_nb_duplication = 0
-    total_nb_change = 0
-    logger.info("Trying to fix new var_history (%d histories)...", len(var_histories))
-    for i, var_history in enumerate(var_histories):
-        logger.info(" start.{0}: {1}".format(i, var_history.block_serial_path))
-    start_time = _time.monotonic()
-    while cur_pass < max_nb_pass:
-        elapsed = _time.monotonic() - start_time
-        if elapsed > max_seconds:
-            logger.warning(
-                "duplicate_histories: time budget exceeded (%.1fs > %.1fs) "
-                "after %d passes, %d duplications",
-                elapsed,
-                max_seconds,
-                cur_pass,
-                total_nb_duplication,
-            )
-            break
-        logger.debug("Current path {0}".format(cur_pass))
-        nb_duplication, nb_change = try_to_duplicate_one_block(var_histories)
-        if nb_change == 0 and nb_duplication == 0:
-            break
-        total_nb_duplication += nb_duplication
-        total_nb_change += nb_change
-        cur_pass += 1
-    for i, var_history in enumerate(var_histories):
-        logger.info(" end.{0}: {1}".format(i, var_history.block_serial_path))
-    return total_nb_duplication, total_nb_change
 
 
 _SEGMENT_REGISTER_NAMES = frozenset(("ds.2", "cs.2", "es.2", "ss.2"))

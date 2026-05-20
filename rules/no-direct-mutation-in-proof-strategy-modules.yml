@@ -12,7 +12,6 @@ files:
 
 ignores:
   # Backend/materialization/emission and known legacy mutators.
-  - "src/d810/evaluator/hexrays_microcode/tracker.py"
   - "src/d810/optimizers/microcode/flow/flattening/abc_block_splitter.py"
   - "src/d810/optimizers/microcode/flow/flattening/block_merge.py"
   - "src/d810/optimizers/microcode/flow/flattening/fix_pred_cond_jump_block.py"
