@@ -2774,7 +2774,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         # Use ConditionalStateResolver for read-only target evidence.
         handler = ConditionalStateResolver(self.mba, dispatcher_info)
 
-        total_n = 0
+        evidence_count = 0
         # Process only the dispatcher father block with each concrete history.
         # A full path history represents one valuation at the dispatcher entry;
         # using that valuation for other blocks in the path can misattribute
@@ -2785,9 +2785,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 father_history=father_history,
             )
             if evidence is not None:
-                total_n += 1
+                evidence_count += 1
 
-        return total_n
+        return evidence_count
 
     def find_bad_while_loops(self, blk):
         # find from mov x,eax
@@ -3298,7 +3298,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 self.mba.get_mblock(x)
                 for x in dispatcher_info.entry_block.blk.predset
             ]
-            total_fixed_father_block = 0
+            total_abc_evidence_observed = 0
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
@@ -3314,7 +3314,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     )
                     break
                 try:
-                    total_fixed_father_block += self.fix_fathers_from_mop_history(
+                    total_abc_evidence_observed += self.fix_fathers_from_mop_history(
                         dispatcher_father,
                         dispatcher_info.entry_block,
                         dispatcher_info,
@@ -3322,8 +3322,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except Exception as e:
                     unflat_logger.error("%s", e)
             unflat_logger.info(
-                "Fixed %s instructions in father history",
-                total_fixed_father_block,
+                "Collected %s ABC evidence item(s) from father history",
+                total_abc_evidence_observed,
             )
         self.last_pass_nb_patch_done = self.remove_flattening()
         unflat_logger.info(

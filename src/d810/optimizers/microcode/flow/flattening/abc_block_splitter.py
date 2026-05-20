@@ -354,8 +354,8 @@ class ConditionalStateResolver:
         state0, state1 = self._calculate_state_values(pattern)
 
         logger.info(
-            "ABC in-place: block %d, magic=%d, states=(%d, %d)",
-            block.serial, pattern.cnst, state0, state1
+            "ABC evidence: block %d, magic=%d, states=(%d, %d)",
+            pattern.block_serial, pattern.cnst, state0, state1
         )
 
         # Resolve targets for both state values
