@@ -182,7 +182,7 @@ Best Practices
 
 See Also
 ========
-- ABCBlockSplitter: Reference implementation of deferred pattern
+- ConditionalStateResolver: Reference implementation of ABC target resolution
 - Conditional-clone rewrites: deferred predecessor repair example
 - GenericDispatcherUnflatteningRule: Orchestrates multiple deferred rules
 """

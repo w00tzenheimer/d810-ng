@@ -7037,9 +7037,11 @@ class TestEmulatedDispatcherManagedContext:
         from d810.optimizers.microcode.flow.flattening.hodur.family import (
             HodurStrategyFamily,
         )
+        from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
+            collect_live_fake_jump_fixes,
+        )
         from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
             FAKE_JUMP_FIXES_METADATA_KEY,
-            collect_live_fake_jump_fixes,
             serialize_fake_jump_fixes,
         )
         from d810.recon.flow.dispatcher_detection import DispatcherCache
