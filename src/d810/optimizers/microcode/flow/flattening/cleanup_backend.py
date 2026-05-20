@@ -40,7 +40,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import 
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FakeJumpPredFix,
-    collect_live_fake_jump_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
     FixPredecessorBranchArmFix,
@@ -48,7 +47,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationPredFix,
-    collect_live_single_iteration_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
     TailGotoMergeCandidate,
@@ -56,6 +54,12 @@ from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import
 )
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
+)
+from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
+    collect_live_fake_jump_block_fixes,
+    collect_live_fake_jump_fixes,
+    collect_live_single_iteration_block_fixes,
+    collect_live_single_iteration_fixes,
 )
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     HEXRAYS_INSN_SNAPSHOT_BODY_BACKEND_ID,
@@ -66,6 +70,10 @@ __all__ = [
     "LiveSimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupDetection",
+    "collect_live_fake_jump_block_fixes",
+    "collect_live_fake_jump_fixes",
+    "collect_live_single_iteration_block_fixes",
+    "collect_live_single_iteration_fixes",
 ]
 
 

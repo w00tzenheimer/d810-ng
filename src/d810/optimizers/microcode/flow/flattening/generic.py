@@ -8,9 +8,9 @@ numbers in the range 1010000-1011999 (0xF6950-0xF719F).
 
 All CFG modifications now use deferred patterns:
 
-1. `fix_fathers_from_mop_history()` -> ABCBlockSplitter
-   - Analysis phase: collect all split operations without modifying CFG
-   - Apply phase: perform all splits atomically after analysis
+1. `fix_fathers_from_mop_history()` -> ConditionalStateResolver
+   - Resolves ABC state expressions directly through dispatcher emulation
+   - Applies the legacy no-new-block in-place rewrite
 
 2. `resolve_dispatcher_father()` -> DeferredGraphModifier
    - Queues goto changes and block creation operations
@@ -88,7 +88,6 @@ from d810.core.registry import EventEmitter
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier, GraphModification
 from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
-    ABCBlockSplitter,
     ConditionalStateResolver,
 )
 from d810.recon.flow.conditional_exit import (
@@ -1559,14 +1558,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     #
     # STATUS: These methods are NO LONGER CALLED by any code path.
     #
-    # REPLACEMENT: ABCBlockSplitter (abc_block_splitter.py) now handles all
-    #              ABC pattern splitting via fix_fathers_from_mop_history().
+    # REPLACEMENT: ConditionalStateResolver (abc_block_splitter.py) now handles
+    #              ABC target resolution via fix_fathers_from_mop_history().
     #
     # WHY COMMENTED OUT:
     #   1. All system tests pass without this code (137 passed, Dec 2024)
     #   2. No call sites exist - grep confirms only self-recursive calls remain
-    #   3. The replacement ABCBlockSplitter uses deferred CFG modification,
-    #      which is safer than the direct mba.insert_block() approach here
+    #   3. The replacement resolver avoids the direct mba.insert_block()
+    #      approach here
     #
     # WHY NOT DELETED:
     #   - Preserving for reference in case edge cases are discovered
