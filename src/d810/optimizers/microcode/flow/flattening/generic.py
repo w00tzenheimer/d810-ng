@@ -8,9 +8,9 @@ numbers in the range 1010000-1011999 (0xF6950-0xF719F).
 
 All CFG modifications now use deferred patterns:
 
-1. `fix_fathers_from_mop_history()` -> ABCBlockSplitter
-   - Analysis phase: collect all split operations without modifying CFG
-   - Apply phase: perform all splits atomically after analysis
+1. `fix_fathers_from_mop_history()` -> ConditionalStateResolver
+   - Resolves ABC state expressions directly through dispatcher emulation
+   - Applies the legacy no-new-block in-place rewrite
 
 2. `resolve_dispatcher_father()` -> DeferredGraphModifier
    - Queues goto changes and block creation operations
@@ -88,7 +88,6 @@ from d810.core.registry import EventEmitter
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter as DeferredEventEmitter
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier, GraphModification
 from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
-    ABCBlockSplitter,
     ConditionalStateResolver,
 )
 from d810.recon.flow.conditional_exit import (
@@ -1559,14 +1558,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     #
     # STATUS: These methods are NO LONGER CALLED by any code path.
     #
-    # REPLACEMENT: ABCBlockSplitter (abc_block_splitter.py) now handles all
-    #              ABC pattern splitting via fix_fathers_from_mop_history().
+    # REPLACEMENT: ConditionalStateResolver (abc_block_splitter.py) now handles
+    #              ABC target resolution via fix_fathers_from_mop_history().
     #
     # WHY COMMENTED OUT:
     #   1. All system tests pass without this code (137 passed, Dec 2024)
     #   2. No call sites exist - grep confirms only self-recursive calls remain
-    #   3. The replacement ABCBlockSplitter uses deferred CFG modification,
-    #      which is safer than the direct mba.insert_block() approach here
+    #   3. The replacement resolver avoids the direct mba.insert_block()
+    #      approach here
     #
     # WHY NOT DELETED:
     #   - Preserving for reference in case edge cases are discovered
@@ -2747,16 +2746,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         dispatcher_entry_block,
         dispatcher_info: GenericDispatcherInfo,
     ):
-        """Fix dispatcher fathers with ABC patterns using in-place transformation.
+        """Collect ABC dispatcher-father evidence without mutating live CFG.
 
-        This method uses ConditionalStateResolver for direct target resolution:
-        1. Collect all blocks to analyze from father histories
-        2. For each ABC pattern (state = x + magic where magic in 1010000-1011999):
-           - Resolve both possible targets via dispatcher emulation
-           - Create conditional jump directly to targets
-        3. No new blocks are created - avoids insert_block() issues
-
-        This is the "directed graph" approach that avoids IDA internal state corruption.
+        ConditionalStateResolver only resolves targets for ABC patterns. The
+        legacy direct rewrite path is retired until an ABC CFG primitive and
+        Hex-Rays materializer own the mutation.
         """
         if self._is_past_deadline():
             unflat_logger.warning(
@@ -2777,21 +2771,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             return 0
 
-        # Use ConditionalStateResolver for direct target resolution (no new blocks)
+        # Use ConditionalStateResolver for read-only target evidence.
         handler = ConditionalStateResolver(self.mba, dispatcher_info)
 
-        total_n = 0
+        evidence_count = 0
         # Process only the dispatcher father block with each concrete history.
         # A full path history represents one valuation at the dispatcher entry;
-        # applying that valuation to other blocks in the path can misattribute
+        # using that valuation for other blocks in the path can misattribute
         # state and over-rewrite unrelated transitions.
         for father_history in father_histories:
-            total_n += handler.analyze_and_apply(
+            evidence = handler.collect_resolution(
                 dispatcher_father,
                 father_history=father_history,
             )
+            if evidence is not None:
+                evidence_count += 1
 
-        return total_n
+        return evidence_count
 
     def find_bad_while_loops(self, blk):
         # find from mov x,eax
@@ -3302,7 +3298,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 self.mba.get_mblock(x)
                 for x in dispatcher_info.entry_block.blk.predset
             ]
-            total_fixed_father_block = 0
+            total_abc_evidence_observed = 0
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
@@ -3318,7 +3314,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     )
                     break
                 try:
-                    total_fixed_father_block += self.fix_fathers_from_mop_history(
+                    total_abc_evidence_observed += self.fix_fathers_from_mop_history(
                         dispatcher_father,
                         dispatcher_info.entry_block,
                         dispatcher_info,
@@ -3326,8 +3322,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except Exception as e:
                     unflat_logger.error("%s", e)
             unflat_logger.info(
-                "Fixed %s instructions in father history",
-                total_fixed_father_block,
+                "Collected %s ABC evidence item(s) from father history",
+                total_abc_evidence_observed,
             )
         self.last_pass_nb_patch_done = self.remove_flattening()
         unflat_logger.info(
