@@ -103,6 +103,9 @@ from d810.recon.flow.branch_ownership import (
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
+from d810.recon.flow.dispatcher_discovery_facts import (
+    collect_state_dispatcher_discovery_fact_observations,
+)
 from d810.recon.flow.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
@@ -7217,6 +7220,24 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 state_var_stkoff=state_var_stkoff,
             )
         )
+        dispatcher_snapshot = flow_graph.get_block(dispatcher_entry_serial)
+        dispatcher_predecessor_serials = (
+            tuple(int(serial) for serial in getattr(dispatcher_snapshot, "preds", ()) or ())
+            if dispatcher_snapshot is not None
+            else ()
+        )
+        dispatcher_discovery_fact_observations = (
+            collect_state_dispatcher_discovery_fact_observations(
+                state_dispatcher_map=state_dispatcher_map,
+                maturity=self._maturity_name(int(getattr(mba, "maturity", 0) or 0)),
+                phase="pre_d810",
+                profile_name=self._profile.name,
+                predecessor_serials=dispatcher_predecessor_serials,
+                initial_state=recovered_initial_state,
+                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+                predecessor_target_facts=predecessor_dispatcher_target_facts,
+            )
+        )
         artifact = EmulatedDispatcherPhaseArtifact(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
@@ -7260,6 +7281,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             state_dispatcher_map=state_dispatcher_map,
             switch_case_transition_facts=switch_case_transition_facts,
             predecessor_dispatcher_target_facts=predecessor_dispatcher_target_facts,
+            dispatcher_discovery_fact_observations=(
+                dispatcher_discovery_fact_observations
+            ),
         )
         return artifact, context
 
@@ -9196,17 +9220,32 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(switch_case_transition_facts),
                     self._profile.name,
                 )
+            dispatcher_discovery_fact_observations = tuple(
+                getattr(
+                    phase_context,
+                    "dispatcher_discovery_fact_observations",
+                    (),
+                )
+                or ()
+            )
             profile_fact_observations = self._profile.collect_fact_observations(mba)
-            if profile_fact_observations:
+            fact_observations = (
+                *dispatcher_discovery_fact_observations,
+                *profile_fact_observations,
+            )
+            if fact_observations:
                 observe_fact_observation(
                     snap_ref,
                     int(getattr(mba, "entry_ea", 0) or 0),
-                    profile_fact_observations,
+                    fact_observations,
                 )
                 self._logger.info(
-                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s",
-                    len(profile_fact_observations),
+                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s "
+                    "(dispatcher_discovery=%d profile_specific=%d)",
+                    len(fact_observations),
                     self._profile.name,
+                    len(dispatcher_discovery_fact_observations),
+                    len(profile_fact_observations),
                 )
             observe_rendered_program(
                 snap_ref,

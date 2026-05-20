@@ -70,6 +70,11 @@ from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_e
     EmulatedDispatcherUnflattener,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_discovery_facts import (
+    DISPATCHER_INITIAL_STATE_FACT_TYPE,
+    STATE_DISPATCHER_TOPOLOGY_FACT_TYPE,
+    STATE_VARIABLE_IDENTITY_FACT_TYPE,
+)
 from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -3551,6 +3556,19 @@ def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_ana
     assert context.state_dispatcher_map is not None
     assert context.state_dispatcher_map.dispatcher_entry_block == 2
     assert context.state_dispatcher_map.dispatcher_blocks == frozenset({2, 3, 7})
+    discovery_by_kind = {
+        observation.kind: observation
+        for observation in context.dispatcher_discovery_fact_observations
+    }
+    assert discovery_by_kind[STATE_DISPATCHER_TOPOLOGY_FACT_TYPE].payload[
+        "dispatcher_blocks"
+    ] == [2, 3, 7]
+    assert discovery_by_kind[STATE_VARIABLE_IDENTITY_FACT_TYPE].payload[
+        "state_var_stkoff"
+    ] == 0x3C
+    assert discovery_by_kind[DISPATCHER_INITIAL_STATE_FACT_TYPE].payload[
+        "initial_state"
+    ] == 0x10
 
 
 def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
@@ -4120,6 +4138,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     monkeypatch,
 ) -> None:
     switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    dispatcher_observation = SimpleNamespace(kind=STATE_DISPATCHER_TOPOLOGY_FACT_TYPE)
     context = EmulatedDispatcherPhaseContext(
         bst_result=object(),
         transition_result=object(),
@@ -4127,6 +4146,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         dag=SimpleNamespace(nodes=(), edges=()),
         semantic_reference_program=object(),
         switch_case_transition_facts=(switch_fact,),
+        dispatcher_discovery_fact_observations=(dispatcher_observation,),
     )
     flow_graph = FlowGraph(
         blocks={
@@ -4155,6 +4175,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         ),
     )
     observed = []
+    observed_fact_rows = []
 
     monkeypatch.setattr(
         hexrays_observability,
@@ -4181,6 +4202,12 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         "d810.recon.observability.observe_switch_case_transition_facts",
         lambda snap, facts: observed.append((snap, tuple(facts))),
     )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_fact_observation",
+        lambda snap, func_ea, observations: observed_fact_rows.append(
+            (snap, func_ea, tuple(observations))
+        ),
+    )
 
     EmulatedDispatcherStrategyFamily(
         profile=tigress_switch_dispatcher_profile(),
@@ -4190,6 +4217,9 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     )
 
     assert observed == [("snap", (switch_fact,))]
+    assert observed_fact_rows == [
+        ("snap", 0x401000, (dispatcher_observation,))
+    ]
 
 
 def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
@@ -5063,12 +5093,14 @@ def test_emulated_dispatcher_family_inserts_safe_copies_before_conditional_targe
         ),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
-        lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
+        GenericDispatcherEngineProfile,
+        "resolve_state_values",
+        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
-        lambda _values: True,
+        GenericDispatcherEngineProfile,
+        "state_values_complete",
+        lambda _self, _values: True,
     )
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",
@@ -5114,12 +5146,14 @@ def test_emulated_dispatcher_family_reuses_deferred_side_effects_after_calls(
         nextb=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
-        lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
+        GenericDispatcherEngineProfile,
+        "resolve_state_values",
+        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
-        lambda _values: True,
+        GenericDispatcherEngineProfile,
+        "state_values_complete",
+        lambda _self, _values: True,
     )
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",
