@@ -1,0 +1,51 @@
+# Hex-Rays materialization must queue through DeferredGraphModifier.
+#
+# The central mutation backend owns live mba_t/mblock_t rewrites, bookkeeping,
+# cleanup, verification, and rollback policy.  Materializer modules should
+# translate plans into DeferredGraphModifier queue_* calls instead of creating
+# new direct Hex-Rays mutation islands.
+
+id: no-direct-hexrays-mutation-outside-deferred-modifier
+language: python
+severity: warning
+
+files:
+  - "src/d810/hexrays/mutation/**/*.py"
+
+ignores:
+  # Central queue/apply implementation and low-level primitive bridge.
+  - "src/d810/hexrays/mutation/deferred_modifier.py"
+  - "src/d810/hexrays/mutation/cfg_mutations.py"
+
+message: |
+  Hex-Rays materialization must route live CFG rewrites through DeferredGraphModifier.
+
+  Queue the operation with an existing DeferredGraphModifier queue_* primitive,
+  or add the missing queue primitive there if the plan needs a new live rewrite.
+
+rule:
+  any:
+    - pattern: $MBA.copy_block($$$)
+    - pattern: $MBA.insert_block($$$)
+    - pattern: $BLK.make_nop($$$)
+    - pattern: $BLK.insert_into_block($$$)
+    - pattern: $BLK.remove_from_block($$$)
+    - pattern: change_1way_block_successor($$$)
+    - pattern: change_2way_block_conditional_successor($$$)
+    - pattern: change_2way_block_fallthrough_successor($$$)
+    - pattern: $MBA.mark_chains_dirty()
+    - pattern: $BLK.mark_lists_dirty()
+    - pattern: $BLK.type = $$$
+    - pattern: $BLK.succset._del($$$)
+    - pattern: $BLK.succset.push_back($$$)
+    - pattern: $BLK.succset.add($$$)
+    - pattern: $BLK.succset.clear()
+    - pattern: $BLK.predset._del($$$)
+    - pattern: $BLK.predset.push_back($$$)
+    - pattern: $BLK.predset.add($$$)
+    - pattern: $BLK.predset.clear()
+
+note: |
+  This is warning-level while existing materializers are migrated.  Do not add
+  new direct mutation sites; prefer PatchPlan/GraphModification lowering into
+  DeferredGraphModifier queue_* calls.
