@@ -1,137 +1,91 @@
-"""Block Merge Optimization Rule.
+"""Block merge cleanup rule.
 
-Merges artificially split basic blocks by removing redundant goto
-instructions.  When an obfuscator (e.g. Hikari, OLLVM) splits a single
-basic block into many tiny blocks connected by unconditional jumps, this
-rule detects the pattern and NOPs the intermediate ``m_goto`` instructions
-so that IDA's built-in optimizer can recombine them.
-
-Algorithm
----------
-For every block *blk* passed to :meth:`BlockMerger.optimize`:
-
-1. Check that *blk* ends with ``m_goto``.
-2. Check that *blk* has exactly **one** successor.
-3. Check that the goto destination operand (``mop_b``) matches the
-   successor's serial.
-4. Check that the successor has exactly **one** predecessor (i.e. *blk*
-   itself).
-5. If all conditions hold, NOP the ``m_goto`` instruction.  IDA will
-   merge the two blocks in the next ``optimize_local`` pass.
-
-Ported from **the copycat project** ``block_merge_handler_t`` (``block_merge.cpp``).
+``BlockMerger`` preserves the legacy project-config rule name while delegating
+the actual work to :class:`BlockMergeTransform`.  The transform analyzes a
+FlowGraph snapshot and emits primitive ``NopInstructions`` edits for redundant
+linear gotos; lowering those primitives makes the CFG mergeable and Hex-Rays
+performs the actual block coalescing during local optimization.
 """
 from __future__ import annotations
 
 import ida_hexrays
 
-from d810.core import getLogger
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
-
-logger = getLogger("D810.optimizer")
+from d810.optimizers.microcode.handler import DEFAULT_FLOW_MATURITIES
 
 
 class BlockMerger(FlowOptimizationRule):
-    """Merge artificially split basic blocks.
-
-    This rule operates per-block.  When a block satisfies all mergeability
-    criteria with its sole successor, the trailing ``m_goto`` is NOPed so
-    that IDA's ``optimize_local`` pass combines the two blocks.
-
-    CFG Safety
-    ----------
-    The rule only *removes* an instruction (NOP) and never adds edges or
-    blocks.  Combined with ``USES_DEFERRED_CFG = False`` and a
-    conservative ``SAFE_MATURITIES`` declaration, this is safe at the
-    listed maturities.
-    """
+    """Run block-merge canonicalization through the primitive CFG pipeline."""
 
     DESCRIPTION = (
         "Merges artificially split basic blocks by removing "
         "redundant goto instructions"
     )
 
-    # We directly NOP the goto -- no deferred CFG modification needed.
-    # The actual block merging is done by IDA's optimize_local.
     USES_DEFERRED_CFG = False
     SAFE_MATURITIES = [
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
     ]
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def __init__(self):
+        super().__init__()
+        self._backend = None
+        self._transform = None
+        self._last_noop_key: tuple[int, int, int] | None = None
 
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
-        """Check whether *blk* can be merged with its successor.
-
-        A block is mergeable when:
-
-        1. It ends in ``m_goto``.
-        2. It has exactly one successor.
-        3. The successor has exactly one predecessor (this block).
-        4. The goto destination (``mop_b``) equals the successor's serial.
-
-        When all conditions are met the ``m_goto`` is NOPed and ``1`` is
-        returned.  Otherwise ``0`` is returned.
-        """
-        if not self._can_merge(blk):
+        """Apply primitive block-merge edits for the current MBA snapshot."""
+        mba = getattr(blk, "mba", None)
+        if mba is None:
             return 0
 
-        # NOP the goto -- IDA will merge the blocks in optimize_local.
-        logger.info(
-            "BlockMerger: NOPing goto in block %d -> %d",
-            blk.serial,
-            blk.tail.d.b,
+        key = (
+            int(getattr(mba, "entry_ea", 0) or 0),
+            int(getattr(mba, "maturity", self.current_maturity)),
+            int(self.current_generation),
         )
-        blk.make_nop(blk.tail)
-        return 1
+        if self._last_noop_key == key:
+            return 0
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        cfg = self._get_backend().lift(mba)
+        all_mods = self._get_transform().transform(cfg)
+        if not all_mods:
+            self._last_noop_key = key
+            return 0
 
-    @staticmethod
-    def _can_merge(blk: ida_hexrays.mblock_t) -> bool:
-        """Return ``True`` if *blk* can be merged with its successor.
+        mods = [mod for mod in all_mods if mod.block_serial == blk.serial]
+        if not mods:
+            return 0
 
-        Criteria (mirroring the copycat project ``can_merge`` + ``has_single_goto_succ``):
+        from d810.hexrays.mutation.cfg_mutations import apply_nop_instructions
 
-        * *blk* has a tail instruction whose opcode is ``m_goto``.
-        * *blk* has exactly one successor.
-        * The goto destination operand type is ``mop_b`` and its value
-          equals the successor's serial.
-        * The successor has exactly one predecessor.
-        """
-        # --- tail must be m_goto ---
-        if blk.tail is None:
-            return False
-        if blk.tail.opcode != ida_hexrays.m_goto:
-            return False
+        count = 0
+        for mod in mods:
+            count += apply_nop_instructions(mba, mod.block_serial, mod.insn_eas)
+        if count <= 0:
+            return 0
 
-        # --- single successor ---
-        if blk.nsucc() != 1:
-            return False
+        self._last_noop_key = None
+        return count
 
-        succ_serial: int = blk.succ(0)
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        if "maturities" not in self.config:
+            self.maturities = list(DEFAULT_FLOW_MATURITIES)
 
-        # --- reject self-referencing goto (infinite loop guard) ---
-        if succ_serial == blk.serial:
-            return False
+    def _get_backend(self):
+        if self._backend is None:
+            from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
-        # --- goto destination must reference the successor block ---
-        if blk.tail.d.t != ida_hexrays.mop_b:
-            return False
-        if blk.tail.d.b != succ_serial:
-            return False
+            self._backend = IDAIRTranslator()
+        return self._backend
 
-        # --- successor must have exactly one predecessor ---
-        mba = blk.mba
-        succ_blk = mba.get_mblock(succ_serial)
-        if succ_blk is None:
-            return False
-        if succ_blk.npred() != 1:
-            return False
+    def _get_transform(self):
+        if self._transform is None:
+            from d810.hexrays.mutation.transform.block_merge import (
+                BlockMergeTransform,
+            )
 
-        return True
+            self._transform = BlockMergeTransform()
+        return self._transform

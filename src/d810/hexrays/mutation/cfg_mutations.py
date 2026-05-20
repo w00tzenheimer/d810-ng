@@ -177,6 +177,33 @@ def insert_goto_instruction(
     goto_ins.d.erase()
 
 
+def apply_nop_instructions(
+    mba: ida_hexrays.mbl_array_t,
+    block_serial: int,
+    insn_eas: tuple[int, ...],
+) -> int:
+    """Materialize ``NopInstructions`` edits in one live Hex-Rays block."""
+    blk = mba.get_mblock(block_serial)
+    if blk is None:
+        return 0
+
+    count = 0
+    for insn_ea in insn_eas:
+        if blk.tail is not None and blk.tail.ea == insn_ea:
+            blk.make_nop(blk.tail)
+            count += 1
+            continue
+
+        insn = blk.head
+        while insn is not None:
+            if insn.ea == insn_ea:
+                blk.make_nop(insn)
+                count += 1
+                break
+            insn = insn.next
+    return count
+
+
 def change_1way_call_block_successor(
     call_blk: ida_hexrays.mblock_t, call_blk_successor_serial: int, verify: bool = True
 ) -> bool:

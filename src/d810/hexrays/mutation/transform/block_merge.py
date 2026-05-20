@@ -158,9 +158,12 @@ class BlockMergeTransform(FlowGraphTransform):
             if tail_insn.ea == 0:
                 continue
 
-            # Check 3: Goto destination must reference the successor block
-            # The destination operand has type mop_b (7) with block_num == succ_serial
-            if not self._goto_targets_successor(tail_insn.operands, succ_serial):
+            # Check 3: Goto destination must reference the successor block.
+            # Live snapshots carry the Hex-Rays destination slot separately;
+            # require that slot to match when present so this transform stays
+            # equivalent to the legacy BlockMerger rule.  Minimal unit-test
+            # snapshots predate typed slots, so they fall back to operand scan.
+            if not self._goto_targets_successor(tail_insn, succ_serial):
                 continue
 
             mods.append(NopInstructions(
@@ -171,24 +174,33 @@ class BlockMergeTransform(FlowGraphTransform):
         return mods
 
     @staticmethod
-    def _goto_targets_successor(operands: tuple, succ_serial: int) -> bool:
-        """Check whether any operand is a mop_b reference to succ_serial.
+    def _goto_targets_successor(tail_insn, succ_serial: int) -> bool:
+        """Check whether the goto destination references succ_serial.
 
-        For m_goto the destination is stored in the ``l`` slot of the
-        instruction, which becomes operands[0] in InsnSnapshot.  However,
-        we scan all captured operands so the check is robust against
-        different lift implementations.
+        Live snapshots populate the typed ``d`` slot.  When it is present,
+        mirror the legacy rule exactly: the destination slot must be ``mop_b``
+        and must equal the successor.  Older tests construct minimal snapshots
+        with only ``operands`` populated, so those still use the broader scan.
 
         Args:
-            operands: Tuple of MopSnapshot instances from the tail instruction.
+            tail_insn: Tail instruction snapshot.
             succ_serial: Expected target block serial number.
 
         Returns:
-            True if an operand with type mop_b (7) and block_num == succ_serial
-            is found; False otherwise (including when operands is empty).
+            True if the destination references ``succ_serial``.
         """
-        for op in operands:
-            if op.t == _MOP_B_TYPE and op.block_num == succ_serial:
+        d = getattr(tail_insn, "d", None)
+        if d is not None:
+            return (
+                getattr(d, "t", None) == _MOP_B_TYPE
+                and getattr(d, "block_ref", None) == succ_serial
+            )
+
+        for op in getattr(tail_insn, "operands", ()):
+            if (
+                getattr(op, "t", None) == _MOP_B_TYPE
+                and getattr(op, "block_num", None) == succ_serial
+            ):
                 return True
         return False
 
