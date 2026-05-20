@@ -35,8 +35,11 @@ import idc
 from d810.core import getLogger
 from d810.evaluator.hexrays_microcode.dispatcher_state_evaluation import (
     DispatcherStateEvaluationError,
+    all_history_values_found,
     collect_dispatcher_father_histories,
+    collect_possible_history_values,
     emulate_dispatcher_with_father_history,
+    find_shared_history_block,
     histories_are_resolved,
 )
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
@@ -76,9 +79,6 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     MopHistory,
-    check_if_all_values_are_found,
-    get_all_possibles_values,
-    get_block_with_multiple_predecessors,
     remove_segment_registers,
 )
 from d810.optimizers.microcode.flow.flattening.exceptions import (
@@ -1421,7 +1421,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             return 0
 
-        father_histories_cst = get_all_possibles_values(
+        father_histories_cst = collect_possible_history_values(
             father_histories,
             dispatcher_entry_block.use_before_def_list,
             verbose=False,
@@ -1452,9 +1452,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father.serial,
             father_histories_cst,
         )
-        shared_block, _pred_groups = get_block_with_multiple_predecessors(
-            father_histories
-        )
+        shared_block, _pred_groups = find_shared_history_block(father_histories)
         if shared_block is not None:
             self._dispatcher_fathers_requiring_retired_duplication.add(
                 (int(dispatcher_entry_block.serial), int(dispatcher_father.serial))
@@ -2293,12 +2291,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             raise NotResolvableFatherException(
                 "Can't fix block {0}".format(dispatcher_father.serial)
             )
-        mop_searched_values_list = get_all_possibles_values(
+        mop_searched_values_list = collect_possible_history_values(
             dispatcher_father_histories,
             dispatcher_info.entry_block.use_before_def_list,
             verbose=False,
         )
-        all_values_found = check_if_all_values_are_found(mop_searched_values_list)
+        all_values_found = all_history_values_found(mop_searched_values_list)
         if not all_values_found:
             raise NotResolvableFatherException(
                 "Can't fix block {0}".format(dispatcher_father.serial)
