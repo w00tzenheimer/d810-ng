@@ -229,7 +229,7 @@ ls -la src/d810/optimizers/microcode/flow/flattening/strategies/
 
 **This step requires manual intervention** to integrate strategies into `hodur/unflattener.py`.
 
-See `ARCHITECTURE_PLAN.md` Phase 4 for detailed instructions.
+See `docs/ARCHITECTURE_PLAN.md` Phase 4 for detailed instructions.
 
 ### Step 5: Commit
 
@@ -262,7 +262,7 @@ After all three phases:
 
 ### Documentation
 - [ ] `ARCHITECTURE.md` updated
-- [ ] `ARCHITECTURE_PLAN.md` exists
+- [ ] `docs/ARCHITECTURE_PLAN.md` exists
 - [ ] Deprecation notices in place
 
 ### Git
@@ -360,4 +360,4 @@ After completing all phases:
 4. **Document:** Update user-facing docs
 5. **Merge:** Create PR and merge to main
 
-See `ARCHITECTURE_PLAN.md` for the complete migration guide.
+See `docs/ARCHITECTURE_PLAN.md` for the complete migration guide.

@@ -88,7 +88,7 @@ analysis = cache.analyze()
 3. **Better pattern**: Strategy pattern provides better testability and composition
 4. **Clear layering**: Recon (detection) → Strategies (implementation) → Planner (orchestration)
 
-See `ARCHITECTURE_PLAN.md` for the full migration plan.
+See `docs/ARCHITECTURE_PLAN.md` for the full migration plan.
 """
 
 
