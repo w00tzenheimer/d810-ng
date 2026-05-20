@@ -33,7 +33,15 @@ import ida_hexrays
 from pathlib import Path
 
 from d810.core import logging
+from d810.cfg.dispatcher_residue_cleanup_planning import (
+    plan_dispatcher_residue_cleanup,
+    plan_unreachable_region_cleanup,
+)
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.dispatcher_residue_cleanup import (
+    apply_dispatcher_residue_cleanup_plan,
+    apply_unreachable_region_cleanup_plan,
+)
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import format_mop_t, maturity_to_string
 from d810.recon.flow.dispatcher_detection import (
@@ -42,6 +50,10 @@ from d810.recon.flow.dispatcher_detection import (
 from d810.recon.flow.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
     is_audit_enabled as is_return_carrier_audit_enabled,
+)
+from d810.recon.flow.dispatcher_residue_cleanup_discovery import (
+    discover_dispatcher_residue_cleanup_facts,
+    discover_unreachable_region_cleanup_facts,
 )
 from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
@@ -87,12 +99,7 @@ from d810.cfg.mbl_keep_selection import (
     TerminalByteKeepTarget,
     select_terminal_byte_keep_targets,
 )
-from d810.hexrays.mutation.cfg_mutations import (
-    MBL_KEEP,
-    change_1way_block_successor,
-    make_2way_block_goto,
-    remove_block_edge,
-)
+from d810.hexrays.mutation.cfg_mutations import MBL_KEEP
 
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
@@ -2061,12 +2068,11 @@ class HodurUnflattener(ComposedUnflatteningRule):
         edges to the dispatcher (despite NOP'd goto instructions). These edges
         keep the dispatcher as a loop header, creating while loops.
 
-        Phase 0 backward-resolves dispatcher predecessors that still have
-        ``goto dispatcher`` operands, redirecting them to their target handler
-        via ``change_1way_block_successor``.
+        Phase 0 backward predecessor mutation is retired here; active
+        resolution belongs in the backward_pred strategy pipeline.
 
-        Phase 1 severs 1-way handler->dispatcher edges (edge-only: removes from
-        succset/predset, marks dirty).
+        Phase 1 severs 1-way handler->dispatcher edges through the Hex-Rays
+        cleanup materialization backend.
 
         Phase 2 converts 2-way blocks with one arm going to dispatcher into 1-way
         gotos keeping the non-dispatcher successor.
@@ -2074,8 +2080,13 @@ class HodurUnflattener(ComposedUnflatteningRule):
         Handler entries keep their BST predecessors for reachability.
         """
         mba = self.mba
-        bst_serials: set[int] = set(bst_node_blocks)
-        bst_serials.add(dispatcher_serial)
+        facts = discover_dispatcher_residue_cleanup_facts(
+            mba,
+            dispatcher_region=bst_node_blocks,
+            dispatcher_serial=dispatcher_serial,
+        )
+        plan = plan_dispatcher_residue_cleanup(facts)
+        bst_serials: set[int] = set(facts.dispatcher_region)
 
         # --- DOT dump: post-apply CFG before any edge severing ---
         self._dump_post_apply_cfg_dot(dispatcher_serial, bst_node_blocks)
@@ -2122,83 +2133,13 @@ class HodurUnflattener(ComposedUnflatteningRule):
                 ",".join(succ_info), tail_op,
             )
 
-        severed = 0
-        severed_2way = 0
-        for serial in range(mba.qty):
-            if serial in bst_serials:
-                continue  # Skip BST/dispatcher blocks
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-            if blk.nsucc() != 1:
-                continue  # Only handle 1-way blocks
-            if blk.succ(0) != dispatcher_serial:
-                continue  # Only handle blocks going to dispatcher
-
-            blk.succset._del(dispatcher_serial)
-            disp_blk.predset._del(blk.serial)
-            blk.mark_lists_dirty()
-            severed += 1
-            unflat_logger.info(
-                "BST cleanup: severed 1-way blk[%d] -> dispatcher edge",
-                blk.serial,
-            )
-            try:
-                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
-                log_cfg_provenance(
-                    pass_name="bst_cleanup",
-                    action="SEVER_EDGE",
-                    block_serial=blk.serial,
-                    target_serial=dispatcher_serial,
-                    reason="sever_1way_handler_to_dispatcher",
-                    mba=mba,
-                )
-            except Exception:
-                pass
-
-        # Handle 2-way blocks with one arm going to dispatcher.
-        # Convert them to 1-way gotos keeping the non-dispatcher successor.
-        for serial in range(mba.qty):
-            if serial in bst_serials:
-                continue
-            blk = mba.get_mblock(serial)
-            if blk is None or blk.nsucc() != 2:
-                continue
-            succ0, succ1 = blk.succ(0), blk.succ(1)
-            if succ0 == dispatcher_serial:
-                keep_serial = succ1
-            elif succ1 == dispatcher_serial:
-                keep_serial = succ0
-            else:
-                continue  # Neither successor is dispatcher
-            unflat_logger.info(
-                "BST cleanup: converting 2-way blk[%d] (succs=%d,%d) to goto blk[%d]",
-                serial, succ0, succ1, keep_serial,
-            )
-            try:
-                make_2way_block_goto(blk, keep_serial, verify=False)
-                severed_2way += 1
-                try:
-                    from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
-                    log_cfg_provenance(
-                        pass_name="bst_cleanup",
-                        action="REDIRECT_EDGE",
-                        block_serial=serial,
-                        target_serial=keep_serial,
-                        reason="convert_2way_to_goto_drop_dispatcher_arm",
-                        extra={"old_succs": [int(succ0), int(succ1)]},
-                        mba=mba,
-                    )
-                except Exception:
-                    pass
-            except Exception as exc:
-                unflat_logger.warning(
-                    "BST cleanup: failed to convert 2-way blk[%d]: %s",
-                    serial, exc,
-                )
-
-        if severed > 0 or severed_2way > 0:
-            disp_blk.mark_lists_dirty()
+        apply_result = apply_dispatcher_residue_cleanup_plan(
+            mba,
+            plan,
+            logger=unflat_logger,
+        )
+        severed = apply_result.severed_1way
+        severed_2way = apply_result.converted_2way
 
         # Phase 3 (old, DISABLED): NOP'ing BST/dispatcher block instructions to
         # prevent IDA from regenerating conditional branches at later
@@ -2238,38 +2179,6 @@ class HodurUnflattener(ComposedUnflatteningRule):
             "(%d backward-resolved, %d 1-way, %d 2-way converted to goto)",
             total_severed, backward_resolved, severed, severed_2way,
         )
-
-        # --- Phase 3: sever dispatcher OUTGOING edges to BST comparison blocks ---
-        # When the dispatcher has no remaining predecessors, its outgoing edges
-        # to BST comparison blocks keep the BST tree reachable.  IDA follows
-        # these edges and reconstructs the comparison tree, generating while
-        # loops.  Severing them disconnects the BST entirely.
-        if disp_blk.npred() == 0:
-            succ_serials = [disp_blk.succ(i) for i in range(disp_blk.nsucc())]
-            for succ_serial in succ_serials:
-                succ_blk = mba.get_mblock(succ_serial)
-                if succ_blk is not None:
-                    succ_blk.predset._del(dispatcher_serial)
-                    succ_blk.mark_lists_dirty()
-                try:
-                    from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
-                    log_cfg_provenance(
-                        pass_name="bst_cleanup",
-                        action="SEVER_EDGE",
-                        block_serial=dispatcher_serial,
-                        target_serial=succ_serial,
-                        reason="dispatcher_outgoing_to_bst_comparison",
-                        mba=mba,
-                    )
-                except Exception:
-                    pass
-            disp_blk.succset.clear()
-            disp_blk.mark_lists_dirty()
-            if succ_serials:
-                unflat_logger.info(
-                    "BST cleanup: severed %d outgoing dispatcher edges to %s",
-                    len(succ_serials), succ_serials,
-                )
 
         return total_severed
 
@@ -2324,6 +2233,26 @@ class HodurUnflattener(ComposedUnflatteningRule):
         # Keeping diagnostic BFS only for now.
         return 0
 
+    def _find_stop_serial(self) -> int | None:
+        """Return the live BLT_STOP serial, falling back only if none is typed."""
+        mba = self.mba
+        qty = int(getattr(mba, "qty", 0) or 0) if mba is not None else 0
+        for serial in range(qty):
+            blk = mba.get_mblock(serial)
+            if (
+                blk is not None
+                and int(getattr(blk, "type", -1)) == int(ida_hexrays.BLT_STOP)
+            ):
+                return serial
+        if qty > 0:
+            unflat_logger.warning(
+                "UnreachableRegionCleanup: no BLT_STOP block found; "
+                "falling back to last serial %d",
+                qty - 1,
+            )
+            return qty - 1
+        return None
+
     def _nop_unreachable_blocks_after_bst_cleanup(
         self,
         *,
@@ -2350,59 +2279,26 @@ class HodurUnflattener(ComposedUnflatteningRule):
         qty = int(getattr(mba, "qty", 0) or 0) if mba is not None else 0
         if qty <= 1:
             return 0
+        stop_serial = self._find_stop_serial()
+        if stop_serial is None:
+            return 0
 
-        visited: set[int] = set()
-        queue: list[int] = [0]
-        while queue:
-            serial = queue.pop(0)
-            if serial in visited or serial < 0 or serial >= qty:
-                continue
-            visited.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-            for i in range(blk.nsucc()):
-                succ = blk.succ(i)
-                if succ not in visited:
-                    queue.append(succ)
+        facts = discover_unreachable_region_cleanup_facts(
+            mba,
+            dispatcher_serial=dispatcher_serial,
+            dispatcher_region=bst_serials,
+            stop_serial=stop_serial,
+            reconstruction_live=reconstruction_live,
+        )
+        if facts.protected:
+            unflat_logger.info(
+                "GutAndWire: protecting %d reconstruction-owned corridor "
+                "blocks from cleanup (seeds=%s)",
+                len(facts.protected),
+                sorted(facts.corridor_seeds)[:20],
+            )
 
-        stop_serial = qty - 1
-        unreachable = {
-            serial
-            for serial in range(mba.qty)
-            if serial not in visited and serial != stop_serial
-        }
-
-        # Protect reconstruction-owned corridors: BFS forward from every
-        # live corridor block that ended up unreachable from block 0.
-        if reconstruction_live:
-            corridor_seeds = reconstruction_live & unreachable
-            if corridor_seeds:
-                corridor_visited: set[int] = set()
-                corridor_queue = list(corridor_seeds)
-                while corridor_queue:
-                    serial = corridor_queue.pop(0)
-                    if serial in corridor_visited or serial < 0 or serial >= mba.qty:
-                        continue
-                    corridor_visited.add(serial)
-                    blk = mba.get_mblock(serial)
-                    if blk is None:
-                        continue
-                    for i in range(blk.nsucc()):
-                        succ = blk.succ(i)
-                        if succ not in corridor_visited:
-                            corridor_queue.append(succ)
-                protected = corridor_visited & unreachable
-                if protected:
-                    unflat_logger.info(
-                        "GutAndWire: protecting %d reconstruction-owned corridor "
-                        "blocks from cleanup (seeds=%s)",
-                        len(protected),
-                        sorted(corridor_seeds)[:20],
-                    )
-                unreachable -= protected
-
-        if not unreachable:
+        if not facts.cleanup_candidates:
             unflat_logger.info(
                 "DeadBlockElimination: no unreachable live blocks after BST cleanup"
             )
@@ -2414,50 +2310,16 @@ class HodurUnflattener(ComposedUnflatteningRule):
         # be eliminated.  The gate incorrectly prevented dead block cleanup
         # for blocks that are legitimately unreachable after linearization.
 
-        # Diagnostic: walk dispatcher component for logging purposes
-        dispatcher_component: set[int] = set()
-        forward_queue = [dispatcher_serial]
-        while forward_queue:
-            serial = forward_queue.pop()
-            if serial in dispatcher_component or serial not in unreachable:
-                continue
-            dispatcher_component.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-            for i in range(blk.nsucc()):
-                succ = blk.succ(i)
-                if succ in unreachable and succ not in dispatcher_component:
-                    forward_queue.append(succ)
-
-        backward_queue = [dispatcher_serial]
-        while backward_queue:
-            serial = backward_queue.pop()
-            if serial < 0 or serial >= mba.qty:
-                continue
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-            for i in range(blk.npred()):
-                pred = blk.pred(i)
-                if pred in unreachable and pred not in dispatcher_component:
-                    dispatcher_component.add(pred)
-                    backward_queue.append(pred)
-
-        dispatcher_component.update(unreachable & set(bst_serials))
-
-        orphaned = unreachable - dispatcher_component
-        if orphaned:
+        if facts.orphaned:
             unflat_logger.info(
                 "DeadBlockElimination: %d dispatcher-island + %d orphaned unreachable blocks "
                 "(total %d)",
-                len(dispatcher_component), len(orphaned), len(unreachable),
+                len(facts.dispatcher_component),
+                len(facts.orphaned),
+                len(facts.cleanup_candidates),
             )
 
-        # Clean ALL unreachable blocks, not just the dispatcher island
-        cleanup_candidates = set(unreachable)
-        cleanup_candidates.discard(stop_serial)
-        if not cleanup_candidates:
+        if not facts.blocks:
             unflat_logger.info(
                 "DeadBlockElimination: no unreachable dispatcher component after BST cleanup"
             )
@@ -2469,153 +2331,19 @@ class HodurUnflattener(ComposedUnflatteningRule):
         # triggers INTERR 50846), NOP payload instructions and leave blocks
         # as 1-way goto shells.  Hex-Rays' later maturity passes safely
         # fold these empty passthrough blocks out.
-        gutted = 0
-        for serial in sorted(cleanup_candidates):
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-
-            nsucc = blk.nsucc()
-
-            # Skip terminal (0-way) blocks — don't modify BLT_STOP etc.
-            if nsucc == 0:
-                continue
-
-            tail = blk.tail
-
-            # Step 1: NOP all payload instructions (everything before tail).
-            insn = blk.head
-            while insn is not None and insn != tail:
-                next_insn = insn.next
-                blk.make_nop(insn)
-                insn = next_insn
-
-            # Step 2: Handle block type.
-            if nsucc > 1:
-                # 2-way (conditional) block — convert to 1-way goto shell.
-                # Keep the first successor (fallthrough), drop the rest.
-                keep_succ = blk.succ(0)
-                drop_succs = [blk.succ(i) for i in range(1, nsucc)]
-
-                # Convert tail instruction to m_goto targeting kept successor.
-                if tail is not None:
-                    tail.opcode = ida_hexrays.m_goto
-                    tail.l.make_blkref(keep_succ)
-                    tail.r.erase()
-                    tail.d.erase()
-
-                # Remove dropped successors from succset and their predsets.
-                for drop_serial in drop_succs:
-                    blk.succset._del(drop_serial)
-                    drop_blk = mba.get_mblock(drop_serial)
-                    if drop_blk is not None:
-                        drop_blk.predset._del(serial)
-                        drop_blk.mark_lists_dirty()
-
-                blk.type = ida_hexrays.BLT_1WAY
-
-            # For 1-way blocks (nsucc == 1): tail is already m_goto,
-            # leave it intact — the block is already a 1-way shell.
-
-            blk.mark_lists_dirty()
-            gutted += 1
-            try:
-                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
-                log_cfg_provenance(
-                    pass_name="gut_and_wire",
-                    action="SOFT_KILL",
-                    block_serial=serial,
-                    target_serial=(blk.succ(0) if blk.nsucc() > 0 else None),
-                    reason="unreachable_after_bst_cleanup",
-                    extra={"original_nsucc": int(nsucc)},
-                    mba=mba,
-                )
-            except Exception:
-                pass
-
-        if gutted == 0:
+        plan = plan_unreachable_region_cleanup(facts)
+        apply_result = apply_unreachable_region_cleanup_plan(
+            mba,
+            plan,
+            logger=unflat_logger,
+        )
+        if apply_result.gutted == 0:
             unflat_logger.info(
                 "GutAndWire: no blocks gutted (all candidates were None)"
             )
             return 0
 
-        # ----- Forward-redirect pass -----
-        # Gutted blocks still have goto targets pointing to other dead blocks,
-        # creating back-edges that IDA's structurer interprets as while loops.
-        # Redirect all dead-zone gotos to BLT_STOP (the function's terminal
-        # block) so that all edges within the dead zone point forward.
-        stop_serial: int | None = None
-        for i in range(mba.qty):
-            if mba.get_mblock(i).type == ida_hexrays.BLT_STOP:
-                stop_serial = i
-                break
-        if stop_serial is None:
-            # Fallback: use last block serial (BLT_STOP is always last)
-            stop_serial = mba.qty - 1
-
-        redirected = 0
-        for serial in sorted(cleanup_candidates):
-            blk = mba.get_mblock(serial)
-            if blk is None or blk.nsucc() != 1:
-                continue
-            succ = blk.succ(0)
-            if succ == stop_serial:
-                continue  # already pointing forward
-            if succ not in cleanup_candidates:
-                continue  # successor is live — leave it alone
-
-            # Redirect goto target to BLT_STOP
-            tail = blk.tail
-            if tail is not None and tail.opcode == ida_hexrays.m_goto:
-                tail.l.make_blkref(stop_serial)
-
-            # Update successor set
-            blk.succset._del(succ)
-            blk.succset.push_back(stop_serial)
-
-            # Update predecessor sets
-            old_succ_blk = mba.get_mblock(succ)
-            if old_succ_blk is not None:
-                old_succ_blk.predset._del(serial)
-                old_succ_blk.mark_lists_dirty()
-
-            stop_blk = mba.get_mblock(stop_serial)
-            if stop_blk is not None:
-                # Avoid duplicate predset entries
-                already_pred = False
-                for pi in range(stop_blk.npred()):
-                    if stop_blk.pred(pi) == serial:
-                        already_pred = True
-                        break
-                if not already_pred:
-                    stop_blk.predset.push_back(serial)
-                stop_blk.mark_lists_dirty()
-
-            blk.mark_lists_dirty()
-            redirected += 1
-            try:
-                from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
-                log_cfg_provenance(
-                    pass_name="gut_and_wire",
-                    action="REDIRECT_EDGE",
-                    block_serial=serial,
-                    target_serial=stop_serial,
-                    reason="forward_redirect_to_blt_stop",
-                    extra={"old_target": int(succ)},
-                    mba=mba,
-                )
-            except Exception:
-                pass
-
-        # Mark chains dirty once after all mutations.
-        mba.mark_chains_dirty()
-
-        unflat_logger.info(
-            "GutAndWire: soft-killed %d unreachable blocks as 1-way goto shells"
-            " (%d redirected forward to BLT_STOP)",
-            gutted, redirected,
-        )
-        return gutted
+        return apply_result.gutted
 
     def _eval_mba_expression(
         self,
@@ -2833,11 +2561,11 @@ class HodurUnflattener(ComposedUnflatteningRule):
         walk instructions backward from the block tail looking for a write to
         the state variable.  When a literal constant (or depth-1 copy chain,
         or valrange fallback) resolves the value, look up the target handler
-        via BST and redirect the block successor using
-        :func:`change_1way_block_successor`.
+        via BST and report the candidate. Direct live redirection is retired;
+        active handling belongs in the backward_pred strategy pipeline.
 
-        This runs BEFORE Phase 1 edge severing so resolved exits get proper
-        instruction-operand redirects instead of raw edge removal.
+        This diagnostic path is intentionally read-only. It returns zero
+        changes and does not mutate CFG state.
 
         Args:
             dispatcher_serial: Serial of the dispatcher block.
@@ -3137,18 +2865,15 @@ class HodurUnflattener(ComposedUnflatteningRule):
 
                             if len(targets) == 1:
                                 target_serial = next(iter(targets))
-                                if change_1way_block_successor(
-                                    pred_blk, target_serial, verify=False,
-                                ):
-                                    redirected += 1
-                                    unflat_logger.info(
-                                        "BACKWARD_RESOLVE: blk[%d] RESOLVED "
-                                        "-> blk[%d] (all %d arms agree)",
-                                        pred_serial,
-                                        target_serial,
-                                        len(per_pred_results),
-                                    )
-                                    break  # resolved — exit xblock loop
+                                unflat_logger.info(
+                                    "BACKWARD_RESOLVE: blk[%d] candidate "
+                                    "-> blk[%d] (all %d arms agree); "
+                                    "not materialized in legacy path",
+                                    pred_serial,
+                                    target_serial,
+                                    len(per_pred_results),
+                                )
+                                break  # candidate found — exit xblock loop
                             elif len(targets) > 1:
                                 unflat_logger.info(
                                     "BACKWARD_RESOLVE: blk[%d] arms DISAGREE: "
@@ -3284,19 +3009,11 @@ class HodurUnflattener(ComposedUnflatteningRule):
             if target is None:
                 continue
 
-            # Redirect the block successor to the target handler
-            try:
-                change_1way_block_successor(pred_blk, target, verify=False)
-                redirected += 1
-                unflat_logger.info(
-                    "backward resolved blk[%d] state=0x%X -> handler blk[%d]",
-                    pred_serial, resolved_value & 0xFFFFFFFF, target,
-                )
-            except Exception as exc:
-                unflat_logger.warning(
-                    "backward resolve blk[%d] state=0x%X -> blk[%d] FAILED: %s",
-                    pred_serial, resolved_value & 0xFFFFFFFF, target, exc,
-                )
+            unflat_logger.info(
+                "backward resolved blk[%d] state=0x%X -> handler blk[%d] "
+                "candidate; not materialized in legacy path",
+                pred_serial, resolved_value & 0xFFFFFFFF, target,
+            )
 
         if redirected > 0:
             unflat_logger.info(
