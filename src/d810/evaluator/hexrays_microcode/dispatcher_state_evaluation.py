@@ -8,7 +8,13 @@ from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
 )
-from d810.evaluator.hexrays_microcode.tracker import MopHistory, MopTracker
+from d810.evaluator.hexrays_microcode.tracker import (
+    MopHistory,
+    MopTracker,
+    check_if_all_values_are_found,
+    get_all_possibles_values,
+    get_block_with_multiple_predecessors,
+)
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
 
 logger = getLogger("D810.evaluator.dispatcher_state")
@@ -51,6 +57,28 @@ def collect_dispatcher_father_histories(
 def histories_are_resolved(mop_histories: list[MopHistory]) -> bool:
     """Return whether all histories fully resolve their tracked mops."""
     return all(mop_history.is_resolved() for mop_history in mop_histories)
+
+
+def collect_possible_history_values(
+    mop_histories: list[MopHistory],
+    state_mops: list[ida_hexrays.mop_t],
+    *,
+    verbose: bool = False,
+) -> list[list[int | None]]:
+    """Collect concrete candidate values for tracked state mops."""
+    return get_all_possibles_values(mop_histories, state_mops, verbose=verbose)
+
+
+def all_history_values_found(mop_searched_values: list[list[int | None]]) -> bool:
+    """Return whether every tracked state value was concretely recovered."""
+    return check_if_all_values_are_found(mop_searched_values)
+
+
+def find_shared_history_block(
+    mop_histories: list[MopHistory],
+) -> tuple[ida_hexrays.mblock_t | None, object]:
+    """Return the first shared predecessor-history block, if one exists."""
+    return get_block_with_multiple_predecessors(mop_histories)
 
 
 def emulate_dispatcher_with_father_history(
@@ -138,7 +166,10 @@ def emulate_dispatcher_with_father_history(
 
 __all__ = [
     "DispatcherStateEvaluationError",
+    "all_history_values_found",
     "collect_dispatcher_father_histories",
+    "collect_possible_history_values",
     "emulate_dispatcher_with_father_history",
+    "find_shared_history_block",
     "histories_are_resolved",
 ]
