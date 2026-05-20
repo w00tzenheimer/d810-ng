@@ -13,6 +13,10 @@ import ida_hexrays
 
 from d810.core.typing import Protocol
 from d810.cfg.dominator import compute_dom_tree
+from d810.cfg.dispatcher_rewrite_planning import (
+    DispatcherPredecessorRewriteInput,
+    plan_dispatcher_predecessor_rewrite,
+)
 from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
@@ -8208,177 +8212,75 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 }
             )
 
-        def _build_conditional_redirect_candidate(
-            instructions: tuple[object, ...] = (),
-        ) -> tuple[
-            tuple[GraphModification, ...],
-            None,
-            EmulatedDispatcherCandidateRecord,
-        ] | tuple[None, str, EmulatedDispatcherCandidateRecord] | None:
-            if (
-                target_blk.nsucc() != 2
-                or target_blk.tail is None
-                or not ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
-            ):
-                return None
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_conditional_target_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if target_blk.nextb is None:
-                reason = "dispatcher_target_missing_fallthrough"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            conditional_target = int(target_blk.tail.d.b)
-            fallthrough_target = int(target_blk.nextb.serial)
-            if conditional_target == dispatcher_father.serial:
-                reason = "dispatcher_conditional_target_self_loop"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if fallthrough_target == dispatcher_father.serial:
-                reason = "dispatcher_fallthrough_target_self_loop"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                CreateConditionalRedirect(
-                    source_block=int(dispatcher_father.serial),
-                    ref_block=int(target_blk.serial),
-                    conditional_target=conditional_target,
-                    fallthrough_target=fallthrough_target,
-                    instructions=instructions,
+        safe_copy_snapshots = tuple(
+            capture_insn_snapshot(insn) for insn in safe_copy_insns
+        )
+        source_old_target = (
+            int(dispatcher_father.succ(0))
+            if int(dispatcher_father.nsucc()) >= 1
+            else None
+        )
+        source_tail = getattr(dispatcher_father, "tail", None)
+        source_is_conditional = bool(
+            source_tail is not None
+            and ida_hexrays.is_mcode_jcond(source_tail.opcode)
+        )
+        target_tail = getattr(target_blk, "tail", None)
+        target_is_conditional = bool(
+            target_tail is not None and ida_hexrays.is_mcode_jcond(target_tail.opcode)
+        )
+        target_conditional_target = None
+        target_fallthrough_target = None
+        if target_is_conditional:
+            target_dest = getattr(getattr(target_tail, "d", None), "b", None)
+            if target_dest is not None:
+                target_conditional_target = int(target_dest)
+            if target_blk.nextb is not None:
+                target_fallthrough_target = int(target_blk.nextb.serial)
+        clone_conditional_targets = (
+            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        decision = plan_dispatcher_predecessor_rewrite(
+            DispatcherPredecessorRewriteInput(
+                source_serial=int(dispatcher_father.serial),
+                source_nsucc=int(dispatcher_father.nsucc()),
+                source_old_target=source_old_target,
+                source_is_conditional=source_is_conditional,
+                target_serial=int(target_blk.serial),
+                target_nsucc=int(target_blk.nsucc()),
+                target_is_conditional=target_is_conditional,
+                target_conditional_target=target_conditional_target,
+                target_fallthrough_target=target_fallthrough_target,
+                safe_copy_instructions=safe_copy_snapshots,
+                deferred_side_effect_instructions=tuple(deferred_side_effects or ()),
+                raw_side_effect_count=len(raw_ins_to_copy),
+                safe_side_effect_count=len(safe_copy_insns),
+                defer_side_effects=(
+                    bool(safe_copy_snapshots)
+                    and resolver.mba.maturity == ida_hexrays.MMAT_CALLS
                 ),
+                clone_conditional_targets=clone_conditional_targets,
             )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if raw_ins_to_copy and not safe_copy_insns:
-            reason = "dispatcher_side_effects_not_dependency_safe"
-            return None, reason, _blocked_record(
-                reason,
+        )
+        if decision.defer_side_effects and safe_copy_snapshots:
+            self._deferred_side_effects[
+                (
+                    int(resolver.mba.entry_ea),
+                    int(entry_serial),
+                    state_signature,
+                )
+            ] = safe_copy_snapshots
+        if decision.blocker is not None:
+            return None, decision.blocker, _blocked_record(
+                decision.blocker,
                 state_signature=state_signature,
                 target_serial=int(target_blk.serial),
                 raw_side_effect_count=len(raw_ins_to_copy),
                 safe_side_effect_count=len(safe_copy_insns),
             )
-
-        if safe_copy_insns:
-            safe_copy_snapshots = tuple(
-                capture_insn_snapshot(insn) for insn in safe_copy_insns
-            )
-            if resolver.mba.maturity == ida_hexrays.MMAT_CALLS:
-                self._deferred_side_effects[
-                    (
-                        int(resolver.mba.entry_ea),
-                        int(entry_serial),
-                        state_signature,
-                    )
-                ] = safe_copy_snapshots
-                reason = "dispatcher_side_effects_deferred_to_later_maturity"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_insert_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                InsertBlock(
-                    pred_serial=int(dispatcher_father.serial),
-                    succ_serial=int(target_blk.serial),
-                    instructions=safe_copy_snapshots,
-                    old_target_serial=int(dispatcher_father.succ(0)),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if deferred_side_effects:
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_insert_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                InsertBlock(
-                    pred_serial=int(dispatcher_father.serial),
-                    succ_serial=int(target_blk.serial),
-                    instructions=deferred_side_effects,
-                    old_target_serial=int(dispatcher_father.succ(0)),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        clone_conditional_targets = (
-            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        if clone_conditional_targets:
-            conditional_redirect = _build_conditional_redirect_candidate()
-            if conditional_redirect is not None:
-                return conditional_redirect
-
-        if dispatcher_father.nsucc() == 1:
-            modifications = (
-                RedirectGoto(
-                    from_serial=int(dispatcher_father.serial),
-                    old_target=int(dispatcher_father.succ(0)),
-                    new_target=int(target_blk.serial),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if (
-            dispatcher_father.nsucc() == 2
-            and dispatcher_father.tail is not None
-            and ida_hexrays.is_mcode_jcond(dispatcher_father.tail.opcode)
-        ):
-            modifications = (
-                ConvertToGoto(
-                    block_serial=int(dispatcher_father.serial),
-                    goto_target=int(target_blk.serial),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        reason = "dispatcher_source_shape_not_lowered"
-        return None, reason, _blocked_record(
-            reason,
-            state_signature=state_signature,
-            target_serial=int(target_blk.serial),
-            raw_side_effect_count=len(raw_ins_to_copy),
-            safe_side_effect_count=len(safe_copy_insns),
-        )
+        modifications = decision.modifications
+        return modifications, None, _record_for_modifications(modifications)
 
     def _mop_const_value(self, mop) -> int | None:
         if mop is None or getattr(mop, "t", None) != ida_hexrays.mop_n:
