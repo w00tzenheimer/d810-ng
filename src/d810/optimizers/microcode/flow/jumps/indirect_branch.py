@@ -47,10 +47,7 @@ from d810.hexrays.utils.table_utils import (
 )
 
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.hexrays.mutation.cfg_mutations import (
-    change_0way_block_successor)
-from d810.hexrays.mutation.cfg_mutations import (
-    change_1way_block_successor)
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.cfg_verify import (
     safe_verify)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
@@ -836,10 +833,9 @@ class IndirectBranchResolver(FlowOptimizationRule):
 
         Uses a deferred pattern: captures only the block serial and target
         serial during analysis, then re-fetches fresh block pointers before
-        applying the CFG modification.  The underlying ``cfg_utils`` helpers
-        (``change_0way_block_successor`` / ``change_1way_block_successor``)
-        handle all ``m_ijmp`` -> ``m_goto`` conversion, succset/predset
-        bookkeeping, and ``mark_lists_dirty()`` calls.
+        applying the CFG modification. ``DeferredGraphModifier`` handles the
+        ``m_ijmp`` -> ``m_goto`` conversion, succset/predset bookkeeping, and
+        dirty marking.
 
         Returns 1 on success, 0 on failure.
         """
@@ -862,14 +858,20 @@ class IndirectBranchResolver(FlowOptimizationRule):
                 )
                 return 0
 
+            modifier = DeferredGraphModifier(mba)
             if fresh_blk.nsucc() == 0:
-                ok = change_0way_block_successor(
-                    fresh_blk, target_blk_idx, verify=False,
+                modifier.queue_terminal_goto_change(
+                    int(block_serial),
+                    int(target_blk_idx),
+                    description="indirect branch terminal goto resolution",
                 )
             else:
-                ok = change_1way_block_successor(
-                    fresh_blk, target_blk_idx, verify=False,
+                modifier.queue_goto_change(
+                    int(block_serial),
+                    int(target_blk_idx),
+                    description="indirect branch goto resolution",
                 )
+            ok = modifier.apply(defer_post_apply_maintenance=True) > 0
 
             if ok:
                 safe_verify(

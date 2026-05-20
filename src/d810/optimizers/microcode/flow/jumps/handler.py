@@ -5,12 +5,9 @@ import ida_hexrays
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
-from d810.hexrays.mutation.cfg_mutations import (
-    change_2way_block_conditional_successor)
 from d810.hexrays.ir.cfg_queries import (
     is_conditional_jump)
-from d810.hexrays.mutation.cfg_mutations import (
-    make_2way_block_goto)
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
     opcode_to_string,
@@ -443,7 +440,16 @@ class JumpFixer(FlowOptimizationRule):
                     )
                     optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
                     if new_ins.opcode == ida_hexrays.m_goto:
-                        make_2way_block_goto(blk, new_ins.d.b)
+                        modifier = DeferredGraphModifier(blk.mba)
+                        modifier.queue_convert_to_goto(
+                            int(blk.serial),
+                            int(new_ins.d.b),
+                            description="jump rule converted conditional block to goto",
+                        )
+                        modifier.apply(
+                            verify_each_mod=True,
+                            defer_post_apply_maintenance=True,
+                        )
                         return True
                     else:
                         # In-place modification: safer than make_nop + insert_into_block

@@ -225,6 +225,10 @@ from d810.hexrays.mutation.cfg_mutations import (
 from d810.hexrays.mutation.cfg_mutations import (
     duplicate_block)
 from d810.hexrays.mutation.cfg_mutations import (
+    ensure_child_has_an_unconditional_father)
+from d810.hexrays.mutation.cfg_mutations import (
+    ensure_last_block_is_goto)
+from d810.hexrays.mutation.cfg_mutations import (
     insert_nop_blk)
 from d810.hexrays.mutation.cfg_mutations import (
     _get_fallthrough_successor_serial)
@@ -487,7 +491,10 @@ class ModificationType(Enum):
     BLOCK_GOTO_CHANGE = auto()       # Change goto destination
     BLOCK_TARGET_CHANGE = auto()      # Change conditional jump target
     BLOCK_FALLTHROUGH_CHANGE = auto() # Change fallthrough successor
+    BLOCK_TERMINAL_GOTO_CHANGE = auto()  # Convert 0-way block to 1-way goto
     BLOCK_CONVERT_TO_GOTO = auto()    # Convert 2-way to 1-way block
+    BLOCK_NWAY_NULL_TAIL_DOWNGRADE = auto()  # Downgrade degenerate NWAY null-tail to 1-way
+    BLOCK_NWAY_GOTO_TYPE_DOWNGRADE = auto()  # Downgrade NWAY+m_goto+1succ to 1-way
     BLOCK_NOP_INSNS = auto()          # NOP instructions in a block
     INSN_REMOVE = auto()              # Remove a specific instruction
     INSN_NOP = auto()                 # NOP a specific instruction
@@ -1333,6 +1340,72 @@ class DeferredGraphModifier:
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
+    def queue_terminal_goto_change(
+        self,
+        block_serial: int,
+        goto_target: int,
+        description: str = "",
+        target_ref_kind: TargetRefKind | None = None,
+    ) -> None:
+        """Queue conversion of a 0-way terminal block to a 1-way goto."""
+        resolved_target_kind = (
+            target_ref_kind
+            if target_ref_kind is not None
+            else self._infer_target_ref_kind(goto_target)
+        )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
+            block_serial=block_serial,
+            new_target=goto_target,
+            priority=20,
+            description=description or f"terminal {block_serial} -> goto {goto_target}",
+            target_ref_kind=resolved_target_kind,
+        ))
+        logger.debug("Queued terminal goto change: block %d -> %d", block_serial, goto_target)
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_nway_null_tail_downgrade(
+        self,
+        block_serial: int,
+        dispatcher_entry_serial: int,
+        description: str = "",
+    ) -> None:
+        """Queue downgrade of a degenerate BLT_NWAY/null-tail block to 1-way."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_NWAY_NULL_TAIL_DOWNGRADE,
+            block_serial=block_serial,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            priority=20,
+            description=description or (
+                f"downgrade nway null-tail {block_serial}, "
+                f"drop {dispatcher_entry_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued nway null-tail downgrade: block %d drop %d",
+            block_serial,
+            dispatcher_entry_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_nway_goto_type_downgrade(
+        self,
+        block_serial: int,
+        description: str = "",
+    ) -> None:
+        """Queue downgrade of BLT_NWAY+m_goto+single-successor to BLT_1WAY."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BLOCK_NWAY_GOTO_TYPE_DOWNGRADE,
+            block_serial=block_serial,
+            priority=20,
+            description=description or f"downgrade nway goto {block_serial}",
+        ))
+        logger.debug("Queued nway goto type downgrade: block %d", block_serial)
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
     def queue_insn_remove(
         self,
         block_serial: int,
@@ -2119,6 +2192,207 @@ class DeferredGraphModifier:
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def run_deep_cleaning(self, *, call_mba_combine_block: bool = True) -> int:
+        """Run the central CFG cleanup primitive through the mutation backend."""
+        return mba_deep_cleaning(
+            self.mba,
+            call_mba_combine_block=call_mba_combine_block,
+        )
+
+    def ensure_last_block_is_goto(self, *, verify: bool = True) -> int:
+        """Normalize the trailing block through the central mutation backend."""
+        return ensure_last_block_is_goto(self.mba, verify=verify)
+
+    def ensure_child_has_unconditional_father(
+        self,
+        father_serial: int,
+        child_serial: int,
+        *,
+        verify: bool = True,
+    ) -> int:
+        """Ensure a child has an unconditional predecessor via the backend."""
+        father = self.mba.get_mblock(int(father_serial))
+        child = self.mba.get_mblock(int(child_serial))
+        return ensure_child_has_an_unconditional_father(
+            father,
+            child,
+            verify=verify,
+        )
+
+    def create_standalone_block(
+        self,
+        *,
+        ref_serial: int,
+        blk_ins: list | tuple | None = None,
+        target_serial: int | None = None,
+        is_0_way: bool = False,
+        verify: bool = True,
+    ) -> int | None:
+        """Create a standalone block and return its live serial."""
+        ref_blk = self.mba.get_mblock(int(ref_serial))
+        if ref_blk is None:
+            logger.warning("create_standalone_block: ref block %d not found", ref_serial)
+            return None
+        new_blk = create_standalone_block(
+            ref_blk=ref_blk,
+            blk_ins=list(blk_ins or ()),
+            target_serial=target_serial,
+            is_0_way=is_0_way,
+            verify=verify,
+        )
+        if new_blk is None:
+            return None
+        return int(new_blk.serial)
+
+    def copy_block_keep_now(
+        self,
+        ref_blk: ida_hexrays.mblock_t,
+        dest_serial: int,
+    ) -> ida_hexrays.mblock_t | None:
+        """Copy a block while preserving the backend MBL_KEEP behavior."""
+        return copy_block_keep(self.mba, ref_blk, int(dest_serial))
+
+    def mark_blocks_dirty_now(
+        self,
+        *blocks: ida_hexrays.mblock_t | None,
+        mark_chains: bool = True,
+    ) -> None:
+        """Mark live block lists and optionally chains dirty from the backend."""
+        for blk in blocks:
+            if blk is None:
+                continue
+            try:
+                if int(getattr(blk, "serial", -1)) != int(self.mba.qty) - 1:
+                    blk.mark_lists_dirty()
+            except Exception:
+                continue
+        if mark_chains:
+            self.mba.mark_chains_dirty()
+
+    def clear_state_frontier_payload_now(self, block_serial: int) -> None:
+        """NOP non-goto instructions in a state-frontier block."""
+        blk = self.mba.get_mblock(int(block_serial))
+        if blk is None:
+            raise RuntimeError(
+                "clear_state_frontier_payload: cannot resolve "
+                f"block={block_serial}"
+            )
+        cur = blk.head
+        while cur is not None:
+            nxt = cur.next
+            opcode = int(getattr(cur, "opcode", -1))
+            if opcode != int(ida_hexrays.m_goto):
+                blk.make_nop(cur)
+            cur = nxt
+        blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
+    def canonicalize_jtbl_case_overlap_now(
+        self,
+        *,
+        jtbl_serial: int,
+        retarget_map: dict[int, int] | tuple[tuple[int, int], ...],
+        deduplicate: bool = False,
+    ) -> int:
+        """Retarget and optionally coalesce jump-table cases through DGM."""
+        blk = self.mba.get_mblock(int(jtbl_serial))
+        if blk is None:
+            logger.warning("canonicalize_jtbl_case_overlap: block %d not found", jtbl_serial)
+            return 0
+        normalized_map = (
+            dict(retarget_map)
+            if not isinstance(retarget_map, dict)
+            else retarget_map
+        )
+        changed = 0
+        if normalized_map:
+            changed += retarget_jtbl_block_cases(blk, normalized_map)
+        if deduplicate:
+            changed += coalesce_jtbl_cases(blk)
+        return int(changed)
+
+    def redirect_fallthrough_edge_now(
+        self,
+        *,
+        source_serial: int,
+        old_target_serial: int,
+        new_target_serial: int,
+    ) -> int:
+        """Redirect a 2-way fallthrough arm through an adjacent helper block."""
+        src = self.mba.get_mblock(int(source_serial))
+        if src is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: cannot resolve "
+                f"src={source_serial}"
+            )
+        if src.nsucc() != 2:
+            self.queue_goto_change(
+                block_serial=int(source_serial),
+                new_target=int(new_target_serial),
+                description="redirect non-2way fallthrough edge",
+            )
+            self.apply(defer_post_apply_maintenance=True)
+            return int(source_serial)
+
+        conditional_target = (
+            int(src.tail.d.b)
+            if src.tail is not None
+            and ida_hexrays.is_mcode_jcond(src.tail.opcode)
+            and src.tail.d is not None
+            and src.tail.d.t == ida_hexrays.mop_b
+            else None
+        )
+        if conditional_target == int(old_target_serial):
+            self.queue_conditional_target_change(
+                block_serial=int(source_serial),
+                old_target=int(old_target_serial),
+                new_target=int(new_target_serial),
+                description="redirect conditional arm",
+            )
+            self.apply(defer_post_apply_maintenance=True)
+            return int(source_serial)
+
+        fallthrough_target = _get_fallthrough_successor_serial(src)
+        if fallthrough_target is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: source has no fallthrough "
+                f"src={source_serial}"
+            )
+        if int(fallthrough_target) != int(old_target_serial):
+            raise RuntimeError(
+                "redirect_fallthrough_edge: fallthrough mismatch "
+                f"src={source_serial} expected={old_target_serial} "
+                f"actual={fallthrough_target}"
+            )
+
+        new_target_blk = self.mba.get_mblock(int(new_target_serial))
+        if new_target_blk is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: cannot resolve "
+                f"new={new_target_serial}"
+            )
+
+        old_qty = int(self.mba.qty)
+        helper = insert_nop_blk(src)
+        if helper is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: failed to synthesize helper "
+                f"src={source_serial}"
+            )
+        self._record_inserted_serial(int(helper.serial), old_qty)
+        changed = change_1way_block_successor(
+            helper,
+            int(new_target_blk.serial),
+            verify=False,
+        )
+        if not changed:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: failed to retarget helper "
+                f"helper={helper.serial} new={new_target_blk.serial}"
+            )
+        self.mba.mark_chains_dirty()
+        return int(helper.serial)
 
     def queue_private_terminal_suffix(
         self,
@@ -5274,8 +5548,20 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
             return self._apply_target_change(blk, mod.new_target, mod.old_target)
 
+        elif mod.mod_type == ModificationType.BLOCK_TERMINAL_GOTO_CHANGE:
+            return self._apply_terminal_goto_change(blk, mod.new_target)
+
         elif mod.mod_type == ModificationType.BLOCK_CONVERT_TO_GOTO:
             return self._apply_convert_to_goto(blk, mod.new_target)
+
+        elif mod.mod_type == ModificationType.BLOCK_NWAY_NULL_TAIL_DOWNGRADE:
+            return self._apply_nway_null_tail_downgrade(
+                blk,
+                dispatcher_entry_serial=mod.dispatcher_entry_serial,
+            )
+
+        elif mod.mod_type == ModificationType.BLOCK_NWAY_GOTO_TYPE_DOWNGRADE:
+            return self._apply_nway_goto_type_downgrade(blk)
 
         elif mod.mod_type == ModificationType.INSN_REMOVE:
             return self._apply_insn_remove(blk, mod.insn_ea)
@@ -5467,6 +5753,21 @@ class DeferredGraphModifier:
 
         return change_1way_block_successor(blk, new_target, verify=False)
 
+    def _apply_terminal_goto_change(
+        self,
+        blk: ida_hexrays.mblock_t,
+        new_target: int,
+    ) -> bool:
+        """Convert a 0-way block to an unconditional goto."""
+        if blk.nsucc() != 0:
+            logger.warning(
+                "Block %d is not terminal (nsucc=%d)",
+                blk.serial,
+                blk.nsucc(),
+            )
+            return False
+        return change_0way_block_successor(blk, new_target, verify=False)
+
     def _apply_target_change(
         self,
         blk: ida_hexrays.mblock_t,
@@ -5585,6 +5886,34 @@ class DeferredGraphModifier:
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
         """Convert a 2-way block to a 1-way goto."""
         return make_2way_block_goto(blk, goto_target, verify=False)
+
+    def _apply_nway_null_tail_downgrade(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        dispatcher_entry_serial: int | None,
+    ) -> bool:
+        if dispatcher_entry_serial is None:
+            return False
+        return downgrade_nway_null_tail_to_1way(
+            blk,
+            int(dispatcher_entry_serial),
+            verify=False,
+        )
+
+    def _apply_nway_goto_type_downgrade(self, blk: ida_hexrays.mblock_t) -> bool:
+        """Downgrade BLT_NWAY+m_goto+single-successor to BLT_1WAY."""
+        tail = getattr(blk, "tail", None)
+        if (
+            blk.type != ida_hexrays.BLT_NWAY
+            or tail is None
+            or tail.opcode != ida_hexrays.m_goto
+            or blk.nsucc() != 1
+        ):
+            return False
+        blk.type = ida_hexrays.BLT_1WAY
+        self.mba.mark_chains_dirty()
+        return True
 
     def _apply_remove_edge(self, blk: ida_hexrays.mblock_t, to_serial: int) -> bool:
         """Remove a single outgoing edge from *blk* to *to_serial*."""
@@ -8436,7 +8765,7 @@ class DeferredGraphModifier:
                     ):
                         return False
                     try:
-                        from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                        from d810.hexrays.mutation.terminal_return_literals import (
                             remember_terminal_zero_guard_literal_return_value,
                         )
 

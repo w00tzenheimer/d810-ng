@@ -42,24 +42,6 @@ from d810.evaluator.hexrays_microcode.dispatcher_state_evaluation import (
     find_shared_history_block,
     histories_are_resolved,
 )
-from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
-from d810.hexrays.ir.cfg_queries import _serial_in_predset
-from d810.hexrays.mutation.cfg_mutations import (
-    change_1way_block_successor)
-from d810.hexrays.mutation.cfg_mutations import (
-    coalesce_jtbl_cases)
-from d810.hexrays.mutation.cfg_mutations import (
-    create_block)
-from d810.hexrays.mutation.cfg_mutations import (
-    downgrade_nway_null_tail_to_1way)
-from d810.hexrays.mutation.cfg_mutations import (
-    ensure_child_has_an_unconditional_father)
-from d810.hexrays.mutation.cfg_mutations import (
-    ensure_last_block_is_goto)
-from d810.hexrays.mutation.cfg_mutations import (
-    mba_deep_cleaning)
-from d810.hexrays.mutation.cfg_mutations import (
-    retarget_jtbl_block_cases)
 from d810.hexrays.mutation.cfg_verify import (
     safe_verify)
 from d810.hexrays.mutation.dispatcher_materialization import (
@@ -1327,14 +1309,19 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     def ensure_all_dispatcher_fathers_are_direct(self) -> int:
         nb_change = 0
+        modifier = DeferredGraphModifier(self.mba)
         for dispatcher_info in self.dispatcher_list:
             nb_change += self.ensure_dispatcher_fathers_are_direct(dispatcher_info)
             dispatcher_father_list = [
                 self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
             ]
             for dispatcher_father in dispatcher_father_list:
-                nb_change += ensure_child_has_an_unconditional_father(
-                    dispatcher_father, dispatcher_info.entry_block.blk, verify=False
+                if dispatcher_father is None:
+                    continue
+                nb_change += modifier.ensure_child_has_unconditional_father(
+                    int(dispatcher_father.serial),
+                    int(dispatcher_info.entry_block.blk.serial),
+                    verify=False,
                 )
                 # Handle degenerate BLT_NWAY blocks with null tail: these arise
                 # when all jtbl cases have been resolved but the block type was
@@ -1347,11 +1334,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     and dispatcher_father.tail is None
                     and dispatcher_father.nsucc() == 2
                 ):
-                    if downgrade_nway_null_tail_to_1way(
-                        dispatcher_father,
-                        dispatcher_info.entry_block.blk.serial,
-                        verify=False,
-                    ):
+                    downgrade_modifier = DeferredGraphModifier(self.mba)
+                    downgrade_modifier.queue_nway_null_tail_downgrade(
+                        int(dispatcher_father.serial),
+                        int(dispatcher_info.entry_block.blk.serial),
+                        description="generic direct-father nway null-tail downgrade",
+                    )
+                    if downgrade_modifier.apply(defer_post_apply_maintenance=True) > 0:
                         nb_change += 1
         return nb_change
 
@@ -1359,12 +1348,17 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self, dispatcher_info: GenericDispatcherInfo
     ) -> int:
         nb_change = 0
+        modifier = DeferredGraphModifier(self.mba)
         dispatcher_father_list = [
             self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
         ]
         for dispatcher_father in dispatcher_father_list:
-            nb_change += ensure_child_has_an_unconditional_father(
-                dispatcher_father, dispatcher_info.entry_block.blk, verify=False
+            if dispatcher_father is None:
+                continue
+            nb_change += modifier.ensure_child_has_unconditional_father(
+                int(dispatcher_father.serial),
+                int(dispatcher_info.entry_block.blk.serial),
+                verify=False,
             )
         return nb_change
 
@@ -2139,16 +2133,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 if not needs_trampoline:
                     continue
                 if dest not in trampoline_cache:
-                    tramp = create_standalone_block(
-                        ref_blk=self.mba.get_mblock(dispatcher_serial),
+                    tramp_serial = DeferredGraphModifier(self.mba).create_standalone_block(
+                        ref_serial=int(dispatcher_serial),
                         blk_ins=[],
                         target_serial=dest,
                         verify=False,
                     )
-                    trampoline_cache[dest] = tramp.serial
+                    if tramp_serial is None:
+                        continue
+                    trampoline_cache[dest] = tramp_serial
                     unflat_logger.debug(
                         "jtbl canon: created trampoline blk %d -> %d to avoid duplicate target",
-                        tramp.serial,
+                        tramp_serial,
                         dest,
                     )
                 retarget_map[key] = trampoline_cache[dest]
@@ -2158,26 +2154,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 # copy_block inside create_standalone_block.
                 dispatcher_blk = self.mba.get_mblock(dispatcher_serial)
 
-            # Pass 2: execute retarget + succ/pred sync via
-            # the central CFG mutation gateway.
-            retargeted_cases = retarget_jtbl_block_cases(
-                dispatcher_blk,
-                retarget_map,
-                deduplicate=False,
+            changed_cases = DeferredGraphModifier(self.mba).canonicalize_jtbl_case_overlap_now(
+                jtbl_serial=int(dispatcher_serial),
+                retarget_map=retarget_map,
+                deduplicate=True,
             )
-            # Always coalesce duplicate jtbl targets on the dispatcher block,
-            # including pre-existing duplicates introduced by the unflattener
-            # that were never retargeted (would cause INTERR 50753).
-            coalesced = coalesce_jtbl_cases(dispatcher_blk)
-            if coalesced > 0:
-                unflat_logger.debug(
-                    "jtbl canon: coalesced %d pre-existing duplicate targets on blk %d",
-                    coalesced,
-                    dispatcher_serial,
-                )
-            if retargeted_cases <= 0 and coalesced <= 0:
+            if changed_cases <= 0:
                 continue
-            total_case_retargets += retargeted_cases
+            total_case_retargets += changed_cases
 
         if total_case_retargets > 0:
             self.mba.mark_chains_dirty()
@@ -2732,7 +2716,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     def remove_flattening(self) -> int:
         total_nb_change = 0
-        self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
+        self.non_significant_changes = DeferredGraphModifier(
+            self.mba
+        ).ensure_last_block_is_goto(verify=False)
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
 
         # Full-MBA scan: catch BLT_NWAY+null-tail blocks that the direct-father
@@ -2749,9 +2735,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             if blk.type == ida_hexrays.BLT_NWAY and blk.tail is None and blk.nsucc() == 2:
                 fixed = False
                 for dispatcher_entry_serial in all_dispatcher_entry_serials:
-                    if downgrade_nway_null_tail_to_1way(
-                        blk, dispatcher_entry_serial, verify=False
-                    ):
+                    downgrade_modifier = DeferredGraphModifier(self.mba)
+                    downgrade_modifier.queue_nway_null_tail_downgrade(
+                        int(blk.serial),
+                        int(dispatcher_entry_serial),
+                        description="generic nway null-tail sweep",
+                    )
+                    if downgrade_modifier.apply(defer_post_apply_maintenance=True) > 0:
                         self.non_significant_changes += 1
                         fixed = True
                         break
@@ -2767,39 +2757,35 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                                 and succ_blk.nsucc() == 1
                                 and int(succ_blk.succset[0]) in all_dispatcher_entry_serials):
                             trampoline_serial = succ_serial
-                            keep_serial = [s for s in succ_serials if s != trampoline_serial][0]
-                            insert_goto_instruction(blk, keep_serial, nop_previous_instruction=False)
-                            blk.type = ida_hexrays.BLT_1WAY
-                            blk.flags |= ida_hexrays.MBL_GOTO
-                            blk.succset._del(trampoline_serial)
-                            blk.mark_lists_dirty()
-                            trampoline_blk = self.mba.get_mblock(trampoline_serial)
-                            if trampoline_blk is not None:
-                                trampoline_blk.predset._del(blk.serial)
-                                if trampoline_blk.serial != self.mba.qty - 1:
-                                    trampoline_blk.mark_lists_dirty()
-                            keep_blk = self.mba.get_mblock(keep_serial)
-                            if keep_blk is not None:
-                                if not _serial_in_predset(keep_blk, blk.serial):
-                                    keep_blk.predset.push_back(blk.serial)
-                                if keep_blk.serial != self.mba.qty - 1:
-                                    keep_blk.mark_lists_dirty()
-                            self.mba.mark_chains_dirty()
-                            logger.info(
-                                "blk[%d] BLT_NWAY null-tail fixed via trampoline %d -> keep %d",
-                                blk.serial, trampoline_serial, keep_serial,
+                            downgrade_modifier = DeferredGraphModifier(self.mba)
+                            downgrade_modifier.queue_nway_null_tail_downgrade(
+                                int(blk.serial),
+                                int(trampoline_serial),
+                                description="generic nway null-tail trampoline sweep",
                             )
-                            self.non_significant_changes += 1
-                            break
+                            if downgrade_modifier.apply(defer_post_apply_maintenance=True) > 0:
+                                keep_serial = [
+                                    s for s in succ_serials if s != trampoline_serial
+                                ][0]
+                                logger.info(
+                                    "blk[%d] BLT_NWAY null-tail fixed via trampoline %d -> keep %d",
+                                    blk.serial, trampoline_serial, keep_serial,
+                                )
+                                self.non_significant_changes += 1
+                                break
             # Case 2: BLT_NWAY with goto tail and single successor → downgrade to BLT_1WAY
             elif (blk.type == ida_hexrays.BLT_NWAY
                   and blk.tail is not None
                   and blk.nsucc() == 1
                   and blk.tail.opcode == ida_hexrays.m_goto):
-                blk.type = ida_hexrays.BLT_1WAY
-                self.mba.mark_chains_dirty()
-                self.non_significant_changes += 1
-                logger.info("blk[%d] downgraded BLT_NWAY+goto to BLT_1WAY", blk.serial)
+                downgrade_modifier = DeferredGraphModifier(self.mba)
+                downgrade_modifier.queue_nway_goto_type_downgrade(
+                    int(blk.serial),
+                    description="generic nway goto sweep",
+                )
+                if downgrade_modifier.apply(defer_post_apply_maintenance=True) > 0:
+                    self.non_significant_changes += 1
+                    logger.info("blk[%d] downgraded BLT_NWAY+goto to BLT_1WAY", blk.serial)
 
         # Reset tracking for this optimization pass
         self._processed_dispatcher_fathers.clear()
@@ -3149,7 +3135,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             # This specifically avoids an MMAT_CALLS failure mode where
             # ensure_all_dispatcher_fathers_are_direct()/redirect operations
             # attempt to rewire around a 2-way father and trigger
-            # change_1way_block_successor/verify exceptions. Deferring this
+            # DGM redirect/verify exceptions. Deferring this
             # shape preserves stability while keeping compact 1-way dispatcher
             # cases (for example mixed_dispatcher_pattern) unflattened early.
             if (
@@ -3229,7 +3215,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             return 0
 
-        nb_clean = mba_deep_cleaning(self.mba, False)
+        nb_clean = DeferredGraphModifier(self.mba).run_deep_cleaning(
+            call_mba_combine_block=False,
+        )
         if self.dump_intermediate_microcode:
             dump_microcode_for_debug(
                 self.mba,
