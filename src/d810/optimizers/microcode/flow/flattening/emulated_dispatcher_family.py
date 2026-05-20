@@ -130,6 +130,10 @@ from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_program,
     render_linearized_state_program,
 )
+from d810.recon.flow.predecessor_dispatcher_target import (
+    PredecessorDispatcherTargetFact,
+    collect_predecessor_dispatcher_target_facts,
+)
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
 )
@@ -4432,6 +4436,7 @@ class GenericDispatcherEngineProfile:
     allow_incomplete_switch_transition_facts: bool = False
     enable_terminal_payload_materialization: bool = False
     enable_phase_reorder: bool = False
+    enable_predecessor_dispatcher_target_lowering: bool = False
     state_dispatcher_map_factory: Callable[
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
@@ -5079,7 +5084,14 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         tuple[EmulatedDispatcherCandidateRecord, ...],
     ]:
         if not detection.collector_dispatchers:
-            return (), (), ()
+            if not self._profile.enable_predecessor_dispatcher_target_lowering:
+                return (), (), ()
+            return self._collect_predecessor_dispatcher_target_candidates(
+                mba=mba,
+                phase_artifact=phase_artifact,
+                phase_context=phase_context,
+                flow_graph=flow_graph,
+            )
 
         resolver = self._make_resolver(mba, detection)
         scc_memberships = self._compute_scc_memberships(flow_graph)
@@ -7196,6 +7208,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             mba,
             state_dispatcher_map=state_dispatcher_map,
         )
+        predecessor_dispatcher_target_facts = (
+            collect_predecessor_dispatcher_target_facts(
+                transition_result=transition_result,
+                dispatcher_entry_serial=dispatcher_entry_serial,
+                state_dispatcher_map=state_dispatcher_map,
+                bst_result=bst_result,
+                transition_report=transition_report,
+                dag=dag,
+                state_var_stkoff=state_var_stkoff,
+            )
+        )
         artifact = EmulatedDispatcherPhaseArtifact(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
@@ -7238,6 +7261,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             semantic_reference_program=semantic_program,
             state_dispatcher_map=state_dispatcher_map,
             switch_case_transition_facts=switch_case_transition_facts,
+            predecessor_dispatcher_target_facts=predecessor_dispatcher_target_facts,
         )
         return artifact, context
 
@@ -8463,6 +8487,13 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             target_serial=target_serial,
             father_serial=father_serial,
         )
+        if fallthrough_serial is None:
+            fallthrough_serial = self._dynamic_guard_fallthrough_from_predecessor_facts(
+                phase_context,
+                source_state=target_state,
+                target_serial=target_serial,
+                father_serial=father_serial,
+            )
         if fallthrough_serial is None or fallthrough_serial == target_serial:
             return None
 
@@ -8516,6 +8547,220 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             target_state & 0xFFFFFFFF,
         )
         return modifications, record
+
+    def _build_dynamic_transition_candidate_from_predecessor_fact(
+        self,
+        *,
+        mba: ida_hexrays.mba_t,
+        fact: PredecessorDispatcherTargetFact,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+        scc_memberships: dict[int, tuple[int, ...]],
+    ) -> tuple[tuple[GraphModification, ...], EmulatedDispatcherCandidateRecord] | None:
+        """Build a dynamic guarded edge from recon predecessor-target proof."""
+
+        transition_result = getattr(phase_context, "transition_result", None)
+        if transition_result is None or phase_artifact is None:
+            return None
+        if phase_artifact.state_var_stkoff is None:
+            return None
+        if fact.transition_provenance_kind != "global_or_state_write":
+            return None
+
+        father_serial = int(fact.predecessor_block_serial)
+        entry_serial = int(fact.dispatcher_entry_serial)
+        target_state = int(fact.state_const)
+        target_serial = int(fact.target_block_serial)
+        if target_serial == father_serial:
+            return None
+        state_dispatcher_map = getattr(phase_context, "state_dispatcher_map", None)
+        dispatcher_blocks = set(
+            getattr(state_dispatcher_map, "dispatcher_blocks", ()) or ()
+        )
+        if target_serial in dispatcher_blocks:
+            return None
+
+        dispatcher_father = mba.get_mblock(father_serial)
+        if dispatcher_father is None or dispatcher_father.nsucc() != 1:
+            return None
+        if int(dispatcher_father.succ(0)) != entry_serial:
+            return None
+
+        ref_serial = self._find_dispatcher_ref_block_for_state(
+            mba,
+            phase_artifact=phase_artifact,
+            target_state=target_state,
+            target_serial=target_serial,
+        )
+        if ref_serial is None and fact.compare_block_serial is not None:
+            ref_serial = int(fact.compare_block_serial)
+        if ref_serial is None:
+            return None
+        fallthrough_serial = self._profile.dynamic_guard_fallthrough(
+            transition_result,
+            target_state=target_state,
+            target_serial=target_serial,
+            father_serial=father_serial,
+        )
+        if fallthrough_serial is None:
+            fallthrough_serial = self._dynamic_guard_fallthrough_from_predecessor_facts(
+                phase_context,
+                source_state=target_state,
+                target_serial=target_serial,
+                father_serial=father_serial,
+            )
+        if fallthrough_serial is None or fallthrough_serial == target_serial:
+            return None
+
+        source_scc = scc_memberships.get(father_serial, ())
+        target_scc = scc_memberships.get(target_serial, ())
+        modifications = (
+            CreateConditionalRedirect(
+                source_block=father_serial,
+                ref_block=ref_serial,
+                conditional_target=target_serial,
+                fallthrough_target=fallthrough_serial,
+            ),
+        )
+        record = EmulatedDispatcherCandidateRecord(
+            dispatcher_entry_serial=entry_serial,
+            father_serial=father_serial,
+            state_signature=(target_state,),
+            target_serial=target_serial,
+            source_nsucc=int(dispatcher_father.nsucc()),
+            raw_side_effect_count=0,
+            safe_side_effect_count=0,
+            selection_reason="dynamic_state_write_conditional_redirect",
+            selected_modification_kinds=tuple(
+                type(mod).__name__ for mod in modifications
+            ),
+            selected_modification_summaries=tuple(
+                self._summarize_modification(mod) for mod in modifications
+            ),
+            legacy_analogue_kind="create_conditional_redirect",
+            semantically_valid=True,
+            structurally_legacy_equivalent=False,
+            source_scc=source_scc,
+            target_scc=target_scc,
+            cluster_key=(
+                f"state={target_state}",
+                f"target={target_serial}",
+                f"fallthrough={fallthrough_serial}",
+                "predecessor_dispatcher_target",
+                f"resolver={fact.resolver_kind}",
+                f"source_scc={','.join(str(value) for value in source_scc)}",
+                f"target_scc={','.join(str(value) for value in target_scc)}",
+                f"source_nsucc={int(dispatcher_father.nsucc())}",
+            ),
+        )
+        self._logger.info(
+            "Emulated-dispatcher predecessor-target conditional redirect: "
+            "father=%d ref=blk[%d] true=blk[%d] false=blk[%d] "
+            "state=0x%X resolver=%s",
+            father_serial,
+            ref_serial,
+            target_serial,
+            fallthrough_serial,
+            target_state & 0xFFFFFFFF,
+            fact.resolver_kind,
+        )
+        return modifications, record
+
+    def _dynamic_guard_fallthrough_from_predecessor_facts(
+        self,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+        *,
+        source_state: int,
+        target_serial: int,
+        father_serial: int,
+    ) -> int | None:
+        """Resolve guarded-edge fallthrough from predecessor-target facts."""
+
+        if phase_context is None:
+            return None
+        candidates: list[int] = []
+        for fact in getattr(
+            phase_context, "predecessor_dispatcher_target_facts", ()
+        ) or ():
+            if not isinstance(fact, PredecessorDispatcherTargetFact):
+                continue
+            if int(fact.predecessor_block_serial) != int(target_serial):
+                continue
+            if fact.source_state_const is None:
+                continue
+            if int(fact.source_state_const) != int(source_state):
+                continue
+            candidate = int(fact.target_block_serial)
+            if candidate in (int(target_serial), int(father_serial)):
+                continue
+            candidates.append(candidate)
+        unique_candidates = tuple(dict.fromkeys(candidates))
+        if len(unique_candidates) != 1:
+            return None
+        return unique_candidates[0]
+
+    def _collect_predecessor_dispatcher_target_candidates(
+        self,
+        *,
+        mba: ida_hexrays.mba_t,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+        flow_graph: FlowGraph,
+    ) -> tuple[
+        tuple[GraphModification, ...],
+        tuple[str, ...],
+        tuple[EmulatedDispatcherCandidateRecord, ...],
+    ]:
+        """Collect dynamic candidates from recon predecessor-target facts."""
+
+        if phase_context is None:
+            return (), (), ()
+        facts = tuple(
+            getattr(phase_context, "predecessor_dispatcher_target_facts", ()) or ()
+        )
+        scc_memberships = self._compute_scc_memberships(flow_graph)
+        modifications: list[GraphModification] = []
+        candidate_records: list[EmulatedDispatcherCandidateRecord] = []
+        seen_fathers: set[tuple[int, int, int]] = set()
+        for fact in facts:
+            if not isinstance(fact, PredecessorDispatcherTargetFact):
+                continue
+            fact_key = (
+                int(fact.dispatcher_entry_serial),
+                int(fact.predecessor_block_serial),
+                int(fact.state_const),
+            )
+            if fact_key in seen_fathers:
+                continue
+            seen_fathers.add(fact_key)
+            start_index = len(modifications)
+            candidate = self._build_dynamic_transition_candidate_from_predecessor_fact(
+                mba=mba,
+                fact=fact,
+                phase_artifact=phase_artifact,
+                phase_context=phase_context,
+                scc_memberships=scc_memberships,
+            )
+            if candidate is None:
+                continue
+            candidate_modifications, record = candidate
+            modifications.extend(candidate_modifications)
+            candidate_records.append(
+                EmulatedDispatcherCandidateRecord(
+                    **{
+                        **record.__dict__,
+                        "selected_modification_indexes": tuple(
+                            range(start_index, len(modifications))
+                        ),
+                    }
+                )
+            )
+
+        return (
+            tuple(modifications),
+            (),
+            self._annotate_cluster_candidates(tuple(candidate_records)),
+        )
 
     def build_snapshot(
         self,
@@ -8677,7 +8922,17 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     sorted(set(switch_transition_blockers))
                 )
         elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
-            selected_modifications = phase_reconstruction_modifications
+            if (
+                fallback_modifications
+                and not fallback_blockers
+                and self._profile.state_transport == "state_dispatcher_map"
+            ):
+                selected_modifications = (
+                    tuple(fallback_modifications)
+                    + tuple(phase_reconstruction_modifications)
+                )
+            else:
+                selected_modifications = phase_reconstruction_modifications
             selected_lowering_mode = "state_region_reconstruction"
             selected_blockers = ()
         elif state_dag_modifications and not state_dag_blockers:
