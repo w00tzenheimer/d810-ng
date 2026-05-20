@@ -755,7 +755,7 @@ class TestApproovFlatteningCharacterization:
     - 64-bit constants with high 32 bits in ABC range (1010000-1011999)
 
     See: src/d810/optimizers/microcode/flow/flattening/generic.py
-    See: src/d810/optimizers/microcode/flow/flattening/unflattener_badwhile_loop.py
+    See: src/d810/optimizers/microcode/flow/flattening/cleanup_family.py
     """
 
     binary_name = _get_default_binary()

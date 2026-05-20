@@ -1,9 +1,9 @@
 /**
- * fake_jumps.c - Test cases for UnflattenerFakeJump optimizer
+ * fake_jumps.c - Test cases for SimpleFlatteningCleanupUnflattener cleanup engine
  *
  * These functions contain conditional jumps (jz/jnz) that are always taken
  * or never taken based on value analysis from predecessor blocks.
- * The UnflattenerFakeJump optimizer should detect and remove these fake jumps.
+ * The SimpleFlatteningCleanupUnflattener cleanup engine should detect and remove these fake jumps.
  */
 
 #include <stdint.h>

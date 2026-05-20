@@ -1,7 +1,6 @@
 """Tests for FakeJumpFixerPass CFG transformation pass.
 
-This module tests the CFG-level fake/opaque jump fixing logic extracted from
-UnflattenerFakeJump.
+This module tests the CFG-level fake/opaque jump fixing logic owned by the cleanup engine path.
 """
 from __future__ import annotations
 

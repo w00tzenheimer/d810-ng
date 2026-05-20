@@ -904,13 +904,6 @@
       }
     },
     {
-      "name": "UnflattenerSwitchCase",
-      "is_activated": false,
-      "config": {
-        "pre_unflatten_optimize_local_rounds": 2
-      }
-    },
-    {
       "name": "JumpFixer",
       "is_activated": true,
       "config": {

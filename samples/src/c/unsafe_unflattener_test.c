@@ -1,5 +1,5 @@
 /**
- * unsafe_unflattener_test.c - Test case for UnflattenerFakeJump safety check.
+ * unsafe_unflattener_test.c - Test case for fake-jump cleanup safety check.
  *
  * This function is designed to trigger the UNSAFE scenario where:
  * - MopTracker resolves some backward paths but not others
@@ -14,7 +14,7 @@
  *   - Path 1 (resolved):   state = 0xDEAD0001  -> jump NOT taken (go to else)
  *   - Path 2 (unresolved): state = 0xDEAD0003  -> jump TAKEN (go to if-body)
  *
- * If UnflattenerFakeJump only considers the RESOLVED path (0xDEAD0001),
+ * If fake-jump cleanup only considers the RESOLVED path (0xDEAD0001),
  * it would incorrectly conclude the jump is NEVER taken and redirect
  * block B to always go to the else branch.
  *
@@ -22,7 +22,7 @@
  * WOULD take the jump. By ignoring this path, we break the CFG.
  *
  * Expected Behavior:
- * - UnflattenerFakeJump should detect that unresolved paths exist
+ * - The cleanup engine should detect that unresolved paths exist
  * - The rule should NOT fire when unresolved paths could have different outcomes
  * - CFG should remain correct
  *
@@ -318,7 +318,7 @@ NOINLINE int unsafe_unflattener_test3(int input, int threshold) {
  *    - Same code path has different outcomes based on computed values
  *    - MopTracker cannot resolve data-dependent conditions
  *
- * In all cases, if UnflattenerFakeJump ignores unresolved paths,
+ * In all cases, if fake-jump cleanup ignores unresolved paths,
  * it would make incorrect assumptions about which state values are
  * possible, leading to broken control flow.
  *

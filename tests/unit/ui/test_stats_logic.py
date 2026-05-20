@@ -47,11 +47,11 @@ class TestGetFiredRuleNames:
             "optimizer_matches": {},
             "rule_matches": {},
             "cfg_patches": {
-                "Unflattener": {"uses": 2, "total_patches": 10}
+                "EmulatedDispatcherUnflattener": {"uses": 2, "total_patches": 10}
             },
         }
         result = get_fired_rule_names(stats)
-        assert result == ["Unflattener"]
+        assert result == ["EmulatedDispatcherUnflattener"]
 
     def test_combined_stats(self):
         """Test stats with rules from all three categories."""
@@ -59,12 +59,12 @@ class TestGetFiredRuleNames:
             "optimizer_matches": {"PatternOpt": 1},
             "rule_matches": {"AddRule": 2},
             "cfg_patches": {
-                "Unflattener": {"uses": 3, "total_patches": 10}
+                "EmulatedDispatcherUnflattener": {"uses": 3, "total_patches": 10}
             },
         }
         result = get_fired_rule_names(stats)
         # Should be sorted and unique
-        assert result == ["AddRule", "PatternOpt", "Unflattener"]
+        assert result == ["AddRule", "EmulatedDispatcherUnflattener", "PatternOpt"]
 
     def test_zero_count_excluded(self):
         """Test that rules with zero counts are excluded."""

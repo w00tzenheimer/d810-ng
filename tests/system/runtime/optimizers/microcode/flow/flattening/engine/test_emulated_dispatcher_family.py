@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import os
+import platform
 from types import SimpleNamespace
 
 import idaapi
@@ -76,14 +78,120 @@ from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRo
 from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.testing.runner import _resolve_test_project_index, get_func_ea
-from tests.system.e2e.test_approov_engine_wrapper_baselines import (
-    _apply_engine_wrapper_profile,
-    _decompile_with_project,
-    _decompile_without_d810,
-    _force_rule_scope_to_current_profile,
-    _get_default_binary,
-    _restore_forced_rule_scope,
-)
+
+
+TEMP_ENGINE_WRAPPER_NOTES = "temporary engine-wrapper test profile"
+
+
+def _get_default_binary() -> str:
+    override = os.environ.get("D810_TEST_BINARY")
+    if override:
+        return override
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
+
+
+def _apply_engine_wrapper_profile(ctx) -> None:
+    ctx.add_rule("HodurUnflattener")
+    ctx.add_rule("EmulatedDispatcherUnflattener")
+
+
+def _force_rule_scope_to_current_profile(state, ctx, func_ea: int):
+    manager = state.manager
+    previous = manager.get_function_rule_override(func_ea)
+    if (
+        previous is not None
+        and getattr(previous, "notes", "") == TEMP_ENGINE_WRAPPER_NOTES
+        and not getattr(previous, "tags", set())
+    ):
+        manager.clear_function_rule_override(func_ea)
+        previous = None
+    enabled_rules = {
+        str(rule.name)
+        for rule in list(ctx.active_ins_rules) + list(ctx.active_blk_rules)
+    }
+    manager.set_function_rule_override(
+        function_addr=func_ea,
+        enabled_rules=enabled_rules,
+        disabled_rules=set(),
+        notes=TEMP_ENGINE_WRAPPER_NOTES,
+    )
+    return previous
+
+
+def _restore_forced_rule_scope(state, func_ea: int, previous) -> None:
+    manager = state.manager
+    if previous is None:
+        manager.clear_function_rule_override(func_ea)
+        return
+    if (
+        getattr(previous, "notes", "") == TEMP_ENGINE_WRAPPER_NOTES
+        and not getattr(previous, "tags", set())
+    ):
+        manager.clear_function_rule_override(func_ea)
+        return
+    if (
+        not previous.enabled_rules
+        and not previous.disabled_rules
+        and not getattr(previous, "tags", set())
+        and not getattr(previous, "notes", "")
+    ):
+        manager.clear_function_rule_override(func_ea)
+        return
+    manager.set_function_rule_override(
+        function_addr=func_ea,
+        enabled_rules=set(previous.enabled_rules),
+        disabled_rules=set(previous.disabled_rules),
+        notes=getattr(previous, "notes", ""),
+    )
+
+
+def _decompile_without_d810(state, func_ea: int, pseudocode_to_string) -> str:
+    state.stop_d810()
+    cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+    assert cfunc is not None, f"Decompilation failed for function at 0x{func_ea:x}"
+    return pseudocode_to_string(cfunc.get_pseudocode())
+
+
+def _decompile_with_project(
+    state,
+    func_ea: int,
+    project_name: str,
+    pseudocode_to_string,
+    *,
+    engine_wrappers_only: bool,
+) -> str:
+    state.stop_d810()
+    project_index = _resolve_test_project_index(state, project_name)
+    state.load_project(project_index)
+    with state.for_project(project_name) as ctx:
+        if engine_wrappers_only:
+            _apply_engine_wrapper_profile(ctx)
+        state.stats.reset()
+        state.start_d810()
+        previous_override = _force_rule_scope_to_current_profile(state, ctx, func_ea)
+        try:
+            cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert cfunc is not None, (
+                f"Decompilation with d810 failed for function at 0x{func_ea:x}"
+            )
+            rendered = pseudocode_to_string(cfunc.get_pseudocode())
+        finally:
+            _restore_forced_rule_scope(state, func_ea, previous_override)
+    state.stop_d810()
+    return rendered
+
+
+class _Collector:
+    def __init__(self):
+        self._items = ()
+
+    def visit_minsn(self):
+        return 0
+
+    def get_dispatcher_list(self):
+        return list(self._items)
 
 
 def _verify_error(mba) -> str | None:
@@ -2684,51 +2792,7 @@ def _build_approov_multistate_phase_cycle(role_map: dict[str, tuple[tuple[int, i
     )
 
 
-def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_gap(
-    monkeypatch,
-) -> None:
-    mba = _fake_mba()
-    analysis = SimpleNamespace(
-        dispatchers=[7, 9],
-        state_constants={0xF6A1E, 0xF6A1F},
-        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
-    )
-    cache = SimpleNamespace(analyze=lambda: analysis)
-
-    class _Collector:
-        def __init__(self):
-            self._items = ()
-
-        def get_dispatcher_list(self):
-            return list(self._items)
-
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
-        _Collector,
-    )
-
-    family = EmulatedDispatcherStrategyFamily(
-        cfg_translator=SimpleNamespace(
-            lift=lambda _mba: _flow_graph_with_conditional_shape()
-        )
-    )
-    detection = family.detect(mba)
-
-    assert detection.detected is True
-    assert detection.analysis_dispatchers == (7, 9)
-    assert detection.collector_dispatcher_entries == ()
-    assert detection.dispatcher_shape == "unknown"
-    assert detection.state_transport == "father_history_emulation"
-    assert detection.lowering_mode == "generic_graph_modifications"
-    assert detection.provenance_hints == ()
-    assert detection.planning_blocker == "dispatcher_cache_detected_but_collector_found_none"
-
-
-def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
+def test_default_ollvm_profile_uses_state_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
@@ -2749,9 +2813,6 @@ def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
     )
     cache = SimpleNamespace(analyze=lambda: analysis)
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     def _extract_state_dispatcher_map(_mba, *, dispatcher_entry_block=None, **_kwargs):
         calls.append(dispatcher_entry_block)
@@ -2787,7 +2848,7 @@ def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
     assert detection.planning_blocker is None
 
 
-def test_default_ollvm_profile_prefers_switch_map_when_collector_is_empty(
+def test_default_ollvm_profile_prefers_switch_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
@@ -2799,9 +2860,6 @@ def test_default_ollvm_profile_prefers_switch_map_when_collector_is_empty(
     )
     cache = SimpleNamespace(analyze=lambda: analysis)
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     def _unexpected_equality_map(*_args, **_kwargs):
         raise AssertionError("switch-table map should be preferred")
@@ -2922,9 +2980,6 @@ def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
     )
     cache = SimpleNamespace(analyze=lambda: analysis)
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     class _Resolver:
         pass
@@ -3052,9 +3107,6 @@ def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate
     facts = (SimpleNamespace(fact_id="carrier:1"),)
     seen: list[tuple[str, tuple[object, ...]]] = []
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     class _Resolver:
         pass
@@ -3279,9 +3331,6 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
     switch_fact_calls = []
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     class _Resolver:
         pass
@@ -3393,9 +3442,6 @@ def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_ana
         target=8,
     )
 
-    class _Collector:
-        def get_dispatcher_list(self):
-            return []
 
     class _Resolver:
         pass
@@ -7057,7 +7103,6 @@ class TestEmulatedDispatcherManagedContext:
             state.load_project(project_index)
             with state.for_project(project_name) as ctx:
                 _apply_engine_wrapper_profile(ctx)
-                ctx.add_rule("FixPredecessorOfConditionalJumpBlock")
                 state.stats.reset()
                 state.start_d810()
                 previous_override = _force_rule_scope_to_current_profile(

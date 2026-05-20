@@ -241,7 +241,7 @@ shell:
  *      \--------------------^
  *   case_cond -> case_true/case_false -> done
  *
- * This isolates the BadWhileLoop "triangle into a conditional dispatcher case"
+ * This isolates the bogus-loop "triangle into a conditional dispatcher case"
  * shape. The risky edge is father -> case_cond: it is direct, not a cleanup
  * trampoline, while dispatcher also reaches the same conditional case block.
  */
@@ -430,7 +430,7 @@ pred_b:
 
 #if defined(_WIN64) || defined(__MINGW32__) || defined(__MINGW64__)
 /*
- * Hand-authored x64 lab rows for BadWhileLoop triangle topology. The C
+ * Hand-authored x64 lab rows for bogus-loop triangle topology. The C
  * versions above are useful source documentation, but clang intentionally
  * lowers conditional goto arms through one-way handoff blocks at -O0. These
  * assembly fixtures keep the exact direct/trampoline edges under validation.

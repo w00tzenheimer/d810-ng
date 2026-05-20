@@ -1087,38 +1087,7 @@
       }
     },
     {
-      "name": "UnflattenerSwitchCase",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": null
-      }
-    },
-    {
-      "name": "SingleIterationLoopUnflattener",
-      "is_activated": false,
-      "config": {}
-    },
-    {
-      "name": "UnflattenerTigressIndirect",
-      "is_activated": false,
-      "config": {
-        "goto_table_info": {
-          "0x1839": {
-            "stack_table_offset": "0x40",
-            "table_address": "0x5080",
-            "table_nb_elt": 38
-          }
-        },
-        "dump_intermediate_microcode": null
-      }
-    },
-    {
       "name": "HodurUnflattener",
-      "is_activated": false,
-      "config": {}
-    },
-    {
-      "name": "UnflattenerFakeJump",
       "is_activated": false,
       "config": {}
     },
@@ -1126,31 +1095,6 @@
       "name": "SimpleFlatteningCleanupUnflattener",
       "is_activated": true,
       "config": {}
-    },
-    {
-      "name": "BadWhileLoop",
-      "is_activated": false,
-      "config": {
-        "min_dispatcher_comparison_value": 2,
-        "dump_intermediate_microcode": null
-      }
-    },
-    {
-      "name": "Unflattener",
-      "is_activated": false,
-      "config": {
-        "whitelisted_functions": [
-          "0x1de2"
-        ],
-        "dump_intermediate_microcode": null
-      }
-    },
-    {
-      "name": "FixPredecessorOfConditionalJumpBlock",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
     },
     {
       "name": "JumpFixer",

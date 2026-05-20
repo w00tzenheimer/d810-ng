@@ -917,11 +917,6 @@
     ],
     "blk_rules": [
         {
-            "name": "UnflattenerSwitchCase",
-            "is_activated": false,
-            "config": {}
-        },
-        {
             "name": "JumpFixer",
             "is_activated": false,
             "config": {

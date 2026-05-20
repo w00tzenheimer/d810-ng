@@ -43,7 +43,7 @@ def create_test_database(db_path: str) -> None:
         # Entry into analysis
         {
             "timestamp": "2024-12-04T10:00:00.000000",
-            "logger": "d810.optimizers.microcode.flow.flattening.unflattener_fake_jump",
+            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
             "level": "DEBUG",
             "levelno": 10,
             "function": "analyze_blk",
@@ -124,10 +124,10 @@ def create_test_database(db_path: str) -> None:
             "extra": json.dumps({"history_index": 4, "resolved": True, "value": 0xF6953, "path": [0, 1, 4, 1, 2]}),
             "test_id": "test_abc_f6_or_dispatch"
         },
-        # Summary from UnflattenerFakeJump
+        # Summary from fake-jump strategy
         {
             "timestamp": "2024-12-04T10:00:00.700000",
-            "logger": "d810.optimizers.microcode.flow.flattening.unflattener_fake_jump",
+            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
             "level": "INFO",
             "levelno": 20,
             "function": "analyze_blk",
@@ -144,7 +144,7 @@ def create_test_database(db_path: str) -> None:
         # Warning about inconsistency
         {
             "timestamp": "2024-12-04T10:00:00.800000",
-            "logger": "d810.optimizers.microcode.flow.flattening.unflattener_fake_jump",
+            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
             "level": "WARNING",
             "levelno": 30,
             "function": "analyze_blk",

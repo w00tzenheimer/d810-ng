@@ -9,7 +9,7 @@
  * - State transitions computed via opaque constant table expressions:
  *     state = (g_opaque_table[N] ^ K1) + K2
  * - Each state block does real computation on the input parameters
- * - Designed to exercise FixPredecessorOfConditionalJumpBlock rule
+ * - Designed to exercise predecessor branch-arm and dispatcher-chain recovery
  *
  * Function 1 (simple, 6 states): result = input * 3 + 7
  * Function 2 (complex, 10 states): result = (a + b) * (a - b)
@@ -150,7 +150,7 @@ EXPORT int hardened_cond_chain_simple(int input)
  * - Each DWORD is volatile to prevent compile-time folding
  * - External function calls stubbed for compilability
  *
- * This exercises FixPredecessorOfConditionalJumpBlock rule with real-world
+ * This exercises predecessor branch-arm recovery with real-world
  * complexity that synthetic samples cannot reproduce.
  * ============================================================================ */
 

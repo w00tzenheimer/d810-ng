@@ -869,7 +869,7 @@ class DispatcherCache:
             self._find_initial_state(analysis)
         elif self._previous_type == DispatcherType.CONDITIONAL_CHAIN:
             # Lock-in: inherit previous classification when score degrades due to
-            # FixPredecessorOfConditionalJumpBlock removing comparison blocks
+            # earlier CFG cleanup removing comparison blocks.
             analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
             logger.info(
                 "Locked-in CONDITIONAL_CHAIN from previous maturity (score=%d, threshold=%d, maturity=%s)",
@@ -928,8 +928,8 @@ def should_skip_dispatcher(mba: ida_hexrays.mba_t, blk: ida_hexrays.mblock_t) ->
     """
     Check if a block should be skipped for switch-table style patching.
 
-    This is used by FixPredecessorOfConditionalJumpBlock to avoid cascading unreachability
-    when dealing with conditional chain dispatchers (nested jnz/jz comparisons).
+    This is used to avoid cascading unreachability when dealing with
+    conditional chain dispatchers (nested jnz/jz comparisons).
 
     IMPORTANT: Only returns True for CONDITIONAL_CHAIN dispatchers, NOT for SWITCH_TABLE.
     Switch-table patching requires modifying dispatcher blocks, so we must not skip them.

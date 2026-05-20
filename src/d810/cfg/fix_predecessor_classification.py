@@ -1,12 +1,8 @@
-"""Diagnostic classification of FixPredecessor repair opportunities.
+"""Diagnostic classification of predecessor-repair opportunities.
 
-This module is intentionally read-only.  It catalogues every queued
-``PredecessorModification`` from the legacy ``FixPredecessorOfConditionalJumpBlock``
-rule against the existing :class:`CloneConditionalAsGoto` planner shape and
-bucketises the result.  The classifier never mutates graph state and the live
-rule remains unaffected; it exists so that we can decide — from corpus
-evidence rather than guesswork — which next primitive is worth migrating into
-the engine path.
+This module is intentionally read-only. It bucketizes predecessor/conditional
+topologies against existing planner shapes so corpus evidence can drive which
+typed CFG primitive is worth adding next.
 """
 from __future__ import annotations
 
@@ -54,12 +50,12 @@ class FixPredecessorBucket(str, Enum):
 
 @dataclass(frozen=True)
 class FixPredecessorClassification:
-    """Read-only metadata describing one queued legacy repair opportunity.
+    """Read-only metadata describing one queued predecessor repair opportunity.
 
     Fields mirror the diagnostic schema required by the next-slice plan:
 
     * ``source_block`` / ``selected_predecessor`` — the predecessor block
-      whose successor the legacy rule would rewrite.
+      whose successor would be rewritten.
     * ``target_conditional_block`` — the 2-way conditional block being
       patched.
     * ``selected_target`` — the arm (taken or fallthrough) the legacy rule

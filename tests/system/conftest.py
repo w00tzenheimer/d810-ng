@@ -653,7 +653,6 @@ def clear_all_caches():
     by ensuring all caches that may hold references to IDA objects are cleared.
     """
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
     from d810.recon.flow.dispatcher_detection import (
         DispatcherCache,
     )
@@ -663,7 +662,6 @@ def clear_all_caches():
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
     MopTracker.reset()
-    fix_pred_cond_jump_block.clear_cache()
 
     yield
 
@@ -672,7 +670,6 @@ def clear_all_caches():
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
     MopTracker.reset()
-    fix_pred_cond_jump_block.clear_cache()
 
 
 @pytest.fixture
@@ -952,7 +949,6 @@ def _d810_state_cm(*, all_rules=False):
     # Clear caches to prevent stale microcode pointer issues between tests
     # Import and clear from both locations to ensure complete cleanup
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block
     from d810.recon.flow.dispatcher_detection import (
         DispatcherCache,
     )
@@ -961,7 +957,6 @@ def _d810_state_cm(*, all_rules=False):
     CORE_MOP_TO_AST_CACHE.clear()
     DispatcherCache.clear_cache()
     MopTracker.reset()
-    fix_pred_cond_jump_block.clear_cache()
     state.stats.reset()
 
     try:

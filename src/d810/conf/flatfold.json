@@ -1118,13 +1118,6 @@
       }
     },
     {
-      "name": "UnflattenerSwitchCase",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
       "name": "GlobalConstantInliner",
       "is_activated": true,
       "config": {}
@@ -1152,33 +1145,9 @@
       }
     },
     {
-      "name": "Unflattener",
-      "is_activated": false,
-      "config": {
-        "max_calls_entry_preds": 24,
-        "max_calls_exit_blocks": 24,
-        "defer_calls_on_conditional_entry_father": true,
-        "log_calls_layout_signals": true
-      }
-    },
-    {
-      "name": "BadWhileLoop",
-      "is_activated": false,
-      "config": {
-        "min_dispatcher_comparison_value": 2
-      }
-    },
-    {
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
       "config": {}
-    },
-    {
-      "name": "FixPredecessorOfConditionalJumpBlock",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
     }
   ]
 }

@@ -771,7 +771,7 @@ class GenericUnflatteningRule(FlowOptimizationRule):
                             unflat_logger.info(
                                 "Detected single-iteration loop at block %d: "
                                 "init=0x%X, check=0x%X, update=0x%X. "
-                                "Consider running BadWhileLoop unflattener.",
+                                "Consider enabling the bad-while-loop cleanup strategy.",
                                 blk.serial, init_const, check_const, update_const,
                             )
 
@@ -2604,8 +2604,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     # that shared block can produce unstable CFGs for some
                     # large flattened functions (AntiDebug case). Instead,
                     # clone the conditional shape and redirect the father to
-                    # the clone, following the same proven pattern used by
-                    # FixPredecessorOfConditionalJumpBlock.
+                    # the clone, following the same conditional-clone pattern
+                    # used by the typed CFG materialization backend.
                     target_is_conditional = (
                         target_blk.nsucc() == 2
                         and target_blk.tail is not None

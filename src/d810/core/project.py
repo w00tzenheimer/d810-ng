@@ -149,7 +149,7 @@ class ProjectContext:
     This class allows dynamic rule filtering during tests or debugging:
 
         with state.for_project("example_libobfuscated.json") as ctx:
-            ctx.remove_rule("FixPredecessorOfConditionalJumpBlock")
+            ctx.remove_rule("JumpFixer")
             ctx.remove_rule(SomeRuleClass)  # Can also use class
             state.start_d810()
             # decompile...

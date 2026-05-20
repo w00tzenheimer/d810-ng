@@ -1,13 +1,7 @@
-"""FlowGraphTransform that fixes fake/opaque jumps by redirecting edges to correct targets.
+"""FlowGraphTransform that fixes fake/opaque jumps by redirecting edges.
 
-This pass migrates the CFG-level edge redirection logic from UnflattenerFakeJump
-(src/d810/optimizers/microcode/flow/flattening/unflattener_fake_jump.py) into
-the FlowGraphTransform framework.
-
-UnflattenerFakeJump uses MopTracker symbolic execution to determine if conditional
-jumps are always/never taken, then redirects predecessors to the correct target.
 This pass handles the **structural** CFG transformation: redirecting edges based
-on pre-computed analysis results.
+on pre-computed fake-jump analysis results.
 
 Two types of redirects:
 1. **2-way blocks**: Redirect one branch of a conditional to the correct target
@@ -40,12 +34,8 @@ class FakeJumpFixerPass(FlowGraphTransform):
     This pass applies pre-computed fake jump fixes (determined by MopTracker
     symbolic execution) as CFG edge redirections.
 
-    The existing UnflattenerFakeJump combines:
-    1. MopTracker symbolic execution (analysis phase)
-    2. CFG-level edge rewiring (change_1way_block_successor)
-
-    This pass extracts the CFG-level orchestration (#2). The analysis phase (#1)
-    remains in the IDA-specific orchestrator.
+    The analysis phase remains in the IDA-specific orchestrator.  This pass only
+    consumes already-computed CFG targets.
 
     Attributes:
         name: Unique identifier "fake_jump_fixer".

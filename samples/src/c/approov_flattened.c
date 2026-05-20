@@ -3,7 +3,7 @@
  *
  * This sample mimics the EXACT decompiled output from real Approov-obfuscated code.
  *
- * The BadWhileLoop detector looks for:
+ * The bogus-loop cleanup detector looks for:
  * - blk.tail.opcode == m_jz with constant in 0xF6000-0xF6FFF range
  * - blk.prevb.tail.opcode == m_mov with constant in range
  * - blk.nextb.tail.opcode == m_jz with constant in range
@@ -38,7 +38,7 @@ volatile uint64 approov_qword = 0;
 /**
  * Real Approov pattern - uses while(!=) to generate jz instruction
  *
- * Pattern requirements for BadWhileLoop:
+ * Pattern requirements for bogus-loop cleanup:
  * - Entry block: jz with constant in 0xF6000-0xF6FFF
  * - prevb: mov #magic, reg
  * - nextb: jz/jnz with constant in 0xF6000-0xF6FFF
@@ -254,7 +254,7 @@ DISPATCHER:
 
 /**
  * Simple loop pattern - uses while(!=) like approov_multistate
- * The while(!=) generates jz which is what BadWhileLoop expects
+ * The while(!=) generates the jz shape expected by bogus-loop cleanup.
  */
 int approov_simple_loop(int input)
 {

@@ -56,7 +56,6 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_family import (
     CLEANUP_FAMILY_METADATA_KEY,
-    LEGACY_CLEANUP_RULE_NAMES,
     SimpleFlatteningCleanupDetection,
     SimpleFlatteningCleanupFamily,
     SimpleFlatteningCleanupMetadata,
@@ -965,7 +964,6 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         "bad_while_loop",
         "fix_predecessor_branch_arm",
     )
-    assert metadata.legacy_rule_names == LEGACY_CLEANUP_RULE_NAMES
     assert metadata.collected_fake_jump_fixes == 1
     assert metadata.selected_fake_jump_fixes == 1
     assert metadata.collected_single_iteration_fixes == 2
@@ -1354,7 +1352,6 @@ def test_cleanup_unflattener_uses_shared_runtime(monkeypatch) -> None:
     metadata = SimpleFlatteningCleanupMetadata(
         family_name="simple_flattening_cleanup",
         strategy_names=("fake_jump", "single_iteration", "bad_while_loop"),
-        legacy_rule_names=LEGACY_CLEANUP_RULE_NAMES,
         maturity=ida_hexrays.MMAT_GLBOPT1,
         func_ea=0x401000,
         collected_fake_jump_fixes=1,
@@ -1460,5 +1457,4 @@ def test_cleanup_unflattener_uses_shared_runtime(monkeypatch) -> None:
     assert calls["execute"][0] is snapshot
 
     observation = rule.get_last_observation()
-    assert observation["snapshot"]["legacy_rule_names"] == LEGACY_CLEANUP_RULE_NAMES
     assert observation["total_changes"] == 3

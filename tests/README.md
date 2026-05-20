@@ -132,9 +132,6 @@ D810_UNSKIP_CASES=1 D810_UNSKIP_DANGEROUS=1 pytest tests/system/ -v -rs
 - `test_xor` in `test_libdeobfuscated_dsl` now simplifies both MBA XOR forms
   (rule `Xor_HackersDelightRule_3` fires twice). If it fails, it is usually
   an expected-code drift (type/cast formatting), not a rule-miss.
-- `test_services_integration::test_find_single_dispatcher` is `XFAIL` when no
-  dispatcher is discovered in candidate functions at runtime. Treat this as
-  sample/maturity coverage, not a hard regression in the services API.
 
 ## Dump Before/After Pseudocode For Specific Functions
 

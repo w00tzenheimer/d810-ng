@@ -1245,56 +1245,6 @@
       }
     },
     {
-      "name": "UnflattenerSwitchCase",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "UnflattenerTigressIndirect",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "UnflattenerFakeJump",
-      "is_activated": false,
-      "config": {}
-    },
-    {
-      "name": "BadWhileLoop",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Unflattener",
-      "is_activated": false,
-      "config": {
-        "max_passes": 3,
-        "maturities": [
-          "MMAT_LOCOPT",
-          "MMAT_CALLS"
-        ],
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "SimplifiedLoopUnflattener",
-      "is_activated": true,
-      "config": {
-        "max_passes": 3,
-        "maturities": [
-          "MMAT_LOCOPT",
-          "MMAT_CALLS"
-        ],
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
       "name": "JumpFixer",
       "is_activated": true,
       "config": {

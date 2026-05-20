@@ -1,5 +1,5 @@
 /**
- * fake_jumps_complex.c - Complex patterns to trigger UnflattenerFakeJump
+ * fake_jumps_complex.c - Complex patterns to trigger fake-jump cleanup
  *
  * These functions use more complex patterns that survive compiler optimization
  * but still result in fake jumps at the microcode level.
