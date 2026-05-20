@@ -1171,11 +1171,9 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
     # patched to go through the NOP block.  We limit the scan to blk's own
     # tail instruction because other blocks' jtbl targets referencing
     # original_successor are intentional (those paths don't go through blk).
-    jtbl_opcode = getattr(ida_hexrays, "m_jtbl", None)
     if (
-        jtbl_opcode is not None
-        and blk.tail is not None
-        and blk.tail.opcode == jtbl_opcode
+        blk.tail is not None
+        and blk.tail.opcode == ida_hexrays.m_jtbl
         and blk.tail.r is not None
         and blk.tail.r.t == ida_hexrays.mop_c
         and blk.tail.r.c is not None
