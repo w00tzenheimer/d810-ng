@@ -16,7 +16,6 @@ ignores:
   - "src/d810/optimizers/microcode/flow/flattening/cleanup_family.py"
   - "src/d810/optimizers/microcode/flow/flattening/engine/return_carrier_fact_guard.py"
   - "src/d810/optimizers/microcode/flow/flattening/engine/terminal_byte_emit_fact_guard.py"
-  - "src/d810/optimizers/microcode/flow/flattening/strategies/bad_while_loop.py"
 
 message: |
   Engine strategy modules must not probe live MBA topology directly.
