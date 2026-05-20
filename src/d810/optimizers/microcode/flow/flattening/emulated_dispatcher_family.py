@@ -36,9 +36,9 @@ from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.core import logging
-from d810.evaluator.hexrays_microcode.tracker import (
-    check_if_all_values_are_found,
-    get_all_possibles_values,
+from d810.evaluator.hexrays_microcode.dispatcher_state_evaluation import (
+    all_history_values_found,
+    collect_possible_history_values,
 )
 from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
@@ -4548,7 +4548,7 @@ class GenericDispatcherEngineProfile:
             if entry_block is not None
             else ()
         )
-        return get_all_possibles_values(
+        return collect_possible_history_values(
             histories,
             use_before_def_list,
             verbose=False,
@@ -4557,7 +4557,7 @@ class GenericDispatcherEngineProfile:
     def state_values_complete(self, values: object) -> bool:
         """Return whether state-value recovery produced complete values."""
 
-        return bool(check_if_all_values_are_found(values))
+        return bool(all_history_values_found(values))
 
     def emulate_dispatcher_target(
         self,
