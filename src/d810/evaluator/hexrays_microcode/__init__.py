@@ -69,7 +69,6 @@ from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     MopHistory,
     MopTracker,
-    duplicate_histories,
     remove_segment_registers,
 )
 from d810.evaluator.hexrays_microcode.valrange_dataflow import (
@@ -99,7 +98,6 @@ __all__ = [
     "InstructionDefUseCollector",
     "MopHistory",
     "MopTracker",
-    "duplicate_histories",
     "remove_segment_registers",
     "MicroCodeEnvironment",
     "MicroCodeInterpreter",

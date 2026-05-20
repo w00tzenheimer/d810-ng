@@ -139,57 +139,66 @@ class TestCythonModeToggleMethods(unittest.TestCase):
         # First disable to ensure we're testing the transition
         self.mode._enabled = False
 
-        # Capture print output
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("d810.core.cymode", level="INFO") as logs:
             self.mode.enable()
             self.assertTrue(self.mode.is_enabled())
-            mock_print.assert_called_once_with("Cython speedups ENABLED.")
+        self.assertEqual(
+            logs.output,
+            ["INFO:d810.core.cymode:Cython speedups ENABLED."],
+        )
 
     def test_enable_when_already_enabled_no_message(self):
         """enable() when already enabled should not print message."""
         self.mode._enabled = True
 
-        with patch("builtins.print") as mock_print:
+        with self.assertNoLogs("d810.core.cymode", level="INFO"):
             self.mode.enable()
             self.assertTrue(self.mode.is_enabled())
-            mock_print.assert_not_called()
 
     def test_disable_sets_enabled_to_false(self):
         """disable() should set is_enabled() to False."""
         # First enable to ensure we're testing the transition
         self.mode._enabled = True
 
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("d810.core.cymode", level="INFO") as logs:
             self.mode.disable()
             self.assertFalse(self.mode.is_enabled())
-            mock_print.assert_called_once_with("Cython speedups DISABLED (using pure Python).")
+        self.assertEqual(
+            logs.output,
+            ["INFO:d810.core.cymode:Cython speedups DISABLED (using pure Python)."],
+        )
 
     def test_disable_when_already_disabled_no_message(self):
         """disable() when already disabled should not print message."""
         self.mode._enabled = False
 
-        with patch("builtins.print") as mock_print:
+        with self.assertNoLogs("d810.core.cymode", level="INFO"):
             self.mode.disable()
             self.assertFalse(self.mode.is_enabled())
-            mock_print.assert_not_called()
 
     def test_toggle_from_enabled_to_disabled(self):
         """toggle() should flip state from enabled to disabled."""
         self.mode._enabled = True
 
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("d810.core.cymode", level="INFO") as logs:
             self.mode.toggle()
             self.assertFalse(self.mode.is_enabled())
-            mock_print.assert_called_once_with("Cython speedups DISABLED (using pure Python).")
+        self.assertEqual(
+            logs.output,
+            ["INFO:d810.core.cymode:Cython speedups DISABLED (using pure Python)."],
+        )
 
     def test_toggle_from_disabled_to_enabled(self):
         """toggle() should flip state from disabled to enabled."""
         self.mode._enabled = False
 
-        with patch("builtins.print") as mock_print:
+        with self.assertLogs("d810.core.cymode", level="INFO") as logs:
             self.mode.toggle()
             self.assertTrue(self.mode.is_enabled())
-            mock_print.assert_called_once_with("Cython speedups ENABLED.")
+        self.assertEqual(
+            logs.output,
+            ["INFO:d810.core.cymode:Cython speedups ENABLED."],
+        )
 
     def test_multiple_toggles(self):
         """Multiple toggle() calls should alternate state."""

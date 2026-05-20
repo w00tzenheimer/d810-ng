@@ -76,8 +76,8 @@ from d810.evaluator.hexrays_microcode.tracker import (
     MopHistory,
     MopTracker,
     check_if_all_values_are_found,
-    duplicate_histories,
     get_all_possibles_values,
+    get_block_with_multiple_predecessors,
     remove_segment_registers,
 )
 from d810.optimizers.microcode.flow.flattening.exceptions import (
@@ -854,7 +854,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
         ConfigParam("max_passes", int, 5, "Maximum optimization passes"),
-        ConfigParam("max_duplication_passes", int, 20, "Maximum duplication passes"),
+        ConfigParam(
+            "max_duplication_passes",
+            int,
+            20,
+            "Retired legacy duplication pass budget; kept for config compatibility",
+        ),
         ConfigParam("min_dispatcher_internal_block", int, 2, "Minimum internal blocks for dispatcher detection"),
         ConfigParam("min_dispatcher_exit_block", int, 2, "Minimum exit blocks for dispatcher detection"),
         ConfigParam("min_dispatcher_comparison_value", int, 2, "Minimum comparison values for dispatcher"),
@@ -963,6 +968,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.non_significant_changes = 0
         # Track processed (source_block, target) pairs to prevent duplicates
         self._processed_dispatcher_fathers: set[tuple[int, int]] = set()
+        self._dispatcher_fathers_requiring_retired_duplication: set[
+            tuple[int, int]
+        ] = set()
         # Quarantine: function EAs where a deferred verify failure was observed.
         # While quarantined, aggressive rewrites for that function/maturity are
         # skipped to prevent compounding MBA corruption.
@@ -1457,9 +1465,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def check_if_histories_are_resolved(self, mop_histories: list[MopHistory]) -> bool:
         return all([mop_history.is_resolved() for mop_history in mop_histories])
 
-    # Maximum number of histories allowed per dispatcher father before
-    # we skip duplication.  Beyond this threshold duplicate_histories()
-    # becomes prohibitively expensive (exponential block creation).
+    # Maximum number of histories allowed per dispatcher father before the
+    # retired legacy resolvability preflight is skipped.
     MAX_HISTORIES_PER_FATHER = 100
 
     def _is_past_deadline(self) -> bool:
@@ -1524,15 +1531,25 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father.serial,
             father_histories_cst,
         )
-        nb_duplication, nb_change = duplicate_histories(
-            father_histories, max_nb_pass=self.max_duplication_passes
+        shared_block, _pred_groups = get_block_with_multiple_predecessors(
+            father_histories
         )
+        if shared_block is not None:
+            self._dispatcher_fathers_requiring_retired_duplication.add(
+                (int(dispatcher_entry_block.serial), int(dispatcher_father.serial))
+            )
+            raise NotDuplicableFatherException(
+                "Dispatcher {0} predecessor {1} requires retired duplicate-history "
+                "block splitting at shared block {2}".format(
+                    dispatcher_entry_block.serial,
+                    dispatcher_father.serial,
+                    shared_block.serial,
+                )
+            )
         unflat_logger.info(
-            "Dispatcher %s predecessor %s duplication: %s blocks created, %s changes made",
+            "Dispatcher %s predecessor %s needs no duplicate-history block split",
             dispatcher_entry_block.serial,
             dispatcher_father.serial,
-            nb_duplication,
-            nb_change,
         )
         return 0
 
@@ -2339,6 +2356,15 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_info.entry_block,
             dispatcher_info,
         )
+        retired_duplication_key = (
+            int(dispatcher_info.entry_block.serial),
+            int(dispatcher_father.serial),
+        )
+        if retired_duplication_key in self._dispatcher_fathers_requiring_retired_duplication:
+            raise NotResolvableFatherException(
+                "Can't fix block {0}: retired duplicate-history block splitting "
+                "would be required".format(dispatcher_father.serial)
+            )
         father_is_resolvable = self.check_if_histories_are_resolved(
             dispatcher_father_histories
         )
@@ -2784,10 +2810,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         ):
                             unflat_logger.info("whoo found it!!!")
 
-    # Maximum cumulative blocks that may be created by duplicate_histories()
-    # across all dispatcher fathers in a single remove_flattening() pass.
-    MAX_CUMULATIVE_DUPLICATIONS = 500
-
     def remove_flattening(self) -> int:
         total_nb_change = 0
         self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
@@ -2861,22 +2883,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
         # Reset tracking for this optimization pass
         self._processed_dispatcher_fathers.clear()
+        self._dispatcher_fathers_requiring_retired_duplication.clear()
         self._deferred_case_overlap_edges.clear()
 
         # Create deferred modifier for all resolve_dispatcher_father operations
         deferred_modifier = DeferredGraphModifier(self.mba)
 
-        total_duplications = 0
-        duplication_budget_exceeded = False
-
         for dispatcher_info in self.dispatcher_list:
-            if duplication_budget_exceeded:
-                break
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
                     self.log_dir,
-                    "unflat_{0}_dispatcher_{1}_after_fix_abc_before_duplication".format(
+                    "unflat_{0}_dispatcher_{1}_after_fix_abc_before_resolvability_preflight".format(
                         self.cur_maturity_pass, dispatcher_info.entry_block.serial
                     ),
                 )
@@ -2895,7 +2913,6 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father_list = [
                 self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
             ]
-            previous_block_count = self.mba.qty
             for dispatcher_father in dispatcher_father_list:
                 if dispatcher_father is None:
                     continue
@@ -2907,29 +2924,16 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 except NotDuplicableFatherException as e:
                     unflat_logger.warning(e)
                     pass
-
-                # Track cumulative block creation and enforce budget
-                current_block_count = self.mba.qty
-                total_duplications += max(0, current_block_count - previous_block_count)
-                previous_block_count = current_block_count
-                if total_duplications > self.MAX_CUMULATIVE_DUPLICATIONS:
-                    unflat_logger.warning(
-                        "Cumulative duplication budget exceeded (%d blocks created, "
-                        "limit %d), stopping further duplication",
-                        total_duplications,
-                        self.MAX_CUMULATIVE_DUPLICATIONS,
-                    )
-                    duplication_budget_exceeded = True
-                    break
             if self.dump_intermediate_microcode:
                 dump_microcode_for_debug(
                     self.mba,
                     self.log_dir,
-                    "unflat_{0}_dispatcher_{1}_after_duplication".format(
+                    "unflat_{0}_dispatcher_{1}_after_resolvability_preflight".format(
                         self.cur_maturity_pass, dispatcher_info.entry_block.serial
                     ),
                 )
-            # During the previous step we changed dispatcher entry block fathers, so we need to reload them
+            # Reload fathers after the resolvability preflight and any earlier
+            # direct-father normalization.
             dispatcher_father_list = [
                 self.mba.get_mblock(x) for x in dispatcher_info.entry_block.blk.predset
             ]
