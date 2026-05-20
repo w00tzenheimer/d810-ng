@@ -2746,16 +2746,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         dispatcher_entry_block,
         dispatcher_info: GenericDispatcherInfo,
     ):
-        """Fix dispatcher fathers with ABC patterns using in-place transformation.
+        """Collect ABC dispatcher-father evidence without mutating live CFG.
 
-        This method uses ConditionalStateResolver for direct target resolution:
-        1. Collect all blocks to analyze from father histories
-        2. For each ABC pattern (state = x + magic where magic in 1010000-1011999):
-           - Resolve both possible targets via dispatcher emulation
-           - Create conditional jump directly to targets
-        3. No new blocks are created - avoids insert_block() issues
-
-        This is the "directed graph" approach that avoids IDA internal state corruption.
+        ConditionalStateResolver only resolves targets for ABC patterns. The
+        legacy direct rewrite path is retired until an ABC CFG primitive and
+        Hex-Rays materializer own the mutation.
         """
         if self._is_past_deadline():
             unflat_logger.warning(
@@ -2776,19 +2771,21 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             return 0
 
-        # Use ConditionalStateResolver for direct target resolution (no new blocks)
+        # Use ConditionalStateResolver for read-only target evidence.
         handler = ConditionalStateResolver(self.mba, dispatcher_info)
 
         total_n = 0
         # Process only the dispatcher father block with each concrete history.
         # A full path history represents one valuation at the dispatcher entry;
-        # applying that valuation to other blocks in the path can misattribute
+        # using that valuation for other blocks in the path can misattribute
         # state and over-rewrite unrelated transitions.
         for father_history in father_histories:
-            total_n += handler.analyze_and_apply(
+            evidence = handler.collect_resolution(
                 dispatcher_father,
                 father_history=father_history,
             )
+            if evidence is not None:
+                total_n += 1
 
         return total_n
 

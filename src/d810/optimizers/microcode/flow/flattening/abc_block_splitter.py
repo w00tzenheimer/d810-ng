@@ -2,16 +2,15 @@
 ABC conditional-state resolver for ABC pattern handling.
 
 This module provides approaches for handling ABC (Arithmetic/Bitwise/Constant)
-patterns in control flow unflattening. ConditionalStateResolver resolves targets
+patterns in control flow unflattening. ConditionalStateResolver discovers targets
 directly without creating new blocks:
 
 - Detects ABC patterns: state = x + magic (where magic in 1010000-1011999)
 - Resolves both possible targets (x=0 and x!=0) via dispatcher emulation
-- Creates conditional jump in-place: jnz x, 0, target1; goto target0
 
 The retired ABCBlockSplitter block-insertion path is intentionally absent from
 this module. New ABC materialization should go through typed CFG primitives and
-Hex-Rays materialization, not direct insert_block() helpers here.
+Hex-Rays materialization, not direct live-CFG helpers here.
 """
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ from d810.core.typing import TYPE_CHECKING
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.utils.hexrays_helpers import dup_mop
 
 if TYPE_CHECKING:
@@ -44,28 +42,31 @@ class ABCPatternInfo:
     resolved_state: int | None = None
 
 
+@dataclass(frozen=True)
+class ABCResolutionEvidence:
+    """Read-only ABC pattern evidence resolved against the dispatcher."""
+
+    pattern: ABCPatternInfo
+    target0_serial: int | None = None
+    target1_serial: int | None = None
+    resolved_target_serial: int | None = None
+
+
 @dataclass
 class ConditionalStateResolver:
     """
-    Resolves conditional state patterns directly to targets without new blocks.
+    Resolves conditional state patterns to target evidence without new blocks.
 
     Detects patterns where state is computed from a binary condition:
         state = x OP magic_constant  (where OP is add/sub/or/xor)
 
-    Instead of creating intermediate blocks, resolves both possible outcomes
-    (x=0 and x=1) via dispatcher emulation and creates a direct conditional jump.
-
-    Example transformation:
-        Before: state = x + 1010123; goto dispatcher
-        After:  jnz x, 0, target_for_1010124; goto target_for_1010123
-
-    This "directed graph" approach avoids insert_block() which causes IDA
-    mba.verify() failures due to internal state corruption.
+    Instead of creating intermediate blocks or mutating live Hex-Rays CFG,
+    resolves possible outcomes via dispatcher emulation and returns evidence.
 
     Usage:
         resolver = ConditionalStateResolver(mba, dispatcher_info)
         for block in blocks_to_analyze:
-            resolver.analyze_and_apply(block)
+            resolver.collect_resolution(block)
     """
 
     mba: ida_hexrays.mba_t
@@ -74,7 +75,7 @@ class ConditionalStateResolver:
     # Magic number range for ABC patterns
     ABC_CONST_MIN: int = 1010000
     ABC_CONST_MAX: int = 1011999
-    rewritten_blocks: set[int] = field(default_factory=set)
+    observed_blocks: set[int] = field(default_factory=set)
 
     def _is_abc_state(self, value: int) -> bool:
         return self.ABC_CONST_MIN < int(value) < self.ABC_CONST_MAX
@@ -137,22 +138,18 @@ class ConditionalStateResolver:
             return None
         return int(value)
 
-    def analyze_and_apply(
+    def collect_resolution(
         self,
         block: ida_hexrays.mblock_t,
         father_history: MopHistory | None = None,
-    ) -> int:
-        """
-        Analyze a block for ABC patterns and apply in-place fix.
-
-        Returns number of patterns fixed.
-        """
-        if block.serial in self.rewritten_blocks:
-            return 0
+    ) -> ABCResolutionEvidence | None:
+        """Analyze a block for ABC patterns and return read-only target evidence."""
+        if block.serial in self.observed_blocks:
+            return None
 
         pattern = self._find_abc_pattern(block, father_history)
         if pattern is None:
-            return 0
+            return None
 
         logger.debug(
             "ConditionalStateResolver: Found %s ABC pattern in block %d, "
@@ -163,11 +160,10 @@ class ConditionalStateResolver:
             pattern.opcode,
             pattern.resolved_state,
         )
-
-        applied = self._apply_inplace(block, pattern)
-        if applied > 0:
-            self.rewritten_blocks.add(block.serial)
-        return applied
+        evidence = self._resolve_pattern_targets(pattern)
+        if evidence is not None:
+            self.observed_blocks.add(block.serial)
+        return evidence
 
     def _find_abc_pattern(
         self,
@@ -334,37 +330,26 @@ class ConditionalStateResolver:
 
         return None
 
-    def _apply_inplace(
-        self, block: ida_hexrays.mblock_t, pattern: ABCPatternInfo
-    ) -> int:
-        """Apply in-place transformation: create conditional jump to targets."""
+    def _resolve_pattern_targets(
+        self,
+        pattern: ABCPatternInfo,
+    ) -> ABCResolutionEvidence | None:
+        """Resolve pattern targets without mutating live CFG."""
         if pattern.pattern_kind == "self_update":
             if pattern.resolved_state is None:
-                return 0
+                return None
             target = self._resolve_target_for_state(pattern.resolved_state)
             if target is None:
                 logger.warning(
                     "ABC self-update: Could not resolve target for block %d, state=%d",
-                    block.serial,
+                    pattern.block_serial,
                     pattern.resolved_state,
                 )
-                return 0
-            if block.nsucc() != 1:
-                logger.warning(
-                    "ABC self-update: block %d has %d successors (expected 1), skipping",
-                    block.serial,
-                    block.nsucc(),
-                )
-                return 0
-            change_1way_block_successor(block, target.serial, verify=False)
-            self.mba.mark_chains_dirty()
-            logger.info(
-                "ABC self-update: redirected block %d -> %d (state=%d)",
-                block.serial,
-                target.serial,
-                pattern.resolved_state,
+                return None
+            return ABCResolutionEvidence(
+                pattern=pattern,
+                resolved_target_serial=int(target.serial),
             )
-            return 1
 
         state0, state1 = self._calculate_state_values(pattern)
 
@@ -379,83 +364,17 @@ class ConditionalStateResolver:
 
         if target0 is None or target1 is None:
             logger.warning(
-                "ABC in-place: Could not resolve targets for block %d (state0=%d->%s, state1=%d->%s)",
-                block.serial, state0, target0, state1, target1
+                "ABC evidence: Could not resolve targets for block %d (state0=%d->%s, state1=%d->%s)",
+                pattern.block_serial, state0, target0, state1, target1
             )
-            return 0
-
-        if target0.serial == target1.serial:
-            # Both states lead to same target - just redirect
-            logger.info(
-                "ABC in-place: block %d -> same target %d",
-                block.serial, target0.serial
-            )
-            change_1way_block_successor(block, target0.serial, verify=False)
-            return 1
+            return None
 
         logger.info(
-            "ABC in-place: block %d -> targets (%d, %d)",
-            block.serial, target0.serial, target1.serial
+            "ABC evidence: block %d -> targets (%d, %d)",
+            pattern.block_serial, target0.serial, target1.serial
         )
-
-        # Create conditional jump: jnz condition_mop, 0, target1; goto target0
-        ea = pattern.instruction_ea
-
-        # Remove instructions from ABC pattern onwards (including goto)
-        curr_inst = block.head
-        while curr_inst is not None:
-            if curr_inst.ea == pattern.instruction_ea:
-                break
-            curr_inst = curr_inst.next
-
-        if curr_inst is None:
-            logger.warning("ABC in-place: pattern instruction not found")
-            return 0
-
-        # Remove from pattern instruction to end
-        to_remove = []
-        while curr_inst is not None:
-            to_remove.append(curr_inst)
-            curr_inst = curr_inst.next
-
-        for inst in to_remove:
-            block.remove_from_block(inst)
-
-        # Add conditional jump: jnz condition, 0, target1
-        jnz_inst = ida_hexrays.minsn_t(ea)
-        jnz_inst.opcode = ida_hexrays.m_jnz
-        jnz_inst.l = pattern.condition_mop
-        jnz_inst.r = ida_hexrays.mop_t()
-        jnz_inst.r.make_number(0, pattern.condition_mop.size, ea)
-        jnz_inst.d = ida_hexrays.mop_t()
-        jnz_inst.d.make_blkref(target1.serial)
-        block.insert_into_block(jnz_inst, block.tail)
-
-        # Update block type and successors
-        block.type = ida_hexrays.BLT_2WAY
-
-        # Clear old successors
-        old_succs = list(block.succset)
-        for old_succ in old_succs:
-            old_blk = self.mba.get_mblock(old_succ)
-            old_blk.predset._del(block.serial)
-            block.succset._del(old_succ)
-
-        # Add new successors: target0 (fallthrough) and target1 (jump)
-        block.succset.add_unique(target0.serial)
-        block.succset.add_unique(target1.serial)
-        target0.predset.add_unique(block.serial)
-        target1.predset.add_unique(block.serial)
-
-        block.mark_lists_dirty()
-        target0.mark_lists_dirty()
-        target1.mark_lists_dirty()
-
-        self.mba.mark_chains_dirty()
-
-        logger.info(
-            "ABC in-place: block %d transformed to 2-way: jnz -> %d, fallthrough -> %d",
-            block.serial, target1.serial, target0.serial
+        return ABCResolutionEvidence(
+            pattern=pattern,
+            target0_serial=int(target0.serial),
+            target1_serial=int(target1.serial),
         )
-
-        return 1
