@@ -68,15 +68,9 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
 family_logger = getLogger("D810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
-LEGACY_CLEANUP_RULE_NAMES = (
-    "UnflattenerFakeJump",
-    "SingleIterationLoopUnflattener",
-    "BadWhileLoop",
-)
 
 __all__ = [
     "CLEANUP_FAMILY_METADATA_KEY",
-    "LEGACY_CLEANUP_RULE_NAMES",
     "LiveSimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupBackend",
     "SimpleFlatteningCleanupDetection",
@@ -87,11 +81,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class SimpleFlatteningCleanupMetadata:
-    """Diagnostic envelope for comparing engine cleanup with legacy rules."""
+    """Diagnostic envelope for the generic cleanup engine family."""
 
     family_name: str
     strategy_names: tuple[str, ...]
-    legacy_rule_names: tuple[str, ...]
     maturity: int
     func_ea: int
     collected_fake_jump_fixes: int
@@ -334,7 +327,6 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
-            legacy_rule_names=LEGACY_CLEANUP_RULE_NAMES,
             maturity=detection.maturity,
             func_ea=detection.func_ea,
             collected_fake_jump_fixes=len(detection.fake_jump_fixes),

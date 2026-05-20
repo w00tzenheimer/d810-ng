@@ -15,7 +15,7 @@ from d810.cfg.graph_modification import (
 )
 from d810.cfg.materialization_payload import CapturedBlockBody
 
-BAD_WHILE_LOOP_SOURCE_RULE = "BadWhileLoop"
+BAD_WHILE_LOOP_SOURCE_RULE = "bad_while_loop"
 CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY = (
     "cleanup_conditional_redirect_proofs"
 )
@@ -239,7 +239,7 @@ class CleanupDuplicateGroupReplayCandidate:
     ``duplicate_group_copied_side_effects`` cannot use the direct
     ``InsertBlock`` replay path. The serialized legacy follow-up row loses the
     copied instructions and full per-predecessor target map, so this evidence
-    must be captured live while the BadWhileLoop oracle still has
+    must be captured live while the bad-while-loop analysis still has
     dependency-safe copied instructions. The neutral rewrite is composite:
     ``pred_i -> source/clone_i -> replay_insert_i -> target_i``.
     """
@@ -664,7 +664,7 @@ def bad_while_loop_conditional_redirect_proof(
 ) -> CleanupConditionalRedirectPromotionProof | None:
     """Build first-class live proof for conditional redirect promotion.
 
-    The proof is computed from the current CFG and the live BadWhileLoop edit.
+    The proof is computed from the current CFG and the bad-while-loop edit.
     It deliberately does not read serialized diagnostic proof metadata.
     """
     diagnostic = explain_bad_while_loop_conditional_redirect(
@@ -700,7 +700,7 @@ def validate_conditional_duplicate_cleanup_edit(
     cfg: FlowGraph,
     legacy_edit: object,
 ) -> bool:
-    """Return whether a legacy BadWhileLoop conditional duplicate is plannable."""
+    """Return whether a bad-while-loop conditional duplicate is plannable."""
     if type(legacy_edit).__name__ != "BadWhileLoopConditionalDuplicate":
         return False
 
@@ -770,7 +770,7 @@ def validate_conditional_redirect_cleanup_edit(
     cfg: FlowGraph,
     legacy_edit: object,
 ) -> bool:
-    """Return whether a legacy BadWhileLoop conditional redirect proof promotes."""
+    """Return whether a bad-while-loop conditional redirect proof promotes."""
     proof = bad_while_loop_conditional_redirect_proof(legacy_edit, cfg)
     return proof is not None and proof.state is CleanupProofState.PROVEN
 
@@ -778,7 +778,7 @@ def validate_conditional_redirect_cleanup_edit(
 def bad_while_loop_duplicate_candidate(
     legacy_edit: object,
 ) -> DispatcherCleanupCandidate | None:
-    """Convert a legacy BadWhileLoop duplicate edit into neutral evidence."""
+    """Convert a bad-while-loop duplicate edit into neutral evidence."""
     if type(legacy_edit).__name__ != "BadWhileLoopDuplicateRedirect":
         return None
 
@@ -812,7 +812,7 @@ def bad_while_loop_side_effect_replay_candidate(
     captured_body: CapturedBlockBody | None,
     dispatcher_internal_serials: Sequence[object] = (),
 ) -> CleanupSideEffectReplayCandidate | None:
-    """Build neutral replay evidence from a live BadWhileLoop side-effect case."""
+    """Build neutral replay evidence from a bad-while-loop side-effect case."""
     dispatcher_entry_int = _coerce_int(dispatcher_entry)
     source_serial_int = _coerce_int(source_serial)
     target_serial_int = _coerce_int(target_serial)
@@ -851,7 +851,7 @@ def bad_while_loop_duplicate_group_replay_candidate(
     per_pred_replays: Sequence[CleanupPerPredReplay],
     dispatcher_internal_serials: Sequence[object] = (),
 ) -> CleanupDuplicateGroupReplayCandidate | None:
-    """Build neutral replay evidence from a live BadWhileLoop duplicate group."""
+    """Build neutral replay evidence from a bad-while-loop duplicate group."""
     dispatcher_entry_int = _coerce_int(dispatcher_entry)
     source_serial_int = _coerce_int(source_serial)
     if dispatcher_entry_int is None or source_serial_int is None:

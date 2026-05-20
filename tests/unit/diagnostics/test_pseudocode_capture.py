@@ -23,7 +23,7 @@ CODE_CHANGED: True
 RULES_FIRED (instruction):
   XorRule [@MMAT_GLBOPT1:1]
 RULES_FIRED (block):
-  FixPredecessorOfConditionalJumpBlock [@MMAT_GLBOPT1:1p]
+  EmulatedDispatcherUnflattener [@MMAT_GLBOPT1:1p]
 
 --- BEFORE ---
 int test_xor()
@@ -56,7 +56,7 @@ def test_parse_capture_dump_extracts_metadata_sections_and_rules() -> None:
     assert SEPARATOR not in parsed.code_after
     assert parsed.rules_fired == (
         "XorRule",
-        "FixPredecessorOfConditionalJumpBlock",
+        "EmulatedDispatcherUnflattener",
     )
 
 
@@ -80,7 +80,7 @@ def test_capture_dump_text_to_db_inserts_schema_row(tmp_path: Path) -> None:
         "test_xor",
         "0x180012340",
         1,
-        json.dumps(["XorRule", "FixPredecessorOfConditionalJumpBlock"]),
+        json.dumps(["XorRule", "EmulatedDispatcherUnflattener"]),
         "example_libobfuscated.json",
         "libobfuscated.dll",
     )
@@ -105,7 +105,7 @@ def test_capture_dump_file_to_db_supports_overrides_and_summary(tmp_path: Path) 
     assert row["binary_name"] == "override.dll"
     assert row["db_path"] == str(db_path)
     assert "FUNCTION=test_xor_override" in summary
-    assert "RULES_FIRED=XorRule, FixPredecessorOfConditionalJumpBlock" in summary
+    assert "RULES_FIRED=XorRule, EmulatedDispatcherUnflattener" in summary
 
     conn = sqlite3.connect(db_path)
     try:

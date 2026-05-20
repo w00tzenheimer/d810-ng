@@ -1,9 +1,7 @@
-"""Cleanup-family engine strategy for the FixPredecessor branch-arm shape.
+"""Cleanup-family engine strategy for the predecessor branch-arm shape.
 
-This is the engine-path sibling of the legacy
-``FixPredecessorOfConditionalJumpBlock`` rule for the
-``two_way_predecessor_arm_known`` shape — see corpus-evidence rationale in
-ticket d81-4zm8.  The strategy emits the typed
+This strategy owns the ``two_way_predecessor_arm_known`` shape — see
+corpus-evidence rationale in ticket d81-4zm8.  It emits the typed
 :class:`CloneConditionalAsGotoFromBranchArm` primitive when (and only when)
 the dedicated branch-arm planner admits each candidate fix:
 
@@ -16,13 +14,9 @@ the dedicated branch-arm planner admits each candidate fix:
 * Selected target has at most one predecessor in the snapshot.
 * Conditional source has no non-tail side effects.
 
-Live mba collection is intentionally a stub today: the live
-``FixPredecessorOfConditionalJumpBlock`` rule already rewrites these shapes
-before the cleanup family runs, so the cleanup family observes them as
-``already_supported_one_way`` post-fix.  The collection function is wired
-into the cleanup backend so the integration point is in place; populating
-it with a full dispatcher-aware analysis lives behind ticket d81-4zm8 and
-will land when the live rule is finally retired.
+Live mba collection is intentionally a stub today.  The collection function is
+wired into the cleanup backend so the integration point is in place; populating
+it with a full dispatcher-aware analysis lives behind ticket d81-4zm8.
 
 Until then, callers can seed FlowGraph metadata directly (e.g. from tests
 or future strategies) and the :class:`FixPredecessorBranchArmStrategy` will
@@ -62,10 +56,9 @@ FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY = "fix_predecessor_branch_arm_fixe
 class FixPredecessorBranchArmFix:
     """Validated FixPredecessor branch-arm candidate for one (pred, cond) pair.
 
-    Mirrors :class:`PredecessorModification` from the legacy live rule but
-    captures the additional planner-required context (resolved arm, outcome,
-    side-effect awareness) so the strategy can drive the typed primitive
-    without re-deriving topology at apply time.
+    Captures the planner-required context (resolved arm, outcome, side-effect
+    awareness) so the strategy can drive the typed primitive without
+    re-deriving topology at apply time.
     """
 
     cond_block: int
@@ -155,12 +148,10 @@ def collect_live_fix_predecessor_branch_arm_fixes(
 ) -> tuple[FixPredecessorBranchArmFix, ...]:
     """Live mba collector — stub today (d81-4zm8 follow-up).
 
-    The legacy ``FixPredecessorOfConditionalJumpBlock`` rule still owns the
-    dispatcher-aware analysis and rewrites arm-known shapes before the
-    cleanup family runs.  Wiring this collector to a full live analysis is
-    deferred until the live rule is retired; until then the cleanup-family
-    strategy sees zero candidates in production and is exercised only by
-    tests that seed FlowGraph metadata directly.
+    Wiring this collector to a full live analysis is still deferred.  Until
+    that producer lands, the cleanup-family strategy sees zero candidates in
+    production and is exercised only by tests that seed FlowGraph metadata
+    directly.
     """
     if mba is None:
         return ()

@@ -126,7 +126,7 @@ def _capture_bad_while_loop_side_effect_body(
         ),
         payload=snapshots,
         metadata={
-            "source_rule": "BadWhileLoop",
+            "source_rule": "bad_while_loop",
             "source_serial": int(source_serial),
         },
     )

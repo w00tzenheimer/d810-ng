@@ -16,12 +16,6 @@ from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block as fix_pred
-from d810.optimizers.microcode.flow.flattening.fix_pred_cond_jump_block import (
-    FixPredecessorOfConditionalJumpBlock,
-    PredecessorModification,
-    PredecessorModificationType,
-)
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
     EmulatedDispatcherStrategyFamily,
@@ -1383,78 +1377,6 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_fallthrough_arm(
 
     assert ok is False
 
-
-def test_clone_conditional_as_goto_planned_path_matches_legacy_live_sequence(
-    monkeypatch,
-):
-    legacy_mba, legacy_source, _legacy_pred, legacy_clone = _clone_as_goto_fixture()
-    planned_mba, planned_source, _planned_pred, planned_clone = _clone_as_goto_fixture()
-
-    legacy_trace: list[tuple] = []
-    planned_trace: list[tuple] = []
-
-    def _legacy_copy_block(_source, _insert_before):
-        legacy_trace.append(("clone", _source.serial))
-        legacy_mba.blocks[legacy_clone.serial] = legacy_clone
-        return legacy_clone
-
-    legacy_mba.copy_block = _legacy_copy_block  # type: ignore[attr-defined]
-
-    def _legacy_convert(blk, target, **_kwargs):
-        legacy_trace.append(("convert", blk.serial, target))
-        return True
-
-    def _legacy_redirect(blk, old_target, new_target, **_kwargs):
-        legacy_trace.append(("redirect", blk.serial, old_target, new_target))
-        return True
-
-    monkeypatch.setattr(fix_pred, "make_2way_block_goto", _legacy_convert)
-    monkeypatch.setattr(fix_pred, "update_blk_successor", _legacy_redirect)
-
-    rule = FixPredecessorOfConditionalJumpBlock()
-    rule.mba = legacy_mba
-    legacy_ok = rule._apply_single_modification(
-        PredecessorModification(
-            mod_type=PredecessorModificationType.ALWAYS_TAKEN,
-            pred_serial=6,
-            cond_block_serial=5,
-            target_serial=30,
-            description="parity",
-        ),
-        legacy_source,
-    )
-
-    def _planned_copy(_mba, source_blk, _insert_before):
-        planned_trace.append(("clone", source_blk.serial))
-        return planned_clone
-
-    def _planned_convert(blk, target, **_kwargs):
-        planned_trace.append(("convert", blk.serial, target))
-        return True
-
-    def _planned_redirect(blk, new_target, **_kwargs):
-        planned_trace.append(("redirect", blk.serial, blk.succ(0), new_target))
-        return True
-
-    monkeypatch.setattr(dm, "copy_block_keep", _planned_copy)
-    monkeypatch.setattr(dm, "make_2way_block_goto", _planned_convert)
-    monkeypatch.setattr(dm, "change_1way_block_successor", _planned_redirect)
-
-    modifier = dm.DeferredGraphModifier(planned_mba)
-    planned_ok = modifier._apply_clone_conditional_as_goto(
-        source_blk=planned_source,
-        pred_serial=6,
-        goto_target_serial=30,
-        expected_serial=7,
-    )
-
-    assert legacy_ok is True
-    assert planned_ok is True
-    assert planned_trace == legacy_trace == [
-        ("clone", 5),
-        ("convert", 7, 30),
-        ("redirect", 6, 5, 7),
-    ]
 
 
 @dataclass

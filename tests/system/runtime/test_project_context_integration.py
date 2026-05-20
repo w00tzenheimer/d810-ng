@@ -92,9 +92,8 @@ class TestProjectContextIntegration:
             with state.for_project("example_libobfuscated.json") as ctx:
                 original_blk_count = len(ctx.active_blk_rules)
 
-                # Remove an active rule.  FixPredecessor is intentionally
-                # disabled in this project profile, so it is not suitable for
-                # a count-based context-manager assertion.
+                # Remove an active rule with stable profile coverage so the
+                # assertion is independent of retired cleanup rules.
                 ctx.remove_rule("ForwardConstantPropagationRule")
                 assert len(ctx.active_blk_rules) < original_blk_count
 
@@ -116,22 +115,14 @@ class TestProjectContextIntegration:
                 original_count = len(ctx.active_blk_rules)
 
                 active_rule_names = {rule.name for rule in ctx.active_blk_rules}
-                removable_rules = [
-                    name
-                    for name in (
-                        "ForwardConstantPropagationRule",
-                        "EmulatedDispatcherUnflattener",
-                    )
-                    if name in active_rule_names
-                ]
-                assert len(removable_rules) >= 2
+                removable_rule = "ForwardConstantPropagationRule"
+                assert removable_rule in active_rule_names
 
-                # Chain multiple active removals. Some ablation configs already
-                # disable legacy rules, so do not count inactive removals.
-                ctx.remove_rule(removable_rules[0]).remove_rule(removable_rules[1])
+                # Chain an active removal with a missing-rule no-op. The profile
+                # intentionally no longer carries retired disabled rules.
+                ctx.remove_rule(removable_rule).remove_rule("RetiredMissingRule")
 
-                # Should have removed 2 rules
-                assert len(ctx.active_blk_rules) == original_count - 2
+                # Should have removed only the active rule
+                assert len(ctx.active_blk_rules) == original_count - 1
                 remaining_rule_names = {rule.name for rule in ctx.active_blk_rules}
-                assert removable_rules[0] not in remaining_rule_names
-                assert removable_rules[1] not in remaining_rule_names
+                assert removable_rule not in remaining_rule_names

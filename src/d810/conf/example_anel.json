@@ -902,22 +902,6 @@
   ],
   "blk_rules": [
     {
-      "name": "Unflattener",
-      "is_activated": false,
-      "config": {
-        "maturities": [
-          "MMAT_CALLS",
-          "MMAT_GLBOPT1",
-          "MMAT_GLBOPT2"
-        ]
-      }
-    },
-    {
-      "name": "UnflattenerFakeJump",
-      "is_activated": false,
-      "config": {}
-    },
-    {
       "name": "JumpFixer",
       "is_activated": true,
       "config": {

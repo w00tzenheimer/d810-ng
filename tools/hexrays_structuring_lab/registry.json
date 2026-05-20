@@ -865,7 +865,7 @@
         "direct-edge",
         "lane-d"
       ],
-      "question": "Does a direct father-to-conditional-case triangle compile into the risky BadWhileLoop dispatcher-case topology?",
+      "question": "Does a direct father-to-conditional-case triangle compile into the risky bogus-loop dispatcher-case topology?",
       "cfg_validation": {
         "status": "passed",
         "compiler_flags": [

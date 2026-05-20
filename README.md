@@ -58,17 +58,13 @@ D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instructio
 
 ### Control-Flow Unflatteners
 
-Flow optimizers restore natural control flow from flattened dispatchers. Rule order matters; unflatteners run in sequence.
+Flow optimizers restore natural control flow from flattened dispatchers. The current unflattening path is engine-profile based: recon produces dispatcher/value-flow evidence, cfg plans typed graph modifications, and Hex-Rays materializes the plan.
 
-| Unflattener | Target | Description |
+| Engine rule | Target | Description |
 |-------------|--------|-------------|
-| **Unflattener** | O-LLVM | Removes O-LLVM-style control-flow flattening: switch/if-chain dispatcher with state variable. |
-| **UnflattenerSwitchCase** | Tigress | Tigress with switch-case dispatcher (`m_jtbl`). |
-| **UnflattenerTigressIndirect** | Tigress | Tigress with indirect jump (`m_ijmp`), requires `goto_table_info` config. |
-| **HodurUnflattener** | Hodur (PlugX) | Nested `while(1)` state machines with `jnz state, #CONST`; no switch dispatcher. |
-| **BadWhileLoop** | Approov | Approov-style `while(v8 != C)` with state constants in 0xF6000–0xF6FFF. |
-| **UnflattenerFakeJump** | Generic | Removes conditional jumps that are always/never taken per predecessor. |
-| **SingleIterationLoopUnflattener** | Residual | Cleans single-iteration loops: `INIT == CHECK` and `UPDATE != CHECK`. |
+| **EmulatedDispatcherUnflattener** | OLLVM / Tigress switch / Tigress indirect / Approov-style dispatchers | Shared dispatcher engine with profiles for equality-chain, switch-table, indirect-transfer, and dynamic state-machine shapes. |
+| **HodurUnflattener** | Hodur (PlugX) | Hodur-specific state-machine strategy family and priors. |
+| **SimpleFlatteningCleanupUnflattener** | Generic cleanup | Shared cleanup family for fake jumps, single-iteration loops, bad-while-loop shapes, and predecessor branch-arm repairs. |
 | **UnflattenControlFlowRule** (experimental) | Generic | Alternative CFG-based unflattener using path emulation. |
 
 ### Flow Optimizations (non-unflattening)
@@ -80,17 +76,16 @@ Flow optimizers restore natural control flow from flattened dispatchers. Rule or
 | **GlobalConstantInliner** | Inlines global constants used as immediates. |
 | **IndirectCallResolver** | Resolves `m_icall` via function-pointer table analysis. |
 | **IndirectBranchResolver** | Resolves indirect branches via jump-table analysis. |
-| **FixPredecessorOfConditionalJumpBlock** | Fixes predecessor edges when jump direction is known. |
 
 ### Supported Obfuscators / Patterns
 
-| Obfuscator | Config | Unflattener(s) | Notes |
-|------------|--------|----------------|-------|
-| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `Unflattener` | FLA + BCF + MBA. |
-| Tigress | `default_unflattening_approov.json` | `UnflattenerSwitchCase`, `BadWhileLoop` | Switch-case and Approov-like patterns. |
-| Approov | `default_unflattening_approov.json` | `UnflattenerSwitchCase`, `BadWhileLoop` | While-loop state constants in magic range. |
-| Hodur (PlugX) | `hodur_deobfuscation.json`, `example_hodur.json` | `HodurUnflattener`, `Unflattener` | Hodur MBA + Hodur while-loop unflattening. |
-| Tigress indirect | `example_libobfuscated.json` | `UnflattenerTigressIndirect` | Needs `goto_table_info` mapping. |
+| Obfuscator | Config | Engine path | Notes |
+|------------|--------|-------------|-------|
+| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `EmulatedDispatcherUnflattener` | FLA + BCF + MBA through the OLLVM dispatcher profile. |
+| Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `EmulatedDispatcherUnflattener` | Switch-table state dispatcher and transition facts. |
+| Approov | `default_unflattening_approov.json` | `EmulatedDispatcherUnflattener` / `SimpleFlatteningCleanupUnflattener` | Approov-like state constants and cleanup shapes. |
+| Hodur (PlugX) | `hodur_deobfuscation.json`, `example_hodur.json` | `HodurUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
+| Tigress indirect | `default_unflattening_tigress_indirect_engine.json` | `EmulatedDispatcherUnflattener` | Indirect transfer-map profile with materialized target proof. |
 
 ### DSL and Rule Verification
 

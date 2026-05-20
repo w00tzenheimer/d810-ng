@@ -904,21 +904,9 @@
         }
       },
       {
-        "name": "UnflattenerSwitchCase",
-        "is_activated": false,
-        "config": {}
-      },
-      {
         "name": "EmulatedDispatcherUnflattener",
         "is_activated": true,
         "config": {}
-      },
-      {
-        "name": "BadWhileLoop",
-        "is_activated":false,
-        "config":{
-          "min_comparison_value": 2
-        }
       },
       {
         "name": "JumpFixer",

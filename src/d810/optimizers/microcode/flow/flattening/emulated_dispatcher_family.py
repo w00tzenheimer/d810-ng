@@ -64,6 +64,10 @@ from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
     collect_ollvm_post_execute_carrier_facts,
     collect_ollvm_profile_fact_observations,
 )
+from d810.optimizers.microcode.flow.flattening.ollvm_dispatcher_analysis import (
+    OllvmDispatcherCollector,
+    OllvmFatherHistoryResolver,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
@@ -83,10 +87,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
     EmulatedDispatcherPhaseContext,
     EmulatedDispatcherMetadata,
     EmulatedDispatcherStrategy,
-)
-from d810.optimizers.microcode.flow.flattening.unflattener import (
-    OllvmDispatcherCollector,
-    Unflattener,
 )
 from d810.recon.flow.bst_analysis import (
     _detect_state_var_stkoff,
@@ -959,8 +959,10 @@ def _return_carrier_preservation_blockers(
 class GenericDispatcherCollectorProtocol(Protocol):
     """Collector surface required by the dispatcher-engine profile.
 
-    Implementations are also passed to ``mba.for_all_topinsns()`` and must be
-    valid Hex-Rays instruction visitors for their detector profile.
+    Live detector implementations are passed to ``mba.for_all_topinsns()`` and
+    must be valid Hex-Rays instruction visitors for their detector profile.
+    Map-driven profiles may use a no-op collector that only exposes this
+    protocol surface.
     """
 
     def get_dispatcher_list(self) -> list[object]:
@@ -997,11 +999,11 @@ class GenericDispatcherResolverProtocol(Protocol):
         """Normalize dispatcher predecessors before late-maturity lowering."""
 
 
-class _NoopDispatcherCollector(ida_hexrays.minsn_visitor_t):
+class _NoopDispatcherCollector:
     """Collector used by profiles that are fully recon-map driven."""
 
     def __init__(self) -> None:
-        super().__init__()
+        pass
 
     def visit_minsn(self) -> int:
         return 0
@@ -4722,17 +4724,12 @@ class GenericDispatcherEngineProfile:
 
 
 def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
-    """Return the default OLLVM-backed dispatcher profile.
-
-    The default remains compatible with the historical emulated-dispatcher
-    path because Approov-style functions still rely on dynamic father-history
-    evidence that is not yet expressible as a pure dispatcher map.
-    """
+    """Return the default OLLVM-backed dispatcher profile."""
 
     return GenericDispatcherEngineProfile(
         name="ollvm",
         collector_factory=OllvmDispatcherCollector,
-        resolver_factory=Unflattener,
+        resolver_factory=OllvmFatherHistoryResolver,
         state_transport="father_history_emulation",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
@@ -5004,7 +5001,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         analysis = cache.analyze()
 
         collector = self._profile.collector_factory()
-        mba.for_all_topinsns(collector)
+        if not isinstance(collector, _NoopDispatcherCollector):
+            mba.for_all_topinsns(collector)
         collector_dispatchers = tuple(collector.get_dispatcher_list())
         collector_entries = tuple(
             serial

@@ -1,5 +1,5 @@
 {
-    "description": "Control flow deobfuscation: unflattens control flow, removes dispatcher blocks, and unrolls bogus while loops (e.g., Approov-style obfuscation). This config combines Unflattener rules with BadWhileLoop detection and JumpFixer to restore natural control flow.",
+    "description": "Control flow deobfuscation: unflattens control flow, removes dispatcher blocks, and unrolls bogus while loops (e.g., Approov-style obfuscation). This config combines engine-backed dispatcher recovery with cleanup and JumpFixer rules to restore natural control flow.",
     "ins_rules": [],
     "blk_rules": [
         {
@@ -7,37 +7,6 @@
             "is_activated": true,
             "config": {
                 "max_optimize_local_rounds": 1
-            }
-        },
-        {
-            "name": "UnflattenerSwitchCase",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "UnflattenerTigressIndirect",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "BadWhileLoop",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "Unflattener",
-            "is_activated": false,
-            "config": {
-                "max_passes": 5,
-                "min_dispatcher_internal_block": 2,
-                "min_dispatcher_exit_block": 2,
-                "min_dispatcher_comparison_value": 2,
-                "max_calls_entry_preds": 24,
-                "max_calls_exit_blocks": 24,
-                "defer_calls_on_conditional_entry_father": true,
-                "log_calls_layout_signals": true,
-                "min_entropy": 0.0,
-                "max_entropy": 1.0
             }
         },
         {

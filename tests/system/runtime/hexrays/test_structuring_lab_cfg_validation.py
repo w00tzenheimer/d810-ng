@@ -1465,7 +1465,7 @@ def _badwhile_triangle_signature(
             blocks,
             func_ea=func_ea,
         )
-    raise AssertionError(f"unknown BadWhileLoop triangle variant: {variant}")
+    raise AssertionError(f"unknown bogus-loop triangle variant: {variant}")
 
 
 def _terminal_tail_candidate_signature(
@@ -2286,7 +2286,7 @@ def _matches_badwhile_triangle_fixture(
             block_count=block_count,
             maturity_name=maturity_name,
         )
-    raise AssertionError(f"unknown BadWhileLoop triangle variant: {variant}")
+    raise AssertionError(f"unknown bogus-loop triangle variant: {variant}")
 
 
 def _case_expected(case_id: str) -> dict[str, object]:

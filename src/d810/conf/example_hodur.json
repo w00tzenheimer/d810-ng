@@ -1,5 +1,5 @@
 {
-    "description": "Configuration for Hodur-style nested while-loop state machines (DO NOT use FixPredecessorOfConditionalJumpBlock - it causes cascading unreachability)",
+    "description": "Configuration for Hodur-style nested while-loop state machines",
     "ins_rules": [
         {
             "name": "RotateHelperInlineRule",
@@ -934,26 +934,6 @@
         {
             "name": "ForwardConstantPropagationRule",
             "is_activated": true,
-            "config": {}
-        },
-        {
-            "name": "FixPredecessorOfConditionalJumpBlock",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "Unflattener",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "UnflattenerSwitchCase",
-            "is_activated": false,
-            "config": {}
-        },
-        {
-            "name": "UnflattenerTigressIndirect",
-            "is_activated": false,
             "config": {}
         },
         {

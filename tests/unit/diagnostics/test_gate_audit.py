@@ -53,13 +53,13 @@ def test_safeguard_rejection_increments_counts_and_emits_failed_event() -> None:
 
 def test_flow_context_gate_emits_failed_event_with_rule_name() -> None:
     s = _scan(
-        "Skipping FixPredecessorOfConditionalJumpBlock via flow context gate:"
+        "Skipping EmulatedDispatcherUnflattener via flow context gate:"
         " no rewritable predecessor"
     )
     assert s.failed == 1
     e = s.events[0]
     assert e.source == "flow_context"
-    assert e.rule_name == "FixPredecessorOfConditionalJumpBlock"
+    assert e.rule_name == "EmulatedDispatcherUnflattener"
     assert e.reason == "no rewritable predecessor"
 
 

@@ -325,8 +325,7 @@ ABC_F6_CASES = [
     DeobfuscationCase(
         function="abc_f6_or_dispatch",
         description="ABC pattern with OR operations on state variables",
-        # The engine replacement handles this; do not require the legacy
-        # UnflattenerFakeJump rule name.
+        # The engine replacement handles this cleanup path.
         project="example_libobfuscated.json",
         obfuscated_contains=["0xF6"],
         expected_code="""
@@ -489,7 +488,7 @@ CONSTANT_FOLDING_CASES = [
         function="AntiDebug_ExceptionFilter",
         description=(
             "Anti-debugging exception handler through the shared Tigress switch "
-            "engine profile. The legacy switch rule can expose invalid readonly "
+            "engine profile. This gate guards against invalid readonly "
             "folding such as a synthetic MEMORY[0xB10000007FFE00E1] rotate chain."
         ),
         project="default_unflattening_tigress_engine_transition_facts.json",
@@ -497,10 +496,6 @@ CONSTANT_FOLDING_CASES = [
             "MEMORY[0xB10000007FFE00E1]",
         ],
         required_rules=["EmulatedDispatcherUnflattener"],
-        forbidden_rules=[
-            "UnflattenerSwitchCase",
-            "UnflattenerTigressIndirect",
-        ],
         must_change=True,
     ),
 ]
@@ -543,8 +538,7 @@ DISPATCHER_PATTERN_CASES = [
         description="Mixed CFF pattern: while(1) dispatcher with large state constants, "
                     "conditional branch, and loop-back. Deobfuscates to do-while loop "
                     "with if/else and arithmetic chain.",
-        # Use flatfold profile so Unflattener is not constrained by the
-        # example profile's narrow whitelist.
+        # Use flatfold profile for the broader rewrite whitelist.
         project="flatfold.json",
         obfuscated_contains=["0xABCD1234", "while"],
         deobfuscated_not_contains=["0xABCD1234", "0x12345678", "0x9ABCDEF0"],
@@ -728,11 +722,6 @@ OLLVM_CASES = [
             "ArithmeticChain",
             "AndBnot_FactorRule_2",
         ],
-        forbidden_rules=[
-            "Unflattener",
-            "UnflattenerSwitchCase",
-            "UnflattenerTigressIndirect",
-        ],
     ),
 ]
 
@@ -755,11 +744,6 @@ TIGRESS_CASES = [
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
         required_rules=["EmulatedDispatcherUnflattener"],
-        forbidden_rules=[
-            "Unflattener",
-            "UnflattenerSwitchCase",
-            "UnflattenerTigressIndirect",
-        ],
         must_change=True,  # Original test: case_count_after < case_count_before
     ),
 ]
@@ -769,7 +753,7 @@ TIGRESS_ENGINE_CASES = [
         function="tigress_minmaxarray",
         description=(
             "Tigress flattened min/max array search through the shared "
-            "state-dispatcher engine profile with legacy switch rules disabled"
+            "state-dispatcher engine profile"
         ),
         project="default_unflattening_tigress_engine_transition_facts.json",
         obfuscated_contains=["switch", "case"],
@@ -784,11 +768,6 @@ TIGRESS_ENGINE_CASES = [
             "case ",
         ],
         required_rules=["EmulatedDispatcherUnflattener"],
-        forbidden_rules=[
-            "Unflattener",
-            "UnflattenerSwitchCase",
-            "UnflattenerTigressIndirect",
-        ],
         must_change=True,
     ),
 ]
@@ -874,9 +853,9 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
             "return (unsigned int)(3 * a1 + 7);",
         ],
         must_change=True,
-        # FixPredecessor intentionally stays disabled for this terminal
-        # conditional-chain shape: predecessor-local rewrites can erase the
-        # final return.  The active owner is the whole-chain emulated
+        # Predecessor-local rewrites can erase the final return for this
+        # terminal conditional-chain shape.  The active owner is the
+        # whole-chain emulated
         # dispatcher lowerer, which folds the table-driven state constants and
         # materializes the payload corridor as one unit.  Keep this outcome
         # based because current block-rule stats do not reliably report the
@@ -891,7 +870,7 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         # Avoid address-dependent symbol assertions (varies by backend/build base).
         obfuscated_contains=["0x623FEB6A"],
         must_change=True,
-        # Keep this outcome-focused: rule composition may vary (FixPred vs Unflattener).
+        # Keep this outcome-focused: rule composition may vary by profile.
         required_rules=[],
     ),
 ]

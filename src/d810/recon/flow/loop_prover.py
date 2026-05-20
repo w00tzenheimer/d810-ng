@@ -5,7 +5,7 @@ It serves as a **diagnostic tool** to detect residual single-iteration loops
 after unflattening.
 
 **Note**: The recommended fix for detected loops is to run the appropriate
-unflattener with `min_comparison_value >= 2` (e.g., BadWhileLoop) rather
+unflattener with `min_comparison_value >= 2` (e.g., bad-while-loop cleanup) rather
 than implementing custom loop unrolling.
 
 Pattern detected::

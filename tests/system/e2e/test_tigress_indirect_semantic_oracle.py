@@ -141,7 +141,6 @@ class TestTigressIndirectSemanticOracle:
                 }
 
         assert "EmulatedDispatcherUnflattener" in block_rules_fired
-        assert "UnflattenerTigressIndirect" not in block_rules_fired
 
         from d810.core.diag import get_diag_db
         from d810.diagnostics.indirect_state_transfer_map import extract_transfer_map

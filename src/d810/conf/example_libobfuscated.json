@@ -967,71 +967,9 @@
       }
     },
     {
-      "name": "FixPredecessorOfConditionalJumpBlock",
-      "is_activated": false,
-      "config": {}
-    },
-    {
-      "name": "Unflattener",
-      "is_activated": false,
-      "config": {
-        "max_calls_entry_preds": 24,
-        "max_calls_exit_blocks": 24,
-        "defer_calls_on_conditional_entry_father": true,
-        "log_calls_layout_signals": true,
-        "post_apply_const_prop": true,
-        "per_function_overrides": {
-          "AntiDebug_ExceptionFilter": {
-            "max_calls_exit_blocks": 500,
-            "min_cfg_edges_required": 256,
-            "max_calls_entry_preds": 500,
-            "defer_calls_on_conditional_entry_father": false
-          }
-        }
-      }
-    },
-    {
-      "name": "UnflattenerSwitchCase",
-      "is_activated": false,
-      "config": {
-        "pre_unflatten_optimize_local_rounds": 2,
-        "per_function_overrides": {
-          "AntiDebug_ExceptionFilter": {
-            "max_exit_blocks_for_additional_passes": 500,
-            "min_cfg_edges_required": 256
-          }
-        }
-      }
-    },
-    {
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
       "config": {}
-    },
-    {
-      "name": "UnflattenerFakeJump",
-      "is_activated": false,
-      "config": {}
-    },
-    {
-      "name": "BadWhileLoop",
-      "is_activated": false,
-      "config": {
-        "min_dispatcher_comparison_value": 2
-      }
-    },
-    {
-      "name": "UnflattenerTigressIndirect",
-      "is_activated": false,
-      "config": {
-        "goto_table_info": {
-          "0x1839": {
-            "stack_table_offset": "0x40",
-            "table_address": "0x5080",
-            "table_nb_elt": 38
-          }
-        }
-      }
     },
     {
       "name": "JumpFixer",

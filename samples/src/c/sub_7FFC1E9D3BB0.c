@@ -18,8 +18,8 @@
  *
  * This exercises:
  *   - FoldReadonlyDataRule (fold_writable_constants for opaque table)
- *   - FixPredecessorOfConditionalJumpBlock (conditional chain dispatch)
- *   - Unflattener (nested while/if CFF pattern)
+ *   - predecessor branch-arm repair (conditional chain dispatch)
+ *   - EmulatedDispatcherUnflattener (nested while/if CFF pattern)
  *   - GlobalConstantInliner (resolve opaque table loads)
  */
 

@@ -54,13 +54,13 @@ class TestProjectContext:
         """Test removing a block rule."""
         mock_state = MagicMock()
         mock_rule = MagicMock()
-        mock_rule.name = "FixPredecessorOfConditionalJumpBlock"
+        mock_rule.name = "JumpFixer"
         mock_state.current_ins_rules = []
         mock_state.current_blk_rules = [mock_rule]
 
         ctx = ProjectContext(state=mock_state, project_index=0)
 
-        ctx.remove_rule("FixPredecessorOfConditionalJumpBlock")
+        ctx.remove_rule("JumpFixer")
 
         assert len(mock_state.current_blk_rules) == 0
 

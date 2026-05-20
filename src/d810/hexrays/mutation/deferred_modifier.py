@@ -183,7 +183,7 @@ Best Practices
 See Also
 ========
 - ABCBlockSplitter: Reference implementation of deferred pattern
-- FixPredecessorOfConditionalJumpBlock: Another deferred pattern example
+- Conditional-clone rewrites: deferred predecessor repair example
 - GenericDispatcherUnflatteningRule: Orchestrates multiple deferred rules
 """
 from __future__ import annotations
@@ -1508,7 +1508,7 @@ class DeferredGraphModifier:
         - Conditional jump target (jcc taken)
         - Fallthrough target (via NOP-goto block for physical adjacency)
 
-        Uses the proven pattern from fix_pred_cond_jump_block.py:
+        Uses the proven conditional-clone materialization pattern:
         1. Duplicate the conditional block (preserving tail instruction)
         2. Create a NOP-goto block as fallthrough (IDA requires physical adjacency)
         3. Wire conditional target directly
@@ -6009,7 +6009,7 @@ class DeferredGraphModifier:
         """
         Create a conditional 2-way block with two wired successors.
 
-        Uses the proven pattern from fix_pred_cond_jump_block.py:
+        Uses the proven conditional-clone materialization pattern:
         1. Duplicate the reference conditional block (preserving tail instruction)
         2. Create a NOP-goto block as the fallthrough successor (IDA requires
            physical adjacency for BLT_2WAY fallthrough)
@@ -6794,10 +6794,8 @@ class DeferredGraphModifier:
     ) -> bool:
         """Clone a conditional block as a goto and redirect one predecessor.
 
-        This is the planned form of the legacy
-        ``FixPredecessorOfConditionalJumpBlock`` live rewrite.  It is limited
-        to the simple one-way predecessor case; the broader legacy helper stays
-        in place for remaining shapes.
+        This is the planned form of the predecessor-repair rewrite for the
+        simple one-way predecessor case.
         """
         if not self._check_clone_conditional_as_goto_preconditions(
             source_block_serial=source_blk.serial,
