@@ -215,9 +215,13 @@ from d810.hexrays.mutation.cfg_mutations import (
 from d810.hexrays.mutation.cfg_mutations import (
     change_2way_block_conditional_successor)
 from d810.hexrays.mutation.cfg_mutations import (
+    coalesce_jtbl_cases)
+from d810.hexrays.mutation.cfg_mutations import (
     create_block)
 from d810.hexrays.mutation.cfg_mutations import (
     create_standalone_block)
+from d810.hexrays.mutation.cfg_mutations import (
+    downgrade_nway_null_tail_to_1way)
 from d810.hexrays.mutation.cfg_mutations import (
     duplicate_block)
 from d810.hexrays.mutation.cfg_mutations import (
@@ -226,6 +230,8 @@ from d810.hexrays.mutation.cfg_mutations import (
     _get_fallthrough_successor_serial)
 from d810.hexrays.mutation.cfg_mutations import (
     insert_goto_instruction)
+from d810.hexrays.mutation.cfg_mutations import (
+    retarget_jtbl_block_cases)
 from d810.hexrays.mutation.cfg_verify import (
     log_block_info)
 from d810.hexrays.mutation.cfg_mutations import (
@@ -488,6 +494,11 @@ class ModificationType(Enum):
     INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
     INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
     INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
+    LOWER_CONDITIONAL_STATE_TRANSITION = auto()  # Replace state-write-to-dispatcher with a proven 2-way edge
+    NORMALIZE_NWAY_DISPATCHER_EXIT = auto()  # Downgrade degenerate NWAY dispatcher exit to 1-way
+    BYPASS_DISPATCHER_TRAMPOLINE = auto()  # Redirect an edge away from a dispatcher trampoline
+    CANONICALIZE_JTBL_CASE_OVERLAP = auto()  # Retarget/coalesce jump-table overlap cases
+    PHASE_CYCLE_LOWERING = auto()  # Lower dispatcher phase-cycle entry redirects
     BLOCK_CREATE_WITH_REDIRECT = auto()  # Create intermediate block and redirect
     BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT = auto()  # Create conditional 2-way block with redirect
     BLOCK_DUPLICATE_AND_REDIRECT = auto()  # Duplicate source block and redirect one predecessor
@@ -601,6 +612,11 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     # BLOCK_FALLTHROUGH_CHANGE: not currently emitted anywhere — mark UNSUPPORTED
     # so staged_atomic falls back to sequential apply if it ever shows up.
     ModificationType.BLOCK_FALLTHROUGH_CHANGE: StagedAtomicClassification.UNSUPPORTED,
+    ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: StagedAtomicClassification.UNSUPPORTED,
+    ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: StagedAtomicClassification.UNSUPPORTED,
+    ModificationType.BYPASS_DISPATCHER_TRAMPOLINE: StagedAtomicClassification.UNSUPPORTED,
+    ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP: StagedAtomicClassification.UNSUPPORTED,
+    ModificationType.PHASE_CYCLE_LOWERING: StagedAtomicClassification.UNSUPPORTED,
 }
 
 
@@ -881,6 +897,27 @@ class GraphModification:
     base_token: str | None = None
     host_text_sha1: str | None = None
     value_size: int | None = None
+    # For LOWER_CONDITIONAL_STATE_TRANSITION
+    rewrite_from_ea: int | None = None
+    condition_operand: object | None = None
+    false_target: int | None = None
+    true_target: int | None = None
+    proof_id: str | None = None
+    # For NORMALIZE_NWAY_DISPATCHER_EXIT
+    dispatcher_entry_serial: int | None = None
+    keep_target_serial: int | None = None
+    # For CANONICALIZE_JTBL_CASE_OVERLAP
+    retarget_map: tuple[tuple[int, int], ...] | None = None
+    deduplicate_cases: bool = False
+    # For PHASE_CYCLE_LOWERING
+    phase_header_entries: tuple[int, ...] | None = None
+    phase_header_target: int | None = None
+    phase_body_entries: tuple[int, ...] | None = None
+    phase_body_target: int | None = None
+    phase_next_phase_entries: tuple[int, ...] | None = None
+    phase_next_phase_target: int | None = None
+    phase_terminal_entries: tuple[int, ...] | None = None
+    phase_terminal_target: int | None = None
 
 
 def _prepare_block_creation_instructions(
@@ -1437,6 +1474,198 @@ class DeferredGraphModifier:
         logger.debug(
             "Queued scalarize_local_alias_access: block %d, host_ea=%s, alias=%s, base=%s",
             block_serial, hex(host_ea), alias_token, base_token,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_lower_conditional_state_transition(
+        self,
+        *,
+        source_serial: int,
+        old_dispatcher_serial: int,
+        rewrite_from_ea: int,
+        condition_operand: object,
+        false_target_serial: int,
+        true_target_serial: int,
+        proof_id: str | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue replacement of a state-write-to-dispatcher edge with a 2-way edge."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            block_serial=source_serial,
+            new_target=true_target_serial,
+            old_target=old_dispatcher_serial,
+            rewrite_from_ea=rewrite_from_ea,
+            condition_operand=condition_operand,
+            false_target=false_target_serial,
+            true_target=true_target_serial,
+            proof_id=proof_id,
+            priority=10,
+            rule_priority=rule_priority,
+            description=description or (
+                f"lower conditional state transition {source_serial}: "
+                f"{old_dispatcher_serial}->{false_target_serial}/{true_target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued lower_conditional_state_transition: src=%d old=%d false=%d true=%d ea=%s",
+            source_serial,
+            old_dispatcher_serial,
+            false_target_serial,
+            true_target_serial,
+            hex(rewrite_from_ea),
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_normalize_nway_dispatcher_exit(
+        self,
+        block_serial: int,
+        dispatcher_entry_serial: int,
+        *,
+        keep_target_serial: int | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue a degenerate BLT_NWAY null-tail dispatcher-exit downgrade."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT,
+            block_serial=block_serial,
+            old_target=dispatcher_entry_serial,
+            new_target=keep_target_serial,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            keep_target_serial=keep_target_serial,
+            priority=15,
+            rule_priority=rule_priority,
+            description=description or (
+                f"normalize NWAY dispatcher exit {block_serial}: "
+                f"drop dispatcher {dispatcher_entry_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued normalize_nway_dispatcher_exit: block=%d dispatcher=%d keep=%s",
+            block_serial,
+            dispatcher_entry_serial,
+            keep_target_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_bypass_dispatcher_trampoline(
+        self,
+        source_serial: int,
+        trampoline_serial: int,
+        target_serial: int,
+        *,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue an exact-edge bypass from a dispatcher trampoline to its target."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.BYPASS_DISPATCHER_TRAMPOLINE,
+            block_serial=source_serial,
+            old_target=trampoline_serial,
+            new_target=target_serial,
+            priority=10,
+            rule_priority=rule_priority,
+            description=description or (
+                f"bypass dispatcher trampoline {source_serial}: "
+                f"{trampoline_serial}->{target_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued bypass_dispatcher_trampoline: src=%d trampoline=%d target=%d",
+            source_serial,
+            trampoline_serial,
+            target_serial,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_canonicalize_jtbl_case_overlap(
+        self,
+        jtbl_serial: int,
+        retarget_map: tuple[tuple[int, int], ...],
+        *,
+        deduplicate: bool = False,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue a jump-table case retarget/coalescing operation."""
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP,
+            block_serial=jtbl_serial,
+            retarget_map=tuple((int(old), int(new)) for old, new in retarget_map),
+            deduplicate_cases=bool(deduplicate),
+            priority=15,
+            rule_priority=rule_priority,
+            description=description or (
+                f"canonicalize jump-table overlap {jtbl_serial}: "
+                f"{len(retarget_map)} retargets"
+            ),
+        ))
+        logger.debug(
+            "Queued canonicalize_jtbl_case_overlap: block=%d retargets=%s deduplicate=%s",
+            jtbl_serial,
+            retarget_map,
+            deduplicate,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_phase_cycle_lowering(
+        self,
+        *,
+        header_entries: tuple[int, ...],
+        header_target: int,
+        body_entries: tuple[int, ...],
+        body_target: int,
+        next_phase_entries: tuple[int, ...],
+        next_phase_target: int,
+        terminal_entries: tuple[int, ...] = (),
+        terminal_target: int | None = None,
+        description: str = "",
+        rule_priority: int = 0,
+    ) -> None:
+        """Queue guarded one-way redirects for a resolved dispatcher phase cycle."""
+        primary = (
+            header_entries[0]
+            if header_entries
+            else body_entries[0]
+            if body_entries
+            else next_phase_entries[0]
+            if next_phase_entries
+            else terminal_entries[0]
+            if terminal_entries
+            else 0
+        )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.PHASE_CYCLE_LOWERING,
+            block_serial=primary,
+            priority=20,
+            rule_priority=rule_priority,
+            phase_header_entries=tuple(header_entries),
+            phase_header_target=header_target,
+            phase_body_entries=tuple(body_entries),
+            phase_body_target=body_target,
+            phase_next_phase_entries=tuple(next_phase_entries),
+            phase_next_phase_target=next_phase_target,
+            phase_terminal_entries=tuple(terminal_entries),
+            phase_terminal_target=terminal_target,
+            description=description or "lower dispatcher phase cycle",
+        ))
+        logger.debug(
+            "Queued phase_cycle_lowering: header=%s->%d body=%s->%d next=%s->%d terminal=%s->%s",
+            header_entries,
+            header_target,
+            body_entries,
+            body_target,
+            next_phase_entries,
+            next_phase_target,
+            terminal_entries,
+            terminal_target,
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -2077,6 +2306,10 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_TARGET_CHANGE,
             ModificationType.BLOCK_FALLTHROUGH_CHANGE,
             ModificationType.BLOCK_CONVERT_TO_GOTO,
+            ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT,
+            ModificationType.BYPASS_DISPATCHER_TRAMPOLINE,
+            ModificationType.PHASE_CYCLE_LOWERING,
             ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
         }
         by_source: dict[int, list[tuple[int, GraphModification]]] = {}
@@ -2271,6 +2504,49 @@ class DeferredGraphModifier:
                     mod.host_text_sha1,
                     mod.value_size,
                 )
+            elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.old_target,
+                    mod.false_target,
+                    mod.true_target,
+                    mod.rewrite_from_ea,
+                    mod.proof_id,
+                )
+            elif mod.mod_type == ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.dispatcher_entry_serial,
+                    mod.keep_target_serial,
+                )
+            elif mod.mod_type == ModificationType.BYPASS_DISPATCHER_TRAMPOLINE:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.old_target,
+                    mod.new_target,
+                )
+            elif mod.mod_type == ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    tuple(mod.retarget_map or ()),
+                    mod.deduplicate_cases,
+                )
+            elif mod.mod_type == ModificationType.PHASE_CYCLE_LOWERING:
+                key = (
+                    mod.mod_type,
+                    mod.phase_header_entries,
+                    mod.phase_header_target,
+                    mod.phase_body_entries,
+                    mod.phase_body_target,
+                    mod.phase_next_phase_entries,
+                    mod.phase_next_phase_target,
+                    mod.phase_terminal_entries,
+                    mod.phase_terminal_target,
+                )
             else:
                 key = (mod.mod_type, mod.block_serial, mod.new_target, mod.target_ref_kind)
 
@@ -2368,6 +2644,11 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT,
+            ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT,
+            ModificationType.BYPASS_DISPATCHER_TRAMPOLINE,
+            ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP,
+            ModificationType.PHASE_CYCLE_LOWERING,
             ModificationType.EDGE_SPLIT_TRAMPOLINE,
             ModificationType.EDGE_REMOVE,
         }
@@ -2379,8 +2660,13 @@ class DeferredGraphModifier:
             ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT: 5,
             ModificationType.BLOCK_DUPLICATE_AND_REDIRECT: 6,
             ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT: 7,
-            ModificationType.EDGE_SPLIT_TRAMPOLINE: 8,
-            ModificationType.EDGE_REMOVE: 9,
+            ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION: 8,
+            ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT: 9,
+            ModificationType.BYPASS_DISPATCHER_TRAMPOLINE: 10,
+            ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP: 11,
+            ModificationType.PHASE_CYCLE_LOWERING: 12,
+            ModificationType.EDGE_SPLIT_TRAMPOLINE: 13,
+            ModificationType.EDGE_REMOVE: 14,
             # EDGE_REDIRECT_VIA_PRED_SPLIT is intentionally absent: it is not
             # in terminal_mod_types (it executes via a separate code path in
             # apply_modifications) so ranking it here would cause it to be
@@ -5016,6 +5302,49 @@ class DeferredGraphModifier:
                 mod.value_size,
             )
 
+        elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
+            return self._apply_lower_conditional_state_transition(
+                blk,
+                old_dispatcher_serial=mod.old_target,
+                rewrite_from_ea=mod.rewrite_from_ea,
+                condition_operand=mod.condition_operand,
+                false_target_serial=mod.false_target,
+                true_target_serial=mod.true_target,
+            )
+
+        elif mod.mod_type == ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT:
+            return self._apply_normalize_nway_dispatcher_exit(
+                blk,
+                dispatcher_entry_serial=mod.dispatcher_entry_serial,
+                keep_target_serial=mod.keep_target_serial,
+            )
+
+        elif mod.mod_type == ModificationType.BYPASS_DISPATCHER_TRAMPOLINE:
+            return self._apply_bypass_dispatcher_trampoline(
+                blk,
+                trampoline_serial=mod.old_target,
+                target_serial=mod.new_target,
+            )
+
+        elif mod.mod_type == ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP:
+            return self._apply_canonicalize_jtbl_case_overlap(
+                blk,
+                retarget_map=mod.retarget_map or (),
+                deduplicate=mod.deduplicate_cases,
+            )
+
+        elif mod.mod_type == ModificationType.PHASE_CYCLE_LOWERING:
+            return self._apply_phase_cycle_lowering(
+                header_entries=mod.phase_header_entries or (),
+                header_target=mod.phase_header_target,
+                body_entries=mod.phase_body_entries or (),
+                body_target=mod.phase_body_target,
+                next_phase_entries=mod.phase_next_phase_entries or (),
+                next_phase_target=mod.phase_next_phase_target,
+                terminal_entries=mod.phase_terminal_entries or (),
+                terminal_target=mod.phase_terminal_target,
+            )
+
         elif mod.mod_type == ModificationType.BLOCK_CREATE_WITH_REDIRECT:
             return self._apply_create_and_redirect(
                 blk,
@@ -5610,6 +5939,283 @@ class DeferredGraphModifier:
             blk.serial, int(host_ea or 0), alias, base, changed,
         )
         return True
+
+    def _materialize_condition_mop(self, condition_operand: object | None) -> object | None:
+        """Clone a proof-supplied condition operand into an owned ``mop_t``."""
+        if condition_operand is None:
+            return None
+        raw_operand = condition_operand
+        to_mop = getattr(raw_operand, "to_mop", None)
+        if callable(to_mop):
+            try:
+                raw_operand = to_mop()
+            except Exception as exc:
+                logger.warning("conditional_state_transition: to_mop failed: %s", exc)
+                return None
+        else:
+            raw_operand = getattr(raw_operand, "owned_mop", raw_operand)
+        try:
+            copied = ida_hexrays.mop_t()
+            copied.assign(raw_operand)
+        except Exception as exc:
+            logger.warning(
+                "conditional_state_transition: could not clone condition operand %r: %s",
+                type(condition_operand).__name__,
+                exc,
+            )
+            return None
+        if int(getattr(copied, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_z):
+            return None
+        return copied
+
+    def _apply_lower_conditional_state_transition(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        old_dispatcher_serial: int | None,
+        rewrite_from_ea: int | None,
+        condition_operand: object | None,
+        false_target_serial: int | None,
+        true_target_serial: int | None,
+    ) -> bool:
+        """Lower a proven conditional state update into explicit 2-way topology."""
+        if (
+            old_dispatcher_serial is None
+            or rewrite_from_ea is None
+            or false_target_serial is None
+            or true_target_serial is None
+        ):
+            logger.warning(
+                "conditional_state_transition: incomplete proof for block %d",
+                blk.serial,
+            )
+            return False
+        false_target = self._resolve_serial(int(false_target_serial))
+        true_target = self._resolve_serial(int(true_target_serial))
+        old_dispatcher = self._resolve_serial(int(old_dispatcher_serial))
+        if false_target is None or true_target is None or old_dispatcher is None:
+            return False
+        if not _is_live_block_serial(self.mba, false_target) or not _is_live_block_serial(self.mba, true_target):
+            logger.warning(
+                "conditional_state_transition: target missing for block %d false=%s true=%s",
+                blk.serial,
+                false_target,
+                true_target,
+            )
+            return False
+        if blk.nsucc() != 1 or int(blk.succset[0]) != int(old_dispatcher):
+            logger.warning(
+                "conditional_state_transition: block %d expected sole successor %d, succs=%s",
+                blk.serial,
+                old_dispatcher,
+                [int(s) for s in blk.succset],
+            )
+            return False
+        condition_mop = self._materialize_condition_mop(condition_operand)
+        if condition_mop is None:
+            return False
+        rewrite_insn = blk.head
+        while rewrite_insn is not None:
+            if int(getattr(rewrite_insn, "ea", -1)) == int(rewrite_from_ea):
+                break
+            rewrite_insn = rewrite_insn.next
+        if rewrite_insn is None:
+            logger.warning(
+                "conditional_state_transition: rewrite EA %s not found in block %d",
+                hex(int(rewrite_from_ea)),
+                blk.serial,
+            )
+            return False
+
+        cursor = rewrite_insn
+        while cursor is not None:
+            next_insn = cursor.next
+            blk.remove_from_block(cursor)
+            cursor = next_insn
+
+        safe_ea = int(rewrite_from_ea)
+        if safe_ea == idaapi.BADADDR:
+            safe_ea = int(getattr(self.mba, "entry_ea", 0) or 0) or 1
+        condition_size = int(getattr(condition_mop, "size", 0) or 1)
+        jnz = ida_hexrays.minsn_t(safe_ea)
+        jnz.opcode = ida_hexrays.m_jnz
+        jnz.l = ida_hexrays.mop_t()
+        jnz.l.assign(condition_mop)
+        jnz.r = ida_hexrays.mop_t()
+        jnz.r.make_number(0, condition_size, safe_ea)
+        jnz.d = ida_hexrays.mop_t()
+        jnz.d.make_blkref(int(true_target))
+        blk.insert_into_block(jnz, blk.tail)
+        blk.flags &= ~ida_hexrays.MBL_GOTO
+        ok = _rewire_edge(
+            blk,
+            [int(old_dispatcher)],
+            [int(false_target), int(true_target)],
+            new_block_type=ida_hexrays.BLT_2WAY,
+            verify=False,
+        )
+        if not ok:
+            return False
+        blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        logger.info(
+            "LOWER_CONDITIONAL_STATE_TRANSITION: blk[%d] old=%d false=%d true=%d ea=0x%x",
+            blk.serial,
+            old_dispatcher,
+            false_target,
+            true_target,
+            int(rewrite_from_ea),
+        )
+        return True
+
+    def _apply_normalize_nway_dispatcher_exit(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        dispatcher_entry_serial: int | None,
+        keep_target_serial: int | None = None,
+    ) -> bool:
+        if dispatcher_entry_serial is None:
+            return False
+        dispatcher = self._resolve_serial(int(dispatcher_entry_serial))
+        keep_target = (
+            self._resolve_serial(int(keep_target_serial))
+            if keep_target_serial is not None
+            else None
+        )
+        if dispatcher is None:
+            return False
+        if keep_target is not None and keep_target not in [int(s) for s in blk.succset]:
+            logger.warning(
+                "normalize_nway_dispatcher_exit: keep target %d is not a successor of block %d",
+                keep_target,
+                blk.serial,
+            )
+            return False
+        return bool(downgrade_nway_null_tail_to_1way(blk, int(dispatcher), verify=False))
+
+    def _apply_bypass_dispatcher_trampoline(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        trampoline_serial: int | None,
+        target_serial: int | None,
+    ) -> bool:
+        if trampoline_serial is None or target_serial is None:
+            return False
+        trampoline = self._resolve_serial(int(trampoline_serial))
+        target = self._resolve_serial(int(target_serial))
+        if trampoline is None or target is None:
+            return False
+        succs = [int(s) for s in blk.succset]
+        if int(trampoline) not in succs:
+            logger.warning(
+                "bypass_dispatcher_trampoline: block %d does not target trampoline %d; succs=%s",
+                blk.serial,
+                trampoline,
+                succs,
+            )
+            return False
+        tail = getattr(blk, "tail", None)
+        if tail is not None and int(getattr(tail, "opcode", -1)) == int(ida_hexrays.m_jtbl):
+            return retarget_jtbl_block_cases(blk, {int(trampoline): int(target)}) > 0
+        if blk.nsucc() == 1:
+            return change_1way_block_successor(blk, int(target), verify=False)
+        if blk.nsucc() == 2:
+            return self._apply_target_change(
+                blk,
+                int(target),
+                old_target=int(trampoline),
+            )
+        logger.warning(
+            "bypass_dispatcher_trampoline: unsupported nsucc=%d for block %d",
+            blk.nsucc(),
+            blk.serial,
+        )
+        return False
+
+    def _apply_canonicalize_jtbl_case_overlap(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        retarget_map: tuple[tuple[int, int], ...],
+        deduplicate: bool = False,
+    ) -> bool:
+        normalized_map = {
+            int(old): int(new)
+            for old, new in retarget_map
+            if int(old) != int(new)
+        }
+        changed = 0
+        if normalized_map:
+            changed += retarget_jtbl_block_cases(blk, normalized_map)
+        if deduplicate:
+            changed += coalesce_jtbl_cases(blk)
+        return changed > 0
+
+    def _apply_phase_cycle_lowering(
+        self,
+        *,
+        header_entries: tuple[int, ...],
+        header_target: int | None,
+        body_entries: tuple[int, ...],
+        body_target: int | None,
+        next_phase_entries: tuple[int, ...],
+        next_phase_target: int | None,
+        terminal_entries: tuple[int, ...] = (),
+        terminal_target: int | None = None,
+    ) -> bool:
+        groups = (
+            (header_entries, header_target, "header"),
+            (body_entries, body_target, "body"),
+            (next_phase_entries, next_phase_target, "next_phase"),
+            (terminal_entries, terminal_target, "terminal"),
+        )
+        changed = 0
+        for entries, target, role in groups:
+            if not entries:
+                continue
+            if target is None:
+                logger.warning("phase_cycle_lowering: %s entries lack a target", role)
+                return False
+            resolved_target = self._resolve_serial(int(target))
+            if resolved_target is None or not _is_live_block_serial(self.mba, resolved_target):
+                logger.warning(
+                    "phase_cycle_lowering: %s target %s is not live",
+                    role,
+                    target,
+                )
+                return False
+            for entry in entries:
+                resolved_entry = self._resolve_serial(int(entry))
+                if resolved_entry is None:
+                    return False
+                phase_blk = self.mba.get_mblock(int(resolved_entry))
+                if phase_blk is None:
+                    logger.warning(
+                        "phase_cycle_lowering: %s entry block %d not found",
+                        role,
+                        resolved_entry,
+                    )
+                    return False
+                if phase_blk.nsucc() != 1:
+                    logger.warning(
+                        "phase_cycle_lowering: %s entry block %d is not 1-way (nsucc=%d)",
+                        role,
+                        resolved_entry,
+                        phase_blk.nsucc(),
+                    )
+                    return False
+                if int(phase_blk.succset[0]) == int(resolved_target):
+                    continue
+                if not change_1way_block_successor(
+                    phase_blk,
+                    int(resolved_target),
+                    verify=False,
+                ):
+                    return False
+                changed += 1
+        return changed > 0
 
     def _apply_create_and_redirect(
         self,
