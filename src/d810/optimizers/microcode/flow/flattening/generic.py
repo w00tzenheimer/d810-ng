@@ -62,6 +62,10 @@ from d810.hexrays.mutation.cfg_mutations import (
     retarget_jtbl_block_cases)
 from d810.hexrays.mutation.cfg_verify import (
     safe_verify)
+from d810.hexrays.mutation.dispatcher_materialization import (
+    apply_dispatcher_deferred_modifier,
+    apply_scheduled_deferred_modifications,
+)
 from d810.hexrays.utils.hexrays_formatters import (
     dump_microcode_for_debug,
     format_minsn_t,
@@ -589,12 +593,10 @@ class GenericUnflatteningRule(FlowOptimizationRule):
             optimizer=self,
         )
 
-        modifier = DeferredGraphModifier(self.mba)
-        modifier.modifications = pending
         is_calls_maturity = self.mba.maturity == ida_hexrays.MMAT_CALLS
-        applied = modifier.apply(
-            run_optimize_local=True,
-            run_deep_cleaning=False,
+        result = apply_scheduled_deferred_modifications(
+            mba=self.mba,
+            modifications=pending,
             verify_each_mod=is_calls_maturity,
             rollback_on_verify_failure=is_calls_maturity,
             continue_on_verify_failure=is_calls_maturity,
@@ -603,10 +605,12 @@ class GenericUnflatteningRule(FlowOptimizationRule):
         self.events.emit(
             UnflatteningEvent.MODIFICATIONS_APPLIED,
             maturity=maturity,
-            applied_count=applied,
+            applied_count=result.applied_count,
             optimizer=self,
         )
-        return applied
+        if result.verify_failed:
+            self._verify_failed = True
+        return result.applied_count
 
     def scan_for_single_iteration_loops(self) -> int:
         """Scan the CFG for provably single-iteration loops.
@@ -2901,64 +2905,20 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             if not safeguard_ok:
                 deferred_modifier.reset()
             else:
-                # Second pass: catch any BLT_NWAY blocks created by
-                # duplicate_block() that inherited type from source.
-                for blk_serial in range(self.mba.qty):
-                    blk = self.mba.get_mblock(blk_serial)
-                    if blk is not None and blk.type == ida_hexrays.BLT_NWAY:
-                        tail = blk.tail
-                        if tail is not None and tail.opcode == ida_hexrays.m_goto and blk.nsucc() == 1:
-                            unflat_logger.debug(
-                                "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY (pre-apply sweep)",
-                                blk_serial,
-                            )
-                            blk.type = ida_hexrays.BLT_1WAY
-                            self.mba.mark_chains_dirty()
-
-                unflat_logger.info(
-                    "Applying %d deferred CFG modifications from resolve_dispatcher_father",
-                    len(deferred_modifier.modifications),
+                materialization_result = apply_dispatcher_deferred_modifier(
+                    mba=self.mba,
+                    modifier=deferred_modifier,
+                    logger=unflat_logger,
+                    case_overlap_edges=tuple(self._deferred_case_overlap_edges),
+                    canonicalize_case_overlaps=(
+                        self._canonicalize_jtbl_cross_case_overlaps
+                    ),
                 )
-                deferred_modifier.apply(
-                    run_optimize_local=False,
-                    run_deep_cleaning=False,
-                    verify_each_mod=True,
-                    rollback_on_verify_failure=True,
-                    continue_on_verify_failure=True,
-                    enable_snapshot_rollback=True,
-                )
-                if not deferred_modifier.verify_failed and self._deferred_case_overlap_edges:
-                    try:
-                        unflat_logger.info(
-                            "Post-apply jtbl overlap scan: %d dispatcher edge-set(s)",
-                            len(self._deferred_case_overlap_edges),
-                        )
-                        canonicalized_cases = self._canonicalize_jtbl_cross_case_overlaps()
-                        if canonicalized_cases > 0:
-                            unflat_logger.info(
-                                "Applied jtbl overlap canonicalization: %d case target retarget(s)",
-                                canonicalized_cases,
-                            )
-                        safe_verify(
-                            self.mba,
-                            "after jtbl cross-case overlap canonicalization",
-                            logger_func=unflat_logger.error,
-                        )
-                        mba_deep_cleaning(self.mba, True)
-                        safe_verify(
-                            self.mba,
-                            "after post-canonicalization deep clean",
-                            logger_func=unflat_logger.error,
-                        )
-                        total_nb_change += canonicalized_cases
-                    except RuntimeError:
-                        unflat_logger.warning(
-                            "verify failed during post-apply canonicalization; "
-                            "discarding modifications for this function"
-                        )
-                        self._verify_failed = True
+                total_nb_change += materialization_result.canonicalized_cases
+                if materialization_result.verify_failed:
+                    self._verify_failed = True
 
-            if deferred_modifier.verify_failed:
+            if self._verify_failed or deferred_modifier.verify_failed:
                 self._verify_failed = True
                 unflat_logger.warning(
                     "MBA verify failed after %d deferred modifications in "
