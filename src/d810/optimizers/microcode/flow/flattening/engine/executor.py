@@ -304,7 +304,9 @@ class TransactionalExecutor:
 
         # Derive execution policy from fragment metadata — travels with the plan.
         raw_policy = fragment.metadata.get("execution_policy")
-        if raw_policy == "nop_cleanup_relaxed":
+        if raw_policy == "nop_merge_blocks_relaxed":
+            execution_policy = ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED
+        elif raw_policy == "nop_cleanup_relaxed":
             execution_policy = ExecutionPolicy.NOP_CLEANUP_RELAXED
         else:
             execution_policy = ExecutionPolicy.STRICT

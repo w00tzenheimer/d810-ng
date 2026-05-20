@@ -912,7 +912,7 @@
       }
     },
     {
-      "name": "BlockMerger",
+      "name": "SimpleFlatteningCleanupUnflattener",
       "is_activated": true,
       "config": {}
     },

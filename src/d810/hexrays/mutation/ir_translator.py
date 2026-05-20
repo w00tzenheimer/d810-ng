@@ -462,9 +462,15 @@ class IDAIRTranslator:
             return 0
 
         # Derive execution policy from the plan itself (not a translator flag).
-        relaxed = patch_plan.execution_policy == ExecutionPolicy.NOP_CLEANUP_RELAXED
+        relaxed = patch_plan.execution_policy in (
+            ExecutionPolicy.NOP_CLEANUP_RELAXED,
+            ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
+        )
+        merge_blocks_cleanup = (
+            patch_plan.execution_policy == ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED
+        )
 
-        # Safety gate: NOP_CLEANUP_RELAXED only permits instruction-local
+        # Safety gate: relaxed NOP policies only permit instruction-local
         # NOP cleanup.  Reject any plan containing block-creating, edge-changing,
         # or redirect steps so relaxed mode cannot silently bypass the verifier
         # for structural mutations.
@@ -477,7 +483,7 @@ class IDAIRTranslator:
             ]
             if disallowed:
                 logger.error(
-                    "NOP_CLEANUP_RELAXED plan contains non-NOP steps "
+                    "relaxed NOP plan contains non-NOP steps "
                     "(%s); rejecting to prevent verifier bypass on structural edits",
                     ", ".join(disallowed),
                 )
@@ -488,12 +494,16 @@ class IDAIRTranslator:
 
         # Build effective post-apply hook: caller hook + contract check
         effective_hook: Callable[[], None] | None = None
-        if self.contract is not None or post_apply_hook is not None:
+        # NOP cleanup intentionally creates a transient CFG/successor mismatch
+        # that Hex-Rays resolves in the apply tail via optimize_local().
+        # Running the live post-contract before that cleanup would abort the
+        # maintenance step, leaving the MBA in the transient state.
+        if post_apply_hook is not None or (self.contract is not None and not relaxed):
 
             def _combined_post_apply_hook() -> None:
                 if post_apply_hook is not None:
                     post_apply_hook()
-                if self.contract is not None:
+                if self.contract is not None and not relaxed:
                     self.contract.verify(mba, plan=patch_plan, phase="post")
 
             effective_hook = _combined_post_apply_hook
@@ -511,7 +521,7 @@ class IDAIRTranslator:
             self._queue_patch_step(modifier, step)
 
         # Apply all queued modifications with snapshot rollback enabled.
-        # Under NOP_CLEANUP_RELAXED, disable rollback so the NOPs survive
+        # Under relaxed NOP cleanup, disable rollback so the NOPs survive
         # even if IDA's GLBOPT1 verifier complains (INTERR 50846).
         enable_rollback = not relaxed
         # Opt-in transactional mode: gates the batch with pre-apply conflict
@@ -528,8 +538,8 @@ class IDAIRTranslator:
         ).strip() == "1"
         try:
             result_count = modifier.apply(
-                run_optimize_local=True,
-                run_deep_cleaning=False,
+                run_optimize_local=not merge_blocks_cleanup,
+                run_deep_cleaning=merge_blocks_cleanup,
                 verify_each_mod=verify_each_mod and enable_rollback,
                 rollback_on_verify_failure=verify_each_mod and enable_rollback,
                 continue_on_verify_failure=verify_each_mod,
@@ -552,8 +562,9 @@ class IDAIRTranslator:
             if relaxed and result_count > 0:
                 logger.info(
                     "DeferredGraphModifier.verify_failed is set after apply "
-                    "but execution_policy=NOP_CLEANUP_RELAXED; "
+                    "but execution_policy=%s; "
                     "returning %d applied modifications",
+                    patch_plan.execution_policy.value,
                     result_count,
                 )
             else:

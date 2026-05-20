@@ -1,7 +1,7 @@
 """FlowGraphTransform that merges artificially split basic blocks.
 
-This pass migrates the functionality of BlockMerger from
-optimizers/microcode/flow/block_merge.py into the FlowGraphTransform/PassPipeline framework.
+This pass contains the CFG analysis for block-merge cleanup and emits
+backend-neutral ``NopInstructions`` primitives.
 
 When a block B has a single successor S, and S has a single predecessor B,
 the trailing goto in B is redundant. This pass signals to NOP that goto so
@@ -48,8 +48,7 @@ class BlockMergeTransform(FlowGraphTransform):
     When detected, the trailing goto in B is NOPed via NopInstructions,
     signaling to IDA's optimizer that the blocks can be merged.
 
-    This is the FlowGraphTransform equivalent of the existing BlockMerger rule in
-    optimizers/microcode/flow/block_merge.py.
+    This is the FlowGraphTransform form of the legacy block-merge cleanup.
 
     Attributes:
         name: Unique identifier "block_merge".
@@ -161,7 +160,7 @@ class BlockMergeTransform(FlowGraphTransform):
             # Check 3: Goto destination must reference the successor block.
             # Live snapshots carry the Hex-Rays destination slot separately;
             # require that slot to match when present so this transform stays
-            # equivalent to the legacy BlockMerger rule.  Minimal unit-test
+            # equivalent to the legacy block-merge rule.  Minimal unit-test
             # snapshots predate typed slots, so they fall back to operand scan.
             if not self._goto_targets_successor(tail_insn, succ_serial):
                 continue

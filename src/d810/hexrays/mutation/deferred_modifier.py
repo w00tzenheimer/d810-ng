@@ -5282,6 +5282,7 @@ class DeferredGraphModifier:
         while insn:
             if insn.ea == insn_ea:
                 blk.make_nop(insn)
+                blk.mark_lists_dirty()
                 return True
             insn = insn.next
 

@@ -39,7 +39,7 @@ class SimpleFlatteningCleanupUnflattener(GenericUnflatteningRule):
     """Planner-visible shell for generic cleanup PlanFragment strategies."""
 
     DESCRIPTION = (
-        "Shared engine adapter for non-Hodur FakeJump and single-iteration cleanup"
+        "Shared engine adapter for non-Hodur simple flattening cleanup"
     )
     HAS_OWN_DISPATCHER_COLLECTOR = True
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
@@ -108,6 +108,9 @@ class SimpleFlatteningCleanupUnflattener(GenericUnflatteningRule):
                 "bad_while_loop_dependency_diagnostics": (
                     len(detection.bad_while_loop_dependency_diagnostics)
                     if detection is not None else 0
+                ),
+                "tail_goto_merges": (
+                    len(detection.tail_goto_merges) if detection is not None else 0
                 ),
                 "collection_errors": (
                     detection.collection_errors if detection is not None else ()
