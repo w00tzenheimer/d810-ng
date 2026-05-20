@@ -1,4 +1,4 @@
-"""Composition-oriented unflattening rule shell.
+"""Composition-oriented unflattening rule lifecycle.
 
 This module owns the reusable optimizer lifecycle shared by strategy-family
 unflatteners: maturity gating, pass accounting, and lightweight flow-context
