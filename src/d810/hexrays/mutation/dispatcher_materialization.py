@@ -6,7 +6,6 @@ from collections.abc import Callable
 
 import ida_hexrays
 
-from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
@@ -102,7 +101,9 @@ def apply_dispatcher_deferred_modifier(
                 "after jtbl cross-case overlap canonicalization",
                 logger_func=getattr(logger, "error", None),
             )
-            mba_deep_cleaning(mba, True)
+            DeferredGraphModifier(mba).run_deep_cleaning(
+                call_mba_combine_block=True,
+            )
             safe_verify(
                 mba,
                 "after post-canonicalization deep clean",
@@ -138,8 +139,12 @@ def _downgrade_nway_goto_blocks(mba: object, logger: object) -> None:
             "(pre-apply sweep)",
             blk_serial,
         )
-        blk.type = ida_hexrays.BLT_1WAY
-        mba.mark_chains_dirty()
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_nway_goto_type_downgrade(
+            int(blk_serial),
+            description="dispatcher materialization nway goto pre-apply sweep",
+        )
+        modifier.apply(defer_post_apply_maintenance=True)
 
 
 def _log_debug(logger: object, message: str, *args: object) -> None:

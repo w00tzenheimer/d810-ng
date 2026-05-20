@@ -48,8 +48,8 @@ from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkva
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
-from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import (
     IDAIRTranslator,
     capture_insn_snapshot,
@@ -3010,10 +3010,6 @@ def _apply_local_alias_mem2reg(
     qty = int(getattr(mba, "qty", 0) or 0)
     setup_moves_removed = 0
     fact_ids: set[str] = set()
-    try:
-        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    except Exception:
-        return 0
     modifier = DeferredGraphModifier(mba)
     queued_keys: set[tuple[int, int, int, str, str]] = set()
     for serial in range(qty):
@@ -3420,11 +3416,6 @@ def _apply_semantic_carrier_promotions(
     scalarized = 0
     touched_blocks: set[int] = set()
     fact_ids: set[str] = set()
-    try:
-        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    except Exception:
-        return 0
-
     modifier = DeferredGraphModifier(mba)
     qty = int(getattr(mba, "qty", 0) or 0)
     for serial in range(qty):
@@ -9379,7 +9370,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             )
             return int(semantic_carrier_changes)
 
-        nb_clean = mba_deep_cleaning(mba, False)
+        nb_clean = DeferredGraphModifier(mba).run_deep_cleaning(
+            call_mba_combine_block=False,
+        )
         if total_changes + nb_clean + semantic_carrier_changes > 0:
             mba.mark_chains_dirty()
             mba.optimize_local(0)

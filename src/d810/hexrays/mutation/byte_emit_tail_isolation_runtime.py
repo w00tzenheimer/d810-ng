@@ -48,6 +48,10 @@ from d810.hexrays.mutation.byte_tail_runtime_evidence import (
     ByteTailRuntimeEvidenceProvider,
     normalize_byte_tail_runtime_evidence,
 )
+from d810.hexrays.mutation.terminal_return_literals import (
+    remember_terminal_zero_guard_literal_return_value,
+    terminal_zero_guard_literal_return_values,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -75,37 +79,21 @@ class _DagSemantics:
     edges: tuple[_DagEdge, ...]
 
 
-# Local mirror of cfg_mutations.MBL_KEEP / copy_block_keep so this runtime
-# module doesn't cross the cfg.transform -> hexrays.mutation layer boundary.
-# See memory ``ida_optimize_global_cfg_kill``: ``mba.copy_block`` does not
+# Local MBL_KEEP value used by the DGM copy helpers. See memory
+# ``ida_optimize_global_cfg_kill``: ``mba.copy_block`` does not
 # inherit MBL_KEEP, and ``optimize_global``'s structural sweep culls clones
 # without it.
 _MBL_KEEP = 0x10000
 
-_TERMINAL_ZERO_GUARD_LITERAL_RETURNS: dict[int, set[int]] = {}
-
-
-def remember_terminal_zero_guard_literal_return_value(mba: Any, value: int) -> None:
-    """Remember an in-memory literal proven for a terminal zero-guard return."""
-    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-    normalized = int(value) & 0xFFFFFFFFFFFFFFFF
-    _TERMINAL_ZERO_GUARD_LITERAL_RETURNS.setdefault(func_ea, set()).add(normalized)
-
-
 def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
-    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-    return tuple(sorted(_TERMINAL_ZERO_GUARD_LITERAL_RETURNS.get(func_ea, ())))
+    return terminal_zero_guard_literal_return_values(mba)
 
 
 def _copy_block_keep(mba, ref_blk, dest_serial):
     """``mba.copy_block`` + ``MBL_KEEP`` so the clone survives optimize_global."""
-    new_blk = mba.copy_block(ref_blk, dest_serial)
-    if new_blk is not None:
-        try:
-            new_blk.flags |= _MBL_KEEP
-        except Exception:
-            pass
-    return new_blk
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    return DeferredGraphModifier(mba).copy_block_keep_now(ref_blk, dest_serial)
 
 
 class LiveMbaAdapter:
@@ -215,28 +203,20 @@ class LiveMbaAdapter:
             predecessor -> trampoline -> successor
 
         Implementation notes:
-        - Uses ``mba.copy_block(blk, mba.qty - 1)`` to append the new
-          block at the end of the MBA. ``mba.insert_block(serial)`` in
-          mid-CFG positions causes IDA internal state corruption and
-          subsequent ``mba.verify()`` failures (see
-          ``abc_block_splitter.py:669`` for the historical note).
-        - The cloned block inherits the predecessor's contents; we NOP
-          every instruction so the trampoline carries zero semantics.
+        - Queues the trampoline through ``DeferredGraphModifier`` so the
+          Hex-Rays mutation stays behind the DGM boundary.
+        - The trampoline is an empty standalone goto shell and carries
+          zero semantics.
         - We rely on the precondition gate (``_check_preconditions``)
           to ensure ``nsucc==1`` and ``tail_kind in {goto, fallthrough}``;
           this method does not re-validate.
-        - Cannot import from ``d810.hexrays`` (layered-architecture
-          contract puts ``d810.cfg`` *below* ``d810.hexrays``), so the
-          mechanics here mirror — but do not call — the helpers in
-          ``hexrays.mutation.cfg_mutations.insert_nop_blk``.
 
         Raises ``RuntimeError`` if the SDK call family fails part-way
         through; the caller (``maybe_run_tail_distinct``) catches and
-        logs.  Best-effort atomicity: a failed
-        ``copy_block`` / ``predset`` op aborts before any pred/succ
-        rewiring, so the mba is left untouched on the typical failure.
+        logs. Best-effort atomicity comes from DGM apply: failures abort
+        before this method records the trampoline serial in the adapter.
         """
-        import ida_hexrays  # lazy import — module must load without IDA
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         mba = self._mba
         pred_blk = mba.get_mblock(int(predecessor_serial))
@@ -247,85 +227,22 @@ class LiveMbaAdapter:
                 f"pred={predecessor_serial} or succ={successor_serial}"
             )
 
-        # 1. Clone predecessor at the end of the MBA (just before the
-        #    dummy last block). copy_block(ref, dest_serial) inserts the
-        #    new block *before* dest_serial in the block list.
-        end_serial = int(mba.qty) - 1
-        tramp = _copy_block_keep(mba, pred_blk, end_serial)
-        if tramp is None:
+        expected_serial = int(mba.qty) - 1
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_create_and_redirect(
+            int(predecessor_serial),
+            int(successor_serial),
+            [],
+            expected_serial=expected_serial,
+            old_target_serial=int(successor_serial),
+            description="byte emit trampoline",
+        )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
             raise RuntimeError(
-                "insert_trampoline_after: mba.copy_block failed for "
+                "insert_trampoline_after: DGM create-and-redirect failed for "
                 f"pred={predecessor_serial}"
             )
-
-        # 2. NOP every instruction the clone inherited so the trampoline
-        #    carries zero semantics.
-        cur = tramp.head
-        while cur is not None:
-            tramp.make_nop(cur)
-            cur = cur.next
-
-        # 3. Mark as a 1-way block and clear stale pred/succ entries
-        #    that copy_block carried over from the source block.
-        tramp.type = ida_hexrays.BLT_1WAY
-        for stale_succ in [int(x) for x in tramp.succset]:
-            tramp.succset._del(stale_succ)
-            other = mba.get_mblock(stale_succ)
-            if other is not None:
-                other.predset._del(tramp.serial)
-                if other.serial != mba.qty - 1:
-                    other.mark_lists_dirty()
-        for stale_pred in [int(x) for x in tramp.predset]:
-            tramp.predset._del(stale_pred)
-
-        # 4. Append a single m_goto to ``successor_serial`` as the
-        #    trampoline's only live instruction.
-        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        goto_ins = ida_hexrays.minsn_t(safe_ea)
-        goto_ins.ea = safe_ea
-        tramp.insert_into_block(goto_ins, tramp.tail)
-        # nop-then-mutate avoids INTERR 52123 (see insert_goto_instruction)
-        tramp.make_nop(tramp.tail)
-        goto_ins.opcode = ida_hexrays.m_goto
-        goto_ins.l = ida_hexrays.mop_t()
-        goto_ins.l.make_blkref(int(successor_serial))
-        goto_ins.r = ida_hexrays.mop_t()
-        goto_ins.r.erase()
-        goto_ins.d = ida_hexrays.mop_t()
-        goto_ins.d.erase()
-        tramp.flags |= ida_hexrays.MBL_GOTO
-
-        # 5. Wire trampoline -> successor.
-        tramp.succset.push_back(int(successor_serial))
-
-        # 6. Rewire predecessor: its sole successor was successor_serial;
-        #    now it must be tramp.serial.  The precondition gate already
-        #    ensured nsucc == 1 and tail_kind in {goto, fallthrough}.
-        pred_blk.succset._del(int(successor_serial))
-        pred_blk.succset.push_back(int(tramp.serial))
-        if (
-            pred_blk.tail is not None
-            and pred_blk.tail.opcode == ida_hexrays.m_goto
-            and pred_blk.tail.l is not None
-            and pred_blk.tail.l.t == ida_hexrays.mop_b
-            and int(pred_blk.tail.l.b) == int(successor_serial)
-        ):
-            pred_blk.tail.l.make_blkref(int(tramp.serial))
-        pred_blk.mark_lists_dirty()
-
-        # 7. Update successor's predset: predecessor no longer points at
-        #    it directly; the trampoline does.
-        succ_blk.predset._del(int(predecessor_serial))
-        succ_blk.predset.push_back(int(tramp.serial))
-        if succ_blk.serial != mba.qty - 1:
-            succ_blk.mark_lists_dirty()
-
-        # 8. Trampoline's own pred set: predecessor.
-        tramp.predset.push_back(int(predecessor_serial))
-        tramp.mark_lists_dirty()
-        mba.mark_chains_dirty()
-
-        return int(tramp.serial)
+        return int(modifier._serial_remap.get(expected_serial, expected_serial))
 
     def successor_npred(self, successor_serial: int) -> int:
         mba = self._mba
@@ -420,9 +337,9 @@ class LiveMbaAdapter:
             new_blk.flags |= _MBL_KEEP
         except Exception:
             pass
-        blk.mark_lists_dirty()
-        new_blk.mark_lists_dirty()
-        mba.mark_chains_dirty()
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+        DeferredGraphModifier(mba).mark_blocks_dirty_now(blk, new_blk)
 
         return int(new_blk.serial)
 
@@ -552,7 +469,7 @@ class LiveMbaAdapter:
         explicit goto rewrite below is a belt-and-braces guard for the
         ``predecessor -> convergence`` edge specifically.
         """
-        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         mba = self._mba
         pred_blk = mba.get_mblock(int(predecessor_serial))
@@ -563,62 +480,20 @@ class LiveMbaAdapter:
                 f"pred={predecessor_serial} conv={convergence_serial}"
             )
 
-        # 1. Append clone at end of MBA via copy_block(ref, dest_serial).
-        end_serial = int(mba.qty) - 1
-        clone = _copy_block_keep(mba, conv_blk, end_serial)
-        if clone is None:
+        expected_serial = int(mba.qty) - 1
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_duplicate_block(
+            source_block_serial=int(convergence_serial),
+            pred_serial=int(predecessor_serial),
+            expected_serial=expected_serial,
+            description="byte emit convergence clone",
+        )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
             raise RuntimeError(
-                "clone_convergence_for_byte_path: mba.copy_block failed "
+                "clone_convergence_for_byte_path: DGM duplicate failed "
                 f"for conv={convergence_serial}"
             )
-        clone_serial = int(getattr(clone, "serial", end_serial))
-
-        # 2. Reset clone's predset to {predecessor_serial}.
-        # copy_block carries the source's predset over to the clone;
-        # we want the clone to be reachable only from `predecessor`.
-        for stale_pred in [int(x) for x in clone.predset]:
-            clone.predset._del(stale_pred)
-        clone.predset.push_back(int(predecessor_serial))
-
-        # 3. Convergence loses `predecessor` from its predset (clone now
-        # owns that edge).
-        conv_blk.predset._del(int(predecessor_serial))
-
-        # 4. Each successor of clone gains `clone_serial` in its predset.
-        # copy_block already wired clone -> conv's successors (clone.succset
-        # mirrors conv.succset).
-        for succ_serial in [int(x) for x in clone.succset]:
-            succ_blk = mba.get_mblock(succ_serial)
-            if succ_blk is None:
-                continue
-            succ_blk.predset.push_back(clone_serial)
-            if succ_blk.serial != mba.qty - 1:
-                succ_blk.mark_lists_dirty()
-
-        # 5. Rewire predecessor: succset entry conv_serial -> clone_serial.
-        pred_blk.succset._del(int(convergence_serial))
-        pred_blk.succset.push_back(clone_serial)
-
-        # 6. If predecessor's tail is an explicit m_goto to the
-        # convergence, rewrite the operand.  copy_block auto-rewires
-        # goto operands when blocks are renumbered, but the goto on
-        # `predecessor` predates the clone and still names
-        # `convergence_serial` — fix it explicitly.
-        if (
-            pred_blk.tail is not None
-            and int(pred_blk.tail.opcode) == int(ida_hexrays.m_goto)
-            and pred_blk.tail.l is not None
-            and pred_blk.tail.l.t == ida_hexrays.mop_b
-            and int(pred_blk.tail.l.b) == int(convergence_serial)
-        ):
-            pred_blk.tail.l.make_blkref(clone_serial)
-
-        pred_blk.mark_lists_dirty()
-        conv_blk.mark_lists_dirty()
-        clone.mark_lists_dirty()
-        mba.mark_chains_dirty()
-
-        return clone_serial
+        return int(modifier._serial_remap.get(expected_serial, expected_serial))
 
 
     # ------------------------------------------------------------------
@@ -642,6 +517,7 @@ class LiveMbaAdapter:
         and a single-successor succset pointing at ``tail_goto_target``.
         """
         import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         mba = self._mba
         template = mba.get_mblock(int(template_serial))
@@ -652,72 +528,24 @@ class LiveMbaAdapter:
                 f"{template_serial} or tail_target={tail_goto_target}"
             )
 
-        # 1. Append clone at the end of the MBA.
-        end_serial = int(mba.qty) - 1
-        clone = _copy_block_keep(mba, template, end_serial)
-        if clone is None:
+        insns = []
+        cur = template.head
+        while cur is not None:
+            if int(getattr(cur, "opcode", -1)) != int(ida_hexrays.m_goto):
+                insns.append(cur)
+            cur = cur.next
+        clone_serial = DeferredGraphModifier(mba).create_standalone_block(
+            ref_serial=int(template_serial),
+            blk_ins=insns,
+            target_serial=int(tail_goto_target),
+            verify=False,
+        )
+        if clone_serial is None:
             raise RuntimeError(
-                "clone_state_write_block: mba.copy_block failed for "
+                "clone_state_write_block: DGM create_standalone failed for "
                 f"template={template_serial}"
             )
-        clone_serial = int(getattr(clone, "serial", end_serial))
-
-        # 2. Reset clone's predset (caller wires the predecessor).
-        for stale_pred in [int(x) for x in clone.predset]:
-            clone.predset._del(stale_pred)
-
-        # 3. Drop any inherited successor edges so we can replace them
-        #    with a single m_goto edge to ``tail_goto_target``. Each old
-        #    successor loses ``clone_serial`` from its predset.
-        for stale_succ in [int(x) for x in clone.succset]:
-            clone.succset._del(stale_succ)
-            other = mba.get_mblock(stale_succ)
-            if other is not None:
-                other.predset._del(clone_serial)
-                if other.serial != mba.qty - 1:
-                    other.mark_lists_dirty()
-
-        # 4. Mark BLT_1WAY and rewrite/append the tail to a single m_goto.
-        clone.type = ida_hexrays.BLT_1WAY
-
-        # If the cloned tail is already a goto, rewrite the operand;
-        # otherwise append a fresh m_goto. We do not delete the cloned
-        # state-write instructions — the whole point is to keep them.
-        if (
-            clone.tail is not None
-            and int(clone.tail.opcode) == int(ida_hexrays.m_goto)
-        ):
-            clone.tail.l = ida_hexrays.mop_t()
-            clone.tail.l.make_blkref(int(tail_goto_target))
-            clone.tail.r = ida_hexrays.mop_t()
-            clone.tail.r.erase()
-            clone.tail.d = ida_hexrays.mop_t()
-            clone.tail.d.erase()
-        else:
-            safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-            goto_ins = ida_hexrays.minsn_t(safe_ea)
-            goto_ins.ea = safe_ea
-            clone.insert_into_block(goto_ins, clone.tail)
-            # nop-then-mutate avoids INTERR 52123 (see insert_trampoline_after)
-            clone.make_nop(clone.tail)
-            goto_ins.opcode = ida_hexrays.m_goto
-            goto_ins.l = ida_hexrays.mop_t()
-            goto_ins.l.make_blkref(int(tail_goto_target))
-            goto_ins.r = ida_hexrays.mop_t()
-            goto_ins.r.erase()
-            goto_ins.d = ida_hexrays.mop_t()
-            goto_ins.d.erase()
-        clone.flags |= ida_hexrays.MBL_GOTO
-
-        # 5. Wire clone -> tail_goto_target.
-        clone.succset.push_back(int(tail_goto_target))
-        tail_target_blk.predset.push_back(clone_serial)
-        if tail_target_blk.serial != mba.qty - 1:
-            tail_target_blk.mark_lists_dirty()
-        clone.mark_lists_dirty()
-        mba.mark_chains_dirty()
-
-        return clone_serial
+        return int(clone_serial)
 
     def redirect_advance_edge(
         self,
@@ -738,7 +566,7 @@ class LiveMbaAdapter:
         Updates predset/succset symmetrically and marks affected blocks
         dirty. ``mba.mark_chains_dirty`` is invoked at the end.
         """
-        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         mba = self._mba
         src = mba.get_mblock(int(source_serial))
@@ -750,65 +578,26 @@ class LiveMbaAdapter:
                 f"src={source_serial} old={old_target_serial} "
                 f"new={new_target_serial}"
             )
-        source_succs = [int(x) for x in src.succset]
-
-        # Rewrite tail operand (best-effort; falls through to succset
-        # rewrite for fallthrough tails).
-        tail = src.tail
-        if tail is not None:
-            try:
-                opc = int(tail.opcode)
-            except AttributeError:
-                opc = -1
-            cond_opcodes = {
-                int(ida_hexrays.m_jnz),
-                int(ida_hexrays.m_jz),
-                int(ida_hexrays.m_jl),
-                int(ida_hexrays.m_jle),
-                int(ida_hexrays.m_jg),
-                int(ida_hexrays.m_jge),
-                int(ida_hexrays.m_jb),
-                int(ida_hexrays.m_jbe),
-                int(ida_hexrays.m_ja),
-                int(ida_hexrays.m_jae),
-                int(ida_hexrays.m_jcnd),
-            }
-            if opc == int(ida_hexrays.m_goto):
-                # m_goto: branch target is in tail.l (mop_b).
-                if (
-                    tail.l is not None
-                    and tail.l.t == ida_hexrays.mop_b
-                    and (
-                        int(tail.l.b) == int(old_target_serial)
-                        or source_succs == [int(old_target_serial)]
-                    )
-                ):
-                    tail.l.make_blkref(int(new_target_serial))
-            elif opc in cond_opcodes:
-                # Conditional jump: branch target is in tail.d (mop_b).
-                # The other arm (early return / fallthrough) goes to
-                # serial+1; do NOT touch it.
-                if (
-                    tail.d is not None
-                    and tail.d.t == ida_hexrays.mop_b
-                    and int(tail.d.b) == int(old_target_serial)
-                ):
-                    tail.d.make_blkref(int(new_target_serial))
-            # Fallthrough tails (no branch operand) are handled by the
-            # succset rewrite below alone.
-
-        # Symmetrically update succset/predset.
-        src.succset._del(int(old_target_serial))
-        src.succset.push_back(int(new_target_serial))
-        old_blk.predset._del(int(source_serial))
-        new_blk.predset.push_back(int(source_serial))
-
-        src.mark_lists_dirty()
-        if old_blk.serial != mba.qty - 1:
-            old_blk.mark_lists_dirty()
-        if new_blk.serial != mba.qty - 1:
-            new_blk.mark_lists_dirty()
-        mba.mark_chains_dirty()
+        modifier = DeferredGraphModifier(mba)
+        if int(src.nsucc()) == 1:
+            modifier.queue_goto_change(
+                int(source_serial),
+                int(new_target_serial),
+                description="byte emit advance edge redirect",
+            )
+        else:
+            modifier.queue_conditional_target_change(
+                int(source_serial),
+                int(new_target_serial),
+                old_target=int(old_target_serial),
+                description="byte emit conditional advance edge redirect",
+            )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
+            raise RuntimeError(
+                "redirect_advance_edge: DGM redirect failed "
+                f"src={source_serial} old={old_target_serial} "
+                f"new={new_target_serial}"
+            )
 
     def redirect_fallthrough_edge(
         self,
@@ -826,12 +615,7 @@ class LiveMbaAdapter:
 
         Returns the live helper serial that now owns the redirected edge.
         """
-        import ida_hexrays  # lazy: IDA may be absent at unit-test time
-        from d810.hexrays.mutation.cfg_mutations import (
-            _get_fallthrough_successor_serial,
-            change_1way_block_successor,
-            insert_nop_blk,
-        )
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         mba = self._mba
         src = mba.get_mblock(int(source_serial))
@@ -840,70 +624,15 @@ class LiveMbaAdapter:
                 "redirect_fallthrough_edge: cannot resolve "
                 f"src={source_serial}"
             )
-        if src.nsucc() != 2:
-            self.redirect_advance_edge(
-                source_serial=int(source_serial),
-                old_target_serial=int(old_target_serial),
-                new_target_serial=int(new_target_serial),
-            )
-            return int(source_serial)
-
-        conditional_target = (
-            int(src.tail.d.b)
-            if src.tail is not None
-            and ida_hexrays.is_mcode_jcond(src.tail.opcode)
-            and src.tail.d is not None
-            and src.tail.d.t == ida_hexrays.mop_b
-            else None
-        )
-        if conditional_target == int(old_target_serial):
-            self.redirect_advance_edge(
-                source_serial=int(source_serial),
-                old_target_serial=int(old_target_serial),
-                new_target_serial=int(new_target_serial),
-            )
-            return int(source_serial)
-
-        fallthrough_target = _get_fallthrough_successor_serial(src)
-        if fallthrough_target is None:
-            raise RuntimeError(
-                "redirect_fallthrough_edge: source has no fallthrough "
-                f"src={source_serial}"
-            )
-        if int(fallthrough_target) != int(old_target_serial):
-            raise RuntimeError(
-                "redirect_fallthrough_edge: fallthrough mismatch "
-                f"src={source_serial} expected={old_target_serial} "
-                f"actual={fallthrough_target}"
-            )
-
-        new_target_blk = mba.get_mblock(int(new_target_serial))
-        if new_target_blk is None:
-            raise RuntimeError(
-                "redirect_fallthrough_edge: cannot resolve "
-                f"new={new_target_serial}"
-            )
-
         old_qty = int(mba.qty)
-        helper = insert_nop_blk(src)
-        if helper is None:
-            raise RuntimeError(
-                "redirect_fallthrough_edge: failed to synthesize helper "
-                f"src={source_serial}"
-            )
-        self._record_inserted_serial(int(helper.serial), old_qty)
-        changed = change_1way_block_successor(
-            helper,
-            int(new_target_blk.serial),
-            verify=False,
+        helper_serial = DeferredGraphModifier(mba).redirect_fallthrough_edge_now(
+            source_serial=int(source_serial),
+            old_target_serial=int(old_target_serial),
+            new_target_serial=int(new_target_serial),
         )
-        if not changed:
-            raise RuntimeError(
-                "redirect_fallthrough_edge: failed to retarget helper "
-                f"helper={helper.serial} new={new_target_blk.serial}"
-            )
-        mba.mark_chains_dirty()
-        return int(helper.serial)
+        if int(helper_serial) != int(source_serial):
+            self._record_inserted_serial(int(helper_serial), old_qty)
+        return int(helper_serial)
 
     def clear_state_frontier_payload(self, block_serial: int) -> None:
         """NOP non-goto instructions in a state-frontier block.
@@ -913,27 +642,11 @@ class LiveMbaAdapter:
         return-carrier write. The block's outgoing edge remains responsible
         for reaching the canonical return frontier.
         """
-        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        mba = self._mba
-        blk = mba.get_mblock(int(block_serial))
-        if blk is None:
-            raise RuntimeError(
-                "clear_state_frontier_payload: cannot resolve "
-                f"blk={block_serial}"
-            )
-        cur = blk.head
-        while cur is not None:
-            nxt = cur.next
-            try:
-                opcode = int(cur.opcode)
-            except Exception:
-                opcode = -1
-            if opcode != int(ida_hexrays.m_goto):
-                blk.make_nop(cur)
-            cur = nxt
-        blk.mark_lists_dirty()
-        mba.mark_chains_dirty()
+        DeferredGraphModifier(self._mba).clear_state_frontier_payload_now(
+            int(block_serial),
+        )
 
     # ------------------------------------------------------------------
     # Byte-store anchor (Track D byte_store mechanism — reference-style
@@ -1067,26 +780,12 @@ class LiveMbaAdapter:
                 f"containing m_stx for v190+#{template_byte_index}.8"
             )
 
-        end_serial = int(mba.qty) - 1
-        anchor = _copy_block_keep(mba, template_block, end_serial)
-        if anchor is None:
-            raise RuntimeError(
-                f"copy_block failed for template={template_block.serial}"
-            )
-
-        # CRITICAL: mba.copy_block may shallow-share nested mop_t objects
-        # between the template and the clone. Break that sharing by
-        # deep-cloning every operand tree in the new anchor.
-        cur_dc = anchor.head
-        while cur_dc is not None:
-            _deepclone_minsn_operands(cur_dc, _ih)
-            cur_dc = cur_dc.next
-
-        # Refresh serials post-copy_block (BLT_STOP shifts).
+        # Build the cloned anchor body outside the live CFG. DGM owns the
+        # actual block allocation, insertion, and edge rewiring.
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
 
-        # Walk the clone: KEEP byte_emit instructions (m_sar, m_shl,
+        # Walk the template: KEEP byte_emit instructions (m_sar, m_shl,
         # m_xdu, m_ldx, m_stx), NOP everything else (state-write m_mov
         # with literal constants, original m_goto, etc.). Then patch
         # the byte index in any kept instruction.
@@ -1096,8 +795,9 @@ class LiveMbaAdapter:
             # Also keep arithmetic helpers that may appear:
             int(_ih.m_add), int(_ih.m_and), int(_ih.m_mul),
         }
-        cur = anchor.head
+        cur = template_block.head
         patch_count = 0
+        anchor_insns = []
         # All anchors write to the same slot as the host (host's slot is
         # observed by downstream code). To prevent IDA from dedup'ing
         # consecutive writes-to-same-slot, each anchor's byte goes to a
@@ -1110,8 +810,10 @@ class LiveMbaAdapter:
         shift_delta = (target_byte_index - template_byte_index) * 8
         while cur is not None:
             if int(cur.opcode) in byte_emit_opcodes:
+                cloned = _ih.minsn_t(cur)
+                _deepclone_minsn_operands(cloned, _ih)
                 # Patch byte_index in operand trees.
-                for op in (cur.l, cur.r, cur.d):
+                for op in (cloned.l, cloned.r, cloned.d):
                     if op is not None:
                         if _patch_v190_byte_const(
                             op, template_byte_index, target_byte_index, _ih,
@@ -1122,11 +824,11 @@ class LiveMbaAdapter:
                 # all 5 to one).
                 # m_stx layout per SDK: l=value, r=segment(2), d=address.
                 # So we wrap cur.d (the address), NOT cur.r (segment).
-                if int(cur.opcode) == int(_ih.m_stx) and offset_delta != 0:
-                    if cur.d is not None:
+                if int(cloned.opcode) == int(_ih.m_stx) and offset_delta != 0:
+                    if cloned.d is not None:
                         _wrap_address_with_offset(
-                            cur.d, offset_delta, _ih,
-                            ea=int(getattr(cur, "ea", 0) or 0),
+                            cloned.d, offset_delta, _ih,
+                            ea=int(getattr(cloned, "ea", 0) or 0),
                         )
                 # For ANY m_shl (top-level OR nested inside m_stx's value
                 # tree), add shift_delta to its shift count (m_shl.r) so
@@ -1134,86 +836,47 @@ class LiveMbaAdapter:
                 # buffer slot.
                 if shift_delta != 0:
                     _wrap_all_nested_shifts(
-                        cur, shift_delta, _ih,
-                        ea=int(getattr(cur, "ea", 0) or 0),
+                        cloned, shift_delta, _ih,
+                        ea=int(getattr(cloned, "ea", 0) or 0),
                     )
-            else:
-                anchor.make_nop(cur)
+                anchor_insns.append(cloned)
             cur = cur.next
         logger.info(
             "byte_anchor[byte_store]: clone of block %d for byte %d->%d: %d patches applied",
             template_block.serial, template_byte_index, target_byte_index, patch_count,
         )
         # Dump ALL kept instructions + walk every operand tree level.
-        cur = anchor.head
-        idx = 0
-        while cur is not None:
-            if int(cur.opcode) in byte_emit_opcodes:
-                try:
-                    ds = cur.dstr() if callable(getattr(cur, "dstr", None)) else ""
-                except Exception:
-                    ds = "<err>"
-                logger.info(
-                    "byte_anchor[byte_store]:   anchor[%d] kept insn[%d]: %s",
-                    anchor.serial, idx, ds[:300],
-                )
-                # Walk and log every operand in the tree.
-                if idx == 1:  # the m_shl (smaller; has the v190 reference)
-                    _dump_mop_tree(cur.l, "l", 0, _ih)
-                    _dump_mop_tree(cur.r, "r", 0, _ih)
-                    _dump_mop_tree(cur.d, "d", 0, _ih)
-                idx += 1
-            cur = cur.next
+        for idx, insn in enumerate(anchor_insns):
+            try:
+                ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+            except Exception:
+                ds = "<err>"
+            logger.info(
+                "byte_anchor[byte_store]:   kept insn[%d]: %s",
+                idx, ds[:300],
+            )
+            if idx == 1:
+                _dump_mop_tree(insn.l, "l", 0, _ih)
+                _dump_mop_tree(insn.r, "r", 0, _ih)
+                _dump_mop_tree(insn.d, "d", 0, _ih)
 
-        # Now wire BLT_1WAY topology and append goto.
-        anchor.type = _ih.BLT_1WAY
-        for stale_succ in [int(x) for x in anchor.succset]:
-            anchor.succset._del(stale_succ)
-            other = mba.get_mblock(stale_succ)
-            if other is not None:
-                other.predset._del(anchor.serial)
-                if other.serial != mba.qty - 1:
-                    other.mark_lists_dirty()
-        for stale_pred in [int(x) for x in anchor.predset]:
-            anchor.predset._del(stale_pred)
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        goto_ins = _ih.minsn_t(safe_ea)
-        goto_ins.ea = safe_ea
-        anchor.insert_into_block(goto_ins, anchor.tail)
-        anchor.make_nop(anchor.tail)
-        goto_ins.opcode = _ih.m_goto
-        goto_ins.l = _ih.mop_t()
-        goto_ins.l.make_blkref(int(successor_serial))
-        goto_ins.r = _ih.mop_t()
-        goto_ins.r.erase()
-        goto_ins.d = _ih.mop_t()
-        goto_ins.d.erase()
-        anchor.flags |= _ih.MBL_GOTO
-
-        anchor.succset.push_back(int(successor_serial))
-        pred_blk.succset._del(int(successor_serial))
-        pred_blk.succset.push_back(int(anchor.serial))
-        if (
-            pred_blk.tail is not None
-            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
-            and pred_blk.tail.l is not None
-            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
-            and int(pred_blk.tail.l.b) == int(successor_serial)
-        ):
-            pred_blk.tail.l.make_blkref(int(anchor.serial))
-        pred_blk.mark_lists_dirty()
-
-        succ_blk.predset._del(int(predecessor_serial))
-        succ_blk.predset.push_back(int(anchor.serial))
-        if succ_blk.serial != mba.qty - 1:
-            succ_blk.mark_lists_dirty()
-
-        anchor.predset.push_back(int(predecessor_serial))
-        anchor.mark_lists_dirty()
-        mba.mark_chains_dirty()
-
-        return int(anchor.serial)
+        expected_serial = int(mba.qty) - 1
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_create_and_redirect(
+            int(predecessor_serial),
+            int(successor_serial),
+            anchor_insns,
+            expected_serial=expected_serial,
+            old_target_serial=int(successor_serial),
+            description="byte emit replica anchor",
+        )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
+            raise RuntimeError(
+                "insert_byte_emit_replica_anchor: DGM create-and-redirect failed"
+            )
+        return int(modifier._serial_remap.get(expected_serial, expected_serial))
 
     # ------------------------------------------------------------------
     # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
@@ -1399,47 +1062,14 @@ class LiveMbaAdapter:
                 "not resolvable"
             )
 
-        # 1. Clone predecessor at end of mba.
-        end_serial = int(mba.qty) - 1
-        anchor = _copy_block_keep(mba, pred_blk, end_serial)
-        if anchor is None:
-            raise RuntimeError(
-                f"insert_anchor_block_xor_pair: copy_block failed for "
-                f"pred={predecessor_serial}"
-            )
-
-        # CRITICAL: mba.copy_block can shift the serials of blocks at
-        # and beyond end_serial (the dummy BLT_STOP block in particular
-        # always shifts by +1). The integer `successor_serial` captured
-        # before copy_block may now point at a DIFFERENT block. Block
-        # references (succ_blk, pred_blk) auto-track shifts; refresh the
-        # integer from succ_blk.serial.
         successor_serial = int(succ_blk.serial)
         predecessor_serial = int(pred_blk.serial)
 
-        # 2. NOP every inherited instruction.
-        cur = anchor.head
-        while cur is not None:
-            anchor.make_nop(cur)
-            cur = cur.next
-
-        # 3. Mark as 1-way; clear stale pred/succ entries copy_block carried over.
-        anchor.type = _ih.BLT_1WAY
-        for stale_succ in [int(x) for x in anchor.succset]:
-            anchor.succset._del(stale_succ)
-            other = mba.get_mblock(stale_succ)
-            if other is not None:
-                other.predset._del(anchor.serial)
-                if other.serial != mba.qty - 1:
-                    other.mark_lists_dirty()
-        for stale_pred in [int(x) for x in anchor.predset]:
-            anchor.predset._del(stale_pred)
-
-        # 4. Allocate a fresh kreg pair for the byte load + zero-extend.
+        # Allocate a fresh kreg pair for the byte load + zero-extend.
         safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
         kreg_id = int(mba.alloc_kreg(8))
 
-        # 5. m_ldx kreg(1) <- [seg : source_addr_operand]
+        # m_ldx kreg(1) <- [seg : source_addr_operand]
         # Clone segment operand from any existing m_stx/m_ldx in the mba
         # since the IDA segment-register constant (mr_ds) is not always
         # exposed in the Python bindings on every IDA version.
@@ -1451,8 +1081,6 @@ class LiveMbaAdapter:
             )
         ldx_ins = _ih.minsn_t(safe_ea)
         ldx_ins.ea = safe_ea
-        anchor.insert_into_block(ldx_ins, anchor.tail)
-        anchor.make_nop(anchor.tail)
         ldx_ins.opcode = _ih.m_ldx
         ldx_ins.l = _ih.mop_t()
         ldx_ins.l.assign(seg_template)
@@ -1461,11 +1089,9 @@ class LiveMbaAdapter:
         ldx_ins.d = _ih.mop_t()
         ldx_ins.d.make_reg(kreg_id, 1)
 
-        # 6. m_xdu kreg(8) <- kreg(1)
+        # m_xdu kreg(8) <- kreg(1)
         xdu_ins = _ih.minsn_t(safe_ea)
         xdu_ins.ea = safe_ea
-        anchor.insert_into_block(xdu_ins, anchor.tail)
-        anchor.make_nop(anchor.tail)
         xdu_ins.opcode = _ih.m_xdu
         xdu_ins.l = _ih.mop_t()
         xdu_ins.l.make_reg(kreg_id, 1)
@@ -1474,11 +1100,9 @@ class LiveMbaAdapter:
         xdu_ins.d = _ih.mop_t()
         xdu_ins.d.make_reg(kreg_id, 8)
 
-        # 7. m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
+        # m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
         xor_ins = _ih.minsn_t(safe_ea)
         xor_ins.ea = safe_ea
-        anchor.insert_into_block(xor_ins, anchor.tail)
-        anchor.make_nop(anchor.tail)
         xor_ins.opcode = _ih.m_xor
         xor_ins.l = _ih.mop_t()
         xor_ins.l.make_stkvar(mba, int(accumulator_stkoff))
@@ -1489,48 +1113,23 @@ class LiveMbaAdapter:
         xor_ins.d.make_stkvar(mba, int(accumulator_stkoff))
         xor_ins.d.size = 8
 
-        # 8. m_goto @successor
-        goto_ins = _ih.minsn_t(safe_ea)
-        goto_ins.ea = safe_ea
-        anchor.insert_into_block(goto_ins, anchor.tail)
-        anchor.make_nop(anchor.tail)
-        goto_ins.opcode = _ih.m_goto
-        goto_ins.l = _ih.mop_t()
-        goto_ins.l.make_blkref(int(successor_serial))
-        goto_ins.r = _ih.mop_t()
-        goto_ins.r.erase()
-        goto_ins.d = _ih.mop_t()
-        goto_ins.d.erase()
-        anchor.flags |= _ih.MBL_GOTO
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
-        # 9. Wire anchor -> successor.
-        anchor.succset.push_back(int(successor_serial))
-
-        # 10. Rewire predecessor: pred->succ becomes pred->anchor->succ.
-        pred_blk.succset._del(int(successor_serial))
-        pred_blk.succset.push_back(int(anchor.serial))
-        if (
-            pred_blk.tail is not None
-            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
-            and pred_blk.tail.l is not None
-            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
-            and int(pred_blk.tail.l.b) == int(successor_serial)
-        ):
-            pred_blk.tail.l.make_blkref(int(anchor.serial))
-        pred_blk.mark_lists_dirty()
-
-        # 11. Update successor's predset.
-        succ_blk.predset._del(int(predecessor_serial))
-        succ_blk.predset.push_back(int(anchor.serial))
-        if succ_blk.serial != mba.qty - 1:
-            succ_blk.mark_lists_dirty()
-
-        # 12. Anchor's own pred set.
-        anchor.predset.push_back(int(predecessor_serial))
-        anchor.mark_lists_dirty()
-        mba.mark_chains_dirty()
-
-        return int(anchor.serial)
+        expected_serial = int(mba.qty) - 1
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_create_and_redirect(
+            int(predecessor_serial),
+            int(successor_serial),
+            [ldx_ins, xdu_ins, xor_ins],
+            expected_serial=expected_serial,
+            old_target_serial=int(successor_serial),
+            description="byte emit xor-pair anchor",
+        )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
+            raise RuntimeError(
+                "insert_anchor_block_xor_pair: DGM create-and-redirect failed"
+            )
+        return int(modifier._serial_remap.get(expected_serial, expected_serial))
 
 
 def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
@@ -2891,68 +2490,34 @@ def _clone_terminal_return_block_for_source(
     if len(return_successors) != 1:
         return None
 
-    insert_serial = int(mba.qty) - 1
     successor_serial = int(return_successors[0])
-    if successor_serial >= insert_serial:
-        successor_serial += 1
-    clone = _copy_block_keep(mba, return_block, insert_serial)
-    if clone is None:
+    insns = []
+    cur = return_block.head
+    while cur is not None:
+        if int(getattr(cur, "opcode", -1)) != int(ida_hexrays.m_goto):
+            insns.append(cur)
+        cur = cur.next
+
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+    creator = DeferredGraphModifier(mba)
+    clone_serial = creator.create_standalone_block(
+        ref_serial=int(return_serial),
+        blk_ins=insns,
+        target_serial=int(successor_serial),
+        verify=False,
+    )
+    if clone_serial is None:
         return None
-    clone_serial = int(getattr(clone, "serial", insert_serial))
-
-    for stale_pred in [int(pred) for pred in getattr(clone, "predset", ())]:
-        clone.predset._del(stale_pred)
-    clone.predset.push_back(int(source_serial))
-    return_block.predset._del(int(source_serial))
-
-    for stale_succ in [int(succ) for succ in getattr(clone, "succset", ())]:
-        clone.succset._del(stale_succ)
-        succ_blk = mba.get_mblock(stale_succ)
-        if succ_blk is None:
-            continue
-        succ_blk.predset._del(clone_serial)
-        if succ_blk.serial != mba.qty - 1:
-            succ_blk.mark_lists_dirty()
-
-    clone.succset.push_back(int(successor_serial))
-    successor_blk = mba.get_mblock(int(successor_serial))
-    if successor_blk is not None:
-        successor_blk.predset.push_back(clone_serial)
-        if successor_blk.serial != mba.qty - 1:
-            successor_blk.mark_lists_dirty()
-
-    clone.type = ida_hexrays.BLT_1WAY
-    clone_tail = getattr(clone, "tail", None)
-    if clone_tail is not None and int(getattr(clone_tail, "opcode", -1)) == int(ida_hexrays.m_goto):
-        clone_tail.l = ida_hexrays.mop_t()
-        clone_tail.l.make_blkref(int(successor_serial))
-        clone_tail.r = ida_hexrays.mop_t()
-        clone_tail.r.erase()
-        clone_tail.d = ida_hexrays.mop_t()
-        clone_tail.d.erase()
-    else:
-        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        goto_ins = ida_hexrays.minsn_t(safe_ea)
-        goto_ins.ea = safe_ea
-        clone.insert_into_block(goto_ins, clone.tail)
-        clone.make_nop(clone.tail)
-        goto_ins.opcode = ida_hexrays.m_goto
-        goto_ins.l = ida_hexrays.mop_t()
-        goto_ins.l.make_blkref(int(successor_serial))
-        goto_ins.r = ida_hexrays.mop_t()
-        goto_ins.r.erase()
-        goto_ins.d = ida_hexrays.mop_t()
-        goto_ins.d.erase()
-    clone.flags |= ida_hexrays.MBL_GOTO
-
-    source.succset._del(int(return_serial))
-    source.succset.push_back(clone_serial)
-    tail.d.make_blkref(clone_serial)
-
-    source.mark_lists_dirty()
-    return_block.mark_lists_dirty()
-    clone.mark_lists_dirty()
-    mba.mark_chains_dirty()
+    redirect = DeferredGraphModifier(mba)
+    redirect.queue_conditional_target_change(
+        int(source_serial),
+        int(clone_serial),
+        old_target=int(return_serial),
+        description="terminal zero-guard shared return clone",
+    )
+    if redirect.apply(defer_post_apply_maintenance=True) <= 0:
+        return None
     logger.info(
         "terminal_zero_guard_literal_return_edges: cloned shared return "
         "source=blk[%d] return=blk[%d] clone=blk[%d] literal=0x%X",
@@ -2961,7 +2526,7 @@ def _clone_terminal_return_block_for_source(
         int(clone_serial),
         int(literal_value),
     )
-    return clone_serial
+    return int(clone_serial)
 
 
 def _rewrite_terminal_return_block_to_literal(
@@ -3008,8 +2573,9 @@ def _rewrite_terminal_return_block_to_literal(
                 size,
                 int(getattr(mba, "entry_ea", 0) or 0),
             )
-            block.mark_lists_dirty()
-            mba.mark_chains_dirty()
+            from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+            DeferredGraphModifier(mba).mark_blocks_dirty_now(block)
             return True
         cur = cur.next
     return False
