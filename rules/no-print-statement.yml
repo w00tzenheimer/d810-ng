@@ -23,7 +23,6 @@ files:
 
 ignores:
   - "src/d810/_vendor/**"
-  - "src/d810/mba/backends/egglog_backend.py"  # __main__ dev runner
   - "src/d810/qt_shim.py"                      # pre-logging startup error (before logger available)
 
 message: |

@@ -19,11 +19,6 @@ severity: error
 files:
   - "src/d810/**/*.py"
 
-ignores:
-  - "src/d810/core/logging.py"
-  - "src/d810/_vendor/**"
-  - "src/d810/mba/backends/egglog_backend.py"  # suppresses third-party egglog logger noise
-
 message: |
   setLevel() with a stdlib logging constant is forbidden.
   Use the string form instead — no import required:

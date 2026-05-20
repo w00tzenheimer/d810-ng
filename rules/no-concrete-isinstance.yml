@@ -18,7 +18,6 @@ files:
 
 ignores:
   - "**"
-  - "src/d810/_vendor/**"
 
 message: |
   isinstance() with concrete class may break after hot reload.
