@@ -9,6 +9,7 @@ from d810.core import getLogger
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
+    legacy_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -107,6 +108,7 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
         )
         enable_phase_reorder = bool(self.config.get("enable_phase_reorder", False))
         if profile_name in {
+            "",
             "state_dispatcher_map",
             "state_map",
             "recon_state_map",
@@ -119,6 +121,15 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
                     ),
                     enable_phase_reorder=enable_phase_reorder,
                 )
+            )
+        elif profile_name in {
+            "legacy_father_history",
+            "ollvm_legacy_father_history",
+            "father_history",
+            "ollvm",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=legacy_father_history_dispatcher_profile()
             )
         elif profile_name in {
             "tigress_switch",
@@ -169,7 +180,11 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
                 )
             )
         else:
-            self._family = EmulatedDispatcherStrategyFamily()
+            raise ValueError(
+                "Unknown EmulatedDispatcherUnflattener profile "
+                f"{profile_name!r}; expected state_dispatcher_map, "
+                "legacy_father_history, tigress_switch, or tigress_indirect"
+            )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if not super().check_if_rule_should_be_used(blk):

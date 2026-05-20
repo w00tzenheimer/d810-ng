@@ -906,7 +906,9 @@
       {
         "name": "EmulatedDispatcherUnflattener",
         "is_activated": true,
-        "config": {}
+        "config": {
+          "profile": "legacy_father_history"
+        }
       },
       {
         "name": "JumpFixer",

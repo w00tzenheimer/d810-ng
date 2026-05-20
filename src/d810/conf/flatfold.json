@@ -1147,7 +1147,9 @@
     {
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
-      "config": {}
+      "config": {
+        "profile": "state_dispatcher_map"
+      }
     }
   ]
 }
