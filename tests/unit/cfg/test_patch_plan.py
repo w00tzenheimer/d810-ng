@@ -12,6 +12,8 @@ import pytest
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.graph_modification import (
+    BypassDispatcherTrampoline,
+    CanonicalizeJumpTableCaseOverlap,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
@@ -21,9 +23,13 @@ from d810.cfg.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
+    LowerConditionalStateTransition,
+    NormalizeNWayDispatcherExit,
     NopInstructions,
+    PhaseCycleLowering,
     RedirectGoto,
     RemoveEdge,
+    ScalarizeLocalAliasAccess,
 )
 from d810.cfg.materialization_payload import (
     CapturedBlockBody,
@@ -41,10 +47,16 @@ from d810.cfg.plan import (
     PatchEdgeRef,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
+    PatchLowerConditionalStateTransition,
+    PatchNormalizeNWayDispatcherExit,
     PatchNopInstructions,
+    PatchBypassDispatcherTrampoline,
+    PatchCanonicalizeJumpTableCaseOverlap,
+    PatchPhaseCycleLowering,
     PatchPlan,
     PatchRedirectGoto,
     PatchRemoveEdge,
+    PatchScalarizeLocalAliasAccess,
     VirtualBlockId,
     compile_patch_plan,
     ensure_patch_plan,
@@ -1072,3 +1084,63 @@ def test_compile_patch_plan_rejects_invalid_branch_arm_clone_shapes(
 ):
     with pytest.raises(ValueError, match=match):
         compile_patch_plan([modification], _branch_arm_clone_cfg())
+
+
+def test_compile_patch_plan_round_trips_legacy_flow_primitives():
+    condition = ("mop", "cond")
+    modifications = [
+        LowerConditionalStateTransition(
+            source_serial=10,
+            old_dispatcher_serial=2,
+            rewrite_from_ea=0x401000,
+            condition_operand=condition,
+            false_target_serial=20,
+            true_target_serial=30,
+            proof_id="abc-proof",
+        ),
+        NormalizeNWayDispatcherExit(
+            block_serial=11,
+            dispatcher_entry_serial=2,
+            keep_target_serial=40,
+        ),
+        BypassDispatcherTrampoline(
+            source_serial=12,
+            trampoline_serial=2,
+            target_serial=41,
+        ),
+        CanonicalizeJumpTableCaseOverlap(
+            jtbl_serial=13,
+            retarget_map=((50, 60), (51, 61)),
+            deduplicate=True,
+        ),
+        ScalarizeLocalAliasAccess(
+            block_serial=14,
+            host_ea=0x401040,
+            host_opcode=123,
+            alias_token="var_10",
+            base_token="var_20",
+            host_text_sha1="abc123",
+            value_size=8,
+        ),
+        PhaseCycleLowering(
+            header_entries=(15,),
+            header_target=16,
+            body_entries=(17,),
+            body_target=15,
+            next_phase_entries=(18,),
+            next_phase_target=19,
+            terminal_entries=(20,),
+            terminal_target=21,
+            state_roles=(("header", 15),),
+        ),
+    ]
+
+    plan = compile_patch_plan(modifications)
+
+    assert isinstance(plan.steps[0], PatchLowerConditionalStateTransition)
+    assert isinstance(plan.steps[1], PatchNormalizeNWayDispatcherExit)
+    assert isinstance(plan.steps[2], PatchBypassDispatcherTrampoline)
+    assert isinstance(plan.steps[3], PatchCanonicalizeJumpTableCaseOverlap)
+    assert isinstance(plan.steps[4], PatchScalarizeLocalAliasAccess)
+    assert isinstance(plan.steps[5], PatchPhaseCycleLowering)
+    assert plan.as_graph_modifications() == modifications

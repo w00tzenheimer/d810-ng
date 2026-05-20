@@ -39,6 +39,8 @@ class ExecutionPolicy(str, Enum):
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
+    BypassDispatcherTrampoline,
+    CanonicalizeJumpTableCaseOverlap,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
@@ -50,8 +52,11 @@ from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
+    LowerConditionalStateTransition,
+    NormalizeNWayDispatcherExit,
     NopInstructions,
     ZeroStateWrite,
+    PhaseCycleLowering,
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
@@ -62,6 +67,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
+    ScalarizeLocalAliasAccess,
 )
 from d810.cfg.materialization_payload import CapturedBlockBody
 
@@ -208,6 +214,120 @@ class PatchPromoteOperandToScalar:
             host_ea=self.host_ea,
             host_opcode=self.host_opcode,
             operand_side=self.operand_side,
+        )
+
+
+@dataclass(frozen=True)
+class PatchLowerConditionalStateTransition:
+    source_serial: int
+    old_dispatcher_serial: int
+    rewrite_from_ea: int
+    condition_operand: object
+    false_target_serial: int
+    true_target_serial: int
+    proof_id: str | None = None
+
+    def to_graph_modification(self) -> LowerConditionalStateTransition:
+        return LowerConditionalStateTransition(
+            source_serial=self.source_serial,
+            old_dispatcher_serial=self.old_dispatcher_serial,
+            rewrite_from_ea=self.rewrite_from_ea,
+            condition_operand=self.condition_operand,
+            false_target_serial=self.false_target_serial,
+            true_target_serial=self.true_target_serial,
+            proof_id=self.proof_id,
+        )
+
+
+@dataclass(frozen=True)
+class PatchNormalizeNWayDispatcherExit:
+    block_serial: int
+    dispatcher_entry_serial: int
+    keep_target_serial: int | None = None
+
+    def to_graph_modification(self) -> NormalizeNWayDispatcherExit:
+        return NormalizeNWayDispatcherExit(
+            block_serial=self.block_serial,
+            dispatcher_entry_serial=self.dispatcher_entry_serial,
+            keep_target_serial=self.keep_target_serial,
+        )
+
+
+@dataclass(frozen=True)
+class PatchBypassDispatcherTrampoline:
+    source_serial: int
+    trampoline_serial: int
+    target_serial: int
+
+    def to_graph_modification(self) -> BypassDispatcherTrampoline:
+        return BypassDispatcherTrampoline(
+            source_serial=self.source_serial,
+            trampoline_serial=self.trampoline_serial,
+            target_serial=self.target_serial,
+        )
+
+
+@dataclass(frozen=True)
+class PatchCanonicalizeJumpTableCaseOverlap:
+    jtbl_serial: int
+    retarget_map: tuple[tuple[int, int], ...]
+    deduplicate: bool = False
+
+    def to_graph_modification(self) -> CanonicalizeJumpTableCaseOverlap:
+        return CanonicalizeJumpTableCaseOverlap(
+            jtbl_serial=self.jtbl_serial,
+            retarget_map=self.retarget_map,
+            deduplicate=self.deduplicate,
+        )
+
+
+@dataclass(frozen=True)
+class PatchScalarizeLocalAliasAccess:
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    alias_token: str
+    base_token: str
+    host_text_sha1: str | None = None
+    value_size: int | None = None
+
+    def to_graph_modification(self) -> ScalarizeLocalAliasAccess:
+        return ScalarizeLocalAliasAccess(
+            block_serial=self.block_serial,
+            host_ea=self.host_ea,
+            host_opcode=self.host_opcode,
+            alias_token=self.alias_token,
+            base_token=self.base_token,
+            host_text_sha1=self.host_text_sha1,
+            value_size=self.value_size,
+        )
+
+
+@dataclass(frozen=True)
+class PatchPhaseCycleLowering:
+    header_entries: tuple[int, ...]
+    header_target: int
+    body_entries: tuple[int, ...]
+    body_target: int
+    next_phase_entries: tuple[int, ...]
+    next_phase_target: int
+    terminal_entries: tuple[int, ...] = ()
+    terminal_target: int | None = None
+    state_roles: tuple[tuple[str, int], ...] = ()
+    reason: str = "dispatcher_phase_cycle"
+
+    def to_graph_modification(self) -> PhaseCycleLowering:
+        return PhaseCycleLowering(
+            header_entries=self.header_entries,
+            header_target=self.header_target,
+            body_entries=self.body_entries,
+            body_target=self.body_target,
+            next_phase_entries=self.next_phase_entries,
+            next_phase_target=self.next_phase_target,
+            terminal_entries=self.terminal_entries,
+            terminal_target=self.terminal_target,
+            state_roles=self.state_roles,
+            reason=self.reason,
         )
 
 
@@ -517,6 +637,12 @@ PatchOperation = Union[
     PatchNopInstructions,
     PatchZeroStateWrite,
     PatchPromoteOperandToScalar,
+    PatchLowerConditionalStateTransition,
+    PatchNormalizeNWayDispatcherExit,
+    PatchBypassDispatcherTrampoline,
+    PatchCanonicalizeJumpTableCaseOverlap,
+    PatchScalarizeLocalAliasAccess,
+    PatchPhaseCycleLowering,
     PatchEdgeSplitTrampoline,
     PatchConditionalRedirect,
     PatchInsertBlock,
@@ -1451,6 +1577,16 @@ def _finalize_step(
         case PatchPromoteOperandToScalar():
             return step
 
+        case (
+            PatchLowerConditionalStateTransition()
+            | PatchNormalizeNWayDispatcherExit()
+            | PatchBypassDispatcherTrampoline()
+            | PatchCanonicalizeJumpTableCaseOverlap()
+            | PatchScalarizeLocalAliasAccess()
+            | PatchPhaseCycleLowering()
+        ):
+            return step
+
         case _PendingEdgeSplitTrampoline(
             modification=EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -1903,6 +2039,102 @@ def compile_patch_plan(
                     operand_side=side,
                 ))
 
+            case LowerConditionalStateTransition(
+                source_serial=src,
+                old_dispatcher_serial=dispatcher,
+                rewrite_from_ea=ea,
+                condition_operand=condition,
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+                proof_id=proof_id,
+            ):
+                raw_steps.append(PatchLowerConditionalStateTransition(
+                    source_serial=src,
+                    old_dispatcher_serial=dispatcher,
+                    rewrite_from_ea=ea,
+                    condition_operand=condition,
+                    false_target_serial=false_target,
+                    true_target_serial=true_target,
+                    proof_id=proof_id,
+                ))
+
+            case NormalizeNWayDispatcherExit(
+                block_serial=serial,
+                dispatcher_entry_serial=dispatcher,
+                keep_target_serial=keep,
+            ):
+                raw_steps.append(PatchNormalizeNWayDispatcherExit(
+                    block_serial=serial,
+                    dispatcher_entry_serial=dispatcher,
+                    keep_target_serial=keep,
+                ))
+
+            case BypassDispatcherTrampoline(
+                source_serial=src,
+                trampoline_serial=trampoline,
+                target_serial=target,
+            ):
+                raw_steps.append(PatchBypassDispatcherTrampoline(
+                    source_serial=src,
+                    trampoline_serial=trampoline,
+                    target_serial=target,
+                ))
+
+            case CanonicalizeJumpTableCaseOverlap(
+                jtbl_serial=serial,
+                retarget_map=retarget_map,
+                deduplicate=deduplicate,
+            ):
+                raw_steps.append(PatchCanonicalizeJumpTableCaseOverlap(
+                    jtbl_serial=serial,
+                    retarget_map=retarget_map,
+                    deduplicate=deduplicate,
+                ))
+
+            case ScalarizeLocalAliasAccess(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                base_token=base,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                raw_steps.append(PatchScalarizeLocalAliasAccess(
+                    block_serial=serial,
+                    host_ea=host_ea,
+                    host_opcode=opcode,
+                    alias_token=alias,
+                    base_token=base,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                ))
+
+            case PhaseCycleLowering(
+                header_entries=header_entries,
+                header_target=header_target,
+                body_entries=body_entries,
+                body_target=body_target,
+                next_phase_entries=next_phase_entries,
+                next_phase_target=next_phase_target,
+                terminal_entries=terminal_entries,
+                terminal_target=terminal_target,
+                state_roles=state_roles,
+                reason=reason,
+            ):
+                raw_steps.append(PatchPhaseCycleLowering(
+                    header_entries=header_entries,
+                    header_target=header_target,
+                    body_entries=body_entries,
+                    body_target=body_target,
+                    next_phase_entries=next_phase_entries,
+                    next_phase_target=next_phase_target,
+                    terminal_entries=terminal_entries,
+                    terminal_target=terminal_target,
+                    state_roles=state_roles,
+                    reason=reason,
+                ))
+
             case EdgeRedirectViaPredSplit(
                 src_block=src,
                 old_target=old,
@@ -2342,6 +2574,12 @@ __all__ = [
     "PatchNopInstructions",
     "PatchZeroStateWrite",
     "PatchPromoteOperandToScalar",
+    "PatchLowerConditionalStateTransition",
+    "PatchNormalizeNWayDispatcherExit",
+    "PatchBypassDispatcherTrampoline",
+    "PatchCanonicalizeJumpTableCaseOverlap",
+    "PatchScalarizeLocalAliasAccess",
+    "PatchPhaseCycleLowering",
     "PatchEdgeSplitTrampoline",
     "PatchConditionalRedirect",
     "PatchInsertBlock",

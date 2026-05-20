@@ -604,6 +604,70 @@ class DuplicateReplayAndRedirect:
 
 
 @dataclass(frozen=True)
+class LowerConditionalStateTransition:
+    """Replace a dispatcher state write with an explicit conditional edge.
+
+    This is the typed CFG primitive for the old ABC conditional-state rewrite:
+    proof code owns the state-expression interpretation and passes the exact
+    rewrite site plus condition operand.  Backends only verify the current edge
+    shape and lower the block into ``false_target`` / ``true_target`` topology.
+    """
+
+    source_serial: int
+    old_dispatcher_serial: int
+    rewrite_from_ea: int
+    condition_operand: object
+    false_target_serial: int
+    true_target_serial: int
+    proof_id: str | None = None
+    reason: str = "conditional_state_transition"
+
+
+@dataclass(frozen=True)
+class NormalizeNWayDispatcherExit:
+    """Downgrade a degenerate dispatcher-exit NWAY block to a one-way exit."""
+
+    block_serial: int
+    dispatcher_entry_serial: int
+    keep_target_serial: int | None = None
+    reason: str = "nway_dispatcher_exit_normalization"
+
+
+@dataclass(frozen=True)
+class BypassDispatcherTrampoline:
+    """Redirect an edge that still points at a dispatcher trampoline."""
+
+    source_serial: int
+    trampoline_serial: int
+    target_serial: int
+    reason: str = "dispatcher_trampoline_bypass"
+
+
+@dataclass(frozen=True)
+class CanonicalizeJumpTableCaseOverlap:
+    """Retarget and optionally coalesce overlapping jump-table cases."""
+
+    jtbl_serial: int
+    retarget_map: tuple[tuple[int, int], ...]
+    deduplicate: bool = False
+    reason: str = "jump_table_case_overlap_canonicalization"
+
+
+@dataclass(frozen=True)
+class ScalarizeLocalAliasAccess:
+    """Rewrite a proven local pointer alias access through its base local."""
+
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    alias_token: str
+    base_token: str
+    host_text_sha1: str | None = None
+    value_size: int | None = None
+    reason: str = "local_alias_scalarization"
+
+
+@dataclass(frozen=True)
 class PhaseCycleLowering:
     """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
 
@@ -616,9 +680,8 @@ class PhaseCycleLowering:
     - exits must flow into a single next phase,
     - the body carries an explicit backedge to the header.
 
-    The current backend does not materialize this primitive yet. It exists to
-    pin the missing contract at the graph-modification layer before production
-    integration.
+    The Hex-Rays backend lowers this as guarded one-way phase-entry redirects;
+    richer materialization can grow behind the same typed contract.
     """
 
     header_entries: tuple[int, ...]
@@ -674,6 +737,11 @@ GraphModification = Union[
     CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
+    LowerConditionalStateTransition,
+    NormalizeNWayDispatcherExit,
+    BypassDispatcherTrampoline,
+    CanonicalizeJumpTableCaseOverlap,
+    ScalarizeLocalAliasAccess,
     PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
@@ -699,6 +767,11 @@ __all__ = [
     "DuplicateAndRedirect",
     "DuplicateReplayEntry",
     "DuplicateReplayAndRedirect",
+    "LowerConditionalStateTransition",
+    "NormalizeNWayDispatcherExit",
+    "BypassDispatcherTrampoline",
+    "CanonicalizeJumpTableCaseOverlap",
+    "ScalarizeLocalAliasAccess",
     "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",

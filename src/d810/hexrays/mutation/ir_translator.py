@@ -40,6 +40,8 @@ from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
+    PatchBypassDispatcherTrampoline,
+    PatchCanonicalizeJumpTableCaseOverlap,
     PatchCloneConditionalAsGoto,
     PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
@@ -48,7 +50,10 @@ from d810.cfg.plan import (
     PatchDuplicateReplayAndRedirect,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
+    PatchLowerConditionalStateTransition,
+    PatchNormalizeNWayDispatcherExit,
     PatchNopInstructions,
+    PatchPhaseCycleLowering,
     PatchZeroStateWrite,
     PatchPromoteOperandToScalar,
     PatchPlan,
@@ -59,6 +64,7 @@ from d810.cfg.plan import (
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchRemoveEdge,
+    PatchScalarizeLocalAliasAccess,
     PatchStep,
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
@@ -590,6 +596,15 @@ class IDAIRTranslator:
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
+                case (
+                    PatchLowerConditionalStateTransition()
+                    | PatchNormalizeNWayDispatcherExit()
+                    | PatchBypassDispatcherTrampoline()
+                    | PatchCanonicalizeJumpTableCaseOverlap()
+                    | PatchScalarizeLocalAliasAccess()
+                    | PatchPhaseCycleLowering()
+                ):
+                    continue
                 case PatchPrivateTerminalSuffix():
                     continue
                 case PatchPrivateTerminalSuffixGroup():
@@ -704,6 +719,119 @@ class IDAIRTranslator:
                         f"promote operand {side} of insn at {hex(host_ea)} "
                         f"in block {serial}"
                     ),
+                )
+
+            case PatchLowerConditionalStateTransition(
+                source_serial=src,
+                old_dispatcher_serial=dispatcher,
+                rewrite_from_ea=ea,
+                condition_operand=condition,
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+                proof_id=proof_id,
+            ):
+                modifier.queue_lower_conditional_state_transition(
+                    source_serial=src,
+                    old_dispatcher_serial=dispatcher,
+                    rewrite_from_ea=ea,
+                    condition_operand=condition,
+                    false_target_serial=false_target,
+                    true_target_serial=true_target,
+                    proof_id=proof_id,
+                    description=(
+                        f"lower conditional state transition {src}: "
+                        f"{dispatcher}->{false_target}/{true_target}"
+                    ),
+                )
+
+            case PatchNormalizeNWayDispatcherExit(
+                block_serial=serial,
+                dispatcher_entry_serial=dispatcher,
+                keep_target_serial=keep,
+            ):
+                modifier.queue_normalize_nway_dispatcher_exit(
+                    serial,
+                    dispatcher,
+                    keep_target_serial=keep,
+                    description=(
+                        f"normalize NWAY dispatcher exit {serial}: "
+                        f"drop dispatcher {dispatcher}"
+                    ),
+                )
+
+            case PatchBypassDispatcherTrampoline(
+                source_serial=src,
+                trampoline_serial=trampoline,
+                target_serial=target,
+            ):
+                modifier.queue_bypass_dispatcher_trampoline(
+                    src,
+                    trampoline,
+                    target,
+                    description=(
+                        f"bypass dispatcher trampoline {src}: "
+                        f"{trampoline}->{target}"
+                    ),
+                )
+
+            case PatchCanonicalizeJumpTableCaseOverlap(
+                jtbl_serial=serial,
+                retarget_map=retarget_map,
+                deduplicate=deduplicate,
+            ):
+                modifier.queue_canonicalize_jtbl_case_overlap(
+                    serial,
+                    retarget_map,
+                    deduplicate=deduplicate,
+                    description=(
+                        f"canonicalize jump-table overlap {serial}: "
+                        f"{len(retarget_map)} retargets"
+                    ),
+                )
+
+            case PatchScalarizeLocalAliasAccess(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                base_token=base,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                modifier.queue_scalarize_local_alias_access(
+                    serial,
+                    host_ea,
+                    opcode,
+                    alias,
+                    base,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                    description=(
+                        f"scalarize local alias {alias}->{base} at "
+                        f"{hex(host_ea)} in block {serial}"
+                    ),
+                )
+
+            case PatchPhaseCycleLowering(
+                header_entries=header_entries,
+                header_target=header_target,
+                body_entries=body_entries,
+                body_target=body_target,
+                next_phase_entries=next_phase_entries,
+                next_phase_target=next_phase_target,
+                terminal_entries=terminal_entries,
+                terminal_target=terminal_target,
+            ):
+                modifier.queue_phase_cycle_lowering(
+                    header_entries=header_entries,
+                    header_target=header_target,
+                    body_entries=body_entries,
+                    body_target=body_target,
+                    next_phase_entries=next_phase_entries,
+                    next_phase_target=next_phase_target,
+                    terminal_entries=terminal_entries,
+                    terminal_target=terminal_target,
+                    description="lower dispatcher phase cycle",
                 )
 
             case PatchEdgeSplitTrampoline(
