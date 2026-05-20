@@ -27,8 +27,8 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     execute_family_pipeline,
     plan_family_pipeline,
 )
-from d810.optimizers.microcode.flow.flattening.generic import (
-    GenericUnflatteningRule,
+from d810.optimizers.microcode.flow.flattening.rule_shell import (
+    ComposedUnflatteningRule,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
     EmulatedDispatcherMetadata,
@@ -66,7 +66,7 @@ def _maturity_text(maturity: object) -> str:
         return str(maturity)
 
 
-class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
+class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
     """Planner-visible shell for the extracted emulated-dispatcher family."""
 
     DESCRIPTION = "Extracted engine adapter for generic emulated-dispatcher lowering"

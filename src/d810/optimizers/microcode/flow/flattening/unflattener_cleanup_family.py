@@ -26,8 +26,8 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     execute_family_pipeline,
     plan_family_pipeline,
 )
-from d810.optimizers.microcode.flow.flattening.generic import (
-    GenericUnflatteningRule,
+from d810.optimizers.microcode.flow.flattening.rule_shell import (
+    ComposedUnflatteningRule,
 )
 
 unflat_logger = getLogger("D810.unflat.cleanup_family.engine")
@@ -35,7 +35,7 @@ unflat_logger = getLogger("D810.unflat.cleanup_family.engine")
 __all__ = ["SimpleFlatteningCleanupUnflattener"]
 
 
-class SimpleFlatteningCleanupUnflattener(GenericUnflatteningRule):
+class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
     """Planner-visible shell for generic cleanup PlanFragment strategies."""
 
     DESCRIPTION = (

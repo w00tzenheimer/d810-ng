@@ -44,7 +44,9 @@ from d810.recon.flow.return_frontier_carrier_audit import (
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
 from d810.recon.function_priors import FunctionAnalysisPriors
-from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
+from d810.optimizers.microcode.flow.flattening.rule_shell import (
+    ComposedUnflatteningRule,
+)
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
@@ -165,7 +167,7 @@ def _block_matches_terminal_byte_target(
     return False
 
 
-class HodurUnflattener(GenericUnflatteningRule):
+class HodurUnflattener(ComposedUnflatteningRule):
     """Unflattener for Hodur-style while-loop state machines.
 
     This rule detects and removes control flow flattening that uses nested
@@ -204,7 +206,7 @@ class HodurUnflattener(GenericUnflatteningRule):
     MOP_TRACKER_MAX_NB_BLOCK = 100
     MOP_TRACKER_MAX_NB_PATH = 100
 
-    CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
+    CONFIG_SCHEMA = ComposedUnflatteningRule.CONFIG_SCHEMA + (
         ConfigParam(
             "min_state_constant",
             int,
