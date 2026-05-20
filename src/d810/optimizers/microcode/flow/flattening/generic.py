@@ -33,9 +33,11 @@ import ida_hexrays
 import idc
 
 from d810.core import getLogger
-from d810.evaluator.hexrays_microcode.emulator import (
-    MicroCodeEnvironment,
-    MicroCodeInterpreter,
+from d810.evaluator.hexrays_microcode.dispatcher_state_evaluation import (
+    DispatcherStateEvaluationError,
+    collect_dispatcher_father_histories,
+    emulate_dispatcher_with_father_history,
+    histories_are_resolved,
 )
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block, insert_goto_instruction
 from d810.hexrays.ir.cfg_queries import _serial_in_predset
@@ -74,7 +76,6 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.evaluator.hexrays_microcode.tracker import (
     InstructionDefUseCollector,
     MopHistory,
-    MopTracker,
     check_if_all_values_are_found,
     get_all_possibles_values,
     get_block_with_multiple_predecessors,
@@ -347,89 +348,17 @@ class GenericDispatcherInfo(object):
         resolve_conditional_exits: bool = False,
         max_emulated_instructions: int = 10000,
     ) -> tuple[ida_hexrays.mblock_t, list[ida_hexrays.minsn_t]]:
-        # Use concrete values from tracker - do NOT use symbolic mode here
-        # Symbolic mode would generate fake values instead of using tracked values
-        microcode_interpreter = MicroCodeInterpreter(symbolic_mode=False)
-        microcode_environment = MicroCodeEnvironment()
-        dispatcher_input_info = []
-        # First, we setup the MicroCodeEnvironment with the state variables (self.entry_block.use_before_def_list)
-        # used by the dispatcher
-        for initialization_mop in self.entry_block.use_before_def_list:
-            # We recover the value of each state variable from the dispatcher father
-            initialization_mop_value = father_history.get_mop_constant_value(
-                initialization_mop
+        try:
+            return emulate_dispatcher_with_father_history(
+                entry_block=self.entry_block,
+                dispatcher_exit_blocks=self.dispatcher_exit_blocks,
+                father_history=father_history,
+                should_continue=self.should_emulation_continue,
+                resolve_conditional_exits=resolve_conditional_exits,
+                max_emulated_instructions=max_emulated_instructions,
             )
-            if initialization_mop_value is None:
-                raise NotResolvableFatherException(
-                    "Can't emulate dispatcher {0} with history {1}".format(
-                        self.entry_block.serial,
-                        father_history.block_serial_path,
-                    )
-                )
-            # We store this value in the MicroCodeEnvironment
-            microcode_environment.define(initialization_mop, initialization_mop_value)
-            dispatcher_input_info.append(
-                f"{format_mop_t(initialization_mop)} = {initialization_mop_value:x}"
-            )
-
-        unflat_logger.info(
-            "Executing dispatcher %s with: %s",
-            self.entry_block.serial,
-            ", ".join(dispatcher_input_info),
-        )
-
-        # Now, we start the emulation of the code at the dispatcher entry block
-        instructions_executed = []
-        cur_blk = self.entry_block.blk
-        cur_ins = cur_blk.head
-        nb_emulated = 0
-        while cur_blk is not None:
-            if cur_ins is None:
-                cur_ins = cur_blk.head
-            if cur_ins is None:
-                break
-            should_continue = self.should_emulation_continue(cur_blk)
-            # Optional semantic refinement: if we reached a dispatcher exit
-            # block that is conditional, execute that conditional as well to
-            # recover the concrete successor instead of returning the
-            # intermediate 2-way block.
-            if not should_continue:
-                can_refine_exit = (
-                    resolve_conditional_exits
-                    and cur_blk.nsucc() == 2
-                    and cur_blk.tail is not None
-                    and ida_hexrays.is_mcode_jcond(cur_blk.tail.opcode)
-                )
-                if not can_refine_exit:
-                    break
-            unflat_logger.debug(
-                "  Executing: %s.%s", cur_blk.serial, format_minsn_t(cur_ins)
-            )
-            # We evaluate the current instruction of the dispatcher to determine
-            # which block and instruction should be executed next
-            is_ok = microcode_interpreter.eval_instruction(
-                cur_blk, cur_ins, microcode_environment
-            )
-            if not is_ok:
-                return cur_blk, instructions_executed
-            instructions_executed.append(cur_ins)
-            nb_emulated += 1
-            if nb_emulated >= int(max_emulated_instructions):
-                unflat_logger.warning(
-                    "Stopping dispatcher emulation after %d instructions "
-                    "(entry=%d, father=%d)",
-                    nb_emulated,
-                    self.entry_block.serial,
-                    father_history.block_serial_path[0]
-                    if len(father_history.block_serial_path) > 0
-                    else -1,
-                )
-                break
-            cur_blk = microcode_environment.next_blk
-            cur_ins = microcode_environment.next_ins
-        # We return the first block executed which is not part of the dispatcher
-        # and all instructions which have been executed by the dispatcher
-        return cur_blk, instructions_executed
+        except DispatcherStateEvaluationError as exc:
+            raise NotResolvableFatherException(str(exc)) from exc
 
     def print_info(self, verbose=False):
         unflat_logger.info("Dispatcher information: ")
@@ -1444,25 +1373,18 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         dispatcher_entry_block: GenericDispatcherBlockInfo,
         dispatcher_info: GenericDispatcherInfo,
     ) -> list[MopHistory]:
-        father_tracker = MopTracker(
-            dispatcher_entry_block.use_before_def_list,
+        return collect_dispatcher_father_histories(
+            dispatcher_father=dispatcher_father,
+            state_mops=dispatcher_entry_block.use_before_def_list,
+            dispatcher_info=dispatcher_info,
+            dispatcher_entry_serial=dispatcher_entry_block.serial,
             max_nb_block=self.MOP_TRACKER_MAX_NB_BLOCK,
             max_path=self.MOP_TRACKER_MAX_NB_PATH,
-            dispatcher_info=dispatcher_info,
+            initialize_tracker=self.register_initialization_variables,
         )
-        father_tracker.reset()
-        self.register_initialization_variables(father_tracker)
-        father_histories = father_tracker.search_backward(dispatcher_father, None)
-        unflat_logger.debug(
-            "Histories (dispatcher %s, predecessor %s): %s",
-            dispatcher_entry_block.serial,
-            dispatcher_father.serial,
-            father_histories,
-        )
-        return father_histories
 
     def check_if_histories_are_resolved(self, mop_histories: list[MopHistory]) -> bool:
-        return all([mop_history.is_resolved() for mop_history in mop_histories])
+        return histories_are_resolved(mop_histories)
 
     # Maximum number of histories allowed per dispatcher father before the
     # retired legacy resolvability preflight is skipped.
