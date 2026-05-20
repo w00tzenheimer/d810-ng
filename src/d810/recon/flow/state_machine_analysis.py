@@ -253,6 +253,53 @@ def classify_exit_state(
     return ExitStateKind.UNCLASSIFIED
 
 
+def _resolved_bst_exit_kind(
+    mba: object,
+    flow_graph: FlowGraph,
+    *,
+    bst_root_serial: int,
+    state_value: int,
+    incoming_state: int | None,
+    state_var_stkoff: int,
+    bst_node_blocks: set[int],
+    state_machine_blocks: set[int],
+) -> tuple[int | None, ExitStateKind | None, bool]:
+    """Resolve ``state_value`` through the BST and classify the resolved body.
+
+    A block outside the known state-machine set is not automatically terminal.
+    OLLVM residual phases commonly route an intermediate state through the BST
+    to a small pre-header/body block that writes the next dispatcher state and
+    re-enters the BST.  A reachability-only terminal check misclassifies that
+    shape because the pre-header can eventually reach a return through the
+    rest of the function.  Local lookahead distinguishes those live state
+    handoffs from true return-frontier exits.
+    """
+
+    resolved = resolve_exit_via_bst_default_snapshot(
+        flow_graph,
+        int(bst_root_serial),
+        int(state_value) & 0xFFFFFFFF,
+    )
+    if resolved is None or resolved in state_machine_blocks:
+        return resolved, None, False
+    if not can_reach_return_snapshot(flow_graph, resolved):
+        return resolved, None, False
+
+    resolved_kind = classify_exit_state(
+        mba=mba,
+        final_state=int(state_value) & 0xFFFFFFFF,
+        incoming_state=incoming_state,
+        successor_serial=int(resolved),
+        state_var_stkoff=int(state_var_stkoff),
+        bst_node_blocks=bst_node_blocks,
+    )
+    is_terminal = resolved_kind in (
+        ExitStateKind.TERMINAL,
+        ExitStateKind.UNCLASSIFIED,
+    )
+    return resolved, resolved_kind, is_terminal
+
+
 @dataclass(frozen=True, slots=True)
 class CarrierResolutionResult:
     """Centralized result from backward constant resolution provenance."""
@@ -302,7 +349,7 @@ class ConditionalTransition:
     target_handler: int | None
     state_write_block: int | None
     state_write_ea: int | None
-    branch_arm: int
+    branch_arm: int | None
     is_terminal_no_write: bool = False
 
 
@@ -838,6 +885,72 @@ def eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
 _BST_CMP_OPCODES: frozenset = frozenset()
 
 
+def _is_bst_comparison_snapshot(
+    block: object | None,
+    *,
+    state_var_ref: tuple[int, int] | None = None,
+    state_var_stkoff: int | None = None,
+) -> bool:
+    """Return whether *block* continues the current BST comparison walk."""
+
+    if block is None or getattr(block, "nsucc", 0) != 2:
+        return False
+    tail = getattr(block, "tail", None)
+    opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
+    if opcode not in _BST_CMP_OPCODES:
+        return False
+    l_mop = getattr(tail, "l", None)
+    r_mop = getattr(tail, "r", None)
+    if l_mop is None or r_mop is None:
+        return False
+    if getattr(r_mop, "t", None) != 2:
+        return False
+    if state_var_ref is not None:
+        if (
+            getattr(l_mop, "t", None),
+            getattr(l_mop, "size", None),
+        ) != state_var_ref:
+            return False
+        if (
+            getattr(l_mop, "t", None) == 3
+            and state_var_stkoff is not None
+            and getattr(l_mop, "stkoff", None) != state_var_stkoff
+        ):
+            return False
+    return True
+
+
+def _is_trivial_bst_connector_snapshot(
+    block: object,
+    flow_graph: FlowGraph,
+    *,
+    state_var_ref: tuple[int, int] | None = None,
+    state_var_stkoff: int | None = None,
+) -> bool:
+    """Return whether *block* is only connector glue inside a dispatcher walk."""
+
+    if getattr(block, "nsucc", 0) != 1:
+        return False
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    if not insns:
+        pass
+    elif len(insns) == 1:
+        tail = getattr(block, "tail", None)
+        opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
+        if opcode != getattr(ida_hexrays, "m_goto", None):
+            return False
+    else:
+        return False
+    succs = tuple(getattr(block, "succs", ()) or ())
+    if len(succs) != 1:
+        return False
+    return _is_bst_comparison_snapshot(
+        flow_graph.get_block(int(succs[0])),
+        state_var_ref=state_var_ref,
+        state_var_stkoff=state_var_stkoff,
+    )
+
+
 def resolve_exit_via_bst_default_snapshot(
     flow_graph: FlowGraph,
     bst_default_serial: int,
@@ -861,6 +974,18 @@ def resolve_exit_via_bst_default_snapshot(
         visited.add(current_serial)
 
         blk_snap = flow_graph.get_block(current_serial)
+        if (
+            blk_snap is not None
+            and current_serial != bst_default_serial
+            and _is_trivial_bst_connector_snapshot(
+                blk_snap,
+                flow_graph,
+                state_var_ref=state_var_ref,
+                state_var_stkoff=state_var_stkoff_local,
+            )
+        ):
+            current_serial = int(blk_snap.succs[0])
+            continue
         if blk_snap is None or blk_snap.nsucc != 2:
             return current_serial if current_serial != bst_default_serial else None
 
@@ -1217,6 +1342,8 @@ def evaluate_handler_paths(
     known_handler_states: "set[int] | None" = None,
     bst_root_serial: "int | None" = None,
     state_machine_blocks: "set[int] | None" = None,
+    use_snapshot_state_writes: bool = True,
+    classify_bst_exits: bool = True,
 ) -> list[HandlerPathResult]:
     """DFS forward eval of a handler, forking state at conditional branches.
 
@@ -1270,7 +1397,78 @@ def evaluate_handler_paths(
 
         succs = [blk.succ(i) for i in range(blk.nsucc())]
 
+        snapshot_state_resolved = False
+        snapshot_final_state: int | None = None
+        snapshot_state_writes: list | None = None
+
+        def _resolved_final_state_and_writes() -> tuple[int | None, list]:
+            """Return the best path-local state value known at this exit.
+
+            Live Hex-Rays evaluation is still the primary source. OLLVM/HCC
+            handlers can, however, choose the next dispatcher state through a
+            branch-local temporary and only copy that temporary into the state
+            variable at a shared suffix block. At that point live lvar identity
+            may not line up with the stack-offset map, so the live walk can miss
+            the actual state write or leave the incoming state in place. The CFG
+            snapshot keeps richer operand-slot data and can replay the concrete
+            ordered path, preserving the branch-local temporary until the shared
+            state assignment. When the snapshot proves such a write on this same
+            path, prefer it over a stale/missing live value.
+            """
+
+            live_val = stk_map.get(state_var_stkoff)
+            nonlocal snapshot_state_resolved
+            nonlocal snapshot_final_state
+            nonlocal snapshot_state_writes
+
+            if not snapshot_state_resolved:
+                snapshot_state_resolved = True
+                snapshot_state_writes = list(cur_writes)
+                if use_snapshot_state_writes and flow_graph is not None:
+                    resolved = find_last_state_write_site_on_path_snapshot(
+                        flow_graph,
+                        ordered_path,
+                        state_var_stkoff,
+                    )
+                    if resolved is not None:
+                        write_blk, site = resolved
+                        snapshot_final_state = int(site.state_value) & 0xFFFFFFFF
+                        write_sig = (int(write_blk), int(site.insn_ea))
+                        existing_writes = {
+                            (int(block), int(ea)) for block, ea in snapshot_state_writes
+                        }
+                        if write_sig not in existing_writes:
+                            snapshot_state_writes.append(write_sig)
+
+            if snapshot_final_state is None:
+                return live_val, list(cur_writes)
+
+            if live_val is None:
+                return snapshot_final_state, list(snapshot_state_writes or cur_writes)
+
+            if (live_val & 0xFFFFFFFF) != snapshot_final_state:
+                return snapshot_final_state, list(snapshot_state_writes or cur_writes)
+
+            return live_val, list(cur_writes)
+
         if not succs:
+            final_val, final_writes = _resolved_final_state_and_writes()
+            if (
+                final_val is not None
+                and final_writes
+                and known_handler_states is not None
+                and (final_val & 0xFFFFFFFF)
+                in {state & 0xFFFFFFFF for state in known_handler_states}
+            ):
+                results.append(
+                    HandlerPathResult(
+                        exit_block=curr_serial,
+                        final_state=final_val & 0xFFFFFFFF,
+                        state_writes=list(final_writes),
+                        ordered_path=list(ordered_path),
+                    )
+                )
+                continue
             results.append(
                 HandlerPathResult(
                     exit_block=curr_serial,
@@ -1287,7 +1485,7 @@ def evaluate_handler_paths(
                 and succ_serial in handler_entry_blocks
                 and succ_serial != entry_serial
             ):
-                final_val = stk_map.get(state_var_stkoff)
+                final_val, final_writes = _resolved_final_state_and_writes()
                 if final_val is not None:
                     # If the current state equals incoming (self-loop default
                     # write), the shared suffix may overwrite it.  Continue
@@ -1338,12 +1536,12 @@ def evaluate_handler_paths(
                             HandlerPathResult(
                                 exit_block=curr_serial,
                                 final_state=final_val & 0xFFFFFFFF,
-                                state_writes=cur_writes,
+                                state_writes=list(final_writes),
                                 ordered_path=list(ordered_path),
                             )
                         )
             elif succ_serial in bst_node_blocks:
-                final_val = stk_map.get(state_var_stkoff)
+                final_val, final_writes = _resolved_final_state_and_writes()
                 if final_val is not None:
                     masked = final_val & 0xFFFFFFFF
                     # --- Terminal classification ---
@@ -1352,23 +1550,52 @@ def evaluate_handler_paths(
                     # check whether it reaches cleanup/return.
                     _is_terminal = False
                     if (
+                        classify_bst_exits
+                        and
                         known_handler_states is not None
                         and masked not in known_handler_states
                         and flow_graph is not None
                         and bst_root_serial is not None
                     ):
-                        _resolved = resolve_exit_via_bst_default_snapshot(
-                            flow_graph, bst_root_serial, masked,
-                        )
                         _sm_blks = state_machine_blocks or bst_node_blocks
+                        _resolved, _resolved_kind, _is_terminal = (
+                            _resolved_bst_exit_kind(
+                                mba,
+                                flow_graph,
+                                bst_root_serial=bst_root_serial,
+                                state_value=masked,
+                                incoming_state=incoming_state,
+                                state_var_stkoff=state_var_stkoff,
+                                bst_node_blocks=bst_node_blocks,
+                                state_machine_blocks=set(_sm_blks),
+                            )
+                        )
                         if _resolved is not None and _resolved not in _sm_blks:
-                            if can_reach_return_snapshot(flow_graph, _resolved):
-                                _is_terminal = True
+                            if _is_terminal:
                                 logger.info(
                                     "  [BST-TERMINAL] entry=%d curr=%d "
-                                    "state=0x%08X resolved=blk[%d] → terminal",
+                                    "state=0x%08X resolved=blk[%d] kind=%s "
+                                    "→ terminal",
                                     entry_serial, curr_serial, masked,
                                     _resolved,
+                                    (
+                                        _resolved_kind.value
+                                        if _resolved_kind is not None
+                                        else "unclassified"
+                                    ),
+                                )
+                            else:
+                                logger.info(
+                                    "  [BST-HANDOFF] entry=%d curr=%d "
+                                    "state=0x%08X resolved=blk[%d] kind=%s "
+                                    "→ keep state handoff",
+                                    entry_serial, curr_serial, masked,
+                                    _resolved,
+                                    (
+                                        _resolved_kind.value
+                                        if _resolved_kind is not None
+                                        else "unclassified"
+                                    ),
                                 )
 
                     if _is_terminal:
@@ -1376,7 +1603,7 @@ def evaluate_handler_paths(
                             HandlerPathResult(
                                 exit_block=curr_serial,
                                 final_state=None,
-                                state_writes=list(cur_writes),
+                                state_writes=list(final_writes),
                                 ordered_path=list(ordered_path),
                             )
                         )
@@ -1385,7 +1612,7 @@ def evaluate_handler_paths(
                             HandlerPathResult(
                                 exit_block=curr_serial,
                                 final_state=masked,
-                                state_writes=cur_writes,
+                                state_writes=list(final_writes),
                                 ordered_path=list(ordered_path),
                             )
                         )

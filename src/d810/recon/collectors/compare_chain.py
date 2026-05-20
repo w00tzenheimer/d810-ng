@@ -25,6 +25,10 @@ from d810.cfg.flow.compare_chain import (
 )
 from d810.cfg.flow.state_var_alias import VarRef
 from d810.recon.models import CandidateFlag, ReconResult
+from d810.recon.flow.equality_chain_dispatcher import (
+    extract_state_dispatcher_map_from_mba,
+)
+from d810.recon.observability import observe_state_dispatcher_rows
 
 # IDA maturity constants - duplicated to avoid IDA import at module level.
 _MMAT_CALLS = 3
@@ -132,19 +136,44 @@ class CompareChainCollector:
 
     def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
         """Resolve compare-chain and wrap into ``ReconResult``."""
+        state_dispatch_map = None
         if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
             comparisons, aliases = _portable_comparisons(target)
         else:
-            comparisons, aliases = self._live_mba_comparisons(target)
+            state_dispatch_map = extract_state_dispatcher_map_from_mba(target)
+            if state_dispatch_map is not None:
+                observe_state_dispatcher_rows(
+                    func_ea=int(func_ea),
+                    maturity=_maturity_name(maturity),
+                    dispatcher_entry_block=(
+                        state_dispatch_map.dispatcher_entry_block
+                    ),
+                    dispatcher_kind=state_dispatch_map.source.name,
+                    rows=state_dispatch_map.rows,
+                )
+                comparisons = []
+                aliases = frozenset()
+            else:
+                comparisons, aliases = self._live_mba_comparisons(target)
 
         conflicting = _count_conflicting(comparisons, aliases)
         table = CompareChainResolver.resolve(comparisons, aliases)
-        table_map = table.as_dict()
+        table_map = (
+            state_dispatch_map.state_to_handler()
+            if state_dispatch_map is not None else table.as_dict()
+        )
+        entries = (
+            tuple(state_dispatch_map.rows)
+            if state_dispatch_map is not None else table.entries
+        )
 
         metrics = MappingProxyType(
             {
-                "compare_chain_length": len(comparisons),
-                "dispatch_table_size": len(table.entries),
+                "compare_chain_length": (
+                    len(entries) if state_dispatch_map is not None
+                    else len(comparisons)
+                ),
+                "dispatch_table_size": len(entries),
                 "unique_constants": len(table_map),
                 "conflicting_count": conflicting,
                 "default_serial": (
@@ -153,15 +182,32 @@ class CompareChainCollector:
             }
         )
 
-        candidates = tuple(
-            CandidateFlag(
-                kind="compare_chain_entry",
-                block_serial=int(entry.source_serial),
-                confidence=0.7,
-                detail=f"0x{int(entry.constant):x} -> blk {int(entry.target_serial)}",
+        if state_dispatch_map is not None:
+            candidates = tuple(
+                CandidateFlag(
+                    kind="state_dispatcher_row",
+                    block_serial=int(entry.compare_block),
+                    confidence=float(entry.confidence),
+                    detail=(
+                        f"0x{int(entry.state_const):x} -> "
+                        f"blk {int(entry.target_block)}"
+                    ),
+                )
+                for entry in entries
             )
-            for entry in table.entries
-        )
+        else:
+            candidates = tuple(
+                CandidateFlag(
+                    kind="compare_chain_entry",
+                    block_serial=int(entry.source_serial),
+                    confidence=0.7,
+                    detail=(
+                        f"0x{int(entry.constant):x} -> "
+                        f"blk {int(entry.target_serial)}"
+                    ),
+                )
+                for entry in table.entries
+            )
 
         return ReconResult(
             collector_name=self.name,
@@ -207,3 +253,11 @@ class CompareChainCollector:
 
         fallback_var = VarRef("temp", 0, 4)
         return comparisons, frozenset({fallback_var}) if comparisons else frozenset()
+
+
+def _maturity_name(maturity: int) -> str:
+    if int(maturity) == _MMAT_CALLS:
+        return "MMAT_CALLS"
+    if int(maturity) == _MMAT_GLBOPT1:
+        return "MMAT_GLBOPT1"
+    return str(maturity)

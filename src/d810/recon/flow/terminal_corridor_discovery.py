@@ -19,7 +19,7 @@ from d810.recon.flow.state_machine_analysis import (
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

@@ -26,6 +26,111 @@ logger = getLogger("D810.branch_fixer")
 optimizer_logger = getLogger("D810.optimizer")
 
 
+def _iter_block_insns(blk: ida_hexrays.mblock_t, *, max_insns: int = 512):
+    insn = getattr(blk, "head", None)
+    seen = 0
+    while insn is not None and seen < max_insns:
+        yield insn
+        seen += 1
+        insn = getattr(insn, "next", None)
+
+
+def _block_has_side_effect_payload(
+    blk: ida_hexrays.mblock_t,
+    *,
+    required_constant_markers: tuple[str, ...] = (),
+) -> bool:
+    side_effect_ops = {
+        op
+        for op in (
+            getattr(ida_hexrays, "m_stx", -1),
+        )
+        if op >= 0
+    }
+    if not side_effect_ops:
+        return False
+    for insn in _iter_block_insns(blk):
+        try:
+            opcode = int(getattr(insn, "opcode", -1))
+        except (TypeError, ValueError):
+            continue
+        if opcode not in side_effect_ops:
+            continue
+        if not required_constant_markers:
+            return True
+        formatted = format_minsn_t(insn).upper()
+        if any(marker in formatted for marker in required_constant_markers):
+            return True
+    return False
+
+
+def _discarded_corridor_has_side_effect_payload(
+    mba: ida_hexrays.mba_t,
+    *,
+    start_serial: int,
+    preserved_target: int,
+    max_depth: int,
+    required_constant_markers: tuple[str, ...] = (),
+) -> bool:
+    """Return whether the branch being removed owns local payload side effects.
+
+    JumpFixer normally treats Z3-proven opaque branches as disposable.  That is
+    fine for pure dispatcher-routing blocks, but OLLVM state-map lowering can
+    leave branch-local payload corridors behind: one arm may contain a memory
+    store that recon has identified as semantic work.  If a later opaque fold
+    discards that arm, IDA DCE erases the payload and the final pseudocode looks
+    cleaner while no longer representing both semantic outcomes.  When
+    ``required_constant_markers`` is supplied, this guard preserves only stores
+    whose value expression carries one of those semantic constants; generic
+    stack-zeroing and local bookkeeping stores remain foldable.
+
+    Keep this bounded and local.  The guard looks only through a small corridor
+    rooted at the discarded successor and stops when it reaches the successor
+    chosen by the fold.  It is enabled by profile config rather than globally.
+    """
+
+    try:
+        qty = int(getattr(mba, "qty", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if start_serial < 0 or start_serial >= qty:
+        return False
+
+    visited: set[int] = set()
+    queue: list[tuple[int, int]] = [(int(start_serial), 0)]
+    while queue:
+        serial, depth = queue.pop(0)
+        if serial in visited or serial == int(preserved_target):
+            continue
+        if serial < 0 or serial >= qty:
+            continue
+        visited.add(serial)
+        blk = mba.get_mblock(serial)
+        if blk is None:
+            continue
+        if _block_has_side_effect_payload(
+            blk,
+            required_constant_markers=required_constant_markers,
+        ):
+            return True
+        if depth >= int(max_depth):
+            continue
+        try:
+            nsucc = int(blk.nsucc())
+        except Exception:
+            nsucc = 0
+        if nsucc > 2:
+            continue
+        for idx in range(nsucc):
+            try:
+                succ = int(blk.succ(idx))
+            except Exception:
+                continue
+            if succ not in visited:
+                queue.append((succ, depth + 1))
+    return False
+
+
 class JumpOptimizationRule(Registrant):
     NAME = None
     ORIGINAL_JUMP_OPCODES = []
@@ -210,6 +315,9 @@ class JumpFixer(FlowOptimizationRule):
         super().__init__()
         self.known_rules = []
         self.rules = []
+        self.preserve_z3_discarded_side_effects = False
+        self.preserve_z3_discarded_side_effect_depth = 3
+        self.preserve_z3_discarded_side_effect_constants: tuple[str, ...] = ()
         # Auto-register all JumpOptimizationRule subclasses
         for rule_cls in JumpOptimizationRule.registry.values():
             self.register_rule(rule_cls())
@@ -221,6 +329,35 @@ class JumpFixer(FlowOptimizationRule):
         super().configure(kwargs)
 
         self.rules.clear()
+        self.preserve_z3_discarded_side_effects = bool(
+            self.config.get("preserve_z3_discarded_side_effects", False)
+        )
+        try:
+            self.preserve_z3_discarded_side_effect_depth = max(
+                0,
+                int(
+                    self.config.get(
+                        "preserve_z3_discarded_side_effect_depth",
+                        self.preserve_z3_discarded_side_effect_depth,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.preserve_z3_discarded_side_effect_depth = 3
+        constants = self.config.get(
+            "preserve_z3_discarded_side_effect_constants",
+            (),
+        )
+        if isinstance(constants, str):
+            constants = (constants,)
+        try:
+            self.preserve_z3_discarded_side_effect_constants = tuple(
+                str(constant).upper()
+                for constant in constants
+                if str(constant)
+            )
+        except TypeError:
+            self.preserve_z3_discarded_side_effect_constants = ()
 
         if "enabled_rules" in self.config.keys():
             for rule in self.known_rules:
@@ -235,6 +372,44 @@ class JumpFixer(FlowOptimizationRule):
                         "JumpFixer disables rule {0}".format(rule.name)
                     )
 
+    def _z3_fold_discards_side_effect_payload(
+        self,
+        blk: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        new_ins: ida_hexrays.minsn_t,
+    ) -> bool:
+        if not self.preserve_z3_discarded_side_effects:
+            return False
+        if new_ins.opcode != ida_hexrays.m_goto:
+            return False
+        if new_ins.d is None or new_ins.d.t != ida_hexrays.mop_b:
+            return False
+        if instruction.d is None or instruction.d.t != ida_hexrays.mop_b:
+            return False
+        if blk.nextb is None:
+            return False
+
+        chosen_target = int(new_ins.d.b)
+        jump_target = int(instruction.d.b)
+        fallthrough_target = int(blk.nextb.serial)
+        if chosen_target == jump_target:
+            discarded_target = fallthrough_target
+        elif chosen_target == fallthrough_target:
+            discarded_target = jump_target
+        else:
+            return False
+
+        mba = getattr(blk, "mba", None)
+        if mba is None:
+            return False
+        return _discarded_corridor_has_side_effect_payload(
+            mba,
+            start_serial=int(discarded_target),
+            preserved_target=int(chosen_target),
+            max_depth=int(self.preserve_z3_discarded_side_effect_depth),
+            required_constant_markers=self.preserve_z3_discarded_side_effect_constants,
+        )
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> bool:
         if not is_conditional_jump(blk):
             return False
@@ -246,6 +421,22 @@ class JumpFixer(FlowOptimizationRule):
                     blk, blk.tail, left_ast, right_ast
                 )
                 if new_ins:
+                    if (
+                        rule.name == "JmpRuleZ3Const"
+                        and self._z3_fold_discards_side_effect_payload(
+                            blk,
+                            blk.tail,
+                            new_ins,
+                        )
+                    ):
+                        optimizer_logger.info(
+                            "Rule %s skipped in blk[%d]: preserving discarded "
+                            "side-effect corridor for target blk[%d]",
+                            rule.name,
+                            int(blk.serial),
+                            int(new_ins.d.b),
+                        )
+                        continue
                     optimizer_logger.info("Rule {0} matched:".format(rule.name))
                     optimizer_logger.info(
                         "  orig: {0}".format(format_minsn_t(blk.tail))

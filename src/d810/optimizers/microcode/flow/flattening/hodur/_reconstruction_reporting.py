@@ -29,6 +29,20 @@ def snapshot_reconstruction_dag(
     strategy_name: str,
 ) -> SnapshotReconstructionResult:
     try:
+        from d810.recon.flow.runtime_evidence import (
+            record_latest_reconstruction_dag,
+        )
+
+        record_latest_reconstruction_dag(
+            int(getattr(mba, "entry_ea", 0) or 0) if mba is not None else 0,
+            dag,
+        )
+    except Exception:
+        logger.debug(
+            "In-memory reconstruction DAG evidence capture failed",
+            exc_info=True,
+        )
+    try:
         from d810.hexrays.observability import request_capture_mba_snapshot
         from d810.recon.observability import (
             DagEdge,

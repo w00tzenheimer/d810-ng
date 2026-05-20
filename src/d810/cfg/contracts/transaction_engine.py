@@ -5,7 +5,7 @@ Does NOT compile plans, run semantic preflight, or own snapshot/restore.
 
 Ownership:
 - TransactionalExecutor: plan compilation, semantic preflight, stage policy
-- IDACfgContract: invariant evaluation only
+- CfgContract: invariant evaluation only
 - IDAIRTranslator: finalized-plan lowering, apply-mode selection
 - DeferredGraphModifier: live mutation, snapshot restore, cleanup, backend verify
 - CfgTransactionEngine: phase ordering, projected/live validation sequencing,
@@ -19,7 +19,7 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.cfg.contracts.ida_contract import IDACfgContract
+    from d810.cfg.contracts.contract import CfgContract
     from d810.cfg.contracts.transaction_policy import FailureClassification
     from d810.cfg.flowgraph import FlowGraph
     from d810.cfg.plan import PatchPlan
@@ -76,7 +76,7 @@ class CfgTransactionEngine:
     def __init__(
         self,
         translator,  # IDAIRTranslator
-        contract: IDACfgContract | None = None,
+        contract: CfgContract | None = None,
     ) -> None:
         self._translator = translator
         self._contract = contract
@@ -110,7 +110,7 @@ class CfgTransactionEngine:
             The translator handles post-apply contract checks and native verify
             internally via its own hook wiring.
         """
-        from d810.cfg.contracts.ida_contract import CfgContractViolationError
+        from d810.cfg.contracts.contract import CfgContractViolationError
 
         # Phase: projected_contract -- reject before any live mutation
         if self._contract is not None:

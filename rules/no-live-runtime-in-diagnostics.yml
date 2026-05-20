@@ -1,0 +1,48 @@
+# Keep diagnostics as post-hoc query/render tooling.
+#
+# Diagnostics may query SQLite diagnostic databases and call pure cfg/recon
+# helpers to explain persisted rows. They should not depend on live IDA/
+# Hex-Rays APIs or optimizer runtime strategy modules.
+
+id: no-live-runtime-in-diagnostics
+language: python
+severity: error
+
+files:
+  - "src/d810/diagnostics/**/*.py"
+  - "src/d810/core/diag/**/*.py"
+
+message: |
+  Diagnostics must stay post-hoc and runtime-neutral.
+
+  Query persisted diagnostic rows from d810.core.diag / d810.diagnostics, and
+  use pure cfg/recon helpers for explanation. Live capture, decompile, and
+  runtime optimizer integration belong on the Hex-Rays side. Do not import live
+  IDA/Hex-Rays APIs or optimizer strategy/runtime modules here.
+
+rule:
+  any:
+    - pattern: import idaapi
+    - pattern: import ida_hexrays
+    - pattern: import idc
+    - pattern: import idautils
+    - pattern: import ida_$MOD
+    - pattern: from idaapi import $$$
+    - pattern: from ida_hexrays import $$$
+    - pattern: from idc import $$$
+    - pattern: from idautils import $$$
+    - pattern: from ida_$MOD import $$$
+    - pattern: import d810.hexrays
+    - pattern: import d810.hexrays.$$$
+    - pattern: from d810.hexrays import $$$
+    - pattern: from d810.hexrays.$$$ import $$$
+    - pattern: import d810.optimizers
+    - pattern: import d810.optimizers.$$$
+    - pattern: from d810.optimizers import $$$
+    - pattern: from d810.optimizers.$$$ import $$$
+
+note: |
+  If a diagnostic needs live MBA/Hex-Rays evidence, capture that evidence in an
+  evaluator/backend, d810.hexrays adapter, or observability event first, then
+  query/render it here. Diagnostics should only consume dumps, SQLite rows, or
+  caller-provided data.

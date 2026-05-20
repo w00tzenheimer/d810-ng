@@ -1,0 +1,13 @@
+{
+  "description": "Shared engine profile for Tigress switch-table state-machine unflattening",
+  "ins_rules": [],
+  "blk_rules": [
+    {
+      "name": "EmulatedDispatcherUnflattener",
+      "is_activated": true,
+      "config": {
+        "profile": "tigress_switch"
+      }
+    }
+  ]
+}

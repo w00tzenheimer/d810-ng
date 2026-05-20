@@ -1,7 +1,7 @@
 """Thin engine-rule shell for the extracted emulated-dispatcher family."""
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import ida_hexrays
 
@@ -9,6 +9,9 @@ from d810.core import getLogger
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
+    ollvm_state_dispatcher_map_profile,
+    tigress_indirect_dispatcher_profile,
+    tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
@@ -36,6 +39,32 @@ unflat_logger = getLogger("D810.unflat.emulated_dispatcher.engine")
 
 __all__ = ["EmulatedDispatcherUnflattener"]
 
+_MATURITY_NAMES = (
+    "MMAT_GENERATED",
+    "MMAT_PREOPTIMIZED",
+    "MMAT_LOCOPT",
+    "MMAT_CALLS",
+    "MMAT_GLBOPT1",
+    "MMAT_GLBOPT2",
+    "MMAT_GLBOPT3",
+    "MMAT_LVARS",
+)
+
+
+def _maturity_text(maturity: object) -> str:
+    if maturity is None:
+        return "unknown"
+    for name in _MATURITY_NAMES:
+        try:
+            if int(getattr(ida_hexrays, name)) == int(maturity):
+                return name
+        except Exception:
+            continue
+    try:
+        return f"MMAT_{int(maturity)}"
+    except Exception:
+        return str(maturity)
+
 
 class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
     """Planner-visible shell for the extracted emulated-dispatcher family."""
@@ -58,9 +87,89 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
         self._current_tracked_maturity = -1
         self._last_function_ea = -1
         self.max_passes = self.DEFAULT_MAX_PASSES
+        self.diagnostics_only = False
         self._last_detection: EmulatedDispatcherDetection | None = None
         self._last_snapshot = None
         self._last_provenance: PipelineProvenance | None = None
+
+    def configure(self, kwargs):
+        super().configure(kwargs)
+        profile_name = str(self.config.get("profile", "") or "").strip().lower()
+        self.diagnostics_only = bool(self.config.get("diagnostics_only", False))
+        prefer_switch_transition_facts = bool(
+            self.config.get("prefer_switch_transition_facts", False)
+        )
+        allow_incomplete_switch_transition_facts = bool(
+            self.config.get("allow_incomplete_switch_transition_facts", False)
+        )
+        enable_terminal_payload_materialization = bool(
+            self.config.get("enable_terminal_payload_materialization", False)
+        )
+        enable_phase_reorder = bool(self.config.get("enable_phase_reorder", False))
+        if profile_name in {
+            "state_dispatcher_map",
+            "state_map",
+            "recon_state_map",
+            "ollvm_state_map",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=ollvm_state_dispatcher_map_profile(
+                    enable_terminal_payload_materialization=(
+                        enable_terminal_payload_materialization
+                    ),
+                    enable_phase_reorder=enable_phase_reorder,
+                )
+            )
+        elif profile_name in {
+            "tigress_switch",
+            "switch_table",
+            "switch_state_map",
+        }:
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=tigress_switch_dispatcher_profile(
+                    prefer_switch_transition_facts=prefer_switch_transition_facts,
+                    allow_incomplete_switch_transition_facts=allow_incomplete_switch_transition_facts,
+                )
+            )
+        elif profile_name in {
+            "tigress_indirect",
+            "indirect_jump",
+            "indirect_jump_table",
+        }:
+            if bool(self.config.get("materialize_indirect_targets", False)):
+                try:
+                    from d810.hexrays.preanalysis.indirect_jump_labels import (
+                        materialize_indirect_label_targets_from_config,
+                    )
+
+                    results = materialize_indirect_label_targets_from_config(
+                        self.config.get("goto_table_info", {})
+                    )
+                    for result in results:
+                        unflat_logger.info(
+                            "Tigress indirect preanalysis 0x%X: success=%s "
+                            "targets=%d/%d jump_xrefs=%d switch_info=%s reason=%s",
+                            result.function_ea,
+                            result.success,
+                            result.materialized_target_count,
+                            result.target_count,
+                            result.jump_xref_count,
+                            result.switch_info_installed,
+                            result.reason,
+                        )
+                except Exception:
+                    unflat_logger.warning(
+                        "Tigress indirect target materialization failed",
+                        exc_info=True,
+                    )
+            self._family = EmulatedDispatcherStrategyFamily(
+                profile=tigress_indirect_dispatcher_profile(
+                    goto_table_info=self.config.get("goto_table_info", {}),
+                    enable_phase_reorder=enable_phase_reorder,
+                )
+            )
+        else:
+            self._family = EmulatedDispatcherStrategyFamily()
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if not super().check_if_rule_should_be_used(blk):
@@ -123,6 +232,29 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
 
         self._last_detection = self._family.detect(self.mba)
         self._last_snapshot = self._family.build_snapshot(self.mba, self._last_detection)
+        fact_view = None
+        if self.flow_context is not None:
+            try:
+                fact_view = self.flow_context.validated_fact_view(self.cur_maturity)
+            except Exception:
+                fact_view = None
+        if fact_view is not None:
+            self._last_snapshot = replace(
+                self._last_snapshot,
+                diagnostic_fact_view=fact_view,
+            )
+        self._family.observe_phase_diagnostics(
+            self.mba,
+            self._last_snapshot,
+            fact_view=fact_view,
+        )
+        if self.diagnostics_only:
+            unflat_logger.info(
+                "Emulated-dispatcher diagnostics-only profile emitted phase evidence; "
+                "skipping planning and CFG lowering"
+            )
+            self._actual_pass_count += 1
+            return 0
 
         planned = plan_family_pipeline(
             self._last_snapshot,
@@ -145,22 +277,80 @@ class EmulatedDispatcherUnflattener(GenericUnflatteningRule):
             self._actual_pass_count += 1
             return 0
 
-        executed = execute_family_pipeline(
-            self._last_snapshot,
-            planned,
-            executor_factory=lambda mba: TransactionalExecutor(
-                mba,
-                safeguard_profile="engine",
+        observation = extract_emulated_dispatcher_metadata(self._last_snapshot.flow_graph)
+        maturity_text = _maturity_text(getattr(self.mba, "maturity", None))
+        unflat_logger.debug(
+            "Emulated-dispatcher execution start: maturity=%s "
+            "selected_mode=%s selected_modifications=%d",
+            maturity_text,
+            observation.selected_lowering_mode if observation is not None else None,
+            (
+                int(observation.selected_modification_count)
+                if observation is not None
+                else -1
             ),
-            flow_context=self.flow_context,
         )
+        try:
+            executed = execute_family_pipeline(
+                self._last_snapshot,
+                planned,
+                executor_factory=lambda mba: TransactionalExecutor(
+                    mba,
+                    safeguard_profile="engine",
+                ),
+                flow_context=self.flow_context,
+            )
+        except Exception:
+            unflat_logger.exception(
+                "Emulated-dispatcher execution failed before summary: "
+                "maturity=%s selected_mode=%s selected_modifications=%d",
+                maturity_text,
+                observation.selected_lowering_mode if observation is not None else None,
+                (
+                    int(observation.selected_modification_count)
+                    if observation is not None
+                    else -1
+                ),
+            )
+            raise
         self._last_provenance = executed.provenance
+        result_summaries = tuple(
+            {
+                "strategy": result.strategy_name,
+                "success": bool(result.success),
+                "edits_applied": int(result.edits_applied),
+                "failure_phase": result.failure_phase,
+                "error": result.error,
+                "backend_filter": result.metadata.get("backend_filter"),
+                "cycle_filter": result.metadata.get("cycle_filter"),
+            }
+            for result in executed.results
+        )
+        unflat_logger.debug(
+            "Emulated-dispatcher execution summary: maturity=%s "
+            "selected_mode=%s selected_modifications=%d total_changes=%d "
+            "results=%s",
+            maturity_text,
+            observation.selected_lowering_mode if observation is not None else None,
+            (
+                int(observation.selected_modification_count)
+                if observation is not None
+                else -1
+            ),
+            int(executed.total_changes),
+            result_summaries,
+        )
         cleanup_changes = self._family.post_execute_cleanup(
             self.mba,
             snapshot=self._last_snapshot,
             total_changes=executed.total_changes,
         )
         total_changes = executed.total_changes + cleanup_changes
+        self._family.record_executed_phase_reconstruction(
+            mba=self.mba,
+            snapshot=self._last_snapshot,
+            total_changes=total_changes,
+        )
         if total_changes > 0 and self.max_passes < self.HARD_MAX_PASSES:
             self.max_passes += 1
         self._actual_pass_count += 1

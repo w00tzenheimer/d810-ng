@@ -1,0 +1,28 @@
+# Keep Hex-Rays mutation backends from becoming diagnostic storage/query code.
+
+id: no-hexrays-mutation-diagnostic-storage-imports
+language: python
+severity: error
+
+files:
+  - "src/d810/hexrays/mutation/**/*.py"
+
+message: |
+  Hex-Rays mutation modules must not import diagnostic storage APIs directly.
+
+  Mutation backends may emit observations, but SQLite diagnostic persistence
+  and post-hoc queries belong in d810.core.diag or d810.diagnostics.
+
+rule:
+  any:
+    - pattern: import sqlite3
+    - pattern: import sqlite3 as $ALIAS
+    - pattern: from sqlite3 import $$$
+    - pattern: from sqlite3 import $NAME as $ALIAS
+    - pattern: import d810.core.diag
+    - pattern: import d810.core.diag.$MOD
+    - pattern: from d810.core.diag import $$$
+    - pattern: from d810.core.diag.$MOD import $$$
+
+note: |
+  Debug logging and diag snapshot capture must not change mutation behavior.

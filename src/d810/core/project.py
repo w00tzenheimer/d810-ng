@@ -161,6 +161,7 @@ class ProjectContext:
     project_index: int
     _original_ins_rules: typing.List = dataclasses.field(default_factory=list)
     _original_blk_rules: typing.List = dataclasses.field(default_factory=list)
+    _original_function_priors: typing.Any = None
     _removed_rules: typing.Set[str] = dataclasses.field(default_factory=set)
     _added_rules: typing.List = dataclasses.field(default_factory=list)
 
@@ -168,6 +169,20 @@ class ProjectContext:
         # Snapshot the current rules for restoration
         self._original_ins_rules = list(self.state.current_ins_rules)
         self._original_blk_rules = list(self.state.current_blk_rules)
+        self._original_function_priors = (
+            self.state.manager.snapshot_function_analysis_priors()
+        )
+
+    @staticmethod
+    def _rule_name(rule: str | type | typing.Any) -> str:
+        if isinstance(rule, str):
+            return rule.lower()
+        if isinstance(rule, type):
+            return rule.__name__.lower()
+        name = getattr(rule, "name", None) or getattr(rule, "__name__", None)
+        if name is None:
+            name = rule.__class__.__name__
+        return str(name).lower()
 
     def remove_rule(self, rule: str | type) -> ProjectContext:
         """Remove a rule from the active rules.
@@ -179,10 +194,7 @@ class ProjectContext:
         Returns:
             self for method chaining
         """
-        if isinstance(rule, str):
-            name = rule.lower()
-        else:
-            name = rule.__name__.lower()
+        name = self._rule_name(rule)
 
         self._removed_rules.add(name)
 
@@ -212,10 +224,7 @@ class ProjectContext:
         Raises:
             ValueError: If the rule is not found in known rules.
         """
-        if isinstance(rule, str):
-            name = rule.lower()
-        else:
-            name = rule.__name__.lower()
+        name = self._rule_name(rule)
 
         # Try to find in known instruction rules
         for known_rule in self.state.known_ins_rules:
@@ -237,10 +246,35 @@ class ProjectContext:
 
         raise ValueError(f"Rule '{rule}' not found in known rules")
 
+    def add_function_priors(
+        self,
+        function: str | int,
+        priors: typing.Any,
+    ) -> ProjectContext:
+        """Add scoped analysis priors for one function.
+
+        The concrete priors object is recon-owned.  ProjectContext only
+        provides the scoped project/test harness channel and restores it on
+        context exit.
+        """
+        self.state.manager.add_function_analysis_priors(function, priors)
+        return self
+
+    def function_analysis_priors(self, function: str | int) -> typing.Any:
+        """Return the currently registered analysis priors for a function."""
+        return self.state.manager.function_analysis_priors(function)
+
+    def function_priors(self, function: str | int) -> typing.Any:
+        """Short alias for tests and project-context call sites."""
+        return self.function_analysis_priors(function)
+
     def restore(self):
         """Restore the original rules (called on context exit)."""
         self.state.current_ins_rules = self._original_ins_rules
         self.state.current_blk_rules = self._original_blk_rules
+        self.state.manager.restore_function_analysis_priors(
+            self._original_function_priors
+        )
         if self._removed_rules:
             logger.info("Restored %d removed rules", len(self._removed_rules))
         if self._added_rules:

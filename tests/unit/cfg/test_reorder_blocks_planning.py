@@ -2,18 +2,28 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.cfg.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.cfg.reorder_blocks_planning import compute_reorder_blocks
 
 
-class _FakeMBA:
-    def __init__(self, block_types: dict[int, int]):
-        self._blocks = {
-            serial: SimpleNamespace(type=block_type)
-            for serial, block_type in block_types.items()
-        }
-
-    def get_mblock(self, serial: int):
-        return self._blocks.get(serial)
+def _flow_graph(block_kinds: dict[int, BlockKind]) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            serial: BlockSnapshot(
+                serial=serial,
+                block_type=-1,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0,
+                insn_snapshots=(),
+                kind=block_kind,
+            )
+            for serial, block_kind in block_kinds.items()
+        },
+        entry_serial=next(iter(block_kinds)),
+        func_ea=0,
+    )
 
 
 def test_compute_reorder_blocks_returns_none_without_state_machine():
@@ -21,11 +31,7 @@ def test_compute_reorder_blocks_returns_none_without_state_machine():
     assert compute_reorder_blocks(snapshot, resolve_target_entry=lambda bst, state: None) is None
 
 
-def test_compute_reorder_blocks_orders_handlers_and_splits_two_way(monkeypatch):
-    import d810.cfg.reorder_blocks_planning as planning
-
-    monkeypatch.setattr(planning, "_BLT_2WAY", 2)
-
+def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
     state_machine = SimpleNamespace(
         initial_state=1,
         handlers={
@@ -43,11 +49,17 @@ def test_compute_reorder_blocks_orders_handlers_and_splits_two_way(monkeypatch):
         handler_range_map={},
         bst_node_blocks=frozenset(),
     )
-    mba = _FakeMBA({10: 1, 11: 2, 20: 1, 30: 1})
     snapshot = SimpleNamespace(
         state_machine=state_machine,
         bst_result=bst_result,
-        mba=mba,
+        flow_graph=_flow_graph(
+            {
+                10: BlockKind.ONE_WAY,
+                11: BlockKind.TWO_WAY,
+                20: BlockKind.ONE_WAY,
+                30: BlockKind.ONE_WAY,
+            }
+        ),
     )
 
     result = compute_reorder_blocks(

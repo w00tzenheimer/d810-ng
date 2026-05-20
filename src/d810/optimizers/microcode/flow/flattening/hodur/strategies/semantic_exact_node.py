@@ -51,7 +51,14 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     adapt_linearized_dag_round_summary,
 )
 from d810.cfg.modification_builder import ModificationBuilder
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.cfg.semantic_exact_selection import (
+    parse_focus_edge_pairs,
+    resolve_edge_window,
+    select_focused_semantic_exact_edges,
+    select_windowed_semantic_exact_edges,
+    semantic_edge_state_pair,
+)
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -60,6 +67,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     LinearizedFlowGraphStrategy,
     _prepare_linearized_flow_graph_plan_setup,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
+    ProjectedTopologyBackend,
 )
 from d810.recon.flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
@@ -78,9 +89,6 @@ from d810.recon.flow.residual_handoff_discovery import (
     state_has_semantic_support,
     supplemental_selected_entry_for_state,
 )
-from d810.recon.flow.linearized_state_dag import (
-    build_live_linearized_state_dag_from_graph,
-)
 from d810.recon.flow.residual_handoff_resolution import (
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,
@@ -95,6 +103,9 @@ logger = logging.getLogger(
     "D810.hodur.strategy.semantic_exact_node_experiment",
     logging.DEBUG,
 )
+_PROJECTED_TOPOLOGY_BACKEND: ProjectedTopologyBackend = (
+    DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND
+)
 
 __all__ = [
     "SemanticExactNodeAllPlannableEdgesStrategy",
@@ -102,95 +113,6 @@ __all__ = [
 ]
 
 _SUB7FFD_FUNC_EA = 0x180012B60
-
-
-def _edge_pair(edge: object) -> tuple[int, int] | None:
-    source_key = getattr(edge, "source_key", None)
-    source_state = getattr(source_key, "state_const", None)
-    target_state = getattr(edge, "target_state", None)
-    if source_state is None or target_state is None:
-        return None
-    return (
-        int(source_state) & 0xFFFFFFFF,
-        int(target_state) & 0xFFFFFFFF,
-    )
-
-
-def _parse_nonnegative_int(value: str | None, *, default: int) -> int:
-    if value is None or value == "":
-        return default
-    try:
-        parsed = int(value, 0)
-    except ValueError:
-        return default
-    return max(0, parsed)
-
-
-def _resolve_edge_window(total_edges: int) -> tuple[int, int]:
-    start = _parse_nonnegative_int(
-        os.getenv("D810_EXACT_NODE_EDGE_START"),
-        default=0,
-    )
-    stop = _parse_nonnegative_int(
-        os.getenv("D810_EXACT_NODE_EDGE_STOP"),
-        default=total_edges,
-    )
-    if start > total_edges:
-        start = total_edges
-    if stop > total_edges:
-        stop = total_edges
-    if stop < start:
-        stop = start
-    return start, stop
-
-
-def _parse_focus_edge_pairs(
-    raw: str | None,
-) -> tuple[tuple[int, int], ...] | None:
-    """Parse a ``D810_EXACT_NODE_FOCUS_EDGES`` style spec.
-
-    Accepts ``src,dst[;src,dst]*`` where each value may be hex (``0x``-prefixed
-    or bare hex) or decimal. Returns ``None`` when the spec is missing or empty
-    so callers can fall back to the default selection path. Malformed entries
-    are silently skipped to keep the env-var override permissive for
-    bisection.
-    """
-    if raw is None:
-        return None
-    cleaned = raw.strip()
-    if not cleaned:
-        return None
-    pairs: list[tuple[int, int]] = []
-    for chunk in cleaned.split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        parts = [part.strip() for part in chunk.split(",")]
-        if len(parts) != 2:
-            continue
-        try:
-            src = int(parts[0], 16) if not parts[0].lower().startswith("0x") else int(parts[0], 0)
-            dst = int(parts[1], 16) if not parts[1].lower().startswith("0x") else int(parts[1], 0)
-        except ValueError:
-            continue
-        pairs.append((src & 0xFFFFFFFF, dst & 0xFFFFFFFF))
-    return tuple(pairs) if pairs else None
-
-
-def _edge_kind_name(edge: object) -> str:
-    kind = getattr(getattr(edge, "kind", None), "name", None)
-    return str(kind) if kind is not None else ""
-
-
-def _is_straight_line_handoff(edge: object) -> bool:
-    """Return True when *edge* is safe for direct exact-edge lowering.
-
-    Straight-line exact lowering is intentionally conservative: it only handles
-    unconditional semantic transitions. Conditional exact nodes are lowered by
-    the dedicated hammock-style strategy instead of being forced through the
-    direct edge emitter.
-    """
-    return _edge_kind_name(edge) == "TRANSITION"
 
 
 def _append_unique_pred_split_source_redirects(
@@ -694,7 +616,7 @@ def build_semantic_exact_round_summary(snapshot):
         pre_header_serial=setup.pre_header_serial,
         bst_node_blocks=setup.bst_node_blocks,
         build_round_summary=build_linearized_dag_round_summary,
-        build_live_dag=build_live_linearized_state_dag_from_graph,
+        build_live_dag=_PROJECTED_TOPOLOGY_BACKEND.build_live_dag,
         build_transition_report=build_dispatcher_transition_report_from_graph,
         select_plannable_edges=select_plannable_dag_edges,
     )
@@ -745,7 +667,7 @@ class _SemanticExactNodeExperimentStrategy:
     def _find_focus_edge(self, plannable_edges: tuple[object, ...]) -> tuple[object, tuple[int, int]] | tuple[None, None]:
         by_pair: dict[tuple[int, int], object] = {}
         for plannable in plannable_edges:
-            pair = _edge_pair(getattr(plannable, "edge", None))
+            pair = semantic_edge_state_pair(getattr(plannable, "edge", None))
             if pair is not None and pair not in by_pair:
                 by_pair[pair] = plannable
         for pair in self.FOCUS_EDGE_PAIRS:
@@ -777,9 +699,9 @@ class _SemanticExactNodeExperimentStrategy:
         selected_edges = self._select_edges(round_summary)
         if not selected_edges:
             sample_pairs = [
-                _edge_pair(entry.edge)
+                semantic_edge_state_pair(entry.edge)
                 for entry in round_summary.plannable_edges[:8]
-                if _edge_pair(entry.edge) is not None
+                if semantic_edge_state_pair(entry.edge) is not None
             ]
             logger.info(
                 "EXACT NODE EXPERIMENT: no whitelisted edge found (plannable=%d sample=%s)",
@@ -1046,7 +968,7 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
         )
 
     def _resolve_focus_edge_pairs(self) -> tuple[tuple[int, int], ...] | None:
-        env_focus = _parse_focus_edge_pairs(os.getenv("D810_EXACT_NODE_FOCUS_EDGES"))
+        env_focus = parse_focus_edge_pairs(os.getenv("D810_EXACT_NODE_FOCUS_EDGES"))
         if env_focus is not None:
             return env_focus
         return self._focus_edge_pairs
@@ -1057,16 +979,10 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
     ) -> list[tuple[object, tuple[int, int]]]:
         focus_pairs = self._resolve_focus_edge_pairs()
         if focus_pairs:
-            by_pair: dict[tuple[int, int], object] = {}
-            for plannable in round_summary.plannable_edges:
-                pair = _edge_pair(getattr(plannable, "edge", None))
-                if pair is not None and pair not in by_pair:
-                    by_pair[pair] = plannable
-            selected: list[tuple[object, tuple[int, int]]] = []
-            for pair in focus_pairs:
-                plannable = by_pair.get(pair)
-                if plannable is not None:
-                    selected.append((plannable, pair))
+            selected = select_focused_semantic_exact_edges(
+                round_summary.plannable_edges,
+                focus_pairs,
+            )
             logger.info(
                 "EXACT NODE EXPERIMENT: focus restriction active, selected %d/%d pinned pairs",
                 len(selected),
@@ -1074,24 +990,15 @@ class SemanticExactNodeAllPlannableEdgesStrategy(
             )
             return selected
 
-        ordered_edges: list[tuple[object, tuple[int, int]]] = []
-        seen_pairs: set[tuple[int, int]] = set()
-        for plannable in round_summary.plannable_edges:
-            edge = getattr(plannable, "edge", None)
-            if edge is None or not _is_straight_line_handoff(edge):
-                continue
-            pair = _edge_pair(edge)
-            if pair is None or pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            ordered_edges.append((plannable, pair))
-
-        start, stop = _resolve_edge_window(len(ordered_edges))
-        windowed = ordered_edges[start:stop]
+        windowed, (start, stop), total_edges = select_windowed_semantic_exact_edges(
+            round_summary.plannable_edges,
+            start_value=os.getenv("D810_EXACT_NODE_EDGE_START"),
+            stop_value=os.getenv("D810_EXACT_NODE_EDGE_STOP"),
+        )
         logger.info(
             "EXACT NODE EXPERIMENT: selected bulk window [%d:%d) of %d unique plannable edges",
             start,
             stop,
-            len(ordered_edges),
+            total_edges,
         )
         return windowed

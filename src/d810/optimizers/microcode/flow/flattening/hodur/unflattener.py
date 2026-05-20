@@ -35,7 +35,7 @@ from pathlib import Path
 from d810.core import logging
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
-from d810.hexrays.utils.hexrays_formatters import format_mop_t
+from d810.hexrays.utils.hexrays_formatters import format_mop_t, maturity_to_string
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
 )
@@ -43,6 +43,7 @@ from d810.recon.flow.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
+from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
@@ -58,21 +59,20 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     HandlerPathResult,
     Pass0RedirectRecord,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.family import (
     HodurStrategyFamily,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    EXPERIMENTAL_STRATEGIES,
-    StateWriteReconstructionStrategy,
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    default_hodur_profile,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
@@ -92,7 +92,7 @@ from d810.hexrays.mutation.cfg_mutations import (
     remove_block_edge,
 )
 
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
@@ -261,13 +261,7 @@ class HodurUnflattener(GenericUnflatteningRule):
         # construction, and strategy registration through the shared engine
         # family surface rather than owning those responsibilities directly.
         self._cfg_translator = IDAIRTranslator()
-        enable_standalone_srw = (
-            os.getenv("D810_RECON_ENABLE_STANDALONE_SRW", "").strip() == "1"
-            and os.getenv("D810_RECON_SKIP_SRW_STRATEGY", "").strip() != "1"
-        )
-        strategy_classes = [*EXPERIMENTAL_STRATEGIES]
-        if enable_standalone_srw:
-            strategy_classes.append(StateWriteReconstructionStrategy)
+        profile = default_hodur_profile()
         self._family = HodurStrategyFamily(
             cfg_translator=self._cfg_translator,
             disabled_strategy_names={
@@ -284,7 +278,7 @@ class HodurUnflattener(GenericUnflatteningRule):
             #
             # D810_RECON_ENABLE_STANDALONE_SRW=1 → append old SRW strategy.
             # D810_RECON_SKIP_SRW_STRATEGY=1 still force-disables it.
-            strategy_classes=strategy_classes,
+            strategy_classes=list(profile.entrypoint_strategy_classes),
             recon_only=self.RECON_ONLY_MODE,
             min_state_constant=self.min_state_constant,
             min_state_constants=self.min_state_constants,
@@ -332,6 +326,9 @@ class HodurUnflattener(GenericUnflatteningRule):
                 # maturity argument.  Returns None when no fact lifecycle
                 # callbacks are attached.
                 return self._ctx.validated_fact_view(maturity)
+
+            def function_analysis_priors(self, func_ea=None):
+                return self._ctx.function_analysis_priors(func_ea)
 
         self._family.set_fact_runtime(_FactRuntimeAdapter(flow_ctx))
 
@@ -410,9 +407,9 @@ class HodurUnflattener(GenericUnflatteningRule):
             view = self.flow_context.validated_fact_view(maturity)
         except Exception:
             unflat_logger.exception(
-                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%d reason=view-error",
+                "HODUR_FACT_VIEW_FAILED func=0x%x maturity=%s reason=view-error",
                 func_ea,
-                maturity,
+                maturity_to_string(maturity),
             )
             return
         if view is None:
@@ -554,10 +551,10 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         unflat_logger.debug(
-            "HodurUnflattener: Starting pass %d/%d at maturity %d",
+            "HodurUnflattener: Starting pass %d/%d at maturity %s",
             self._actual_pass_count,
             self.max_passes,
-            self.cur_maturity,
+            maturity_to_string(self.cur_maturity),
         )
 
         if self._actual_pass_count == 0:
@@ -949,9 +946,9 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         if nb_changes == 0:
             unflat_logger.info(
-                "HodurUnflattener: convergence reached at pass %d, maturity %d",
+                "HodurUnflattener: convergence reached at pass %d, maturity %s",
                 self._actual_pass_count,
-                self.cur_maturity,
+                maturity_to_string(self.cur_maturity),
             )
 
         self._actual_pass_count += 1
@@ -989,10 +986,18 @@ class HodurUnflattener(GenericUnflatteningRule):
                         )
                     except (TypeError, ValueError):
                         corridors = ()
+                function_priors = FunctionAnalysisPriors()
+                if self.flow_context is not None:
+                    function_priors = self.flow_context.function_analysis_priors(
+                        self.mba.entry_ea
+                    )
                 audit_return_frontier_carriers(
                     mba=self.mba,
                     side_effect_corridors=corridors,
                     label="post_pipeline",
+                    artifact_priors=(
+                        function_priors.return_frontier_artifacts
+                    ),
                 )
             except Exception:
                 unflat_logger.debug(
@@ -1072,21 +1077,118 @@ class HodurUnflattener(GenericUnflatteningRule):
         #       so byte_emit handlers are still present and reachable.
         # Default-off; only fires when the corresponding env gate is set.
         try:
-            from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+            from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                maybe_rewrite_impossible_return_artifact_edges,
                 maybe_run_byte_anchor,
+                maybe_run_terminal_tail_cascade_egress_lowering,
                 maybe_run_tail_distinct,
                 maybe_run_tail_duplicate_convergence,
                 maybe_run_tail_state_cascade,
-                maybe_run_terminal_tail_cascade_egress_lowering,
+            )
+            from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+                ByteTailRuntimeEvidence,
+                StaticByteTailRuntimeEvidenceProvider,
             )
 
             unflat_logger.info(
                 "TAIL_SHAPING_HOOK phase=after_post_bundle_stabilize"
             )
-            maybe_run_terminal_tail_cascade_egress_lowering(self.mba)
-            maybe_run_tail_distinct(self.mba)
-            maybe_run_tail_duplicate_convergence(self.mba)
-            maybe_run_tail_state_cascade(self.mba)
+            fact_view = getattr(snapshot, "diagnostic_fact_view", None)
+            if fact_view is None and self.flow_context is not None:
+                try:
+                    fact_view = self.flow_context.validated_fact_view(
+                        self.cur_maturity
+                    )
+                except Exception:
+                    unflat_logger.debug(
+                        "terminal_tail_cascade_egress fact view lookup failed",
+                        exc_info=True,
+                    )
+                    fact_view = None
+            runtime_fact_raw = os.environ.get(
+                "D810_TERMINAL_TAIL_CASCADE_EGRESS_RUNTIME_FACTS", "0"
+            )
+            if str(runtime_fact_raw).lower() in {"1", "true", "yes", "on"}:
+                try:
+                    from d810.recon.flow.runtime_evidence import (
+                        ensure_terminal_byte_fact_view,
+                    )
+
+                    fact_view = ensure_terminal_byte_fact_view(
+                        self.mba,
+                        func_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+                        maturity=int(
+                            getattr(self.mba, "maturity", self.cur_maturity) or 0
+                        ),
+                        fact_view=fact_view,
+                        phase="post_bundle_stabilize",
+                    )
+                except Exception:
+                    unflat_logger.debug(
+                        "terminal_tail_cascade_egress runtime fact collection failed",
+                        exc_info=True,
+                    )
+            latest_dag = None
+            try:
+                from d810.recon.flow.runtime_evidence import (
+                    get_latest_reconstruction_dag,
+                )
+
+                latest_dag = get_latest_reconstruction_dag(
+                    int(getattr(self.mba, "entry_ea", 0) or 0)
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "terminal_tail_cascade_egress DAG lookup failed",
+                    exc_info=True,
+                )
+            function_priors = FunctionAnalysisPriors()
+            if self.flow_context is not None:
+                function_priors = self.flow_context.function_analysis_priors(
+                    self.mba.entry_ea
+                )
+            impossible_return_artifact_edges = tuple(
+                function_priors
+                .return_frontier_artifacts
+                .impossible_return_artifact_edges
+            )
+            evidence_provider = StaticByteTailRuntimeEvidenceProvider(
+                ByteTailRuntimeEvidence(
+                    fact_view=fact_view,
+                    dag=latest_dag,
+                    terminal_tail_cascade_egress=(
+                        function_priors.terminal_tail_cascade_egress
+                    ),
+                    impossible_return_artifact_edges=(
+                        impossible_return_artifact_edges
+                    ),
+                )
+            )
+            maybe_run_terminal_tail_cascade_egress_lowering(
+                self.mba,
+                fact_view=fact_view,
+                dag=latest_dag,
+                evidence_provider=evidence_provider,
+            )
+            maybe_rewrite_impossible_return_artifact_edges(
+                self.mba,
+                evidence_provider=evidence_provider,
+            )
+            maybe_run_tail_distinct(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
+            maybe_run_tail_duplicate_convergence(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
+            maybe_run_tail_state_cascade(
+                self.mba,
+                fact_view=fact_view,
+                evidence_provider=evidence_provider,
+            )
             maybe_run_byte_anchor(self.mba)
         except Exception:
             unflat_logger.debug(

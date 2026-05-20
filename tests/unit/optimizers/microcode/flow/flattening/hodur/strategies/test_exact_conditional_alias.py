@@ -13,9 +13,15 @@ from d810.cfg.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
     ExactConditionalAliasNodeLoweringStrategy,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    exact_conditional_alias as exact_conditional_alias_module,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork import (
     ExactConditionalForkNodeLoweringStrategy,
     analyze_exact_conditional_fork_sites,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    exact_conditional_fork as exact_conditional_fork_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     analyze_exact_conditional_sites,
@@ -657,7 +663,8 @@ def test_exact_conditional_alias_strategy_uses_duplicate_and_redirect_when_tail_
         dispatcher_region=(2,),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias.build_semantic_exact_round_summary",
+        exact_conditional_alias_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
 
@@ -1008,6 +1015,13 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
     builder = ModificationBuilder.from_snapshot(
         SimpleNamespace(flow_graph=flow_graph, mba=SimpleNamespace())
     )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph_arg: object, state_var_stkoff: int):
+            assert flow_graph_arg is flow_graph
+            assert state_var_stkoff == 0x7BC
+            return SimpleNamespace(in_stk_maps={}, in_reg_maps={})
+
     setup = SimpleNamespace(
         builder=builder,
         bst_node_blocks=(2,),
@@ -1016,16 +1030,14 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         dispatcher=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.build_semantic_exact_round_summary",
+        exact_conditional_fork_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.collect_residual_dispatcher_predecessors",
+        exact_conditional_fork_module,
+        "collect_residual_dispatcher_predecessors",
         lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.run_snapshot_constant_fixpoint",
-        lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
     )
 
     def _fake_path_horizon(edge, **kwargs):
@@ -1046,7 +1058,8 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.resolve_transition_path_horizon",
+        exact_conditional_fork_module,
+        "resolve_transition_path_horizon",
         _fake_path_horizon,
     )
 
@@ -1059,7 +1072,9 @@ def test_exact_conditional_fork_plan_zeroes_safe_tail_state_writes(monkeypatch):
         reachability=SimpleNamespace(entry_serial=15),
     )
 
-    fragment = ExactConditionalForkNodeLoweringStrategy().plan(snapshot)
+    strategy = ExactConditionalForkNodeLoweringStrategy()
+    strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    fragment = strategy.plan(snapshot)
 
     assert fragment is not None
     zeroes = [mod for mod in fragment.modifications if mod.__class__.__name__ == "ZeroStateWrite"]
@@ -1071,6 +1086,13 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
     builder = ModificationBuilder.from_snapshot(
         SimpleNamespace(flow_graph=flow_graph, mba=SimpleNamespace())
     )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph_arg: object, state_var_stkoff: int):
+            assert flow_graph_arg is flow_graph
+            assert state_var_stkoff == 0x7BC
+            return SimpleNamespace(in_stk_maps={}, in_reg_maps={})
+
     setup = SimpleNamespace(
         builder=builder,
         bst_node_blocks=(2,),
@@ -1079,19 +1101,18 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
         dispatcher=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.build_semantic_exact_round_summary",
+        exact_conditional_fork_module,
+        "build_semantic_exact_round_summary",
         lambda _snapshot: (setup, round_summary),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.collect_residual_dispatcher_predecessors",
+        exact_conditional_fork_module,
+        "collect_residual_dispatcher_predecessors",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.run_snapshot_constant_fixpoint",
-        lambda *args, **kwargs: SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_fork.resolve_transition_path_horizon",
+        exact_conditional_fork_module,
+        "resolve_transition_path_horizon",
         lambda *args, **kwargs: None,
     )
 
@@ -1104,7 +1125,9 @@ def test_exact_conditional_fork_plan_nops_trivial_direct_tail_state_writes(monke
         reachability=SimpleNamespace(entry_serial=15),
     )
 
-    fragment = ExactConditionalForkNodeLoweringStrategy().plan(snapshot)
+    strategy = ExactConditionalForkNodeLoweringStrategy()
+    strategy._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    fragment = strategy.plan(snapshot)
 
     assert fragment is not None
     nops = [mod for mod in fragment.modifications if isinstance(mod, NopInstructions)]

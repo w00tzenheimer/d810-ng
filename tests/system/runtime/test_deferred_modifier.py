@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 import platform
 from types import SimpleNamespace
@@ -8,13 +9,19 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError
+from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.graph_modification import CreateConditionalRedirect
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.optimizers.microcode.flow.flattening import fix_pred_cond_jump_block as fix_pred
+from d810.optimizers.microcode.flow.flattening.fix_pred_cond_jump_block import (
+    FixPredecessorOfConditionalJumpBlock,
+    PredecessorModification,
+    PredecessorModificationType,
+)
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
     EmulatedDispatcherStrategyFamily,
@@ -317,6 +324,224 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(monk
     # and signal verify_failed so the caller can quarantine the function.
     assert applied == 0
     assert modifier.verify_failed is True
+
+
+def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monkeypatch):
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.modifications = [
+        dm.GraphModification(
+            dm.ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
+            block_serial=0,
+            insn_ea=0x1000,
+            host_opcode=ida_hexrays.m_ldx,
+            alias_token="%var_378",
+            base_token="%var_18",
+            description="alias scalarization must rollback on verify failure",
+        ),
+    ]
+
+    apply_calls = {"count": 0}
+    restore_calls = {"count": 0}
+    verify_calls = {"count": 0}
+
+    def _apply_alias(*_args, **_kwargs):
+        apply_calls["count"] += 1
+        return True
+
+    def _safe_verify(*_args, **_kwargs):
+        verify_calls["count"] += 1
+        if verify_calls["count"] == 2:
+            raise RuntimeError("alias scalarization verify failure")
+
+    monkeypatch.setattr(modifier, "_apply_scalarize_local_alias_access", _apply_alias)
+    monkeypatch.setattr(
+        modifier,
+        "_restore_from_snapshot",
+        lambda _snap: restore_calls.__setitem__("count", restore_calls["count"] + 1) or True,
+    )
+    monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
+    monkeypatch.setattr(dm, "safe_verify", _safe_verify)
+    monkeypatch.setattr(dm, "mba_deep_cleaning", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm, "lift", lambda _m: SimpleNamespace(num_blocks=1, entry_serial=0))
+
+    applied = modifier.apply(
+        run_optimize_local=False,
+        run_deep_cleaning=False,
+        verify_each_mod=True,
+        rollback_on_verify_failure=True,
+        transactional=True,
+    )
+
+    assert applied == 0
+    assert apply_calls["count"] == 1
+    assert restore_calls["count"] == 1
+    assert modifier.verify_failed is False
+
+
+def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch):
+    from d810.optimizers.microcode.flow.flattening import (
+        emulated_dispatcher_family as edf,
+    )
+    from d810.recon.facts.value_flow import (
+        LIFECYCLE_PRODUCTION_PROVEN,
+        SCALAR_REPLACEMENT_FACT_TYPE,
+    )
+
+    class _Mop:
+        def __init__(self, text: str):
+            self._text = text
+            self.size = 4
+
+        def dstr(self) -> str:
+            return self._text
+
+    insn = SimpleNamespace(
+        opcode=ida_hexrays.m_ldx,
+        ea=0x18000F123,
+        r=_Mop("[ds.2:%var_378.8].4"),
+        d=_Mop("%var_420.4"),
+        next=None,
+    )
+    insn.dstr = lambda: "ldx [ds.2:%var_378.8].4, %var_420.4"
+    block = _FakeBlock(0)
+    block.head = insn
+    block.make_lists_ready = lambda: None  # type: ignore[attr-defined]
+    mba = _FakeMBA()
+    mba.blocks = {0: block}
+    mba.qty = 1
+
+    created_modifiers = []
+
+    class _FakeModifier:
+        def __init__(self, _mba):
+            self.queued = []
+            self.apply_kwargs = {}
+            self.verify_failed = False
+            created_modifiers.append(self)
+
+        def queue_scalarize_local_alias_access(self, *args, **kwargs):
+            self.queued.append((args, kwargs))
+
+        def apply(self, **kwargs):
+            self.apply_kwargs = dict(kwargs)
+            return len(self.queued)
+
+    fact = SimpleNamespace(
+        kind=SCALAR_REPLACEMENT_FACT_TYPE,
+        fact_id="local-scalarization",
+        payload={
+            "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
+            "storage_identity": "%var_378",
+            "anchor_locator": {
+                "requires_live_revalidation": True,
+                "source_block": 0,
+                "instruction_ea": 0x18000F123,
+                "instruction_index": 0,
+                "instruction_opcode_name": "m_ldx",
+                "instruction_text_sha1": hashlib.sha1(
+                    insn.dstr().encode("utf-8")
+                ).hexdigest()[:16],
+                "carrier_token": "%var_378",
+            },
+            "storage_overlap_proof": {
+                "fully_included": True,
+                "partial_overlap": False,
+                "carrier_token": "%var_378",
+                "base_token": "%var_18",
+                "requires_live_mlist_revalidation": True,
+            },
+            "details": {
+                "proof_family": "local_expression_storage_scalarization",
+                "local_base_token": "%var_18",
+            },
+        },
+    )
+    verify_calls = {"count": 0}
+
+    monkeypatch.setattr(dm, "DeferredGraphModifier", _FakeModifier)
+    monkeypatch.setattr(
+        edf,
+        "_verify_ollvm_carrier_mutation",
+        lambda *_args, **_kwargs: verify_calls.__setitem__("count", verify_calls["count"] + 1),
+    )
+
+    applied = edf._apply_local_alias_mem2reg(
+        mba,
+        SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
+        (fact,),
+    )
+
+    assert applied == 1
+    assert verify_calls["count"] == 1
+    assert len(created_modifiers) == 1
+    assert len(created_modifiers[0].queued) == 1
+    assert created_modifiers[0].apply_kwargs == {
+        "run_optimize_local": True,
+        "run_deep_cleaning": False,
+        "verify_each_mod": True,
+        "rollback_on_verify_failure": True,
+        "transactional": True,
+    }
+    queued_args, queued_kwargs = created_modifiers[0].queued[0]
+    assert queued_args[:5] == (
+        0,
+        0x18000F123,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+    )
+    assert queued_kwargs["host_text_sha1"]
+    assert queued_kwargs["value_size"] == 4
+
+
+def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    block = _FakeBlock(0)
+    host = SimpleNamespace(
+        opcode=ida_hexrays.m_ldx,
+        ea=0x18000F123,
+        next=None,
+        dstr=lambda: "ldx [ds.2:%var_378.8].4, %var_420.4",
+    )
+    block.head = host
+
+    assert modifier._apply_scalarize_local_alias_access(
+        block,
+        0x18000F123,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        "definitely-wrong",
+        4,
+    ) is False
+
+
+def test_scalarize_local_alias_access_coalesce_keeps_distinct_live_anchors() -> None:
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier.queue_scalarize_local_alias_access(
+        7,
+        0x180010000,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        host_text_sha1="hash-a",
+        value_size=4,
+    )
+    modifier.queue_scalarize_local_alias_access(
+        7,
+        0x180010010,
+        ida_hexrays.m_ldx,
+        "%var_378",
+        "%var_18",
+        host_text_sha1="hash-b",
+        value_size=4,
+    )
+
+    assert modifier.coalesce() == 0
+    assert len(modifier.modifications) == 2
 
 
 def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
@@ -705,7 +930,9 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
     assert calls == [dm.ModificationType.INSN_NOP]
 
 
-def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
+def test_create_conditional_redirect_records_serial_drift_remap_and_continues(monkeypatch, request):
+    import logging
+
     mba = _FakeMBA()
     source = _FakeBlock(5)
     ref = _FakeBlock(6)
@@ -713,6 +940,8 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
     mba.qty = len(mba.blocks)
 
     modifier = dm.DeferredGraphModifier(mba)
+    modifier._serial_remap[10] = 13
+    modifier._serial_remap[11] = 14
 
     monkeypatch.setattr(dm.ida_hexrays, "is_mcode_jcond", lambda _opcode: True)
     monkeypatch.setattr(
@@ -721,22 +950,46 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
         lambda *_a, **_k: (_FakeBlock(7), _FakeBlock(8)),
     )
 
+    records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _ListHandler(level=logging.WARNING)
+    dm.logger.addHandler(handler)
+    request.addfinalizer(lambda: dm.logger.removeHandler(handler))
+
     cond_calls = {"count": 0}
     ft_calls = {"count": 0}
     src_calls = {"count": 0}
+    cond_targets: list[int] = []
+    ft_targets: list[int] = []
+    src_targets: list[int] = []
+
+    def _change_2way(_blk, new_target, *_a, **_k):
+        cond_calls["count"] += 1
+        cond_targets.append(new_target)
+        return True
+
+    def _change_1way(blk, new_target, *_a, **_k):
+        if blk.serial == 8:
+            ft_calls["count"] += 1
+            ft_targets.append(new_target)
+        else:
+            src_calls["count"] += 1
+            src_targets.append(new_target)
+        return True
+
     monkeypatch.setattr(
         dm,
         "change_2way_block_conditional_successor",
-        lambda *_a, **_k: cond_calls.__setitem__("count", cond_calls["count"] + 1) or True,
+        _change_2way,
     )
     monkeypatch.setattr(
         dm,
         "change_1way_block_successor",
-        lambda blk, *_a, **_k: (
-            ft_calls.__setitem__("count", ft_calls["count"] + 1)
-            if blk.serial == 8
-            else src_calls.__setitem__("count", src_calls["count"] + 1)
-        ) or True,
+        _change_1way,
     )
 
     ok = modifier._apply_create_conditional_redirect(
@@ -745,13 +998,58 @@ def test_create_conditional_redirect_rejects_unexpected_serial(monkeypatch):
         conditional_target_serial=10,
         fallthrough_target_serial=11,
         expected_conditional_serial=9,
-        expected_fallthrough_serial=8,
+        expected_fallthrough_serial=12,
+    )
+
+    assert ok is True
+    assert cond_calls["count"] == 1
+    assert ft_calls["count"] == 1
+    assert src_calls["count"] == 1
+    assert cond_targets == [13]
+    assert ft_targets == [14]
+    assert src_targets == [7]
+    assert modifier._serial_remap[9] == 7
+    assert modifier._serial_remap[12] == 8
+    messages = [record.getMessage() for record in records]
+    assert any(
+        "created conditional blk[7], expected blk[9]" in message
+        for message in messages
+    )
+    assert any(
+        "created fallthrough blk[8], expected blk[12]" in message
+        for message in messages
+    )
+
+
+def test_create_conditional_redirect_rejects_stale_source_edge_before_cloning(
+    monkeypatch,
+):
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    source.succset = _FakeEdgeSet([9])
+    source.succ = lambda _idx: 9
+    mba.blocks.update({5: source})
+    mba.qty = len(mba.blocks)
+
+    modifier = dm.DeferredGraphModifier(mba)
+    duplicate_calls = {"count": 0}
+
+    def _duplicate_block(*_args, **_kwargs):
+        duplicate_calls["count"] += 1
+        return (_FakeBlock(7), _FakeBlock(8))
+
+    monkeypatch.setattr(dm, "duplicate_block", _duplicate_block)
+
+    ok = modifier._apply_create_conditional_redirect(
+        source_blk=source,
+        ref_blk_serial=6,
+        conditional_target_serial=10,
+        fallthrough_target_serial=11,
+        old_target_serial=6,
     )
 
     assert ok is False
-    assert cond_calls["count"] == 0
-    assert ft_calls["count"] == 0
-    assert src_calls["count"] == 0
+    assert duplicate_calls["count"] == 0
 
 
 def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
@@ -797,6 +1095,368 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
     assert modifier._serial_remap[225] == 223
 
 
+def test_duplicate_replay_queue_records_single_composite_modification():
+    mba = _FakeMBA()
+    modifier = dm.DeferredGraphModifier(mba)
+    body = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
+
+    modifier.queue_duplicate_replay_and_redirect(
+        source_block_serial=5,
+        dispatcher_entry_serial=2,
+        per_pred_replays=(
+            (8, 3, 20, None, body),
+            (9, 4, 21, 22, body),
+        ),
+        description="duplicate replay test",
+    )
+
+    assert len(modifier.modifications) == 1
+    queued = modifier.modifications[0]
+    assert queued.mod_type == dm.ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT
+    assert queued.block_serial == 5
+    assert queued.new_target == 2
+    assert queued.replay_entries == (
+        (8, 3, 20, None, body),
+        (9, 4, 21, 22, body),
+    )
+    assert modifier.coalesce() == 0
+
+
+def _clone_as_goto_fixture():
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    fallthrough = _FakeBlock(20)
+    target = _FakeBlock(30)
+    clone = _FakeBlock(7)
+
+    source.type = ida_hexrays.BLT_2WAY
+    source.succset = _FakeEdgeSet([20, 30])
+    source.predset = _FakeEdgeSet([6])
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    source.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    source.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    pred.succset = _FakeEdgeSet([5])
+    pred.nsucc = lambda: 1  # type: ignore[assignment]
+    pred.succ = lambda _idx: 5  # type: ignore[assignment]
+
+    clone.type = ida_hexrays.BLT_2WAY
+    clone.succset = _FakeEdgeSet([20, 30])
+    clone.predset = _FakeEdgeSet([6, 9])
+    clone.nsucc = lambda: 2  # type: ignore[assignment]
+    clone.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    clone.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    mba.blocks = {
+        5: source,
+        6: pred,
+        7: clone,
+        20: fallthrough,
+        30: target,
+    }
+    mba.qty = 31
+
+    return mba, source, pred, clone
+
+
+def test_clone_conditional_as_goto_records_serial_drift_remap_and_replays_shape(
+    monkeypatch,
+):
+    mba, source, pred, clone = _clone_as_goto_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+    trace: list[tuple] = []
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+
+    def _convert(blk, target, **_kwargs):
+        trace.append(("convert", blk.serial, target))
+        return True
+
+    def _redirect(blk, new_target, **_kwargs):
+        trace.append(("redirect", blk.serial, blk.succ(0), new_target))
+        return True
+
+    monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _redirect)
+
+    ok = modifier._apply_clone_conditional_as_goto(
+        source_blk=source,
+        pred_serial=pred.serial,
+        goto_target_serial=30,
+        expected_serial=9,
+    )
+
+    assert ok is True
+    assert modifier._serial_remap[9] == 7
+    assert list(clone.predset) == []
+    assert trace == [
+        ("convert", 7, 30),
+        ("redirect", 6, 5, 7),
+    ]
+
+
+def _clone_as_goto_from_arm_fixture():
+    """Mirror of :func:`_clone_as_goto_fixture` but with a 2-way predecessor.
+
+    pred blk[6] is 2-way: explicit branch arm targets source blk[5] (arm=1),
+    fallthrough arm targets blk[40].  source blk[5] is itself 2-way with
+    arms blk[20] (fallthrough) / blk[30] (explicit branch).  Selected
+    target is blk[30] (the branch arm of source).
+    """
+    mba = _FakeMBA()
+    source = _FakeBlock(5)
+    pred = _FakeBlock(6)
+    fallthrough = _FakeBlock(20)
+    target = _FakeBlock(30)
+    pred_other = _FakeBlock(40)
+    clone = _FakeBlock(7)
+
+    source.type = ida_hexrays.BLT_2WAY
+    source.succset = _FakeEdgeSet([20, 30])
+    source.predset = _FakeEdgeSet([6])
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    source.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    source.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    # pred is 2-way; explicit branch arm targets source (arm == 1).
+    pred.type = ida_hexrays.BLT_2WAY
+    pred.succset = _FakeEdgeSet([40, 5])
+    pred.nsucc = lambda: 2  # type: ignore[assignment]
+    pred.succ = lambda idx: (40, 5)[idx]  # type: ignore[assignment]
+    pred.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1006,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=5),
+    )
+
+    clone.type = ida_hexrays.BLT_2WAY
+    clone.succset = _FakeEdgeSet([20, 30])
+    clone.predset = _FakeEdgeSet([6, 9])
+    clone.nsucc = lambda: 2  # type: ignore[assignment]
+    clone.succ = lambda idx: (20, 30)[idx]  # type: ignore[assignment]
+    clone.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1005,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=30),
+    )
+
+    mba.blocks = {
+        5: source,
+        6: pred,
+        7: clone,
+        20: fallthrough,
+        30: target,
+        40: pred_other,
+    }
+    mba.qty = 41
+
+    return mba, source, pred, clone
+
+
+def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypatch):
+    mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+    trace: list[tuple] = []
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+
+    def _convert(blk, target, **_kwargs):
+        trace.append(("convert", blk.serial, target))
+        return True
+
+    def _rewire_branch(blk, new_target, **kwargs):
+        trace.append(
+            (
+                "rewire_branch",
+                blk.serial,
+                int(blk.tail.d.b),
+                new_target,
+                kwargs.get("old_target"),
+            )
+        )
+        return True
+
+    monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
+    monkeypatch.setattr(
+        dm, "change_2way_block_conditional_successor", _rewire_branch
+    )
+
+    ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
+        source_blk=source,
+        pred_serial=pred.serial,
+        goto_target_serial=30,
+        expected_serial=9,
+    )
+
+    assert ok is True
+    assert modifier._serial_remap[9] == 7
+    assert list(clone.predset) == []
+    # The clone gets converted to a goto, then the 2-way predecessor's
+    # explicit branch arm is rewired to the clone via the 2-way helper.
+    assert trace == [
+        ("convert", 7, 30),
+        ("rewire_branch", 6, 5, 7, 5),
+    ]
+
+
+def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
+    monkeypatch,
+):
+    """Apply path rejects when pred is 1-way at apply-time (drift / mis-queue)."""
+    mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+
+    # Mutate pred to 1-way to simulate stale/drifted topology.
+    pred.nsucc = lambda: 1  # type: ignore[assignment]
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+    monkeypatch.setattr(
+        dm,
+        "make_2way_block_goto",
+        lambda *_a, **_k: pytest.fail("convert must not run when pred is 1-way"),
+    )
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        lambda *_a, **_k: pytest.fail("rewire must not run when pred is 1-way"),
+    )
+
+    ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
+        source_blk=source,
+        pred_serial=pred.serial,
+        goto_target_serial=30,
+    )
+
+    assert ok is False
+
+
+def test_clone_conditional_as_goto_from_branch_arm_refuses_fallthrough_arm(
+    monkeypatch,
+):
+    """Apply path rejects when pred's explicit branch arm doesn't point at source.
+
+    The legacy live rule bails on the fallthrough-arm case in
+    ``update_blk_successor``; the engine path's planner already declines via
+    ``PRED_FALLTHROUGH_ARM_NOT_SUPPORTED``.  This is the apply-time defense
+    in depth against a stale queue.
+    """
+    mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+
+    # Flip pred's explicit branch operand to target the OTHER successor.
+    pred.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1006,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=40),
+    )
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+    monkeypatch.setattr(
+        dm,
+        "make_2way_block_goto",
+        lambda *_a, **_k: pytest.fail("convert must not run on fallthrough arm"),
+    )
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        lambda *_a, **_k: pytest.fail("rewire must not run on fallthrough arm"),
+    )
+
+    ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
+        source_blk=source,
+        pred_serial=pred.serial,
+        goto_target_serial=30,
+    )
+
+    assert ok is False
+
+
+def test_clone_conditional_as_goto_planned_path_matches_legacy_live_sequence(
+    monkeypatch,
+):
+    legacy_mba, legacy_source, _legacy_pred, legacy_clone = _clone_as_goto_fixture()
+    planned_mba, planned_source, _planned_pred, planned_clone = _clone_as_goto_fixture()
+
+    legacy_trace: list[tuple] = []
+    planned_trace: list[tuple] = []
+
+    def _legacy_copy_block(_source, _insert_before):
+        legacy_trace.append(("clone", _source.serial))
+        legacy_mba.blocks[legacy_clone.serial] = legacy_clone
+        return legacy_clone
+
+    legacy_mba.copy_block = _legacy_copy_block  # type: ignore[attr-defined]
+
+    def _legacy_convert(blk, target, **_kwargs):
+        legacy_trace.append(("convert", blk.serial, target))
+        return True
+
+    def _legacy_redirect(blk, old_target, new_target, **_kwargs):
+        legacy_trace.append(("redirect", blk.serial, old_target, new_target))
+        return True
+
+    monkeypatch.setattr(fix_pred, "make_2way_block_goto", _legacy_convert)
+    monkeypatch.setattr(fix_pred, "update_blk_successor", _legacy_redirect)
+
+    rule = FixPredecessorOfConditionalJumpBlock()
+    rule.mba = legacy_mba
+    legacy_ok = rule._apply_single_modification(
+        PredecessorModification(
+            mod_type=PredecessorModificationType.ALWAYS_TAKEN,
+            pred_serial=6,
+            cond_block_serial=5,
+            target_serial=30,
+            description="parity",
+        ),
+        legacy_source,
+    )
+
+    def _planned_copy(_mba, source_blk, _insert_before):
+        planned_trace.append(("clone", source_blk.serial))
+        return planned_clone
+
+    def _planned_convert(blk, target, **_kwargs):
+        planned_trace.append(("convert", blk.serial, target))
+        return True
+
+    def _planned_redirect(blk, new_target, **_kwargs):
+        planned_trace.append(("redirect", blk.serial, blk.succ(0), new_target))
+        return True
+
+    monkeypatch.setattr(dm, "copy_block_keep", _planned_copy)
+    monkeypatch.setattr(dm, "make_2way_block_goto", _planned_convert)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _planned_redirect)
+
+    modifier = dm.DeferredGraphModifier(planned_mba)
+    planned_ok = modifier._apply_clone_conditional_as_goto(
+        source_blk=planned_source,
+        pred_serial=6,
+        goto_target_serial=30,
+        expected_serial=7,
+    )
+
+    assert legacy_ok is True
+    assert planned_ok is True
+    assert planned_trace == legacy_trace == [
+        ("clone", 5),
+        ("convert", 7, 30),
+        ("redirect", 6, 5, 7),
+    ]
+
+
 @dataclass
 class _StepTrace:
     label: str
@@ -821,6 +1481,56 @@ def _find_real_conditional_redirect_candidate(mba) -> CreateConditionalRedirect 
     for mod in snapshot.flow_graph.metadata.get(EMULATED_DISPATCHER_MODIFICATIONS_KEY, ()):
         if isinstance(mod, CreateConditionalRedirect):
             return mod
+
+    # Prefer the planner-produced CreateConditionalRedirect above when it is
+    # available: that keeps this test tied to the exact edit the strategy family
+    # intended to emit. The sampled Approov function does not always produce that
+    # edit kind, though. If the strategy changes shape, the old behavior was to
+    # skip this test entirely, which meant the deferred mutator backend could
+    # lose real-MBA coverage without anyone noticing.
+    #
+    # This fallback is deliberately narrower than planner validation. It builds
+    # a structurally valid CreateConditionalRedirect from the live MBA topology:
+    # clone any real 2-way conditional block as the reference block, reuse its
+    # real successors as the conditional/fallthrough targets, then redirect an
+    # unrelated real 1-way goto source block through the newly created
+    # conditional. That exercises the runtime operation that matters here:
+    #
+    #     source -> cloned conditional -> taken target
+    #                              \-> helper fallthrough block -> fallthrough target
+    #
+    # In other words, if this path is used, the test is asserting backend safety
+    # for CreateConditionalRedirect on real IDA microcode. It is not asserting
+    # that the emulated-dispatcher planner discovered a semantically meaningful
+    # conditional redirect for this particular function.
+    ref_blk = None
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        if blk is None or blk.tail is None:
+            continue
+        if blk.nsucc() != 2 or not ida_hexrays.is_mcode_jcond(blk.tail.opcode):
+            continue
+        ref_blk = blk
+        break
+    if ref_blk is None:
+        return None
+
+    ref_successors = tuple(int(ref_blk.succ(idx)) for idx in range(ref_blk.nsucc()))
+    if len(ref_successors) != 2:
+        return None
+
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        blk = mba.get_mblock(serial)
+        if blk is None or blk.serial == ref_blk.serial or blk.serial == 0:
+            continue
+        if blk.nsucc() != 1 or blk.tail is None or blk.tail.opcode != ida_hexrays.m_goto:
+            continue
+        return CreateConditionalRedirect(
+            source_block=int(blk.serial),
+            ref_block=int(ref_blk.serial),
+            conditional_target=int(ref_successors[0]),
+            fallthrough_target=int(ref_successors[1]),
+        )
     return None
 
 
@@ -2645,182 +3355,6 @@ class TestStagedAtomicEaIdentity:
             "(identified by its captured start EA), not a wrong block "
             "at the stale serial"
         )
-
-    def _install_capture_handler(self, request):
-        """Install a capture handler directly on dm.logger (D810 doesn't propagate).
-
-        Returns the captured-records list so tests can inspect warnings.
-        D810's logger sets ``propagate=False`` so pytest's ``caplog``
-        cannot intercept events via the root logger; we attach a direct
-        handler to ``dm.logger`` instead.  Cleanup via pytest finalizer
-        guarantees the handler is detached even on test failure.
-        """
-        import logging
-
-        records: list[logging.LogRecord] = []
-
-        class _ListHandler(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                records.append(record)
-
-        handler = _ListHandler(level=logging.WARNING)
-        dm.logger.addHandler(handler)
-        request.addfinalizer(lambda: dm.logger.removeHandler(handler))
-        return records
-
-    @pytest.mark.xfail(
-        reason=(
-            "Bug 4 fix: EA-based lookup has been replaced by pointer "
-            "identity (copy_block preserves source EAs, so EA could not "
-            "distinguish original from copy).  Out-of-band removal "
-            "detection now requires simulating pointer invalidation, "
-            "which these fakes don't model.  Spec preserved for a "
-            "future pointer-identity test rewrite."
-        ),
-        strict=False,
-    )
-    def test_commit_skips_rewire_when_original_removed_out_of_band(
-        self, monkeypatch, request,
-    ):
-        """Captured-EA block deleted between stage and commit -> skip + warn."""
-        mba = _StagedFakeMBA()
-        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
-        src.predset.push_back(10)
-        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
-        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
-        tgt.predset.push_back(5)
-        mba.blocks.update({5: src, 10: pred, 20: tgt})
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        _staged_patch_wiring(monkeypatch, mba)
-        records = self._install_capture_handler(request)
-
-        modifier = dm.DeferredGraphModifier(mba)
-        mod = dm.GraphModification(
-            dm.ModificationType.BLOCK_GOTO_CHANGE,
-            block_serial=5,
-            new_target=30,
-        )
-        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
-        assert rewire is not None
-
-        # Out-of-band: delete the original block before commit runs.
-        del mba.blocks[rewire.original_serial]
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        ok = modifier._commit_staged_rewire(rewire)
-
-        # Rewire skipped cleanly — no crash, False result, warning logged.
-        assert ok is False
-        messages = [rec.getMessage() for rec in records]
-        assert any(
-            "missing block by EA" in m or "block removed out of band" in m
-            for m in messages
-        ), f"expected a 'missing block by EA' warning, got {messages}"
-
-    @pytest.mark.xfail(
-        reason=(
-            "Bug 4 fix: pred snapshot is now direct mblock_t pointers, "
-            "not EAs.  Out-of-band pred removal detection needs a fake "
-            "that marks the block 'removed' so .serial raises — not "
-            "modeled here.  Preserved for future pointer-identity rewrite."
-        ),
-        strict=False,
-    )
-    def test_commit_skips_pred_when_pred_removed_out_of_band(
-        self, monkeypatch, request,
-    ):
-        """Captured-EA pred deleted between stage and commit -> pred skipped + warn."""
-        mba = _StagedFakeMBA()
-        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
-        src.predset.push_back(10)
-        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
-        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
-        tgt.predset.push_back(5)
-        mba.blocks.update({5: src, 10: pred, 20: tgt})
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        _staged_patch_wiring(monkeypatch, mba)
-        records = self._install_capture_handler(request)
-
-        modifier = dm.DeferredGraphModifier(mba)
-        mod = dm.GraphModification(
-            dm.ModificationType.BLOCK_GOTO_CHANGE,
-            block_serial=5,
-            new_target=30,
-        )
-        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
-        assert rewire is not None
-        assert rewire.preds_to_redirect == (0x1800A000,)
-
-        # Out-of-band: delete the pred before commit runs.
-        del mba.blocks[10]
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        ok = modifier._commit_staged_rewire(rewire)
-
-        # With no external preds left to redirect, the rewire still
-        # returns True (no failed redirects) but logs a warning about the
-        # missing pred.
-        assert ok is True, (
-            "rewire should still return True when all preds were validly "
-            "skipped — partial or empty redirects are not failures"
-        )
-        messages = [rec.getMessage() for rec in records]
-        assert any(
-            "start_ea=0x1800a000" in m.lower() or "not found" in m.lower()
-            for m in messages
-        ), f"expected a pred-not-found warning, got {messages}"
-
-    @pytest.mark.xfail(
-        reason=(
-            "Bug 4 fix: cleanup uses direct mblock_t pointers now.  "
-            "Pretending to remove via ``del mba.blocks[serial]`` doesn't "
-            "invalidate the stored pointer since the fake block object "
-            "is still referenced.  Preserved for future rewrite."
-        ),
-        strict=False,
-    )
-    def test_cleanup_skips_removed_out_of_band_with_warning(self, monkeypatch, request):
-        """If the captured-EA original was already removed, cleanup skips + warns."""
-        mba = _StagedFakeMBA()
-        src = _StagedFakeBlock(5, nsucc=1, succ_serial=20, start=0x18005000)
-        src.predset.push_back(10)
-        pred = _StagedFakeBlock(10, nsucc=1, succ_serial=5, start=0x1800A000)
-        tgt = _StagedFakeBlock(20, nsucc=0, start=0x18014000)
-        tgt.predset.push_back(5)
-        mba.blocks.update({5: src, 10: pred, 20: tgt})
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        _staged_patch_wiring(monkeypatch, mba)
-        records = self._install_capture_handler(request)
-
-        modifier = dm.DeferredGraphModifier(mba)
-        mod = dm.GraphModification(
-            dm.ModificationType.BLOCK_GOTO_CHANGE,
-            block_serial=5,
-            new_target=30,
-        )
-        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
-        assert rewire is not None
-        # Pretend the rewire was committed.
-        committed = [rewire]
-
-        # Now remove the original out-of-band before cleanup runs.
-        del mba.blocks[rewire.original_serial]
-        mba.qty = max(mba.blocks.keys()) + 1
-
-        removed = modifier._cleanup_orphaned_originals(committed)
-
-        assert removed == 0, (
-            "cleanup must skip blocks that were removed out-of-band, "
-            "not recount them"
-        )
-        messages = [rec.getMessage() for rec in records]
-        assert any(
-            "already removed" in m.lower() or "0x18005000" in m.lower()
-            for m in messages
-        ), f"expected an 'already removed' warning, got {messages}"
 
     def test_cleanup_removes_correct_block_after_multi_stage_serial_drift(
         self, monkeypatch,

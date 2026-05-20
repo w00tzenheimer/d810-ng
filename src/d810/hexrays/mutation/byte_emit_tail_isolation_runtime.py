@@ -1,0 +1,5016 @@
+"""Hex-Rays adapter implementations for byte_emit_tail_isolation.
+
+This module owns the live ``mba_t``/``mblock_t`` materialization mechanics for
+the backend-neutral planners in :mod:`d810.cfg.transform.byte_emit_tail_isolation`.
+The cfg layer describes what byte-tail CFG shape is wanted; this adapter says
+how Hex-Rays performs the live block copies, rewrites, dirtying, and verifier
+interaction.
+"""
+from __future__ import annotations
+
+from collections import deque
+import dataclasses
+import json
+import os
+
+from d810.core import logging
+from d810.core.typing import Any, Iterable
+
+from d810.cfg.transform.byte_emit_live_use_anchor import (
+    execute_byte_store_replica_anchor,
+    execute_live_host_anchor,
+    execute_multi_byte_live_host_anchor,
+    execute_reconnect_byte_emits,
+    execute_single_xor_anchor,
+    execute_split_xor_anchor,
+    parse_byte_anchor_env,
+    parse_byte_host_overrides_env,
+    parse_byte_store_env,
+    parse_live_host_env,
+    parse_multi_byte_env,
+    parse_multi_host_env,
+    parse_reconnect_env,
+    parse_single_xor_env,
+)
+from d810.cfg.transform.byte_emit_tail_isolation import (
+    BlockView,
+    FactRow,
+    duplicate_convergence_for_byte_path,
+    execute_state_cascade,
+    execute_terminal_tail_cascade_egress_lowering,
+    isolate_byte_emit_tail,
+    parse_state_cascade_pair_env,
+    parse_tail_distinct_byte_env,
+    parse_tail_duplicate_convergence_byte_env,
+)
+from d810.cfg.scc import CfgSCC, compute_live_cfg_sccs
+from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+    ByteTailRuntimeEvidenceProvider,
+    normalize_byte_tail_runtime_evidence,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _DagEdge:
+    edge_id: int
+    source_state: int | None
+    target_state: int | None
+    edge_kind: str
+    source_block: int | None
+    source_arm: int | None
+    target_entry: int | None
+    ordered_path: tuple[int, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _DagSemantics:
+    snapshot_id: int
+    state_to_scc: dict[int, int]
+    scc_reachable: dict[int, frozenset[int]]
+    block_to_sccs: dict[int, frozenset[int]]
+    scc_successors: dict[int, frozenset[int]]
+    edges: tuple[_DagEdge, ...]
+
+
+# Local mirror of cfg_mutations.MBL_KEEP / copy_block_keep so this runtime
+# module doesn't cross the cfg.transform -> hexrays.mutation layer boundary.
+# See memory ``ida_optimize_global_cfg_kill``: ``mba.copy_block`` does not
+# inherit MBL_KEEP, and ``optimize_global``'s structural sweep culls clones
+# without it.
+_MBL_KEEP = 0x10000
+
+_TERMINAL_ZERO_GUARD_LITERAL_RETURNS: dict[int, set[int]] = {}
+
+
+def remember_terminal_zero_guard_literal_return_value(mba: Any, value: int) -> None:
+    """Remember an in-memory literal proven for a terminal zero-guard return."""
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    normalized = int(value) & 0xFFFFFFFFFFFFFFFF
+    _TERMINAL_ZERO_GUARD_LITERAL_RETURNS.setdefault(func_ea, set()).add(normalized)
+
+
+def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
+    func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    return tuple(sorted(_TERMINAL_ZERO_GUARD_LITERAL_RETURNS.get(func_ea, ())))
+
+
+def _copy_block_keep(mba, ref_blk, dest_serial):
+    """``mba.copy_block`` + ``MBL_KEEP`` so the clone survives optimize_global."""
+    new_blk = mba.copy_block(ref_blk, dest_serial)
+    if new_blk is not None:
+        try:
+            new_blk.flags |= _MBL_KEEP
+        except Exception:
+            pass
+    return new_blk
+
+
+class LiveMbaAdapter:
+    """MicrocodeAdapter backed by a live ``mba_t``.
+
+    Imports IDA SDK lazily inside methods so this module can be imported
+    at unit-test time before IDA is available.
+
+    The mutator (``insert_trampoline_after``) clones the predecessor at
+    the end of the MBA via ``mba.copy_block``, NOPs all inherited
+    instructions, appends a single ``m_goto`` to the successor, and
+    rewires pred/succ sets.  Mid-CFG ``mba.insert_block`` is avoided
+    because it corrupts IDA internal state (see
+    ``abc_block_splitter.py:669``).
+    """
+
+    def __init__(self, mba) -> None:  # mba: ida_hexrays.mba_t
+        self._mba = mba
+        self._serial_remap: dict[int, int] = {}
+
+    def resolve_live_serial(self, serial: int) -> int:
+        return int(self._serial_remap.get(int(serial), int(serial)))
+
+    def _record_inserted_serial(self, insertion_serial: int, old_qty: int) -> None:
+        remap = dict(self._serial_remap)
+        for original_serial, live_serial in tuple(remap.items()):
+            if int(live_serial) >= int(insertion_serial):
+                remap[int(original_serial)] = int(live_serial) + 1
+        for serial in range(int(insertion_serial), int(old_qty)):
+            remap.setdefault(int(serial), int(serial) + 1)
+        self._serial_remap = remap
+
+    def find_block_by_ea(self, ea: int) -> BlockView | None:
+        """Walk ``mba.blocks`` and return a pure ``BlockView`` for the
+        first block whose ``start`` equals ``ea``.
+
+        Returns ``None`` when no block matches.
+        """
+        import ida_hexrays  # noqa: F401  (kept for future tail-opcode logic)
+
+        mba = self._mba
+        qty = int(getattr(mba, "qty", 0) or 0)
+        for i in range(qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            blk_start = int(getattr(blk, "start", 0) or 0)
+            if blk_start != int(ea):
+                continue
+
+            nsucc = int(blk.nsucc()) if callable(getattr(blk, "nsucc", None)) else 0
+            succ_serial: int | None = None
+            succ_npred: int | None = None
+            if nsucc == 1 and callable(getattr(blk, "succ", None)):
+                succ_serial = int(blk.succ(0))
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is not None and callable(
+                    getattr(succ_blk, "npred", None)
+                ):
+                    succ_npred = int(succ_blk.npred())
+
+            tail_kind = "unknown"
+            tail = getattr(blk, "tail", None)
+            if tail is None:
+                tail_kind = "fallthrough"
+            else:
+                try:
+                    if int(tail.opcode) == int(ida_hexrays.m_goto):
+                        tail_kind = "goto"
+                    elif int(tail.opcode) in {
+                        int(ida_hexrays.m_jcnd),
+                        int(ida_hexrays.m_jz),
+                        int(ida_hexrays.m_jnz),
+                        int(ida_hexrays.m_jb),
+                        int(ida_hexrays.m_jae),
+                        int(ida_hexrays.m_jl),
+                        int(ida_hexrays.m_jg),
+                        int(ida_hexrays.m_jle),
+                        int(ida_hexrays.m_jge),
+                    }:
+                        tail_kind = "cond_branch"
+                    else:
+                        tail_kind = "fallthrough"
+                except AttributeError:
+                    tail_kind = "unknown"
+
+            return BlockView(
+                serial=int(getattr(blk, "serial", i)),
+                start_ea=blk_start,
+                nsucc=nsucc,
+                succ_serial=succ_serial,
+                succ_npred=succ_npred,
+                tail_kind=tail_kind,
+            )
+        return None
+
+    def insert_trampoline_after(
+        self, *, predecessor_serial: int, successor_serial: int,
+    ) -> int:
+        """Insert an empty BLT_1WAY trampoline between predecessor and
+        successor; the trampoline contains exactly one ``m_goto`` to
+        ``successor_serial``.
+
+        Topology before:
+            predecessor -> successor
+        Topology after:
+            predecessor -> trampoline -> successor
+
+        Implementation notes:
+        - Uses ``mba.copy_block(blk, mba.qty - 1)`` to append the new
+          block at the end of the MBA. ``mba.insert_block(serial)`` in
+          mid-CFG positions causes IDA internal state corruption and
+          subsequent ``mba.verify()`` failures (see
+          ``abc_block_splitter.py:669`` for the historical note).
+        - The cloned block inherits the predecessor's contents; we NOP
+          every instruction so the trampoline carries zero semantics.
+        - We rely on the precondition gate (``_check_preconditions``)
+          to ensure ``nsucc==1`` and ``tail_kind in {goto, fallthrough}``;
+          this method does not re-validate.
+        - Cannot import from ``d810.hexrays`` (layered-architecture
+          contract puts ``d810.cfg`` *below* ``d810.hexrays``), so the
+          mechanics here mirror — but do not call — the helpers in
+          ``hexrays.mutation.cfg_mutations.insert_nop_blk``.
+
+        Raises ``RuntimeError`` if the SDK call family fails part-way
+        through; the caller (``maybe_run_tail_distinct``) catches and
+        logs.  Best-effort atomicity: a failed
+        ``copy_block`` / ``predset`` op aborts before any pred/succ
+        rewiring, so the mba is left untouched on the typical failure.
+        """
+        import ida_hexrays  # lazy import — module must load without IDA
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if pred_blk is None or succ_blk is None:
+            raise RuntimeError(
+                "insert_trampoline_after: cannot resolve "
+                f"pred={predecessor_serial} or succ={successor_serial}"
+            )
+
+        # 1. Clone predecessor at the end of the MBA (just before the
+        #    dummy last block). copy_block(ref, dest_serial) inserts the
+        #    new block *before* dest_serial in the block list.
+        end_serial = int(mba.qty) - 1
+        tramp = _copy_block_keep(mba, pred_blk, end_serial)
+        if tramp is None:
+            raise RuntimeError(
+                "insert_trampoline_after: mba.copy_block failed for "
+                f"pred={predecessor_serial}"
+            )
+
+        # 2. NOP every instruction the clone inherited so the trampoline
+        #    carries zero semantics.
+        cur = tramp.head
+        while cur is not None:
+            tramp.make_nop(cur)
+            cur = cur.next
+
+        # 3. Mark as a 1-way block and clear stale pred/succ entries
+        #    that copy_block carried over from the source block.
+        tramp.type = ida_hexrays.BLT_1WAY
+        for stale_succ in [int(x) for x in tramp.succset]:
+            tramp.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(tramp.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in tramp.predset]:
+            tramp.predset._del(stale_pred)
+
+        # 4. Append a single m_goto to ``successor_serial`` as the
+        #    trampoline's only live instruction.
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        goto_ins = ida_hexrays.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        tramp.insert_into_block(goto_ins, tramp.tail)
+        # nop-then-mutate avoids INTERR 52123 (see insert_goto_instruction)
+        tramp.make_nop(tramp.tail)
+        goto_ins.opcode = ida_hexrays.m_goto
+        goto_ins.l = ida_hexrays.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = ida_hexrays.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = ida_hexrays.mop_t()
+        goto_ins.d.erase()
+        tramp.flags |= ida_hexrays.MBL_GOTO
+
+        # 5. Wire trampoline -> successor.
+        tramp.succset.push_back(int(successor_serial))
+
+        # 6. Rewire predecessor: its sole successor was successor_serial;
+        #    now it must be tramp.serial.  The precondition gate already
+        #    ensured nsucc == 1 and tail_kind in {goto, fallthrough}.
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(tramp.serial))
+        if (
+            pred_blk.tail is not None
+            and pred_blk.tail.opcode == ida_hexrays.m_goto
+            and pred_blk.tail.l is not None
+            and pred_blk.tail.l.t == ida_hexrays.mop_b
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(tramp.serial))
+        pred_blk.mark_lists_dirty()
+
+        # 7. Update successor's predset: predecessor no longer points at
+        #    it directly; the trampoline does.
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(tramp.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        # 8. Trampoline's own pred set: predecessor.
+        tramp.predset.push_back(int(predecessor_serial))
+        tramp.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(tramp.serial)
+
+    def successor_npred(self, successor_serial: int) -> int:
+        mba = self._mba
+        blk = mba.get_mblock(int(successor_serial))
+        if blk is None or not callable(getattr(blk, "npred", None)):
+            return 0
+        return int(blk.npred())
+
+    def split_block_at_tail_jcnd(self, block_serial: int) -> int:
+        """Split a 2-way block at its tail conditional jump.
+
+        Uses the native ``mba.split_block(blk, start_insn)`` SDK API
+        (``hexrays.hpp:5303``).  The instruction sequence is partitioned:
+        bytes-emission instructions stay in the original block (which
+        becomes BLT_1WAY); the tail conditional and its two-arm
+        successor list move to a fresh block inserted immediately after.
+
+        Layered-architecture note: ``d810.cfg`` is below ``d810.hexrays``,
+        so we cannot import ``CONDITIONAL_JUMP_OPCODES`` from
+        ``d810.hexrays.utils.hexrays_helpers`` nor the ``cfg_verify.n``
+        helper.  The cond-opcode set is inlined here (mirroring the set
+        already used by ``find_block_by_ea`` on this same adapter), and
+        post-split verification is left to downstream stages.
+
+        Returns the new tail block's serial.
+
+        Raises ``RuntimeError`` if the block cannot be resolved, is not
+        2-way, contains no conditional jump in its instruction stream,
+        or if ``mba.split_block`` itself fails.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        block_serial = self.resolve_live_serial(int(block_serial))
+        blk = mba.get_mblock(int(block_serial))
+        if blk is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: cannot resolve block "
+                f"{block_serial}"
+            )
+
+        nsucc = (
+            int(blk.nsucc())
+            if callable(getattr(blk, "nsucc", None))
+            else int(getattr(blk, "nsucc", 0) or 0)
+        )
+        if nsucc != 2:
+            raise RuntimeError(
+                f"split_block_at_tail_jcnd: block {block_serial} nsucc="
+                f"{nsucc}, expected 2"
+            )
+
+        # Walk head -> tail to locate the conditional jump.  DO NOT call
+        # dstr() / print on instructions before the split; ``maybe_use``
+        # / ``maybe_def`` are side-effecting on inspection per the IDA
+        # microcode SDK contract.
+        cond_opcodes = {
+            int(ida_hexrays.m_jnz),
+            int(ida_hexrays.m_jz),
+            int(ida_hexrays.m_jl),
+            int(ida_hexrays.m_jle),
+            int(ida_hexrays.m_jg),
+            int(ida_hexrays.m_jge),
+            int(ida_hexrays.m_jb),
+            int(ida_hexrays.m_jbe),
+            int(ida_hexrays.m_ja),
+            int(ida_hexrays.m_jae),
+            int(ida_hexrays.m_jcnd),
+            int(ida_hexrays.m_jtbl),
+        }
+        cur = blk.head
+        target = None
+        while cur is not None:
+            if int(cur.opcode) in cond_opcodes:
+                target = cur
+                break
+            cur = cur.next
+        if target is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: no conditional jump in "
+                f"block {block_serial}"
+            )
+
+        new_blk = mba.split_block(blk, target)
+        if new_blk is None:
+            raise RuntimeError(
+                "split_block_at_tail_jcnd: mba.split_block returned "
+                f"None for block {block_serial}"
+            )
+
+        try:
+            new_blk.flags |= _MBL_KEEP
+        except Exception:
+            pass
+        blk.mark_lists_dirty()
+        new_blk.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(new_blk.serial)
+
+    # ------------------------------------------------------------------
+    # ConvergenceAdapter Protocol implementation (uee-32r3 Track CTD)
+    # ------------------------------------------------------------------
+
+    def block_has_m_stx(self, block_serial: int) -> bool:
+        """True iff the block contains an ``m_stx`` instruction.
+
+        Walks ``head -> tail`` checking opcode integers only.  We never
+        call ``dstr()`` / ``print`` / ``maybe_use`` / ``maybe_def`` —
+        those are side-effecting on inspection per the IDA microcode
+        SDK contract.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        blk = self._mba.get_mblock(int(block_serial))
+        if blk is None:
+            return False
+        cur = blk.head
+        target_opcode = int(ida_hexrays.m_stx)
+        while cur is not None:
+            try:
+                if int(cur.opcode) == target_opcode:
+                    return True
+            except AttributeError:
+                pass
+            cur = cur.next
+        return False
+
+    def forward_walk_until_convergence(
+        self,
+        start_serial: int,
+        *,
+        max_depth: int = 8,
+    ) -> tuple[int | None, str]:
+        """BFS forward from ``start_serial`` for the first convergence.
+
+        A "convergence" is a block with ``npred > 1`` (i.e. genuinely
+        shared with sibling paths) that also reaches ``BLT_STOP`` within
+        a small bounded forward walk.
+
+        Reasons:
+          - ``"ok"`` (with serial): valid convergence found.
+          - ``"no_npred_gt_1_within_depth"``: BFS exhausted ``max_depth``
+            without ever seeing a ``npred>1`` candidate.
+          - ``"convergence_does_not_reach_return"``: at least one
+            ``npred>1`` candidate was visited but none reached
+            ``BLT_STOP``.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from collections import deque
+
+        mba = self._mba
+
+        def _succs_of(serial: int) -> tuple[int, ...]:
+            b = mba.get_mblock(int(serial))
+            if b is None:
+                return ()
+            n = int(b.nsucc()) if callable(getattr(b, "nsucc", None)) else 0
+            return tuple(int(b.succ(i)) for i in range(n))
+
+        def _reaches_stop(start: int, depth_cap: int = 12) -> bool:
+            seen: set[int] = set()
+            q: deque[tuple[int, int]] = deque([(int(start), 0)])
+            while q:
+                s, d = q.popleft()
+                if s in seen or d > depth_cap:
+                    continue
+                seen.add(s)
+                b = mba.get_mblock(s)
+                if b is None:
+                    continue
+                blk_type = int(getattr(b, "type", -1))
+                if blk_type == int(ida_hexrays.BLT_STOP):
+                    return True
+                for ns in _succs_of(s):
+                    q.append((ns, d + 1))
+            return False
+
+        saw_candidate = False
+        seen: set[int] = set()
+        q: deque[tuple[int, int]] = deque([(int(start_serial), 0)])
+        while q:
+            s, d = q.popleft()
+            if s in seen or d > max_depth:
+                continue
+            seen.add(s)
+            b = mba.get_mblock(s)
+            if b is None:
+                continue
+            npred = (
+                int(b.npred()) if callable(getattr(b, "npred", None)) else 0
+            )
+            if d > 0 and npred > 1:
+                saw_candidate = True
+                if _reaches_stop(s):
+                    return (s, "ok")
+                # else: keep searching deeper for a different convergence
+                continue
+            for ns in _succs_of(s):
+                q.append((ns, d + 1))
+
+        if saw_candidate:
+            return (None, "convergence_does_not_reach_return")
+        return (None, "no_npred_gt_1_within_depth")
+
+    def clone_convergence_for_byte_path(
+        self,
+        *,
+        predecessor_serial: int,
+        convergence_serial: int,
+    ) -> int:
+        """Clone the convergence block; rewire predecessor's edge to it.
+
+        Topology before:
+            predecessor -> convergence -> [convergence's succs]
+            (other preds) -> convergence
+        Topology after:
+            predecessor -> clone -> [convergence's succs]
+            (other preds) -> convergence -> [convergence's succs]
+
+        Mirrors the predset/succset pattern used by
+        ``insert_trampoline_after`` (push_back / _del).  ``copy_block``
+        is verified to auto-update goto operands in other blocks; the
+        explicit goto rewrite below is a belt-and-braces guard for the
+        ``predecessor -> convergence`` edge specifically.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        conv_blk = mba.get_mblock(int(convergence_serial))
+        if pred_blk is None or conv_blk is None:
+            raise RuntimeError(
+                "clone_convergence_for_byte_path: cannot resolve "
+                f"pred={predecessor_serial} conv={convergence_serial}"
+            )
+
+        # 1. Append clone at end of MBA via copy_block(ref, dest_serial).
+        end_serial = int(mba.qty) - 1
+        clone = _copy_block_keep(mba, conv_blk, end_serial)
+        if clone is None:
+            raise RuntimeError(
+                "clone_convergence_for_byte_path: mba.copy_block failed "
+                f"for conv={convergence_serial}"
+            )
+        clone_serial = int(getattr(clone, "serial", end_serial))
+
+        # 2. Reset clone's predset to {predecessor_serial}.
+        # copy_block carries the source's predset over to the clone;
+        # we want the clone to be reachable only from `predecessor`.
+        for stale_pred in [int(x) for x in clone.predset]:
+            clone.predset._del(stale_pred)
+        clone.predset.push_back(int(predecessor_serial))
+
+        # 3. Convergence loses `predecessor` from its predset (clone now
+        # owns that edge).
+        conv_blk.predset._del(int(predecessor_serial))
+
+        # 4. Each successor of clone gains `clone_serial` in its predset.
+        # copy_block already wired clone -> conv's successors (clone.succset
+        # mirrors conv.succset).
+        for succ_serial in [int(x) for x in clone.succset]:
+            succ_blk = mba.get_mblock(succ_serial)
+            if succ_blk is None:
+                continue
+            succ_blk.predset.push_back(clone_serial)
+            if succ_blk.serial != mba.qty - 1:
+                succ_blk.mark_lists_dirty()
+
+        # 5. Rewire predecessor: succset entry conv_serial -> clone_serial.
+        pred_blk.succset._del(int(convergence_serial))
+        pred_blk.succset.push_back(clone_serial)
+
+        # 6. If predecessor's tail is an explicit m_goto to the
+        # convergence, rewrite the operand.  copy_block auto-rewires
+        # goto operands when blocks are renumbered, but the goto on
+        # `predecessor` predates the clone and still names
+        # `convergence_serial` — fix it explicitly.
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(ida_hexrays.m_goto)
+            and pred_blk.tail.l is not None
+            and pred_blk.tail.l.t == ida_hexrays.mop_b
+            and int(pred_blk.tail.l.b) == int(convergence_serial)
+        ):
+            pred_blk.tail.l.make_blkref(clone_serial)
+
+        pred_blk.mark_lists_dirty()
+        conv_blk.mark_lists_dirty()
+        clone.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return clone_serial
+
+
+    # ------------------------------------------------------------------
+    # State-cascade adapter Protocol implementation (byte5->byte6 probe)
+    # ------------------------------------------------------------------
+
+    def clone_state_write_block(
+        self,
+        *,
+        template_serial: int,
+        tail_goto_target: int,
+    ) -> int:
+        """Clone the planner-supplied state-write block; set the clone's
+        tail to ``m_goto @tail_goto_target``; append at end of mba.
+
+        The clone holds the SAME instructions as the template (no
+        synthesis). Mirrors the ``mba.copy_block`` idiom used by
+        ``insert_trampoline_after`` and ``clone_convergence_for_byte_path``.
+
+        Returned clone has empty predset (caller wires the predecessor)
+        and a single-successor succset pointing at ``tail_goto_target``.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        template = mba.get_mblock(int(template_serial))
+        tail_target_blk = mba.get_mblock(int(tail_goto_target))
+        if template is None or tail_target_blk is None:
+            raise RuntimeError(
+                "clone_state_write_block: cannot resolve template="
+                f"{template_serial} or tail_target={tail_goto_target}"
+            )
+
+        # 1. Append clone at the end of the MBA.
+        end_serial = int(mba.qty) - 1
+        clone = _copy_block_keep(mba, template, end_serial)
+        if clone is None:
+            raise RuntimeError(
+                "clone_state_write_block: mba.copy_block failed for "
+                f"template={template_serial}"
+            )
+        clone_serial = int(getattr(clone, "serial", end_serial))
+
+        # 2. Reset clone's predset (caller wires the predecessor).
+        for stale_pred in [int(x) for x in clone.predset]:
+            clone.predset._del(stale_pred)
+
+        # 3. Drop any inherited successor edges so we can replace them
+        #    with a single m_goto edge to ``tail_goto_target``. Each old
+        #    successor loses ``clone_serial`` from its predset.
+        for stale_succ in [int(x) for x in clone.succset]:
+            clone.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(clone_serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+
+        # 4. Mark BLT_1WAY and rewrite/append the tail to a single m_goto.
+        clone.type = ida_hexrays.BLT_1WAY
+
+        # If the cloned tail is already a goto, rewrite the operand;
+        # otherwise append a fresh m_goto. We do not delete the cloned
+        # state-write instructions — the whole point is to keep them.
+        if (
+            clone.tail is not None
+            and int(clone.tail.opcode) == int(ida_hexrays.m_goto)
+        ):
+            clone.tail.l = ida_hexrays.mop_t()
+            clone.tail.l.make_blkref(int(tail_goto_target))
+            clone.tail.r = ida_hexrays.mop_t()
+            clone.tail.r.erase()
+            clone.tail.d = ida_hexrays.mop_t()
+            clone.tail.d.erase()
+        else:
+            safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            goto_ins = ida_hexrays.minsn_t(safe_ea)
+            goto_ins.ea = safe_ea
+            clone.insert_into_block(goto_ins, clone.tail)
+            # nop-then-mutate avoids INTERR 52123 (see insert_trampoline_after)
+            clone.make_nop(clone.tail)
+            goto_ins.opcode = ida_hexrays.m_goto
+            goto_ins.l = ida_hexrays.mop_t()
+            goto_ins.l.make_blkref(int(tail_goto_target))
+            goto_ins.r = ida_hexrays.mop_t()
+            goto_ins.r.erase()
+            goto_ins.d = ida_hexrays.mop_t()
+            goto_ins.d.erase()
+        clone.flags |= ida_hexrays.MBL_GOTO
+
+        # 5. Wire clone -> tail_goto_target.
+        clone.succset.push_back(int(tail_goto_target))
+        tail_target_blk.predset.push_back(clone_serial)
+        if tail_target_blk.serial != mba.qty - 1:
+            tail_target_blk.mark_lists_dirty()
+        clone.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return clone_serial
+
+    def redirect_advance_edge(
+        self,
+        *,
+        source_serial: int,
+        old_target_serial: int,
+        new_target_serial: int,
+    ) -> None:
+        """Rewire ``source_serial``'s advance edge from ``old_target`` to
+        ``new_target``.
+
+        For a 1-way block whose tail is ``m_goto @old_target``, this
+        rewrites the goto operand. For a 2-way block whose conditional
+        tail names ``old_target`` in its branch operand, only that arm is
+        redirected; the early-return arm remains untouched. Falls back to
+        a succset-only rewrite when the tail is a plain fallthrough.
+
+        Updates predset/succset symmetrically and marks affected blocks
+        dirty. ``mba.mark_chains_dirty`` is invoked at the end.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        src = mba.get_mblock(int(source_serial))
+        old_blk = mba.get_mblock(int(old_target_serial))
+        new_blk = mba.get_mblock(int(new_target_serial))
+        if src is None or old_blk is None or new_blk is None:
+            raise RuntimeError(
+                "redirect_advance_edge: cannot resolve "
+                f"src={source_serial} old={old_target_serial} "
+                f"new={new_target_serial}"
+            )
+        source_succs = [int(x) for x in src.succset]
+
+        # Rewrite tail operand (best-effort; falls through to succset
+        # rewrite for fallthrough tails).
+        tail = src.tail
+        if tail is not None:
+            try:
+                opc = int(tail.opcode)
+            except AttributeError:
+                opc = -1
+            cond_opcodes = {
+                int(ida_hexrays.m_jnz),
+                int(ida_hexrays.m_jz),
+                int(ida_hexrays.m_jl),
+                int(ida_hexrays.m_jle),
+                int(ida_hexrays.m_jg),
+                int(ida_hexrays.m_jge),
+                int(ida_hexrays.m_jb),
+                int(ida_hexrays.m_jbe),
+                int(ida_hexrays.m_ja),
+                int(ida_hexrays.m_jae),
+                int(ida_hexrays.m_jcnd),
+            }
+            if opc == int(ida_hexrays.m_goto):
+                # m_goto: branch target is in tail.l (mop_b).
+                if (
+                    tail.l is not None
+                    and tail.l.t == ida_hexrays.mop_b
+                    and (
+                        int(tail.l.b) == int(old_target_serial)
+                        or source_succs == [int(old_target_serial)]
+                    )
+                ):
+                    tail.l.make_blkref(int(new_target_serial))
+            elif opc in cond_opcodes:
+                # Conditional jump: branch target is in tail.d (mop_b).
+                # The other arm (early return / fallthrough) goes to
+                # serial+1; do NOT touch it.
+                if (
+                    tail.d is not None
+                    and tail.d.t == ida_hexrays.mop_b
+                    and int(tail.d.b) == int(old_target_serial)
+                ):
+                    tail.d.make_blkref(int(new_target_serial))
+            # Fallthrough tails (no branch operand) are handled by the
+            # succset rewrite below alone.
+
+        # Symmetrically update succset/predset.
+        src.succset._del(int(old_target_serial))
+        src.succset.push_back(int(new_target_serial))
+        old_blk.predset._del(int(source_serial))
+        new_blk.predset.push_back(int(source_serial))
+
+        src.mark_lists_dirty()
+        if old_blk.serial != mba.qty - 1:
+            old_blk.mark_lists_dirty()
+        if new_blk.serial != mba.qty - 1:
+            new_blk.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+    def redirect_fallthrough_edge(
+        self,
+        *,
+        source_serial: int,
+        old_target_serial: int,
+        new_target_serial: int,
+    ) -> int:
+        """Re-home a BLT_2WAY fallthrough arm through an adjacent helper.
+
+        Hex-Rays verifies the non-taken arm of a 2-way block through physical
+        adjacency, so a succset-only rewrite is not enough. Insert a NOP/goto
+        helper immediately after ``source_serial`` and retarget that helper to
+        ``new_target_serial``.
+
+        Returns the live helper serial that now owns the redirected edge.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+        from d810.hexrays.mutation.cfg_mutations import (
+            _get_fallthrough_successor_serial,
+            change_1way_block_successor,
+            insert_nop_blk,
+        )
+
+        mba = self._mba
+        src = mba.get_mblock(int(source_serial))
+        if src is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: cannot resolve "
+                f"src={source_serial}"
+            )
+        if src.nsucc() != 2:
+            self.redirect_advance_edge(
+                source_serial=int(source_serial),
+                old_target_serial=int(old_target_serial),
+                new_target_serial=int(new_target_serial),
+            )
+            return int(source_serial)
+
+        conditional_target = (
+            int(src.tail.d.b)
+            if src.tail is not None
+            and ida_hexrays.is_mcode_jcond(src.tail.opcode)
+            and src.tail.d is not None
+            and src.tail.d.t == ida_hexrays.mop_b
+            else None
+        )
+        if conditional_target == int(old_target_serial):
+            self.redirect_advance_edge(
+                source_serial=int(source_serial),
+                old_target_serial=int(old_target_serial),
+                new_target_serial=int(new_target_serial),
+            )
+            return int(source_serial)
+
+        fallthrough_target = _get_fallthrough_successor_serial(src)
+        if fallthrough_target is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: source has no fallthrough "
+                f"src={source_serial}"
+            )
+        if int(fallthrough_target) != int(old_target_serial):
+            raise RuntimeError(
+                "redirect_fallthrough_edge: fallthrough mismatch "
+                f"src={source_serial} expected={old_target_serial} "
+                f"actual={fallthrough_target}"
+            )
+
+        new_target_blk = mba.get_mblock(int(new_target_serial))
+        if new_target_blk is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: cannot resolve "
+                f"new={new_target_serial}"
+            )
+
+        old_qty = int(mba.qty)
+        helper = insert_nop_blk(src)
+        if helper is None:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: failed to synthesize helper "
+                f"src={source_serial}"
+            )
+        self._record_inserted_serial(int(helper.serial), old_qty)
+        changed = change_1way_block_successor(
+            helper,
+            int(new_target_blk.serial),
+            verify=False,
+        )
+        if not changed:
+            raise RuntimeError(
+                "redirect_fallthrough_edge: failed to retarget helper "
+                f"helper={helper.serial} new={new_target_blk.serial}"
+            )
+        mba.mark_chains_dirty()
+        return int(helper.serial)
+
+    def clear_state_frontier_payload(self, block_serial: int) -> None:
+        """NOP non-goto instructions in a state-frontier block.
+
+        Equality-frontier closure sometimes has to keep a state-frontier
+        block as a structural bridge while removing its stale dispatcher or
+        return-carrier write. The block's outgoing edge remains responsible
+        for reaching the canonical return frontier.
+        """
+        import ida_hexrays  # lazy: IDA may be absent at unit-test time
+
+        mba = self._mba
+        blk = mba.get_mblock(int(block_serial))
+        if blk is None:
+            raise RuntimeError(
+                "clear_state_frontier_payload: cannot resolve "
+                f"blk={block_serial}"
+            )
+        cur = blk.head
+        while cur is not None:
+            nxt = cur.next
+            try:
+                opcode = int(cur.opcode)
+            except Exception:
+                opcode = -1
+            if opcode != int(ida_hexrays.m_goto):
+                blk.make_nop(cur)
+            cur = nxt
+        blk.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+    # ------------------------------------------------------------------
+    # Byte-store anchor (Track D byte_store mechanism — reference-style
+    # buffer write replication for bytes 2-6).
+    # ------------------------------------------------------------------
+
+    def _find_byte_emit_template_block(self, byte_index: int):
+        """Search the entire mba for the BLOCK containing an m_stx
+        instance whose dstr references v190 at the given byte_index.
+        Returns the mblock_t (so the ENTIRE block can be cloned via
+        copy_block), or None.
+
+        This is the right granularity for byte_store: the entire
+        byte_emit block has a self-contained def chain (m_sar
+        precomputes counter>>3, m_shl precomputes the shifted byte,
+        m_stx writes to buffer). Cloning the whole block preserves
+        all the local SSA/use-def relationships IDA's verifier
+        requires.
+        """
+        import ida_hexrays as _ih
+
+        if byte_index == 0:
+            needles = ("[ds.2:%var_190.8].1",)
+        else:
+            needles = (f"%var_190.8+#{byte_index}.8",)
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                if int(insn.opcode) == int(_ih.m_stx):
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                    except Exception:
+                        ds = ""
+                    if any(n in ds for n in needles):
+                        return blk
+                insn = insn.next
+        return None
+
+    def _find_byte_emit_stx_template(self, byte_index: int):
+        """Search the entire mba for an m_stx instance whose dstr
+        references v190 at the given byte_index. Returns the minsn_t
+        directly (so it can be cloned), or None.
+
+        Used by insert_byte_emit_replica_anchor: the host block doesn't
+        necessarily CONTAIN the template m_stx; the template lives in
+        a (possibly soon-to-be-DCE'd) byte_emit block that we can still
+        clone at hook time.
+        """
+        import ida_hexrays as _ih
+
+        if byte_index == 0:
+            needles = ("[ds.2:%var_190.8].1",)
+        else:
+            needles = (f"%var_190.8+#{byte_index}.8",)
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                if int(insn.opcode) == int(_ih.m_stx):
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                    except Exception:
+                        ds = ""
+                    if any(n in ds for n in needles):
+                        return insn
+                insn = insn.next
+        return None
+
+    def insert_byte_emit_replica_anchor(
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
+        template_byte_index: int,
+        target_byte_index: int,
+    ) -> int:
+        """Insert an anchor block whose body is a CLONE of the
+        predecessor's byte-emit m_stx, with the byte-index operand
+        patched from ``template_byte_index`` to ``target_byte_index``.
+
+        Use case: predecessor is byte 1's emit block (which survives
+        IDA DCE). We want bytes 2-6 to appear as buffer writes in AFTER
+        pseudocode. Cloning byte 1's m_stx and patching the byte index
+        gives us a structurally identical buffer write but referencing
+        the target byte's source-byte read.
+
+        The buffer offset is NOT adjusted (same slot as template) -- the
+        goal is making the m_stx (and hence the source-byte load)
+        survive optimize_global, not preserving exact reference
+        semantics.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        if pred_blk is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: pred {predecessor_serial} not resolvable"
+            )
+
+        if int(successor_serial) == -1:
+            pred_succs = [int(s) for s in pred_blk.succset]
+            if len(pred_succs) != 1:
+                raise RuntimeError(
+                    "sentinel successor=-1 requires 1-way pred; "
+                    f"block {predecessor_serial} has {len(pred_succs)} succs"
+                )
+            successor_serial = pred_succs[0]
+
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if succ_blk is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: succ {successor_serial} not resolvable"
+            )
+
+        # Find the template BLOCK (the entire byte_emit block) for the
+        # template byte. We'll clone this whole block so the def chain
+        # (m_sar precomputes counter>>3, m_shl precomputes shifted byte,
+        # m_stx writes to buffer) is self-contained.
+        template_block = self._find_byte_emit_template_block(template_byte_index)
+        if template_block is None:
+            raise RuntimeError(
+                f"insert_byte_emit_replica_anchor: no template block "
+                f"containing m_stx for v190+#{template_byte_index}.8"
+            )
+
+        end_serial = int(mba.qty) - 1
+        anchor = _copy_block_keep(mba, template_block, end_serial)
+        if anchor is None:
+            raise RuntimeError(
+                f"copy_block failed for template={template_block.serial}"
+            )
+
+        # CRITICAL: mba.copy_block may shallow-share nested mop_t objects
+        # between the template and the clone. Break that sharing by
+        # deep-cloning every operand tree in the new anchor.
+        cur_dc = anchor.head
+        while cur_dc is not None:
+            _deepclone_minsn_operands(cur_dc, _ih)
+            cur_dc = cur_dc.next
+
+        # Refresh serials post-copy_block (BLT_STOP shifts).
+        successor_serial = int(succ_blk.serial)
+        predecessor_serial = int(pred_blk.serial)
+
+        # Walk the clone: KEEP byte_emit instructions (m_sar, m_shl,
+        # m_xdu, m_ldx, m_stx), NOP everything else (state-write m_mov
+        # with literal constants, original m_goto, etc.). Then patch
+        # the byte index in any kept instruction.
+        byte_emit_opcodes = {
+            int(_ih.m_sar), int(_ih.m_shl), int(_ih.m_xdu),
+            int(_ih.m_ldx), int(_ih.m_stx),
+            # Also keep arithmetic helpers that may appear:
+            int(_ih.m_add), int(_ih.m_and), int(_ih.m_mul),
+        }
+        cur = anchor.head
+        patch_count = 0
+        # All anchors write to the same slot as the host (host's slot is
+        # observed by downstream code). To prevent IDA from dedup'ing
+        # consecutive writes-to-same-slot, each anchor's byte goes to a
+        # DIFFERENT bit-position within the slot via a shift delta.
+        # Each anchor writes byte k to a DIFFERENT 8-byte slot
+        # (buffer_base + (k-1)*8) AND at byte position (k-1)*8 within
+        # that slot. Together, this lays out the cascade across
+        # consecutive buffer slots -- matching REF's byte_emit pattern.
+        offset_delta = (target_byte_index - template_byte_index) * 8
+        shift_delta = (target_byte_index - template_byte_index) * 8
+        while cur is not None:
+            if int(cur.opcode) in byte_emit_opcodes:
+                # Patch byte_index in operand trees.
+                for op in (cur.l, cur.r, cur.d):
+                    if op is not None:
+                        if _patch_v190_byte_const(
+                            op, template_byte_index, target_byte_index, _ih,
+                        ):
+                            patch_count += 1
+                # Add (k-1)*8 to the m_stx ADDRESS operand so each
+                # anchor writes to a distinct slot (otherwise IDA dedups
+                # all 5 to one).
+                # m_stx layout per SDK: l=value, r=segment(2), d=address.
+                # So we wrap cur.d (the address), NOT cur.r (segment).
+                if int(cur.opcode) == int(_ih.m_stx) and offset_delta != 0:
+                    if cur.d is not None:
+                        _wrap_address_with_offset(
+                            cur.d, offset_delta, _ih,
+                            ea=int(getattr(cur, "ea", 0) or 0),
+                        )
+                # For ANY m_shl (top-level OR nested inside m_stx's value
+                # tree), add shift_delta to its shift count (m_shl.r) so
+                # each byte ORs into a unique bit position within the
+                # buffer slot.
+                if shift_delta != 0:
+                    _wrap_all_nested_shifts(
+                        cur, shift_delta, _ih,
+                        ea=int(getattr(cur, "ea", 0) or 0),
+                    )
+            else:
+                anchor.make_nop(cur)
+            cur = cur.next
+        logger.info(
+            "byte_anchor[byte_store]: clone of block %d for byte %d->%d: %d patches applied",
+            template_block.serial, template_byte_index, target_byte_index, patch_count,
+        )
+        # Dump ALL kept instructions + walk every operand tree level.
+        cur = anchor.head
+        idx = 0
+        while cur is not None:
+            if int(cur.opcode) in byte_emit_opcodes:
+                try:
+                    ds = cur.dstr() if callable(getattr(cur, "dstr", None)) else ""
+                except Exception:
+                    ds = "<err>"
+                logger.info(
+                    "byte_anchor[byte_store]:   anchor[%d] kept insn[%d]: %s",
+                    anchor.serial, idx, ds[:300],
+                )
+                # Walk and log every operand in the tree.
+                if idx == 1:  # the m_shl (smaller; has the v190 reference)
+                    _dump_mop_tree(cur.l, "l", 0, _ih)
+                    _dump_mop_tree(cur.r, "r", 0, _ih)
+                    _dump_mop_tree(cur.d, "d", 0, _ih)
+                idx += 1
+            cur = cur.next
+
+        # Now wire BLT_1WAY topology and append goto.
+        anchor.type = _ih.BLT_1WAY
+        for stale_succ in [int(x) for x in anchor.succset]:
+            anchor.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(anchor.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in anchor.predset]:
+            anchor.predset._del(stale_pred)
+
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        goto_ins = _ih.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        anchor.insert_into_block(goto_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        goto_ins.opcode = _ih.m_goto
+        goto_ins.l = _ih.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = _ih.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = _ih.mop_t()
+        goto_ins.d.erase()
+        anchor.flags |= _ih.MBL_GOTO
+
+        anchor.succset.push_back(int(successor_serial))
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(anchor.serial))
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
+            and pred_blk.tail.l is not None
+            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(anchor.serial))
+        pred_blk.mark_lists_dirty()
+
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(anchor.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        anchor.predset.push_back(int(predecessor_serial))
+        anchor.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(anchor.serial)
+
+    # ------------------------------------------------------------------
+    # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
+    # ------------------------------------------------------------------
+
+    def find_byte_emit_block_by_v190_offset(self, byte_index: int):
+        """Walk every block; for each block walk every top-level minsn
+        and its full operand-tree recursively, seeking an m_ldx whose
+        r operand resolves to v190+#byte_index. Return that block.
+
+        Fallback: textual dstr match.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        qty = int(getattr(mba, "qty", 0) or 0)
+        insn_count = 0
+        v190_byte_indices_seen: set[int] = set()
+        dstr_match_serial: int | None = None
+        for serial in range(qty):
+            blk = mba.get_mblock(serial)
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                insn_count += 1
+                found = _find_v190_ldx_in_insn(insn, byte_index, v190_byte_indices_seen)
+                if found is not None:
+                    return self.find_block_by_ea(
+                        int(getattr(blk, "start", 0) or 0),
+                    )
+                try:
+                    dstr = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
+                except Exception:
+                    dstr = ""
+                # Byte 0's form has no '+#0.8' suffix (IDA folds the
+                # zero); look for the bare '[ds.2:%var_190.8].1' load.
+                if byte_index == 0:
+                    needle_match = "[ds.2:%var_190.8].1" in dstr
+                else:
+                    needle = f"%var_190.8+#{byte_index}.8"
+                    needle_match = needle in dstr
+                if needle_match and dstr_match_serial is None:
+                    dstr_match_serial = serial
+                insn = insn.next
+        if dstr_match_serial is not None:
+            logger.warning(
+                "byte_anchor: structural walker missed byte %d but dstr "
+                "matches in block %d (insns walked: %d, byte indices the "
+                "structural walker DID find: %s). Falling back.",
+                byte_index, dstr_match_serial, insn_count,
+                sorted(v190_byte_indices_seen),
+            )
+            blk = mba.get_mblock(dstr_match_serial)
+            return self.find_block_by_ea(
+                int(getattr(blk, "start", 0) or 0),
+            )
+        logger.info(
+            "byte_anchor: no insn found with m_ldx of v190+#%d "
+            "(walked %d insns, structural byte indices found: %s).",
+            byte_index, insn_count, sorted(v190_byte_indices_seen),
+        )
+        return None
+
+    def extract_v190_indexed_operand(
+        self, byte_emit_serial: int, byte_index: int,
+    ):
+        """Find an operand whose dstr equals ``(%var_190.8+#k.8)``
+        anywhere in any insn's operand tree (in the byte_emit block
+        first, then any other block as fallback). Return a clone.
+
+        We dstr-match rather than structural-match because the operand
+        is stored in a wide variety of nested mop_t/minsn_t shapes the
+        structural recognizer doesn't fully cover, but ``mop_t.dstr()``
+        always renders to a stable textual form.
+        """
+        import ida_hexrays as _ih
+
+        target = f"(%var_190.8+#{byte_index}.8)"
+        # First pass: search the named byte_emit block.
+        blk = self._mba.get_mblock(int(byte_emit_serial))
+        if blk is not None:
+            found = _find_mop_by_dstr_in_block(blk, target, _ih)
+            if found is not None:
+                clone = _ih.mop_t()
+                clone.assign(found)
+                return clone
+        # Second pass: search any block in the mba.
+        qty = int(getattr(self._mba, "qty", 0) or 0)
+        for serial in range(qty):
+            blk = self._mba.get_mblock(serial)
+            if blk is None:
+                continue
+            found = _find_mop_by_dstr_in_block(blk, target, _ih)
+            if found is not None:
+                logger.warning(
+                    "byte_anchor: extract_v190_indexed_operand: target "
+                    "%s found in block %d (not the byte_emit block %d).",
+                    target, serial, byte_emit_serial,
+                )
+                clone = _ih.mop_t()
+                clone.assign(found)
+                return clone
+        raise RuntimeError(
+            f"no operand matching {target!r} found anywhere in mba"
+        )
+
+    def find_pre_return_block(self) -> int:
+        """Return the unique BLT_STOP predecessor's serial.
+
+        Raises RuntimeError if zero or more than one BLT_STOP exists,
+        or if BLT_STOP has anything other than exactly one predecessor.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        qty = int(getattr(mba, "qty", 0) or 0)
+        stop_serials = [
+            s for s in range(qty)
+            if mba.get_mblock(s) is not None
+            and int(mba.get_mblock(s).type) == int(_ih.BLT_STOP)
+        ]
+        if len(stop_serials) != 1:
+            raise RuntimeError(
+                f"expected exactly one BLT_STOP block; got {len(stop_serials)}"
+            )
+        stop_blk = mba.get_mblock(stop_serials[0])
+        preds = [int(p) for p in stop_blk.predset]
+        if len(preds) != 1:
+            raise RuntimeError(
+                f"expected exactly one BLT_STOP predecessor; got {len(preds)}"
+            )
+        return preds[0]
+
+    def insert_anchor_block_xor_pair(
+        self,
+        *,
+        predecessor_serial: int,
+        successor_serial: int,
+        source_addr_operand,
+        accumulator_stkoff: int,
+    ) -> int:
+        """Insert an anchor block carrying:
+
+            m_ldx  kreg(1),  ds.2, source_addr_operand
+            m_xdu  kreg(8),  kreg(1)
+            m_xor  var(8),   var(8), kreg(8)
+            m_goto @successor
+
+        between predecessor and successor.
+
+        Mirrors ``insert_trampoline_after``'s clone-and-NOP-then-decorate
+        pattern (mba.copy_block + make_nop + insert_into_block +
+        nop-then-mutate) to avoid INTERR 52123.
+
+        ``successor_serial == -1`` is a sentinel meaning: use
+        ``predecessor_serial``'s current sole successor.
+        """
+        import ida_hexrays as _ih
+
+        mba = self._mba
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        if pred_blk is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: pred {predecessor_serial} "
+                "not resolvable"
+            )
+
+        # Resolve sentinel.
+        if int(successor_serial) == -1:
+            pred_succs = [int(s) for s in pred_blk.succset]
+            if len(pred_succs) != 1:
+                raise RuntimeError(
+                    "sentinel successor=-1 requires 1-way pred; "
+                    f"block {predecessor_serial} has {len(pred_succs)} succs"
+                )
+            successor_serial = pred_succs[0]
+
+        succ_blk = mba.get_mblock(int(successor_serial))
+        if succ_blk is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: succ {successor_serial} "
+                "not resolvable"
+            )
+
+        # 1. Clone predecessor at end of mba.
+        end_serial = int(mba.qty) - 1
+        anchor = _copy_block_keep(mba, pred_blk, end_serial)
+        if anchor is None:
+            raise RuntimeError(
+                f"insert_anchor_block_xor_pair: copy_block failed for "
+                f"pred={predecessor_serial}"
+            )
+
+        # CRITICAL: mba.copy_block can shift the serials of blocks at
+        # and beyond end_serial (the dummy BLT_STOP block in particular
+        # always shifts by +1). The integer `successor_serial` captured
+        # before copy_block may now point at a DIFFERENT block. Block
+        # references (succ_blk, pred_blk) auto-track shifts; refresh the
+        # integer from succ_blk.serial.
+        successor_serial = int(succ_blk.serial)
+        predecessor_serial = int(pred_blk.serial)
+
+        # 2. NOP every inherited instruction.
+        cur = anchor.head
+        while cur is not None:
+            anchor.make_nop(cur)
+            cur = cur.next
+
+        # 3. Mark as 1-way; clear stale pred/succ entries copy_block carried over.
+        anchor.type = _ih.BLT_1WAY
+        for stale_succ in [int(x) for x in anchor.succset]:
+            anchor.succset._del(stale_succ)
+            other = mba.get_mblock(stale_succ)
+            if other is not None:
+                other.predset._del(anchor.serial)
+                if other.serial != mba.qty - 1:
+                    other.mark_lists_dirty()
+        for stale_pred in [int(x) for x in anchor.predset]:
+            anchor.predset._del(stale_pred)
+
+        # 4. Allocate a fresh kreg pair for the byte load + zero-extend.
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        kreg_id = int(mba.alloc_kreg(8))
+
+        # 5. m_ldx kreg(1) <- [seg : source_addr_operand]
+        # Clone segment operand from any existing m_stx/m_ldx in the mba
+        # since the IDA segment-register constant (mr_ds) is not always
+        # exposed in the Python bindings on every IDA version.
+        seg_template = _find_segment_operand_template(mba, _ih)
+        if seg_template is None:
+            raise RuntimeError(
+                "insert_anchor_block_xor_pair: no m_stx/m_ldx in mba to "
+                "clone segment operand from"
+            )
+        ldx_ins = _ih.minsn_t(safe_ea)
+        ldx_ins.ea = safe_ea
+        anchor.insert_into_block(ldx_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        ldx_ins.opcode = _ih.m_ldx
+        ldx_ins.l = _ih.mop_t()
+        ldx_ins.l.assign(seg_template)
+        ldx_ins.r = _ih.mop_t()
+        ldx_ins.r.assign(source_addr_operand)
+        ldx_ins.d = _ih.mop_t()
+        ldx_ins.d.make_reg(kreg_id, 1)
+
+        # 6. m_xdu kreg(8) <- kreg(1)
+        xdu_ins = _ih.minsn_t(safe_ea)
+        xdu_ins.ea = safe_ea
+        anchor.insert_into_block(xdu_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        xdu_ins.opcode = _ih.m_xdu
+        xdu_ins.l = _ih.mop_t()
+        xdu_ins.l.make_reg(kreg_id, 1)
+        xdu_ins.r = _ih.mop_t()
+        xdu_ins.r.erase()
+        xdu_ins.d = _ih.mop_t()
+        xdu_ins.d.make_reg(kreg_id, 8)
+
+        # 7. m_xor stkvar(8) <- stkvar(8) ^ kreg(8)
+        xor_ins = _ih.minsn_t(safe_ea)
+        xor_ins.ea = safe_ea
+        anchor.insert_into_block(xor_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        xor_ins.opcode = _ih.m_xor
+        xor_ins.l = _ih.mop_t()
+        xor_ins.l.make_stkvar(mba, int(accumulator_stkoff))
+        xor_ins.l.size = 8
+        xor_ins.r = _ih.mop_t()
+        xor_ins.r.make_reg(kreg_id, 8)
+        xor_ins.d = _ih.mop_t()
+        xor_ins.d.make_stkvar(mba, int(accumulator_stkoff))
+        xor_ins.d.size = 8
+
+        # 8. m_goto @successor
+        goto_ins = _ih.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        anchor.insert_into_block(goto_ins, anchor.tail)
+        anchor.make_nop(anchor.tail)
+        goto_ins.opcode = _ih.m_goto
+        goto_ins.l = _ih.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = _ih.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = _ih.mop_t()
+        goto_ins.d.erase()
+        anchor.flags |= _ih.MBL_GOTO
+
+        # 9. Wire anchor -> successor.
+        anchor.succset.push_back(int(successor_serial))
+
+        # 10. Rewire predecessor: pred->succ becomes pred->anchor->succ.
+        pred_blk.succset._del(int(successor_serial))
+        pred_blk.succset.push_back(int(anchor.serial))
+        if (
+            pred_blk.tail is not None
+            and int(pred_blk.tail.opcode) == int(_ih.m_goto)
+            and pred_blk.tail.l is not None
+            and int(pred_blk.tail.l.t) == int(_ih.mop_b)
+            and int(pred_blk.tail.l.b) == int(successor_serial)
+        ):
+            pred_blk.tail.l.make_blkref(int(anchor.serial))
+        pred_blk.mark_lists_dirty()
+
+        # 11. Update successor's predset.
+        succ_blk.predset._del(int(predecessor_serial))
+        succ_blk.predset.push_back(int(anchor.serial))
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+        # 12. Anchor's own pred set.
+        anchor.predset.push_back(int(predecessor_serial))
+        anchor.mark_lists_dirty()
+        mba.mark_chains_dirty()
+
+        return int(anchor.serial)
+
+
+def _dump_mop_tree(op, label: str, depth: int, _ih, max_depth: int = 8) -> None:
+    """Recursively log every operand in a tree with type + dstr + key fields."""
+    if op is None or depth > max_depth:
+        return
+    t = int(getattr(op, "t", -1))
+    type_names = {
+        0: "mop_z", 1: "mop_r", 2: "mop_n", 3: "mop_str",
+        4: "mop_d", 5: "mop_S", 6: "mop_v", 7: "mop_b",
+        8: "mop_f", 9: "mop_l", 10: "mop_a", 11: "mop_h",
+        12: "mop_c", 13: "mop_fn", 14: "mop_p", 15: "mop_sc",
+    }
+    type_name = type_names.get(t, f"mop_t={t}")
+    try:
+        ds = op.dstr() if callable(getattr(op, "dstr", None)) else ""
+    except Exception:
+        ds = "<err>"
+    extras = []
+    if t == int(_ih.mop_S):
+        s = getattr(op, "s", None)
+        if s is not None:
+            extras.append(f"s.off=0x{int(getattr(s, 'off', 0)):x}")
+    if t == int(_ih.mop_a):
+        a = getattr(op, "a", None)
+        if a is not None:
+            extras.append(f"a.t={int(getattr(a, 't', -1))}")
+            try:
+                inner = a.dstr() if callable(getattr(a, "dstr", None)) else ""
+                extras.append(f"a.dstr={inner[:30]}")
+            except Exception:
+                pass
+            inner_s = getattr(a, "s", None)
+            if inner_s is not None:
+                extras.append(f"a.s.off=0x{int(getattr(inner_s, 'off', 0)):x}")
+    if t == int(_ih.mop_n):
+        nnn = getattr(op, "nnn", None)
+        if nnn is not None:
+            extras.append(f"nnn={int(getattr(nnn, 'value', 0))}")
+    indent = "  " * depth
+    logger.info("MOPTRACE %s%s.%s [%s] size=%s dstr=%s",
+                indent, label, type_name, ",".join(extras),
+                int(getattr(op, "size", 0) or 0), ds[:60])
+    # Recurse if this is mop_d (wraps a sub-instruction).
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            try:
+                op_name = type_names.get(int(getattr(sub, "opcode", -1)), "?")
+            except Exception:
+                op_name = "?"
+            logger.info("MOPTRACE %s  %s.sub opcode=%s", indent, label,
+                        int(getattr(sub, "opcode", -1)))
+            _dump_mop_tree(getattr(sub, "l", None), f"{label}.sub.l", depth + 1, _ih, max_depth)
+            _dump_mop_tree(getattr(sub, "r", None), f"{label}.sub.r", depth + 1, _ih, max_depth)
+            _dump_mop_tree(getattr(sub, "d", None), f"{label}.sub.d", depth + 1, _ih, max_depth)
+    # Recurse into mop_a (address-of) target.
+    if t == int(_ih.mop_a):
+        inner = getattr(op, "a", None)
+        if inner is not None:
+            _dump_mop_tree(inner, f"{label}.a", depth + 1, _ih, max_depth)
+
+
+def _wrap_all_nested_shifts(insn, delta: int, _ih, ea: int = 0) -> None:
+    """Walk an instruction's operand tree recursively; wrap m_shl.r
+    (shift count) with m_add(orig, #delta) for every m_shl encountered.
+
+    Used by byte_store anchors: each cloned anchor has both a top-level
+    m_shl AND a nested m_shl inside the m_stx's value tree. Both need
+    the shift-count offset to make the byte OR into a distinct bit
+    position within the buffer slot.
+    """
+    if insn is None:
+        return
+    if int(getattr(insn, "opcode", -1)) == int(_ih.m_shl):
+        if insn.r is not None:
+            _wrap_address_with_offset(insn.r, delta, _ih, ea=ea)
+    for op_name in ("l", "r", "d"):
+        op = getattr(insn, op_name, None)
+        if op is None:
+            continue
+        if int(getattr(op, "t", -1)) != int(_ih.mop_d):
+            continue
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            _wrap_all_nested_shifts(sub, delta, _ih, ea=ea)
+
+
+def _deepclone_mop(mop, _ih) -> None:
+    """Force a mop_t's wrapped sub-instruction to be a fresh, independent
+    copy (no shared state with the original).
+
+    For mop_d operands, SWIG returns the wrapped ``minsn_t*`` directly --
+    so two mop_t's that wrap the same minsn_t share its operand tree.
+    To break this sharing we must allocate a fresh minsn_t and use
+    ``minsn_t.copy()`` (which does a deep copy via HEXDSP) to populate
+    it, then replace the original pointer.
+
+    Recurses into the freshly cloned sub-instruction's operands.
+    """
+    if mop is None:
+        return
+    if int(getattr(mop, "t", -1)) != int(_ih.mop_d):
+        return  # only mop_d wraps a sub-instruction
+    shared_inner = getattr(mop, "d", None)
+    if shared_inner is None:
+        return
+    try:
+        ea = int(getattr(shared_inner, "ea", 0) or 0)
+        fresh_inner = _ih.minsn_t(ea)
+        fresh_inner.copy(shared_inner)  # HEXDSP deep-copy of contents
+        mop.d = fresh_inner
+    except Exception:
+        return
+    # Recurse into the FRESH inner's operands -- any nested mop_d may
+    # still wrap a shared minsn_t until we recurse.
+    _deepclone_mop(getattr(fresh_inner, "l", None), _ih)
+    _deepclone_mop(getattr(fresh_inner, "r", None), _ih)
+    _deepclone_mop(getattr(fresh_inner, "d", None), _ih)
+
+
+def _deepclone_minsn_operands(insn, _ih) -> None:
+    """Deep-clone all three operands of an instruction (post-copy_block)."""
+    if insn is None:
+        return
+    _deepclone_mop(getattr(insn, "l", None), _ih)
+    _deepclone_mop(getattr(insn, "r", None), _ih)
+    _deepclone_mop(getattr(insn, "d", None), _ih)
+
+
+def _wrap_address_with_offset(op, delta: int, _ih, ea: int = 0) -> bool:
+    """Wrap ``op`` (an m_stx address operand) as
+    ``m_add(original_op_contents, mop_n=delta)`` -- adds a constant
+    offset to the address so this m_stx writes to a different buffer
+    slot than the template.
+
+    ``ea`` must be a valid mba address (the verifier checks
+    INTERR 50863 'wrong instruction address' for ea outside mba range).
+    """
+    if op is None or int(delta) == 0:
+        return False
+    try:
+        original_size = int(getattr(op, "size", 0) or 8)
+        original = _ih.mop_t()
+        original.assign(op)
+        add_insn = _ih.minsn_t(int(ea))
+        add_insn.ea = int(ea)
+        add_insn.opcode = _ih.m_add
+        add_insn.l = original
+        add_insn.r = _ih.mop_t()
+        add_insn.r.make_number(int(delta), original_size)
+        add_insn.d = _ih.mop_t()
+        add_insn.d.erase()
+        add_insn.d.size = original_size
+        op.create_from_insn(add_insn)
+        op.size = original_size
+        return True
+    except Exception:
+        logger.exception("_wrap_address_with_offset failed for delta=%d", delta)
+        return False
+
+
+def _is_v190_mop_S(op, _ih) -> bool:
+    """Return True if op is the mop_S rendering as '%var_190.8'.
+
+    The internal stkoff for var_190 is function-specific (e.g. 0x668
+    in sub_7FFD3338C040 -- the s.off field uses a different offset
+    convention than the displayed name). dstr-based matching is the
+    only reliable way to identify the byte-source-pointer stkvar.
+    """
+    if op is None:
+        return False
+    if int(getattr(op, "t", -1)) != int(_ih.mop_S):
+        return False
+    try:
+        ds = op.dstr() if callable(getattr(op, "dstr", None)) else ""
+    except Exception:
+        return False
+    return ds == "%var_190.8"
+
+
+def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
+    """Walk a mop_t tree; find any reference to (v190+#old_index.8) and
+    rewrite it to (v190+#new_index.8).
+
+    The operand shape we look for is mop_d wrapping m_add(v190, #k),
+    where v190 is identified by mop_t.dstr()=='%var_190.8' (not by
+    stkoff -- the internal stkoff doesn't match the displayed-name
+    offset).
+
+    Returns True if any patch was applied.
+    """
+    if op is None:
+        return False
+    t = int(getattr(op, "t", -1))
+    patched = False
+
+    # NOTE: byte 0 -> byte k transform attempted (replacing bare mop_S
+    # with mop_d(m_add(stkvar, #k))) but byte 0 template block doesn't
+    # actually contain an m_stx at MMAT_GLBOPT1 -- the m_stx for byte 0
+    # is generated by IDA during optimize_global as part of block 47.
+    # So host_byte=0 isn't a viable byte_store host in this binary's
+    # pre-optimize state. Leaving the transformation disabled.
+
+    # Match: mop_d wrapping m_add(v190, mop_n=old_index). The v190 leaf
+    # is identified by dstr=='%var_190.8' (the displayed-name offset
+    # convention differs from the internal mop_S.s.off; only dstr is
+    # a reliable identifier).
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            if int(getattr(sub, "opcode", -1)) == int(_ih.m_add):
+                l = getattr(sub, "l", None)
+                r = getattr(sub, "r", None)
+                # Standard order: l=v190, r=mop_n
+                if (
+                    _is_v190_mop_S(l, _ih)
+                    and r is not None
+                    and int(getattr(r, "t", -1)) == int(_ih.mop_n)
+                    and getattr(r, "nnn", None) is not None
+                    and int(r.nnn.value) == int(old_index)
+                ):
+                    r.make_number(int(new_index), int(r.size or 8))
+                    patched = True
+                # Reversed order (commutative)
+                if (
+                    _is_v190_mop_S(r, _ih)
+                    and l is not None
+                    and int(getattr(l, "t", -1)) == int(_ih.mop_n)
+                    and getattr(l, "nnn", None) is not None
+                    and int(l.nnn.value) == int(old_index)
+                ):
+                    l.make_number(int(new_index), int(l.size or 8))
+                    patched = True
+            # Recurse into sub-instruction's operands.
+            for child in (sub.l, sub.r, sub.d):
+                if _patch_v190_byte_const(child, old_index, new_index, _ih):
+                    patched = True
+    return patched
+
+
+def _mop_dstr(mop) -> str:
+    """Best-effort textual rendering of a mop_t (returns '' on failure)."""
+    try:
+        ds = mop.dstr() if callable(getattr(mop, "dstr", None)) else ""
+        return ds if isinstance(ds, str) else ""
+    except Exception:
+        return ""
+
+
+def _find_mop_by_dstr_in_block(blk, target: str, _ih):
+    """Walk every minsn in the block and every nested mop_t operand
+    tree; return the first mop_t whose dstr() equals or contains
+    ``target``. Returns None if no match.
+    """
+    insn = blk.head
+    while insn is not None:
+        for op in (
+            getattr(insn, "l", None),
+            getattr(insn, "r", None),
+            getattr(insn, "d", None),
+        ):
+            found = _find_mop_by_dstr(op, target, _ih)
+            if found is not None:
+                return found
+        insn = insn.next
+    return None
+
+
+def _find_mop_by_dstr(mop, target: str, _ih, depth: int = 15):
+    """Walk a mop_t recursively (descending into mop_d sub-instructions
+    and their operand trees) seeking a mop whose dstr matches target.
+    """
+    if depth <= 0 or mop is None:
+        return None
+    ds = _mop_dstr(mop)
+    if target in ds:
+        # Prefer the most specific match: the operand whose own dstr
+        # equals target exactly. If we found a parent containing target
+        # as a substring, descend to find a tighter match.
+        if ds == target:
+            return mop
+        # Descend.
+        if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
+            sub = getattr(mop, "d", None)
+            if sub is not None:
+                for child in (
+                    getattr(sub, "l", None),
+                    getattr(sub, "r", None),
+                    getattr(sub, "d", None),
+                ):
+                    inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
+                    if inner is not None:
+                        return inner
+        # No tighter match -> return the substring-matching parent.
+        return mop
+    # Target not in this mop's dstr; still descend into sub-insns in
+    # case the operand tree's dstr collapsed the inner form.
+    if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
+        sub = getattr(mop, "d", None)
+        if sub is not None:
+            for child in (
+                getattr(sub, "l", None),
+                getattr(sub, "r", None),
+                getattr(sub, "d", None),
+            ):
+                inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
+                if inner is not None:
+                    return inner
+    return None
+
+
+def _find_v190_ldx_in_insn(
+    insn,
+    byte_index: int,
+    observed_byte_indices: set[int] | None = None,
+    depth: int = 15,
+):
+    """Recursively walk an minsn_t and every nested mop_d/sub-instruction
+    seeking an m_ldx whose r operand is v190+#byte_index.
+
+    ``observed_byte_indices`` (optional) is populated with any byte index
+    k for which a v190+#k m_ldx was seen during the walk -- a diagnostic
+    aid so the caller can log "we saw bytes 0,1,2 but not 6".
+    """
+    import ida_hexrays as _ih
+
+    if depth <= 0 or insn is None:
+        return None
+    if int(getattr(insn, "opcode", -1)) == int(_ih.m_ldx):
+        r = getattr(insn, "r", None)
+        if r is not None and _is_v190_plus_k(r, byte_index):
+            return r
+        if observed_byte_indices is not None and r is not None:
+            for k in range(7):
+                if _is_v190_plus_k(r, k):
+                    observed_byte_indices.add(k)
+    for op in (
+        getattr(insn, "l", None),
+        getattr(insn, "r", None),
+        getattr(insn, "d", None),
+    ):
+        if op is None:
+            continue
+        if int(getattr(op, "t", -1)) != int(_ih.mop_d):
+            continue
+        sub = getattr(op, "d", None)
+        if sub is None:
+            continue
+        found = _find_v190_ldx_in_insn(
+            sub, byte_index, observed_byte_indices, depth - 1,
+        )
+        if found is not None:
+            return found
+    return None
+
+
+def _find_segment_operand_template(mba, _ih):
+    """Return a clone of the segment operand from any existing
+    m_stx or m_ldx in the mba.
+
+    The segment register constant ``mr_ds`` is not always exposed as a
+    Python attribute on ``ida_hexrays`` (depends on IDA version /
+    architecture), but every binary that touches the data segment has
+    at least one m_stx/m_ldx in its microcode whose segment operand is
+    a well-formed register reference we can clone.
+
+    Returns None if no candidate insn is found.
+    """
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        blk = mba.get_mblock(serial)
+        if blk is None:
+            continue
+        insn = blk.head
+        while insn is not None:
+            opc = int(getattr(insn, "opcode", -1))
+            if opc == int(_ih.m_stx) or opc == int(_ih.m_ldx):
+                seg = getattr(insn, "l", None)
+                if seg is not None:
+                    clone = _ih.mop_t()
+                    clone.assign(seg)
+                    return clone
+            insn = insn.next
+    return None
+
+
+def _synthesize_v190_plus_k_operand(mba, byte_index: int, _ih):
+    """Build a fresh ``mop_d(m_add(stkvar@0x190, #byte_index.8))`` mop_t.
+
+    Used as a fallback when the structural walker can't find an existing
+    m_ldx of v190+#k to clone (which happens when IDA materializes the
+    intermediate through a temp kreg, dropping the inline form).
+
+    The synthetic operand is semantically equivalent to the original
+    byte_emit's address operand for IDA's alias analysis purposes.
+    """
+    add_insn = _ih.minsn_t(int(getattr(mba, "entry_ea", 0) or 0))
+    add_insn.opcode = _ih.m_add
+    add_insn.l = _ih.mop_t()
+    add_insn.l.make_stkvar(mba, 0x190)
+    add_insn.l.size = 8
+    add_insn.r = _ih.mop_t()
+    add_insn.r.make_number(int(byte_index), 8)
+    add_insn.d = _ih.mop_t()
+    add_insn.d.erase()
+
+    result = _ih.mop_t()
+    result.create_from_insn(add_insn)
+    return result
+
+
+def _walk_mop_for_v190_ldx(addr_op, byte_index: int, depth: int = 8):
+    """Recursively search ``addr_op`` for an m_ldx whose r operand
+    matches v190 + #byte_index. Returns that r operand (the address)
+    or None.
+    """
+    import ida_hexrays as _ih
+
+    if depth <= 0 or addr_op is None:
+        return None
+    if int(getattr(addr_op, "t", -1)) != int(_ih.mop_d):
+        return None
+    sub = getattr(addr_op, "d", None)
+    if sub is None:
+        return None
+    if int(getattr(sub, "opcode", -1)) == int(_ih.m_ldx):
+        r = getattr(sub, "r", None)
+        if r is not None and _is_v190_plus_k(r, byte_index):
+            return r
+    for child in (getattr(sub, "l", None), getattr(sub, "r", None), getattr(sub, "d", None)):
+        found = _walk_mop_for_v190_ldx(child, byte_index, depth - 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_v190_plus_k(op, byte_index: int) -> bool:
+    """True if ``op`` algebraically equals ``v190 + #byte_index``.
+
+    Accepts two folded forms produced by IDA microcode:
+      1. mop_S with stkoff == 0x190 + byte_index  (constant-folded)
+      2. mop_d/m_add(mop_S@0x190, mop_n=byte_index)  (unfolded)
+    """
+    import ida_hexrays as _ih
+
+    if op is None:
+        return False
+    t = int(getattr(op, "t", -1))
+    if t == int(_ih.mop_S):
+        stkvar = getattr(op, "s", None)
+        if stkvar is None:
+            return False
+        if int(getattr(stkvar, "off", 0)) == 0x190 + int(byte_index):
+            return True
+        return False
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if sub is None:
+            return False
+        if int(getattr(sub, "opcode", -1)) != int(_ih.m_add):
+            return False
+        l = getattr(sub, "l", None)
+        r = getattr(sub, "r", None)
+        if l is None or r is None:
+            return False
+        if (
+            int(getattr(l, "t", -1)) == int(_ih.mop_S)
+            and getattr(l, "s", None) is not None
+            and int(l.s.off) == 0x190
+            and int(getattr(r, "t", -1)) == int(_ih.mop_n)
+            and getattr(r, "nnn", None) is not None
+            and int(r.nnn.value) == int(byte_index)
+        ):
+            return True
+        if (
+            int(getattr(r, "t", -1)) == int(_ih.mop_S)
+            and getattr(r, "s", None) is not None
+            and int(r.s.off) == 0x190
+            and int(getattr(l, "t", -1)) == int(_ih.mop_n)
+            and getattr(l, "nnn", None) is not None
+            and int(l.nnn.value) == int(byte_index)
+        ):
+            return True
+    return False
+
+
+class _ValidatedFactViewAdapter:
+    """Adapt in-memory lifecycle facts to the CFG byte-tail FactView."""
+
+    def __init__(self, fact_view: Any) -> None:
+        self._fact_view = fact_view
+
+    def terminal_byte_emit_facts(self, byte_index: int) -> Iterable[FactRow]:
+        rows: list[FactRow] = []
+        for obs in getattr(self._fact_view, "active_observations", ()) or ():
+            if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
+                continue
+            payload = getattr(obs, "payload", None) or {}
+            if not isinstance(payload, dict):
+                continue
+            try:
+                bi = int(payload.get("byte_index"))
+            except (TypeError, ValueError):
+                continue
+            if bi != int(byte_index):
+                continue
+            block_raw = (
+                payload.get("destination_block")
+                or payload.get("block_serial")
+                or payload.get("source_block")
+                or getattr(obs, "source_block", None)
+            )
+            try:
+                block_serial = int(block_raw)
+            except (TypeError, ValueError):
+                block_serial = 0
+            ea_hex = str(payload.get("start_ea_hex") or "")
+            if not ea_hex:
+                raw_ea = payload.get("block_ea")
+                if raw_ea is None:
+                    raw_ea = getattr(obs, "source_ea", None)
+                try:
+                    if raw_ea is not None:
+                        ea_int = (
+                            int(raw_ea, 0)
+                            if isinstance(raw_ea, str)
+                            else int(raw_ea)
+                        )
+                        ea_hex = (
+                            f"0x{ea_int & ((1 << 64) - 1):016x}"
+                        )
+                except (TypeError, ValueError):
+                    ea_hex = ""
+            rows.append(
+                FactRow(
+                    snapshot_id=0,
+                    byte_index=bi,
+                    block_serial=block_serial,
+                    start_ea_hex=ea_hex,
+                    corridor_role=str(payload.get("corridor_role") or ""),
+                )
+            )
+        return rows
+
+
+def _byte_emit_fact_view(fact_view: Any | None) -> Any | None:
+    if fact_view is None:
+        return None
+    if callable(getattr(fact_view, "terminal_byte_emit_facts", None)):
+        return fact_view
+    if hasattr(fact_view, "active_observations"):
+        return _ValidatedFactViewAdapter(fact_view)
+    return fact_view
+
+
+def maybe_run_tail_distinct(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
+    """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
+
+    Default-off.  When ``D810_TAIL_DISTINCT_BYTE`` is set to a valid byte
+    index in ``[0, 6]`` this resolves the matching in-memory
+    ``TerminalByteEmitterFact``, finds the live block, and inserts a single
+    empty trampoline between byte_emit[k] and its shared successor.
+
+    Lives in ``d810.cfg.transform`` (not ``d810.manager``) so the
+    optimizer call site can import it without violating the layered
+    import contract (optimizers must not depend on UI, and manager
+    transitively imports UI).
+
+    Any failure (no fact, block missing, preconditions unmet, adapter
+    not yet wired) is logged and swallowed — the manager pipeline never
+    breaks because of this experiment.
+    """
+    raw = os.environ.get("D810_TAIL_DISTINCT_BYTE")
+    byte_index = parse_tail_distinct_byte_env(raw)
+    if byte_index is None:
+        return  # default-off: no log, no mutation
+
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
+
+    if fact_view is None:
+        logger.warning(
+            "tail_distinct: D810_TAIL_DISTINCT_BYTE=%r set but in-memory "
+            "fact view unavailable; skipping",
+            raw,
+        )
+        return
+
+    fact_view = _byte_emit_fact_view(fact_view)
+    adapter = LiveMbaAdapter(mba)
+    try:
+        report = isolate_byte_emit_tail(
+            byte_index=byte_index,
+            fact_view=fact_view,
+            adapter=adapter,
+        )
+    except NotImplementedError as exc:
+        logger.warning("tail_distinct: adapter not wired: %s", exc)
+        return
+    except Exception:
+        logger.exception("tail_distinct: unexpected failure; continuing")
+        return
+
+    logger.info("tail_distinct: %s", report)
+
+
+def maybe_run_tail_duplicate_convergence(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
+    """Env-gated hook: ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE`` probe.
+
+    Default-off.  When set to exactly ``"6"`` and
+    ``D810_TAIL_DISTINCT_BYTE`` is NOT set, this resolves the matching
+    in-memory ``TerminalByteEmitterFact`` for byte 6, walks forward to
+    the first shared convergence block that reaches
+    ``BLT_STOP``, clones that convergence, and rewires the
+    byte-side predecessor's edge onto the clone.  The original
+    convergence remains intact for sibling paths.
+
+    Mutual exclusion with ``D810_TAIL_DISTINCT_BYTE``: if both are set
+    we refuse to run either probe (the call site invokes both hooks
+    unconditionally; this guard prevents double-mutation of the same
+    block).
+
+    Any failure (no fact, block missing, walk dead-ends, adapter not
+    wired) is logged and swallowed — the manager pipeline never breaks
+    because of this experiment.
+    """
+    raw = os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+    byte_index = parse_tail_duplicate_convergence_byte_env(raw)
+    if byte_index is None:
+        return  # default-off: no log, no mutation
+
+    if os.environ.get("D810_TAIL_DISTINCT_BYTE"):
+        logger.warning(
+            "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE "
+            "and D810_TAIL_DISTINCT_BYTE are both set; refusing to run "
+            "either probe."
+        )
+        return
+
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
+
+    if fact_view is None:
+        logger.warning(
+            "tail_duplicate_convergence: D810_TAIL_DUPLICATE_CONVERGENCE_BYTE="
+            "%r set but in-memory fact view unavailable; skipping",
+            raw,
+        )
+        return
+
+    fact_view = _byte_emit_fact_view(fact_view)
+    adapter = LiveMbaAdapter(mba)
+    try:
+        report = duplicate_convergence_for_byte_path(
+            byte_index=byte_index,
+            fact_view=fact_view,
+            adapter=adapter,
+        )
+    except NotImplementedError as exc:
+        logger.warning(
+            "tail_duplicate_convergence: adapter not wired: %s", exc,
+        )
+        return
+    except Exception:
+        logger.exception(
+            "tail_duplicate_convergence: unexpected failure; continuing"
+        )
+        return
+
+    logger.info("tail_duplicate_convergence: %s", report)
+
+
+# ---------------------------------------------------------------------------
+# TerminalTailStateCascade env-gated hook (byte5 -> byte6)
+# ---------------------------------------------------------------------------
+
+
+def _json_int_tuple(value) -> tuple[int, ...]:
+    if not value:
+        return ()
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    out: list[int] = []
+    for item in parsed:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
+
+
+def _load_planner_blocks_from_mba(mba):
+    """Build planner block views directly from the live MBA."""
+    from d810.cfg.terminal_tail_cascade_egress_planner import TerminalTailBlock
+
+    blocks = {}
+    try:
+        import ida_hexrays
+    except Exception:
+        ida_hexrays = None
+
+    def _opcode_name(opcode: int) -> str:
+        try:
+            if ida_hexrays is not None:
+                name = ida_hexrays.get_mreg_name(int(opcode), 0)
+                if name:
+                    return str(name)
+        except Exception:
+            pass
+        return f"op_{int(opcode)}"
+
+    def _type_name(block_type: int) -> str:
+        if ida_hexrays is None:
+            return f"BLT_{int(block_type)}"
+        names = {
+            int(ida_hexrays.BLT_NONE): "BLT_NONE",
+            int(ida_hexrays.BLT_STOP): "BLT_STOP",
+            int(ida_hexrays.BLT_1WAY): "BLT_1WAY",
+            int(ida_hexrays.BLT_2WAY): "BLT_2WAY",
+            int(ida_hexrays.BLT_NWAY): "BLT_NWAY",
+            int(ida_hexrays.BLT_XTRN): "BLT_XTRN",
+        }
+        return names.get(int(block_type), f"BLT_{int(block_type)}")
+
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        block = mba.get_mblock(serial)
+        if block is None:
+            continue
+        succs = tuple(int(block.succ(i)) for i in range(int(block.nsucc())))
+        preds = tuple(int(block.pred(i)) for i in range(int(block.npred())))
+        opcodes: list[str] = []
+        text: list[str] = []
+        insn = getattr(block, "head", None)
+        while insn is not None:
+            try:
+                opcodes.append(_opcode_name(int(insn.opcode)))
+            except Exception:
+                opcodes.append("")
+            try:
+                text.append(str(insn.dstr() or ""))
+            except Exception:
+                text.append("")
+            insn = getattr(insn, "next", None)
+        blocks[serial] = TerminalTailBlock(
+            serial=serial,
+            succs=succs,
+            preds=preds,
+            type_name=_type_name(int(getattr(block, "type", 0) or 0)),
+            start_ea_hex=f"0x{int(getattr(block, 'start', 0) or 0) & ((1 << 64) - 1):016x}",
+            insn_opcodes=tuple(opcodes),
+            insn_text=tuple(text),
+        )
+    return blocks
+
+
+def _int_from_payload(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_live_site_block_from_payload(
+    *,
+    payload: dict,
+    source_ea: int | None,
+    adapter,
+) -> int | None:
+    """Resolve a fact-view terminal byte site into the current live MBA.
+
+    Fact observations are collected before the late Hex-Rays materializer has
+    finished inserting and shifting blocks.  The planner uses a live block map,
+    so serials from the fact view must be treated as diagnostics unless the
+    corresponding instruction EA is still in that same live block.
+    """
+    if adapter is None:
+        return None
+
+    if source_ea is not None:
+        containing = _live_blocks_containing_ea(adapter, (int(source_ea),))
+        if len(containing) == 1:
+            return int(containing[0])
+
+    block_ea = _int_from_payload(payload.get("block_ea"))
+    if block_ea is not None:
+        starts = _live_blocks_with_start_ea(adapter, int(block_ea))
+        if len(starts) == 1:
+            return int(starts[0])
+
+    return None
+
+
+def _load_planner_sites_from_fact_view(fact_view, *, adapter=None):
+    """Build planner sites from a ValidatedFactView-like object."""
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        terminal_byte_emit_site_from_payload,
+    )
+
+    if fact_view is None:
+        return []
+    sites: list = []
+    for obs in getattr(fact_view, "active_observations", ()) or ():
+        if getattr(obs, "kind", None) != "TerminalByteEmitterFact":
+            continue
+        payload = dict(getattr(obs, "payload", None) or {})
+        if not isinstance(payload, dict):
+            continue
+        source_block = getattr(obs, "source_block", None)
+        if source_block is not None:
+            payload.setdefault("source_block", source_block)
+            payload.setdefault("block_serial", source_block)
+            payload.setdefault("destination_block", source_block)
+        source_ea = getattr(obs, "source_ea", None)
+        source_ea_hex = (
+            f"0x{int(source_ea) & ((1 << 64) - 1):016x}"
+            if source_ea is not None else None
+        )
+        live_source_block = _resolve_live_site_block_from_payload(
+            payload=payload,
+            source_ea=int(source_ea) if source_ea is not None else None,
+            adapter=adapter,
+        )
+        if live_source_block is not None:
+            payload["source_block"] = int(live_source_block)
+            payload["block_serial"] = int(live_source_block)
+            payload["destination_block"] = int(live_source_block)
+        site = terminal_byte_emit_site_from_payload(
+            str(getattr(obs, "fact_id", "")),
+            payload,
+            source_ea_hex=source_ea_hex,
+            confidence=float(getattr(obs, "confidence", 0.0) or 0.0),
+        )
+        if site is not None:
+            sites.append(site)
+    return sites
+
+
+def _bridge_plan_row_to_live_mba(
+    plan_row,
+    *,
+    diag_conn,
+    snap17_id: int | None,
+    adapter,
+    logger_,
+) -> tuple[object, str]:
+    """Translate snap17 serials in plan_row to live MBA serials.
+
+    The planner reads ``post_bundle_stabilize`` (snap17) blocks and
+    produces a row whose ``source_block``,
+    ``current_continuation_target``, ``intended_target``, and
+    ``state_write_block`` are snap17 serials. Bundle-stabilize between
+    live-mba and snap17 remaps serials, so we cannot pass snap17 serials
+    straight to a live ``mba.get_mblock(serial)`` call. This helper
+    bridges via the start-EA: snap17 serial -> snap17 ``start_ea_i64``
+    -> live MBA serial via ``adapter.find_block_by_ea``.
+
+    Returns ``(mapped_row, "ok")`` on success, or ``(None, reason)`` if
+    any required field cannot map. The mapped row preserves all
+    non-serial fields unchanged.
+
+    ``state_write_block`` is only required when
+    ``state_write_bypassed`` is True; otherwise its value passes
+    through unchanged (typically None).
+    """
+    fields_to_map: list[str] = ["source_block", "intended_target"]
+    state_write_required = bool(getattr(plan_row, "state_write_bypassed", False))
+    state_write_serial = getattr(plan_row, "state_write_block", None)
+    if state_write_required and state_write_serial is None:
+        return (
+            None,
+            "live_block_not_resolvable:state_write_block:None:required_when_bypassed",
+        )
+    if state_write_required:
+        fields_to_map.append("state_write_block")
+
+    if diag_conn is None:
+        mapped_serials: dict[str, int | None] = {}
+        for field_name in fields_to_map:
+            serial = getattr(plan_row, field_name, None)
+            if serial is None:
+                return (
+                    None,
+                    f"live_block_not_resolvable:{field_name}:None:planner_serial_none",
+                )
+            serial_i = int(serial)
+            if not _live_block_exists(adapter, serial_i):
+                return (
+                    None,
+                    f"live_block_not_resolvable:{field_name}:{serial_i}:not_in_live_mba",
+                )
+            mapped_serials[field_name] = serial_i
+
+        snap_source = getattr(plan_row, "source_block", None)
+        snap_current = getattr(plan_row, "current_continuation_target", None)
+        if snap_source is None or snap_current is None:
+            return (
+                None,
+                "live_block_not_resolvable:current_continuation_target:None:planner_serial_none",
+            )
+        live_current, current_reason = _map_snap_successor_to_live(
+            diag_conn=None,
+            snapshot_id=None,
+            snap_source_serial=int(snap_source),
+            snap_target_serial=int(snap_current),
+            live_source_serial=int(mapped_serials["source_block"]),
+            adapter=adapter,
+        )
+        if live_current is None:
+            return (None, current_reason)
+        mapped_serials["current_continuation_target"] = int(live_current)
+        if not state_write_required:
+            mapped_serials["state_write_block"] = state_write_serial
+
+        return (
+            dataclasses.replace(
+                plan_row,
+                source_block=mapped_serials["source_block"],
+                current_continuation_target=mapped_serials["current_continuation_target"],
+                intended_target=mapped_serials["intended_target"],
+                state_write_block=mapped_serials["state_write_block"],
+            ),
+            "ok",
+        )
+
+    return (None, "live_block_not_resolvable:diag_bridge_disabled")
+
+
+def _resolve_adapter_live_serial(adapter, live_serial: int) -> int:
+    resolve = getattr(adapter, "resolve_live_serial", None)
+    if resolve is None:
+        return int(live_serial)
+    try:
+        return int(resolve(int(live_serial)))
+    except Exception:
+        return int(live_serial)
+
+
+def _live_successors(adapter, live_serial: int) -> tuple[int, ...]:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return ()
+    blk = mba.get_mblock(int(live_serial))
+    if blk is None:
+        return ()
+    try:
+        return tuple(int(blk.succ(i)) for i in range(int(blk.nsucc())))
+    except Exception:
+        return ()
+
+
+def _live_block_exists(adapter, live_serial: int) -> bool:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    try:
+        return mba.get_mblock(int(live_serial)) is not None
+    except Exception:
+        return False
+
+
+def _map_snap_successor_to_live(
+    *,
+    diag_conn,
+    snapshot_id: int | None,
+    snap_source_serial: int,
+    snap_target_serial: int,
+    live_source_serial: int,
+    adapter,
+) -> tuple[int | None, str]:
+    snap_succs = _live_successors(adapter, int(live_source_serial))
+    live_succs = _live_successors(adapter, int(live_source_serial))
+
+    if int(snap_target_serial) in snap_succs:
+        index = snap_succs.index(int(snap_target_serial))
+        if index < len(live_succs):
+            return (int(live_succs[index]), "ok")
+
+    if int(snap_target_serial) in live_succs:
+        return (int(snap_target_serial), "ok")
+
+    return _map_snap_serial_to_live(
+        diag_conn=diag_conn,
+        snapshot_id=int(snapshot_id) if snapshot_id is not None else None,
+        snap_serial=int(snap_target_serial),
+        adapter=adapter,
+        field_name="current_continuation_target",
+    )
+
+
+def _map_snap_serial_to_live(
+    *,
+    diag_conn,
+    snapshot_id: int | None,
+    snap_serial: int,
+    adapter,
+    field_name: str,
+) -> tuple[int | None, str]:
+    live_serial = _resolve_adapter_live_serial(adapter, int(snap_serial))
+    if _live_block_exists(adapter, int(live_serial)):
+        return (int(live_serial), "ok")
+    return (
+        None,
+        f"live_block_not_resolvable:{field_name}:{snap_serial}:not_in_live_mba",
+    )
+
+
+def _block_mentions_source_byte(block, byte_index: int) -> bool:
+    if block is None:
+        return False
+    if byte_index == 0:
+        needles = ("%var_190",)
+    else:
+        needles = (
+            f"%var_190.8+#{int(byte_index)}.8",
+            f"%var_190+#{int(byte_index)}",
+            f"%var_190.8 + #{int(byte_index)}.8",
+        )
+    return any(
+        any(needle in text for needle in needles)
+        for text in getattr(block, "insn_text", ()) or ()
+    )
+
+
+def _shortest_path_to_source_byte(
+    blocks,
+    *,
+    start_serial: int | None,
+    byte_index: int,
+    max_depth: int = 10,
+) -> tuple[int, ...]:
+    if start_serial is None:
+        return ()
+    start = int(start_serial)
+    queue: list[tuple[int, tuple[int, ...]]] = [(start, (start,))]
+    seen = {start}
+    while queue:
+        serial, path = queue.pop(0)
+        if len(path) > max_depth:
+            continue
+        block = blocks.get(serial)
+        if _block_mentions_source_byte(block, byte_index):
+            return path
+        for succ in getattr(block, "succs", ()) if block is not None else ():
+            succ_i = int(succ)
+            if succ_i in seen:
+                continue
+            seen.add(succ_i)
+            queue.append((succ_i, path + (succ_i,)))
+    return ()
+
+
+def _site_mentions_exact_source_byte(site, byte_index: int) -> bool:
+    text = str(getattr(site, "source_expression", "") or "")
+    if byte_index == 0:
+        return "%var_190" in text
+    return any(
+        needle in text
+        for needle in (
+            f"%var_190.8+#{int(byte_index)}.8",
+            f"%var_190+#{int(byte_index)}",
+            f"%var_190.8 + #{int(byte_index)}.8",
+        )
+    )
+
+
+def _select_terminal_entry_site_block(
+    sites,
+    *,
+    byte_index: int,
+    exclude_block: int | None = None,
+) -> int | None:
+    candidates: list[tuple[int, int]] = []
+    for site in sites:
+        if int(getattr(site, "byte_index", -1)) != int(byte_index):
+            continue
+        if getattr(site, "corridor_role", "") != "terminal_tail":
+            continue
+        block = int(getattr(site, "block_serial", -1))
+        if exclude_block is not None and block == int(exclude_block):
+            continue
+        exact = _site_mentions_exact_source_byte(site, byte_index)
+        candidates.append((1 if exact else 0, block))
+    if not candidates:
+        return None
+    # Entry blocks are the non-exact terminal-tail facts. If every candidate
+    # is exact, use the lowest serial as the earliest local entry.
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return int(candidates[0][1])
+
+
+def _select_terminal_store_guard_block(
+    sites,
+    *,
+    byte_index: int,
+    exclude_exact_source: bool = True,
+) -> int | None:
+    candidates: list[tuple[int, int]] = []
+    for site in sites:
+        if int(getattr(site, "byte_index", -1)) != int(byte_index):
+            continue
+        if getattr(site, "corridor_role", "") != "terminal_tail":
+            continue
+        if exclude_exact_source and _site_mentions_exact_source_byte(site, byte_index):
+            continue
+        block = int(getattr(site, "block_serial", -1))
+        candidates.append((block, block))
+    if not candidates:
+        return None
+    candidates.sort()
+    return int(candidates[0][1])
+
+
+def _live_single_successor(adapter, live_serial: int) -> int | None:
+    succs = _live_successors(adapter, int(live_serial))
+    if len(succs) != 1:
+        return None
+    return int(succs[0])
+
+
+def _live_block_is_state_frontier_only(adapter, live_serial: int) -> bool:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    blk = mba.get_mblock(int(live_serial))
+    if blk is None:
+        return False
+    try:
+        import ida_hexrays
+
+        allowed = {
+            int(ida_hexrays.m_nop),
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_goto),
+        }
+    except Exception:
+        return False
+    saw_insn = False
+    cur = getattr(blk, "head", None)
+    while cur is not None:
+        saw_insn = True
+        try:
+            opcode = int(cur.opcode)
+        except Exception:
+            return False
+        if opcode not in allowed:
+            return False
+        cur = getattr(cur, "next", None)
+    return saw_insn
+
+
+def _live_block_is_pure_trampoline(adapter, live_serial: int) -> bool:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    blk = mba.get_mblock(int(live_serial))
+    if blk is None or _live_single_successor(adapter, int(live_serial)) is None:
+        return False
+    try:
+        import ida_hexrays
+
+        allowed = {int(ida_hexrays.m_nop), int(ida_hexrays.m_goto)}
+    except Exception:
+        return False
+    cur = getattr(blk, "head", None)
+    while cur is not None:
+        try:
+            opcode = int(cur.opcode)
+        except Exception:
+            return False
+        if opcode not in allowed:
+            return False
+        cur = getattr(cur, "next", None)
+    return True
+
+
+def _mop_const_value(mop: Any) -> int | None:
+    if mop is None:
+        return None
+    try:
+        import ida_hexrays
+
+        if int(getattr(mop, "t", -1)) != int(ida_hexrays.mop_n):
+            return None
+    except Exception:
+        return None
+    nnn = getattr(mop, "nnn", None)
+    value = getattr(nnn, "value", None) if nnn is not None else None
+    if value is None:
+        value = getattr(mop, "value", None)
+    if value is None or callable(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mop_contains_const_value(mop: Any, value: int) -> bool:
+    if mop is None:
+        return False
+    const_value = _mop_const_value(mop)
+    if const_value is not None and int(const_value) == int(value):
+        return True
+    sub_insn = getattr(mop, "d", None)
+    if sub_insn is None or sub_insn is mop:
+        return False
+    return _insn_contains_const_value(sub_insn, int(value))
+
+
+def _insn_contains_const_value(insn: Any, value: int) -> bool:
+    if insn is None:
+        return False
+    for operand_name in ("l", "r", "d"):
+        if _mop_contains_const_value(getattr(insn, operand_name, None), int(value)):
+            return True
+    return False
+
+
+def _tail_targets_block(tail: Any, target: int) -> bool:
+    try:
+        import ida_hexrays
+
+        return bool(
+            getattr(getattr(tail, "d", None), "t", None) == ida_hexrays.mop_b
+            and int(tail.d.b) == int(target)
+        )
+    except Exception:
+        return False
+
+
+def _terminal_zero_guard_targets_literal_return(
+    adapter,
+    *,
+    source_serial: int,
+    return_serial: int,
+) -> bool:
+    import ida_hexrays
+
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    source = mba.get_mblock(int(source_serial))
+    return_block = mba.get_mblock(int(return_serial))
+    if source is None or return_block is None:
+        return False
+    if source.nsucc() != 2 or return_block.nsucc() != 1:
+        return False
+    tail = getattr(source, "tail", None)
+    if tail is None or not ida_hexrays.is_mcode_jcond(tail.opcode):
+        return False
+    if not _tail_targets_block(tail, int(return_serial)):
+        return False
+    if _mop_const_value(getattr(tail, "r", None)) not in (0, None):
+        return False
+    if not _mop_contains_const_value(getattr(tail, "l", None), 7):
+        return False
+    successor = int(return_block.succ(0))
+    stop = mba.get_mblock(successor)
+    return bool(stop is not None and stop.nsucc() == 0)
+
+
+def _terminal_return_block_npred(block: Any) -> int:
+    try:
+        npred = getattr(block, "npred", None)
+        if callable(npred):
+            return int(npred())
+    except Exception:
+        pass
+    try:
+        return len([int(pred) for pred in getattr(block, "predset", ())])
+    except Exception:
+        return 0
+
+
+def _terminal_return_block_pred_serials(block: Any) -> tuple[int, ...]:
+    try:
+        return tuple(sorted(int(pred) for pred in getattr(block, "predset", ())))
+    except Exception:
+        return ()
+
+
+def _terminal_return_block_has_only_literal_zero_guard_preds(
+    adapter,
+    *,
+    return_serial: int,
+) -> bool:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    block = mba.get_mblock(int(return_serial))
+    if block is None:
+        return False
+    preds = _terminal_return_block_pred_serials(block)
+    if not preds:
+        return False
+    return all(
+        _terminal_zero_guard_targets_literal_return(
+            adapter,
+            source_serial=int(pred),
+            return_serial=int(return_serial),
+        )
+        for pred in preds
+    )
+
+
+def _clone_terminal_return_block_for_source(
+    adapter,
+    *,
+    source_serial: int,
+    return_serial: int,
+    literal_value: int,
+) -> int | None:
+    import ida_hexrays
+
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return None
+    source = mba.get_mblock(int(source_serial))
+    return_block = mba.get_mblock(int(return_serial))
+    if source is None or return_block is None:
+        return None
+    if _terminal_return_block_npred(return_block) <= 1:
+        return int(return_serial)
+
+    tail = getattr(source, "tail", None)
+    if (
+        tail is None
+        or not ida_hexrays.is_mcode_jcond(tail.opcode)
+        or not _tail_targets_block(tail, int(return_serial))
+    ):
+        return None
+    try:
+        return_successors = [
+            int(return_block.succ(index)) for index in range(int(return_block.nsucc()))
+        ]
+    except Exception:
+        return None
+    if len(return_successors) != 1:
+        return None
+
+    insert_serial = int(mba.qty) - 1
+    successor_serial = int(return_successors[0])
+    if successor_serial >= insert_serial:
+        successor_serial += 1
+    clone = _copy_block_keep(mba, return_block, insert_serial)
+    if clone is None:
+        return None
+    clone_serial = int(getattr(clone, "serial", insert_serial))
+
+    for stale_pred in [int(pred) for pred in getattr(clone, "predset", ())]:
+        clone.predset._del(stale_pred)
+    clone.predset.push_back(int(source_serial))
+    return_block.predset._del(int(source_serial))
+
+    for stale_succ in [int(succ) for succ in getattr(clone, "succset", ())]:
+        clone.succset._del(stale_succ)
+        succ_blk = mba.get_mblock(stale_succ)
+        if succ_blk is None:
+            continue
+        succ_blk.predset._del(clone_serial)
+        if succ_blk.serial != mba.qty - 1:
+            succ_blk.mark_lists_dirty()
+
+    clone.succset.push_back(int(successor_serial))
+    successor_blk = mba.get_mblock(int(successor_serial))
+    if successor_blk is not None:
+        successor_blk.predset.push_back(clone_serial)
+        if successor_blk.serial != mba.qty - 1:
+            successor_blk.mark_lists_dirty()
+
+    clone.type = ida_hexrays.BLT_1WAY
+    clone_tail = getattr(clone, "tail", None)
+    if clone_tail is not None and int(getattr(clone_tail, "opcode", -1)) == int(ida_hexrays.m_goto):
+        clone_tail.l = ida_hexrays.mop_t()
+        clone_tail.l.make_blkref(int(successor_serial))
+        clone_tail.r = ida_hexrays.mop_t()
+        clone_tail.r.erase()
+        clone_tail.d = ida_hexrays.mop_t()
+        clone_tail.d.erase()
+    else:
+        safe_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        goto_ins = ida_hexrays.minsn_t(safe_ea)
+        goto_ins.ea = safe_ea
+        clone.insert_into_block(goto_ins, clone.tail)
+        clone.make_nop(clone.tail)
+        goto_ins.opcode = ida_hexrays.m_goto
+        goto_ins.l = ida_hexrays.mop_t()
+        goto_ins.l.make_blkref(int(successor_serial))
+        goto_ins.r = ida_hexrays.mop_t()
+        goto_ins.r.erase()
+        goto_ins.d = ida_hexrays.mop_t()
+        goto_ins.d.erase()
+    clone.flags |= ida_hexrays.MBL_GOTO
+
+    source.succset._del(int(return_serial))
+    source.succset.push_back(clone_serial)
+    tail.d.make_blkref(clone_serial)
+
+    source.mark_lists_dirty()
+    return_block.mark_lists_dirty()
+    clone.mark_lists_dirty()
+    mba.mark_chains_dirty()
+    logger.info(
+        "terminal_zero_guard_literal_return_edges: cloned shared return "
+        "source=blk[%d] return=blk[%d] clone=blk[%d] literal=0x%X",
+        int(source_serial),
+        int(return_serial),
+        int(clone_serial),
+        int(literal_value),
+    )
+    return clone_serial
+
+
+def _rewrite_terminal_return_block_to_literal(
+    adapter,
+    *,
+    return_serial: int,
+    literal_value: int,
+) -> bool:
+    import ida_hexrays
+
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return False
+    block = mba.get_mblock(int(return_serial))
+    if block is None or block.nsucc() != 1:
+        return False
+
+    allowed_opcodes = {
+        int(ida_hexrays.m_nop),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_goto),
+    }
+    saw_return_move = False
+    cur = block.head
+    while cur is not None:
+        opcode = int(getattr(cur, "opcode", -1))
+        if opcode not in allowed_opcodes:
+            return False
+        if opcode == int(ida_hexrays.m_mov):
+            destination = getattr(cur, "d", None)
+            if destination is not None and getattr(destination, "t", None) != ida_hexrays.mop_z:
+                saw_return_move = True
+        cur = cur.next
+    if not saw_return_move:
+        return False
+
+    cur = block.head
+    while cur is not None:
+        if int(getattr(cur, "opcode", -1)) == int(ida_hexrays.m_mov):
+            size = int(getattr(cur.l, "size", 0) or getattr(cur.d, "size", 0) or 8)
+            cur.l = ida_hexrays.mop_t()
+            cur.l.make_number(
+                int(literal_value) & ((1 << (size * 8)) - 1),
+                size,
+                int(getattr(mba, "entry_ea", 0) or 0),
+            )
+            block.mark_lists_dirty()
+            mba.mark_chains_dirty()
+            return True
+        cur = cur.next
+    return False
+
+
+def _live_successor_map(adapter) -> dict[int, tuple[int, ...]]:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return {}
+    out: dict[int, tuple[int, ...]] = {}
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        out[serial] = _live_successors(adapter, serial)
+    return out
+
+
+def _live_reachable_from_entry(adapter) -> frozenset[int]:
+    succs = _live_successor_map(adapter)
+    seen: set[int] = {0}
+    queue: deque[int] = deque([0])
+    while queue:
+        cur = queue.popleft()
+        for succ in succs.get(cur, ()):
+            if succ in seen:
+                continue
+            seen.add(succ)
+            queue.append(succ)
+    return frozenset(seen)
+
+
+def _live_block_start_ea(adapter, live_serial: int) -> int | None:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return None
+    blk = mba.get_mblock(int(live_serial))
+    if blk is None:
+        return None
+    try:
+        return int(getattr(blk, "start", 0) or 0) & ((1 << 64) - 1)
+    except Exception:
+        return None
+
+
+def _snap_start_ea(
+    *,
+    diag_conn,
+    target_snap: int | None,
+    snap_serial: int,
+) -> int | None:
+    return None
+
+
+def _snap_instruction_eas(
+    *,
+    diag_conn,
+    target_snap: int | None,
+    snap_serial: int,
+) -> tuple[int, ...]:
+    return ()
+
+
+def _live_blocks_with_start_ea(adapter, ea: int) -> tuple[int, ...]:
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return ()
+    out: list[int] = []
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for i in range(qty):
+        blk = mba.get_mblock(i)
+        if blk is None:
+            continue
+        blk_start = int(getattr(blk, "start", 0) or 0) & ((1 << 64) - 1)
+        if blk_start == int(ea):
+            out.append(int(getattr(blk, "serial", i)))
+    return tuple(out)
+
+
+def _live_blocks_containing_ea(adapter, eas: Iterable[int]) -> tuple[int, ...]:
+    needles = {int(ea) & ((1 << 64) - 1) for ea in eas}
+    if not needles:
+        return ()
+    mba = getattr(adapter, "_mba", None)
+    if mba is None:
+        return ()
+    out: list[int] = []
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for i in range(qty):
+        blk = mba.get_mblock(i)
+        if blk is None:
+            continue
+        cur = getattr(blk, "head", None)
+        while cur is not None:
+            try:
+                insn_ea = int(getattr(cur, "ea", 0) or 0) & ((1 << 64) - 1)
+            except Exception:
+                insn_ea = 0
+            if insn_ea in needles:
+                out.append(int(getattr(blk, "serial", i)))
+                break
+            cur = getattr(cur, "next", None)
+    return tuple(out)
+
+
+def _snap_serial_for_live_block(
+    *,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    live_serial: int,
+) -> int | None:
+    return int(live_serial) if _live_block_exists(adapter, int(live_serial)) else None
+
+
+def _parse_state_hex(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value), 0) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_dag_semantics(diag_conn) -> _DagSemantics | None:
+    return None
+
+
+def _dag_state_value_from_node(node) -> int | None:
+    key = getattr(node, "key", None)
+    state_const = getattr(key, "state_const", None)
+    if state_const is None:
+        return None
+    try:
+        return int(state_const) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_dag_semantics_from_dag(dag) -> _DagSemantics | None:
+    """Build DAG semantics from the in-memory LinearizedStateDag."""
+    if dag is None:
+        return None
+
+    states: set[int] = set()
+    adj: dict[int, tuple[int, ...]] = {}
+    temp_adj: dict[int, set[int]] = {}
+    edges: list[_DagEdge] = []
+
+    for node in getattr(dag, "nodes", ()) or ():
+        state = _dag_state_value_from_node(node)
+        if state is not None:
+            states.add(state)
+
+    for edge_id, edge in enumerate(getattr(dag, "edges", ()) or ()):
+        source_key = getattr(edge, "source_key", None)
+        target_key = getattr(edge, "target_key", None)
+        source_state = _parse_state_hex(getattr(source_key, "state_const", None))
+        target_state = _parse_state_hex(getattr(target_key, "state_const", None))
+        if source_state is not None:
+            states.add(source_state)
+        if target_state is not None:
+            states.add(target_state)
+            if source_state is not None:
+                temp_adj.setdefault(source_state, set()).add(target_state)
+
+        source_anchor = getattr(edge, "source_anchor", None)
+        source_block = (
+            int(getattr(source_anchor, "block_serial"))
+            if source_anchor is not None
+            and getattr(source_anchor, "block_serial", None) is not None
+            else None
+        )
+        source_arm = (
+            int(getattr(source_anchor, "branch_arm"))
+            if source_anchor is not None
+            and getattr(source_anchor, "branch_arm", None) is not None
+            else None
+        )
+        kind = getattr(edge, "kind", "")
+        kind_name = getattr(kind, "name", None)
+        edges.append(
+            _DagEdge(
+                edge_id=int(edge_id),
+                source_state=source_state,
+                target_state=target_state,
+                edge_kind=str(kind_name if kind_name is not None else kind),
+                source_block=source_block,
+                source_arm=source_arm,
+                target_entry=(
+                    int(getattr(edge, "target_entry_anchor"))
+                    if getattr(edge, "target_entry_anchor", None) is not None
+                    else None
+                ),
+                ordered_path=tuple(
+                    int(block)
+                    for block in (getattr(edge, "ordered_path", ()) or ())
+                ),
+            )
+        )
+
+    for state in states:
+        adj[state] = tuple(sorted(temp_adj.get(state, ())))
+
+    sccs = compute_live_cfg_sccs(adj)
+    state_to_scc: dict[int, int] = {}
+    for scc in sccs:
+        for state in scc.blocks:
+            state_to_scc[int(state)] = int(scc.scc_id)
+
+    scc_successors_mut: dict[int, set[int]] = {
+        int(scc.scc_id): set() for scc in sccs
+    }
+    for source, targets in adj.items():
+        source_scc = state_to_scc.get(int(source))
+        if source_scc is None:
+            continue
+        for target in targets:
+            target_scc = state_to_scc.get(int(target))
+            if target_scc is None or target_scc == source_scc:
+                continue
+            scc_successors_mut.setdefault(source_scc, set()).add(target_scc)
+
+    scc_reachable: dict[int, frozenset[int]] = {}
+    for scc_id in scc_successors_mut:
+        seen: set[int] = set()
+        queue: deque[int] = deque([scc_id])
+        while queue:
+            cur = queue.popleft()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            queue.extend(scc_successors_mut.get(cur, ()))
+        scc_reachable[scc_id] = frozenset(seen)
+
+    block_to_sccs_mut: dict[int, set[int]] = {}
+    for node in getattr(dag, "nodes", ()) or ():
+        state = _dag_state_value_from_node(node)
+        if state is None:
+            continue
+        scc_id = state_to_scc.get(state)
+        if scc_id is None:
+            continue
+        for attr in ("owned_blocks", "exclusive_blocks", "shared_suffix_blocks"):
+            for block in getattr(node, attr, ()) or ():
+                block_to_sccs_mut.setdefault(int(block), set()).add(int(scc_id))
+
+    return _DagSemantics(
+        snapshot_id=0,
+        state_to_scc=state_to_scc,
+        scc_reachable=scc_reachable,
+        block_to_sccs={
+            block: frozenset(sccs_) for block, sccs_ in block_to_sccs_mut.items()
+        },
+        scc_successors={
+            scc_id: frozenset(targets)
+            for scc_id, targets in scc_successors_mut.items()
+        },
+        edges=tuple(edges),
+    )
+
+
+def _dag_sccs_for_snap_blocks(
+    dag: _DagSemantics | None,
+    snap_blocks: Iterable[int],
+) -> frozenset[int]:
+    if dag is None:
+        return frozenset()
+    out: set[int] = set()
+    for block in snap_blocks:
+        out.update(dag.block_to_sccs.get(int(block), ()))
+    return frozenset(out)
+
+
+def _dag_sccs_for_live_blocks(
+    *,
+    dag: _DagSemantics | None,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    live_blocks: Iterable[int],
+) -> frozenset[int]:
+    if dag is None:
+        return frozenset()
+    snap_blocks: list[int] = []
+    for live in live_blocks:
+        snap = _snap_serial_for_live_block(
+            diag_conn=diag_conn,
+            target_snap=target_snap,
+            adapter=adapter,
+            live_serial=int(live),
+        )
+        if snap is not None:
+            snap_blocks.append(snap)
+    return _dag_sccs_for_snap_blocks(dag, snap_blocks)
+
+
+def _dag_reachable_from_any(
+    dag: _DagSemantics,
+    source_sccs: Iterable[int],
+) -> frozenset[int]:
+    out: set[int] = set()
+    for scc_id in source_sccs:
+        out.update(dag.scc_reachable.get(int(scc_id), frozenset({int(scc_id)})))
+    return frozenset(out)
+
+
+def _first_cyclic_scc_reachable(
+    *,
+    live_sccs: tuple[CfgSCC, ...],
+    live_succs: dict[int, tuple[int, ...]],
+    start_serial: int,
+    max_depth: int = 10,
+) -> CfgSCC | None:
+    block_to_scc = {
+        block: scc
+        for scc in live_sccs
+        if scc.is_cyclic
+        for block in scc.blocks
+    }
+    queue: deque[tuple[int, int]] = deque([(int(start_serial), 0)])
+    seen: set[int] = set()
+    while queue:
+        serial, depth = queue.popleft()
+        if serial in seen or depth > max_depth:
+            continue
+        seen.add(serial)
+        scc = block_to_scc.get(serial)
+        if scc is not None:
+            return scc
+        for succ in live_succs.get(serial, ()):
+            queue.append((int(succ), depth + 1))
+    return None
+
+
+def _frontier_for_terminal_arm(
+    *,
+    adapter,
+    start_live: int,
+    max_depth: int = 8,
+) -> tuple[int | None, int | None, str]:
+    """Return (frontier_block, old_target) for a terminal arm.
+
+    Pure trampolines are skipped as the frontier itself; state-frontier
+    blocks are preserved and only their outgoing edge is closed.
+    """
+    current = int(start_live)
+    last_pure: int | None = None
+    for _ in range(max_depth):
+        if _live_block_is_pure_trampoline(adapter, current):
+            succ = _live_single_successor(adapter, current)
+            if succ is None:
+                return (None, None, "pure_trampoline_without_successor")
+            last_pure = current
+            current = int(succ)
+            continue
+        break
+
+    if last_pure is not None:
+        return (int(last_pure), int(current), "pure_trampoline_frontier")
+
+    if _live_block_is_state_frontier_only(adapter, current):
+        succ = _live_single_successor(adapter, current)
+        if succ is None:
+            return (None, None, "state_frontier_without_successor")
+        return (int(current), int(succ), "state_frontier")
+
+    return (None, None, f"terminal_arm_has_payload:{current}")
+
+
+def _cfg_scc_is_illegal_from_dag_sources(
+    *,
+    dag: _DagSemantics | None,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    source_sccs: frozenset[int],
+    cfg_scc: CfgSCC | None,
+) -> bool:
+    if dag is None or not source_sccs or cfg_scc is None:
+        return False
+    target_sccs = _dag_sccs_for_live_blocks(
+        dag=dag,
+        diag_conn=diag_conn,
+        target_snap=target_snap,
+        adapter=adapter,
+        live_blocks=cfg_scc.blocks,
+    )
+    if not target_sccs:
+        return False
+    reachable = _dag_reachable_from_any(dag, source_sccs)
+    return any(target_scc not in reachable for target_scc in target_sccs)
+
+
+def _resolve_byte4_equality_frontier(
+    *,
+    blocks,
+    row5,
+    sites,
+) -> int | None:
+    byte4_guard = _select_terminal_store_guard_block(
+        sites,
+        byte_index=5,
+        exclude_exact_source=True,
+    )
+    if byte4_guard is None:
+        return None
+    block = blocks.get(int(byte4_guard))
+    if block is None:
+        return None
+    continuation = getattr(row5, "source_block", None)
+    for succ in getattr(block, "succs", ()) or ():
+        succ_i = int(succ)
+        if continuation is None or succ_i != int(continuation):
+            return succ_i
+    return None
+
+
+def _dag_conditional_return_candidates(
+    dag: _DagSemantics | None,
+) -> tuple[tuple[str, int, int], ...]:
+    if dag is None:
+        return ()
+    out: list[tuple[str, int, int]] = []
+    for edge in getattr(dag, "edges", ()) or ():
+        if edge.edge_kind != "CONDITIONAL_RETURN":
+            continue
+        source = edge.source_block
+        if source is None:
+            continue
+        path = tuple(int(serial) for serial in edge.ordered_path or ())
+        if not path:
+            continue
+        if path[0] == int(source):
+            if len(path) < 2:
+                continue
+            return_arm = int(path[1])
+        else:
+            return_arm = int(path[0])
+        if return_arm == int(source):
+            continue
+        out.append(
+            (
+                f"dag_conditional_return_edge{int(edge.edge_id)}",
+                int(source),
+                int(return_arm),
+            )
+        )
+    return tuple(out)
+
+
+def _map_terminal_return_frontier(
+    *,
+    row2,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+) -> tuple[int | None, str]:
+    if row2 is None:
+        return (None, "missing_byte2_row")
+    source_snap = getattr(row2, "source_block", None)
+    return_snap = getattr(row2, "early_return_target", None)
+    if source_snap is None or return_snap is None:
+        return (None, "byte2_row_missing_return_frontier")
+    live_source, source_reason = _map_snap_serial_to_live(
+        diag_conn=diag_conn,
+        snapshot_id=target_snap,
+        snap_serial=int(source_snap),
+        adapter=adapter,
+        field_name="byte2_return_source",
+    )
+    if live_source is None:
+        return (None, source_reason)
+    return _map_snap_successor_to_live(
+        diag_conn=diag_conn,
+        snapshot_id=target_snap,
+        snap_source_serial=int(source_snap),
+        snap_target_serial=int(return_snap),
+        live_source_serial=int(live_source),
+        adapter=adapter,
+    )
+
+
+def _close_terminal_equality_frontiers(
+    *,
+    rows_by_byte,
+    blocks,
+    sites,
+    dag: _DagSemantics | None,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    return_frontier_byte_index: int,
+    row_byte_indices: Iterable[int],
+    shared_store_guard_byte_indices: Iterable[int],
+) -> tuple[tuple[str, int, int], tuple[str, ...]]:
+    """Redirect illegal terminal equality frontiers.
+
+    The candidate source/return arms come from planner rows derived from
+    TerminalByteEmitterFact payloads, plus shared-store guard blocks that
+    the same facts identify. A rewrite is allowed only when the arm reaches
+    a live CFG SCC that is not reachable from the terminal-byte DAG SCC.
+    """
+    row_return = rows_by_byte.get(int(return_frontier_byte_index))
+
+    return_live, return_reason = _map_terminal_return_frontier(
+        row2=row_return,
+        diag_conn=diag_conn,
+        target_snap=target_snap,
+        adapter=adapter,
+    )
+    if return_live is None:
+        return ((), (f"return_frontier:{return_reason}",))
+
+    live_succs = _live_successor_map(adapter)
+    live_sccs = compute_live_cfg_sccs(live_succs)
+    terminal_sccs = _dag_sccs_for_snap_blocks(
+        dag,
+        (
+            int(getattr(site, "block_serial"))
+            for site in sites
+            if getattr(site, "corridor_role", "") == "terminal_tail"
+            and getattr(site, "block_serial", None) is not None
+        ),
+    )
+
+    applied: list[tuple[str, int, int]] = []
+    skipped: list[str] = []
+    candidate_rows: list[tuple[str, int, int]] = []
+    row_candidate_indices = frozenset(int(item) for item in row_byte_indices)
+    guard_candidate_indices = frozenset(
+        int(item) for item in shared_store_guard_byte_indices
+    )
+    for row in rows_by_byte.values():
+        byte_index = int(getattr(row, "byte_index", -1))
+        if (
+            byte_index not in row_candidate_indices
+            and byte_index not in guard_candidate_indices
+        ):
+            continue
+        source_snap = getattr(row, "source_block", None)
+        return_snap = getattr(row, "early_return_target", None)
+        if (
+            byte_index in row_candidate_indices
+            and source_snap is not None
+            and return_snap is not None
+        ):
+            candidate_rows.append(
+                (f"byte{byte_index}_row_equality", int(source_snap), int(return_snap))
+            )
+
+        if byte_index not in guard_candidate_indices:
+            continue
+        guard_snap = _select_terminal_store_guard_block(
+            sites,
+            byte_index=byte_index,
+            exclude_exact_source=True,
+        )
+        if guard_snap is None or source_snap is None:
+            continue
+        guard_block = blocks.get(int(guard_snap))
+        if guard_block is None:
+            continue
+        current_snap = getattr(row, "current_continuation_target", None)
+        continuation_snaps = {int(source_snap)}
+        if current_snap is not None:
+            continuation_snaps.add(int(current_snap))
+        for succ in getattr(guard_block, "succs", ()) or ():
+            succ_i = int(succ)
+            if succ_i in continuation_snaps:
+                continue
+            candidate_rows.append(
+                (f"byte{byte_index}_shared_equality", int(guard_snap), succ_i)
+            )
+
+    seen_candidates: set[tuple[int, int]] = set()
+    for label, source_snap, return_snap in candidate_rows:
+        candidate_key = (int(source_snap), int(return_snap))
+        if candidate_key in seen_candidates:
+            continue
+        seen_candidates.add(candidate_key)
+
+        source_live, source_reason = _map_snap_serial_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_serial=int(source_snap),
+            adapter=adapter,
+            field_name=f"{label}_source",
+        )
+        if source_live is None:
+            skipped.append(f"{label}:{source_reason}")
+            continue
+        arm_live, arm_reason = _map_snap_successor_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_source_serial=int(source_snap),
+            snap_target_serial=int(return_snap),
+            live_source_serial=int(source_live),
+            adapter=adapter,
+        )
+        if arm_live is None:
+            skipped.append(f"{label}:{arm_reason}")
+            continue
+        current_return_live = _resolve_adapter_live_serial(adapter, int(return_live))
+        if int(arm_live) == int(current_return_live):
+            skipped.append(f"{label}:already_closed:{arm_live}")
+            continue
+
+        source_sccs = _dag_sccs_for_snap_blocks(dag, (int(source_snap),))
+        if not source_sccs:
+            source_sccs = terminal_sccs
+
+        is_dag_conditional_return = label.startswith("dag_conditional_return_")
+        if _live_block_is_state_frontier_only(adapter, int(arm_live)):
+            old_live = _live_single_successor(adapter, int(arm_live))
+            if old_live is None:
+                skipped.append(f"{label}:state_frontier_without_successor")
+                continue
+            if is_dag_conditional_return:
+                clear_payload = getattr(adapter, "clear_state_frontier_payload", None)
+                if clear_payload is None:
+                    skipped.append(f"{label}:state_frontier_payload_clear_unavailable")
+                    continue
+                clear_payload(int(arm_live))
+                redirect_fallthrough = getattr(adapter, "redirect_fallthrough_edge", None)
+                if redirect_fallthrough is not None:
+                    try:
+                        redirect_fallthrough(
+                            source_serial=int(source_live),
+                            old_target_serial=int(arm_live),
+                            new_target_serial=int(current_return_live),
+                        )
+                        applied.append((label, int(arm_live), int(current_return_live)))
+                        continue
+                    except RuntimeError as exc:
+                        skipped.append(f"{label}:fallthrough_redirect_failed:{exc}")
+                        continue
+                if int(old_live) != int(current_return_live):
+                    adapter.redirect_advance_edge(
+                        source_serial=int(arm_live),
+                        old_target_serial=int(old_live),
+                        new_target_serial=int(current_return_live),
+                    )
+                applied.append((label, int(arm_live), int(current_return_live)))
+                continue
+            cfg_scc = _first_cyclic_scc_reachable(
+                live_sccs=live_sccs,
+                live_succs=live_succs,
+                start_serial=int(old_live),
+            )
+            if not _cfg_scc_is_illegal_from_dag_sources(
+                dag=dag,
+                diag_conn=diag_conn,
+                target_snap=target_snap,
+                adapter=adapter,
+                source_sccs=source_sccs,
+                cfg_scc=cfg_scc,
+            ):
+                skipped.append(
+                    f"{label}:no_dag_scc_violation:{arm_live}->{old_live}"
+                )
+                continue
+            clear_payload = getattr(adapter, "clear_state_frontier_payload", None)
+            if clear_payload is None:
+                skipped.append(f"{label}:state_frontier_payload_clear_unavailable")
+                continue
+            clear_payload(int(arm_live))
+            if int(old_live) == int(current_return_live):
+                applied.append((label, int(arm_live), int(current_return_live)))
+                continue
+            adapter.redirect_advance_edge(
+                source_serial=int(arm_live),
+                old_target_serial=int(old_live),
+                new_target_serial=int(current_return_live),
+            )
+            applied.append((label, int(arm_live), int(current_return_live)))
+            continue
+
+        frontier_live, old_live, frontier_reason = _frontier_for_terminal_arm(
+            adapter=adapter,
+            start_live=int(arm_live),
+        )
+        if frontier_live is None or old_live is None:
+            skipped.append(f"{label}:{frontier_reason}")
+            continue
+        if int(old_live) == int(current_return_live):
+            skipped.append(f"{label}:already_closed:{frontier_live}")
+            continue
+
+        cfg_scc = _first_cyclic_scc_reachable(
+            live_sccs=live_sccs,
+            live_succs=live_succs,
+            start_serial=int(old_live),
+        )
+        if not _cfg_scc_is_illegal_from_dag_sources(
+            dag=dag,
+            diag_conn=diag_conn,
+            target_snap=target_snap,
+            adapter=adapter,
+            source_sccs=source_sccs,
+            cfg_scc=cfg_scc,
+        ):
+            skipped.append(f"{label}:no_dag_scc_violation:{frontier_live}->{old_live}")
+            continue
+        if _live_block_is_state_frontier_only(adapter, int(frontier_live)):
+            clear_payload = getattr(adapter, "clear_state_frontier_payload", None)
+            if clear_payload is None:
+                skipped.append(f"{label}:state_frontier_payload_clear_unavailable")
+                continue
+            clear_payload(int(frontier_live))
+        adapter.redirect_advance_edge(
+            source_serial=int(frontier_live),
+            old_target_serial=int(old_live),
+            new_target_serial=int(current_return_live),
+        )
+        applied.append((label, int(frontier_live), int(current_return_live)))
+
+    return (tuple(applied), tuple(skipped))
+
+
+def _rewrite_impossible_return_artifact_edges(
+    adapter,
+    edge_proofs: Iterable[Any],
+) -> tuple[tuple[int, int, int], ...]:
+    """Apply proof-carrying impossible-return artifact edge rewrites.
+
+    This helper does not infer sibling layout.  It only verifies and applies
+    exact edge identities supplied by a profile-specific evidence producer.
+    """
+    proofs = tuple(edge_proofs)
+    if not proofs:
+        return ()
+    live_succs = _live_successor_map(adapter)
+    applied: list[tuple[int, int, int]] = []
+    clear_payload = getattr(adapter, "clear_state_frontier_payload", None)
+    if clear_payload is None:
+        return ()
+    for proof in proofs:
+        source = int(proof.source_block)
+        artifact = int(proof.artifact_block)
+        old_target = int(proof.old_target_block)
+        continuation = int(proof.continuation_block)
+        proof_ids = tuple(str(item) for item in proof.proof_ids)
+
+        if artifact not in {int(succ) for succ in live_succs.get(source, ())}:
+            logger.info(
+                "impossible_return_artifact_edges: skip proof=%s "
+                "reason=source_edge_mismatch source=%d artifact=%d",
+                proof_ids,
+                source,
+                artifact,
+            )
+            continue
+        live_old_target = _live_single_successor(adapter, artifact)
+        if live_old_target is None or int(live_old_target) != old_target:
+            logger.info(
+                "impossible_return_artifact_edges: skip proof=%s "
+                "reason=artifact_edge_mismatch artifact=%d expected_old=%d "
+                "live_old=%s",
+                proof_ids,
+                artifact,
+                old_target,
+                live_old_target,
+            )
+            continue
+        if continuation == artifact or continuation == old_target:
+            continue
+        try:
+            clear_payload(artifact)
+            adapter.redirect_advance_edge(
+                source_serial=artifact,
+                old_target_serial=old_target,
+                new_target_serial=continuation,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "impossible_return_artifact_edges: skip proof=%s source=%d "
+                "artifact=%d continuation=%d reason=%s",
+                proof_ids,
+                source,
+                artifact,
+                continuation,
+                exc,
+            )
+            continue
+        applied.append((source, artifact, continuation))
+    return tuple(applied)
+
+
+def _rewrite_terminal_zero_guard_literal_return_edges(
+    adapter,
+    literal_values: Iterable[int],
+) -> tuple[tuple[int, int, int], ...]:
+    """Rewrite residual zero-guard return arms once recon proved a literal."""
+    literals = tuple(
+        dict.fromkeys(
+            int(value) & 0xFFFFFFFFFFFFFFFF for value in literal_values
+        )
+    )
+    if len(literals) != 1:
+        return ()
+    literal = int(literals[0])
+    live_succs = _live_successor_map(adapter)
+    applied: list[tuple[int, int, int]] = []
+    for source, succs in sorted(live_succs.items()):
+        if len(succs) != 2:
+            continue
+        for return_arm in succs:
+            if not _terminal_zero_guard_targets_literal_return(
+                adapter,
+                source_serial=int(source),
+                return_serial=int(return_arm),
+            ):
+                continue
+            if not _rewrite_terminal_return_block_to_literal(
+                adapter,
+                return_serial=int(return_arm),
+                literal_value=literal,
+            ):
+                continue
+            applied.append((int(source), int(return_arm), literal))
+            break
+    return tuple(applied)
+
+
+def maybe_rewrite_impossible_return_artifact_edges(
+    mba: Any,
+    *,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+    impossible_return_artifact_edges: Iterable[Any] = (),
+) -> tuple[tuple[int, int, int], ...]:
+    """Late Hex-Rays cleanup for proven impossible-return artifact edges."""
+    raw = os.environ.get("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", "0")
+    if str(raw).lower() not in {"1", "true", "yes", "on"}:
+        return ()
+
+    edge_proofs = tuple(impossible_return_artifact_edges)
+    if not edge_proofs:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        edge_proofs = tuple(evidence.impossible_return_artifact_edges or ())
+    if not edge_proofs:
+        logger.info(
+            "impossible_return_artifact_edges: skipped reason=no_evidence"
+        )
+        return ()
+
+    adapter = LiveMbaAdapter(mba)
+    applied = _rewrite_impossible_return_artifact_edges(adapter, edge_proofs)
+    if not applied:
+        return ()
+    logger.info(
+        "impossible_return_artifact_edges: applied=%s",
+        applied,
+    )
+    return applied
+
+
+def maybe_rewrite_terminal_zero_guard_literal_return_edges(
+    mba: Any,
+) -> tuple[tuple[int, int, int], ...]:
+    """Late Hex-Rays cleanup for residual zero arms proven to return a literal."""
+    raw = os.environ.get("D810_REWRITE_TERMINAL_ZERO_GUARD_LITERAL_RETURNS", "1")
+    if str(raw).lower() not in {"1", "true", "yes", "on"}:
+        return ()
+
+    literal_values = _terminal_zero_guard_literal_return_values(mba)
+    if not literal_values:
+        return ()
+    adapter = LiveMbaAdapter(mba)
+    applied = _rewrite_terminal_zero_guard_literal_return_edges(
+        adapter,
+        literal_values,
+    )
+    if not applied:
+        return ()
+    logger.info(
+        "terminal_zero_guard_literal_return_edges: applied=%s",
+        applied,
+    )
+    return applied
+
+
+def _shortest_live_path(
+    live_succs: dict[int, tuple[int, ...]],
+    *,
+    start: int,
+    target: int,
+    max_depth: int = 8,
+) -> tuple[int, ...]:
+    queue: deque[tuple[int, tuple[int, ...]]] = deque([(int(start), (int(start),))])
+    seen = {int(start)}
+    while queue:
+        serial, path = queue.popleft()
+        if serial == int(target):
+            return path
+        if len(path) > max_depth:
+            continue
+        for succ in live_succs.get(serial, ()):
+            if succ in seen:
+                continue
+            seen.add(succ)
+            queue.append((int(succ), path + (int(succ),)))
+    return ()
+
+
+def _find_unreachable_root_reaching(
+    *,
+    adapter,
+    target_live: int,
+    reachable_from_entry: frozenset[int],
+    max_depth: int = 8,
+) -> int | None:
+    live_succs = _live_successor_map(adapter)
+    preds: dict[int, set[int]] = {serial: set() for serial in live_succs}
+    for source, succs in live_succs.items():
+        for succ in succs:
+            preds.setdefault(int(succ), set()).add(int(source))
+
+    mba = getattr(adapter, "_mba", None)
+    stop_serial = int(getattr(mba, "qty", 1) or 1) - 1 if mba is not None else -1
+    candidates: list[tuple[int, int]] = []
+    for serial in sorted(live_succs):
+        if serial in {0, stop_serial}:
+            continue
+        if preds.get(serial):
+            continue
+        if serial in reachable_from_entry:
+            continue
+        path = _shortest_live_path(
+            live_succs,
+            start=serial,
+            target=int(target_live),
+            max_depth=max_depth,
+        )
+        if path:
+            candidates.append((len(path), serial))
+    if not candidates:
+        if int(target_live) not in reachable_from_entry:
+            return int(target_live)
+        return None
+    candidates.sort()
+    return int(candidates[0][1])
+
+
+def _select_terminal_tail_entry_live(
+    *,
+    blocks,
+    sites,
+    rows_by_byte,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    first_byte_index: int,
+) -> tuple[int | None, str]:
+    from d810.cfg.terminal_tail_cascade_egress_planner import (
+        select_effective_terminal_tail_entry_block,
+    )
+
+    entry_snap = select_effective_terminal_tail_entry_block(blocks, sites)
+    if entry_snap is None:
+        present = sorted(
+            (
+                int(byte_index),
+                getattr(candidate, "source_block", None),
+            )
+            for byte_index, candidate in rows_by_byte.items()
+            if getattr(candidate, "source_block", None) is not None
+        )
+        row = next((candidate for _, candidate in present), None)
+        if row is None or getattr(row, "source_block", None) is None:
+            return (None, "missing_terminal_tail_entry")
+        entry_snap = int(row.source_block)
+
+    if diag_conn is None:
+        if not _live_block_exists(adapter, int(entry_snap)):
+            return (
+                None,
+                "live_block_not_resolvable:terminal_tail_effective_entry:"
+                f"{entry_snap}",
+            )
+        candidate_set: set[int] = {int(entry_snap)}
+        reachable = _live_reachable_from_entry(adapter)
+        candidates = tuple(sorted(candidate_set))
+
+        first_byte = rows_by_byte.get(int(first_byte_index))
+        first_byte_live: set[int] = set()
+        if (
+            first_byte is not None
+            and getattr(first_byte, "source_block", None) is not None
+            and _live_block_exists(adapter, int(first_byte.source_block))
+        ):
+            first_byte_live.add(int(first_byte.source_block))
+
+        live_succs = _live_successor_map(adapter)
+        scored: list[tuple[int, int, int]] = []
+        for candidate in candidates:
+            reaches_first = (
+                not first_byte_live
+                or any(
+                    _shortest_live_path(
+                        live_succs,
+                        start=int(candidate),
+                        target=int(first_byte_candidate),
+                        max_depth=16,
+                    )
+                    for first_byte_candidate in first_byte_live
+                )
+            )
+            if not reaches_first:
+                continue
+            distance = 1000 if int(candidate) in reachable else 0
+            if first_byte_live:
+                distances = [
+                    len(path)
+                    for first_byte_candidate in first_byte_live
+                    if (
+                        path := _shortest_live_path(
+                            live_succs,
+                            start=int(candidate),
+                            target=int(first_byte_candidate),
+                            max_depth=16,
+                        )
+                    )
+                ]
+                distance = min(distances) if distances else 999
+            scored.append((distance, int(candidate), int(candidate)))
+
+        if not scored:
+            return (
+                None,
+                "terminal_tail_effective_entry_has_no_live_candidate:"
+                f"{candidates}",
+            )
+        scored.sort()
+        return (int(scored[0][1]), "ok")
+
+    candidate_set: set[int] = set()
+    start_ea = _snap_start_ea(
+        diag_conn=diag_conn,
+        target_snap=target_snap,
+        snap_serial=int(entry_snap),
+    )
+    if start_ea is not None:
+        view = adapter.find_block_by_ea(start_ea)
+        if view is not None:
+            candidate_set.add(int(getattr(view, "serial", -1)))
+        candidate_set.update(_live_blocks_with_start_ea(adapter, start_ea))
+    candidate_set.update(
+        _live_blocks_containing_ea(
+            adapter,
+            _snap_instruction_eas(
+                diag_conn=diag_conn,
+                target_snap=target_snap,
+                snap_serial=int(entry_snap),
+            ),
+        )
+    )
+    if not candidate_set:
+        return (
+            None,
+            "live_block_not_resolvable:terminal_tail_effective_entry:"
+            f"{entry_snap}",
+        )
+
+    reachable = _live_reachable_from_entry(adapter)
+    candidates = tuple(sorted(candidate_set))
+
+    first_byte = rows_by_byte.get(int(first_byte_index))
+    first_byte_live: set[int] = set()
+    if first_byte is not None and getattr(first_byte, "source_block", None) is not None:
+        first_byte_ea = _snap_start_ea(
+            diag_conn=diag_conn,
+            target_snap=target_snap,
+            snap_serial=int(first_byte.source_block),
+        )
+        if first_byte_ea is not None:
+            view = adapter.find_block_by_ea(first_byte_ea)
+            if view is not None:
+                first_byte_live.add(int(getattr(view, "serial", -1)))
+            first_byte_live.update(_live_blocks_with_start_ea(adapter, first_byte_ea))
+        first_byte_live.update(
+            _live_blocks_containing_ea(
+                adapter,
+                _snap_instruction_eas(
+                    diag_conn=diag_conn,
+                    target_snap=target_snap,
+                    snap_serial=int(first_byte.source_block),
+                ),
+            )
+        )
+
+    live_succs = _live_successor_map(adapter)
+    scored: list[tuple[int, int, int]] = []
+    for candidate in candidates:
+        reaches_first = (
+            not first_byte_live
+            or any(
+                _shortest_live_path(
+                    live_succs,
+                    start=int(candidate),
+                    target=int(first_byte_candidate),
+                    max_depth=16,
+                )
+                for first_byte_candidate in first_byte_live
+            )
+        )
+        if not reaches_first:
+            continue
+        entry_candidate = int(candidate)
+        distance = 1000 if entry_candidate in reachable else 0
+        if first_byte_live:
+            distances = [
+                len(path)
+                for first_byte_candidate in first_byte_live
+                if (
+                    path := _shortest_live_path(
+                        live_succs,
+                        start=entry_candidate,
+                        target=int(first_byte_candidate),
+                        max_depth=16,
+                    )
+                )
+            ]
+            distance = min(distances) if distances else 999
+        scored.append((distance, int(entry_candidate), int(candidate)))
+
+    if not scored:
+        return (
+            None,
+            "terminal_tail_effective_entry_has_no_live_candidate:"
+            f"{candidates}",
+        )
+    scored.sort()
+    return (int(scored[0][1]), "ok")
+
+
+def _next_ordered_path_block(edge: _DagEdge) -> int | None:
+    if edge.source_block is None:
+        return None
+    try:
+        index = edge.ordered_path.index(int(edge.source_block))
+    except ValueError:
+        return None
+    if index + 1 >= len(edge.ordered_path):
+        return None
+    return int(edge.ordered_path[index + 1])
+
+
+def _close_terminal_tail_entry_frontier(
+    *,
+    rows_by_byte,
+    blocks,
+    sites,
+    dag: _DagSemantics | None,
+    diag_conn,
+    target_snap: int | None,
+    adapter,
+    first_byte_index: int,
+) -> tuple[tuple[int, int, int], tuple[str, ...]]:
+    """Splice a preserved terminal-tail island into live control flow."""
+    if dag is None:
+        return ((), ("missing_dag_semantics",))
+
+    reachable = _live_reachable_from_entry(adapter)
+    entry_live, entry_reason = _select_terminal_tail_entry_live(
+        blocks=blocks,
+        sites=sites,
+        rows_by_byte=rows_by_byte,
+        diag_conn=diag_conn,
+        target_snap=target_snap,
+        adapter=adapter,
+        first_byte_index=int(first_byte_index),
+    )
+    if entry_live is None:
+        return ((), (f"entry:{entry_reason}",))
+
+    live_succs = _live_successor_map(adapter)
+    live_sccs = compute_live_cfg_sccs(live_succs)
+    terminal_tail_live: set[int] = set()
+    for site in sites:
+        if getattr(site, "corridor_role", "") != "terminal_tail":
+            continue
+        block_serial = getattr(site, "block_serial", None)
+        if block_serial is None:
+            continue
+        mapped, _ = _map_snap_serial_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_serial=int(block_serial),
+            adapter=adapter,
+            field_name="terminal_tail_site",
+        )
+        if mapped is not None:
+            terminal_tail_live.add(int(mapped))
+    for row in rows_by_byte.values():
+        for field_name in (
+            "source_block",
+            "current_continuation_target",
+            "intended_target",
+            "early_return_target",
+        ):
+            block_serial = getattr(row, field_name, None)
+            if block_serial is None:
+                continue
+            mapped, _ = _map_snap_serial_to_live(
+                diag_conn=diag_conn,
+                snapshot_id=target_snap,
+                snap_serial=int(block_serial),
+                adapter=adapter,
+                field_name=f"terminal_tail_row_{field_name}",
+            )
+            if mapped is not None:
+                terminal_tail_live.add(int(mapped))
+    applied: list[tuple[int, int, int]] = []
+    skipped: list[str] = []
+
+    for edge in dag.edges:
+        if edge.edge_kind != "CONDITIONAL_TRANSITION":
+            continue
+        if (
+            edge.source_block is None
+            or edge.target_entry is None
+            or edge.target_state is None
+        ):
+            continue
+        target_scc = dag.state_to_scc.get(int(edge.target_state))
+        if target_scc is None:
+            continue
+        if dag.scc_successors.get(int(target_scc), frozenset()):
+            skipped.append(f"edge{edge.edge_id}:target_scc_not_terminal")
+            continue
+
+        source_live, source_reason = _map_snap_serial_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_serial=int(edge.source_block),
+            adapter=adapter,
+            field_name=f"entry_edge{edge.edge_id}_source",
+        )
+        if source_live is None:
+            skipped.append(f"edge{edge.edge_id}:{source_reason}")
+            continue
+        if int(source_live) not in reachable:
+            skipped.append(f"edge{edge.edge_id}:source_not_live:{source_live}")
+            continue
+
+        next_snap = _next_ordered_path_block(edge)
+        if next_snap is None:
+            skipped.append(f"edge{edge.edge_id}:missing_ordered_path_arm")
+            continue
+        arm_live, arm_reason = _map_snap_successor_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_source_serial=int(edge.source_block),
+            snap_target_serial=int(next_snap),
+            live_source_serial=int(source_live),
+            adapter=adapter,
+        )
+        if arm_live is None:
+            skipped.append(f"edge{edge.edge_id}:{arm_reason}")
+            continue
+        if int(arm_live) == int(entry_live):
+            skipped.append(f"edge{edge.edge_id}:already_enters_tail:{entry_live}")
+            continue
+
+        frontier_live, old_live, frontier_reason = _frontier_for_terminal_arm(
+            adapter=adapter,
+            start_live=int(arm_live),
+        )
+        if frontier_live is None or old_live is None:
+            skipped.append(f"edge{edge.edge_id}:{frontier_reason}")
+            continue
+        target_entry_live, target_entry_reason = _map_snap_serial_to_live(
+            diag_conn=diag_conn,
+            snapshot_id=target_snap,
+            snap_serial=int(edge.target_entry),
+            adapter=adapter,
+            field_name=f"entry_edge{edge.edge_id}_target_entry",
+        )
+        if target_entry_live is None:
+            skipped.append(f"edge{edge.edge_id}:{target_entry_reason}")
+            continue
+        if int(old_live) == int(target_entry_live):
+            skipped.append(
+                f"edge{edge.edge_id}:already_enters_dag_target:{target_entry_live}"
+            )
+            continue
+        if int(arm_live) in terminal_tail_live or int(frontier_live) in terminal_tail_live:
+            skipped.append(
+                f"edge{edge.edge_id}:frontier_inside_terminal_tail:{frontier_live}"
+            )
+            continue
+
+        cfg_scc = _first_cyclic_scc_reachable(
+            live_sccs=live_sccs,
+            live_succs=live_succs,
+            start_serial=int(old_live),
+        )
+        if not _cfg_scc_is_illegal_from_dag_sources(
+            dag=dag,
+            diag_conn=diag_conn,
+            target_snap=target_snap,
+            adapter=adapter,
+            source_sccs=frozenset({int(target_scc)}),
+            cfg_scc=cfg_scc,
+        ):
+            skipped.append(
+                f"edge{edge.edge_id}:no_dag_scc_violation:{frontier_live}->{old_live}"
+            )
+            continue
+
+        adapter.redirect_advance_edge(
+            source_serial=int(frontier_live),
+            old_target_serial=int(old_live),
+            new_target_serial=int(entry_live),
+        )
+        applied.append((int(frontier_live), int(old_live), int(entry_live)))
+        break
+
+    return (tuple(applied), tuple(skipped))
+
+
+def maybe_run_terminal_tail_cascade_egress_lowering(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    dag: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+    cascade_priors: Any | None = None,
+) -> None:
+    """Materialize a terminal byte-tail cascade from explicit function priors."""
+    raw = os.environ.get("D810_TERMINAL_TAIL_CASCADE_EGRESS", "1")
+    if str(raw).lower() not in {"1", "true", "yes", "on"}:
+        return
+
+    if (
+        os.environ.get("D810_TAIL_DISTINCT_BYTE")
+        or os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+        or os.environ.get("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR")
+    ):
+        logger.warning(
+            "terminal_tail_cascade_egress: another tail-shaping probe is "
+            "enabled; refusing to combine mutations"
+        )
+        return
+
+    evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+    if cascade_priors is None:
+        cascade_priors = evidence.terminal_tail_cascade_egress
+    if cascade_priors is None or bool(getattr(cascade_priors, "is_empty", True)):
+        logger.info("terminal_tail_cascade_egress: skipped reason=no_priors")
+        return
+
+    planner_evidence = None
+    if fact_view is None or dag is None:
+        if fact_view is None:
+            fact_view = evidence.fact_view
+        if dag is None:
+            dag = evidence.dag
+        planner_evidence = evidence.terminal_tail_planner
+
+    if fact_view is None and planner_evidence is None:
+        logger.warning(
+            "terminal_tail_cascade_egress: fact view unavailable; skipping"
+        )
+        return
+
+    diag_conn = None
+    target_snap: int | None = None
+
+    adapter = LiveMbaAdapter(mba)
+
+    try:
+        from d810.cfg.terminal_tail_cascade_egress_planner import (
+            TerminalTailCascadeEgressPlanner,
+        )
+
+        if planner_evidence is None:
+            blocks = _load_planner_blocks_from_mba(mba)
+            sites = _load_planner_sites_from_fact_view(fact_view, adapter=adapter)
+        else:
+            blocks = dict(planner_evidence.blocks)
+            sites = list(planner_evidence.sites)
+            if dag is None:
+                dag = planner_evidence.dag
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+        dag = _load_dag_semantics_from_dag(dag)
+    except Exception:
+        logger.exception(
+            "terminal_tail_cascade_egress: planner failed; skipping"
+        )
+        return
+
+    rows_by_byte = {int(row.byte_index): row for row in plan.rows}
+    for override in getattr(cascade_priors, "row_target_overrides", ()) or ():
+        row = rows_by_byte.get(int(override.byte_index))
+        target_row = rows_by_byte.get(int(override.target_entry_byte_index))
+        target_entry = None
+        if target_row is not None:
+            target_entry = _select_terminal_entry_site_block(
+                sites,
+                byte_index=int(override.target_entry_byte_index),
+                exclude_block=getattr(target_row, "source_block", None),
+            )
+        if row is not None and target_entry is not None:
+            rows_by_byte[int(override.byte_index)] = dataclasses.replace(
+                row,
+                intended_target=int(target_entry),
+            )
+
+    mapped_rows = []
+    for byte_index in tuple(getattr(cascade_priors, "byte_indices", ()) or ()):
+        row = rows_by_byte.get(int(byte_index))
+        if row is None:
+            continue
+        mapped_row, bridge_reason = _bridge_plan_row_to_live_mba(
+            row,
+            diag_conn=diag_conn,
+            snap17_id=target_snap,
+            adapter=adapter,
+            logger_=logger,
+        )
+        if mapped_row is None:
+            logger.info(
+                "terminal_tail_cascade_egress: EA-bridge rejected byte=%s: %s",
+                getattr(row, "byte_index", "?"),
+                bridge_reason,
+            )
+            continue
+        mapped_rows.append(mapped_row)
+
+    try:
+        report = execute_terminal_tail_cascade_egress_lowering(
+            plan_rows=tuple(mapped_rows),
+            adapter=adapter,
+            byte_indices=tuple(getattr(cascade_priors, "byte_indices", ()) or ()),
+            split_byte_indices=(),
+        )
+    except Exception:
+        logger.exception(
+            "terminal_tail_cascade_egress: row lowering failed; continuing"
+        )
+        report = None
+
+    bridge_results: list[tuple[int, bool, str]] = []
+    for bridge in getattr(cascade_priors, "continuation_bridges", ()) or ():
+        continuation_row = rows_by_byte.get(int(bridge.continuation_byte_index))
+        path = _shortest_path_to_source_byte(
+            blocks,
+            start_serial=(
+                getattr(continuation_row, "current_continuation_target", None)
+                if continuation_row is not None
+                else None
+            ),
+            byte_index=int(bridge.source_byte_index),
+            max_depth=int(bridge.max_depth),
+        )
+        source_block = path[-1] if path else None
+        target_block = _select_terminal_store_guard_block(
+            sites,
+            byte_index=int(bridge.target_store_guard_byte_index),
+            exclude_exact_source=True,
+        )
+        if source_block is None:
+            bridge_results.append(
+                (
+                    int(bridge.source_byte_index),
+                    False,
+                    "source_loader_not_found_on_continuation",
+                )
+            )
+        elif target_block is None:
+            bridge_results.append(
+                (
+                    int(bridge.source_byte_index),
+                    False,
+                    "store_guard_target_not_found",
+                )
+            )
+        else:
+            source_view = blocks.get(int(source_block))
+            succs = tuple(getattr(source_view, "succs", ()) or ())
+            if len(succs) != 1:
+                bridge_results.append(
+                    (
+                        int(bridge.source_byte_index),
+                        False,
+                        f"source_loader_nsucc={len(succs)}",
+                    )
+                )
+            else:
+                old_target = int(succs[0])
+                mapped_source, rs = _map_snap_serial_to_live(
+                    diag_conn=diag_conn,
+                    snapshot_id=target_snap,
+                    snap_serial=int(source_block),
+                    adapter=adapter,
+                    field_name=(
+                        f"byte{int(bridge.source_byte_index)}_source_loader"
+                    ),
+                )
+                if mapped_source is None:
+                    mapped_old, ro = (None, rs)
+                else:
+                    mapped_old, ro = _map_snap_successor_to_live(
+                        diag_conn=diag_conn,
+                        snapshot_id=target_snap,
+                        snap_source_serial=int(source_block),
+                        snap_target_serial=old_target,
+                        live_source_serial=mapped_source,
+                        adapter=adapter,
+                    )
+                mapped_target, rt = _map_snap_serial_to_live(
+                    diag_conn=diag_conn,
+                    snapshot_id=target_snap,
+                    snap_serial=int(target_block),
+                    adapter=adapter,
+                    field_name=(
+                        f"byte{int(bridge.source_byte_index)}_store_guard"
+                    ),
+                )
+                if mapped_source is None:
+                    bridge_results.append(
+                        (int(bridge.source_byte_index), False, rs)
+                    )
+                elif mapped_old is None:
+                    bridge_results.append(
+                        (int(bridge.source_byte_index), False, ro)
+                    )
+                elif mapped_target is None:
+                    bridge_results.append(
+                        (int(bridge.source_byte_index), False, rt)
+                    )
+                else:
+                    try:
+                        adapter.redirect_advance_edge(
+                            source_serial=mapped_source,
+                            old_target_serial=mapped_old,
+                            new_target_serial=mapped_target,
+                        )
+                        bridge_results.append(
+                            (
+                                int(bridge.source_byte_index),
+                                True,
+                                f"ok:snap{source_block}->{target_block}",
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        bridge_results.append(
+                            (
+                                int(bridge.source_byte_index),
+                                False,
+                                f"redirect_failed:{type(exc).__name__}",
+                            )
+                        )
+
+    equality_applied: tuple[tuple[str, int, int], ...] = ()
+    equality_skipped: tuple[str, ...] = ()
+    equality_policy = getattr(cascade_priors, "equality_frontier", None)
+    if equality_policy is not None:
+        try:
+            equality_applied, equality_skipped = _close_terminal_equality_frontiers(
+                rows_by_byte=rows_by_byte,
+                blocks=blocks,
+                sites=sites,
+                dag=dag,
+                diag_conn=diag_conn,
+                target_snap=target_snap,
+                adapter=adapter,
+                return_frontier_byte_index=int(
+                    equality_policy.return_frontier_byte_index
+                ),
+                row_byte_indices=tuple(equality_policy.row_byte_indices),
+                shared_store_guard_byte_indices=tuple(
+                    equality_policy.shared_store_guard_byte_indices
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "terminal_tail_cascade_egress: equality frontier closure failed; continuing"
+            )
+
+    split_report = None
+    split_rows = []
+    for split_byte_index in tuple(
+        getattr(cascade_priors, "split_byte_indices", ()) or ()
+    ):
+        split_row = rows_by_byte.get(int(split_byte_index))
+        if split_row is None:
+            continue
+        mapped_split_row, bridge_reason = _bridge_plan_row_to_live_mba(
+            split_row,
+            diag_conn=diag_conn,
+            snap17_id=target_snap,
+            adapter=adapter,
+            logger_=logger,
+        )
+        if mapped_split_row is None:
+            logger.info(
+                "terminal_tail_cascade_egress: split bridge rejected: %s",
+                bridge_reason,
+            )
+            continue
+        split_rows.append(mapped_split_row)
+    if split_rows:
+        try:
+            split_report = execute_terminal_tail_cascade_egress_lowering(
+                plan_rows=tuple(split_rows),
+                adapter=adapter,
+                byte_indices=(),
+                split_byte_indices=tuple(
+                    getattr(cascade_priors, "split_byte_indices", ()) or ()
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "terminal_tail_cascade_egress: split failed; continuing"
+            )
+
+    entry_applied: tuple[tuple[int, int, int], ...] = ()
+    entry_skipped: tuple[str, ...] = ()
+    entry_policy = getattr(cascade_priors, "entry_frontier", None)
+    if entry_policy is not None:
+        try:
+            entry_applied, entry_skipped = _close_terminal_tail_entry_frontier(
+                rows_by_byte=rows_by_byte,
+                blocks=blocks,
+                sites=sites,
+                dag=dag,
+                diag_conn=diag_conn,
+                target_snap=target_snap,
+                adapter=adapter,
+                first_byte_index=int(entry_policy.first_byte_index),
+            )
+        except Exception:
+            logger.exception(
+                "terminal_tail_cascade_egress: entry frontier closure failed; continuing"
+            )
+
+    logger.info(
+        "terminal_tail_cascade_egress: report=%s bridges=%s "
+        "equality_applied=%s equality_skipped=%s entry_applied=%s "
+        "entry_skipped=%s split=%s",
+        report,
+        tuple(bridge_results),
+        equality_applied,
+        equality_skipped,
+        entry_applied,
+        entry_skipped,
+        split_report,
+    )
+
+
+def maybe_run_tail_state_cascade(
+    mba: Any,
+    *,
+    fact_view: Any | None = None,
+    evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
+) -> None:
+    """Env-gated hook: ``D810_TERMINAL_TAIL_STATE_CASCADE_PAIR`` probe.
+
+    Default-off. When set to exactly ``"5:6"`` and neither
+    ``D810_TAIL_DISTINCT_BYTE`` nor ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE``
+    is set, this:
+
+    1. Uses explicit in-memory planner/fact evidence supplied by the caller.
+    2. Builds planner inputs (TerminalTailBlock map + TerminalByteEmitSite
+       list) without querying diagnostic SQLite and runs
+       ``TerminalTailCascadeEgressPlanner.build_plan()``.
+    3. Selects the byte-5 row.
+    4. Hands off to the pure ``execute_state_cascade`` orchestrator,
+       which gates on the planner's ``SAFE_TARGET_POST_GUARD`` verdict
+       and rewires byte5's advance edge through ``LiveMbaAdapter``.
+
+    Any failure (env not set, no fact view, planner returns no byte-5 row,
+    verdict not safe, …) is logged and swallowed
+    so the manager pipeline never breaks.
+    """
+    raw = os.environ.get("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR")
+    pair = parse_state_cascade_pair_env(raw)
+    if pair is None:
+        return  # default-off: no log, no mutation
+
+    if (
+        os.environ.get("D810_TAIL_DISTINCT_BYTE")
+        or os.environ.get("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE")
+    ):
+        logger.warning(
+            "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR is "
+            "set together with another tail-shaping probe; refusing to "
+            "run any."
+        )
+        return
+
+    planner_evidence = None
+    if fact_view is None:
+        evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
+        fact_view = evidence.fact_view
+        planner_evidence = evidence.terminal_tail_planner
+
+    try:
+        from d810.cfg.terminal_tail_cascade_egress_planner import (
+            TerminalTailCascadeEgressPlanner,
+        )
+
+        if planner_evidence is None:
+            if fact_view is None:
+                logger.warning(
+                    "tail_state_cascade: D810_TERMINAL_TAIL_STATE_CASCADE_PAIR=%r "
+                    "set but in-memory fact view unavailable; skipping",
+                    raw,
+                )
+                return
+            blocks = _load_planner_blocks_from_mba(mba)
+            sites = _load_planner_sites_from_fact_view(fact_view)
+        else:
+            blocks = dict(planner_evidence.blocks)
+            sites = list(planner_evidence.sites)
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+    except Exception:
+        logger.exception(
+            "tail_state_cascade: planner failed; skipping"
+        )
+        return
+
+    byte5_row = next(
+        (row for row in plan.rows if row.byte_index == 5), None,
+    )
+    if byte5_row is None:
+        logger.warning(
+            "tail_state_cascade: planner produced no byte-5 row; skipping"
+        )
+        return
+
+    logger.info(
+        "tail_state_cascade: planner row byte_index=5 "
+        "verdict=%s source_block=%s intended_target=%s "
+        "current_continuation=%s state_variable=%s "
+        "state_required_value=%s state_write_block=%s "
+        "state_write_bypassed=%s",
+        byte5_row.state_update_verdict,
+        byte5_row.source_block,
+        byte5_row.intended_target,
+        byte5_row.current_continuation_target,
+        byte5_row.state_variable,
+        byte5_row.state_required_value,
+        byte5_row.state_write_block,
+        byte5_row.state_write_bypassed,
+    )
+
+    adapter = LiveMbaAdapter(mba)
+
+    mapped_row, bridge_reason = _bridge_plan_row_to_live_mba(
+        byte5_row,
+        diag_conn=None,
+        snap17_id=None,
+        adapter=adapter,
+        logger_=logger,
+    )
+    if mapped_row is None:
+        logger.info(
+            "tail_state_cascade: EA-bridge rejected: %s", bridge_reason,
+        )
+        from d810.cfg.transform.byte_emit_tail_isolation import StateCascadeReport
+        report = StateCascadeReport(
+            applied=False, pair="5:6", reason=bridge_reason,
+        )
+        logger.info("tail_state_cascade: %s", report)
+        return
+
+    logger.info(
+        "tail_state_cascade: EA-bridge mapped row "
+        "source_block=%s->%s continuation=%s->%s intended=%s->%s "
+        "state_write=%s->%s",
+        byte5_row.source_block, mapped_row.source_block,
+        byte5_row.current_continuation_target, mapped_row.current_continuation_target,
+        byte5_row.intended_target, mapped_row.intended_target,
+        byte5_row.state_write_block, mapped_row.state_write_block,
+    )
+
+    try:
+        report = execute_state_cascade(
+            pair=pair,
+            plan_row=mapped_row,
+            adapter=adapter,
+        )
+    except Exception:
+        logger.exception(
+            "tail_state_cascade: unexpected failure; continuing"
+        )
+        return
+
+    logger.info("tail_state_cascade: %s", report)
+
+
+def maybe_run_byte_anchor(mba: Any) -> None:
+    """Env-gated hook: ``D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR`` probe.
+
+    Default-off. When set to exactly ``"1"`` and NO prior tail-shape
+    probe gate is set, inserts two split-XOR anchor blocks around
+    byte 6's emit block to keep its source-byte read alive through
+    IDA's ``optimize_global()`` at the snap17 -> snap18 transition.
+
+    Mutually exclusive with ``D810_TAIL_DISTINCT_BYTE``,
+    ``D810_TAIL_DUPLICATE_CONVERGENCE_BYTE``, and
+    ``D810_TERMINAL_TAIL_STATE_CASCADE_PAIR`` (refuses to run if any
+    of them is also set).
+
+    Any failure is logged and swallowed -- the manager pipeline never
+    breaks because of this probe.
+    """
+    split_mechanism = parse_byte_anchor_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_SPLIT_XOR")
+    )
+    single_mechanism = parse_single_xor_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_SINGLE_XOR")
+    )
+    live_host_byte = parse_live_host_env(
+        os.environ.get("D810_TAIL_ANCHOR_BYTE6_LIVE_HOST")
+    )
+    multi_bytes = parse_multi_byte_env(
+        os.environ.get("D810_TAIL_ANCHOR_READ_BYTES")
+    )
+    store_bytes = parse_byte_store_env(
+        os.environ.get("D810_TAIL_ANCHOR_STORE_BYTES")
+    )
+    reconnect_bytes = parse_reconnect_env(
+        os.environ.get("D810_TAIL_ANCHOR_RECONNECT_BYTES")
+    )
+    multi_host_explicit = parse_multi_host_env(
+        os.environ.get("D810_TAIL_ANCHOR_LIVE_HOST")
+    )
+    multi_host = multi_host_explicit if multi_host_explicit is not None else 1
+    # byte_store_replica + multi_byte XOR can coexist: byte_store handles
+    # bytes preservable as buffer writes via byte-1 host; multi_byte XOR
+    # captures any remaining bytes (e.g. byte 4) as XOR-chain entries
+    # into the rax slot. Other mechanisms remain mutually exclusive.
+    hybrid_byte_store_xor = (
+        store_bytes is not None and multi_bytes is not None
+        and split_mechanism is None
+        and single_mechanism is None
+        and live_host_byte is None
+    )
+    if not hybrid_byte_store_xor:
+        active = sum(
+            1 for m in (
+                split_mechanism, single_mechanism, live_host_byte,
+                multi_bytes, store_bytes, reconnect_bytes,
+            )
+            if m is not None
+        )
+        if active > 1:
+            logger.warning(
+                "byte_anchor: multiple anchor-mechanism envs set; refusing."
+            )
+            return
+        if active == 0:
+            return  # default-off
+
+    conflicting = [
+        n for n in (
+            "D810_TAIL_DISTINCT_BYTE",
+            "D810_TAIL_DUPLICATE_CONVERGENCE_BYTE",
+            "D810_TERMINAL_TAIL_STATE_CASCADE_PAIR",
+        )
+        if os.environ.get(n)
+    ]
+    if conflicting:
+        logger.warning(
+            "byte_anchor: refusing to run; conflicting tail-shape probes "
+            "set: %s",
+            ", ".join(conflicting),
+        )
+        return
+
+    adapter = LiveMbaAdapter(mba)
+    try:
+        if hybrid_byte_store_xor:
+            # Run byte_store first so its anchor's m_stx is in place,
+            # then multi_byte XOR appends XOR anchors for the remaining
+            # bytes onto a separate chain (different host successor).
+            host_overrides = parse_byte_host_overrides_env(
+                os.environ.get("D810_TAIL_ANCHOR_HOST_OVERRIDES")
+            )
+            store_report = execute_byte_store_replica_anchor(
+                host_byte_index=multi_host,
+                target_byte_indices=store_bytes,
+                adapter=adapter,
+                host_overrides=host_overrides,
+            )
+            logger.info("byte_anchor[hybrid/store]: %s", store_report)
+            xor_report = execute_multi_byte_live_host_anchor(
+                host_byte_index=multi_host,
+                read_byte_indices=multi_bytes,
+                adapter=adapter,
+            )
+            logger.info("byte_anchor[hybrid/xor]: %s", xor_report)
+            return
+        if split_mechanism is not None:
+            report = execute_split_xor_anchor(byte_index=6, adapter=adapter)
+        elif single_mechanism is not None:
+            report = execute_single_xor_anchor(byte_index=6, adapter=adapter)
+        elif multi_bytes is not None:
+            report = execute_multi_byte_live_host_anchor(
+                host_byte_index=multi_host,
+                read_byte_indices=multi_bytes,
+                adapter=adapter,
+            )
+        elif store_bytes is not None:
+            host_overrides = parse_byte_host_overrides_env(
+                os.environ.get("D810_TAIL_ANCHOR_HOST_OVERRIDES")
+            )
+            report = execute_byte_store_replica_anchor(
+                host_byte_index=multi_host,
+                target_byte_indices=store_bytes,
+                adapter=adapter,
+                host_overrides=host_overrides,
+            )
+        elif reconnect_bytes is not None:
+            report = execute_reconnect_byte_emits(
+                target_byte_indices=reconnect_bytes,
+                host_byte_index=multi_host,
+                adapter=adapter,
+            )
+        else:
+            report = execute_live_host_anchor(
+                host_byte_index=int(live_host_byte),
+                read_byte_index=6,
+                adapter=adapter,
+            )
+    except Exception:
+        logger.exception("byte_anchor: unexpected failure; continuing")
+        return
+
+    logger.info("byte_anchor: %s", report)
+
+    # Post-mutation dump: when applied, log the contents of the new anchor
+    # blocks AND the affected neighbors so we can see exactly what we built
+    # even if IDA's decompile() later rejects the result.
+    #
+    # MultiByteAnchorReport carries sub_reports instead of single
+    # anchor_a/anchor_b fields, so guard with getattr(...) and fall
+    # back to walking sub_reports for the multi-byte case.
+    anchor_a = getattr(report, "anchor_a_serial", None)
+    anchor_b = getattr(report, "anchor_b_serial", None)
+    byte_emit_serial = getattr(report, "byte_emit_serial", None)
+    if getattr(report, "applied", False) and (anchor_a is not None and anchor_b is not None):
+        diag_serials = [
+            byte_emit_serial,
+            anchor_a,
+            anchor_b,
+        ]
+        # Also include each anchor's successor and predecessor for wiring check.
+        for s in (anchor_a, anchor_b):
+            blk = mba.get_mblock(int(s))
+            if blk is not None:
+                diag_serials.extend(int(x) for x in blk.predset)
+                diag_serials.extend(int(x) for x in blk.succset)
+        seen: set[int] = set()
+        for s in diag_serials:
+            if s is None or s in seen:
+                continue
+            seen.add(int(s))
+            blk = mba.get_mblock(int(s))
+            if blk is None:
+                continue
+            try:
+                preds = list(int(p) for p in blk.predset)
+                succs = list(int(p) for p in blk.succset)
+                btype = int(getattr(blk, "type", -1))
+                logger.info(
+                    "byte_anchor: block %d type=%d preds=%s succs=%s",
+                    s, btype, preds, succs,
+                )
+                insn = blk.head
+                idx = 0
+                while insn is not None and idx < 12:
+                    try:
+                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else "<no-dstr>"
+                    except Exception:
+                        ds = "<dstr-raised>"
+                    logger.info("byte_anchor:   blk[%d] insn[%d]: %s", s, idx, ds)
+                    insn = insn.next
+                    idx += 1
+            except Exception:
+                logger.exception("byte_anchor: block %d dump failed", s)
+
+    # Multi-byte path: report.sub_reports is a tuple of ByteEmitAnchorReport.
+    # Each sub_report has its own anchor_a_serial.  Aggregate the inserted
+    # anchor serials for a single diagnostic log line per byte.
+    sub_reports = getattr(report, "sub_reports", None)
+    if getattr(report, "applied", False) and sub_reports:
+        per_byte: list[tuple[int, int | None]] = []
+        for sub in sub_reports:
+            try:
+                per_byte.append(
+                    (int(sub.byte_index), getattr(sub, "anchor_a_serial", None))
+                )
+            except Exception:
+                continue
+        logger.info(
+            "byte_anchor[multi]: applied=%d/%d entries; per-byte anchor_a serials: %s",
+            sum(1 for _, a in per_byte if a is not None),
+            len(per_byte),
+            per_byte,
+        )

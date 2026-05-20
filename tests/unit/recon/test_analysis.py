@@ -331,6 +331,7 @@ class TestSuppressRules:
         assert hints.obfuscation_type == "ollvm_flat"
         assert hints.confidence >= _SUPPRESS_CONFIDENCE_THRESHOLD
         assert "ConstantFolding" in hints.suppress_rules
+        assert "ForwardConstantPropagationRule" not in hints.suppress_rules
 
     def test_no_suppress_below_threshold(self) -> None:
         """At baseline confidence (2 signals), no rule suppression."""
@@ -470,6 +471,7 @@ class TestUserOverride:
             assert hints.confidence == 1.0
             assert "unflattening" in hints.recommended_inferences
             assert "ConstantFolding" in hints.suppress_rules
+            assert "ForwardConstantPropagationRule" not in hints.suppress_rules
         finally:
             store.close()
 

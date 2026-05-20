@@ -1,5 +1,6 @@
 """Tests for sqlite persistence backend."""
 
+import sqlite3
 import tempfile
 import pytest
 from pathlib import Path
@@ -8,8 +9,7 @@ from d810.core.persistence import (
     ActiveRuleInferenceConfig,
     SQLiteOptimizationStorage,
     FunctionFingerprint,
-    CachedResult,
-    FunctionRuleConfig,
+    ProviderPhaseSnapshot,
     create_optimization_storage,
 )
 
@@ -31,6 +31,14 @@ def storage(temp_db):
     s = SQLiteOptimizationStorage(temp_db)
     yield s
     s.close()
+
+
+def provider_phase(level=5, friendly_level="MMAT_GLBOPT1"):
+    return ProviderPhaseSnapshot(
+        provider_name="hexrays_microcode",
+        provider_level=level,
+        friendly_provider_level=friendly_level,
+    )
 
 
 class TestFunctionFingerprint:
@@ -81,24 +89,25 @@ class TestSQLiteOptimizationStorage:
         storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase(),
             changes=42,
             patches=patches
         )
 
         # Load result
-        result = storage.load_result(0x401000, maturity=5)
+        result = storage.load_result(0x401000, provider_phase=provider_phase())
 
         assert result is not None
         assert result.function_addr == 0x401000
-        assert result.maturity == 5
+        assert result.provider_level == 5
+        assert result.friendly_provider_level == "MMAT_GLBOPT1"
         assert result.changes_made == 42
         assert len(result.patches) == 2
         assert result.fingerprint == "test_hash_123"
 
     def test_load_nonexistent_result(self, storage):
         """Test loading a result that doesn't exist."""
-        result = storage.load_result(0x999999, maturity=1)
+        result = storage.load_result(0x999999, provider_phase=provider_phase(1))
         assert result is None
 
     def test_has_valid_cache(self, storage):
@@ -229,19 +238,19 @@ class TestSQLiteOptimizationStorage:
         storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase(),
             changes=10,
             patches=[]
         )
 
         # Verify it exists
-        assert storage.load_result(0x401000, 5) is not None
+        assert storage.load_result(0x401000, provider_phase()) is not None
 
         # Invalidate
         storage.invalidate_function(0x401000)
 
         # Verify it's gone
-        assert storage.load_result(0x401000, 5) is None
+        assert storage.load_result(0x401000, provider_phase()) is None
         assert storage.has_valid_cache(0x401000, "test_hash") is False
 
     def test_get_statistics(self, storage):
@@ -257,7 +266,7 @@ class TestSQLiteOptimizationStorage:
         storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase(),
             changes=10,
             patches=[{"type": "test"}]
         )
@@ -270,6 +279,99 @@ class TestSQLiteOptimizationStorage:
         assert stats['results_cached'] == 1
         assert stats['patches_stored'] == 1
         assert stats['functions_with_custom_rules'] == 1
+
+    def test_migrates_legacy_phase_schema(self, temp_db):
+        """Test migrating cache rows from the pre-provider phase schema."""
+        conn = sqlite3.connect(str(temp_db))
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE functions (
+                address INTEGER PRIMARY KEY,
+                size INTEGER NOT NULL,
+                bytes_hash TEXT NOT NULL,
+                block_count INTEGER NOT NULL,
+                instruction_count INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE patches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                function_addr INTEGER NOT NULL,
+                maturity INTEGER NOT NULL,
+                patch_type TEXT NOT NULL,
+                patch_data TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+        """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE results (
+                function_addr INTEGER NOT NULL,
+                maturity INTEGER NOT NULL,
+                changes_made INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                PRIMARY KEY (function_addr, maturity)
+            )
+        """
+        )
+        cursor.execute(
+            """
+            INSERT INTO functions
+            (
+                address,
+                size,
+                bytes_hash,
+                block_count,
+                instruction_count,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (0x401000, 100, "legacy_hash", 5, 50, 1.0, 1.0),
+        )
+        cursor.execute(
+            """
+            INSERT INTO results
+            (function_addr, maturity, changes_made, fingerprint, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (0x401000, 5, 7, "legacy_hash", 2.0),
+        )
+        cursor.execute(
+            """
+            INSERT INTO patches
+            (function_addr, maturity, patch_type, patch_data, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (0x401000, 5, "legacy_patch", '{"type": "legacy_patch"}', 2.0),
+        )
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteOptimizationStorage(temp_db)
+        try:
+            result = storage.load_result(0x401000, provider_phase())
+            assert result is not None
+            assert result.provider_name == "hexrays_microcode"
+            assert result.provider_level == 5
+            assert result.changes_made == 7
+            assert result.patches == [{"type": "legacy_patch"}]
+
+            cursor = storage.conn.cursor()
+            cursor.execute("PRAGMA table_info(results)")
+            result_columns = {row["name"] for row in cursor.fetchall()}
+            assert "provider_level" in result_columns
+            assert "maturity" not in result_columns
+        finally:
+            storage.close()
 
     def test_context_manager(self, temp_db):
         """Test context manager support."""
@@ -286,8 +388,8 @@ class TestSQLiteOptimizationStorage:
         # Connection should be closed
         assert storage.conn is None
 
-    def test_multiple_maturities(self, storage):
-        """Test storing results for multiple maturity levels."""
+    def test_multiple_provider_levels(self, storage):
+        """Test storing results for multiple provider levels."""
         fingerprint = FunctionFingerprint(
             address=0x401000,
             size=100,
@@ -296,15 +398,24 @@ class TestSQLiteOptimizationStorage:
             instruction_count=50
         )
 
-        # Save results for different maturities
-        storage.save_result(0x401000, fingerprint, maturity=1, changes=5, patches=[])
-        storage.save_result(0x401000, fingerprint, maturity=3, changes=10, patches=[])
-        storage.save_result(0x401000, fingerprint, maturity=5, changes=15, patches=[])
+        # Save results for different provider levels
+        phase_1 = provider_phase(1, "MMAT_GENERATED")
+        phase_3 = provider_phase(3, "MMAT_CALLS")
+        phase_5 = provider_phase(5, "MMAT_GLBOPT1")
+        storage.save_result(
+            0x401000, fingerprint, provider_phase=phase_1, changes=5, patches=[]
+        )
+        storage.save_result(
+            0x401000, fingerprint, provider_phase=phase_3, changes=10, patches=[]
+        )
+        storage.save_result(
+            0x401000, fingerprint, provider_phase=phase_5, changes=15, patches=[]
+        )
 
         # Load and verify
-        r1 = storage.load_result(0x401000, 1)
-        r3 = storage.load_result(0x401000, 3)
-        r5 = storage.load_result(0x401000, 5)
+        r1 = storage.load_result(0x401000, phase_1)
+        r3 = storage.load_result(0x401000, phase_3)
+        r5 = storage.load_result(0x401000, phase_5)
 
         assert r1.changes_made == 5
         assert r3.changes_made == 10
@@ -324,7 +435,7 @@ class TestSQLiteOptimizationStorage:
         storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase(),
             changes=10,
             patches=[{"type": "old"}]
         )
@@ -333,13 +444,13 @@ class TestSQLiteOptimizationStorage:
         storage.save_result(
             function_addr=0x401000,
             fingerprint=fingerprint,
-            maturity=5,
+            provider_phase=provider_phase(),
             changes=20,
             patches=[{"type": "new1"}, {"type": "new2"}]
         )
 
         # Load and verify updated
-        result = storage.load_result(0x401000, 5)
+        result = storage.load_result(0x401000, provider_phase())
         assert result.changes_made == 20
         assert len(result.patches) == 2
         assert result.patches[0]["type"] == "new1"

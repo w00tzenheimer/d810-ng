@@ -34,33 +34,38 @@ Notes::
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import re
 import sqlite3
 import sys
 from pathlib import Path
 
-from d810.core.typing import Any, Iterable, Mapping
+from d810.diagnostics.output import add_output_argument, get_output, write_output
+from d810.core.typing import Any
 
-from d810.recon.flow.alternate_correlation import (
+from d810.diagnostics.alternate_correlation import (
     AlternateCorrelation,
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )
-from d810.recon.flow.alternate_selection import (
+from d810.diagnostics.alternate_selection import (
     AlternateSelection,
     persist_alternate_selections,
     select_alternate_edges,
 )
-from d810.recon.flow.bst_resolution import (
+from d810.diagnostics.bst_resolution import (
     BstResolution,
     load_latest_bst_intervals_from_db,
     parse_latest_bst_intervals_from_log,
     persist_bst_resolutions,
     resolve_state_transition_facts,
 )
-from d810.recon.flow.edge_diagnostics import (
+from d810.diagnostics.state_dispatcher_resolution import (
+    load_latest_state_dispatcher_map_from_db,
+    persist_state_dispatch_resolutions,
+    resolve_state_transition_facts_with_dispatcher,
+)
+from d810.diagnostics.edge_diagnostics import (
     EdgeDiagnostic,
     classify_dag_edges,
     persist_edge_diagnostics,
@@ -86,6 +91,7 @@ from d810.diagnostics.query import (
     state_local,
     var_writes,
 )
+
 
 
 def _normalize_maturity_name(maturity: str | None) -> str | None:
@@ -1079,127 +1085,6 @@ def _format_state_write_rewrites(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _resolve_oracle_snap_ids(
-    conn,
-    *,
-    snap17_labels: tuple[str, ...],
-    snap18_labels: tuple[str, ...],
-) -> tuple[int | None, int | None]:
-    """Resolve snap17 and snap18 IDs.
-
-    Snap18 is resolved first via MAX(id) over its preference labels.
-    Snap17 is then resolved as the highest id whose label is in the
-    snap17 preference list AND id < snap18. This handles the common
-    case where a GLBOPT1 pipeline runs more than once and creates
-    multiple `post_bundle_stabilize` rows whose latest copy lives
-    AFTER the actual `GLBOPT1_post_d810` boundary.
-    """
-
-    def _max_id_for_labels(
-        labels: tuple[str, ...], upper_bound: int | None,
-    ) -> int | None:
-        for label in labels:
-            if upper_bound is None:
-                row = conn.execute(
-                    "SELECT MAX(id) FROM snapshots WHERE label = ?",
-                    (label,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT MAX(id) FROM snapshots "
-                    "WHERE label = ? AND id < ?",
-                    (label, upper_bound),
-                ).fetchone()
-            if row is not None and row[0] is not None:
-                return int(row[0])
-        return None
-
-    snap18 = _max_id_for_labels(snap18_labels, None)
-    snap17 = _max_id_for_labels(snap17_labels, snap18)
-    return snap17, snap18
-
-
-def _oracle_persist_features(
-    conn,
-    *,
-    func_ea_hex: str,
-    func_ea_i64: int,
-    features: Iterable[Any],
-) -> int:
-    """Scoped upsert of region_shape_features.
-
-    Uses INSERT OR REPLACE keyed by the table's primary key
-    (func_ea_hex, source, snapshot_id, feature). Never deletes rows
-    outside the (source, snapshot_id, feature) tuples being written.
-    """
-    n = 0
-    for f in features:
-        conn.execute(
-            "INSERT OR REPLACE INTO region_shape_features "
-            "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
-            " feature, value_text, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                func_ea_hex,
-                func_ea_i64,
-                f.snapshot_id,
-                f.source.value,
-                f.region.value,
-                f.feature,
-                str(f.value),
-                json.dumps(f.evidence, sort_keys=True),
-            ),
-        )
-        n += 1
-    conn.commit()
-    return n
-
-
-def _oracle_persist_dce_causes(
-    conn,
-    *,
-    func_ea_hex: str,
-    func_ea_i64: int,
-    causes: Iterable[Mapping[str, Any]],
-) -> int:
-    """Scoped upsert of terminal_tail_dce_causes.
-
-    Each cause row carries an ``evidence`` mapping (dict-like) which is
-    serialized internally via ``json.dumps(..., sort_keys=True)``. This
-    matches the ``_oracle_persist_features`` contract: callers pass a
-    structured value, not a pre-serialized string.
-
-    Primary key is (func_ea_hex, byte_index); INSERT OR REPLACE
-    naturally upserts per-byte without touching unrelated rows.
-    """
-    n = 0
-    for c in causes:
-        conn.execute(
-            "INSERT OR REPLACE INTO terminal_tail_dce_causes "
-            "(func_ea_hex, func_ea_i64, byte_index, "
-            " last_present_snapshot_id, first_missing_snapshot_id, "
-            " last_block_serial, last_ea_hex, "
-            " cause, recommended_action, rationale, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                func_ea_hex,
-                func_ea_i64,
-                int(c["byte_index"]),
-                c.get("last_present_snapshot_id"),
-                c.get("first_missing_snapshot_id"),
-                c.get("last_block_serial"),
-                c.get("last_ea_hex"),
-                str(c["cause"]),
-                str(c["recommended_action"]),
-                str(c["rationale"]),
-                json.dumps(c["evidence"], sort_keys=True),
-            ),
-        )
-        n += 1
-    conn.commit()
-    return n
-
-
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m d810.diagnostics``."""
     # Common args shared by all subcommands via parents= mechanism.
@@ -1220,6 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         "--phase",
         help="Resolve snapshot by phase (for example: post_d810, pre_d810, post_apply)",
     )
+    add_output_argument(common)
 
     parser = argparse.ArgumentParser(
         prog="d810.diagnostics",
@@ -1637,6 +1523,57 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
+    p_dispatch_resolve = sub.add_parser(
+        "state-transition-dispatch-resolutions",
+        parents=[common],
+        help=(
+            "Enrich LOCOPT-pre StateTransitionAnchorFacts with exact "
+            "state-dispatcher rows. Observability-only."
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--snap-id",
+        type=int,
+        default=None,
+        help=(
+            "LOCOPT-pre snapshot id to enrich (default: pick the "
+            "first snapshot whose label contains MMAT_LOCOPT and "
+            "phase pre_d810)"
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--dispatcher-snap-id",
+        type=int,
+        default=None,
+        help="Snapshot id containing state_dispatcher_rows (default: latest)",
+    )
+    p_dispatch_resolve.add_argument(
+        "--block",
+        type=int,
+        default=None,
+        help="Filter output to one source block",
+    )
+    p_dispatch_resolve.add_argument(
+        "--persist",
+        action="store_true",
+        default=True,
+        help=(
+            "Persist resolutions into "
+            "state_transition_dispatch_resolutions table (default)"
+        ),
+    )
+    p_dispatch_resolve.add_argument(
+        "--no-persist",
+        action="store_false",
+        dest="persist",
+        help="Compute and print resolutions without writing rows",
+    )
+    p_dispatch_resolve.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+    )
+
     p_alt_corr = sub.add_parser(
         "dag-edge-alternate-correlations",
         parents=[common],
@@ -2010,10 +1947,7 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
         help="Output machine-readable JSON instead of a text table.",
     )
-
-    importlib.import_module(
-        "d810.cfg.region_oracle_cli"
-    ).register_region_diff_parser(sub, common)
+    add_output_argument(p_gate_audit)
 
     from d810.diagnostics.dump_after import register_parser as _register_dump_after
     from d810.diagnostics.inspect_state_node import (
@@ -2026,9 +1960,13 @@ def main(argv: list[str] | None = None) -> int:
     from d810.diagnostics.frontier_diagnostics import (
         register_parser as _register_frontier_diagnostics,
     )
+    from d810.diagnostics.indirect_state_transfer_map import (
+        register_parser as _register_indirect_transfer_map,
+    )
 
     _register_dump_after(sub)
     _register_frontier_diagnostics(sub)
+    _register_indirect_transfer_map(sub, common)
     _register_inspect_state_node(sub)
     _register_residual_worksheet(sub)
     _register_snap_render(sub)
@@ -2058,6 +1996,13 @@ def main(argv: list[str] | None = None) -> int:
 
         return _run_frontier_diagnostics(args)
 
+    if args.command == "indirect-transfer-map":
+        from d810.diagnostics.indirect_state_transfer_map import (
+            run as _run_indirect_transfer_map,
+        )
+
+        return _run_indirect_transfer_map(args)
+
     # inspect-state-node opens its own DB on a path that may differ from
     # the heuristic default, so it does not flow through the common
     # connection block.
@@ -2084,7 +2029,7 @@ def main(argv: list[str] | None = None) -> int:
             strict=args.strict,
             as_json=args.json_output,
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         return rc
 
     conn = sqlite3.connect(args.db)
@@ -2094,7 +2039,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in (
         "region-shape",
         "terminal-tail-dce",
-        "region-diff",
         "hcc-byte-cascade-trace",
         "admission-explain",
         "compose-evidence-explain",
@@ -2104,9 +2048,6 @@ def main(argv: list[str] | None = None) -> int:
         "return-ledger",
         "cascade-egress-plan",
     ):
-        # region-diff is function-EA-scoped; it resolves its own snap IDs
-        # via labels and tolerates a sparse / schemaless diag DB by
-        # returning a structured error.
         snap_id = -1
     else:
         snap_id = _resolve_snapshot_id(
@@ -2117,27 +2058,27 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "chain":
-        print(_snapshot_header(conn, snap_id))
+        write_output(get_output(args), _snapshot_header(conn, snap_id))
         result = chain(conn, snap_id, args.serials)
-        print(_format_chain(result, _block_identity_lookup(conn, snap_id)))
+        write_output(get_output(args), _format_chain(result, _block_identity_lookup(conn, snap_id)))
     elif args.command == "var-writes":
         result = var_writes(conn, snap_id, args.stkoff)
-        print(_format_var_writes(result))
+        write_output(get_output(args), _format_var_writes(result))
     elif args.command == "block":
-        print(_snapshot_header(conn, snap_id))
+        write_output(get_output(args), _snapshot_header(conn, snap_id))
         result = block_detail(conn, snap_id, args.serial)
-        print(_format_block(
+        write_output(get_output(args), _format_block(
             result,
             show_insns=args.insns,
             block_lookup=_block_identity_lookup(conn, snap_id),
         ))
     elif args.command == "return-paths":
         result = return_paths(conn, snap_id)
-        print(_format_return_paths(result, _block_identity_lookup(conn, snap_id)))
+        write_output(get_output(args), _format_return_paths(result, _block_identity_lookup(conn, snap_id)))
     elif args.command == "program":
-        print(_snapshot_header(conn, snap_id))
+        write_output(get_output(args), _snapshot_header(conn, snap_id))
         if args.nodes:
-            print(
+            write_output(get_output(args),
                 _format_rendered_program_nodes(
                     rendered_program_nodes(conn, snap_id, args.variant),
                     _block_identity_lookup(conn, snap_id),
@@ -2145,20 +2086,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             result = rendered_program_text(conn, snap_id, args.variant)
-            print(_format_rendered_program_text(
+            write_output(get_output(args), _format_rendered_program_text(
                 result,
                 _block_identity_lookup(conn, snap_id),
             ))
     elif args.command == "program-variants":
-        print(_snapshot_header(conn, snap_id))
-        print(
+        write_output(get_output(args), _snapshot_header(conn, snap_id))
+        write_output(get_output(args),
             _format_rendered_program_variants(
                 rendered_program_variants(conn, snap_id)
             )
         )
     elif args.command == "state-local":
-        print(_snapshot_header(conn, snap_id))
-        print(
+        write_output(get_output(args), _snapshot_header(conn, snap_id))
+        write_output(get_output(args),
             _format_state_local(
                 state_local(conn, snap_id, args.state),
                 state=args.state,
@@ -2166,17 +2107,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "block-trace":
         if args.ea is not None:
-            print(_format_block_trace(block_trace_by_ea(conn, args.ea)))
+            write_output(get_output(args), _format_block_trace(block_trace_by_ea(conn, args.ea)))
         else:
-            print(
+            write_output(get_output(args),
                 _format_block_trace(
                     block_trace_by_serial(conn, snap_id, args.serial)
                 )
             )
     elif args.command == "block-lineage":
-        print(_format_block_lineage(block_lineage(conn, snap_id, args.serial)))
+        write_output(get_output(args), _format_block_lineage(block_lineage(conn, snap_id, args.serial)))
     elif args.command == "ea-trace":
-        print(_ea_trace(conn, args.eas, args.exact))
+        write_output(get_output(args), _ea_trace(conn, args.eas, args.exact))
     elif args.command == "merge-causality":
         from_snap = _resolve_snapshot_by_label(conn, args.from_label)
         to_snap = _resolve_snapshot_by_label(conn, args.to_label)
@@ -2194,9 +2135,9 @@ def main(argv: list[str] | None = None) -> int:
             ]
         result = dict(result)
         result["vanished"] = filtered
-        print(_format_merge_causality(result, limit=args.limit))
+        write_output(get_output(args), _format_merge_causality(result, limit=args.limit))
     elif args.command == "watch-transitions":
-        print(_format_watch_transitions(
+        write_output(get_output(args), _format_watch_transitions(
             conn,
             block=args.block,
             session=args.session,
@@ -2216,9 +2157,9 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
             columns = [
                 "fact_id",
                 "kind",
@@ -2230,7 +2171,7 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            print(_format_fact_rows(
+            write_output(get_output(args), _format_fact_rows(
                 rows,
                 columns,
             ))
@@ -2246,9 +2187,9 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
             columns = [
                 "source_fact_id",
                 "target_fact_id",
@@ -2260,7 +2201,7 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            print(_format_fact_rows(
+            write_output(get_output(args), _format_fact_rows(
                 rows,
                 columns,
             ))
@@ -2276,13 +2217,13 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
             columns = ["consumer", "strategy", "fact_id", "maturity", "decision", "reason"]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            print(_format_fact_rows(
+            write_output(get_output(args), _format_fact_rows(
                 rows,
                 columns,
             ))
@@ -2297,9 +2238,9 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            print("all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
             columns = [
                 "conflict_id",
                 "fact_id",
@@ -2310,16 +2251,16 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            print(_format_fact_rows(
+            write_output(get_output(args), _format_fact_rows(
                 rows,
                 columns,
             ))
     elif args.command == "fact-trace":
         result = fact_trace(conn, semantic_key=args.semantic_key, kind=args.kind)
         if args.json_output:
-            print(json.dumps(result, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(result, indent=2, sort_keys=True))
         else:
-            print(_format_fact_trace(result))
+            write_output(get_output(args), _format_fact_trace(result))
     elif args.command == "fact-diff":
         rows = fact_diff(
             conn,
@@ -2331,7 +2272,7 @@ def main(argv: list[str] | None = None) -> int:
             semantic_key=args.semantic_key,
         )
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
             columns = [
                 "source_fact_id",
@@ -2343,19 +2284,19 @@ def main(argv: list[str] | None = None) -> int:
                 "source_block",
                 "target_block",
             ]
-            print(_format_fact_rows(rows, columns))
+            write_output(get_output(args), _format_fact_rows(rows, columns))
     elif args.command == "state-write-trace":
         result = _state_write_trace(conn, block=args.block)
         if args.json_output:
-            print(json.dumps(result, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(result, indent=2, sort_keys=True))
         else:
-            print(_format_state_write_trace(result))
+            write_output(get_output(args), _format_state_write_trace(result))
     elif args.command == "state-write-rewrites":
         rows = _state_write_rewrites(conn, block=args.block)
         if args.json_output:
-            print(json.dumps(rows, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            print(_format_state_write_rewrites(rows))
+            write_output(get_output(args), _format_state_write_rewrites(rows))
     elif args.command == "dag-edge-diagnostics":
         if args.snap_id is not None:
             snap_ids = [int(args.snap_id)]
@@ -2380,7 +2321,7 @@ def main(argv: list[str] | None = None) -> int:
                 if d.classification == args.classification
             ]
         if args.json_output:
-            print(
+            write_output(get_output(args),
                 json.dumps(
                     [
                         {
@@ -2407,9 +2348,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"snap\tedge\tterm\tkind\tclass\t"
                 f"source\ttarget\torig\trewritten\treason"
             )
-            print(header)
+            write_output(get_output(args), header)
             for d in filtered:
-                print(
+                write_output(get_output(args),
                     "\t".join(
                         (
                             str(d.snapshot_id),
@@ -2425,7 +2366,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                 )
-            print(
+            write_output(get_output(args),
                 f"\n# {len(filtered)} edge(s) shown "
                 f"(persisted={args.persist}, filter={args.kind}/"
                 f"{args.classification or 'any'})"
@@ -2446,7 +2387,7 @@ def main(argv: list[str] | None = None) -> int:
                 "ORDER BY id LIMIT 1"
             ).fetchone()
             if row is None:
-                print(
+                write_output(get_output(args),
                     "no MMAT_LOCOPT pre_d810 snapshot found; "
                     "pass --snap-id explicitly"
                 )
@@ -2467,7 +2408,7 @@ def main(argv: list[str] | None = None) -> int:
                 if r.source_block_serial == int(args.block)
             ]
         if args.json_output:
-            print(
+            write_output(get_output(args),
                 json.dumps(
                     [
                         {
@@ -2492,12 +2433,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            print(
+            write_output(get_output(args),
                 "snap\tsource_blk\tsource_const\t"
                 "next_blk\tnext_const\treason\tmaturity"
             )
             for r in filtered:
-                print(
+                write_output(get_output(args),
                     "\t".join(
                         (
                             str(r.snapshot_id),
@@ -2514,10 +2455,99 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                 )
-            print(
+            write_output(get_output(args),
                 f"\n# {len(filtered)} resolution(s) shown "
                 f"(persisted={args.persist}, "
                 f"intervals={len(intervals)})"
+            )
+    elif args.command == "state-transition-dispatch-resolutions":
+        dispatch_map = load_latest_state_dispatcher_map_from_db(
+            conn,
+            snapshot_id=args.dispatcher_snap_id,
+        )
+        if args.snap_id is not None:
+            locopt_snap = int(args.snap_id)
+        else:
+            row = conn.execute(
+                "SELECT id FROM snapshots "
+                "WHERE label LIKE '%MMAT_LOCOPT%pre_d810%' "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                write_output(get_output(args),
+                    "no MMAT_LOCOPT pre_d810 snapshot found; "
+                    "pass --snap-id explicitly"
+                )
+                conn.close()
+                return 1
+            locopt_snap = int(row[0])
+        resolutions = resolve_state_transition_facts_with_dispatcher(
+            conn,
+            dispatch_map=dispatch_map,
+            locopt_snapshot_id=locopt_snap,
+        )
+        if args.persist:
+            persist_state_dispatch_resolutions(conn, resolutions)
+        filtered = list(resolutions)
+        if args.block is not None:
+            filtered = [
+                r for r in filtered
+                if r.source_block_serial == int(args.block)
+            ]
+        if args.json_output:
+            write_output(get_output(args),
+                json.dumps(
+                    [
+                        {
+                            "snapshot_id": r.snapshot_id,
+                            "fact_id": r.fact_id,
+                            "source_block_serial": r.source_block_serial,
+                            "source_state_const_hex":
+                                r.source_state_const_hex,
+                            "resolved_next_block_serial":
+                                r.resolved_next_block_serial,
+                            "resolved_next_state_const_hex":
+                                r.resolved_next_state_const_hex,
+                            "resolved_next_state_const_u64":
+                                r.resolved_next_state_const_u64,
+                            "resolution_kind": r.resolution_kind,
+                            "resolution_reason": r.resolution_reason,
+                            "resolution_maturity": r.resolution_maturity,
+                        }
+                        for r in filtered
+                    ],
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            write_output(get_output(args),
+                "snap\tsource_blk\tsource_const\t"
+                "next_blk\tnext_const\tkind\treason\tmaturity"
+            )
+            for r in filtered:
+                write_output(get_output(args),
+                    "\t".join(
+                        (
+                            str(r.snapshot_id),
+                            str(r.source_block_serial),
+                            r.source_state_const_hex,
+                            (
+                                str(r.resolved_next_block_serial)
+                                if r.resolved_next_block_serial
+                                is not None else "-"
+                            ),
+                            r.resolved_next_state_const_hex or "-",
+                            r.resolution_kind,
+                            r.resolution_reason,
+                            r.resolution_maturity,
+                        )
+                    )
+                )
+            write_output(get_output(args),
+                f"\n# {len(filtered)} resolution(s) shown "
+                f"(persisted={args.persist}, "
+                f"rows={len(dispatch_map.rows) if dispatch_map else 0})"
             )
     elif args.command == "dag-edge-alternate-correlations":
         if args.snap_id is not None:
@@ -2544,7 +2574,7 @@ def main(argv: list[str] | None = None) -> int:
                 if c.collapsed_edge_id == int(args.collapsed_edge)
             ]
         if args.json_output:
-            print(
+            write_output(get_output(args),
                 json.dumps(
                     [
                         {
@@ -2573,13 +2603,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            print(
+            write_output(get_output(args),
                 "snap\tcollapsed_edge\talt_edge\t"
                 "collapsed_src->collapsed_tgt\t"
                 "alt_src->alt_tgt\tpath\toverlap\treason"
             )
             for c in filtered:
-                print(
+                write_output(get_output(args),
                     "\t".join(
                         (
                             str(c.snapshot_id),
@@ -2595,7 +2625,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                 )
-            print(
+            write_output(get_output(args),
                 f"\n# {len(filtered)} correlation(s) shown "
                 f"(persisted={args.persist})"
             )
@@ -2627,7 +2657,7 @@ def main(argv: list[str] | None = None) -> int:
                 if s.collapsed_edge_id == int(args.collapsed_edge)
             ]
         if args.json_output:
-            print(
+            write_output(get_output(args),
                 json.dumps(
                     [
                         {
@@ -2648,12 +2678,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            print(
+            write_output(get_output(args),
                 "snap\tcollapsed\talt\tsel\tsrc_bi\treached_bi\t"
                 "reached_state\treason"
             )
             for s in filtered:
-                print(
+                write_output(get_output(args),
                     "\t".join(
                         (
                             str(s.snapshot_id),
@@ -2675,7 +2705,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             sel_count = sum(1 for s in filtered if s.selected)
             rej_count = len(filtered) - sel_count
-            print(
+            write_output(get_output(args),
                 f"\n# {sel_count} selected / {rej_count} rejected "
                 f"(persisted={args.persist}, max_depth={args.max_depth})"
             )
@@ -2711,12 +2741,12 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 for r in rows
             ]
-            print(json.dumps(out, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(out, indent=2, sort_keys=True))
         else:
-            print("source\tsnapshot_id\tregion\tfeature\tvalue")
+            write_output(get_output(args), "source\tsnapshot_id\tregion\tfeature\tvalue")
             for r in rows:
-                print(f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
-            print(f"\n# {len(rows)} row(s) shown")
+                write_output(get_output(args), f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
+            write_output(get_output(args), f"\n# {len(rows)} row(s) shown")
     elif args.command == "terminal-tail-dce":
         func_ea = args.func_ea.strip().lower()
         if not func_ea.startswith("0x"):
@@ -2750,24 +2780,12 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 for r in rows
             ]
-            print(json.dumps(out, indent=2, sort_keys=True))
+            write_output(get_output(args), json.dumps(out, indent=2, sort_keys=True))
         else:
-            print("byte_index\tcause\trecommended_action\tlast_pres -> first_miss")
+            write_output(get_output(args), "byte_index\tcause\trecommended_action\tlast_pres -> first_miss")
             for r in rows:
-                print(f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
-            print(f"\n# {len(rows)} cause(s) shown")
-    elif args.command == "region-diff":
-        cfg_cli = importlib.import_module("d810.cfg.region_oracle_cli")
-        rc = cfg_cli.handle_region_diff(
-            args,
-            conn,
-            _resolve_oracle_snap_ids,
-            _oracle_persist_features,
-            _oracle_persist_dce_causes,
-        )
-        conn.close()
-        return rc
-
+                write_output(get_output(args), f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
+            write_output(get_output(args), f"\n# {len(rows)} cause(s) shown")
     elif args.command == "hcc-byte-cascade-trace":
         from d810.diagnostics.hcc_byte_cascade_trace import (
             enrich_rows_with_db,
@@ -2787,9 +2805,9 @@ def main(argv: list[str] | None = None) -> int:
         if db_path.exists():
             rows = enrich_rows_with_db(rows, db_path)
         if getattr(args, "json_output", False):
-            print(format_report_json(rows))
+            write_output(get_output(args), format_report_json(rows))
         else:
-            print(format_report(rows, func_label=args.func_label))
+            write_output(get_output(args), format_report(rows, func_label=args.func_label))
         conn.close()
         return 0
 
@@ -2817,7 +2835,7 @@ def main(argv: list[str] | None = None) -> int:
             func_label=args.func_label,
             as_json=getattr(args, "json_output", False),
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 
@@ -2845,7 +2863,7 @@ def main(argv: list[str] | None = None) -> int:
             func_label=args.func_label,
             as_json=getattr(args, "json_output", False),
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 
@@ -2871,7 +2889,7 @@ def main(argv: list[str] | None = None) -> int:
             func_label=args.func_label,
             as_json=getattr(args, "json_output", False),
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 
@@ -2889,7 +2907,7 @@ def main(argv: list[str] | None = None) -> int:
             localize=args.localize,
             initial_snap_id=args.initial_snap_id,
         )
-        print(text, end="")
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0
 
@@ -2902,7 +2920,7 @@ def main(argv: list[str] | None = None) -> int:
             fact_snapshot_id=args.fact_snapshot_id,
             target_snapshot_id=args.target_snapshot_id,
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 
@@ -2917,7 +2935,7 @@ def main(argv: list[str] | None = None) -> int:
             as_json=getattr(args, "json_output", False),
             list_snapshots_only=args.list_snapshots,
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 
@@ -2944,7 +2962,7 @@ def main(argv: list[str] | None = None) -> int:
             min_dispatcher_preds=args.min_dispatcher_preds,
             show_edges=args.show_edges,
         )
-        sys.stdout.write(text)
+        write_output(get_output(args), text, end="")
         conn.close()
         return 0 if not text.startswith("Error:") else 2
 

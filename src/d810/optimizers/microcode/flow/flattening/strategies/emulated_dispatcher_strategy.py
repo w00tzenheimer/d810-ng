@@ -16,6 +16,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    PromoteOperandToScalar,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
@@ -96,6 +97,8 @@ class EmulatedDispatcherPhaseContext:
     transition_report: object
     dag: object
     semantic_reference_program: object
+    state_dispatcher_map: object | None = None
+    switch_case_transition_facts: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,7 @@ class EmulatedDispatcherMetadata:
     lowering_mode: str = "none"
     provenance_hints: tuple[str, ...] = ()
     analysis_dispatchers: tuple[int, ...] = ()
+    state_dispatcher_entries: tuple[int, ...] = ()
     state_constants: tuple[int, ...] = ()
     collector_dispatchers: tuple[int, ...] = ()
     planning_ready: bool = False
@@ -115,6 +119,9 @@ class EmulatedDispatcherMetadata:
     rejected_fathers: int = 0
     candidate_kinds: tuple[str, ...] = ()
     rejection_reasons: tuple[str, ...] = ()
+    # Reasons the selected rewrite is intentionally partial. These are the
+    # waived proof obligations for selected partial rewrites, not hard blockers.
+    partial_rewrite_reasons: tuple[str, ...] = ()
     candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...] = ()
     phase_artifact: EmulatedDispatcherPhaseArtifact | None = None
     selected_lowering_mode: str | None = None
@@ -123,7 +130,15 @@ class EmulatedDispatcherMetadata:
 
     @property
     def detected(self) -> bool:
-        return bool(self.analysis_dispatchers or self.collector_dispatchers)
+        return bool(
+            self.analysis_dispatchers
+            or self.collector_dispatchers
+            or self.state_dispatcher_entries
+        )
+
+    @property
+    def is_partial(self) -> bool:
+        return bool(self.partial_rewrite_reasons)
 
 
 def extract_emulated_dispatcher_metadata(
@@ -245,6 +260,7 @@ def _coerce_selected_emulated_dispatcher_modifications(
         EdgeRedirectViaPredSplit,
         CreateConditionalRedirect,
         InsertBlock,
+        PromoteOperandToScalar,
         DuplicateBlock,
         DuplicateAndRedirect,
         PrivateTerminalSuffix,
@@ -292,6 +308,28 @@ def extract_emulated_dispatcher_fallback_modifications(
     )
 
 
+def _extract_selected_emulated_dispatcher_modifications(
+    flow_graph: FlowGraph | None,
+) -> tuple[GraphModification, ...]:
+    """Return the strategy batch selected by the family snapshot.
+
+    ``EMULATED_DISPATCHER_MODIFICATIONS_KEY`` is the canonical selected batch:
+    normally the father-history fallback, but richer profiles can replace it
+    with phase/DAG lowerings.  The explicit fallback key remains available for
+    diagnostics and parity comparisons; executing it here would silently ignore
+    the selected lowering mode.
+    """
+
+    if flow_graph is None:
+        return ()
+    metadata = getattr(flow_graph, "metadata", {}) or {}
+    raw = metadata.get(EMULATED_DISPATCHER_MODIFICATIONS_KEY)
+    return _normalize_emulated_dispatcher_modifications(
+        flow_graph,
+        _coerce_emulated_dispatcher_modifications(raw),
+    )
+
+
 def _is_valid_emulated_dispatcher_modification(
     cfg: FlowGraph,
     mod: GraphModification,
@@ -330,8 +368,46 @@ def _is_valid_emulated_dispatcher_modification(
             and mod.pred_serial != mod.succ_serial
             and mod.pred_serial != effective_old_target
             and effective_old_target in cfg.blocks[mod.pred_serial].succs
-            and len(mod.instructions) > 0
+            and (len(mod.instructions) > 0 or mod.captured_body is not None)
         )
+    if isinstance(mod, ZeroStateWrite):
+        return mod.block_serial in cfg.blocks
+    if isinstance(mod, PromoteOperandToScalar):
+        return mod.block_serial in cfg.blocks
+    if isinstance(mod, EdgeRedirectViaPredSplit):
+        return (
+            mod.src_block in cfg.blocks
+            and mod.old_target in cfg.blocks
+            and mod.new_target in cfg.blocks
+            and mod.via_pred in cfg.blocks
+            and mod.src_block != mod.new_target
+            and mod.old_target != mod.new_target
+        )
+    if isinstance(mod, DuplicateBlock):
+        if mod.source_block not in cfg.blocks:
+            return False
+        if mod.pred_serial is not None and mod.pred_serial not in cfg.blocks:
+            return False
+        if mod.target_block is not None and mod.target_block not in cfg.blocks:
+            return False
+        if mod.conditional_target is not None and mod.conditional_target not in cfg.blocks:
+            return False
+        if mod.fallthrough_target is not None and mod.fallthrough_target not in cfg.blocks:
+            return False
+        return True
+    if isinstance(mod, DuplicateAndRedirect):
+        if mod.source_serial not in cfg.blocks or not mod.per_pred_targets:
+            return False
+        return all(
+            pred in cfg.blocks
+            and target in cfg.blocks
+            and pred != target
+            for pred, target in mod.per_pred_targets
+        )
+    if isinstance(mod, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)):
+        return True
+    if isinstance(mod, DirectTerminalLoweringGroup):
+        return True
     if isinstance(mod, ReorderBlocks):
         mentioned = set(mod.dfs_block_order) | set(mod.non_2way_serials) | set(mod.two_way_serials)
         return all(serial in cfg.blocks for serial in mentioned)
@@ -382,6 +458,38 @@ def _build_ownership(
                 edges.add((pred, succ if old_target is None else old_target))
                 if old_target is not None:
                     edges.add((pred, succ))
+            case ZeroStateWrite(block_serial=serial):
+                blocks.add(serial)
+            case PromoteOperandToScalar(block_serial=serial):
+                blocks.add(serial)
+            case EdgeRedirectViaPredSplit(
+                src_block=src,
+                old_target=old,
+                new_target=new,
+                via_pred=via_pred,
+            ):
+                blocks.add(src)
+                blocks.add(via_pred)
+                edges.add((src, old))
+                edges.add((src, new))
+            case DuplicateBlock(
+                source_block=src,
+                target_block=target,
+                pred_serial=pred,
+                conditional_target=conditional,
+                fallthrough_target=fallthrough,
+            ):
+                blocks.add(src)
+                if pred is not None:
+                    blocks.add(pred)
+                for target_block in (target, conditional, fallthrough):
+                    if target_block is not None:
+                        blocks.add(target_block)
+            case DuplicateAndRedirect(source_serial=src, per_pred_targets=targets):
+                blocks.add(src)
+                for pred, target in targets:
+                    blocks.add(pred)
+                    blocks.add(target)
             case ReorderBlocks():
                 pass
     return OwnershipScope(
@@ -466,7 +574,7 @@ class EmulatedDispatcherStrategy:
             return False
         if observation.selected_lowering_mode == "dispatcher_loop_recovery":
             return False
-        return bool(extract_emulated_dispatcher_fallback_modifications(snapshot.flow_graph))
+        return bool(_extract_selected_emulated_dispatcher_modifications(snapshot.flow_graph))
 
     def plan(self, snapshot):
         observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
@@ -474,7 +582,7 @@ class EmulatedDispatcherStrategy:
             return None
         if observation.selected_lowering_mode == "dispatcher_loop_recovery":
             return None
-        modifications = extract_emulated_dispatcher_fallback_modifications(
+        modifications = _extract_selected_emulated_dispatcher_modifications(
             snapshot.flow_graph
         )
         if not modifications:

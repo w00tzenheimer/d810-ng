@@ -23,8 +23,8 @@ from collections import Counter
 
 import ida_hexrays
 
-from d810.cfg.contracts import IDACfgContract
 from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
+from d810.hexrays.contracts import IDACfgContract
 from d810.cfg.block_identity import (
     block_fingerprint,
     block_label,
@@ -47,11 +47,14 @@ from d810.cfg.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
 )
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
+    InsertBlock,
     RedirectBranch,
     RedirectGoto,
 )
@@ -60,7 +63,11 @@ from d810.core import logging
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     prove_terminal_returns,
 )
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.mutation.ir_translator import (
+    IDAIRTranslator,
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+)
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     GateAccounting,
     GateDecision,
@@ -77,7 +84,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
     VerificationGate,
 )
-from d810.optimizers.microcode.flow.flattening.use_def_dominance import (
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
 from d810.optimizers.microcode.flow.flattening.safeguards import (
@@ -99,6 +106,8 @@ from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_s
 def _preflight_priority(mod: GraphModification) -> int:
     """Mirror DeferredGraphModifier apply priority for topology simulation."""
     from d810.cfg.graph_modification import (
+        CloneConditionalAsGoto,
+        CloneConditionalAsGotoFromBranchArm,
         ConvertToGoto,
         CreateConditionalRedirect,
         EdgeRedirectViaPredSplit,
@@ -108,7 +117,13 @@ def _preflight_priority(mod: GraphModification) -> int:
     )
 
     match mod:
-        case InsertBlock() | CreateConditionalRedirect() | DuplicateBlock():
+        case (
+            InsertBlock()
+            | CreateConditionalRedirect()
+            | DuplicateBlock()
+            | CloneConditionalAsGoto()
+            | CloneConditionalAsGotoFromBranchArm()
+        ):
             return 5
         case EdgeRedirectViaPredSplit(clone_until=clone_until):
             return 12 if clone_until is not None else 8
@@ -122,7 +137,7 @@ def _preflight_priority(mod: GraphModification) -> int:
 
 def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
     match edit.kind:
-        case "create_conditional_redirect" | "duplicate_block":
+        case "create_conditional_redirect" | "duplicate_block" | "clone_conditional_as_goto":
             return 5
         case "edge_split_redirect":
             return 12 if edit.clone_until is not None else 8
@@ -311,7 +326,12 @@ class TransactionalExecutor:
         except (AttributeError, TypeError, ValueError):
             qty = 0
         for _i in range(qty):
-            _diag = detect_loop_counter_writeback_tail(self.mba, _i)
+            _diag = detect_loop_counter_writeback_tail(
+                self.mba,
+                _i,
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
+            )
             if _diag is not None:
                 writeback_tail_blocks.add(int(_diag.tail_block_serial))
         if writeback_tail_blocks:
@@ -391,16 +411,27 @@ class TransactionalExecutor:
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
                 stale_hazard_override_keys=stale_hazard_override_keys,
+                reject_carrier_writer_bypass=(
+                    fragment.strategy_name == "dispatcher_loop_recovery"
+                ),
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
         )
         if return_carrier_rejections:
+            bypass_rejections = sum(
+                1
+                for rejection in return_carrier_rejections
+                if getattr(rejection, "reason", "") == "carrier_writer_bypass"
+            )
             gate_accounting = gate_accounting.add(
                 GateDecision(
                     gate_name="return_carrier_fact_guard",
                     verdict=GateVerdict.PASSED,
                     reason=(
                         f"rejected {len(return_carrier_rejections)} redirect(s) "
-                        "that would const-feed return-carrier facts"
+                        f"({bypass_rejections} carrier-bypass) "
+                        "that would violate return-carrier facts"
                     ),
                 )
             )
@@ -413,6 +444,8 @@ class TransactionalExecutor:
                 dag_frontier_override_keys=(
                     terminal_byte_emit_dag_frontier_overrides
                 ),
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
             )
         )
         if terminal_byte_emit_rejections:
@@ -857,12 +890,26 @@ class TransactionalExecutor:
         modifier = deferred_modifier.DeferredGraphModifier(self.mba)
         rejected_edges: set[tuple[int, int, int, int]] = set()
         for step in trampoline_steps:
-            if modifier._check_edge_split_trampoline_preconditions(
-                source_block_serial=step.source_serial,
-                via_pred=step.via_pred,
-                old_target=step.old_target,
-                new_target=step.new_target,
-            ):
+            try:
+                preconditions_ok = modifier._check_edge_split_trampoline_preconditions(
+                    source_block_serial=step.source_serial,
+                    via_pred=step.via_pred,
+                    old_target=step.old_target,
+                    new_target=step.new_target,
+                    validate_new_target=False,
+                )
+            except RuntimeError as exc:
+                executor_logger.warning(
+                    "executor filter: edge-split live precondition probe failed "
+                    "src=%s pred=%s old=%s new=%s: %s",
+                    step.source_serial,
+                    step.via_pred,
+                    step.old_target,
+                    step.new_target,
+                    exc,
+                )
+                preconditions_ok = False
+            if preconditions_ok:
                 continue
             rejected_edges.add(
                 (step.source_serial, step.old_target, step.via_pred, step.new_target)
@@ -871,22 +918,48 @@ class TransactionalExecutor:
         if not rejected_edges:
             return modifications, patch_plan, 0
 
+        def _depends_on_rejected_edge_split(mod: GraphModification) -> bool:
+            if isinstance(mod, EdgeRedirectViaPredSplit):
+                rewritten_new_target = patch_plan.relocation_map.rewrite_serial(
+                    int(mod.new_target)
+                )
+                return any(
+                    int(mod.src_block) == source_serial
+                    and int(mod.old_target) == old_target
+                    and int(mod.via_pred) == via_pred
+                    and rewritten_new_target == new_target
+                    for (
+                        source_serial,
+                        old_target,
+                        via_pred,
+                        new_target,
+                    ) in rejected_edges
+                )
+            if isinstance(mod, InsertBlock) and mod.old_target_serial is not None:
+                rewritten_succ = patch_plan.relocation_map.rewrite_serial(
+                    int(mod.succ_serial)
+                )
+                return any(
+                    int(mod.old_target_serial) == source_serial
+                    and rewritten_succ == new_target
+                    for (
+                        source_serial,
+                        _old_target,
+                        _via_pred,
+                        new_target,
+                    ) in rejected_edges
+                )
+            return False
+
         filtered_modifications: list[GraphModification] = []
         for mod in patch_plan.planner_modifications:
-            if (
-                isinstance(mod, EdgeRedirectViaPredSplit)
-                and (
-                    mod.src_block,
-                    mod.old_target,
-                    mod.via_pred,
-                    mod.new_target,
-                )
-                in rejected_edges
-            ):
+            if _depends_on_rejected_edge_split(mod):
                 continue
             filtered_modifications.append(mod)
 
-        removed_count = len(rejected_edges)
+        removed_count = len(patch_plan.planner_modifications) - len(
+            filtered_modifications
+        )
         remaining_count = len(filtered_modifications)
         executor_logger.info(
             "executor filter: backend_removed=%d, remaining=%d",
@@ -1092,6 +1165,13 @@ class TransactionalExecutor:
                     if src == pre_header_serial:
                         continue
                     redirect_modifications.append(mod)
+                case (
+                    CloneConditionalAsGoto(source_block=src)
+                    | CloneConditionalAsGotoFromBranchArm(source_block=src)
+                ):
+                    if src == pre_header_serial:
+                        continue
+                    redirect_modifications.append(mod)
 
         if not redirect_modifications:
             return original_modifications, 0
@@ -1169,7 +1249,7 @@ class TransactionalExecutor:
 
             edits_to_remove: set[int] = set()
             for idx, (_, edit) in enumerate(current_pairs):
-                if edit.kind != "edge_split_redirect":
+                if edit.kind not in {"edge_split_redirect", "clone_conditional_as_goto"}:
                     continue
                 if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
                     edits_to_remove.add(idx)
@@ -1199,7 +1279,7 @@ class TransactionalExecutor:
     ) -> set[int]:
         seeds: set[int] = set()
         for clone_serial, edit in clone_origins.items():
-            if edit.kind == "edge_split_redirect":
+            if edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
                 if edit.source in terminal_exits or edit.via_pred in terminal_exits:
                     seeds.add(clone_serial)
             elif edit.kind == "create_conditional_redirect":
@@ -1224,7 +1304,7 @@ class TransactionalExecutor:
             }:
                 if edit.source in terminal_exits:
                     targets.add(edit.new_target)
-            elif edit.kind == "edge_split_redirect":
+            elif edit.kind in {"edge_split_redirect", "clone_conditional_as_goto"}:
                 if edit.source in terminal_exits or edit.via_pred in terminal_exits:
                     targets.add(edit.new_target)
             elif edit.kind == "create_conditional_redirect":

@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Audit stale Hodur compatibility imports after engine extraction.
+
+Default mode is dry-run. Use ``--apply`` to write the generated report.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import difflib
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+
+HODUR_PACKAGE = "d810.optimizers.microcode.flow.flattening.hodur"
+ENGINE_PACKAGE = "d810.optimizers.microcode.flow.flattening.engine"
+
+MODULE_RENAMES: dict[str, str] = {
+    f"{HODUR_PACKAGE}.strategy": f"{ENGINE_PACKAGE}.strategy",
+    f"{HODUR_PACKAGE}.planner": f"{ENGINE_PACKAGE}.planner",
+    f"{HODUR_PACKAGE}.provenance": f"{ENGINE_PACKAGE}.provenance",
+    f"{HODUR_PACKAGE}.executor": f"{ENGINE_PACKAGE}.executor",
+    f"{HODUR_PACKAGE}.snapshot": f"{ENGINE_PACKAGE}.snapshot",
+    f"{HODUR_PACKAGE}.metrics": f"{ENGINE_PACKAGE}.metrics",
+}
+
+PACKAGE_ALIAS_NAMES = frozenset(module.rsplit(".", 1)[-1] for module in MODULE_RENAMES)
+DEFAULT_REPORT = Path(".tmp/unflattening_engine_extraction/import_boundary_report.md")
+DEFAULT_SCOPES = ("src", "tests", "tools")
+SKIP_PARTS = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tmp",
+        ".worktrees",
+        "__pycache__",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ImportHit:
+    path: Path
+    line: int
+    module: str
+    canonical_module: str
+    classification: str
+
+
+def _relative_path(root: Path, path: Path) -> Path:
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path
+
+
+def _should_skip(path: Path) -> bool:
+    return any(part in SKIP_PARTS for part in path.parts)
+
+
+def iter_python_files(root: Path, explicit_paths: tuple[str, ...] = ()) -> list[Path]:
+    if explicit_paths:
+        files = []
+        for raw_path in explicit_paths:
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = root / path
+            files.append(path.resolve())
+        return sorted(path for path in files if path.is_file() and path.suffix == ".py")
+
+    files: list[Path] = []
+    for scope in DEFAULT_SCOPES:
+        base = root / scope
+        if not base.exists():
+            continue
+        files.extend(
+            path
+            for path in base.rglob("*.py")
+            if path.is_file() and not _should_skip(_relative_path(root, path))
+        )
+    return sorted(files)
+
+
+def classify_path(root: Path, path: Path) -> str:
+    rel = _relative_path(root, path).as_posix()
+    if rel.startswith("src/"):
+        return "blocking-production"
+    if rel.startswith("tests/system/runtime/optimizers/microcode/flow/flattening/engine/"):
+        return "compat-test-fixture"
+    if rel.startswith("tests/") and "/hodur/" in rel:
+        return "hodur-local-test"
+    if rel.startswith("tests/"):
+        return "test-rewrite-candidate"
+    if rel.startswith("tools/scripts/codemod_phase"):
+        return "historical-codemod"
+    if rel.startswith("tools/"):
+        return "tool-review"
+    return "review"
+
+
+def _hit(root: Path, path: Path, line: int, module: str) -> ImportHit:
+    return ImportHit(
+        path=path,
+        line=line,
+        module=module,
+        canonical_module=MODULE_RENAMES[module],
+        classification=classify_path(root, path),
+    )
+
+
+def scan_file(root: Path, path: Path) -> list[ImportHit]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return []
+
+    hits: list[ImportHit] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in MODULE_RENAMES:
+                    hits.append(_hit(root, path, node.lineno, alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module
+            if module in MODULE_RENAMES:
+                hits.append(_hit(root, path, node.lineno, module))
+            elif module == HODUR_PACKAGE:
+                for alias in node.names:
+                    candidate = f"{HODUR_PACKAGE}.{alias.name}"
+                    if alias.name in PACKAGE_ALIAS_NAMES and candidate in MODULE_RENAMES:
+                        hits.append(_hit(root, path, node.lineno, candidate))
+    return hits
+
+
+def scan_imports(root: Path, explicit_paths: tuple[str, ...] = ()) -> list[ImportHit]:
+    hits: list[ImportHit] = []
+    for path in iter_python_files(root, explicit_paths):
+        hits.extend(scan_file(root, path))
+    return sorted(
+        hits,
+        key=lambda hit: (
+            _relative_path(root, hit.path).as_posix(),
+            hit.line,
+            hit.module,
+        ),
+    )
+
+
+def render_report(root: Path, hits: list[ImportHit]) -> str:
+    lines = [
+        "# Unflattening Engine Import Boundary Report",
+        "",
+        "Generated by `tools/scripts/codemod_unflattening_engine_import_boundary.py`.",
+        "",
+        "This report tracks imports that still target Hodur compatibility modules",
+        "for engine-generic runtime types. Production imports should move to the",
+        "canonical `flattening.engine` modules. Hodur-local tests and compatibility",
+        "fixtures may remain when they are explicitly testing the bridge.",
+        "",
+        "## Summary",
+        "",
+    ]
+    if not hits:
+        lines.extend(["No stale compatibility imports found.", ""])
+        return "\n".join(lines)
+
+    counts = Counter(hit.classification for hit in hits)
+    for classification in sorted(counts):
+        lines.append(f"- `{classification}`: {counts[classification]}")
+
+    lines.extend(["", "## Hits", ""])
+    for hit in hits:
+        rel = _relative_path(root, hit.path).as_posix()
+        lines.append(
+            "- "
+            f"{rel}:{hit.line}: `{hit.module}` -> "
+            f"`{hit.canonical_module}` (`{hit.classification}`)"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `blocking-production` should be fixed before claiming E1 remains clean.",
+            "- `test-rewrite-candidate` can usually be handled by",
+            "  `tools/scripts/codemod_hodur_test_engine_imports.py`.",
+            "- `compat-test-fixture` and `hodur-local-test` are review items, not",
+            "  automatic rewrites.",
+            "- `historical-codemod` means older migration scripts still mention the old",
+            "  path; keep or delete them intentionally.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _resolve(root: Path, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def _print_diff(path: Path, existing: str, generated: str) -> None:
+    for line in difflib.unified_diff(
+        existing.splitlines(),
+        generated.splitlines(),
+        fromfile=str(path),
+        tofile=str(path),
+        lineterm="",
+    ):
+        print(line)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", default=".", help="Repository root")
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_REPORT),
+        help="Report output path, relative to root unless absolute",
+    )
+    parser.add_argument(
+        "--fail-on-production",
+        action="store_true",
+        help="Return nonzero if production compatibility imports are found",
+    )
+    parser.add_argument("--apply", action="store_true", help="Write the report")
+    parser.add_argument("paths", nargs="*", help="Optional paths to scan")
+    args = parser.parse_args()
+
+    root = Path(args.root).resolve()
+    output = _resolve(root, args.output)
+    hits = scan_imports(root, tuple(args.paths))
+    generated = render_report(root, hits)
+    existing = output.read_text(encoding="utf-8") if output.exists() else ""
+
+    if existing == generated:
+        print(f"no changes for {output}")
+    elif args.apply:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(generated, encoding="utf-8")
+        print(f"wrote {output}")
+    else:
+        print(f"would write {output}")
+        _print_diff(output, existing, generated)
+        print("dry-run: 1 file(s)")
+
+    if args.fail_on_production and any(
+        hit.classification == "blocking-production" for hit in hits
+    ):
+        print("blocking production compatibility imports found")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

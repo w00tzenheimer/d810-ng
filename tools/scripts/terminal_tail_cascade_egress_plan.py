@@ -5,7 +5,7 @@ Migrated to ``d810.diagnostics`` -- see ``docs/debug-tooling-migration.md``.
 This file forwards to ``python -m d810.diagnostics cascade-egress-plan``
 with the same argument shape. To use the new command directly:
 
-    ./tools/cff_debug.py egress-plan
+    ./tools/d810cli.py egress-plan
     PYTHONPATH=src python -m d810.diagnostics cascade-egress-plan \\
         --db DB [--fact-snapshot-id N] [--target-snapshot-id N]
 

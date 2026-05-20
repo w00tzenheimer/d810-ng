@@ -23,6 +23,19 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
+from d810.cfg.fix_predecessor_classification import (
+    FixPredecessorBucket,
+    FixPredecessorClassification,
+    classify_predecessor_modification,
+)
+from d810.cfg.fix_predecessor_planning import (
+    FixPredecessorCloneAsGotoDecision,
+    FixPredecessorCloneAsGotoFromBranchArmDecision,
+    FixPredecessorOutcome,
+    plan_fix_predecessor_clone_as_goto,
+    plan_fix_predecessor_clone_from_branch_arm,
+)
+from d810.cfg.flowgraph import FlowGraph
 from d810.hexrays.mutation.cfg_mutations import (
     make_2way_block_goto)
 from d810.hexrays.mutation.cfg_verify import (
@@ -30,7 +43,11 @@ from d810.hexrays.mutation.cfg_verify import (
 from d810.hexrays.mutation.cfg_mutations import (
     update_blk_successor)
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
+from d810.hexrays.utils.hexrays_formatters import (
+    dump_microcode_for_debug,
+    format_minsn_t,
+    maturity_to_string,
+)
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
 from d810.recon.flow.dispatcher_detection import (
     DispatcherCache,
@@ -163,6 +180,157 @@ class PredecessorModification:
     description: str = ""
 
 
+class _BranchOperandRef:
+    """Tiny adapter exposing a ``block_num`` attribute for a branch target.
+
+    Used only inside the classification-snapshot path so
+    :func:`d810.cfg.fix_predecessor_planning.infer_conditional_target`
+    can resolve the explicit jump arm from the live tail.
+    """
+
+    __slots__ = ("block_num",)
+
+    def __init__(self, block_num: int) -> None:
+        self.block_num = int(block_num)
+
+
+def _snapshot_cfg_for_classification(
+    mba: ida_hexrays.mba_t,
+) -> tuple[FlowGraph, set[int]]:
+    """Build a CFG snapshot tuned for FixPredecessor classification.
+
+    Mirrors :func:`d810.optimizers.microcode.flow.context._flowgraph_from_live_mba`
+    but additionally captures the tail ``d`` operand for 2-way conditional
+    blocks via ``operand_slots``.  Without that, planner-side
+    :func:`infer_conditional_target` always returns ``None`` and every
+    classification falls into ``unsupported_shape``.
+    """
+    from d810.cfg.flowgraph import (
+        BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot,
+    )
+
+    blocks: dict[int, BlockSnapshot] = {}
+    side_effect_blocks: set[int] = set()
+
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        succs = list(blk.succset)
+        preds = list(blk.predset)
+
+        insn = blk.head
+        while insn is not None:
+            if insn.has_side_effects():
+                side_effect_blocks.add(i)
+                break
+            insn = insn.next
+
+        insns: tuple[InsnSnapshot, ...] = ()
+        tail = blk.tail
+        if tail is not None:
+            l_snap = r_snap = None
+            if tail.l and tail.l.t != 0:
+                stkoff = None
+                if tail.l.t == 3 and hasattr(tail.l, "s") and tail.l.s:  # mop_S
+                    stkoff = tail.l.s.off
+                l_snap = MopSnapshot(t=tail.l.t, size=tail.l.size, stkoff=stkoff)
+            if tail.r and tail.r.t != 0:
+                val = None
+                if tail.r.t == 2:  # mop_n
+                    val = (
+                        tail.r.nnn.value
+                        if hasattr(tail.r, "nnn") and tail.r.nnn
+                        else None
+                    )
+                r_snap = MopSnapshot(t=tail.r.t, size=tail.r.size, value=val)
+            operand_slots: tuple = ()
+            if (
+                tail.d is not None
+                and tail.d.t == ida_hexrays.mop_b
+            ):
+                operand_slots = (("d", _BranchOperandRef(tail.d.b)),)
+            insns = (
+                InsnSnapshot(
+                    opcode=tail.opcode,
+                    ea=tail.ea,
+                    operands=(),
+                    l=l_snap,
+                    r=r_snap,
+                    operand_slots=operand_slots,
+                ),
+            )
+
+        blocks[i] = BlockSnapshot(
+            serial=i,
+            block_type=blk.type,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=blk.flags,
+            start_ea=blk.start,
+            insn_snapshots=insns,
+        )
+
+    return (
+        FlowGraph(blocks=blocks, entry_serial=0, func_ea=mba.entry_ea),
+        side_effect_blocks,
+    )
+
+
+def _modification_outcome(
+    modification: PredecessorModification,
+) -> FixPredecessorOutcome:
+    return (
+        FixPredecessorOutcome.ALWAYS_TAKEN
+        if modification.mod_type == PredecessorModificationType.ALWAYS_TAKEN
+        else FixPredecessorOutcome.NEVER_TAKEN
+    )
+
+
+def plan_predecessor_modification_clone_as_goto(
+    cfg: FlowGraph,
+    modification: PredecessorModification,
+) -> FixPredecessorCloneAsGotoDecision:
+    """Project a live FixPredecessor modification into CFG planning intent.
+
+    This adapter is intentionally read-only.  It lets tests and diagnostics
+    compare the legacy queued modification against the backend-neutral
+    one-way clone-as-goto shape before any shared-engine executor path is
+    selected.  Use :func:`plan_predecessor_modification_clone_from_branch_arm`
+    for the 2-way predecessor branch-arm sibling shape.
+    """
+    return plan_fix_predecessor_clone_as_goto(
+        cfg,
+        pred_serial=modification.pred_serial,
+        conditional_serial=modification.cond_block_serial,
+        selected_target_serial=modification.target_serial,
+        outcome=_modification_outcome(modification),
+        description=modification.description,
+    )
+
+
+def plan_predecessor_modification_clone_from_branch_arm(
+    cfg: FlowGraph,
+    modification: PredecessorModification,
+    *,
+    side_effect_blocks: frozenset[int] = frozenset(),
+) -> FixPredecessorCloneAsGotoFromBranchArmDecision:
+    """Project a live FixPredecessor modification into the 2-way arm shape.
+
+    Read-only sibling of
+    :func:`plan_predecessor_modification_clone_as_goto`.  Returns the
+    branch-arm planner's decision for parity comparisons against the legacy
+    live rule's ``change_2way_block_conditional_successor`` path.
+    """
+    return plan_fix_predecessor_clone_from_branch_arm(
+        cfg,
+        pred_serial=modification.pred_serial,
+        conditional_serial=modification.cond_block_serial,
+        selected_target_serial=modification.target_serial,
+        outcome=_modification_outcome(modification),
+        side_effect_blocks=side_effect_blocks,
+        description=modification.description,
+    )
+
+
 class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
     """Detect if a predecessor of a conditional block always takes the same path and patch it.
 
@@ -204,6 +372,22 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         self._state_var_repr_cache: dict[int, str] = {}  # blk_serial -> repr
         self._pending_modifications: list[PredecessorModification] = []
         self._modifier: Optional[DeferredGraphModifier] = None
+        # Diagnostic-only classification records.  Populated per optimize()
+        # pass *before* modifications are applied so the topology reflects
+        # the pre-modification CFG.  Read by the apply path to opt admitted
+        # branch-arm shapes into the engine path.
+        self._classifications: list[FixPredecessorClassification] = []
+        # Per-modification classification lookup, keyed by ``id(mod)``.
+        # Reset on every optimize() call alongside _pending_modifications so
+        # stale entries from earlier passes are never read.
+        self._classifications_by_mod_id: dict[int, FixPredecessorClassification] = {}
+        # Diagnostic counters for the engine-path migration: number of
+        # ``CloneConditionalAsGotoFromBranchArm`` emissions admitted by the
+        # planner and the subset that the engine path successfully applied.
+        # Reset on maturity change.
+        self._branch_arm_engine_admissions: int = 0
+        self._branch_arm_engine_applied: int = 0
+        self._branch_arm_engine_failures: int = 0
         # Set when safe_verify fails -- prevents further processing on a
         # corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
@@ -455,6 +639,16 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             # Single-predecessor conditional blocks are usually structured
             # control flow (loop/ladder checks), not flattened dispatchers.
             return 0
+        for succ_serial in list(blk.succset):
+            succ_blk = self.mba.get_mblock(int(succ_serial))
+            if succ_blk is not None and succ_blk.nsucc() == 0:
+                if unflat_logger.info_on:
+                    unflat_logger.info(
+                        "Skipping blk[%d]: conditional has terminal successor blk[%d]",
+                        blk.serial,
+                        int(succ_serial),
+                    )
+                return 0
 
         analysis = self._get_dispatcher_analysis(blk)
         # This rule is meant for predicate chains. On switch-table dispatchers
@@ -464,6 +658,23 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             return 0
         if blk.serial not in analysis.dispatchers:
             return 0
+        if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
+            state_constants = tuple(
+                int(value) for value in getattr(analysis, "state_constants", ()) or ()
+            )
+            compared_value = getattr(getattr(getattr(blk.tail, "r", None), "nnn", None), "value", None)
+            if (
+                compared_value is not None
+                and state_constants
+                and int(compared_value) == max(state_constants)
+            ):
+                if unflat_logger.info_on:
+                    unflat_logger.info(
+                        "Skipping blk[%d]: conditional-chain max-state terminal boundary 0x%X",
+                        blk.serial,
+                        int(compared_value),
+                    )
+                return 0
 
         # --- Terminal boundary guard ---
         # Skip blocks that sit on the BST-to-cleanup boundary.  Resolving
@@ -600,8 +811,12 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                     f"{self.cur_maturity_pass}_{cond_block_serial}_after_pred_fix"
                 )
 
-        # Clear pending modifications after applying
+        # Clear pending modifications after applying.  The per-mod
+        # classification lookup is keyed by ``id(mod)``; since the pending
+        # mods are about to be discarded, the id keys would become dangling
+        # so the lookup table must be cleared in the same step.
         self._pending_modifications.clear()
+        self._classifications_by_mod_id.clear()
 
         if unflat_logger.info_on:
             unflat_logger.info(
@@ -697,6 +912,68 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         self.mba.mark_chains_dirty()
         return cloned
 
+    def _try_apply_branch_arm_engine_path(
+        self,
+        mod: PredecessorModification,
+        cond_blk: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Apply a modification through the engine path if admitted.
+
+        Returns ``True`` on success (caller should NOT run the legacy path),
+        ``False`` if the engine path is not eligible OR if it failed and the
+        caller should fall back to the legacy clone + ``update_blk_successor``
+        sequence.  Increments diagnostic counters either way.
+        """
+        if self._modifier is None:
+            return False
+        classification = self._classifications_by_mod_id.get(id(mod))
+        if classification is None:
+            return False
+        if not classification.matches_clone_conditional_as_goto_from_branch_arm:
+            return False
+
+        try:
+            engine_ok = (
+                self._modifier._apply_clone_conditional_as_goto_from_branch_arm(
+                    source_blk=cond_blk,
+                    pred_serial=mod.pred_serial,
+                    goto_target_serial=mod.target_serial,
+                )
+            )
+        except Exception as exc:
+            self._branch_arm_engine_failures += 1
+            unflat_logger.warning(
+                "fix_pred engine path raised for pred=%d cond=%d target=%d: %s; "
+                "falling back to legacy",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+                exc,
+            )
+            return False
+
+        if not engine_ok:
+            self._branch_arm_engine_failures += 1
+            unflat_logger.warning(
+                "fix_pred engine path declined pred=%d cond=%d target=%d at "
+                "apply-time; falling back to legacy",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+            )
+            return False
+
+        self._branch_arm_engine_applied += 1
+        if unflat_logger.debug_on:
+            unflat_logger.debug(
+                "fix_pred engine path applied: "
+                "clone_conditional_as_goto_from_branch_arm pred=%d cond=%d target=%d",
+                mod.pred_serial,
+                mod.cond_block_serial,
+                mod.target_serial,
+            )
+        return True
+
     def _apply_single_modification(
         self,
         mod: PredecessorModification,
@@ -735,6 +1012,18 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 mod.mod_type.name, mod.pred_serial,
                 mod.cond_block_serial, mod.target_serial
             )
+
+        # Engine path: when the branch-arm planner admits this shape, emit
+        # CloneConditionalAsGotoFromBranchArm via the deferred modifier so
+        # the migration is observable through the typed primitive instead of
+        # untyped clone + update_blk_successor.  For ``pred_arm == 1`` the
+        # net mutation is identical to the legacy path
+        # (``change_2way_block_conditional_successor`` is the shared low-level
+        # helper).  Falls back to legacy on engine-path failure as defense in
+        # depth; ``arm == 0`` cases are not admitted by the planner so they
+        # never enter this branch.
+        if self._try_apply_branch_arm_engine_path(mod, cond_blk):
+            return True
 
         try:
             new_jmp_block = None
@@ -794,6 +1083,91 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             self._critical_apply_failure = True
             return False
 
+    def _classify_pending_modifications(self) -> None:
+        """Snapshot the live CFG once and classify every queued modification.
+
+        Diagnostic-only.  Runs *before* any modification is applied so the
+        bucket assignments reflect pre-rewrite topology.  The classifications
+        list is appended to across blocks in a single ``optimize()`` pass and
+        is reset at the next call to ``optimize()``.
+        """
+        if not self._pending_modifications:
+            return
+
+        try:
+            cfg, side_effect_blocks = _snapshot_cfg_for_classification(self.mba)
+        except Exception as exc:  # pragma: no cover - diagnostic only
+            unflat_logger.debug(
+                "Skipping FixPredecessor classification: snapshot failed: %s",
+                exc,
+            )
+            return
+
+        side_effect_frozen = frozenset(side_effect_blocks)
+        for mod in self._pending_modifications:
+            outcome = (
+                FixPredecessorOutcome.ALWAYS_TAKEN
+                if mod.mod_type == PredecessorModificationType.ALWAYS_TAKEN
+                else FixPredecessorOutcome.NEVER_TAKEN
+            )
+            try:
+                classification = classify_predecessor_modification(
+                    cfg,
+                    pred_serial=mod.pred_serial,
+                    conditional_serial=mod.cond_block_serial,
+                    selected_target_serial=mod.target_serial,
+                    outcome=outcome,
+                    side_effect_blocks=side_effect_frozen,
+                    description=mod.description,
+                )
+            except Exception as exc:  # pragma: no cover - diagnostic only
+                unflat_logger.debug(
+                    "Skipping classification for %s: %s",
+                    mod.description, exc,
+                )
+                continue
+
+            self._classifications.append(classification)
+            self._classifications_by_mod_id[id(mod)] = classification
+            if classification.matches_clone_conditional_as_goto_from_branch_arm:
+                self._branch_arm_engine_admissions += 1
+            if unflat_logger.debug_on:
+                rejection = (
+                    classification.planner_rejection.value
+                    if classification.planner_rejection is not None
+                    else "accepted"
+                )
+                unflat_logger.debug(
+                    "fix_pred bucket: %s pred=%d cond=%d target=%d "
+                    "outcome=%s pred_topology=%s arm=%s "
+                    "cond_succs=%d cond_preds=%d target_preds=%d "
+                    "side_effects=%s matches_one_way=%s matches_arm=%s "
+                    "planner=%s",
+                    classification.bucket.value,
+                    classification.selected_predecessor,
+                    classification.target_conditional_block,
+                    classification.selected_target,
+                    classification.outcome.value,
+                    classification.predecessor_topology.value,
+                    classification.predecessor_arm,
+                    classification.conditional_target_successor_count,
+                    classification.conditional_target_predecessor_count,
+                    classification.selected_target_predecessor_count,
+                    classification.conditional_has_body_side_effects,
+                    classification.matches_clone_conditional_as_goto,
+                    classification.matches_clone_conditional_as_goto_from_branch_arm,
+                    rejection,
+                )
+
+    @property
+    def classifications(self) -> tuple[FixPredecessorClassification, ...]:
+        """Diagnostic classification records for the current maturity pass.
+
+        Accumulates across blocks within a maturity pass and is reset on
+        maturity change.  Read-only — apply path never references this.
+        """
+        return tuple(self._classifications)
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         """Main optimization entry point.
 
@@ -810,7 +1184,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
         if self._modifier is None:
             self._modifier = DeferredGraphModifier(self.mba)
 
-        # Clear pending modifications from previous pass
+        # Clear pending modifications from previous pass.  Classifications
+        # are intentionally retained across optimize() calls within the same
+        # maturity pass and cleared on maturity change (see
+        # check_if_rule_should_be_used) so corpus diagnostics can aggregate.
         self._pending_modifications.clear()
 
         if not self.check_if_rule_should_be_used(blk):
@@ -821,6 +1198,10 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         if nb_queued == 0:
             return 0
+
+        # Phase 1.5: Diagnostic classification (read-only).
+        # Captures topology before any modification is applied.
+        self._classify_pending_modifications()
 
         # NOTE: No bulk-CFG safeguard here. FixPredecessor makes targeted
         # per-block edge redirects (not bulk CFG rewrites like Hodur).
@@ -874,14 +1255,19 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             self.cur_maturity_pass = 0
             self._state_var_repr_cache.clear()  # Clear cache on maturity change
             self._verify_failed = False  # Reset on maturity change
+            self._classifications.clear()  # Reset diagnostic records
+            self._classifications_by_mod_id.clear()
+            self._branch_arm_engine_admissions = 0
+            self._branch_arm_engine_applied = 0
+            self._branch_arm_engine_failures = 0
 
         if self.cur_maturity not in self.maturities:
             # Gate: maturity filter — normal operation, not a bypass.
             if unflat_logger.debug_on:
                 unflat_logger.debug(
-                    "Gate skipped [maturity_filter]: %s at maturity %d not in %s",
+                    "Gate skipped [maturity_filter]: %s at maturity %s not in %s",
                     self.__class__.__name__,
-                    self.cur_maturity,
+                    maturity_to_string(self.cur_maturity),
                     self.maturities,
                 )
             return False

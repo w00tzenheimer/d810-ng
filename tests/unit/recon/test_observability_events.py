@@ -10,6 +10,7 @@ from d810.core.observability import (
 )
 from d810.core.observability_models import DagEdge, DagNode, Modification
 from d810.recon.observability import (
+    BranchOwnershipProofsObserved,
     DagLocalFactsObserved,
     DagObserved,
     FactConflictsObserved,
@@ -21,6 +22,7 @@ from d810.recon.observability import (
     RenderedProgramObserved,
     diagnostics_enabled,
     observe_dag,
+    observe_branch_ownership_proofs,
     observe_dag_local_facts,
     observe_fact_conflict,
     observe_fact_consumer,
@@ -68,6 +70,18 @@ def test_observe_dag_publishes_event_with_tuple_payloads():
     assert isinstance(seen[0].edges, tuple)
     assert seen[0].nodes[0].state == 0x10
     assert seen[0].edges[0].edge_id == 0
+
+
+def test_observe_branch_ownership_proofs_publishes_tuple_payloads():
+    seen: list[BranchOwnershipProofsObserved] = []
+    subscribe(BranchOwnershipProofsObserved, seen.append)
+
+    snap = _make_snap()
+    observe_branch_ownership_proofs(snap, [{"proof_id": "p"}])
+
+    assert len(seen) == 1
+    assert seen[0].snapshot is snap
+    assert seen[0].rows == ({"proof_id": "p"},)
 
 
 def test_observe_fact_observation_carries_func_ea_and_tuple():

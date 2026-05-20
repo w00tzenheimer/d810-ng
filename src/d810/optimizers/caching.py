@@ -43,10 +43,14 @@ from d810.core.persistence import (
     CachedResult,
     FunctionFingerprint,
     FunctionRuleConfig,
+    ProviderPhaseSnapshot,
     create_optimization_storage,
 )
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 logger = getLogger("D810.caching")
+
+HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
 
 
 # =============================================================================
@@ -187,10 +191,15 @@ class OptimizationCache:
             patches: List of patch descriptions.
         """
         fingerprint = self.compute_function_fingerprint(mba, function_addr)
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+            provider_level=int(maturity),
+            friendly_provider_level=maturity_to_string(maturity),
+        )
         self._storage.save_result(
             function_addr=function_addr,
             fingerprint=fingerprint,
-            maturity=maturity,
+            provider_phase=provider_phase,
             changes=changes,
             patches=patches,
         )
@@ -207,7 +216,12 @@ class OptimizationCache:
         Returns:
             Cached result if found, None otherwise.
         """
-        return self._storage.load_result(function_addr, maturity)
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+            provider_level=int(maturity),
+            friendly_provider_level=maturity_to_string(maturity),
+        )
+        return self._storage.load_result(function_addr, provider_phase)
 
     def set_function_rules(
         self,

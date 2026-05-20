@@ -9,7 +9,7 @@ The worksheet is intentionally read-only. It correlates:
 - optional residual-handoff log lines from a text dump or log file
 
 Exposed as the ``residual-worksheet`` subcommand of
-``python -m d810.diagnostics``. Distinct from ``cff_debug.py residuals``
+``python -m d810.diagnostics``. Distinct from ``d810cli.py residuals``
 (which is a text-only grep over the AFTER pseudocode).
 """
 from __future__ import annotations
@@ -24,7 +24,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable, Sequence
+
 
 DEFAULT_PHASE = "post_d810"
 DEFAULT_MATURITY = "MMAT_GLBOPT1"
@@ -1320,10 +1322,7 @@ def register_parser(sub) -> None:
         default="markdown",
         help="Output format",
     )
-    p.add_argument(
-        "--output", type=Path, default=None,
-        help="Write output to this path instead of stdout",
-    )
+    add_output_argument(p)
     p.add_argument(
         "--list-snapshots", action="store_true",
         help="List snapshots and exit",
@@ -1350,7 +1349,8 @@ def run(args: argparse.Namespace) -> int:
         conn = _open_db(diag_db_path)
         try:
             for row in list_snapshots(conn):
-                print(
+                write_output(
+                    get_output(args),
                     f"[{int(row['id']):>3}] {row['label']} "
                     f"({row['maturity']} / {row['phase']} / {row['block_count']} blocks)"
                 )
@@ -1384,8 +1384,5 @@ def run(args: argparse.Namespace) -> int:
     else:
         rendered = render_markdown(result)
 
-    if args.output is not None:
-        args.output.write_text(rendered + "\n", encoding="utf-8")
-    else:
-        print(rendered)
+    write_output(get_output(args), rendered)
     return 0

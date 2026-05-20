@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
 from d810.cfg.modification_builder import ModificationBuilder
+from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
+    semantic_exact_node as semantic_module,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     _append_deferred_terminal_side_exit_redirects,
     _append_residual_exact_row_redirects,
@@ -10,6 +15,96 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
     _append_residual_shared_group_redirects,
     _append_unique_pred_split_source_redirects,
 )
+
+
+def test_semantic_exact_round_summary_uses_projected_topology_backend(
+    monkeypatch,
+):
+    class _FakeProjectedTopologyBackend:
+        def __init__(self) -> None:
+            self.live_dag_calls: list[tuple[object, object, dict]] = []
+
+        def build_projected_mba(self, flow_graph: object) -> object:
+            raise AssertionError("semantic exact should not project an MBA")
+
+        def build_live_dag(
+            self,
+            current_flow_graph: object,
+            transition_result: object,
+            **kwargs,
+        ) -> object:
+            self.live_dag_calls.append(
+                (current_flow_graph, transition_result, kwargs)
+            )
+            return SimpleNamespace(source="backend-dag")
+
+    backend = _FakeProjectedTopologyBackend()
+    setup = SimpleNamespace(
+        transition_result=SimpleNamespace(name="transition-result"),
+        state_var_stkoff=0x7BC,
+        pre_header_serial=9,
+        bst_node_blocks=frozenset({2, 9}),
+    )
+    flow_graph = SimpleNamespace(name="flow-graph")
+    mba = SimpleNamespace(name="mba")
+    snapshot = SimpleNamespace(
+        mba=mba,
+        state_machine=SimpleNamespace(initial_state=0x6107F8EC),
+        bst_result=SimpleNamespace(),
+        flow_graph=flow_graph,
+        bst_dispatcher_serial=2,
+    )
+
+    monkeypatch.setattr(
+        semantic_module,
+        "_PROJECTED_TOPOLOGY_BACKEND",
+        backend,
+    )
+    monkeypatch.setattr(
+        semantic_module,
+        "_prepare_linearized_flow_graph_plan_setup",
+        lambda **kwargs: setup,
+    )
+
+    def fake_adapt_round_summary(**kwargs):
+        dag = kwargs["build_live_dag"](
+            kwargs["current_flow_graph"],
+            kwargs["transition_result"],
+            dispatcher_entry_serial=kwargs["dispatcher_serial"],
+            state_var_stkoff=kwargs["state_var_stkoff"],
+            pre_header_serial=kwargs["pre_header_serial"],
+            initial_state=kwargs["state_machine"].initial_state,
+            handler_range_map={},
+            bst_node_blocks=kwargs["bst_node_blocks"],
+            diagnostics=(),
+            dispatcher=None,
+            mba=kwargs["dag_round_mba"],
+            prefer_local_corridors=True,
+        )
+        return SimpleNamespace(dag=dag)
+
+    monkeypatch.setattr(
+        semantic_module,
+        "adapt_linearized_dag_round_summary",
+        fake_adapt_round_summary,
+    )
+
+    returned_setup, round_summary = (
+        semantic_module.build_semantic_exact_round_summary(snapshot)
+    )
+
+    assert returned_setup is setup
+    assert round_summary.dag.source == "backend-dag"
+    assert len(backend.live_dag_calls) == 1
+    live_flow_graph, transition_result, kwargs = backend.live_dag_calls[0]
+    assert live_flow_graph is flow_graph
+    assert transition_result is setup.transition_result
+    assert kwargs["dispatcher_entry_serial"] == 2
+    assert kwargs["state_var_stkoff"] == 0x7BC
+    assert kwargs["pre_header_serial"] == 9
+    assert kwargs["initial_state"] == 0x6107F8EC
+    assert kwargs["bst_node_blocks"] == frozenset({2, 9})
+    assert kwargs["mba"] is mba
 
 
 def test_append_unique_pred_split_source_redirects_adds_source_redirect_for_unique_target():

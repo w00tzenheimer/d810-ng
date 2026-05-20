@@ -8,6 +8,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from d810.diagnostics.output import add_output_argument, get_output, write_output
+
+
 
 def _loads_json_list(text: str | None) -> list[int]:
     if not text:
@@ -211,6 +214,7 @@ def register_parser(subparsers) -> None:
         help="Show every diagnostic kind instead of only unresolved rows.",
     )
     parser.add_argument("--json", action="store_true", dest="json_output")
+    add_output_argument(parser)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -229,9 +233,9 @@ def run(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     if args.json_output:
-        print(json.dumps(rows, indent=2, sort_keys=True))
+        write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
     else:
-        sys.stdout.write(format_frontier_diagnostics(rows))
+        write_output(get_output(args), format_frontier_diagnostics(rows), end="")
     return 0
 
 

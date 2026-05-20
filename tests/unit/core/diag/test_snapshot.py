@@ -22,6 +22,7 @@ from d810.core.diag.snapshot import (
     _dual,
     _safe_int,
     dag_node_diagnostic_state,
+    snapshot_branch_ownership_proofs,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_fact_conflicts,
@@ -32,6 +33,9 @@ from d810.core.diag.snapshot import (
     snapshot_modifications,
     snapshot_rendered_program,
     snapshot_reachability,
+    snapshot_state_dispatcher_rows,
+    snapshot_state_transition_dispatch_resolutions,
+    snapshot_switch_case_transition_facts,
 )
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
@@ -99,6 +103,216 @@ def _make_block(
         succs=succs or [],
         preds=preds or [],
         instructions=instructions,
+    )
+
+
+def test_snapshot_state_dispatcher_rows_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_dispatcher_rows(
+        conn,
+        1,
+        [
+            {
+                "state_const": 0x89407346,
+                "target_block": 76,
+                "dispatcher_entry_block": 5,
+                "compare_block": 6,
+                "dispatcher_kind": "CONDITIONAL_CHAIN",
+                "branch_kind": "jz_taken",
+                "payload": {"target_ea_hex": "0x00000001800178e3"},
+            }
+        ],
+        dispatcher_entry_block=5,
+        dispatcher_kind="CONDITIONAL_CHAIN",
+        maturity="MMAT_GLBOPT1",
+    )
+
+    row = conn.execute(
+        "SELECT state_const_hex, target_block, dispatcher_kind, payload_json "
+        "FROM state_dispatcher_rows"
+    ).fetchone()
+    assert row[:3] == ("0x0000000089407346", 76, "CONDITIONAL_CHAIN")
+    payload = json.loads(row[3])
+    assert payload["row_kind"] is None
+    assert payload["branch_kind"] == "jz_taken"
+    assert payload["target_ea_hex"] == "0x00000001800178e3"
+
+
+def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_transition_dispatch_resolutions(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0x10",
+                "resolved_next_block_serial": 20,
+                "resolved_next_state_const_hex": "0x20",
+                "resolved_next_state_const_u64": 0x20,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "resolved_exact_state",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT fact_id, resolved_next_block_serial, resolution_reason "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchone()
+    assert row == ("fact-1", 20, "resolved_exact_state")
+
+
+def test_snapshot_state_transition_dispatch_resolutions_deduplicates_rows() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_transition_dispatch_resolutions(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0x10",
+                "resolved_next_block_serial": 20,
+                "resolved_next_state_const_hex": "0x20",
+                "resolved_next_state_const_u64": 0x20,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "first",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0x10",
+                "resolved_next_block_serial": 21,
+                "resolved_next_state_const_hex": "0x21",
+                "resolved_next_state_const_u64": 0x21,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "latest",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+        ],
+    )
+
+    rows = conn.execute(
+        "SELECT fact_id, resolved_next_block_serial, resolution_reason "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchall()
+    assert rows == [("fact-1", 21, "latest")]
+
+
+def test_snapshot_switch_case_transition_facts_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_switch_case_transition_facts(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "tigress_switch:case=4:conditional",
+                "source_state_hex": "0x0000000000000004",
+                "source_state_i64": 4,
+                "case_entry_block": 104,
+                "transition_kind": "CONDITIONAL",
+                "next_state_a_hex": "0x0000000000000009",
+                "next_state_a_i64": 9,
+                "next_state_b_hex": "0x000000000000000d",
+                "next_state_b_i64": 13,
+                "proof_kind": "REAL_DATA_DEPENDENT",
+                "trusted": 1,
+                "reason": "conditional_case_transition_source_predicate",
+                "payload": {"profile_name": "tigress_switch"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT source_state_hex, transition_kind, next_state_a_hex, "
+        "next_state_b_hex, proof_kind, trusted "
+        "FROM switch_case_transition_facts"
+    ).fetchone()
+    assert row == (
+        "0x0000000000000004",
+        "CONDITIONAL",
+        "0x0000000000000009",
+        "0x000000000000000d",
+        "REAL_DATA_DEPENDENT",
+        1,
+    )
+
+
+def test_snapshot_branch_ownership_proofs_round_trip() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_branch_ownership_proofs(
+        conn,
+        1,
+        [
+            {
+                "proof_id": "branch_ownership:edge=1",
+                "proof_kind": "OBFUSCATION_RESIDUE_ARM",
+                "trusted": True,
+                "reason": "trusted_opaque_branch_provenance",
+                "source_block": 10,
+                "branch_arm": 1,
+                "source_state": 0x10,
+                "target_state": 0x20,
+                "target_entry": 30,
+                "predicate_block": 10,
+                "dispatcher_entry_block": 2,
+                "oracle_kind": "explicit_opaque_provenance",
+                "evidence": {"edge_kind": "CONDITIONAL_TRANSITION"},
+                "payload": {"profile_name": "ollvm_state_map"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT proof_kind, trusted, source_block, source_state_hex, "
+        "target_state_hex, oracle_kind FROM branch_ownership_proofs"
+    ).fetchone()
+    assert row == (
+        "OBFUSCATION_RESIDUE_ARM",
+        1,
+        10,
+        "0x0000000000000010",
+        "0x0000000000000020",
+        "explicit_opaque_provenance",
     )
 
 

@@ -31,6 +31,7 @@ from .assertions import (
     assert_contains,
     assert_not_contains,
     assert_operator_complexity,
+    assert_regex_contains,
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
@@ -221,6 +222,13 @@ def run_deobfuscation_test(
             assert_contains(
                 code_after,
                 effective_case.deobfuscated_contains,
+                context="deobfuscated code",
+            )
+
+        if effective_case.deobfuscated_regexes:
+            assert_regex_contains(
+                code_after,
+                effective_case.deobfuscated_regexes,
                 context="deobfuscated code",
             )
 

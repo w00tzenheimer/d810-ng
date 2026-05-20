@@ -23,9 +23,9 @@ Scope (per user directive)
 
 Hard exclusions
 ---------------
-* Never touch writers classified STATE_GUARD_ARTIFACT
-  (e.g. 0xC5FB34A1D9A6E315 case) -- pool-qword leakage, not a
-  recoverable carrier.
+* Never touch protected non-carrier return-frontier writers
+  (configured function-specific artifact priors) -- pool-qword leakage,
+  not a recoverable carrier.
 * Never touch writers classified RETURN_CARRIER_LOST -- those are
   legitimate constant returns by design.
 * Never modify CFG topology -- only mutate operand identity in an
@@ -39,7 +39,7 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -50,7 +50,7 @@ from d810.recon.flow.return_frontier_carrier_audit import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
@@ -120,10 +120,16 @@ class ReturnFrontierCarrierPreserveStrategy:
         )
         os.environ["D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT"] = "1"
         try:
+            discovery = getattr(snapshot, "discovery", None)
             entries = audit_return_frontier_carriers(
                 mba=mba,
                 side_effect_corridors=corridors,
                 label=self.name,
+                artifact_priors=getattr(
+                    discovery,
+                    "return_frontier_artifact_priors",
+                    None,
+                ),
             )
         finally:
             if prior_audit_gate:

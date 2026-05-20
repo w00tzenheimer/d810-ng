@@ -28,6 +28,10 @@ from dataclasses import dataclass
 # Use the d810 logger pattern -- NOT stdlib logging.  See
 # .claude/rules/CORE_INSTRUCTIONS.md.
 from d810.core.logging import getLogger
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactPriors,
+    ReturnFrontierCarrierClassification,
+)
 
 logger = getLogger(__name__)
 
@@ -51,7 +55,7 @@ class ReturnFrontierCarrierEntry:
 
 CLASSIFICATIONS = (
     "RETURN_CARRIER_LOST",
-    "STATE_GUARD_ARTIFACT",
+    ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value,
     "POINTER_IDENTITY_PROPAGATED",
     "UNKNOWN_FAN_IN_DIVERGENCE",
     "UNKNOWN",
@@ -61,15 +65,6 @@ CLASSIFICATIONS = (
 def is_audit_enabled() -> bool:
     """Return True iff the env gate is set to '1'."""
     return os.environ.get(_AUDIT_ENV, "").strip() == "1"
-
-
-# Known pre-existing function-pool qwords for sub_7FFD3338C040.
-# Documented in MEMORY.md as a real pool artifact, NOT a D810
-# fabrication -- its presence as a returned constant indicates the
-# return-slot has no live def and IDA pulled it from the pool.
-_KNOWN_POOL_ARTIFACT_VALUES = frozenset({
-    0xC5FB34A1D9A6E315,
-})
 
 
 # Default bounds for the backward walker.
@@ -428,12 +423,13 @@ def _detect_dead_def_state_guard(
     mop_S: int,
     mop_l: int,
 ):
-    """Secondary detection for STATE_GUARD_ARTIFACT.
+    """Detect protected non-carrier return-frontier writers.
 
     If the writer's source mop is an m_add (or similar arithmetic op)
     whose .l references a stkoff/lvar that has *no* live def anywhere
     else in the function (i.e. no m_mov/m_stx writes to that stkoff
-    exist), the writer is encoding a use-of-dead-def.
+    exist), the writer is encoding a use-of-dead-def. Recon treats that
+    writer as topology evidence to preserve, not as a carrier to lower.
 
     Returns (matched, reason_str).
     """
@@ -631,6 +627,7 @@ def audit_return_frontier_carriers(
     *,
     label: str = "post_pipeline",
     return_stkoff: int | None = None,
+    artifact_priors: ReturnFrontierArtifactPriors | None = None,
 ) -> tuple[ReturnFrontierCarrierEntry, ...]:
     """Audit every return-tail block; return one entry per return block.
 
@@ -653,6 +650,7 @@ def audit_return_frontier_carriers(
 
     if mba is None:
         return ()
+    effective_artifact_priors = artifact_priors or ReturnFrontierArtifactPriors()
 
     try:
         import ida_hexrays
@@ -825,12 +823,18 @@ def audit_return_frontier_carriers(
                     except (AttributeError, TypeError):
                         val = 0
                     masked = val & 0xFFFFFFFFFFFFFFFF
-                    if masked in _KNOWN_POOL_ARTIFACT_VALUES:
-                        classification = "STATE_GUARD_ARTIFACT"
+                    if (
+                        effective_artifact_priors
+                        .is_known_impossible_return_constant(masked)
+                    ):
+                        classification = (
+                            ReturnFrontierCarrierClassification
+                            .PROTECTED_NON_CARRIER_RETURN_WRITER.value
+                        )
                         diagnostic = (
-                            f"returned constant 0x{masked:016x} matches known "
-                            f"pool artifact; original carrier likely state-var "
-                            f"widening"
+                            f"returned constant 0x{masked:016x} matches "
+                            f"configured protected return-artifact prior; "
+                            f"original carrier likely state-var widening"
                         )
                     else:
                         classification = "RETURN_CARRIER_LOST"
@@ -863,7 +867,9 @@ def audit_return_frontier_carriers(
             # misclassify as a state-guard artifact since the caller
             # writes that slot, not us.
             if classification not in (
-                "STATE_GUARD_ARTIFACT", "POINTER_IDENTITY_PROPAGATED"
+                ReturnFrontierCarrierClassification
+                .PROTECTED_NON_CARRIER_RETURN_WRITER.value,
+                "POINTER_IDENTITY_PROPAGATED",
             ):
                 ap_match, ap_reason = _detect_arg_propagation(
                     return_write_insn, writer_blk, mba,
@@ -878,7 +884,9 @@ def audit_return_frontier_carriers(
             # 0xC5FB... pattern where the writer is m_add of a stkoff
             # that has no live def anywhere in the function).
             if classification not in (
-                "STATE_GUARD_ARTIFACT", "POINTER_IDENTITY_PROPAGATED"
+                ReturnFrontierCarrierClassification
+                .PROTECTED_NON_CARRIER_RETURN_WRITER.value,
+                "POINTER_IDENTITY_PROPAGATED",
             ):
                 sg_match, sg_reason = _detect_dead_def_state_guard(
                     mba, return_write_insn,
@@ -886,7 +894,10 @@ def audit_return_frontier_carriers(
                     mop_r=mop_r, mop_S=mop_S, mop_l=mop_l,
                 )
                 if sg_match:
-                    classification = "STATE_GUARD_ARTIFACT"
+                    classification = (
+                        ReturnFrontierCarrierClassification
+                        .PROTECTED_NON_CARRIER_RETURN_WRITER.value
+                    )
                     diagnostic = f"dead-def state-guard: {sg_reason}"
 
             reaching_def_opcode: int | None = None

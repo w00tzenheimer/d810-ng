@@ -12,19 +12,19 @@ if "ida_hexrays" not in sys.modules:
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto
 from d810.cfg.plan import PatchPlan
-from d810.optimizers.microcode.flow.flattening.hodur import executor as _executor_mod
-from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+from d810.optimizers.microcode.flow.flattening.engine import executor as _executor_mod
+from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.planner import (
+from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.provenance import (
+from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import AnalysisSnapshot
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

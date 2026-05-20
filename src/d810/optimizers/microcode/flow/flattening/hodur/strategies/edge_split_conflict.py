@@ -14,13 +14,13 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_DIRECT,
     PlanFragment,
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 

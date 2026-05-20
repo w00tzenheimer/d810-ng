@@ -1,0 +1,64 @@
+{
+  "description": "Engine profile for Tigress indirect jump-table dispatchers through the shared engine",
+  "ins_rules": [
+    {
+      "name": "ConstantSubtreeFoldRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Z3ConstantOptimization",
+      "is_activated": true,
+      "config": {
+        "min_nb_opcode": 4,
+        "min_nb_constant": 3
+      }
+    },
+    {
+      "name": "Z3setnzRuleGeneric",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "Z3setzRuleGeneric",
+      "is_activated": true,
+      "config": {}
+    }
+  ],
+  "blk_rules": [
+    {
+      "name": "ForwardConstantPropagationRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "EmulatedDispatcherUnflattener",
+      "is_activated": true,
+      "config": {
+        "maturities": [
+          "MMAT_LOCOPT",
+          "MMAT_CALLS",
+          "MMAT_GLBOPT1",
+          "MMAT_GLBOPT2"
+        ],
+        "profile": "tigress_indirect",
+        "diagnostics_only": false,
+        "materialize_indirect_targets": true,
+        "enable_phase_reorder": true,
+        "goto_table_info": {
+          "0x1800175c0": {
+            "state_base": 1,
+            "initial_state": 34,
+            "state_var_stkoff": "0x30",
+            "stack_table_offset": "0x70",
+            "table_address": "0x180019f10",
+            "table_nb_elt": 37,
+            "dispatch_jump_ea": "0x1800177a8",
+            "materialized_targets": true,
+            "label_end": "0x180017d2f"
+          }
+        }
+      }
+    }
+  ]
+}

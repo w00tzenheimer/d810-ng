@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError
+from d810.cfg.contracts.contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.contracts.transaction_engine import (
     CfgTransactionEngine,

@@ -1,6 +1,7 @@
 """Concrete strategies built on top of the shared unflattening engine."""
 
 from .bad_while_loop import (
+    BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
     BAD_WHILE_LOOP_CREATE_CONDITIONAL_REDIRECT,
@@ -16,8 +17,10 @@ from .bad_while_loop import (
     collect_live_bad_while_loop_analysis,
     collect_live_bad_while_loop_edits,
     collect_live_bad_while_loop_follow_up,
+    extract_bad_while_loop_dependency_diagnostics,
     extract_bad_while_loop_edits,
     extract_bad_while_loop_follow_up,
+    serialize_bad_while_loop_dependency_diagnostics,
     serialize_bad_while_loop_edits,
     serialize_bad_while_loop_follow_up,
 )
@@ -61,6 +64,7 @@ from .single_iteration import (
 
 __all__ = [
     "BAD_WHILE_LOOP_EDITS_METADATA_KEY",
+    "BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY",
     "BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY",
     "BAD_WHILE_LOOP_CREATE_CONDITIONAL_REDIRECT",
     "BAD_WHILE_LOOP_DUPLICATE_AND_REDIRECT",
@@ -97,6 +101,7 @@ __all__ = [
     "collect_live_fake_jump_fixes",
     "collect_live_single_iteration_block_fixes",
     "collect_live_single_iteration_fixes",
+    "extract_bad_while_loop_dependency_diagnostics",
     "extract_bad_while_loop_edits",
     "extract_bad_while_loop_follow_up",
     "extract_fake_jump_fixes",
@@ -105,6 +110,7 @@ __all__ = [
     "extract_emulated_dispatcher_modifications",
     "extract_single_iteration_fixes",
     "resolve_fake_jump_target",
+    "serialize_bad_while_loop_dependency_diagnostics",
     "serialize_bad_while_loop_edits",
     "serialize_bad_while_loop_follow_up",
     "serialize_fake_jump_fixes",

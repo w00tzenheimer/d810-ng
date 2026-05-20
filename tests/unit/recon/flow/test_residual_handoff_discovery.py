@@ -266,7 +266,7 @@ class TestResidualTargetDiscovery:
             == 24
         )
 
-    def test_resolves_nonexact_dispatch_target_via_same_state_exact_raw_node(self) -> None:
+    def test_keeps_nonexact_dispatch_target_without_contextual_owner_proof(self) -> None:
         exact_raw = _node(entry=66, handler=66, state=0x4C77464F, owned=(66, 67), exclusive=(66,))
         dag = _dag((exact_raw,), ())
         dispatcher = SimpleNamespace(
@@ -282,7 +282,7 @@ class TestResidualTargetDiscovery:
                 bst_node_blocks={2},
                 dispatcher=dispatcher,
             )
-            == 66
+            == 71
         )
 
     def test_resolves_projected_path_tail_target(self) -> None:

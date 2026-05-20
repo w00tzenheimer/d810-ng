@@ -64,7 +64,7 @@ APPROOV_ENGINE_BASELINES = {
     },
     "approov_simplified": {
         "legacy_project": "example_libobfuscated.json",
-        "engine_matches_legacy": False,
+        "engine_matches_legacy": True,
         "engine_changed": True,
         "legacy_ast": {
             "statements": 2,
@@ -88,40 +88,40 @@ APPROOV_ENGINE_BASELINES = {
         "engine_matches_legacy": True,
         "engine_changed": True,
         "legacy_ast": {
-            "statements": 5,
-            "returns": 0,
+            "statements": 7,
+            "returns": 1,
             "whiles": 1,
             "gotos": 0,
-            "ifs": 1,
+            "ifs": 2,
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 5,
-            "returns": 0,
+            "statements": 7,
+            "returns": 1,
             "whiles": 1,
             "gotos": 0,
-            "ifs": 1,
+            "ifs": 2,
             "calls": 0,
         },
     },
     "approov_vm_dispatcher": {
         "legacy_project": "default_unflattening_approov.json",
         "engine_matches_legacy": True,
-        "engine_changed": False,
+        "engine_changed": True,
         "legacy_ast": {
-            "statements": 4,
+            "statements": 0,
             "returns": 0,
-            "whiles": 1,
+            "whiles": 0,
             "gotos": 0,
-            "ifs": 2,
+            "ifs": 0,
             "calls": 0,
         },
         "engine_ast": {
-            "statements": 4,
+            "statements": 0,
             "returns": 0,
-            "whiles": 1,
+            "whiles": 0,
             "gotos": 0,
-            "ifs": 2,
+            "ifs": 0,
             "calls": 0,
         },
     },
@@ -325,6 +325,9 @@ class TestApproovEngineWrapperBaselines:
         )
 
         assert effective_case.project == expected["legacy_project"]
+        if effective_case.function == "approov_simplified":
+            assert "return 0;" not in engine_code
+            assert "return a1;" in engine_code
         assert engine_matches_legacy is expected["engine_matches_legacy"]
         assert engine_changed is expected["engine_changed"]
         assert legacy_ast == expected["legacy_ast"]

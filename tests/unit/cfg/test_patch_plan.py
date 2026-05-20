@@ -10,9 +10,14 @@ from pathlib import Path
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -20,12 +25,19 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
+from d810.cfg.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.cfg.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchEdgeRef,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
@@ -125,6 +137,36 @@ def _conditional_duplicate_cfg() -> FlowGraph:
     )
 
 
+def _duplicate_replay_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            2: _block(2, (3, 4), (10,),),
+            3: _block(3, (), (2,)),
+            4: _block(4, (), (2,)),
+            8: _block(8, (10,), ()),
+            9: _block(9, (10,), ()),
+            10: _block(10, (2,), (8, 9)),
+            20: _block(20, (), ()),
+        },
+        entry_serial=8,
+        func_ea=0,
+    )
+
+
+def _captured_body(source_serial: int = 10) -> CapturedBlockBody:
+    instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
+    return CapturedBlockBody(
+        backend_id="fake",
+        capture_id=f"fake-body:{source_serial}",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(source_serial,),
+            instruction_count=len(instructions),
+            source_eas=frozenset({0x2000}),
+        ),
+        payload=instructions,
+    )
+
+
 def test_compile_patch_plan_converts_existing_block_rewrites():
     modifications = [
         RedirectGoto(from_serial=1, old_target=2, new_target=3),
@@ -220,6 +262,7 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
                 ref_block=10,
                 conditional_target=14,
                 fallthrough_target=11,
+                old_target_serial=10,
             )
         ],
         _conditional_cfg(),
@@ -239,7 +282,15 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
             ref_block=10,
             conditional_target=16,
             fallthrough_target=11,
+            old_target_serial=10,
         ),
+    )
+    assert patch_plan.steps[0].to_graph_modification() == CreateConditionalRedirect(
+        source_block=9,
+        ref_block=10,
+        conditional_target=16,
+        fallthrough_target=11,
+        old_target_serial=10,
     )
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "conditional_redirect_clone",
@@ -312,6 +363,41 @@ def test_compile_patch_plan_finalizes_insert_block():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_compile_patch_plan_preserves_opaque_insert_block_body():
+    body = CapturedBlockBody(
+        backend_id="fake",
+        capture_id="fake-body",
+        summary=CapturedBlockBodySummary(
+            source_blocks=(10,),
+            instruction_count=1,
+            source_eas=frozenset({0x2000}),
+        ),
+        payload=object(),
+    )
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=10,
+                succ_serial=11,
+                captured_body=body,
+            )
+        ],
+        _cfg(),
+    )
+
+    assert patch_plan.new_blocks[0].captured_body is body
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=11,
+            pred_serial=10,
+            succ_serial=12,
+            instructions=(),
+            captured_body=body,
+        ),
+    )
+
+
 def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
     instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
     patch_plan = compile_patch_plan(
@@ -350,6 +436,35 @@ def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
     assert patch_plan.legacy_block_operations == ()
 
 
+def test_empty_insert_block_compiles_as_runtime_trampoline():
+    patch_plan = compile_patch_plan(
+        [
+            InsertBlock(
+                pred_serial=9,
+                old_target_serial=10,
+                succ_serial=11,
+            )
+        ],
+        _conditional_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.new_blocks[0].kind == "insert_block"
+    assert patch_plan.new_blocks[0].instructions == ()
+    assert patch_plan.new_blocks[0].captured_body is None
+    assert patch_plan.steps == (
+        PatchInsertBlock(
+            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
+            assigned_serial=14,
+            pred_serial=9,
+            succ_serial=11,
+            instructions=(),
+            old_target_serial=10,
+        ),
+    )
+    assert patch_plan.legacy_block_operations == ()
+
+
 def test_compile_patch_plan_finalizes_duplicate_block():
     patch_plan = compile_patch_plan(
         [
@@ -383,17 +498,6 @@ def test_compile_patch_plan_finalizes_duplicate_block():
 
 
 def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split():
-    cfg = FlowGraph(
-        blocks={
-            2: _block(2, (), (9,)),
-            9: _block(9, (2,), ()),
-            10: _block(10, (11,), ()),
-            11: _block(11, (), (10,)),
-        },
-        entry_serial=9,
-        func_ea=0,
-    )
-
     patch_plan = compile_patch_plan(
         [
             DuplicateBlock(
@@ -402,7 +506,7 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
                 pred_serial=9,
             )
         ],
-        cfg,
+        _cfg(),
     )
 
     assert patch_plan.contains_block_creation
@@ -423,6 +527,74 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
     )
     assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> None:
+    left_body = _captured_body()
+    right_body = _captured_body()
+    modification = DuplicateReplayAndRedirect(
+        source_serial=10,
+        dispatcher_entry=2,
+        per_pred_replays=(
+            DuplicateReplayEntry(
+                pred_serial=8,
+                target_serial=3,
+                captured_body=left_body,
+            ),
+            DuplicateReplayEntry(
+                pred_serial=9,
+                target_serial=4,
+                captured_body=right_body,
+            ),
+        ),
+    )
+
+    patch_plan = compile_patch_plan([modification], _duplicate_replay_cfg())
+
+    assert patch_plan.contains_block_creation
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchDuplicateReplayAndRedirect)
+    assert [
+        (
+            row.pred_serial,
+            row.target_serial,
+            row.replay_serial,
+            row.clone_serial,
+        )
+        for row in step.per_pred_replays
+    ] == [(8, 3, 20, None), (9, 4, 21, 22)]
+    assert [spec.kind for spec in patch_plan.new_blocks] == [
+        "duplicate_replay_insert",
+        "duplicate_replay_insert",
+        "duplicate_replay_clone",
+    ]
+    assert patch_plan.legacy_block_operations == ()
+    assert patch_plan.as_graph_modifications() == [modification]
+
+
+def test_compile_patch_plan_rejects_invalid_duplicate_replay_shapes() -> None:
+    with pytest.raises(ValueError, match="predecessor 11 not found"):
+        compile_patch_plan(
+            [
+                DuplicateReplayAndRedirect(
+                    source_serial=10,
+                    dispatcher_entry=2,
+                    per_pred_replays=(
+                        DuplicateReplayEntry(
+                            pred_serial=8,
+                            target_serial=3,
+                            captured_body=_captured_body(),
+                        ),
+                        DuplicateReplayEntry(
+                            pred_serial=11,
+                            target_serial=4,
+                            captured_body=_captured_body(),
+                        ),
+                    ),
+                )
+            ],
+            _duplicate_replay_cfg(),
+        )
 
 
 def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
@@ -489,6 +661,121 @@ def test_compile_patch_plan_finalizes_conditional_duplicate_block():
         "duplicate_block_fallthrough",
     ]
     assert patch_plan.legacy_block_operations == ()
+
+
+def test_compile_patch_plan_finalizes_clone_conditional_as_goto():
+    modification = CloneConditionalAsGoto(
+        source_block=10,
+        pred_serial=8,
+        goto_target=11,
+        reason="fix predecessor simple case",
+    )
+
+    patch_plan = compile_patch_plan([modification], _conditional_duplicate_cfg())
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.steps == (
+        PatchCloneConditionalAsGoto(
+            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
+            assigned_serial=13,
+            source_serial=10,
+            pred_serial=8,
+            goto_target=11,
+            source_successors=(11, 12),
+            conditional_target=11,
+            fallthrough_target=12,
+            reason="fix predecessor simple case",
+        ),
+    )
+    assert patch_plan.new_blocks == (
+        PatchBlockSpec(
+            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
+            kind="clone_conditional_as_goto",
+            template_block=10,
+            incoming_edge=PatchEdgeRef(source=8, target=10),
+            outgoing_edges=(
+                PatchEdgeRef(
+                    source=VirtualBlockId(
+                        namespace="clone_conditional_as_goto",
+                        ordinal=0,
+                    ),
+                    target=11,
+                ),
+            ),
+        ),
+    )
+    assert patch_plan.legacy_block_operations == ()
+    assert patch_plan.as_graph_modifications() == [modification]
+
+
+def test_clone_conditional_as_goto_projects_clone_and_pred_redirect_only():
+    patch_plan = compile_patch_plan(
+        [
+            CloneConditionalAsGoto(
+                source_block=10,
+                pred_serial=8,
+                goto_target=11,
+            )
+        ],
+        _conditional_duplicate_cfg(),
+    )
+
+    projected = project_post_state(_conditional_duplicate_cfg(), patch_plan)
+
+    assert projected.get_block(8).succs == (13,)
+    assert projected.get_block(10).succs == (11, 12)
+    assert projected.get_block(13).succs == (11,)
+    assert projected.get_block(13).tail_opcode is not None
+
+
+def test_compile_patch_plan_rejects_clone_conditional_as_goto_without_cfg():
+    with pytest.raises(ValueError, match="requires FlowGraph context"):
+        compile_patch_plan(
+            [
+                CloneConditionalAsGoto(
+                    source_block=10,
+                    pred_serial=8,
+                    goto_target=11,
+                )
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("cfg", "modification", "match"),
+    (
+        (
+            _conditional_duplicate_cfg(),
+            CloneConditionalAsGoto(source_block=12, pred_serial=8, goto_target=11),
+            "does not target source",
+        ),
+        (
+            _conditional_duplicate_cfg(),
+            CloneConditionalAsGoto(source_block=10, pred_serial=8, goto_target=13),
+            "not one of conditional arms",
+        ),
+        (
+            FlowGraph(
+                blocks={
+                    8: _block(8, (11,), ()),
+                    11: _block(11, (), (8,)),
+                    12: _block(12, (), ()),
+                },
+                entry_serial=8,
+                func_ea=0,
+            ),
+            CloneConditionalAsGoto(source_block=11, pred_serial=8, goto_target=12),
+            "expected 2",
+        ),
+    ),
+)
+def test_compile_patch_plan_rejects_invalid_clone_conditional_as_goto_shapes(
+    cfg: FlowGraph,
+    modification: CloneConditionalAsGoto,
+    match: str,
+):
+    with pytest.raises(ValueError, match=match):
+        compile_patch_plan([modification], cfg)
 
 
 def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():
@@ -616,3 +903,172 @@ def test_compile_patch_plan_compiles_remove_edge():
     # Round-trip back to GraphModification
     roundtripped = step.to_graph_modification()
     assert roundtripped == RemoveEdge(from_serial=5, to_serial=10)
+
+
+def _branch_arm_clone_cfg() -> FlowGraph:
+    """CFG with a 2-way predecessor whose explicit branch arm targets the cond.
+
+    Mirrors :func:`_conditional_duplicate_cfg` but the predecessor at blk[7]
+    is itself 2-way: ``pred.tail.d.b == 10`` (arm=1) and fallthrough goes to
+    blk[20].  Block 10 is the 2-way conditional with arms 11 (fallthrough)
+    and 12 (explicit branch target). Selected goto target is blk[12].
+    """
+    return FlowGraph(
+        blocks={
+            7: _block(
+                7,
+                (20, 10),
+                (),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1007,
+                        operands=(_BlockRef(10),),
+                        operand_slots=(("d", _BlockRef(10)),),
+                    ),
+                ),
+            ),
+            8: _block(8, (10,), ()),
+            10: _block(
+                10,
+                (11, 12),
+                (7, 8),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(12),),
+                        operand_slots=(("d", _BlockRef(12)),),
+                    ),
+                ),
+            ),
+            11: _block(11, (), (10,)),
+            12: _block(12, (), (10,)),
+            20: _block(20, (), (7,)),
+        },
+        entry_serial=7,
+        func_ea=0,
+    )
+
+
+def test_clone_conditional_as_goto_from_branch_arm_projects_clone_and_arm_redirect():
+    patch_plan = compile_patch_plan(
+        [
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=12,
+            )
+        ],
+        _branch_arm_clone_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    assert patch_plan.new_blocks[0].kind == "clone_conditional_as_goto_from_branch_arm"
+    assert len(patch_plan.steps) == 1
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchCloneConditionalAsGotoFromBranchArm)
+    assert step.source_serial == 10
+    assert step.pred_serial == 7
+    assert step.pred_arm == 1
+    assert step.goto_target == 12
+    assert step.conditional_target == 12
+    assert step.fallthrough_target == 11
+    assert step.pred_branch_target_serial == 10
+    # Allocator places the clone before existing terminal blocks, which
+    # shifts the original pred_fallthrough (blk[20]) one slot up.  The
+    # relocation map is applied here, so the recorded fallthrough is whatever
+    # serial blk[20] now lives at after the clone slot is reserved.
+    assert step.pred_fallthrough_target_serial >= 20
+    assert step.assigned_serial > 0
+
+    # Post-state projection: pred 7's explicit branch arm now points at the
+    # clone (assigned_serial), clone points at the selected target 12, and
+    # the source conditional 10 retains both arms (still reachable from blk[8]).
+    projected = project_post_state(_branch_arm_clone_cfg(), patch_plan)
+    assert projected.get_block(10).succs == (11, 12)
+    clone = projected.get_block(step.assigned_serial)
+    assert clone is not None
+    assert clone.succs == (12,)
+
+
+def test_compile_patch_plan_rejects_clone_conditional_as_goto_from_branch_arm_without_cfg():
+    with pytest.raises(ValueError, match="requires FlowGraph context"):
+        compile_patch_plan(
+            [
+                CloneConditionalAsGotoFromBranchArm(
+                    source_block=10,
+                    pred_serial=7,
+                    pred_arm=1,
+                    goto_target=12,
+                )
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    ("modification", "match"),
+    (
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=99,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=12,
+            ),
+            "source block 99 not found",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=8,  # 1-way pred — invalid for branch-arm shape
+                pred_arm=1,
+                goto_target=12,
+            ),
+            "expected 2",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=2,
+                goto_target=12,
+            ),
+            "pred_arm must be 0 or 1",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=0,
+                goto_target=12,
+            ),
+            "pred_arm=0 but pred fallthrough is 20, not source 10",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=10,
+            ),
+            "self-loop to source",
+        ),
+        (
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=1,
+                goto_target=99,
+            ),
+            "goto target 99 not found",
+        ),
+    ),
+)
+def test_compile_patch_plan_rejects_invalid_branch_arm_clone_shapes(
+    modification: CloneConditionalAsGotoFromBranchArm,
+    match: str,
+):
+    with pytest.raises(ValueError, match=match):
+        compile_patch_plan([modification], _branch_arm_clone_cfg())

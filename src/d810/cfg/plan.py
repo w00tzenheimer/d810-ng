@@ -35,10 +35,14 @@ class ExecutionPolicy(str, Enum):
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateAndRedirect,
     DuplicateBlock,
+    DuplicateReplayAndRedirect,
+    DuplicateReplayEntry,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -47,12 +51,15 @@ from d810.cfg.graph_modification import (
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringGroup,
     DirectTerminalLoweringSite,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
 )
+from d810.cfg.materialization_payload import CapturedBlockBody
 
 
 @dataclass(frozen=True, order=True)
@@ -87,6 +94,7 @@ class PatchBlockSpec:
     incoming_edge: PatchEdgeRef | None = None
     outgoing_edges: tuple[PatchEdgeRef, ...] = ()
     instructions: tuple[InsnSnapshot, ...] = ()
+    captured_body: CapturedBlockBody | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +233,7 @@ class PatchConditionalRedirect:
     ref_block: int
     conditional_target: int
     fallthrough_target: int
+    old_target_serial: int | None = None
     instructions: tuple[InsnSnapshot, ...] = ()
 
     def to_graph_modification(self) -> CreateConditionalRedirect:
@@ -233,6 +242,7 @@ class PatchConditionalRedirect:
             ref_block=self.ref_block,
             conditional_target=self.conditional_target,
             fallthrough_target=self.fallthrough_target,
+            old_target_serial=self.old_target_serial,
             instructions=self.instructions,
         )
 
@@ -247,6 +257,7 @@ class PatchInsertBlock:
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...]
     old_target_serial: int | None = None
+    captured_body: CapturedBlockBody | None = None
 
     def to_graph_modification(self) -> InsertBlock:
         return InsertBlock(
@@ -254,6 +265,7 @@ class PatchInsertBlock:
             succ_serial=self.succ_serial,
             instructions=self.instructions,
             old_target_serial=self.old_target_serial,
+            captured_body=self.captured_body,
         )
 
 
@@ -280,6 +292,100 @@ class PatchDuplicateBlock:
             pred_serial=self.pred_serial,
             conditional_target=self.conditional_target,
             fallthrough_target=self.fallthrough_target,
+        )
+
+
+@dataclass(frozen=True)
+class PatchDuplicateReplayEntry:
+    """Finalized per-predecessor clone/replay route."""
+
+    pred_serial: int
+    target_serial: int
+    replay_block_id: VirtualBlockId
+    replay_serial: int
+    captured_body: CapturedBlockBody
+    clone_block_id: VirtualBlockId | None = None
+    clone_serial: int | None = None
+
+
+@dataclass(frozen=True)
+class PatchDuplicateReplayAndRedirect:
+    """Finalized duplicate-group replay materialization step."""
+
+    source_serial: int
+    dispatcher_entry: int
+    per_pred_replays: tuple[PatchDuplicateReplayEntry, ...]
+
+    def to_graph_modification(self) -> DuplicateReplayAndRedirect:
+        return DuplicateReplayAndRedirect(
+            source_serial=self.source_serial,
+            dispatcher_entry=self.dispatcher_entry,
+            per_pred_replays=tuple(
+                DuplicateReplayEntry(
+                    pred_serial=entry.pred_serial,
+                    target_serial=entry.target_serial,
+                    captured_body=entry.captured_body,
+                )
+                for entry in self.per_pred_replays
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PatchCloneConditionalAsGoto:
+    """Finalized clone-conditional-as-goto materialization step."""
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    source_serial: int
+    pred_serial: int
+    goto_target: int
+    source_successors: tuple[int, int]
+    conditional_target: int
+    fallthrough_target: int
+    reason: str = "fix_predecessor_clone_as_goto"
+
+    def to_graph_modification(self) -> CloneConditionalAsGoto:
+        return CloneConditionalAsGoto(
+            source_block=self.source_serial,
+            pred_serial=self.pred_serial,
+            goto_target=self.goto_target,
+            reason=self.reason,
+        )
+
+
+@dataclass(frozen=True)
+class PatchCloneConditionalAsGotoFromBranchArm:
+    """Finalized clone-conditional-as-goto-from-branch-arm materialization step.
+
+    Sibling of :class:`PatchCloneConditionalAsGoto` for the case where the
+    predecessor is itself a 2-way conditional whose ``pred_arm`` reaches the
+    cloned source.  Only ``pred_arm == 1`` (explicit branch arm) is supported
+    by the engine path today; ``pred_arm == 0`` records stay in legacy
+    fallback because no tested fallthrough-rewrite helper exists.
+    """
+
+    block_id: VirtualBlockId
+    assigned_serial: int
+    source_serial: int
+    pred_serial: int
+    pred_arm: int
+    goto_target: int
+    source_successors: tuple[int, int]
+    pred_successors: tuple[int, int]
+    pred_branch_target_serial: int
+    pred_fallthrough_target_serial: int
+    conditional_target: int
+    fallthrough_target: int
+    reason: str = "fix_predecessor_clone_as_goto_from_branch_arm"
+
+    def to_graph_modification(self) -> CloneConditionalAsGotoFromBranchArm:
+        return CloneConditionalAsGotoFromBranchArm(
+            source_block=self.source_serial,
+            pred_serial=self.pred_serial,
+            pred_arm=self.pred_arm,
+            goto_target=self.goto_target,
+            reason=self.reason,
         )
 
 
@@ -345,7 +451,7 @@ class PatchDirectTerminalLoweringGroup:
     return_block_serial: int
     suffix_serials: tuple[int, ...]
     sites: tuple[DirectTerminalLoweringSite, ...]
-    per_site_clone_assigned_serials: dict[int, tuple[VirtualBlockId, ...]]
+    per_site_clone_assigned_serials: dict[int, tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -371,10 +477,14 @@ BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
     DuplicateBlock,
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     DuplicateAndRedirect,
+    DuplicateReplayAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
+    DirectTerminalLoweringGroup,
 ]
 
 
@@ -407,6 +517,9 @@ PatchOperation = Union[
     PatchConditionalRedirect,
     PatchInsertBlock,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
     PatchDirectTerminalLoweringGroup,
@@ -502,6 +615,34 @@ class _PendingDuplicateBlock:
 
 
 @dataclass(frozen=True)
+class _PendingDuplicateReplayAndRedirect:
+    modification: DuplicateReplayAndRedirect
+    replay_block_ids: tuple[VirtualBlockId, ...]
+    clone_block_ids: tuple[VirtualBlockId | None, ...]
+
+
+@dataclass(frozen=True)
+class _PendingCloneConditionalAsGoto:
+    modification: CloneConditionalAsGoto
+    block_id: VirtualBlockId
+    source_successors: tuple[int, int]
+    conditional_target: int
+    fallthrough_target: int
+
+
+@dataclass(frozen=True)
+class _PendingCloneConditionalAsGotoFromBranchArm:
+    modification: CloneConditionalAsGotoFromBranchArm
+    block_id: VirtualBlockId
+    source_successors: tuple[int, int]
+    pred_successors: tuple[int, int]
+    pred_branch_target_serial: int
+    pred_fallthrough_target_serial: int
+    conditional_target: int
+    fallthrough_target: int
+
+
+@dataclass(frozen=True)
 class _PendingPrivateTerminalSuffix:
     modification: PrivateTerminalSuffix
     clone_block_ids: tuple[VirtualBlockId, ...]
@@ -511,6 +652,12 @@ class _PendingPrivateTerminalSuffix:
 class _PendingPrivateTerminalSuffixGroup:
     modification: PrivateTerminalSuffixGroup
     per_anchor_clone_block_ids: tuple[tuple[VirtualBlockId, ...], ...]
+
+
+@dataclass(frozen=True)
+class _PendingDirectTerminalLoweringGroup:
+    modification: DirectTerminalLoweringGroup
+    per_site_clone_block_ids: dict[int, tuple[VirtualBlockId, ...]]
 
 
 @dataclass(frozen=True)
@@ -531,10 +678,14 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             EdgeRedirectViaPredSplit,
             CreateConditionalRedirect,
             DuplicateBlock,
+            CloneConditionalAsGoto,
+            CloneConditionalAsGotoFromBranchArm,
             DuplicateAndRedirect,
+            DuplicateReplayAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
             PrivateTerminalSuffixGroup,
+            DirectTerminalLoweringGroup,
         ),
     )
 
@@ -574,7 +725,11 @@ def _rewrite_instruction_operand(
     operand: object,
     relocation_map: PatchRelocationMap,
 ) -> object:
-    block_num = getattr(operand, "block_num", None)
+    block_attr = "block_num"
+    block_num = getattr(operand, block_attr, None)
+    if not isinstance(block_num, int):
+        block_attr = "block_ref"
+        block_num = getattr(operand, block_attr, None)
     if not isinstance(block_num, int):
         return operand
 
@@ -582,7 +737,7 @@ def _rewrite_instruction_operand(
     if rewritten_block_num == block_num:
         return operand
 
-    replace_kwargs = {"block_num": rewritten_block_num}
+    replace_kwargs = {block_attr: rewritten_block_num}
     if hasattr(operand, "owned_mop"):
         replace_kwargs["owned_mop"] = None
     try:
@@ -672,18 +827,30 @@ def _infer_conditional_target(block: BlockSnapshot) -> int | None:
     if block.nsucc != 2 or not block.insn_snapshots:
         return None
 
+    def _operand_block_ref(operand: object) -> int | None:
+        for attr in ("block_num", "block_ref"):
+            block_ref = getattr(operand, attr, None)
+            if isinstance(block_ref, int):
+                return block_ref
+        return None
+
     tail = block.insn_snapshots[-1]
     for slot_name, operand in tail.operand_slots:
         if slot_name != "d":
             continue
-        block_num = getattr(operand, "block_num", None)
-        if isinstance(block_num, int):
-            return block_num
+        block_ref = _operand_block_ref(operand)
+        if block_ref is not None:
+            return block_ref
+
+    if tail.d is not None:
+        block_ref = _operand_block_ref(tail.d)
+        if block_ref is not None:
+            return block_ref
 
     for operand in tail.operands:
-        block_num = getattr(operand, "block_num", None)
-        if isinstance(block_num, int):
-            return block_num
+        block_ref = _operand_block_ref(operand)
+        if block_ref is not None:
+            return block_ref
 
     return None
 
@@ -728,6 +895,236 @@ def _classify_duplicate_pred_redirect(
     return "unsupported"
 
 
+def _compile_clone_conditional_as_goto_step(
+    modification: CloneConditionalAsGoto,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingCloneConditionalAsGoto, PatchBlockSpec]:
+    source_block = cfg.get_block(modification.source_block)
+    pred_block = cfg.get_block(modification.pred_serial)
+    target_block = cfg.get_block(modification.goto_target)
+    if source_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGoto source block {modification.source_block} not found"
+        )
+    if pred_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGoto predecessor block {modification.pred_serial} not found"
+        )
+    if target_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGoto goto target {modification.goto_target} not found"
+        )
+    if pred_block.nsucc != 1:
+        raise ValueError(
+            f"CloneConditionalAsGoto predecessor {modification.pred_serial} "
+            f"has {pred_block.nsucc} successors; expected 1"
+        )
+    if pred_block.succs != (modification.source_block,):
+        raise ValueError(
+            f"CloneConditionalAsGoto predecessor {modification.pred_serial} "
+            f"does not target source {modification.source_block}"
+        )
+    if source_block.nsucc != 2:
+        raise ValueError(
+            f"CloneConditionalAsGoto source {modification.source_block} "
+            f"has {source_block.nsucc} successors; expected 2"
+        )
+
+    conditional_target = _infer_conditional_target(source_block)
+    if conditional_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGoto source {modification.source_block} "
+            "has no explicit conditional target"
+        )
+    if conditional_target not in source_block.succs:
+        raise ValueError(
+            f"CloneConditionalAsGoto conditional target {conditional_target} "
+            f"is not in source successors {source_block.succs}"
+        )
+    fallthrough_target = _infer_fallthrough_target(
+        source_block,
+        conditional_target=conditional_target,
+    )
+    if fallthrough_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGoto source {modification.source_block} "
+            f"has ambiguous fallthrough successors {source_block.succs}"
+        )
+    if modification.goto_target == modification.source_block:
+        raise ValueError("CloneConditionalAsGoto target would self-loop to source")
+    if modification.goto_target not in {conditional_target, fallthrough_target}:
+        raise ValueError(
+            f"CloneConditionalAsGoto target {modification.goto_target} is not "
+            f"one of conditional arms {conditional_target}, {fallthrough_target}"
+        )
+
+    block_id = allocator.alloc("clone_conditional_as_goto")
+    spec = PatchBlockSpec(
+        block_id=block_id,
+        kind="clone_conditional_as_goto",
+        template_block=modification.source_block,
+        incoming_edge=PatchEdgeRef(
+            source=modification.pred_serial,
+            target=modification.source_block,
+        ),
+        outgoing_edges=(
+            PatchEdgeRef(source=block_id, target=modification.goto_target),
+        ),
+    )
+    return (
+        _PendingCloneConditionalAsGoto(
+            modification=modification,
+            block_id=block_id,
+            source_successors=(
+                int(source_block.succs[0]),
+                int(source_block.succs[1]),
+            ),
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ),
+        spec,
+    )
+
+
+def _compile_clone_conditional_as_goto_from_branch_arm_step(
+    modification: CloneConditionalAsGotoFromBranchArm,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingCloneConditionalAsGotoFromBranchArm, PatchBlockSpec]:
+    """Compile the 2-way-pred branch-arm clone-as-goto shape into PatchPlan IR.
+
+    Mirrors :func:`_compile_clone_conditional_as_goto_step` but validates a
+    2-way predecessor and threads ``pred_arm`` + pred-side arm targets so the
+    backend translator can pick ``change_2way_block_conditional_successor``
+    instead of ``change_1way_block_successor``.  Only ``pred_arm == 1`` is
+    supported by the engine path today (mirrors planner constraint
+    PRED_FALLTHROUGH_ARM_NOT_SUPPORTED).
+    """
+    source_block = cfg.get_block(modification.source_block)
+    pred_block = cfg.get_block(modification.pred_serial)
+    target_block = cfg.get_block(modification.goto_target)
+    if source_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source block {modification.source_block} not found"
+        )
+    if pred_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor block {modification.pred_serial} not found"
+        )
+    if target_block is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm goto target {modification.goto_target} not found"
+        )
+    if pred_block.nsucc != 2:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            f"has {pred_block.nsucc} successors; expected 2"
+        )
+    if modification.source_block not in pred_block.succs:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            f"successors {pred_block.succs} do not include source {modification.source_block}"
+        )
+    if modification.pred_arm not in (0, 1):
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm must be 0 or 1, "
+            f"got {modification.pred_arm}"
+        )
+    pred_branch_target = _infer_conditional_target(pred_block)
+    if pred_branch_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            "has no explicit branch arm"
+        )
+    pred_fallthrough_target = _infer_fallthrough_target(
+        pred_block, conditional_target=pred_branch_target
+    )
+    if pred_fallthrough_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm predecessor {modification.pred_serial} "
+            "arms collapse to a single target"
+        )
+    if modification.pred_arm == 1 and modification.source_block != pred_branch_target:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm=1 but pred branch target is "
+            f"{pred_branch_target}, not source {modification.source_block}"
+        )
+    if modification.pred_arm == 0 and modification.source_block != pred_fallthrough_target:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm pred_arm=0 but pred fallthrough is "
+            f"{pred_fallthrough_target}, not source {modification.source_block}"
+        )
+
+    if source_block.nsucc != 2:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            f"has {source_block.nsucc} successors; expected 2"
+        )
+    conditional_target = _infer_conditional_target(source_block)
+    if conditional_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            "has no explicit conditional target"
+        )
+    if conditional_target not in source_block.succs:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm conditional target {conditional_target} "
+            f"is not in source successors {source_block.succs}"
+        )
+    fallthrough_target = _infer_fallthrough_target(
+        source_block,
+        conditional_target=conditional_target,
+    )
+    if fallthrough_target is None:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm source {modification.source_block} "
+            f"has ambiguous fallthrough successors {source_block.succs}"
+        )
+    if modification.goto_target == modification.source_block:
+        raise ValueError(
+            "CloneConditionalAsGotoFromBranchArm target would self-loop to source"
+        )
+    if modification.goto_target not in {conditional_target, fallthrough_target}:
+        raise ValueError(
+            f"CloneConditionalAsGotoFromBranchArm target {modification.goto_target} is not "
+            f"one of conditional arms {conditional_target}, {fallthrough_target}"
+        )
+
+    block_id = allocator.alloc("clone_conditional_as_goto_from_branch_arm")
+    spec = PatchBlockSpec(
+        block_id=block_id,
+        kind="clone_conditional_as_goto_from_branch_arm",
+        template_block=modification.source_block,
+        incoming_edge=PatchEdgeRef(
+            source=modification.pred_serial,
+            target=modification.source_block,
+        ),
+        outgoing_edges=(
+            PatchEdgeRef(source=block_id, target=modification.goto_target),
+        ),
+    )
+    return (
+        _PendingCloneConditionalAsGotoFromBranchArm(
+            modification=modification,
+            block_id=block_id,
+            source_successors=(
+                int(source_block.succs[0]),
+                int(source_block.succs[1]),
+            ),
+            pred_successors=(
+                int(pred_block.succs[0]),
+                int(pred_block.succs[1]),
+            ),
+            pred_branch_target_serial=int(pred_branch_target),
+            pred_fallthrough_target_serial=int(pred_fallthrough_target),
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ),
+        spec,
+    )
+
+
 def _compile_legacy_block_step(
     modification: BlockCreatingGraphModification,
     allocator: _VirtualIdAllocator,
@@ -755,6 +1152,7 @@ def _compile_legacy_block_step(
             succ_serial=succ,
             instructions=insns,
             old_target_serial=old_target,
+            captured_body=captured_body,
         ):
             effective_old_target = succ if old_target is None else old_target
             block_id = allocator.alloc("insert_block")
@@ -764,6 +1162,7 @@ def _compile_legacy_block_step(
                 incoming_edge=PatchEdgeRef(source=pred, target=effective_old_target),
                 outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                 instructions=insns,
+                captured_body=captured_body,
             )
             return LegacyBlockOperation(modification=modification, block_id=block_id), spec
 
@@ -888,8 +1287,128 @@ def _compile_duplicate_block_step(
     )
 
 
+def _compile_duplicate_replay_and_redirect_step(
+    modification: DuplicateReplayAndRedirect,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingDuplicateReplayAndRedirect, tuple[PatchBlockSpec, ...]]:
+    source_block = cfg.get_block(modification.source_serial)
+    dispatcher_block = cfg.get_block(modification.dispatcher_entry)
+    if source_block is None:
+        raise ValueError(
+            f"DuplicateReplayAndRedirect source {modification.source_serial} not found"
+        )
+    if dispatcher_block is None:
+        raise ValueError(
+            f"DuplicateReplayAndRedirect dispatcher {modification.dispatcher_entry} not found"
+        )
+    if source_block.nsucc != 1 or source_block.succs[0] != modification.dispatcher_entry:
+        raise ValueError(
+            "DuplicateReplayAndRedirect requires source to be one-way to dispatcher"
+        )
+    if len(modification.per_pred_replays) < 2:
+        raise ValueError("DuplicateReplayAndRedirect requires at least two predecessors")
+
+    source_preds = set(source_block.preds)
+    seen_preds: set[int] = set()
+    replay_ids: list[VirtualBlockId] = []
+    clone_ids: list[VirtualBlockId | None] = []
+    for index, entry in enumerate(modification.per_pred_replays):
+        if entry.pred_serial in seen_preds:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect duplicate predecessor {entry.pred_serial}"
+            )
+        seen_preds.add(entry.pred_serial)
+
+        pred_block = cfg.get_block(entry.pred_serial)
+        target_block = cfg.get_block(entry.target_serial)
+        if pred_block is None:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect predecessor {entry.pred_serial} not found"
+            )
+        if target_block is None:
+            raise ValueError(
+                f"DuplicateReplayAndRedirect target {entry.target_serial} not found"
+            )
+        if pred_block.nsucc != 1 or pred_block.succs[0] != modification.source_serial:
+            raise ValueError(
+                "DuplicateReplayAndRedirect requires every predecessor to be one-way to source"
+            )
+        if entry.target_serial in {
+            modification.source_serial,
+            modification.dispatcher_entry,
+        }:
+            raise ValueError("DuplicateReplayAndRedirect target loops through cleanup source")
+        if target_block.nsucc > 1:
+            raise ValueError("DuplicateReplayAndRedirect target requires trampoline")
+        if (
+            entry.captured_body.instruction_count <= 0
+            or entry.captured_body.summary.contains_call
+        ):
+            raise ValueError(
+                "DuplicateReplayAndRedirect requires nonempty no-call replay bodies"
+            )
+
+        replay_ids.append(allocator.alloc("duplicate_replay_insert"))
+        clone_ids.append(None if index == 0 else allocator.alloc("duplicate_replay_clone"))
+
+    if seen_preds != source_preds:
+        raise ValueError("DuplicateReplayAndRedirect must cover every source predecessor")
+
+    specs: list[PatchBlockSpec] = []
+    for entry, replay_id, clone_id in zip(
+        modification.per_pred_replays,
+        replay_ids,
+        clone_ids,
+    ):
+        replay_source: PatchBlockRef = (
+            modification.source_serial if clone_id is None else clone_id
+        )
+        specs.append(
+            PatchBlockSpec(
+                block_id=replay_id,
+                kind="duplicate_replay_insert",
+                incoming_edge=PatchEdgeRef(
+                    source=replay_source,
+                    target=modification.dispatcher_entry,
+                ),
+                outgoing_edges=(PatchEdgeRef(source=replay_id, target=entry.target_serial),),
+                captured_body=entry.captured_body,
+            )
+        )
+
+    for entry, replay_id, clone_id in zip(
+        modification.per_pred_replays,
+        replay_ids,
+        clone_ids,
+    ):
+        if clone_id is None:
+            continue
+        specs.append(
+            PatchBlockSpec(
+                block_id=clone_id,
+                kind="duplicate_replay_clone",
+                template_block=modification.source_serial,
+                incoming_edge=PatchEdgeRef(
+                    source=entry.pred_serial,
+                    target=modification.source_serial,
+                ),
+                outgoing_edges=(PatchEdgeRef(source=clone_id, target=replay_id),),
+            )
+        )
+
+    return (
+        _PendingDuplicateReplayAndRedirect(
+            modification=modification,
+            replay_block_ids=tuple(replay_ids),
+            clone_block_ids=tuple(clone_ids),
+        ),
+        tuple(specs),
+    )
+
+
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingDirectTerminalLoweringGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -957,6 +1476,7 @@ def _finalize_step(
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                old_target_serial=old_target,
                 instructions=instructions,
             ),
             block_id=block_id,
@@ -977,6 +1497,11 @@ def _finalize_step(
                 ref_block=relocation_map.rewrite_serial(ref),
                 conditional_target=relocation_map.rewrite_serial(conditional),
                 fallthrough_target=relocation_map.rewrite_serial(fallthrough),
+                old_target_serial=(
+                    None
+                    if old_target is None
+                    else relocation_map.rewrite_serial(old_target)
+                ),
                 instructions=_rewrite_instruction_snapshots(instructions, relocation_map),
             )
 
@@ -986,6 +1511,7 @@ def _finalize_step(
                 succ_serial=succ,
                 instructions=insns,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ),
             block_id=block_id,
         ):
@@ -1003,6 +1529,7 @@ def _finalize_step(
                     if old_target is None
                     else relocation_map.rewrite_serial(old_target)
                 ),
+                captured_body=captured_body,
             )
 
         case _PendingDuplicateBlock(
@@ -1054,6 +1581,121 @@ def _finalize_step(
                 fallthrough_serial=fallthrough_serial,
             )
 
+        case _PendingDuplicateReplayAndRedirect(
+            modification=DuplicateReplayAndRedirect(
+                source_serial=source,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=per_pred_replays,
+            ),
+            replay_block_ids=replay_ids,
+            clone_block_ids=clone_ids,
+        ):
+            finalized_replays: list[PatchDuplicateReplayEntry] = []
+            for entry, replay_id, clone_id in zip(
+                per_pred_replays,
+                replay_ids,
+                clone_ids,
+            ):
+                replay_serial = relocation_map.assigned_serial_for(replay_id)
+                if replay_serial is None:
+                    raise ValueError(f"Missing assigned serial for {replay_id}")
+                clone_serial = None
+                if clone_id is not None:
+                    clone_serial = relocation_map.assigned_serial_for(clone_id)
+                    if clone_serial is None:
+                        raise ValueError(f"Missing assigned serial for {clone_id}")
+                finalized_replays.append(
+                    PatchDuplicateReplayEntry(
+                        pred_serial=entry.pred_serial,
+                        target_serial=relocation_map.rewrite_serial(entry.target_serial),
+                        replay_block_id=replay_id,
+                        replay_serial=replay_serial,
+                        captured_body=entry.captured_body,
+                        clone_block_id=clone_id,
+                        clone_serial=clone_serial,
+                    )
+                )
+            return PatchDuplicateReplayAndRedirect(
+                source_serial=source,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=tuple(finalized_replays),
+            )
+
+        case _PendingCloneConditionalAsGoto(
+            modification=CloneConditionalAsGoto(
+                source_block=src,
+                pred_serial=pred,
+                goto_target=target,
+                reason=reason,
+            ),
+            block_id=block_id,
+            source_successors=source_successors,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            return PatchCloneConditionalAsGoto(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=relocation_map.rewrite_serial(target),
+                source_successors=tuple(
+                    relocation_map.rewrite_serial(serial)
+                    for serial in source_successors
+                ),
+                conditional_target=relocation_map.rewrite_serial(conditional_target),
+                fallthrough_target=relocation_map.rewrite_serial(fallthrough_target),
+                reason=reason,
+            )
+
+        case _PendingCloneConditionalAsGotoFromBranchArm(
+            modification=CloneConditionalAsGotoFromBranchArm(
+                source_block=src,
+                pred_serial=pred,
+                pred_arm=pred_arm,
+                goto_target=target,
+                reason=reason,
+            ),
+            block_id=block_id,
+            source_successors=source_successors,
+            pred_successors=pred_successors,
+            pred_branch_target_serial=pred_branch_target,
+            pred_fallthrough_target_serial=pred_fallthrough_target,
+            conditional_target=conditional_target,
+            fallthrough_target=fallthrough_target,
+        ):
+            assigned_serial = relocation_map.assigned_serial_for(block_id)
+            if assigned_serial is None:
+                raise ValueError(f"Missing assigned serial for {block_id}")
+            return PatchCloneConditionalAsGotoFromBranchArm(
+                block_id=block_id,
+                assigned_serial=assigned_serial,
+                source_serial=src,
+                pred_serial=pred,
+                pred_arm=pred_arm,
+                goto_target=relocation_map.rewrite_serial(target),
+                source_successors=tuple(
+                    relocation_map.rewrite_serial(serial)
+                    for serial in source_successors
+                ),
+                pred_successors=tuple(
+                    relocation_map.rewrite_serial(serial)
+                    for serial in pred_successors
+                ),
+                pred_branch_target_serial=relocation_map.rewrite_serial(
+                    pred_branch_target
+                ),
+                pred_fallthrough_target_serial=relocation_map.rewrite_serial(
+                    pred_fallthrough_target
+                ),
+                conditional_target=relocation_map.rewrite_serial(conditional_target),
+                fallthrough_target=relocation_map.rewrite_serial(fallthrough_target),
+                reason=reason,
+            )
+
         case _PendingPrivateTerminalSuffix(
             modification=PrivateTerminalSuffix(
                 anchor_serial=anchor,
@@ -1103,6 +1745,32 @@ def _finalize_step(
                 anchors=anchors,
                 per_anchor_clone_block_ids=per_anchor_ids,
                 per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
+            )
+
+        case _PendingDirectTerminalLoweringGroup(
+            modification=DirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                sites=sites,
+            ),
+            per_site_clone_block_ids=per_site_ids,
+        ):
+            per_site_assigned: dict[int, tuple[int, ...]] = {}
+            for anchor, clone_ids in per_site_ids.items():
+                assigned: list[int] = []
+                for clone_id in clone_ids:
+                    serial = relocation_map.assigned_serial_for(clone_id)
+                    if serial is None:
+                        raise ValueError(f"Missing assigned serial for {clone_id}")
+                    assigned.append(serial)
+                per_site_assigned[int(anchor)] = tuple(assigned)
+            return PatchDirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                return_block_serial=return_block,
+                suffix_serials=suffix,
+                sites=sites,
+                per_site_clone_assigned_serials=per_site_assigned,
             )
 
         case _PendingReorderBlocks(
@@ -1264,6 +1932,7 @@ def compile_patch_plan(
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                old_target_serial=_old_target,
             ):
                 if cfg is None:
                     block_id = allocator.alloc("conditional_redirect")
@@ -1330,6 +1999,7 @@ def compile_patch_plan(
                 succ_serial=succ,
                 instructions=insns,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ):
                 effective_old_target = succ if old_target is None else old_target
                 if cfg is None:
@@ -1348,6 +2018,7 @@ def compile_patch_plan(
                             ),
                             outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
                             instructions=insns,
+                            captured_body=captured_body,
                         )
                     )
                     raw_steps.append(
@@ -1373,6 +2044,50 @@ def compile_patch_plan(
                         pending_step, duplicate_specs = compiled_duplicate
                         raw_steps.append(pending_step)
                         new_blocks.extend(duplicate_specs)
+
+            case DuplicateReplayAndRedirect():
+                if cfg is None:
+                    raise ValueError(
+                        "compile_patch_plan requires FlowGraph context for "
+                        "DuplicateReplayAndRedirect"
+                    )
+                pending_step, replay_specs = _compile_duplicate_replay_and_redirect_step(
+                    modification,
+                    cfg,
+                    allocator,
+                )
+                raw_steps.append(pending_step)
+                new_blocks.extend(replay_specs)
+
+            case CloneConditionalAsGoto():
+                if cfg is None:
+                    raise ValueError(
+                        "compile_patch_plan requires FlowGraph context for "
+                        "CloneConditionalAsGoto"
+                    )
+                pending_step, clone_spec = _compile_clone_conditional_as_goto_step(
+                    modification,
+                    cfg,
+                    allocator,
+                )
+                raw_steps.append(pending_step)
+                new_blocks.append(clone_spec)
+
+            case CloneConditionalAsGotoFromBranchArm():
+                if cfg is None:
+                    raise ValueError(
+                        "compile_patch_plan requires FlowGraph context for "
+                        "CloneConditionalAsGotoFromBranchArm"
+                    )
+                pending_step, clone_spec = (
+                    _compile_clone_conditional_as_goto_from_branch_arm_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
+                )
+                raw_steps.append(pending_step)
+                new_blocks.append(clone_spec)
 
             case DuplicateAndRedirect(
                 source_serial=src,
@@ -1480,6 +2195,69 @@ def compile_patch_plan(
                     )
                 )
 
+            case DirectTerminalLoweringGroup(
+                shared_entry_serial=shared_entry,
+                suffix_serials=suffix,
+                sites=sites,
+            ):
+                if not suffix:
+                    raise ValueError(
+                        "DirectTerminalLoweringGroup requires non-empty suffix_serials"
+                    )
+                per_site_clone_ids: dict[int, tuple[VirtualBlockId, ...]] = {}
+                for site in sites:
+                    if site.kind is DirectTerminalLoweringKind.RETURN_CONST:
+                        per_site_clone_ids[int(site.anchor_serial)] = ()
+                        continue
+                    clone_sources = tuple(
+                        int(serial) for serial in site.materializer_serials
+                    )
+                    if not clone_sources:
+                        clone_sources = tuple(int(serial) for serial in suffix[:-1])
+                    if not clone_sources:
+                        raise ValueError(
+                            "DirectTerminalLoweringGroup requires materializer "
+                            "blocks or a non-terminal suffix"
+                        )
+                    site_clone_ids: list[VirtualBlockId] = []
+                    for idx, source_serial in enumerate(clone_sources):
+                        clone_id = allocator.alloc(
+                            f"direct_terminal_a{site.anchor_serial}"
+                        )
+                        site_clone_ids.append(clone_id)
+                        if idx < len(clone_sources) - 1:
+                            next_clone_id = VirtualBlockId(
+                                namespace=f"direct_terminal_a{site.anchor_serial}",
+                                ordinal=clone_id.ordinal + 1,
+                            )
+                            outgoing = (
+                                PatchEdgeRef(source=clone_id, target=next_clone_id),
+                            )
+                        else:
+                            outgoing = ()
+                        incoming = None
+                        if idx == 0:
+                            incoming = PatchEdgeRef(
+                                source=int(site.anchor_serial),
+                                target=int(shared_entry),
+                            )
+                        new_blocks.append(
+                            PatchBlockSpec(
+                                block_id=clone_id,
+                                kind="direct_terminal_lowering_clone",
+                                template_block=source_serial,
+                                incoming_edge=incoming,
+                                outgoing_edges=outgoing,
+                            )
+                        )
+                    per_site_clone_ids[int(site.anchor_serial)] = tuple(site_clone_ids)
+                raw_steps.append(
+                    _PendingDirectTerminalLoweringGroup(
+                        modification=modification,
+                        per_site_clone_block_ids=per_site_clone_ids,
+                    )
+                )
+
             case ReorderBlocks(
                 dfs_block_order=order,
                 non_2way_serials=non_2way,
@@ -1564,6 +2342,9 @@ __all__ = [
     "PatchConditionalRedirect",
     "PatchInsertBlock",
     "PatchDuplicateBlock",
+    "PatchDuplicateReplayEntry",
+    "PatchDuplicateReplayAndRedirect",
+    "PatchCloneConditionalAsGoto",
     "PatchPrivateTerminalSuffix",
     "PatchPrivateTerminalSuffixGroup",
     "PatchDirectTerminalLoweringGroup",

@@ -79,6 +79,7 @@ These are not part of the default live profile.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `D810_DEBUG_LOGGING=1` | off | Sets d810 loggers to debug level. The Docker runner forwards this via `--enable-debug-logging`. |
+| `D810_FACT_LIFECYCLE=0` | enabled | Disables fact lifecycle evidence and behavior that depends on that evidence. The Docker runner exposes this opt-out as `--disable-fact-lifecycle`; there is no enable flag because fact lifecycle is default-on. |
 | `D810_DUMP_ALL_LINEARIZED_PROGRAMS=1` | off | Dumps all linearized program variants instead of only the default. |
 | `D810_DIAG_FULL_COVERAGE_CHAIN=1` | off | Enables the SCC/full-coverage chain diagnostic probe. |
 | `D810_FENCE_INSN_OPT_AT_GLBOPT1=1` | off | Fences instruction optimizers at GLBOPT1 for causality tests. |

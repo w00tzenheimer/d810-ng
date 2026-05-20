@@ -10,21 +10,23 @@ design.
 The stack is **observability-first**: every layer persists evidence to
 the diag DB and is queryable via the ``d810.diagnostics`` CLI.  The one
 behavior consumer (``selected_alternate_edge_override``) is gated on
-two env vars and remains a no-op when either is unset.
+fact lifecycle evidence, which is enabled by default; set
+``D810_FACT_LIFECYCLE=0`` to disable the evidence path. Debug logging is
+not behavior-bearing and must not be used as a proxy for this setting.
 
 ## Quick reference
 
 | layer | module | persistence table | gate |
 | - | - | - | - |
-| State-write anchor | `recon.facts.collectors.state_write_anchor` | `fact_observations(kind=StateWriteAnchorFact)` + `fact_mappings(status=STATE_CONST_REWRITTEN)` | `D810_FACT_LIFECYCLE=1` |
-| State-transition anchor | `recon.facts.collectors.state_transition_anchor` | `fact_observations(kind=StateTransitionAnchorFact)` | `D810_FACT_LIFECYCLE=1` |
+| State-write anchor | `recon.facts.collectors.state_write_anchor` | `fact_observations(kind=StateWriteAnchorFact)` + `fact_mappings(status=STATE_CONST_REWRITTEN)` | enabled by default; `D810_FACT_LIFECYCLE=0` disables |
+| State-transition anchor | `recon.facts.collectors.state_transition_anchor` | `fact_observations(kind=StateTransitionAnchorFact)` | enabled by default; `D810_FACT_LIFECYCLE=0` disables |
 | Edge classification | `core.diag.edge_diagnostics` | `dag_edge_diagnostics` | none (post-hoc CLI) |
 | BST resolution | `core.diag.bst_resolution` | `state_transition_bst_resolutions` | none (post-hoc CLI; reads `INTERVAL_DISPATCHER_ROWS` from log) |
 | Alternate correlation | `core.diag.alternate_correlation` | `dag_edge_alternate_correlations` | none (post-hoc CLI) |
 | Alternate selection | `core.diag.alternate_selection` | `dag_edge_alternate_selections` | none (post-hoc CLI) |
-| Selected-alternate DAG override (BEHAVIOR) | `recon.flow.selected_alternate_edge_override` | (mutates in-memory `LinearizedStateDag.edges`) | `D810_FACT_LIFECYCLE=1` |
-| Terminal-byte fact guards (BEHAVIOR) | `optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard` and `return_carrier_fact_guard` | (filters CFG modifications during executor) | `D810_FACT_LIFECYCLE=1` |
-| HCC chained-skip terminal-byte gate (BEHAVIOR) | `optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer._emit_chained_call_anchor` | (suppresses guard-skip RedirectBranch emission at point) | `D810_FACT_LIFECYCLE=1` |
+| Selected-alternate DAG override (BEHAVIOR) | `recon.flow.selected_alternate_edge_override` | (mutates in-memory `LinearizedStateDag.edges`) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
+| Terminal-byte fact guards (BEHAVIOR) | `optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard` and `return_carrier_fact_guard` | (filters CFG modifications during executor) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
+| HCC chained-skip terminal-byte gate (BEHAVIOR) | `optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer._emit_chained_call_anchor` | (suppresses guard-skip RedirectBranch emission at point) | fact lifecycle evidence; `D810_FACT_LIFECYCLE=0` disables |
 
 ## Cascade flow
 
@@ -187,7 +189,8 @@ after `snapshot_reconstruction_dag(...)` and BEFORE
 participates in candidate generation.
 
 Strict gates (all must hold for an override to fire):
-- `D810_FACT_LIFECYCLE=1`
+- fact lifecycle evidence is available (default; `D810_FACT_LIFECYCLE=0`
+  disables it)
 - caller passed a non-None `(diag_db, snap_id)` from the snapshot result
 - `dag_edge_diagnostics.classification = 'COLLAPSED_TO_REWRITTEN_TARGET'`
 - exactly ONE `dag_edge_alternate_selections` row with `selected = 1`
@@ -228,7 +231,7 @@ in commits `87bd185c` through `c9d094ea` and the rolled-back
    `early_return_arm_no_later_terminal_tail`.
 
 3. **Recon-DAG override is empirically inert at the pseudocode
-   level.**  When `D810_FACT_LIFECYCLE=1`, the override fires (22
+   level.**  With default fact lifecycle evidence, the override fires (22
    substitutions across 4 strategy passes).  The recon DAG's
    `dag.edges` are mutated.  But the modifications emitted by HCC at
    snap 7 are byte-identical between override-on and override-off
@@ -253,39 +256,94 @@ in commits `87bd185c` through `c9d094ea` and the rolled-back
    Z3 confirmed `(v_528 + v_508) == v_4F8` is SAT (counterexample
    `v22 = 0x7FF7E50B1B8DC1EC`).  Folding it would not help.
 
-6. **The remaining harness divergence is loop-carrier loss.**
+6. **The remaining harness divergence is loop-predicate value loss.**
    `%var_3A8` (v22) is written only by `blk[151]`/`[186]` *outside*
    the post-HCC loop SCC.  Loop back-edges `[79, 236, 52] -> 81`
    never traverse a v22 writer, so v22 stays invariant per
    iteration in the rendered C transliteration.  D810's HCC
    linearization absorbed the dispatcher round-trip that originally
-   refreshed the carrier each iteration but did not preserve a
-   per-iteration carrier write inside the loop region.
+   refreshed the loop-predicate value each iteration but did not
+   preserve a per-iteration value-flow def inside the loop region.
 
 ## Architectural ruling and next direction
 
 For state-machine deobfuscation cases where the harness still
 diverges after applying every fact-rooted guard, override, and
-correlation, the load-bearing failure is **loop-carrier
+correlation, the load-bearing failure is **loop-predicate value
 preservation**, not byte-tail topology and not opaque-predicate
 folding.
 
 The next architectural unit (deferred from the prior session) is a
-`LoopCarrierFact` substrate that:
+`LoopPredicateValueFact` substrate that:
 
-1. captures pre-HCC carrier writers + readers + loop SCC at
+1. captures pre-HCC loop-predicate value defs + uses + loop SCC at
    LOCOPT/CALLS,
-2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations,
+2. classifies `LOOP_CARRIER_WRITER_OUTSIDE_SCC` violations (the source
+   collector still emits `LoopCarrierFact`; projected value-flow rows use
+   `LoopPredicateValueFact`),
 3. persists fact rows mirroring the existing
    `state_write_anchor` / `state_transition_anchor` shape.
 
 Behavior, after the diagnostic substrate proves stable, is one of:
 - **preserve route** (preferred first): HCC refuses redirects that
-  move a carrier writer out of the loop SCC.  Mirrors the
-  return-carrier rule.
-- **reinsert route**: HCC materializes a safe carrier write at the
-  loop update point.
+  move a loop-predicate value def out of the loop SCC.  Mirrors the
+  return materialization-point rule.
+- **reinsert route**: HCC materializes a safe loop-predicate value
+  def at the loop update point.
 
-Do NOT pick a route until the `LoopCarrierFact` table shows the
-violation persisted and queryable for `sub_7FFD`'s v22 case plus at
-least one secondary case (likely the byte-counter).
+Do NOT pick a route until the `LoopPredicateValueFact` table shows
+the violation persisted and queryable for `sub_7FFD`'s v22 case plus
+at least one secondary case (likely the byte-counter).
+
+---
+
+## Vocabulary: value-flow facts and schema canonicalization
+
+The fact ontology described above is the **value-flow** family per
+``docs/plans/2026-05-18-value-flow-terminology-rename-design.md``. New
+projected value-flow facts use canonical serialized
+``FactObservation.kind`` values. The diagnostic alias registry at
+``d810.recon.facts.value_flow.alias_registry`` is the canonicalization
+boundary for observed producer names and previous schema names; it is not a
+reason for new projected value-flow rows to emit carrier-era strings.
+
+When reading older code paths, diag SQL, or archived notes, translate
+as follows:
+
+|Read|Mean|
+|-|-|
+|carrier fact|value-flow fact|
+|carrier|abstract location|
+|`ObservableStoreFact` (kind)|`ObservableMemoryDefFact` (type)|
+|observable output store evidence|`ObservableOutputFact` (type)|
+|`CarrierStorePromotionFact` (kind)|`ScalarPromotionFact` (type)|
+|`SameCarrierAliasFact` (kind)|`MustAliasFact` (type)|
+|local pointer alias-set evidence|`MayAliasFact` (type)|
+|`LocalStorageScalarizationFact` (kind)|`ScalarReplacementFact` (type)|
+|`ExpressionCarrierFact` (kind)|`SymbolicExpressionFact` (type)|
+|`LoopPredicateCarrierFact` (kind)|`LoopPredicateValueFact` (type)|
+|`CallResultCarrierFact` (kind)|`CallReturnValueFact` (type)|
+|`GenericInductionCarrierFact` (kind)|`InductionVariableFact` (type)|
+|`TerminalMaterializationFact` (kind)|`MaterializationPointFact` (type)|
+|Hodur `ReturnCarrierFact` slot use|`MemoryUseFact` (type)|
+|Hodur `ReturnFrontierFact` merge|`MemoryPhiFact` (type)|
+|Hodur byte-emitter destination expression|`PointsToFact` (type)|
+|Hodur `ReturnCarrierFact` returned value|`ReturnValueFact` (type)|
+|`StateVariableWriteFact` (kind)|`StateWriteFact` (type)|
+|`StateTransitionCarrierFact` (kind)|`StateTransitionFact` (type)|
+|`SideEffectCorridorFact` (kind)|`EffectPathFact` (type)|
+|`CallSideEffectAnchorFact` (kind)|`CallEffectSummaryFact` (type)|
+|`InductionCarrierFactCollector`|`InductionVariableFactCollector`|
+|`LoopCarrierFactCollector`|`LoopPredicateValueFactCollector`|
+|`ReturnCarrierFactCollector`|`ReturnSlotFactCollector`; `ReturnValueFactCollector` projects the same Hodur evidence into `ReturnValueFact`|
+|`OllvmSemanticCarrierFactCollector`|`OllvmValueFlowEvidenceCollector`|
+
+The carrier-era collector class names and ``d810.recon.facts.carrier`` import
+shim are removed. Raw source observations may still use source-ontology names
+such as ``ReturnCarrierFact`` because those are producer evidence rows, not
+projected value-flow rows.
+
+See the Phase 0 inventory under ``.tmp/terminology_rename/`` for the
+full glossary, term definitions (materialization point, ModRef,
+MemoryDef vs MemoryUse vs MemoryPhi, etc.), and the rename-map
+rationale.

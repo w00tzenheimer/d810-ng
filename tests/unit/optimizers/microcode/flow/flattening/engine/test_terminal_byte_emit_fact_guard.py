@@ -3,12 +3,23 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.cfg.graph_modification import (
+    DirectTerminalLoweringGroup,
+    DirectTerminalLoweringKind,
+    DirectTerminalLoweringSite,
+    PrivateTerminalSuffixGroup,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.optimizers.microcode.flow.flattening.engine import (
     terminal_byte_emit_fact_guard,
 )
 from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
+    append_protected_non_carrier_return_writer_direct_lowerings,
     filter_terminal_byte_emit_fact_redirects,
+)
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierCarrierClassification,
 )
 from d810.recon.facts import FactObservation, ValidatedFactView
 
@@ -69,7 +80,7 @@ def _patch_state_const_refs(monkeypatch, refs: frozenset[str]) -> None:
     monkeypatch.setattr(
         terminal_byte_emit_fact_guard,
         "collect_const_var_refs_in_block",
-        lambda _mba, _block_serial: refs,
+        lambda _mba, _block_serial, **_kwargs: refs,
     )
 
 
@@ -278,6 +289,110 @@ def test_zero_guard_return_successor_retargets_to_constant_materializer(
     assert rejections[0].replacement_target == 27
 
 
+def test_zero_guard_return_successor_with_private_suffix_retargets_to_materializer(
+    monkeypatch,
+) -> None:
+    """Private suffix plans do not change the executor guard behavior.
+
+    The guard only rejects the unsafe byte-emitter target and retargets the
+    redirect to the proven constant sibling.  Direct terminal lowering is a
+    separate proof path and is not inferred here.
+    """
+    _patch_state_const_refs(monkeypatch, frozenset())
+    monkeypatch.setattr(
+        terminal_byte_emit_fact_guard,
+        "_constant_terminal_return_materializer_for_successor",
+        lambda _mba, old_target, source_block: 27,
+    )
+    byte6 = _terminal_byte_emit_fact(
+        "byte_emit:byte6",
+        destination_block=217,
+        byte_index=6,
+    )
+    zero_guard = _zero_guard_fact("byte_emit:zero_guard")
+    view = ValidatedFactView(
+        maturity="MMAT_LOCOPT",
+        observations=(byte6, zero_guard),
+    )
+    redirect = RedirectGoto(from_serial=207, old_target=218, new_target=217)
+    private_suffix = PrivateTerminalSuffixGroup(
+        anchors=(27,),
+        shared_entry_serial=218,
+        return_block_serial=219,
+        suffix_serials=(218, 219),
+        reason="terminal_family_split",
+    )
+
+    filtered, rejections = filter_terminal_byte_emit_fact_redirects(
+        [redirect, private_suffix],
+        mba=object(),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered[0] == RedirectGoto(from_serial=207, old_target=218, new_target=27)
+    assert filtered[1] == private_suffix
+    assert len(rejections) == 1
+    assert rejections[0].replacement_target == 27
+
+
+def test_zero_guard_return_successor_retarget_ignores_literal_lowering(
+    monkeypatch,
+) -> None:
+    """A literal sibling materializer still produces a plain retarget.
+
+    The literal value is useful for a future direct-lowering proof, but the
+    fact guard's behavior is limited to replacing the unsafe byte-emitter
+    target with the proven constant sibling.
+    """
+    _patch_state_const_refs(monkeypatch, frozenset())
+    monkeypatch.setattr(
+        terminal_byte_emit_fact_guard,
+        "_constant_terminal_return_materializer_for_successor",
+        lambda _mba, old_target, source_block: 27,
+    )
+    blocks = {
+        27: SimpleNamespace(
+            predset=(),
+            succset=(218,),
+            head=_mov_const_to_stack(0x5644FD01B1049C4B, 2072),
+        ),
+        207: SimpleNamespace(predset=(), succset=(218,), head=None),
+        218: SimpleNamespace(predset=(27, 207), succset=(219,), head=None),
+        219: SimpleNamespace(predset=(218,), succset=(), head=None),
+    }
+    byte6 = _terminal_byte_emit_fact(
+        "byte_emit:byte6",
+        destination_block=217,
+        byte_index=6,
+    )
+    zero_guard = _zero_guard_fact("byte_emit:zero_guard")
+    view = ValidatedFactView(
+        maturity="MMAT_LOCOPT",
+        observations=(byte6, zero_guard),
+    )
+    redirect = RedirectGoto(from_serial=207, old_target=218, new_target=217)
+    private_suffix = PrivateTerminalSuffixGroup(
+        anchors=(27,),
+        shared_entry_serial=218,
+        return_block_serial=219,
+        suffix_serials=(218, 219),
+        reason="terminal_family_split",
+    )
+
+    filtered, rejections = filter_terminal_byte_emit_fact_redirects(
+        [redirect, private_suffix],
+        mba=_fake_mba(blocks),
+        fact_view=view,
+        dispatcher_serial=2,
+    )
+
+    assert filtered[0] == RedirectGoto(from_serial=207, old_target=218, new_target=27)
+    assert filtered[1] == private_suffix
+    assert len(rejections) == 1
+    assert rejections[0].replacement_target == 27
+
+
 def test_zero_guard_retargeter_falls_back_to_unique_constant_sibling(
     monkeypatch,
 ) -> None:
@@ -366,6 +481,87 @@ def test_zero_guard_retargeter_matches_display_named_state_var(
     assert filtered == [RedirectGoto(from_serial=207, old_target=218, new_target=27)]
     assert len(rejections) == 1
     assert rejections[0].replacement_target == 27
+
+
+def test_protected_non_carrier_return_writer_fact_stays_observational() -> None:
+    blocks = {
+        27: SimpleNamespace(
+            predset=(),
+            succset=(218,),
+            head=_mov_const_to_stack(0x5644FD01B1049C4B, 2072),
+        ),
+        41: SimpleNamespace(
+            predset=(),
+            succset=(218,),
+            head=_xdu_state_to_stack(2072),
+        ),
+        218: SimpleNamespace(predset=(27, 41), succset=(219,), head=None),
+        219: SimpleNamespace(predset=(218,), succset=(), head=None),
+    }
+    fact = SimpleNamespace(
+        classification=(
+            ReturnFrontierCarrierClassification
+            .PROTECTED_NON_CARRIER_RETURN_WRITER
+        ),
+        ret_block=219,
+        writer_block=41,
+        walk_path=(219, 218, 41),
+    )
+
+    filtered = append_protected_non_carrier_return_writer_direct_lowerings(
+        [],
+        mba=_fake_mba(blocks),
+        carrier_facts=(fact,),
+    )
+
+    assert filtered == []
+
+
+def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lowering() -> None:
+    blocks = {
+        27: SimpleNamespace(
+            predset=(),
+            succset=(218,),
+            head=_mov_const_to_stack(0x5644FD01B1049C4B, 2072),
+        ),
+        41: SimpleNamespace(
+            predset=(),
+            succset=(218,),
+            head=_xdu_state_to_stack(2072),
+        ),
+        218: SimpleNamespace(predset=(27, 41), succset=(219,), head=None),
+        219: SimpleNamespace(predset=(218,), succset=(), head=None),
+    }
+    fact = SimpleNamespace(
+        classification=(
+            ReturnFrontierCarrierClassification
+            .PROTECTED_NON_CARRIER_RETURN_WRITER
+        ),
+        ret_block=219,
+        writer_block=41,
+        walk_path=(219, 218, 41),
+    )
+    existing = DirectTerminalLoweringGroup(
+        shared_entry_serial=218,
+        return_block_serial=219,
+        suffix_serials=(218, 219),
+        sites=(
+            DirectTerminalLoweringSite(
+                anchor_serial=41,
+                kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+                materializer_serials=(27, 218),
+            ),
+        ),
+        reason="existing",
+    )
+
+    filtered = append_protected_non_carrier_return_writer_direct_lowerings(
+        [existing],
+        mba=_fake_mba(blocks),
+        carrier_facts=(fact,),
+    )
+
+    assert filtered == [existing]
 
 
 def test_non_state_flow_source_permits_redirect(monkeypatch) -> None:

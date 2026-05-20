@@ -23,7 +23,7 @@ from d810.cfg.residual_handoff_planning import (
 
 
 class TestPlanResidualDispatcherSource:
-    def test_goto_wins_over_prefix_before_branch_anchor(self):
+    def test_prefix_before_branch_anchor_wins_over_goto(self):
         plan = plan_residual_dispatcher_source(
             ResidualDispatcherSourceContext(
                 source_block=18,
@@ -69,12 +69,12 @@ class TestPlanResidualDispatcherSource:
         )
 
         assert plan.accepted
-        assert plan.kind == ResidualDispatcherSourcePlanKind.GOTO
+        assert plan.kind == ResidualDispatcherSourcePlanKind.PREFIX_BRANCH_ANCHOR
         assert plan.redirected_count == 1
         assert plan.modifications == (
-            RedirectGoto(from_serial=18, old_target=6, new_target=26),
+            RedirectBranch(from_serial=12, old_target=18, new_target=20),
         )
-        assert plan.claimed_1way_updates == ((18, 26),)
+        assert plan.claimed_2way_updates == ((((12, 18), 20)),)
 
     def test_prefix_before_branch_anchor_wins_without_goto(self):
         plan = plan_residual_dispatcher_source(

@@ -1,17 +1,14 @@
 """Alias-aware lowering for duplicate-arm exact conditional nodes."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.flow.conditional_alias import (
-    AliasConditionalSite,
-    analyze_duplicate_alias_conditional_sites,
+from d810.cfg.semantic_conditional_lowering import (
+    ExactConditionalAliasInventory,
+    analyze_exact_conditional_alias_sites,
+    collect_exact_conditional_alias_sites,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -20,6 +17,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     _SUB7FFD_FUNC_EA,
     build_semantic_exact_round_summary,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+    accepts_exact_sub7ffd_glbopt1,
 )
 from d810.recon.flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
@@ -39,28 +39,6 @@ __all__ = [
     "analyze_exact_conditional_alias_sites",
     "collect_exact_conditional_alias_sites",
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class ExactConditionalAliasInventory:
-    selected_count: int
-    alias_blocks: tuple[int, ...]
-
-
-def analyze_exact_conditional_alias_sites(round_summary, flow_graph) -> tuple[tuple[AliasConditionalSite, ...], ExactConditionalAliasInventory]:
-    sites = analyze_duplicate_alias_conditional_sites(round_summary, flow_graph)
-    return (
-        sites,
-        ExactConditionalAliasInventory(
-            selected_count=len(sites),
-            alias_blocks=tuple(sorted(int(site.source_block) for site in sites)),
-        ),
-    )
-
-
-def collect_exact_conditional_alias_sites(round_summary, flow_graph) -> tuple[AliasConditionalSite, ...]:
-    sites, _inventory = analyze_exact_conditional_alias_sites(round_summary, flow_graph)
-    return sites
 
 
 @algorithm_metadata(
@@ -94,10 +72,10 @@ class ExactConditionalAliasNodeLoweringStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot) -> bool:
-        mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
-            return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        if not accepts_exact_sub7ffd_glbopt1(
+            snapshot,
+            expected_entry_ea=_SUB7FFD_FUNC_EA,
+        ):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None

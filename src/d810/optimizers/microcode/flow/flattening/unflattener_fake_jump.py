@@ -5,6 +5,10 @@ from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.evaluator.hexrays_microcode.tracker import MopTracker
+from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    mop_matches_derived_xor_key,
+    recognize_derived_xor_dispatcher_models,
+)
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     resolve_fake_jump_target,
@@ -30,6 +34,26 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         # corrupted MBA that would cause IDA hangs.
         self._verify_failed: bool = False
 
+    def _is_derived_xor_dispatch_key(self, mop: ida_hexrays.mop_t) -> bool:
+        """Return true when fake-jump would claim a derived-key dispatcher.
+
+        ABC XOR-style dispatchers do not compare the raw state carrier.  They
+        compute a transient key, for example ``key = low8(carrier) ^ 0xEF``,
+        and handler blocks update the carrier with ``carrier ^= CONST``.  The
+        generic fake-jump tracker can then see a constant carrier history and
+        incorrectly decide that key comparisons are always taken or never
+        taken.  Leave that shape to EmulatedDispatcherUnflattener, which
+        recovers the derived-key transitions explicitly.
+        """
+
+        mba = getattr(self, "mba", None)
+        if mba is None:
+            return False
+        for model in recognize_derived_xor_dispatcher_models(mba=mba):
+            if mop_matches_derived_xor_key(mop, model):
+                return True
+        return False
+
     def analyze_blk(self, blk: ida_hexrays.mblock_t) -> int:
         if (blk.tail is None) or blk.tail.opcode not in FAKE_LOOP_OPCODES:
             return 0
@@ -43,6 +67,12 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             format_minsn_t(blk.tail),
         )
         op_compared = ida_hexrays.mop_t(blk.tail.l)
+        if self._is_derived_xor_dispatch_key(op_compared):
+            unflat_logger.info(
+                "Skipping fake-jump rewrite for derived-XOR dispatcher key in blk %s",
+                blk.serial,
+            )
+            return 0
         blk_preset_list = [x for x in blk.predset]
         nb_change = 0
         for pred_serial in blk_preset_list:

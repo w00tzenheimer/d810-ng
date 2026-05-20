@@ -1,48 +1,70 @@
-// test_function_ollvm_fla_bcf_sub - EXPECTED (ideal deobfuscated output)
-// Address: 0x932c
+// test_function_ollvm_fla_bcf_sub - REFERENCE
 //
 // OLLVM obfuscation applied:
-// - FLA (Control Flow Flattening): 8 nested while loops + 40 switch cases
-// - BCF (Bogus Control Flow): Opaque predicates like (((x-1)*x) & 1) == 0
-// - SUB (Instruction Substitution): MBA expressions
+// - FLA: control-flow flattening with a massive nested dispatcher
+// - BCF: bogus control flow and opaque predicates
+// - SUB: instruction substitution and bit-manipulation noise
 //
-// The opaque predicates use:
-//   ((((_BYTE)x - 1) * (_BYTE)x) & 1) == 0
-// This is ALWAYS TRUE because (n-1)*n is always even (one of n or n-1 is even).
-//
-// The predicate (y < 0xA) depends on runtime value of global 'y'.
+// This reference is intentionally semantic and readable. It documents the
+// behavior the e2e test should move toward, not the current partial D810 output.
+// Do not use it as an exact AST expected_code oracle until D810 emits a
+// structurally comparable result.
 
-__int64 __fastcall test_function_ollvm_fla_bcf_sub(__int64 result, __int64 a2)
+EXPORT void test_function_ollvm_fla_bcf_sub(unsigned int *input, unsigned int *output)
 {
-    char buffer[100];
-    struct timeval tv;
+    /* ==================== CLEAN UNFLATTENED VERSION ==================== */
+    /* All control-flow flattening, bogus control flow (BCF), opaque predicates,
+       state variable, nested dispatcher loops, and anti-analysis junk removed.
+       Only the real semantic logic remains. */
 
-    memset(buffer, 0, 100);
-    gettimeofday(&tv, 0);
+    char password_buffer[100] = {0};
+    int strcmp_result = 0;
+    unsigned int working_value = 0;
+    int password_ok = 0;
 
-    // MBA-obfuscated constant computation (should fold)
-    // Original: complex expression with 0xAFDEEEDF, 0x50211120, etc.
-    // Simplified: some constant manipulation of tv.tv_sec
-
+    /* === PHASE 1: Password prompt and verification === */
     printf("Please enter password:");
-    scanf("%s", buffer);
+    scanf("%s", password_buffer);
 
-    result = strncmp(buffer, "secret", 100);
+    strcmp_result = strncmp(password_buffer, "secret", 100);
+    password_ok = (strcmp_result == 0);
 
-    if (result != 0) {
-        // Password incorrect path
-        // Loop computing some hash/checksum of buffer
-        int sum = 0;
-        for (int i = 0; i < 100; i++) {
-            sum += tv.tv_sec * buffer[i];
-            sum = (sum * 6) & 3;  // Some transformation
-        }
-        // XOR result into output
-        *(_DWORD*)tv.tv_sec = sum ^ 0x173063C1;
-    } else {
-        // Password correct path
-        *(_DWORD*)tv.tv_sec = 0;
+    /* === PHASE 2: Process input array into output array === */
+    if (input)
+        working_value = *input;
+
+    working_value = working_value + 5 * working_value;
+    working_value += 66;
+    working_value = (working_value & 0xFFFFFFBD) | (~working_value & 0x42);
+    working_value *= 2;
+
+    if (password_ok)
+    {
+        working_value = (working_value & 0xE8CF9C3E) | (~working_value & 0x173063C1);
+        working_value ^= 0x259CF55E;
+
+        if (output)
+            *output = working_value;
+
+        if (output && output != input)
+            output[1] = 0;
+    }
+    else
+    {
+        working_value = (working_value & 0xCD536960) | (~working_value & 0x32AC969F);
+        working_value ^= 0x259CF55E;
+
+        if (output)
+            *output = ~working_value;
     }
 
-    return result;
+    /* === PHASE 3: Preserved anti-analysis side effect === */
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
+    if (input && output && input != output)
+    {
+        output[2] = input[0] + 5 * input[0];
+        output[3] = working_value;
+    }
 }

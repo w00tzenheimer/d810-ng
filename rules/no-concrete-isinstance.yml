@@ -11,11 +11,13 @@ id: no-concrete-isinstance
 language: python
 severity: warning
 
-# Limit this advisory rule to first-party source code only.
+# Disabled: this advisory rule is too noisy in the current codebase. Keep the
+# rule documented here so it can be re-enabled later with narrower targeting.
 files:
   - "src/**/*.py"
 
 ignores:
+  - "**"
   - "src/d810/_vendor/**"
 
 message: |

@@ -23,7 +23,7 @@ class DispatcherHandlerMap:
     handler_state_map: dict[int, int]  # handler_serial -> state_const
     dispatcher_serial: int
     dispatcher_blocks: frozenset[int]
-    state_var_stkoff: int
+    state_var_stkoff: int | None
     source: DispatcherType
     initial_state: int | None = None
     handler_range_map: dict[int, tuple[int | None, int | None]] = field(
@@ -79,6 +79,22 @@ class DispatcherHandlerMap:
             source=DispatcherType.CONDITIONAL_CHAIN,
             initial_state=bst_result.initial_state,
             handler_range_map=dict(bst_result.handler_range_map),
+        )
+
+    @classmethod
+    def from_state_dispatcher_map(
+        cls,
+        dispatch_map: object,
+    ) -> DispatcherHandlerMap:
+        """Bridge from exact ``StateDispatcherMap`` rows."""
+        return cls(
+            handler_state_map=dict(dispatch_map.handler_state_map()),
+            dispatcher_serial=int(dispatch_map.dispatcher_entry_block),
+            dispatcher_blocks=frozenset(dispatch_map.dispatcher_blocks),
+            state_var_stkoff=dispatch_map.state_var_stkoff,
+            source=dispatch_map.source,
+            initial_state=dispatch_map.initial_state,
+            handler_range_map={},
         )
 
     def to_bst_result(self) -> object:

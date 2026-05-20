@@ -237,6 +237,340 @@ shell:
 
 /*
  * Intended CFG:
+ *   father -> dispatcher -> case_cond
+ *      \--------------------^
+ *   case_cond -> case_true/case_false -> done
+ *
+ * This isolates the BadWhileLoop "triangle into a conditional dispatcher case"
+ * shape. The risky edge is father -> case_cond: it is direct, not a cleanup
+ * trampoline, while dispatcher also reaches the same conditional case block.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_badwhile_direct_triangle_case(int x)
+{
+    int result = x + 3;
+    int state = x & 3;
+
+    goto father;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+case_true:
+    result = result + 0x31;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+case_false:
+    result = result ^ 0x2424;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+dispatcher_fallback:
+    result = result - 0x17;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+father:
+    result = result ^ 0x1111;
+    g_hexrays_lab_sink = result;
+    if ((g_hexrays_lab_sink & 4) != 0) {
+        goto case_cond;
+    }
+    goto dispatcher;
+
+dispatcher:
+    if (state != 1) {
+        goto dispatcher_fallback;
+    }
+
+case_cond:
+    if ((g_hexrays_lab_sink + state) == 0x4101) {
+        goto case_true;
+    }
+    goto case_false;
+}
+
+/*
+ * Intended CFG:
+ *   father -> tri_trampoline -> case_cond
+ *      \-> dispatcher -----------^
+ *   case_cond -> case_true/case_false -> done
+ *
+ * This is the trampoline variant of the same triangle. The father edge to the
+ * conditional case is intentionally mediated by a minimal one-way label so the
+ * compiled CFG can prove case_cond does not list father as a direct pred.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_badwhile_trampoline_triangle_case(int x)
+{
+    int result = x + 5;
+    int state = x & 7;
+
+    goto father;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+case_true:
+    result = result + 0x43;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+case_false:
+    result = result ^ 0x3535;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+dispatcher_fallback:
+    result = result - 0x19;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+father:
+    result = result ^ 0x2222;
+    g_hexrays_lab_sink = result;
+    if ((g_hexrays_lab_sink & 8) == 0) {
+        goto dispatcher;
+    }
+    goto tri_trampoline;
+
+tri_trampoline:
+    goto case_cond;
+
+dispatcher:
+    if (state != 2) {
+        goto dispatcher_fallback;
+    }
+
+case_cond:
+    if ((g_hexrays_lab_sink ^ state) == 0x4202) {
+        goto case_true;
+    }
+    goto case_false;
+}
+
+/*
+ * Intended CFG:
+ *   pred_a -> shared -> dispatcher -> case_cond
+ *      \-----------------------------^
+ *   pred_b -> shared
+ *      \-----------------------------^
+ *
+ * This is the duplicate-group direct triangle lab row. Both per-pred arms can
+ * resolve directly to the conditional dispatcher case, while their normal path
+ * still joins through a shared body that flows into the dispatcher.
+ */
+EXPORT HEXRAYS_LAB_NOINLINE
+int hexrays_lab_badwhile_duplicate_group_triangle(int x)
+{
+    int result = x + 7;
+    int state = x & 15;
+
+    if ((g_hexrays_lab_sink & 1) != 0) {
+        goto pred_a;
+    }
+    goto pred_b;
+
+done:
+    g_hexrays_lab_sink = result;
+    return result;
+
+case_true:
+    result = result + 0x59;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+case_false:
+    result = result ^ 0x4646;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+case_cond:
+    if ((g_hexrays_lab_sink - state) == 0x4303) {
+        goto case_true;
+    }
+    goto case_false;
+
+dispatcher_fallback:
+    result = result - 0x1D;
+    g_hexrays_lab_sink = result;
+    goto done;
+
+dispatcher:
+    if (state == 3) {
+        goto case_cond;
+    }
+    goto dispatcher_fallback;
+
+shared:
+    result = result ^ 0x5151;
+    g_hexrays_lab_sink = result;
+    goto dispatcher;
+
+pred_a:
+    result = result + 0x0A;
+    g_hexrays_lab_sink = result;
+    if ((g_hexrays_lab_sink & 2) != 0) {
+        goto case_cond;
+    }
+    goto shared;
+
+pred_b:
+    result = result - 0x0B;
+    g_hexrays_lab_sink = result;
+    if ((g_hexrays_lab_sink & 4) != 0) {
+        goto case_cond;
+    }
+    goto shared;
+}
+
+
+#if defined(_WIN64) || defined(__MINGW32__) || defined(__MINGW64__)
+/*
+ * Hand-authored x64 lab rows for BadWhileLoop triangle topology. The C
+ * versions above are useful source documentation, but clang intentionally
+ * lowers conditional goto arms through one-way handoff blocks at -O0. These
+ * assembly fixtures keep the exact direct/trampoline edges under validation.
+ */
+__asm__(
+".text\n"
+".att_syntax prefix\n"
+".globl hexrays_lab_badwhile_direct_triangle_case_asm\n"
+".def hexrays_lab_badwhile_direct_triangle_case_asm; .scl 2; .type 32; .endef\n"
+"hexrays_lab_badwhile_direct_triangle_case_asm:\n"
+"  leal 3(%ecx), %eax\n"
+"  movl %ecx, %r8d\n"
+"  andl $3, %r8d\n"
+".Lbadwhile_direct_father:\n"
+"  xorl $0x1111, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  testl $4, %r9d\n"
+"  jne .Lbadwhile_direct_case_cond\n"
+".Lbadwhile_direct_dispatcher:\n"
+"  cmpl $1, %r8d\n"
+"  je .Lbadwhile_direct_case_cond\n"
+".Lbadwhile_direct_dispatcher_fallback:\n"
+"  subl $0x17, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_direct_done\n"
+".Lbadwhile_direct_case_cond:\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  addl %r8d, %r9d\n"
+"  cmpl $0x4101, %r9d\n"
+"  je .Lbadwhile_direct_case_true\n"
+".Lbadwhile_direct_case_false:\n"
+"  xorl $0x2424, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_direct_done\n"
+".Lbadwhile_direct_case_true:\n"
+"  addl $0x31, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+".Lbadwhile_direct_done:\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  retq\n"
+);
+
+__asm__(
+".text\n"
+".att_syntax prefix\n"
+".globl hexrays_lab_badwhile_trampoline_triangle_case_asm\n"
+".def hexrays_lab_badwhile_trampoline_triangle_case_asm; .scl 2; .type 32; .endef\n"
+"hexrays_lab_badwhile_trampoline_triangle_case_asm:\n"
+"  leal 5(%ecx), %eax\n"
+"  movl %ecx, %r8d\n"
+"  andl $7, %r8d\n"
+".Lbadwhile_trampoline_father:\n"
+"  xorl $0x2222, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  testl $8, %r9d\n"
+"  je .Lbadwhile_trampoline_dispatcher\n"
+".Lbadwhile_tri_trampoline:\n"
+"  jmp .Lbadwhile_trampoline_case_cond\n"
+".Lbadwhile_trampoline_dispatcher:\n"
+"  cmpl $2, %r8d\n"
+"  je .Lbadwhile_trampoline_case_cond\n"
+".Lbadwhile_trampoline_dispatcher_fallback:\n"
+"  subl $0x19, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_trampoline_done\n"
+".Lbadwhile_trampoline_case_cond:\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  xorl %r8d, %r9d\n"
+"  cmpl $0x4202, %r9d\n"
+"  je .Lbadwhile_trampoline_case_true\n"
+".Lbadwhile_trampoline_case_false:\n"
+"  xorl $0x3535, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_trampoline_done\n"
+".Lbadwhile_trampoline_case_true:\n"
+"  addl $0x43, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+".Lbadwhile_trampoline_done:\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  retq\n"
+);
+
+__asm__(
+".text\n"
+".att_syntax prefix\n"
+".globl hexrays_lab_badwhile_duplicate_group_triangle_asm\n"
+".def hexrays_lab_badwhile_duplicate_group_triangle_asm; .scl 2; .type 32; .endef\n"
+"hexrays_lab_badwhile_duplicate_group_triangle_asm:\n"
+"  leal 7(%ecx), %eax\n"
+"  movl %ecx, %r8d\n"
+"  andl $15, %r8d\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  testl $1, %r9d\n"
+"  jne .Lbadwhile_dup_pred_a\n"
+"  jmp .Lbadwhile_dup_pred_b\n"
+".Lbadwhile_dup_pred_a:\n"
+"  addl $0x0A, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  testl $2, %r9d\n"
+"  jne .Lbadwhile_dup_case_cond\n"
+".Lbadwhile_dup_shared:\n"
+"  xorl $0x5151, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_dup_dispatcher\n"
+".Lbadwhile_dup_dispatcher:\n"
+"  cmpl $3, %r8d\n"
+"  je .Lbadwhile_dup_case_cond\n"
+".Lbadwhile_dup_dispatcher_fallback:\n"
+"  subl $0x1D, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_dup_done\n"
+".Lbadwhile_dup_pred_b:\n"
+"  subl $0x0B, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  testl $4, %r9d\n"
+"  je .Lbadwhile_dup_shared\n"
+".Lbadwhile_dup_case_cond:\n"
+"  movl g_hexrays_lab_sink(%rip), %r9d\n"
+"  subl %r8d, %r9d\n"
+"  cmpl $0x4303, %r9d\n"
+"  je .Lbadwhile_dup_case_true\n"
+".Lbadwhile_dup_case_false:\n"
+"  xorl $0x4646, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  jmp .Lbadwhile_dup_done\n"
+".Lbadwhile_dup_case_true:\n"
+"  addl $0x59, %eax\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+".Lbadwhile_dup_done:\n"
+"  movl %eax, g_hexrays_lab_sink(%rip)\n"
+"  retq\n"
+);
+#endif
+
+/*
+ * Intended CFG:
  *   byte0 -> guard0 -> byte1 -> guard1 -> ... -> byte6 -> done
  *
  * This is the REF-like oracle for the terminal-byte tail. Each byte store is

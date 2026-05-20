@@ -661,7 +661,7 @@ class TestExecuteLinearizedFlowGraphPlanning:
         assert result.transition_count == 1
         assert emit_edge_calls == []
 
-    def test_normalizes_projected_conditional_redirects_against_latest_dag(self):
+    def test_keeps_projected_conditional_redirects_without_contextual_owner_proof(self):
         source_key = StateDagNodeKey(handler_serial=15, state_const=0x6107F8EC)
         raw_taken_key = StateDagNodeKey(handler_serial=66, state_const=0x4C77464F)
         raw_not_taken_key = StateDagNodeKey(handler_serial=202, state_const=0x296F2452)
@@ -804,10 +804,10 @@ class TestExecuteLinearizedFlowGraphPlanning:
 
         assert result.accepted
         assert result.modifications == (
-            RedirectBranch(from_serial=15, old_target=16, new_target=14),
-            RedirectBranch(from_serial=15, old_target=17, new_target=201),
+            RedirectBranch(from_serial=15, old_target=16, new_target=66),
+            RedirectBranch(from_serial=15, old_target=17, new_target=202),
         )
-        assert result.residual_dispatcher_normalized_count == 2
+        assert result.residual_dispatcher_normalized_count == 0
 
 def test_structured_regions_follow_successor_worklist_from_initial_state():
     region_a = LinearizedDagStructuredRegion(

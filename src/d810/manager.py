@@ -17,10 +17,15 @@ except ImportError:
     cProfile = None  # type: ignore[assignment]
 
 from d810.backends.mba.ida import adapt_rules
-from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, typing
+from d810.core import (
+    MOP_CONSTANT_CACHE,
+    MOP_TO_AST_CACHE,
+    typing,
+)
 from d810.core.config import D810Configuration, ProjectConfiguration
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.platform import resolve_arch_config
 from d810.core.project import ProjectContext, ProjectManager
 from d810.core.registry import EventEmitter, SingletonMeta
@@ -57,12 +62,25 @@ from d810.recon.collectors.handler_transitions import HandlerTransitionsCollecto
 from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
 from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
 from d810.recon.collectors.return_frontier import ReturnFrontierCollector
+from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactEdgeProof,
+    ReturnFrontierArtifactPriors,
+)
+from d810.recon.flow.terminal_tail_priors import (
+    TerminalTailCascadeEgressPriors,
+    TerminalTailContinuationBridgePrior,
+    TerminalTailEntryFrontierPriors,
+    TerminalTailEqualityFrontierPriors,
+    TerminalTailRowTargetOverride,
+)
 from d810.recon.facts.collectors import (
     ByteEmitCorridorFactCollector,
     CallAnchorFactCollector,
-    InductionCarrierFactCollector,
-    LoopCarrierFactCollector,
-    ReturnCarrierFactCollector,
+    InductionVariableFactCollector,
+    LoopPredicateValueFactCollector,
+    OllvmValueFlowEvidenceCollector,
+    ReturnSlotFactCollector,
     ReturnFrontierFactCollector,
     StateTransitionAnchorFactCollector,
     StateWriteAnchorFactCollector,
@@ -94,13 +112,13 @@ def maybe_run_tail_distinct(mba: typing.Any) -> None:
     """Env-gated hook: ``D810_TAIL_DISTINCT_BYTE`` topology-only experiment.
 
     Thin manager-level re-export of the implementation in
-    :mod:`d810.cfg.transform.byte_emit_tail_isolation_runtime`.  The real
+    :mod:`d810.hexrays.mutation.byte_emit_tail_isolation_runtime`.  The real
     helper lives outside ``d810.manager`` so optimizer call sites can
     import it without crossing the layered-architecture import contract
     (optimizers must not depend on ``d810.ui``, and manager transitively
     imports UI).
     """
-    from d810.cfg.transform.byte_emit_tail_isolation_runtime import (
+    from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         maybe_run_tail_distinct as _impl,
     )
     _impl(mba)
@@ -406,6 +424,9 @@ class D810Manager:
     _profiling_enabled: bool = dataclasses.field(default=False, init=False)
     _start_ts: float = dataclasses.field(default=0.0, init=False)
     _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
+    _function_analysis_priors: dict[str, FunctionAnalysisPriors] = (
+        dataclasses.field(default_factory=dict, init=False)
+    )
 
     @property
     def started(self):
@@ -421,6 +442,251 @@ class D810Manager:
 
     def configure(self, **kwargs):
         self.config = kwargs
+        self._load_function_analysis_priors_from_config(
+            kwargs.get("function_analysis_priors", {})
+        )
+
+    @staticmethod
+    def _coerce_prior_constants(value: typing.Any) -> tuple[object, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, int)):
+            return (value,)
+        try:
+            return tuple(value)
+        except TypeError:
+            return (value,)
+
+    @staticmethod
+    def _coerce_prior_int_tuple(value: typing.Any) -> tuple[int, ...]:
+        return tuple(
+            int(item)
+            for item in D810Manager._coerce_prior_constants(value)
+        )
+
+    @staticmethod
+    def _load_return_frontier_edge_proofs(
+        raw: typing.Any,
+    ) -> tuple[ReturnFrontierArtifactEdgeProof, ...]:
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        proofs: list[ReturnFrontierArtifactEdgeProof] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                proofs.append(
+                    ReturnFrontierArtifactEdgeProof(
+                        source_block=int(item["source_block"]),
+                        artifact_block=int(item["artifact_block"]),
+                        old_target_block=int(item["old_target_block"]),
+                        continuation_block=int(item["continuation_block"]),
+                        proof_ids=tuple(
+                            str(proof_id)
+                            for proof_id in item.get("proof_ids", ())
+                        ),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return tuple(proofs)
+
+    @staticmethod
+    def _load_terminal_tail_cascade_priors(
+        raw: typing.Any,
+    ) -> TerminalTailCascadeEgressPriors:
+        if not isinstance(raw, dict):
+            return TerminalTailCascadeEgressPriors()
+
+        row_target_overrides = []
+        for item in raw.get("row_target_overrides", ()) or ():
+            if not isinstance(item, dict):
+                continue
+            try:
+                row_target_overrides.append(
+                    TerminalTailRowTargetOverride(
+                        byte_index=int(item["byte_index"]),
+                        target_entry_byte_index=int(
+                            item["target_entry_byte_index"]
+                        ),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        continuation_bridges = []
+        for item in raw.get("continuation_bridges", ()) or ():
+            if not isinstance(item, dict):
+                continue
+            try:
+                continuation_bridges.append(
+                    TerminalTailContinuationBridgePrior(
+                        continuation_byte_index=int(
+                            item["continuation_byte_index"]
+                        ),
+                        source_byte_index=int(item["source_byte_index"]),
+                        target_store_guard_byte_index=int(
+                            item["target_store_guard_byte_index"]
+                        ),
+                        max_depth=int(item.get("max_depth", 8)),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        equality_raw = raw.get("equality_frontier")
+        equality = None
+        if isinstance(equality_raw, dict):
+            try:
+                equality = TerminalTailEqualityFrontierPriors(
+                    return_frontier_byte_index=int(
+                        equality_raw["return_frontier_byte_index"]
+                    ),
+                    row_byte_indices=D810Manager._coerce_prior_int_tuple(
+                        equality_raw.get("row_byte_indices", ())
+                    ),
+                    shared_store_guard_byte_indices=(
+                        D810Manager._coerce_prior_int_tuple(
+                            equality_raw.get(
+                                "shared_store_guard_byte_indices",
+                                (),
+                            )
+                        )
+                    ),
+                )
+            except (KeyError, TypeError, ValueError):
+                equality = None
+
+        entry_raw = raw.get("entry_frontier")
+        entry = None
+        if isinstance(entry_raw, dict):
+            try:
+                entry = TerminalTailEntryFrontierPriors(
+                    first_byte_index=int(entry_raw["first_byte_index"])
+                )
+            except (KeyError, TypeError, ValueError):
+                entry = None
+
+        return TerminalTailCascadeEgressPriors(
+            byte_indices=D810Manager._coerce_prior_int_tuple(
+                raw.get("byte_indices", ())
+            ),
+            split_byte_indices=D810Manager._coerce_prior_int_tuple(
+                raw.get("split_byte_indices", ())
+            ),
+            row_target_overrides=tuple(row_target_overrides),
+            continuation_bridges=tuple(continuation_bridges),
+            equality_frontier=equality,
+            entry_frontier=entry,
+        )
+
+    def _load_function_analysis_priors_from_config(self, raw: typing.Any) -> None:
+        self._function_analysis_priors = {}
+        if not isinstance(raw, dict):
+            return
+        for function, raw_priors in raw.items():
+            if not isinstance(raw_priors, dict):
+                continue
+            return_frontier = raw_priors.get("return_frontier_artifacts", {})
+            if not isinstance(return_frontier, dict):
+                return_frontier = {}
+            constants = return_frontier.get(
+                "known_impossible_return_constants",
+                raw_priors.get("known_impossible_return_constants", ()),
+            )
+            artifact_priors = (
+                ReturnFrontierArtifactPriors
+                .from_known_impossible_return_constants(
+                    self._coerce_prior_constants(constants)
+                )
+            )
+            artifact_priors = artifact_priors.with_impossible_return_artifact_edges(
+                self._load_return_frontier_edge_proofs(
+                    return_frontier.get("impossible_return_artifact_edges", ())
+                )
+            )
+            priors = FunctionAnalysisPriors(
+                return_frontier_artifacts=artifact_priors,
+                terminal_tail_cascade_egress=(
+                    self._load_terminal_tail_cascade_priors(
+                        raw_priors.get("terminal_tail_cascade_egress", {})
+                    )
+                ),
+            )
+            if not priors.is_empty:
+                self.add_function_analysis_priors(function, priors)
+
+    @staticmethod
+    def _function_prior_keys(identifier: str | int) -> tuple[str, ...]:
+        keys: set[str] = set()
+        if isinstance(identifier, int):
+            value = int(identifier)
+            keys.add(str(value).lower())
+            keys.add(f"0x{value:x}".lower())
+            keys.add(f"sub_{value:x}".lower())
+            return tuple(sorted(keys))
+
+        raw = str(identifier).strip()
+        if not raw:
+            return tuple()
+        keys.add(raw.lower())
+        normalized = raw.lower()
+        parse_target = normalized
+        parse_base = 0
+        if normalized.startswith("sub_"):
+            parse_target = normalized[4:]
+            parse_base = 16
+        try:
+            value = int(parse_target, parse_base)
+        except ValueError:
+            value = None
+        if value is not None:
+            keys.add(str(value).lower())
+            keys.add(f"0x{value:x}".lower())
+            keys.add(f"sub_{value:x}".lower())
+        return tuple(sorted(keys))
+
+    def snapshot_function_analysis_priors(self) -> dict[str, FunctionAnalysisPriors]:
+        return dict(self._function_analysis_priors)
+
+    def restore_function_analysis_priors(
+        self,
+        snapshot: dict[str, FunctionAnalysisPriors] | None,
+    ) -> None:
+        self._function_analysis_priors = dict(snapshot or {})
+
+    def add_function_analysis_priors(
+        self,
+        function: str | int,
+        priors: FunctionAnalysisPriors,
+    ) -> None:
+        existing = self.function_analysis_priors(function)
+        merged = existing.merge(priors)
+        for key in self._function_prior_keys(function):
+            self._function_analysis_priors[key] = merged
+
+    def function_analysis_priors(self, function: str | int) -> FunctionAnalysisPriors:
+        for key in self._function_prior_keys(function):
+            priors = self._function_analysis_priors.get(key)
+            if priors is not None:
+                return priors
+        return FunctionAnalysisPriors()
+
+    def function_analysis_priors_for_ea(self, func_ea: int) -> FunctionAnalysisPriors:
+        identifiers: list[str | int] = [int(func_ea)]
+        try:
+            import ida_name
+
+            name = ida_name.get_name(int(func_ea))
+        except Exception:
+            name = ""
+        if name:
+            identifiers.append(str(name))
+
+        priors = FunctionAnalysisPriors()
+        for identifier in identifiers:
+            priors = priors.merge(self.function_analysis_priors(identifier))
+        return priors
 
     def emit_rule_scope_invalidation(
         self,
@@ -542,10 +808,15 @@ class D810Manager:
             return
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            provider_phase = ProviderPhaseSnapshot(
+                provider_name="hexrays_microcode",
+                provider_level=int(maturity),
+                friendly_provider_level=_maturity_name(int(maturity)),
+            )
             self._recon_runtime.capture_maturity_facts(
                 mba,
                 func_ea=func_ea,
-                maturity=int(maturity),
+                provider_phase=provider_phase,
                 phase="post_d810",
                 snapshot=snapshot,
             )
@@ -721,7 +992,7 @@ class D810Manager:
         if int(getattr(mba, "qty", 0) or 0) <= 0:
             return
         try:
-            from d810.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
+            from d810.hexrays.diagnostics.glbopt_dce_probe import probe_byte_emit_dce
 
             lines = probe_byte_emit_dce(mba, byte_emit_eas)
         except Exception:
@@ -830,6 +1101,7 @@ class D810Manager:
             rule_scope_service=self.rule_scope_service,
             rule_scope_project_name=project_name,
             rule_scope_idb_key=idb_key,
+            function_priors_provider=self.function_analysis_priors_for_ea,
         )
         for rule in self.instruction_optimizer_rules:
             rule.log_dir = self.log_dir
@@ -870,9 +1142,10 @@ class D810Manager:
                 AnalysisPhase(),
                 self._recon_phase._store,
             )
-            self._recon_runtime.register_fact_collector(InductionCarrierFactCollector())
-            self._recon_runtime.register_fact_collector(LoopCarrierFactCollector())
-            self._recon_runtime.register_fact_collector(ReturnCarrierFactCollector())
+            self._recon_runtime.register_fact_collector(InductionVariableFactCollector())
+            self._recon_runtime.register_fact_collector(LoopPredicateValueFactCollector())
+            self._recon_runtime.register_fact_collector(OllvmValueFlowEvidenceCollector())
+            self._recon_runtime.register_fact_collector(ReturnSlotFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
             self._recon_runtime.register_fact_collector(CallAnchorFactCollector())
@@ -1301,6 +1574,8 @@ class D810Manager:
             def _fact_view_provider(func_ea: int, maturity: int | str):
                 if self._recon_runtime is None:
                     return None
+                if isinstance(maturity, int):
+                    maturity = _maturity_name(maturity)
                 return self._recon_runtime.validated_fact_view(func_ea, maturity)
 
             passes.append(
@@ -1541,6 +1816,9 @@ class D810State(metaclass=SingletonMeta):
                 rule_scope_project_name=self.current_project.path.name,
                 rule_scope_idb_key=str(
                     cfg.get("idb_key", self.current_project.path.name)
+                ),
+                function_priors_provider=(
+                    self.manager.function_analysis_priors_for_ea
                 ),
             )
             self.manager._compile_rule_scope()

@@ -10,6 +10,7 @@ from d810.cfg.flow.return_frontier import ReturnSite
 from d810.cfg.flowgraph import FlowGraph
 from d810.core import logging
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
 )
@@ -30,23 +31,20 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
+)
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    ALL_STRATEGIES,
-)
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
-    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
-    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
-    collect_live_bad_while_loop_analysis,
-    serialize_bad_while_loop_edits,
-    serialize_bad_while_loop_follow_up,
+from d810.optimizers.microcode.flow.flattening.hodur.profile import (
+    default_hodur_profile,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
@@ -65,12 +63,15 @@ from d810.recon.flow.graph_reachability import (
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
+from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.recon.flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
 
 family_logger = logging.getLogger("D810.unflat.hodur.family", logging.DEBUG)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
+)
 
 __all__ = ["HodurDetection", "HodurStrategyFamily"]
 
@@ -142,8 +143,13 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
         self._fact_runtime: object | None = fact_runtime
+        self._constant_fixpoint_backend: ConstantFixpointBackend = (
+            _CONSTANT_FIXPOINT_BACKEND
+        )
         selected_strategy_classes = (
-            list(strategy_classes) if strategy_classes is not None else ALL_STRATEGIES
+            list(strategy_classes)
+            if strategy_classes is not None
+            else list(default_hodur_profile().strategy_classes)
         )
         self._strategies = [
             cls()
@@ -207,6 +213,33 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self.min_state_constants = int(min_state_constants)
         self.max_state_constants = int(max_state_constants)
 
+    def _function_analysis_priors_for_mba(
+        self,
+        mba: object,
+    ) -> FunctionAnalysisPriors:
+        try:
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        except (TypeError, ValueError):
+            return FunctionAnalysisPriors()
+        runtime = self._fact_runtime
+        if runtime is None:
+            return FunctionAnalysisPriors()
+        provider = getattr(runtime, "function_analysis_priors", None)
+        if not callable(provider):
+            return FunctionAnalysisPriors()
+        try:
+            priors = provider(func_ea)
+        except Exception:
+            family_logger.debug(
+                "Function analysis priors lookup failed for 0x%x",
+                func_ea,
+                exc_info=True,
+            )
+            return FunctionAnalysisPriors()
+        if isinstance(priors, FunctionAnalysisPriors):
+            return priors
+        return FunctionAnalysisPriors()
+
     def reset_runtime_state(self) -> None:
         self._state_machine: DispatcherStateMachine | None = None
         self._detector: HodurStateMachineDetector | None = None
@@ -260,7 +293,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
         state_machine = detection.state_machine
         flow_graph = self._cfg_translator.lift(mba)
         flow_graph = self.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
-        flow_graph = self.attach_bad_while_loop_edits_to_flow_graph(mba, flow_graph)
         flow_graph = self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
         dispatcher_cache = DispatcherCache.get_or_create(mba)
         reachability = self.compute_reachability_info(mba)
@@ -269,6 +301,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         # runtime is available.  Strategies may consult this for fact-rooted
         # safety gates.  Never falls back to heuristics when absent.
         fact_view = self._resolve_fact_view(mba)
+        function_priors = self._function_analysis_priors_for_mba(mba)
+        return_frontier_artifact_priors = (
+            function_priors.return_frontier_artifacts
+        )
 
         if state_machine is None:
             return AnalysisSnapshot(
@@ -302,8 +338,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 bst_result = None
 
         if bst_result is None and self._switch_table_map is not None:
-            bst_result = self._switch_table_map.to_bst_result()
-            bst_dispatcher_serial = self._switch_table_map.dispatcher_serial
+            switch_handler_map = self._switch_table_map.to_dispatcher_handler_map()
+            bst_result = switch_handler_map.to_bst_result()
+            bst_dispatcher_serial = self._switch_table_map.dispatcher_entry_block
             self._logger.debug(
                 "Using synthetic BST from switch-table analysis: %d handlers, dispatcher=blk[%d]",
                 len(bst_result.handler_state_map),
@@ -354,7 +391,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     ),
                     strategy_name="hodur_round_discovery_context",
                 )
-                constant_fixpoint = run_snapshot_constant_fixpoint(
+                constant_fixpoint = self._constant_fixpoint_backend.compute(
                     flow_graph,
                     state_var_stkoff,
                 )
@@ -388,6 +425,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     dispatcher=getattr(bst_result, "dispatcher", None),
                     mba=mba,
                     prefer_local_corridors=True,
+                    return_frontier_artifact_priors=(
+                        return_frontier_artifact_priors
+                    ),
                 )
             except Exception as exc:
                 family_logger.debug(
@@ -428,7 +468,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         allow_legacy_block_creation: bool,
     ):
         """Return the live executor factory for the Hodur family."""
-        from d810.optimizers.microcode.flow.flattening.hodur.executor import (
+        from d810.optimizers.microcode.flow.flattening.engine.executor import (
             TransactionalExecutor,
         )
 
@@ -437,6 +477,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 mba,
                 gate=gate,
                 allow_legacy_block_creation=allow_legacy_block_creation,
+                safeguard_profile="hodur",
             )
 
         return _factory
@@ -464,6 +505,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         strategies_by_name = {
             getattr(strategy, "name", None): strategy for strategy in self._strategies
         }
+        maturity_name = maturity_to_string(maturity)
 
         for fragment, result in zip(pipeline, results):
             if not (result.success and result.edits_applied > 0):
@@ -477,10 +519,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
             if applied is not None:
                 applied.add((func_ea, maturity))
                 self._logger.info(
-                    "Marking strategy %s as applied for func 0x%X maturity=%d",
+                    "Marking strategy %s as applied for func 0x%X maturity=%s",
                     fragment.strategy_name,
                     func_ea,
-                    maturity,
+                    maturity_name,
                 )
 
             residual_counts = getattr(
@@ -500,10 +542,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
             )
             residual_counts[(func_ea, maturity)] = len(residual_preds)
             self._logger.info(
-                "Recorded %s residual dispatcher pred count for func 0x%X maturity=%d: %d",
+                "Recorded %s residual dispatcher pred count for func 0x%X maturity=%s: %d",
                 fragment.strategy_name,
                 func_ea,
-                maturity,
+                maturity_name,
                 len(residual_preds),
             )
 
@@ -863,52 +905,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
             metadata=metadata,
         )
 
-    def attach_bad_while_loop_edits_to_flow_graph(
-        self,
-        mba: ida_hexrays.mba_t,
-        flow_graph: FlowGraph,
-    ) -> FlowGraph:
-        """Attach safe BadWhileLoop edits plus classified follow-up metadata."""
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
-            return flow_graph
-
-        try:
-            analysis = collect_live_bad_while_loop_analysis(
-                mba,
-                logger=self._logger,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception:
-            self._logger.debug(
-                "Failed to collect BadWhileLoop edits for FlowGraph metadata",
-                exc_info=True,
-            )
-            return flow_graph
-
-        if not analysis.edits and not analysis.follow_up:
-            return flow_graph
-
-        metadata = dict(flow_graph.metadata)
-        if analysis.edits:
-            metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = serialize_bad_while_loop_edits(
-                analysis.edits
-            )
-        if analysis.follow_up:
-            metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] = (
-                serialize_bad_while_loop_follow_up(analysis.follow_up)
-            )
-        self._logger.info(
-            "Attached %d safe BadWhileLoop edits and %d follow-up gaps to FlowGraph metadata",
-            len(analysis.edits),
-            len(analysis.follow_up),
-        )
-        return FlowGraph(
-            blocks=flow_graph.blocks,
-            entry_serial=flow_graph.entry_serial,
-            func_ea=flow_graph.func_ea,
-            metadata=metadata,
-        )
-
     def attach_single_iteration_fixes_to_flow_graph(
         self,
         mba: ida_hexrays.mba_t,
@@ -984,7 +980,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         try:
             func_ea = int(getattr(mba, "entry_ea", 0) or 0)
             maturity = getattr(mba, "maturity", 0)
-            return runtime.validated_fact_view(func_ea, maturity)
+            return runtime.validated_fact_view(func_ea, maturity_to_string(maturity))
         except Exception:
             return None
 
@@ -1032,7 +1028,8 @@ class HodurStrategyFamily(CFFStrategyFamily):
         if result is None:
             return None
 
-        handler_map = result.handler_map
+        state_dispatcher_map = result.state_dispatcher_map
+        handler_map = state_dispatcher_map.to_dispatcher_handler_map()
         state_var_mop = result.state_var_mop
 
         self._logger.info(
@@ -1092,6 +1089,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
             len(state_machine.transitions),
         )
 
-        self._switch_table_map = handler_map
+        self._switch_table_map = state_dispatcher_map
         self._state_machine = state_machine
         return state_machine

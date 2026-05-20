@@ -35,6 +35,9 @@ from d810.recon.flow.persisted_recon_dag import store_persisted_recon_dag
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
+from d810.recon.flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactPriors,
+)
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
@@ -144,6 +147,9 @@ class ReconRoundDiscoveryContext:
     # strategy fallback to its local setup recipes is intentional for A.1).
     linearized_program: RenderedProgramSnapshot | None = None
 
+    # Caller/profile priors used while building return-frontier artifact facts.
+    return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None
+
     # Opaque round identity: ``(func_ea, maturity, pass_number, monotonic_ns)``.
     # Used by downstream consumers (probes, caches) to key per-round data.
     round_id: tuple[int, int, int, int] = (0, 0, 0, 0)
@@ -212,6 +218,7 @@ def build_round_discovery_context(
     dispatcher: object | None = None,
     mba: object | None = None,
     prefer_local_corridors: bool = False,
+    return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
 ) -> ReconRoundDiscoveryContext:
     """Build the per-round discovery context for one unflattening pass.
 
@@ -241,6 +248,7 @@ def build_round_discovery_context(
         dispatcher=dispatcher,
         mba=mba,
         prefer_local_corridors=prefer_local_corridors,
+        return_frontier_artifact_priors=return_frontier_artifact_priors,
         corrected_dag_out=corrected_dag_out,
     )
     corrected_dag = corrected_dag_out[0] if corrected_dag_out else dag
@@ -331,6 +339,7 @@ def build_round_discovery_context(
         node_by_key=node_by_key,
         local_facts=local_facts,
         linearized_program=linearized_program,
+        return_frontier_artifact_priors=return_frontier_artifact_priors,
         round_id=round_id,
     )
 

@@ -187,7 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_dag_local_edges_state
 -- StateTransitionAnchorFact transit chains, and TerminalByteEmitterFact
 -- destinations.  Observability-only: NO behavior of recon edge target
 -- selection depends on these rows.  See
--- ``d810.recon.flow.edge_diagnostics`` for classification rules.
+-- ``d810.diagnostics.edge_diagnostics`` for classification rules.
 CREATE TABLE IF NOT EXISTS dag_edge_diagnostics (
     snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
     edge_id                INTEGER NOT NULL,
@@ -264,6 +264,28 @@ CREATE TABLE IF NOT EXISTS bst_interval_dispatcher_rows (
 CREATE INDEX IF NOT EXISTS idx_bst_interval_dispatcher_rows_target
     ON bst_interval_dispatcher_rows(snapshot_id, target_block);
 
+CREATE TABLE IF NOT EXISTS state_dispatcher_rows (
+    snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index                INTEGER NOT NULL,
+    state_const_hex          TEXT NOT NULL,
+    state_const_i64          INTEGER NOT NULL,
+    target_block             INTEGER NOT NULL,
+    dispatcher_entry_block   INTEGER,
+    compare_block            INTEGER,
+    dispatcher_kind          TEXT NOT NULL,
+    branch_kind              TEXT,
+    maturity                 TEXT,
+    confidence               REAL NOT NULL DEFAULT 1.0,
+    payload_json             TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_state
+    ON state_dispatcher_rows(snapshot_id, state_const_i64);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_target
+    ON state_dispatcher_rows(snapshot_id, target_block);
+CREATE INDEX IF NOT EXISTS idx_state_dispatcher_rows_kind
+    ON state_dispatcher_rows(snapshot_id, dispatcher_kind);
+
 CREATE TABLE IF NOT EXISTS state_transition_bst_resolutions (
     snapshot_id                       INTEGER NOT NULL REFERENCES snapshots(id),
     fact_id                           TEXT NOT NULL,
@@ -280,6 +302,77 @@ CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_block
     ON state_transition_bst_resolutions(source_block_serial);
 CREATE INDEX IF NOT EXISTS idx_state_transition_bst_resolutions_resolved
     ON state_transition_bst_resolutions(bst_resolved_next_state_const_hex);
+
+CREATE TABLE IF NOT EXISTS state_transition_dispatch_resolutions (
+    snapshot_id                         INTEGER NOT NULL REFERENCES snapshots(id),
+    fact_id                             TEXT NOT NULL,
+    source_block_serial                 INTEGER NOT NULL,
+    source_state_const_hex              TEXT NOT NULL,
+    resolved_next_block_serial          INTEGER,
+    resolved_next_state_const_hex       TEXT,
+    resolved_next_state_const_u64       INTEGER,
+    resolution_kind                     TEXT NOT NULL,
+    resolution_reason                   TEXT NOT NULL,
+    resolution_maturity                 TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, fact_id, resolution_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_block
+    ON state_transition_dispatch_resolutions(source_block_serial);
+CREATE INDEX IF NOT EXISTS idx_state_transition_dispatch_resolutions_resolved
+    ON state_transition_dispatch_resolutions(resolved_next_state_const_hex);
+
+CREATE TABLE IF NOT EXISTS switch_case_transition_facts (
+    snapshot_id          INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index            INTEGER NOT NULL,
+    fact_id              TEXT NOT NULL,
+    source_state_hex     TEXT,
+    source_state_i64     INTEGER,
+    case_entry_block     INTEGER,
+    transition_kind      TEXT NOT NULL,
+    next_state_a_hex     TEXT,
+    next_state_a_i64     INTEGER,
+    next_state_b_hex     TEXT,
+    next_state_b_i64     INTEGER,
+    return_value         INTEGER,
+    proof_kind           TEXT,
+    trusted              INTEGER NOT NULL DEFAULT 0,
+    reason               TEXT NOT NULL,
+    profile_name         TEXT,
+    dispatcher_entry     INTEGER,
+    target_block         INTEGER,
+    payload_json         TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_switch_case_transition_facts_source
+    ON switch_case_transition_facts(snapshot_id, source_state_i64);
+CREATE INDEX IF NOT EXISTS idx_switch_case_transition_facts_kind
+    ON switch_case_transition_facts(snapshot_id, transition_kind, trusted);
+
+CREATE TABLE IF NOT EXISTS branch_ownership_proofs (
+    snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
+    row_index                INTEGER NOT NULL,
+    proof_id                 TEXT NOT NULL,
+    proof_kind               TEXT NOT NULL,
+    trusted                  INTEGER NOT NULL DEFAULT 0,
+    reason                   TEXT NOT NULL,
+    source_block             INTEGER,
+    branch_arm               INTEGER,
+    source_state_hex         TEXT,
+    source_state_i64         INTEGER,
+    target_state_hex         TEXT,
+    target_state_i64         INTEGER,
+    target_entry             INTEGER,
+    predicate_block          INTEGER,
+    dispatcher_entry_block   INTEGER,
+    oracle_kind              TEXT NOT NULL,
+    evidence_json            TEXT NOT NULL DEFAULT '{}',
+    payload_json             TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (snapshot_id, row_index)
+);
+CREATE INDEX IF NOT EXISTS idx_branch_ownership_proofs_kind
+    ON branch_ownership_proofs(snapshot_id, proof_kind, trusted);
+CREATE INDEX IF NOT EXISTS idx_branch_ownership_proofs_source
+    ON branch_ownership_proofs(snapshot_id, source_block, branch_arm);
 
 -- Correlations between a ``COLLAPSED_TO_REWRITTEN_TARGET`` recon edge
 -- and an alternate already-persisted ``dag_edges`` row whose source

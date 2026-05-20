@@ -1,10 +1,10 @@
-"""Tests for InductionCarrierFactCollector."""
+"""Tests for InductionVariableFactCollector."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import InductionCarrierFactCollector
+from d810.recon.facts.collectors import InductionVariableFactCollector
 from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
 
 
@@ -85,7 +85,7 @@ def _two_block_target(
 
 
 def test_collects_direct_add_induction_fact() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(_insn()),
@@ -108,7 +108,7 @@ def test_collects_direct_add_induction_fact() -> None:
 
 
 def test_collects_sub_as_negative_step() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(
@@ -130,7 +130,7 @@ def test_collects_sub_as_negative_step() -> None:
 
 
 def test_collects_commuted_add() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(
@@ -153,7 +153,7 @@ def test_collects_commuted_add() -> None:
 
 
 def test_collects_numeric_opcode_add_alias() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(_insn(opcode_name="op_12")),
@@ -168,7 +168,7 @@ def test_collects_numeric_opcode_add_alias() -> None:
 
 
 def test_collects_memory_store_update_carrier() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     define = _insn(
         index=2,
         opcode_name="op_12",
@@ -211,7 +211,7 @@ def test_collects_memory_store_update_carrier() -> None:
 
 
 def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     define = _insn(
         index=2,
         opcode_name="op_12",
@@ -244,7 +244,7 @@ def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
 
 
 def test_collects_writeback_tail_carrier() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     move = _insn(
         index=1,
         opcode_name="op_4",
@@ -290,7 +290,7 @@ def test_collects_writeback_tail_carrier() -> None:
 
 
 def test_collects_writeback_tail_carrier_with_ssa_versions() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     move = _insn(
         index=1,
         opcode_name="op_4",
@@ -329,7 +329,7 @@ def test_collects_writeback_tail_carrier_with_ssa_versions() -> None:
 
 
 def test_writeback_tail_requires_same_block_address_use() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     move = _insn(
         index=1,
         opcode_name="op_4",
@@ -362,7 +362,7 @@ def test_writeback_tail_requires_same_block_address_use() -> None:
 
 
 def test_writeback_tail_requires_source_token_inside_memory_address() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
     move = _insn(
         index=1,
         opcode_name="op_4",
@@ -395,7 +395,7 @@ def test_writeback_tail_requires_source_token_inside_memory_address() -> None:
 
 
 def test_ignores_non_self_update() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(_insn(src_l_stkoff=0x700)),
@@ -408,7 +408,7 @@ def test_ignores_non_self_update() -> None:
 
 
 def test_ignores_ambiguous_sub_const_minus_var() -> None:
-    collector = InductionCarrierFactCollector()
+    collector = InductionVariableFactCollector()
 
     facts = collector.collect(
         _target(

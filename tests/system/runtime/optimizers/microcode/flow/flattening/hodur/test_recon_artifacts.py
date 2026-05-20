@@ -35,8 +35,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
 from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
-    _parse_focus_edge_pairs,
-    _resolve_edge_window,
+)
+from d810.cfg.semantic_exact_selection import (
+    parse_focus_edge_pairs,
+    resolve_edge_window,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
     SemanticStructuredRegionStrategy,
@@ -74,15 +76,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
     FakeJumpStrategy,
-)
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
-    BAD_WHILE_LOOP_EDITS_METADATA_KEY,
-    BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,
-    BadWhileLoopAnalysis,
-    BadWhileLoopFollowUp,
-    BadWhileLoopGotoConversion,
-    BadWhileLoopGotoRedirect,
-    BadWhileLoopStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SINGLE_ITERATION_FIXES_METADATA_KEY,
@@ -256,24 +249,6 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     assert unflattener._initial_transitions == ["initial"]
 
 
-def test_hodur_unflattener_registers_current_experimental_strategies():
-    unflattener = HodurUnflattener()
-
-    assert [type(strategy) for strategy in unflattener._strategies] == [
-        HandlerChainComposerStrategy,
-        DispatcherTrampolineSkipStrategy,
-        CounterHoistStrategy,
-        ReturnFrontierCarrierPreserveStrategy,
-    ]
-    strategies = unflattener._family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT1)
-    assert [type(strategy) for strategy in strategies] == [
-        HandlerChainComposerStrategy,
-        DispatcherTrampolineSkipStrategy,
-        CounterHoistStrategy,
-        ReturnFrontierCarrierPreserveStrategy,
-    ]
-
-
 def test_semantic_structured_region_strategy_only_runs_at_glbopt1():
     strategy = SemanticStructuredRegionStrategy()
     state_machine = SimpleNamespace(handlers={0x10: object()}, initial_state=0x10)
@@ -318,17 +293,25 @@ def test_semantic_exact_node_bulk_window_defaults(monkeypatch):
     monkeypatch.delenv("D810_EXACT_NODE_EDGE_START", raising=False)
     monkeypatch.delenv("D810_EXACT_NODE_EDGE_STOP", raising=False)
 
-    assert _resolve_edge_window(10) == (0, 10)
+    assert resolve_edge_window(10) == (0, 10)
 
 
 def test_semantic_exact_node_bulk_window_clamps_and_orders(monkeypatch):
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "7")
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "3")
-    assert _resolve_edge_window(10) == (7, 7)
+    assert resolve_edge_window(
+        10,
+        start_value="7",
+        stop_value="3",
+    ) == (7, 7)
 
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_START", "0x2")
     monkeypatch.setenv("D810_EXACT_NODE_EDGE_STOP", "99")
-    assert _resolve_edge_window(10) == (2, 10)
+    assert resolve_edge_window(
+        10,
+        start_value="0x2",
+        stop_value="99",
+    ) == (2, 10)
 
 
 def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
@@ -357,20 +340,20 @@ def test_semantic_exact_node_bulk_selection_skips_conditional_edges():
     ]
 
 
-def test_parse_focus_edge_pairs_handles_hex_and_decimal():
-    assert _parse_focus_edge_pairs(None) is None
-    assert _parse_focus_edge_pairs("") is None
-    assert _parse_focus_edge_pairs("   ") is None
-    assert _parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
-    assert _parse_focus_edge_pairs(
+def test_parse_focus_edge_pairs_handles_hex_specs():
+    assert parse_focus_edge_pairs(None) is None
+    assert parse_focus_edge_pairs("") is None
+    assert parse_focus_edge_pairs("   ") is None
+    assert parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
+    assert parse_focus_edge_pairs(
         "5d0aebd3,606dc166;606dc166,139f2922"
     ) == (
         (0x5D0AEBD3, 0x606DC166),
         (0x606DC166, 0x139F2922),
     )
-    assert _parse_focus_edge_pairs("0x10,0x20") == ((0x10, 0x20),)
+    assert parse_focus_edge_pairs("0x10,0x20") == ((0x10, 0x20),)
     # Malformed entries are silently skipped; valid ones survive.
-    assert _parse_focus_edge_pairs("garbage;0x10,0x20") == ((0x10, 0x20),)
+    assert parse_focus_edge_pairs("garbage;0x10,0x20") == ((0x10, 0x20),)
 
 
 def test_semantic_exact_node_focus_pairs_constructor_arg(monkeypatch):
@@ -894,11 +877,6 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     )
     monkeypatch.setattr(
         family,
-        "attach_bad_while_loop_edits_to_flow_graph",
-        lambda _mba, flow_graph: flow_graph,
-    )
-    monkeypatch.setattr(
-        family,
         "attach_single_iteration_fixes_to_flow_graph",
         lambda _mba, flow_graph: flow_graph,
     )
@@ -919,6 +897,127 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     assert snapshot.reachability is reachability
     assert snapshot.maturity == ida_hexrays.MMAT_GLBOPT1
     assert snapshot.pass_number == 0
+
+
+def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
+    monkeypatch,
+):
+    family = HodurStrategyFamily(strategy_classes=())
+    constant_fixpoint = object()
+    discovery = object()
+    transition_result = object()
+    dispatcher = object()
+    dispatcher_cache = object()
+    reachability = SimpleNamespace(entry_serial=0)
+    base_flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 1, (2,), (), 0, 0, ()),
+            2: BlockSnapshot(2, 0, (), (0,), 0, 0, ()),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    class _FakeConstantFixpointBackend:
+        def compute(self, flow_graph: object, state_var_stkoff: int) -> object:
+            assert flow_graph is base_flow_graph
+            assert state_var_stkoff == 0x7BC
+            return constant_fixpoint
+
+    monkeypatch.setattr(
+        family._cfg_translator,
+        "lift",
+        lambda _mba: base_flow_graph,
+    )
+    monkeypatch.setattr(
+        hodur_family_module,
+        "DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: dispatcher_cache),
+    )
+    monkeypatch.setattr(
+        family,
+        "compute_reachability_info",
+        lambda _mba: reachability,
+    )
+    monkeypatch.setattr(
+        family,
+        "attach_fake_jump_fixes_to_flow_graph",
+        lambda _mba, flow_graph: flow_graph,
+    )
+    monkeypatch.setattr(
+        family,
+        "attach_single_iteration_fixes_to_flow_graph",
+        lambda _mba, flow_graph: flow_graph,
+    )
+    monkeypatch.setattr(
+        hodur_family_module,
+        "build_transition_result_from_state_machine",
+        lambda *args, **kwargs: transition_result,
+    )
+
+    def _fake_build_round_discovery_context(**kwargs):
+        assert kwargs["flow_graph"] is base_flow_graph
+        assert kwargs["transition_result"] is transition_result
+        assert kwargs["dispatcher_entry_serial"] == 2
+        assert kwargs["state_var_stkoff"] == 0x7BC
+        assert kwargs["constant_fixpoint"] is constant_fixpoint
+        assert kwargs["dispatcher"] is None
+        return discovery
+
+    monkeypatch.setattr(
+        hodur_family_module,
+        "build_round_discovery_context",
+        _fake_build_round_discovery_context,
+    )
+    family._constant_fixpoint_backend = _FakeConstantFixpointBackend()
+    from d810.recon.flow.dispatcher_detection import DispatcherType
+    from d810.recon.flow.dispatcher_map import (
+        StateDispatcherMap,
+        StateDispatcherRow,
+    )
+
+    family._switch_table_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=2,
+                dispatcher_block=2,
+                compare_block=2,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+                row_kind="handler",
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x7BC,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    state_machine = SimpleNamespace(
+        handlers={0x10: SimpleNamespace(check_block=2)},
+        initial_state=0x10,
+        transitions=(),
+        state_var=SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            s=SimpleNamespace(off=0x7BC),
+        ),
+    )
+
+    snapshot = family.build_snapshot(
+        mba,
+        HodurDetection(
+            state_machine=state_machine,
+            detector=object(),
+            detection_source="test",
+        ),
+    )
+
+    assert snapshot.discovery is discovery
 
 
 def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_machine(
@@ -1279,84 +1378,6 @@ def test_attach_fake_jump_fixes_skips_cleanup_only_emulated_dispatcher_candidate
 
     assert updated is flow_graph
     assert updated.metadata == {}
-
-
-def test_attach_bad_while_loop_edits_to_flow_graph_metadata(monkeypatch):
-    unflattener = HodurUnflattener()
-    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
-    flow_graph = FlowGraph(
-        blocks={
-            0: BlockSnapshot(0, 1, (1,), (), 0, 0, ()),
-            1: BlockSnapshot(1, 1, (2,), (0,), 0, 0, ()),
-            2: BlockSnapshot(2, 4, (3, 4), (1, 5), 0, 0, ()),
-            3: BlockSnapshot(3, 0, (), (2,), 0, 0, ()),
-            4: BlockSnapshot(4, 0, (), (2,), 0, 0, ()),
-            5: BlockSnapshot(5, 4, (2, 8), (), 0, 0, ()),
-            8: BlockSnapshot(8, 0, (), (5,), 0, 0, ()),
-        },
-        entry_serial=0,
-        func_ea=0x401000,
-    )
-
-    monkeypatch.setattr(
-        hodur_family_module,
-        "collect_live_bad_while_loop_analysis",
-        lambda *_args, **_kwargs: BadWhileLoopAnalysis(
-            edits=(
-                BadWhileLoopGotoRedirect(
-                    dispatcher_entry=2,
-                    from_serial=1,
-                    new_target=3,
-                ),
-                BadWhileLoopGotoConversion(
-                    dispatcher_entry=2,
-                    block_serial=5,
-                    goto_target=4,
-                ),
-            ),
-            follow_up=(
-                BadWhileLoopFollowUp(
-                    dispatcher_entry=2,
-                    from_serial=5,
-                    category="create_conditional_redirect",
-                    reason="conditional_exit_with_loopback",
-                    target_serial=3,
-                    fallthrough_target=8,
-                ),
-            ),
-        ),
-    )
-
-    updated = unflattener._family.attach_bad_while_loop_edits_to_flow_graph(
-        mba, flow_graph
-    )
-
-    assert updated is not flow_graph
-    assert updated.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == [
-        {
-            "kind": "redirect_goto",
-            "dispatcher_entry": 2,
-            "from_serial": 1,
-            "new_target": 3,
-        },
-        {
-            "kind": "convert_to_goto",
-            "dispatcher_entry": 2,
-            "block_serial": 5,
-            "goto_target": 4,
-        },
-    ]
-    assert updated.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] == [
-        {
-            "dispatcher_entry": 2,
-            "from_serial": 5,
-            "category": "create_conditional_redirect",
-            "reason": "conditional_exit_with_loopback",
-            "target_serial": 3,
-            "fallthrough_target": 8,
-        }
-    ]
-    assert flow_graph.metadata == {}
 
 
 def test_attach_single_iteration_fixes_to_flow_graph_metadata(monkeypatch):

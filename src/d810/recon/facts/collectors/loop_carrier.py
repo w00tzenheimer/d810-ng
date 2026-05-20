@@ -212,10 +212,16 @@ def _carrier_stkoff(writers: tuple[_InstructionView, ...]) -> int | None:
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
 
 
-class LoopCarrierFactCollector:
-    """Observe loop predicates whose carrier writer is outside the loop SCC."""
+class LoopPredicateValueFactCollector:
+    """Observe loop predicates whose carrier writer is outside the loop SCC.
 
-    name = "LoopCarrierFactCollector"
+    Canonical collector class name for loop-predicate source evidence.
+    Raw observations still serialize as ``LoopCarrierFact`` because that is the
+    source ontology produced by this collector; projected value-flow facts
+    serialize as ``LoopPredicateValueFact``.
+    """
+
+    name = "LoopPredicateValueFactCollector"
     fact_kinds = frozenset({"LoopCarrierFact"})
     maturities = _TARGET_MATURITIES
 
@@ -363,4 +369,4 @@ class LoopCarrierFactCollector:
         return tuple(observations)
 
 
-__all__ = ["LoopCarrierFactCollector"]
+__all__ = ["LoopPredicateValueFactCollector"]

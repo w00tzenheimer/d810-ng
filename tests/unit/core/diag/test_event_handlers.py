@@ -14,6 +14,7 @@ import pytest
 
 from d810.cfg.observability import (
     observe_cfg_provenance,
+    observe_cfg_provenance_latest,
     observe_watch_block_transition,
 )
 from d810.core.diag.event_handlers import (
@@ -41,9 +42,12 @@ from d810.core.observability_models import (
     Modification,
 )
 from d810.recon.observability import (
+    observe_branch_ownership_proofs,
     observe_dag,
     observe_modifications,
     observe_reachability,
+    observe_state_dispatcher_rows,
+    observe_state_transition_dispatch_resolutions,
 )
 
 
@@ -239,6 +243,125 @@ def test_event_without_snapshot_mapping_is_a_noop(fake_conn):
     assert rows[0] == 0
 
 
+def test_state_dispatcher_rows_buffer_until_snapshot(fake_conn):
+    observe_state_dispatcher_rows(
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        dispatcher_entry_block=2,
+        dispatcher_kind="CONDITIONAL_CHAIN",
+        rows=[
+            {
+                "state_const": 0x89407346,
+                "target_block": 3,
+                "compare_block": None,
+                "branch_kind": "handler_state_map",
+                "confidence": 1.0,
+            }
+        ],
+    )
+
+    pre_rows = fake_conn.execute(
+        "SELECT COUNT(*) FROM state_dispatcher_rows"
+    ).fetchone()
+    assert pre_rows[0] == 0
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+
+    row = fake_conn.execute(
+        "SELECT state_const_hex, target_block, compare_block, branch_kind "
+        "FROM state_dispatcher_rows"
+    ).fetchone()
+    assert row == (
+        "0x0000000089407346",
+        3,
+        None,
+        "handler_state_map",
+    )
+
+
+def test_state_transition_dispatch_resolutions_write_under_snapshot(fake_conn):
+    snap = request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+    assert snap is not None
+
+    observe_state_transition_dispatch_resolutions(
+        snap,
+        [
+            {
+                "fact_id": "state_transition_anchor:blk=100",
+                "source_block_serial": 100,
+                "source_state_const_hex": "0x89407346",
+                "resolved_next_block_serial": 76,
+                "resolved_next_state_const_hex": "0x0000000010743c4c",
+                "resolved_next_state_const_u64": 0x10743C4C,
+                "resolution_kind": "ollvm_state_dispatcher_map",
+                "resolution_reason": "resolved_exact_state",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+        ],
+    )
+
+    row = fake_conn.execute(
+        "SELECT fact_id, resolved_next_block_serial, resolution_kind "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchone()
+    assert row == (
+        "state_transition_anchor:blk=100",
+        76,
+        "ollvm_state_dispatcher_map",
+    )
+
+
+def test_branch_ownership_proofs_write_under_snapshot(fake_conn):
+    snap = request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+    assert snap is not None
+
+    observe_branch_ownership_proofs(
+        snap,
+        [
+            {
+                "proof_id": "branch_ownership:edge=1",
+                "proof_kind": "OBFUSCATION_RESIDUE_ARM",
+                "trusted": True,
+                "reason": "trusted_opaque_branch_provenance",
+                "source_block": 100,
+                "branch_arm": 0,
+                "source_state": 0x10,
+                "target_state": 0x20,
+                "target_entry": 76,
+                "predicate_block": 100,
+                "dispatcher_entry_block": 2,
+                "oracle_kind": "explicit_opaque_provenance",
+                "evidence": {"edge_kind": "CONDITIONAL_TRANSITION"},
+                "payload": {"profile_name": "ollvm_state_map"},
+            },
+        ],
+    )
+
+    row = fake_conn.execute(
+        "SELECT proof_kind, trusted, target_entry, oracle_kind "
+        "FROM branch_ownership_proofs"
+    ).fetchone()
+    assert row == ("OBFUSCATION_RESIDUE_ARM", 1, 76, "explicit_opaque_provenance")
+
+
 def test_capture_handler_short_circuits_when_no_conn():
     """If get_diag_db returns None, handler must no-op without raising."""
 
@@ -303,6 +426,59 @@ def test_cfg_provenance_buffers_until_next_capture(fake_conn):
         ("cfg_mutations", "DELETE", 42, None),
         ("cfg_mutations", "REDIRECT_EDGE", 10, 20),
     ]
+
+
+def test_cfg_provenance_latest_writes_to_current_function_snapshot(fake_conn):
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L", func_ea=0x401000, maturity="M", phase="post_d810",
+    )
+
+    observe_cfg_provenance_latest(
+        func_ea=0x401000,
+        pass_name="EmulatedDispatcherUnflattener",
+        action="VETO_REDIRECT",
+        block_serial=42,
+        target_serial=99,
+        reason="direct_use_def_severance",
+        extra={"orphaned_use_count": 3},
+    )
+
+    rows = fake_conn.execute(
+        "SELECT pass_name, action, block_serial, target_serial, reason, "
+        "extra_json FROM cfg_provenance"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][:5] == (
+        "EmulatedDispatcherUnflattener",
+        "VETO_REDIRECT",
+        42,
+        99,
+        "direct_use_def_severance",
+    )
+    assert '"orphaned_use_count": 3' in rows[0][5]
+
+
+def test_cfg_provenance_latest_appends_sequence(fake_conn):
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L", func_ea=0x401000, maturity="M", phase="post_d810",
+    )
+
+    for block_serial in (42, 43):
+        observe_cfg_provenance_latest(
+            func_ea=0x401000,
+            pass_name="EmulatedDispatcherUnflattener",
+            action="VETO_REDIRECT",
+            block_serial=block_serial,
+            target_serial=99,
+            reason="direct_use_def_severance",
+        )
+
+    rows = fake_conn.execute(
+        "SELECT seq, block_serial FROM cfg_provenance ORDER BY seq"
+    ).fetchall()
+    assert rows == [(0, 42), (1, 43)]
 
 
 def test_watch_block_transition_event_writes_immediately(fake_conn):

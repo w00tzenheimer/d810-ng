@@ -31,12 +31,19 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
 from d810.cfg.modification_builder import ModificationBuilder
+from d810.cfg.residual_target_resolution import (
+    BstConditionalTail,
+    BstGotoTail,
+    resolve_dispatcher_trampoline_skip_candidate,
+    walk_bst_dispatcher,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
@@ -44,7 +51,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.snapshot import (
+    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
 
@@ -130,14 +137,39 @@ class DispatcherTrampolineSkipStrategy:
             if blk is None:
                 continue
             serial = int(blk.serial)
-            if serial in bst_node_blocks:
-                continue
-            if (
+            goto_target = self._goto_target(blk)
+            direct_use_def_veto = (
                 cumulative_view is not None
                 and callable(
                     getattr(cumulative_view, "is_direct_use_def_vetoed", None)
                 )
                 and cumulative_view.is_direct_use_def_vetoed(serial)
+            )
+            decision = resolve_dispatcher_trampoline_skip_candidate(
+                source_block=serial,
+                bst_root=bst_root_serial,
+                bst_blocks=bst_node_blocks,
+                nsucc=int(blk.nsucc()),
+                goto_target=goto_target,
+                direct_use_def_veto=direct_use_def_veto,
+                state_value_fn=lambda blk=blk: self._find_last_state_write_constant(
+                    blk,
+                    state_var_stkoff,
+                ),
+                target_for_state_fn=lambda state_value: self._walk_bst(
+                    mba,
+                    bst_root_serial,
+                    bst_node_blocks,
+                    state_value,
+                ),
+                target_exists_fn=lambda target_serial: (
+                    0 <= int(target_serial) < int(mba.qty)
+                    and mba.get_mblock(int(target_serial)) is not None
+                ),
+                block_count=int(mba.qty),
+            )
+            if (
+                decision.rejection_reason == "direct_use_def_veto"
             ):
                 logger.info(
                     "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO "
@@ -147,39 +179,10 @@ class DispatcherTrampolineSkipStrategy:
                 )
                 skipped_direct_use_def_veto += 1
                 continue
-            if blk.nsucc() != 1:
+            if not decision.is_admitted:
                 continue
-            tail = blk.tail
-            if tail is None or tail.opcode != ida_hexrays.m_goto:
-                continue
-            # Goto target must be the BST root.
-            tgt = getattr(tail, "l", None)
-            if tgt is None or tgt.t != ida_hexrays.mop_b:
-                continue
-            if int(tgt.b) != bst_root_serial:
-                continue
-            # Find last state-write at end of B.
-            state_value = self._find_last_state_write_constant(
-                blk, state_var_stkoff
-            )
-            if state_value is None:
-                continue
-            # Walk the BST cascade.
-            target_serial = self._walk_bst(
-                mba, bst_root_serial, bst_node_blocks, state_value
-            )
-            if target_serial is None:
-                continue
-            if target_serial in bst_node_blocks:
-                continue
-            if target_serial == serial:
-                continue
-            # Defensive: target must exist as a real block.
-            if target_serial < 0 or target_serial >= mba.qty:
-                continue
-            tgt_blk = mba.get_mblock(target_serial)
-            if tgt_blk is None:
-                continue
+            target_serial = int(decision.target_block)
+            state_value = int(decision.state_value)
 
             modification = builder.goto_redirect(
                 source_block=serial,
@@ -197,7 +200,12 @@ class DispatcherTrampolineSkipStrategy:
             if fact_view is not None:
                 sites = fact_view.return_carrier_sites_for_block(target_serial)
                 if sites:
-                    introduced = collect_const_var_refs_in_block(mba, serial)
+                    introduced = collect_const_var_refs_in_block(
+                        mba,
+                        serial,
+                        insn_kind_classifier=self._hexrays_insn_kind,
+                        operand_kind_classifier=self._hexrays_operand_kind,
+                    )
                     if introduced:
                         for site in sites:
                             fact_refs = frozenset(
@@ -353,6 +361,38 @@ class DispatcherTrampolineSkipStrategy:
         return None
 
     @staticmethod
+    def _hexrays_insn_kind(insn: object) -> InsnKind | None:
+        try:
+            opcode = int(getattr(insn, "opcode"))
+        except (TypeError, ValueError):
+            return None
+        if opcode == int(ida_hexrays.m_mov):
+            return InsnKind.MOV
+        return None
+
+    @staticmethod
+    def _hexrays_operand_kind(mop: object) -> OperandKind | None:
+        try:
+            operand_type = int(getattr(mop, "t"))
+        except (TypeError, ValueError):
+            return None
+        if operand_type == int(ida_hexrays.mop_n):
+            return OperandKind.NUMBER
+        if operand_type == int(ida_hexrays.mop_S):
+            return OperandKind.STACK
+        return None
+
+    @staticmethod
+    def _goto_target(blk: object) -> int | None:
+        tail = getattr(blk, "tail", None)
+        if tail is None or tail.opcode != ida_hexrays.m_goto:
+            return None
+        target = getattr(tail, "l", None)
+        if target is None or target.t != ida_hexrays.mop_b:
+            return None
+        return int(target.b)
+
+    @staticmethod
     def _walk_bst(
         mba: object,
         root: int,
@@ -368,66 +408,54 @@ class DispatcherTrampolineSkipStrategy:
         taken / fall-through edge.  Returns the first non-BST block reached,
         or ``None`` if the walk hit an unrecognized block.
         """
-        current = int(root)
-        visited: set[int] = set()
-        max_steps = 64
-        for _ in range(max_steps):
-            if current in visited:
-                return None
-            visited.add(current)
-            if current not in bst_blocks:
-                return current
-            blk = mba.get_mblock(current)
-            if blk is None:
-                return None
-            tail = blk.tail
-            if tail is None:
-                return None
-            opcode = tail.opcode
-            if opcode == ida_hexrays.m_goto:
-                tgt = tail.l
-                if tgt is None or tgt.t != ida_hexrays.mop_b:
-                    return None
-                current = int(tgt.b)
-                continue
-            if opcode in _BST_COND_OPCODES:
-                lhs = tail.l
-                rhs = tail.r
-                taken_target = tail.d
-                if (
-                    rhs is None
-                    or rhs.t != ida_hexrays.mop_n
-                    or taken_target is None
-                    or taken_target.t != ida_hexrays.mop_b
-                ):
-                    return None
-                # Determine compare size from the rhs constant.
-                try:
-                    rhs_value = int(rhs.nnn.value)
-                    rhs_size = int(rhs.size) if rhs.size > 0 else 4
-                except Exception:
-                    return None
-                taken = HodurStateMachineDetector._is_jump_taken_for_state(
-                    opcode, int(state_value), rhs_value, rhs_size
-                )
-                if taken is None:
-                    return None
-                if taken:
-                    current = int(taken_target.b)
-                    continue
-                # Fall-through: prefer the structural fall-through successor
-                # (the non-taken successor of a 2-way block).
-                fallthrough = None
-                taken_serial = int(taken_target.b)
-                for j in range(blk.nsucc()):
-                    s = int(blk.succ(j))
-                    if s != taken_serial:
-                        fallthrough = s
-                        break
-                if fallthrough is None:
-                    fallthrough = current + 1
-                current = fallthrough
-                continue
-            # Unknown tail opcode for a BST block -- bail out.
+        return walk_bst_dispatcher(
+            root=int(root),
+            bst_blocks=bst_blocks,
+            state_value=int(state_value),
+            tail_for_block_fn=lambda serial: DispatcherTrampolineSkipStrategy._bst_tail_view(
+                mba,
+                serial,
+            ),
+            is_conditional_taken_fn=HodurStateMachineDetector._is_jump_taken_for_state,
+        )
+
+    @staticmethod
+    def _bst_tail_view(
+        mba: object,
+        serial: int,
+    ) -> BstGotoTail | BstConditionalTail | None:
+        blk = mba.get_mblock(int(serial))
+        if blk is None:
             return None
-        return None
+        tail = blk.tail
+        if tail is None:
+            return None
+        opcode = tail.opcode
+        if opcode == ida_hexrays.m_goto:
+            target = tail.l
+            if target is None or target.t != ida_hexrays.mop_b:
+                return None
+            return BstGotoTail(target=int(target.b))
+        if opcode not in _BST_COND_OPCODES:
+            return None
+        rhs = tail.r
+        taken_target = tail.d
+        if (
+            rhs is None
+            or rhs.t != ida_hexrays.mop_n
+            or taken_target is None
+            or taken_target.t != ida_hexrays.mop_b
+        ):
+            return None
+        try:
+            rhs_value = int(rhs.nnn.value)
+            rhs_size = int(rhs.size) if rhs.size > 0 else 4
+        except Exception:
+            return None
+        return BstConditionalTail(
+            opcode=int(opcode),
+            rhs_value=rhs_value,
+            rhs_size=rhs_size,
+            taken_target=int(taken_target.b),
+            successors=tuple(int(blk.succ(index)) for index in range(blk.nsucc())),
+        )

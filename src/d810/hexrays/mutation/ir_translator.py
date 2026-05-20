@@ -10,9 +10,11 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
-from d810.cfg.contracts.ida_contract import CfgContractViolationError, IDACfgContract
+from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
 
 from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
+    CloneConditionalAsGotoFromBranchArm,
     GraphModification,
     RedirectGoto,
     RedirectBranch,
@@ -21,18 +23,29 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateAndRedirect,
     DuplicateBlock,
+    DuplicateReplayAndRedirect,
     InsertBlock,
     RemoveEdge,
     NopInstructions,
 )
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.cfg.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchNopInstructions,
@@ -50,7 +63,11 @@ from d810.cfg.plan import (
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.hexrays.mutation.insn_snapshot_materializer import validate_insn_snapshots
+from d810.hexrays.mutation.insn_snapshot_materializer import (
+    insn_snapshots_from_captured_body,
+    validate_captured_block_body,
+    validate_insn_snapshots,
+)
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -64,6 +81,88 @@ import os
 import ida_hexrays
 
 
+def _block_kind_from_hexrays(block_type: int) -> BlockKind:
+    block_type = int(block_type)
+    if block_type == int(ida_hexrays.BLT_NONE):
+        return BlockKind.NONE
+    if block_type == int(ida_hexrays.BLT_STOP):
+        return BlockKind.STOP
+    if block_type == int(ida_hexrays.BLT_XTRN):
+        return BlockKind.EXTERNAL
+    if block_type == int(ida_hexrays.BLT_0WAY):
+        return BlockKind.ZERO_WAY
+    if block_type == int(ida_hexrays.BLT_1WAY):
+        return BlockKind.ONE_WAY
+    if block_type == int(ida_hexrays.BLT_2WAY):
+        return BlockKind.TWO_WAY
+    if block_type == int(ida_hexrays.BLT_NWAY):
+        return BlockKind.N_WAY
+    return BlockKind.UNKNOWN
+
+
+def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
+    opcode = int(opcode)
+    if opcode == int(ida_hexrays.m_nop):
+        return InsnKind.NOP
+    if opcode == int(ida_hexrays.m_mov):
+        return InsnKind.MOV
+    if opcode == int(ida_hexrays.m_ldx):
+        return InsnKind.LOAD
+    if opcode == int(ida_hexrays.m_xdu):
+        return InsnKind.XDU
+    if opcode == int(ida_hexrays.m_add):
+        return InsnKind.ADD
+    if opcode == int(ida_hexrays.m_and):
+        return InsnKind.AND
+    if opcode == int(ida_hexrays.m_goto):
+        return InsnKind.GOTO
+    if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
+        return InsnKind.EQUALITY_JUMP
+    is_jcond = getattr(ida_hexrays, "is_mcode_jcond", None)
+    if callable(is_jcond) and is_jcond(opcode):
+        return InsnKind.COND_JUMP
+    return InsnKind.UNKNOWN
+
+
+def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
+    operand_type = int(operand_type)
+    mapping = {
+        int(ida_hexrays.mop_z): OperandKind.EMPTY,
+        int(ida_hexrays.mop_r): OperandKind.REGISTER,
+        int(ida_hexrays.mop_n): OperandKind.NUMBER,
+        int(ida_hexrays.mop_str): OperandKind.STRING,
+        int(ida_hexrays.mop_d): OperandKind.SUBINSN,
+        int(ida_hexrays.mop_S): OperandKind.STACK,
+        int(ida_hexrays.mop_v): OperandKind.GLOBAL,
+        int(ida_hexrays.mop_b): OperandKind.BLOCK,
+        int(ida_hexrays.mop_f): OperandKind.ARG_LIST,
+        int(ida_hexrays.mop_l): OperandKind.LVAR,
+        int(ida_hexrays.mop_a): OperandKind.ADDRESS,
+        int(ida_hexrays.mop_h): OperandKind.HELPER,
+        int(ida_hexrays.mop_c): OperandKind.CASE_LIST,
+        int(ida_hexrays.mop_fn): OperandKind.FP_CONST,
+        int(ida_hexrays.mop_p): OperandKind.PAIR,
+        int(ida_hexrays.mop_sc): OperandKind.SCATTERED,
+    }
+    return mapping.get(operand_type, OperandKind.UNKNOWN)
+
+
+def classify_live_insn_kind(insn: object) -> InsnKind | None:
+    """Return backend-neutral instruction semantics for a live Hex-Rays insn."""
+    try:
+        return _insn_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_live_operand_kind(mop: object) -> OperandKind | None:
+    """Return backend-neutral operand semantics for a live Hex-Rays operand."""
+    try:
+        return _operand_kind_from_hexrays(int(getattr(mop, "t")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
     """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
 
@@ -73,17 +172,18 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         return None
     t = mop.t
     size = mop.size
+    kind = _operand_kind_from_hexrays(t)
     if t == ida_hexrays.mop_n:
         nnn = mop.nnn
-        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0)
+        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
     if t == ida_hexrays.mop_S:
         s = mop.s
-        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None)
+        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None, kind=kind)
     if t == ida_hexrays.mop_r:
-        return CfgMopSnapshot(t=t, size=size, reg=mop.r)
+        return CfgMopSnapshot(t=t, size=size, reg=mop.r, kind=kind)
     if t == ida_hexrays.mop_b:
-        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b)
-    return CfgMopSnapshot(t=t, size=size)
+        return CfgMopSnapshot(t=t, size=size, block_ref=mop.b, kind=kind)
+    return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
 def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
@@ -114,6 +214,8 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         l=capture_mop_snapshot(insn.l),
         r=capture_mop_snapshot(insn.r),
         d=capture_mop_snapshot(insn.d),
+        kind=_insn_kind_from_hexrays(opcode),
+        raw_opcode=int(opcode),
     )
 
 
@@ -140,6 +242,8 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
         flags=flags,
         start_ea=start_ea,
         insn_snapshots=tuple(insn_snapshots),
+        kind=_block_kind_from_hexrays(block_type),
+        raw_block_type=int(block_type),
     )
 
 
@@ -158,7 +262,15 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
 
 def _unsupported_insert_block_reason(step: PatchInsertBlock) -> str | None:
-    reason = validate_insn_snapshots(step.instructions)
+    if step.captured_body is not None:
+        if step.captured_body.summary.contains_call:
+            return (
+                f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
+                "cannot replay call-containing captured body"
+            )
+        reason = validate_captured_block_body(step.captured_body)
+    else:
+        reason = validate_insn_snapshots(step.instructions)
     if reason is not None:
         return (
             f"PatchInsertBlock({step.pred_serial}->{step.succ_serial}) "
@@ -195,6 +307,38 @@ def _unsupported_duplicate_block_reason(step: PatchDuplicateBlock) -> str | None
             return (
                 f"PatchDuplicateBlock(source={step.source_serial}) "
                 "missing duplicated conditional target"
+            )
+    return None
+
+
+def _unsupported_duplicate_replay_reason(
+    step: PatchDuplicateReplayAndRedirect,
+) -> str | None:
+    if len(step.per_pred_replays) < 2:
+        return (
+            f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+            "requires at least two predecessor replay rows"
+        )
+    seen_preds: set[int] = set()
+    for entry in step.per_pred_replays:
+        if entry.pred_serial in seen_preds:
+            return (
+                f"PatchDuplicateReplayAndRedirect(source={step.source_serial}) "
+                f"duplicates predecessor {entry.pred_serial}"
+            )
+        seen_preds.add(entry.pred_serial)
+        if entry.captured_body.summary.contains_call:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                "cannot replay call-containing captured body"
+            )
+        reason = validate_captured_block_body(entry.captured_body)
+        if reason is not None:
+            return (
+                "PatchDuplicateReplayAndRedirect("
+                f"source={step.source_serial}, pred={entry.pred_serial}) "
+                f"cannot rebuild replay body: {reason}"
             )
     return None
 
@@ -431,7 +575,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -449,6 +593,10 @@ class IDAIRTranslator:
                         reasons.append(reason)
                 case PatchDuplicateBlock() as duplicate_step:
                     reason = _unsupported_duplicate_block_reason(duplicate_step)
+                    if reason is not None:
+                        reasons.append(reason)
+                case PatchDuplicateReplayAndRedirect() as replay_step:
+                    reason = _unsupported_duplicate_replay_reason(replay_step)
                     if reason is not None:
                         reasons.append(reason)
                 case PatchRemoveEdge():
@@ -571,6 +719,7 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=conditional_target,
                 fallthrough_target=fallthrough_target,
+                old_target_serial=old_target,
                 assigned_serial=assigned,
                 fallthrough_serial=fallthrough_serial,
                 instructions=instructions,
@@ -580,6 +729,7 @@ class IDAIRTranslator:
                     ref_blk_serial=ref,
                     conditional_target_serial=conditional_target,
                     fallthrough_target_serial=fallthrough_target,
+                    old_target_serial=old_target,
                     instructions_to_copy=instructions,
                     expected_conditional_serial=assigned,
                     expected_fallthrough_serial=fallthrough_serial,
@@ -596,7 +746,10 @@ class IDAIRTranslator:
                 assigned_serial=assigned,
                 instructions=instructions,
                 old_target_serial=old_target,
+                captured_body=captured_body,
             ):
+                if captured_body is not None:
+                    instructions = insn_snapshots_from_captured_body(captured_body)
                 modifier.queue_create_and_redirect(
                     source_block_serial=pred,
                     final_target_serial=succ,
@@ -632,6 +785,70 @@ class IDAIRTranslator:
                         f"duplicate block src={src} pred={pred} "
                         f"target={target} cond={conditional_target} "
                         f"ft={fallthrough_target} via {assigned}"
+                    ),
+                )
+
+            case PatchDuplicateReplayAndRedirect(
+                source_serial=src,
+                dispatcher_entry=dispatcher,
+                per_pred_replays=per_pred_replays,
+            ):
+                replay_entries = []
+                for entry in per_pred_replays:
+                    replay_entries.append(
+                        (
+                            entry.pred_serial,
+                            entry.target_serial,
+                            entry.replay_serial,
+                            entry.clone_serial,
+                            tuple(insn_snapshots_from_captured_body(entry.captured_body)),
+                        )
+                    )
+                modifier.queue_duplicate_replay_and_redirect(
+                    source_block_serial=src,
+                    dispatcher_entry_serial=dispatcher,
+                    per_pred_replays=tuple(replay_entries),
+                    description=(
+                        f"duplicate replay source={src} dispatcher={dispatcher} "
+                        f"rows={len(replay_entries)}"
+                    ),
+                )
+
+            case PatchCloneConditionalAsGoto(
+                source_serial=src,
+                pred_serial=pred,
+                goto_target=target,
+                assigned_serial=assigned,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto pred={pred} src={src} "
+                        f"target={target} via {assigned}: {reason}"
+                    ),
+                )
+
+            case PatchCloneConditionalAsGotoFromBranchArm(
+                source_serial=src,
+                pred_serial=pred,
+                pred_arm=arm,
+                goto_target=target,
+                assigned_serial=assigned,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto_from_branch_arm(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    pred_arm=arm,
+                    goto_target_serial=target,
+                    expected_serial=assigned,
+                    description=(
+                        f"clone conditional as goto from arm pred={pred} arm={arm} "
+                        f"src={src} target={target} via {assigned}: {reason}"
                     ),
                 )
 
@@ -730,6 +947,7 @@ class IDAIRTranslator:
                 ref_block=ref,
                 conditional_target=cond_target,
                 fallthrough_target=fallthrough_target,
+                old_target_serial=old_target,
                 instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
@@ -737,6 +955,7 @@ class IDAIRTranslator:
                     ref_blk_serial=ref,
                     conditional_target_serial=cond_target,
                     fallthrough_target_serial=fallthrough_target,
+                    old_target_serial=old_target,
                     instructions_to_copy=instructions,
                     description=(
                         f"create conditional redirect src={src} ref={ref} "
@@ -760,6 +979,40 @@ class IDAIRTranslator:
                     description=(
                         f"duplicate block src={src} pred={pred} target={target} "
                         f"cond={conditional_target} ft={fallthrough_target}"
+                    ),
+                )
+
+            case CloneConditionalAsGoto(
+                source_block=src,
+                pred_serial=pred,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    goto_target_serial=target,
+                    description=(
+                        f"clone conditional as goto pred={pred} src={src} "
+                        f"target={target}: {reason}"
+                    ),
+                )
+
+            case CloneConditionalAsGotoFromBranchArm(
+                source_block=src,
+                pred_serial=pred,
+                pred_arm=arm,
+                goto_target=target,
+                reason=reason,
+            ):
+                modifier.queue_clone_conditional_as_goto_from_branch_arm(
+                    source_block_serial=src,
+                    pred_serial=pred,
+                    pred_arm=arm,
+                    goto_target_serial=target,
+                    description=(
+                        f"clone conditional as goto from arm pred={pred} "
+                        f"arm={arm} src={src} target={target}: {reason}"
                     ),
                 )
 
@@ -839,6 +1092,8 @@ class IDAIRTranslator:
 
 __all__ = [
     "IDAIRTranslator",
+    "classify_live_insn_kind",
+    "classify_live_operand_kind",
     "capture_insn_snapshot",
     "capture_mop_snapshot",
     "lift",

@@ -7,15 +7,25 @@ import idaapi
 import ida_hexrays
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+import d810.hexrays.observability as hexrays_observability
+import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
+    EdgeRedirectViaPredSplit,
     InsertBlock,
     PhaseCycleLowering,
+    PromoteOperandToScalar,
+    ReorderBlocks,
     RedirectGoto,
+    ZeroStateWrite,
 )
+from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchInsertBlock, compile_patch_plan
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import lift as lift_mba
+from d810.optimizers.microcode.flow.flattening import (
+    emulated_dispatcher_family as emulated_family_module,
+)
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionPhase,
     DecisionReasonCode,
@@ -33,16 +43,23 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
+    GenericDispatcherEngineProfile,
+    ollvm_state_dispatcher_map_profile,
+    tigress_indirect_dispatcher_profile,
+    tigress_switch_dispatcher_profile,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
     EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY,
     EMULATED_DISPATCHER_METADATA_KEY,
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,
+    EMULATED_DISPATCHER_PHASE_CONTEXT_KEY,
     EmulatedDispatcherCandidateRecord,
     EmulatedDispatcherMetadata,
     EmulatedDispatcherPhaseArtifact,
+    EmulatedDispatcherPhaseContext,
     EmulatedDispatcherStrategy,
     extract_emulated_dispatcher_candidate_records,
+    extract_emulated_dispatcher_fallback_modifications,
     extract_emulated_dispatcher_metadata,
     extract_emulated_dispatcher_modifications,
     extract_emulated_dispatcher_phase_artifact,
@@ -50,6 +67,14 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
 from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine import (
     EmulatedDispatcherUnflattener,
 )
+from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.branch_ownership import (
+    BranchOwnershipProof,
+    BranchOwnershipProofKind,
+)
+from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
+from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.testing.runner import _resolve_test_project_index, get_func_ea
 from tests.system.e2e.test_approov_engine_wrapper_baselines import (
     _apply_engine_wrapper_profile,
@@ -240,6 +265,2150 @@ def _flow_graph_with_conditional_shape() -> FlowGraph:
     )
 
 
+def _state_dispatcher_map(
+    *,
+    dispatcher_entry: int = 2,
+) -> StateDispatcherMap:
+    return StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=5,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+            ),
+            StateDispatcherRow(
+                state_const=0x20,
+                target_block=7,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="switch_case",
+                source=DispatcherType.SWITCH_TABLE,
+            ),
+        ),
+        dispatcher_entry_block=dispatcher_entry,
+        dispatcher_blocks=frozenset({dispatcher_entry}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
+        initial_state=0x10,
+    )
+
+
+def _conditional_chain_state_dispatcher_map(
+    *,
+    dispatcher_entry: int,
+    state: int,
+    target: int,
+) -> StateDispatcherMap:
+    return StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=target,
+                dispatcher_block=dispatcher_entry,
+                compare_block=dispatcher_entry,
+                branch_kind="jnz_fallthrough",
+                source=DispatcherType.CONDITIONAL_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=dispatcher_entry,
+        dispatcher_blocks=frozenset({dispatcher_entry}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+    )
+
+
+def _switch_return_fact(source_state: int, exit_block: int):
+    return switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id=f"tigress_switch:case={source_state}:return",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.RETURN_FRONTIER,
+        source_state=source_state,
+        case_entry_block=exit_block,
+        return_value=0,
+        proof=BranchOwnershipProof(
+            proof_id=f"tigress_switch:case={source_state}:return",
+            proof_kind=BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER,
+            trusted=True,
+            reason="case_body_returns",
+            source_state=source_state,
+            source_block=exit_block,
+            predicate_block=exit_block,
+            dispatcher_entry_block=2,
+            oracle_kind="switch_case_return_frontier",
+        ),
+        reason="case_body_returns",
+        exit_block=exit_block,
+    )
+
+
+def test_phase_node_entry_by_state_prefers_exact_dispatcher_map_rows() -> None:
+    def _node(state: int, entry: int):
+        return SimpleNamespace(
+            key=SimpleNamespace(state_const=state),
+            entry_anchor=entry,
+        )
+
+    def _snapshot(serial: int) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_0WAY,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            _node(0x10, 9),
+            _node(0x10, 5),
+            _node(0x30, 11),
+            _node(0x30, 12),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={serial: _snapshot(serial) for serial in (2, 5, 7, 9, 11, 12)},
+        entry_serial=9,
+        func_ea=0x401000,
+    )
+
+    entries = emulated_family_module._phase_node_entry_by_state(
+        dag=dag,
+        phase_context=context,
+        flow_graph=flow_graph,
+    )
+
+    assert entries[0x10] == 5
+    assert entries[0x20] == 7
+    assert entries[0x30] == 11
+
+
+def test_ollvm_terminal_payload_backedge_retargets_to_selector_return_frontier() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        branch_ownership_proof: BranchOwnershipProof | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+            branch_ownership_proof=branch_ownership_proof,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="proof-selector-to-payload",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="trusted_opaque_branch_provenance:ollvm_bcf_opaque_predicate",
+            source_state=selector_state,
+            target_state=payload_state,
+            target_entry=136,
+            oracle_kind="fixture",
+        ),
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert len(rewritten) == 1
+    assert rewritten[0].target_entry == 204
+    assert candidate.target_entry == 96
+
+
+def test_ollvm_terminal_payload_backedge_uses_pred_split_for_shared_payload() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        branch_ownership_proof: BranchOwnershipProof | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+            branch_ownership_proof=branch_ownership_proof,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        source_block=98,
+        branch_arm=1,
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="proof-selector-to-payload-split",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="opaque_selected_terminal_selector_backedge_residue",
+            source_block=98,
+            branch_arm=1,
+            source_state=selector_state,
+            target_state=payload_state,
+            target_entry=136,
+            oracle_kind="fixture",
+            evidence={"requires_cfg_split": True},
+        ),
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        source_block=98,
+        branch_arm=0,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(99, 136),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 136),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+    assert rewritten[0].target_entry == 204
+
+    replacement = emulated_family_module._terminal_payload_edge_split_replacement(
+        candidate=rewritten[0],
+        modification=RedirectGoto(from_serial=136, old_target=96, new_target=204),
+        dag=dag,
+        flow_graph=flow_graph,
+        branch_ownership_proofs=(),
+    )
+    assert replacement == (
+        EdgeRedirectViaPredSplit(
+            src_block=136,
+            old_target=96,
+            new_target=204,
+            via_pred=98,
+        ),
+    )
+
+
+def test_ollvm_terminal_payload_materialization_candidate_preserves_store() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+    store = InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=())
+    state_write = InsnSnapshot(opcode=ida_hexrays.m_mov, ea=0x40113A, operands=())
+    dag = SimpleNamespace(
+        nodes=(),
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                SemanticEdgeKind.TRANSITION,
+                target_entry=96,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=204,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(204, 100),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            100: BlockSnapshot(
+                serial=100,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(136,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401100,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(100, 148),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(store, state_write),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 148),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            148: BlockSnapshot(
+                serial=148,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(136,),
+                preds=(146,),
+                flags=0,
+                start_ea=0x401148,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="branch_ownership_terminal_selector_backedge",
+        evidence={
+            "requires_side_effect_materialization": True,
+            "opaque_selected_proof_id": "selector-residue-proof",
+            "external_incoming_materialization_veto_proof_ids": (
+                "external-veto-proof",
+            ),
+            "external_incoming_side_effect_guard_reasons": (
+                "discarded_arm_contains_payload_store",
+            ),
+        },
+    )
+    veto = BranchOwnershipProof(
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="z3_branch_ownership",
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto),
+        )
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.selector_source_block == 98
+    assert candidate.selector_branch_arm == 1
+    assert candidate.selector_old_target == 100
+    assert candidate.selector_state == selector_state
+    assert candidate.payload_state == payload_state
+    assert candidate.payload_block == 136
+    assert candidate.payload_backedge_target == 96
+    assert candidate.semantic_continuation == 204
+    assert candidate.side_effect_corridor_blocks == (136,)
+    assert candidate.side_effect_instructions == (store,)
+    assert candidate.side_effect_instructions[0].ea == 0x401136
+    assert candidate.external_incoming_edges[0].old_target == 148
+    assert candidate.materialization_veto_proof_ids == ("external-veto-proof",)
+    assert candidate.side_effect_guard_reasons == (
+        "discarded_arm_contains_payload_store",
+    )
+    assert candidate.owned_redirect_edges == ((98, 100), (146, 148))
+
+    modifications = (
+        emulated_family_module
+        ._terminal_selector_payload_materialization_modifications(candidate)
+    )
+    compiled_modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+    assert blocker is None
+    assert compiled_modifications == modifications
+    assert modifications == (
+        InsertBlock(
+            pred_serial=98,
+            succ_serial=204,
+            instructions=(store,),
+            old_target_serial=100,
+        ),
+        InsertBlock(
+            pred_serial=146,
+            succ_serial=204,
+            instructions=(store,),
+            old_target_serial=148,
+        ),
+    )
+    patch_plan = compile_patch_plan(modifications, flow_graph)
+    rewritten_continuation = patch_plan.relocation_map.rewrite_serial(204)
+    assert isinstance(patch_plan.steps[0], PatchInsertBlock)
+    assert patch_plan.steps[0].pred_serial == 98
+    assert patch_plan.steps[0].succ_serial == rewritten_continuation
+    assert patch_plan.steps[0].old_target_serial == 100
+    assert patch_plan.steps[0].instructions == (store,)
+    assert isinstance(patch_plan.steps[1], PatchInsertBlock)
+    assert patch_plan.steps[1].pred_serial == 146
+    assert patch_plan.steps[1].succ_serial == rewritten_continuation
+    assert patch_plan.steps[1].old_target_serial == 148
+    assert patch_plan.steps[1].instructions == (store,)
+
+
+def test_ollvm_terminal_payload_materialization_rejects_fallthrough_selector_arm() -> None:
+    store = InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=())
+    candidate = emulated_family_module.TerminalSelectorPayloadMaterializationCandidate(
+        selector_source_block=98,
+        selector_branch_arm=0,
+        selector_old_target=204,
+        selector_state=0x049FD3A3,
+        payload_state=0x2AC056AD,
+        payload_block=136,
+        payload_backedge_target=96,
+        semantic_continuation=204,
+        side_effect_corridor_blocks=(136,),
+        side_effect_instructions=(store,),
+        selector_blocked_proof_id="selector-gap-proof",
+        selector_residue_proof_id="selector-residue-proof",
+        external_incoming_edges=(
+            emulated_family_module.TerminalSelectorPayloadIncomingEdge(
+                source_block=146,
+                branch_arm=1,
+                old_target=148,
+                source_state=0x3CFC5AAB,
+                target_state=0x2AC056AD,
+                target_entry=136,
+                veto_proof_id="external-veto-proof",
+                side_effect_guard_reason="discarded_arm_contains_payload_store",
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            98: BlockSnapshot(
+                serial=98,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(204, 136),
+                preds=(96,),
+                flags=0,
+                start_ea=0x401098,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(store,),
+            ),
+            146: BlockSnapshot(
+                serial=146,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(147, 136),
+                preds=(145,),
+                flags=0,
+                start_ea=0x401146,
+                insn_snapshots=(),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=98,
+        func_ea=0x401000,
+    )
+
+    modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+
+    assert modifications == ()
+    assert blocker == "terminal_payload_materialization_selector_arm_not_supported"
+
+
+def test_ollvm_terminal_payload_materialization_rejects_missing_payload_snapshot() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_mov, ea=0x40113A, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+    veto = BranchOwnershipProof(
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto),
+        )
+    )
+
+    assert candidates == ()
+
+
+def test_ollvm_terminal_payload_materialization_compile_failure_blocks(
+    monkeypatch,
+) -> None:
+    candidate = (
+        emulated_family_module.TerminalSelectorPayloadMaterializationCandidate(
+            selector_source_block=98,
+            selector_branch_arm=1,
+            selector_old_target=100,
+            selector_state=0x049FD3A3,
+            payload_state=0x2AC056AD,
+            payload_block=136,
+            payload_backedge_target=96,
+            semantic_continuation=204,
+            side_effect_corridor_blocks=(136,),
+            side_effect_instructions=(
+                InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+            ),
+            selector_blocked_proof_id="selector-gap-proof",
+            selector_residue_proof_id="selector-residue-proof",
+            external_incoming_edges=(
+                emulated_family_module.TerminalSelectorPayloadIncomingEdge(
+                    source_block=146,
+                    branch_arm=1,
+                    old_target=148,
+                    source_state=0x3CFC5AAB,
+                    target_state=0x2AC056AD,
+                    target_entry=136,
+                    veto_proof_id="external-veto-proof",
+                    side_effect_guard_reason="discarded_arm_contains_payload_store",
+                ),
+            ),
+        )
+    )
+    flow_graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0x401000)
+
+    def _raise_compile_failure(*_args, **_kwargs):
+        raise ValueError("compile failure")
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "compile_patch_plan",
+        _raise_compile_failure,
+    )
+
+    modifications, blocker = (
+        emulated_family_module
+        ._compile_terminal_selector_payload_materialization_modifications(
+            candidate,
+            flow_graph,
+        )
+    )
+
+    assert modifications == ()
+    assert blocker == "terminal_payload_materialization_patch_plan_failed"
+
+
+def test_ollvm_terminal_payload_materialization_rejects_semantic_external_edge() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+    semantic = BranchOwnershipProof(
+        proof_id="external-semantic-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="source_data_controls_payload",
+        source_block=146,
+        branch_arm=1,
+        source_state=external_state,
+        target_state=payload_state,
+        target_entry=136,
+    )
+    veto = replace(
+        semantic,
+        proof_id="external-veto-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        evidence={
+            "side_effect_guard_reason": "discarded_arm_contains_payload_store",
+        },
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked, veto, semantic),
+        )
+    )
+
+    assert candidates == ()
+
+
+def test_ollvm_terminal_payload_materialization_rejects_unproven_external_edge() -> None:
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    external_state = 0x3CFC5AAB
+    return_state = 0xBFF7ACB5
+
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        *,
+        target_entry: int,
+        source_block: int | None = None,
+        branch_arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.CONDITIONAL_TRANSITION,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            source_anchor=(
+                SimpleNamespace(block_serial=source_block, branch_arm=branch_arm)
+                if source_block is not None
+                else None
+            ),
+            ordered_path=(target_entry,),
+        )
+
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                payload_state,
+                selector_state,
+                target_entry=96,
+                kind=SemanticEdgeKind.TRANSITION,
+            ),
+            _edge(
+                selector_state,
+                payload_state,
+                target_entry=136,
+                source_block=98,
+                branch_arm=1,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                target_entry=204,
+                source_block=98,
+                branch_arm=0,
+            ),
+            _edge(
+                external_state,
+                payload_state,
+                target_entry=136,
+                source_block=146,
+                branch_arm=1,
+            ),
+            _edge(
+                return_state,
+                None,
+                target_entry=204,
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98, 146),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=ida_hexrays.m_stx, ea=0x401136, operands=()),
+                ),
+            )
+        },
+        entry_serial=136,
+        func_ea=0x401000,
+    )
+    blocked = BranchOwnershipProof(
+        proof_id="selector-gap-proof",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="terminal_selector_backedge_requires_side_effect_materialization",
+        source_block=98,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        evidence={"requires_side_effect_materialization": True},
+    )
+
+    candidates = (
+        emulated_family_module
+        ._collect_terminal_selector_payload_materialization_candidates(
+            dag=dag,
+            flow_graph=flow_graph,
+            branch_ownership_proofs=(blocked,),
+        )
+    )
+
+    assert candidates == ()
+
+
+class _FakeInsn:
+    def __init__(self, *, opcode: int, l: object, d: object, ea: int) -> None:
+        self.opcode = opcode
+        self.l = l
+        self.d = d
+        self.ea = ea
+        self.next = None
+
+
+class _FakeBlock:
+    def __init__(self, head: object | None = None) -> None:
+        self.head = head
+
+
+class _FakeMba:
+    def __init__(self, blocks: dict[int, _FakeBlock]) -> None:
+        self._blocks = blocks
+        self.qty = max(blocks) + 1
+
+    def get_mblock(self, serial: int) -> _FakeBlock:
+        return self._blocks[int(serial)]
+
+
+def _stk_mop(stkoff: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=size,
+        s=SimpleNamespace(off=stkoff),
+    )
+
+
+def _reg_mop(reg: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(t=ida_hexrays.mop_r, size=size, r=reg)
+
+
+def _num_mop(value: int, size: int = 8) -> SimpleNamespace:
+    return SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=size,
+        value=value,
+        nnn=SimpleNamespace(value=value),
+    )
+
+
+def _flow_graph_for_return_carrier_bypass() -> FlowGraph:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (2,), (0,)),
+            2: _block(2, (3,), (1,)),
+            3: _block(3, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+
+def test_dispatcher_loop_recovery_rejects_return_slot_writer_bypass(
+    monkeypatch,
+) -> None:
+    return_read = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_stk_mop(0x8),
+        d=_reg_mop(0),
+        ea=0x401030,
+    )
+    mba = _FakeMba(
+        {
+            0: _FakeBlock(),
+            1: _FakeBlock(),
+            2: _FakeBlock(),
+            3: _FakeBlock(return_read),
+        }
+    )
+    flow_graph = _flow_graph_for_return_carrier_bypass()
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "find_reaching_defs_for_stkvar",
+        lambda _mba, _blk, _stkoff, _size: (
+            SimpleNamespace(block_serial=0, ins_ea=0x401000),
+            SimpleNamespace(block_serial=2, ins_ea=0x401020),
+        ),
+    )
+
+    bypasses = emulated_family_module._return_carrier_preservation_bypasses(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ),
+    )
+
+    assert len(bypasses) == 1
+    assert bypasses[0].writer_block == 2
+    assert bypasses[0].return_block == 3
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ),
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_dispatcher_loop_recovery_rejects_semantic_return_writer_bypass() -> None:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    writer = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_stk_mop(0x10),
+        d=_stk_mop(0x8),
+        ea=0x401050,
+    )
+    mba = _FakeMba({10: _FakeBlock(writer)})
+    flow_graph = FlowGraph(
+        blocks={
+            0: _block(0, (8, 9), ()),
+            3: _block(3, (11,), (5, 8, 9, 10)),
+            5: _block(5, (3,), (10,)),
+            8: _block(8, (3,), (0,)),
+            9: _block(9, (3,), (0,)),
+            10: _block(10, (3,), (8,)),
+            11: _block(11, (), (3, 9)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    phase_context = SimpleNamespace(
+        semantic_reference_program=SimpleNamespace(
+            nodes=(
+                SimpleNamespace(
+                    node_index=0,
+                    handler_serial=11,
+                    entry_anchor=11,
+                ),
+            ),
+            lines=(
+                SimpleNamespace(
+                    node_index=0,
+                    line_kind="return",
+                    text="    return result;",
+                ),
+            ),
+        )
+    )
+
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=9, old_target=3, new_target=11),
+            RedirectGoto(from_serial=10, old_target=3, new_target=5),
+            RedirectGoto(from_serial=8, old_target=3, new_target=10),
+        ),
+        phase_context=phase_context,
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_dispatcher_loop_recovery_rejects_semantic_const_zero_return() -> None:
+    def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    const_zero_return = _FakeInsn(
+        opcode=ida_hexrays.m_mov,
+        l=_num_mop(0),
+        d=_reg_mop(0),
+        ea=0x401060,
+    )
+    mba = _FakeMba({11: _FakeBlock(const_zero_return)})
+    flow_graph = FlowGraph(
+        blocks={
+            0: _block(0, (9,), ()),
+            3: _block(3, (11,), (9,)),
+            9: _block(9, (3,), (0,)),
+            11: _block(11, (), (3, 9)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    phase_context = SimpleNamespace(
+        semantic_reference_program=SimpleNamespace(
+            nodes=(
+                SimpleNamespace(
+                    node_index=0,
+                    handler_serial=11,
+                    entry_anchor=11,
+                ),
+            ),
+            lines=(
+                SimpleNamespace(
+                    node_index=0,
+                    line_kind="return",
+                    text="    return result;",
+                ),
+            ),
+        )
+    )
+
+    assert emulated_family_module._return_carrier_preservation_blockers(
+        mba=mba,
+        flow_graph=flow_graph,
+        modifications=(
+            RedirectGoto(from_serial=9, old_target=3, new_target=11),
+        ),
+        phase_context=phase_context,
+    ) == ("dispatcher_loop_recovery_return_carrier_bypass",)
+
+
+def test_ollvm_terminal_payload_backedge_requires_branch_ownership_proof() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(
+            payload_edge,
+            _edge(
+                selector_state,
+                payload_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=136,
+            ),
+            _edge(
+                selector_state,
+                return_state,
+                SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                target_entry=204,
+            ),
+            _edge(
+                return_state,
+                None,
+                SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=204,
+            ),
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert rewritten == [candidate]
+    assert rewritten[0].target_entry == 96
+
+
+def test_ollvm_terminal_payload_backedge_consumes_phase_branch_ownership_proofs() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        branch_arm: int | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            source_anchor=SimpleNamespace(
+                block_serial=96,
+                branch_arm=branch_arm,
+            ),
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_arm=1,
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        branch_arm=0,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    proof = BranchOwnershipProof(
+        proof_id="proof-selector-to-payload",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="moptracker_path_constant_non_taken_arm",
+        source_block=96,
+        branch_arm=1,
+        source_state=selector_state,
+        target_state=payload_state,
+        target_entry=136,
+        oracle_kind="moptracker_branch_ownership",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        branch_ownership_proofs=(proof,),
+        logger=logger,
+    )
+
+    assert len(rewritten) == 1
+    assert rewritten[0].target_entry == 204
+    assert candidate.target_entry == 96
+
+
+def test_ollvm_terminal_payload_backedge_rejects_sibling_branch_proof() -> None:
+    def _key(state: int):
+        return SimpleNamespace(state_const=state)
+
+    def _edge(
+        source: int,
+        target: int | None,
+        kind: SemanticEdgeKind,
+        *,
+        target_entry: int,
+        branch_arm: int | None = None,
+        metadata: dict | None = None,
+    ):
+        return SimpleNamespace(
+            source_key=_key(source),
+            target_key=(_key(target) if target is not None else None),
+            kind=kind,
+            source_anchor=SimpleNamespace(
+                block_serial=96,
+                branch_arm=branch_arm,
+            ),
+            target_entry_anchor=target_entry,
+            ordered_path=(target_entry,),
+            metadata=metadata,
+        )
+
+    payload_state = 0x2AC056AD
+    selector_state = 0x049FD3A3
+    return_state = 0xBFF7ACB5
+    payload_edge = _edge(
+        payload_state,
+        selector_state,
+        SemanticEdgeKind.TRANSITION,
+        target_entry=96,
+    )
+    sibling_proof = BranchOwnershipProof(
+        proof_id="proof-selector-to-return",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture sibling proof",
+        source_block=96,
+        branch_arm=0,
+        source_state=selector_state,
+        target_state=return_state,
+        target_entry=204,
+        oracle_kind="fixture",
+    )
+    shared_metadata = {"branch_ownership_proofs": (sibling_proof,)}
+    selector_to_payload = _edge(
+        selector_state,
+        payload_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=136,
+        branch_arm=1,
+        metadata=shared_metadata,
+    )
+    selector_to_return = _edge(
+        selector_state,
+        return_state,
+        SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        target_entry=204,
+        branch_arm=0,
+        metadata=shared_metadata,
+    )
+    return_edge = _edge(
+        return_state,
+        None,
+        SemanticEdgeKind.CONDITIONAL_RETURN,
+        target_entry=204,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            SimpleNamespace(
+                key=_key(payload_state),
+                entry_anchor=136,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(selector_state),
+                entry_anchor=96,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+            SimpleNamespace(
+                key=_key(return_state),
+                entry_anchor=204,
+                owned_blocks=(),
+                exclusive_blocks=(),
+            ),
+        ),
+        edges=(payload_edge, selector_to_payload, selector_to_return, return_edge),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            96: BlockSnapshot(
+                serial=96,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(98, 100),
+                preds=(136,),
+                flags=0,
+                start_ea=0x401096,
+                insn_snapshots=(),
+            ),
+            136: BlockSnapshot(
+                serial=136,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(96,),
+                preds=(98,),
+                flags=0,
+                start_ea=0x401136,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=ida_hexrays.m_stx,
+                        ea=0x401136,
+                        operands=(),
+                    ),
+                ),
+            ),
+            204: BlockSnapshot(
+                serial=204,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(99,),
+                flags=0,
+                start_ea=0x401204,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=96,
+        func_ea=0x401000,
+    )
+    candidate = ReconstructionCandidate(
+        edge=payload_edge,
+        horizon_block=136,
+        site=None,
+        target_entry=96,
+        first_shared_block=None,
+        via_pred=None,
+        emission_mode="direct",
+    )
+    logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    rewritten = emulated_family_module._retarget_ollvm_terminal_payload_backedges(
+        dag=dag,
+        flow_graph=flow_graph,
+        raw_candidates=[candidate],
+        logger=logger,
+    )
+
+    assert rewritten == [candidate]
+    assert rewritten[0].target_entry == 96
+
+
+def test_branch_ownership_consumer_requires_minimum_rewrite_identity() -> None:
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="partial-proof",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="fixture",
+            source_state=0x10,
+            target_state=0x20,
+            oracle_kind="fixture",
+        ),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is False
+    )
+
+
+def test_branch_ownership_consumer_accepts_branch_arm_identity() -> None:
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proof=BranchOwnershipProof(
+            proof_id="arm-proof",
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="fixture",
+            source_block=5,
+            branch_arm=1,
+            source_state=0x10,
+            target_state=0x20,
+            oracle_kind="fixture",
+        ),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is True
+    )
+
+
+def test_branch_ownership_consumer_real_branch_proof_vetoes_rewrite() -> None:
+    nonsemantic_proof = BranchOwnershipProof(
+        proof_id="nonsemantic-arm-proof",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture nonsemantic",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    real_branch_proof = BranchOwnershipProof(
+        proof_id="real-branch-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="fixture input-derived",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proofs=(nonsemantic_proof, real_branch_proof),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is False
+    )
+
+
+def test_branch_ownership_consumer_sibling_real_branch_does_not_veto_rewrite() -> None:
+    nonsemantic_proof = BranchOwnershipProof(
+        proof_id="nonsemantic-arm-proof",
+        proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+        trusted=True,
+        reason="fixture nonsemantic",
+        source_block=5,
+        branch_arm=1,
+        source_state=0x10,
+        target_state=0x20,
+        oracle_kind="fixture",
+    )
+    sibling_real_branch_proof = BranchOwnershipProof(
+        proof_id="real-sibling-proof",
+        proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+        trusted=True,
+        reason="fixture input-derived sibling",
+        source_block=5,
+        branch_arm=0,
+        source_state=0x10,
+        target_state=0x30,
+        oracle_kind="fixture",
+    )
+    edge = SimpleNamespace(
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        target_entry_anchor=30,
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=1),
+        branch_ownership_proofs=(nonsemantic_proof, sibling_real_branch_proof),
+    )
+
+    assert (
+        emulated_family_module._edge_has_trusted_nonsemantic_branch_proof(edge)
+        is True
+    )
+
+
+def test_branch_ownership_refiner_side_effect_veto_is_sticky() -> None:
+    original = BranchOwnershipProof(
+        proof_id="candidate",
+        proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+        trusted=False,
+        reason="fixture original",
+        source_block=5,
+        branch_arm=0,
+        source_state=0x10,
+        target_state=0x20,
+        target_entry=8,
+        oracle_kind="fixture",
+    )
+    z3_veto = replace(
+        original,
+        reason="z3_jumpfixer_discarded_arm_side_effect_guard",
+        evidence={"side_effect_guard_reason": "discarded_arm_contains_payload_store"},
+    )
+
+    def _z3_refiner(
+        _proof: BranchOwnershipProof,
+        _edge: object,
+    ) -> BranchOwnershipProof:
+        return z3_veto
+
+    def _moptracker_refiner(
+        proof: BranchOwnershipProof,
+        _edge: object,
+    ) -> BranchOwnershipProof:
+        return replace(
+            proof,
+            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+            trusted=True,
+            reason="moptracker_fallback_residue",
+        )
+
+    refiner = emulated_family_module._compose_branch_ownership_refiners(
+        (_z3_refiner, _moptracker_refiner)
+    )
+
+    refined = refiner(original, SimpleNamespace())
+
+    assert refined == z3_veto
+    assert refined.vetoes_fallback_refinement is True
+    assert refined.authorizes_nonsemantic_branch_rewrite is False
+
+
+def test_branch_ownership_retarget_requires_owned_source_or_split_plan() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(10,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(30,),
+                preds=(1, 2),
+                flags=0,
+                start_ea=0x401010,
+                insn_snapshots=(),
+            ),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(30,),
+                preds=(1,),
+                flags=0,
+                start_ea=0x401020,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=1,
+        func_ea=0x401000,
+    )
+
+    shared_direct = SimpleNamespace(
+        emission_mode="direct",
+        horizon_block=10,
+        first_shared_block=None,
+        via_pred=None,
+    )
+    owned_direct = SimpleNamespace(
+        emission_mode="direct",
+        horizon_block=20,
+        first_shared_block=None,
+        via_pred=None,
+    )
+    split_plan = SimpleNamespace(
+        emission_mode="pred_split",
+        horizon_block=20,
+        first_shared_block=10,
+        via_pred=1,
+    )
+
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            shared_direct,
+            flow_graph,
+        )
+        is False
+    )
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            owned_direct,
+            flow_graph,
+        )
+        is True
+    )
+    assert (
+        emulated_family_module._candidate_has_owned_or_split_lowering(
+            split_plan,
+            flow_graph,
+        )
+        is True
+    )
+
+
 def _snapshot_operand_signature(mop) -> str:
     if mop is None:
         return "z"
@@ -329,6 +2498,100 @@ def _compute_backedges(flow_graph: FlowGraph) -> tuple[tuple[int, int], ...]:
     if flow_graph.entry_serial in flow_graph.blocks:
         _walk(flow_graph.entry_serial)
     return tuple(sorted(backedges))
+
+
+def test_phase_reconstruction_reorder_blocks_walks_dag_semantic_order() -> None:
+    def _snapshot(serial: int, block_type: int = ida_hexrays.BLT_1WAY) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=block_type,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    def _node(state: int, entry: int, owned: tuple[int, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            key=SimpleNamespace(state_const=state),
+            entry_anchor=entry,
+            owned_blocks=owned,
+            exclusive_blocks=(),
+        )
+
+    def _edge(
+        source_state: int,
+        target_state: int | None,
+        path: tuple[int, ...],
+        *,
+        arm: int | None = None,
+        kind: SemanticEdgeKind = SemanticEdgeKind.TRANSITION,
+        target_entry: int | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            kind=kind,
+            source_key=SimpleNamespace(state_const=source_state),
+            target_key=(
+                SimpleNamespace(state_const=target_state)
+                if target_state is not None
+                else None
+            ),
+            target_entry_anchor=target_entry,
+            source_anchor=SimpleNamespace(branch_arm=arm),
+            ordered_path=path,
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: _snapshot(2),
+            3: _snapshot(3),
+            10: _snapshot(10),
+            11: _snapshot(11),
+            12: _snapshot(12),
+            13: _snapshot(13, ida_hexrays.BLT_2WAY),
+            20: _snapshot(20),
+            21: _snapshot(21),
+            22: _snapshot(22),
+            30: _snapshot(30),
+            99: _snapshot(99, ida_hexrays.BLT_0WAY),
+            100: _snapshot(100, ida_hexrays.BLT_STOP),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+    dag = SimpleNamespace(
+        nodes=(
+            _node(0x10, 10, (10, 11)),
+            _node(0x20, 20, (20,)),
+            _node(0x30, 30, (30,)),
+        ),
+        edges=(
+            _edge(0x10, 0x20, (10, 11, 12, 20), arm=0, target_entry=20),
+            _edge(0x10, 0x30, (10, 13, 30), arm=1, target_entry=30),
+            _edge(0x20, 0x10, (20, 21, 10), target_entry=10),
+            _edge(
+                0x20,
+                None,
+                (20, 22, 99, 100),
+                kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+                target_entry=100,
+            ),
+        ),
+    )
+
+    reorder = emulated_family_module._phase_reconstruction_reorder_blocks_from_dag(
+        dag=dag,
+        flow_graph=flow_graph,
+        initial_state=0x10,
+        excluded_blocks={2, 3},
+    )
+
+    assert reorder == ReorderBlocks(
+        dfs_block_order=(10, 11, 12, 20, 21, 22, 99, 13, 30),
+        non_2way_serials=(10, 11, 12, 20, 21, 22, 99, 30),
+        two_way_serials=(13,),
+    )
 
 
 def _summarize_cfg_shape(
@@ -465,6 +2728,2034 @@ def test_emulated_dispatcher_family_detect_reports_dispatcher_cache_collector_ga
     assert detection.planning_blocker == "dispatcher_cache_detected_but_collector_found_none"
 
 
+def test_default_ollvm_profile_uses_state_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    dispatch_map = replace(
+        dispatch_map,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+        rows=tuple(
+            replace(row, source=DispatcherType.CONDITIONAL_CHAIN)
+            for row in dispatch_map.rows
+        ),
+    )
+    calls = []
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[99],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _extract_state_dispatcher_map(_mba, *, dispatcher_entry_block=None, **_kwargs):
+        calls.append(dispatcher_entry_block)
+        if dispatcher_entry_block is not None:
+            return None
+        return dispatch_map
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "extract_state_dispatcher_map_from_mba",
+        _extract_state_dispatcher_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert calls == [99, None]
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == ()
+    assert detection.analysis_dispatchers == (99,)
+    assert detection.state_dispatcher_entries == (13,)
+    assert detection.dispatcher_shape == "conditional_chain"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ("equality_chain",)
+    assert detection.planning_blocker is None
+
+
+def test_default_ollvm_profile_prefers_switch_map_when_collector_is_empty(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
+    mba = _fake_mba()
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="UNKNOWN"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    def _unexpected_equality_map(*_args, **_kwargs):
+        raise AssertionError("switch-table map should be preferred")
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
+        _Collector,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_tigress_switch_state_dispatcher_maps",
+        lambda *_args: (dispatch_map,),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_ollvm_state_dispatcher_maps",
+        _unexpected_equality_map,
+    )
+
+    family = EmulatedDispatcherStrategyFamily()
+    detection = family.detect(mba)
+
+    assert detection.detected is True
+    assert detection.state_dispatcher_entries == (21,)
+    assert detection.dispatcher_shape == "switch_table"
+    assert detection.state_transport == "state_dispatcher_map"
+    assert detection.provenance_hints == ()
+    assert detection.planning_blocker is None
+
+
+def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
+    monkeypatch,
+) -> None:
+    visits = []
+    mba = SimpleNamespace(
+        qty=1,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+        get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+        for_all_topinsns=lambda collector: collector.mark_visited(),
+    )
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants={0x1234},
+        dispatcher_type=SimpleNamespace(name="PROFILE_KIND"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def mark_visited(self):
+            visits.append("visited")
+
+        def get_dispatcher_list(self):
+            return [SimpleNamespace(entry_block=SimpleNamespace(serial=11))]
+
+    class _Resolver:
+        def get_dispatcher_father_histories(self, *_args):
+            return ()
+
+        def check_if_histories_are_resolved(self, _histories):
+            return False
+
+        def _filter_dependency_safe_copies(self, _father, insns):
+            return list(insns)
+
+        def ensure_all_dispatcher_fathers_are_direct(self):
+            return 0
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(
+            lift=lambda _mba: _flow_graph_with_conditional_shape()
+        ),
+        profile=GenericDispatcherEngineProfile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            provenance_hints=("fixture_profile",),
+        ),
+    )
+    detection = family.detect(mba)
+
+    assert visits == ["visited"]
+    assert family.name == "emulated_dispatcher"
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == (11,)
+    assert detection.dispatcher_shape == "profile_kind"
+    assert detection.state_transport == "fixture_transport"
+    assert detection.lowering_mode == "fixture_lowering"
+    assert detection.provenance_hints == ("fixture_profile",)
+
+
+def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    mba = SimpleNamespace(
+        qty=1,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+        get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+        for_all_topinsns=lambda _collector: None,
+    )
+    analysis = SimpleNamespace(
+        dispatchers=[],
+        state_constants=set(),
+        dispatcher_type=SimpleNamespace(name="NONE"),
+    )
+    cache = SimpleNamespace(analyze=lambda: analysis)
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
+        SimpleNamespace(get_or_create=lambda _mba: cache),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="switch_fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_dispatcher_map_factory=lambda *_args: (dispatch_map,),
+        )
+    )
+    detection = family.detect(mba)
+
+    assert detection.detected is True
+    assert detection.collector_dispatcher_entries == ()
+    assert detection.analysis_dispatchers == ()
+    assert detection.state_dispatcher_entries == (13,)
+    assert detection.state_dispatcher_maps == (dispatch_map,)
+    assert detection.dispatcher_shape == "switch_table"
+    assert detection.state_constants == (0x10, 0x20)
+    assert detection.state_transport == "state_dispatcher_map"
+
+
+def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
+    for profile in (
+        ollvm_state_dispatcher_map_profile(),
+        tigress_switch_dispatcher_profile(),
+        tigress_indirect_dispatcher_profile(),
+    ):
+        resolver = profile.resolver_factory()
+        assert type(resolver).__name__ == "_NoopDispatcherResolver"
+        assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
+        assert resolver.check_if_histories_are_resolved(None) is False
+
+
+def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=34,
+    )
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_CALLS)
+    calls = []
+
+    def _analyze(mba_arg, goto_table_info):
+        calls.append((mba_arg, goto_table_info))
+        return SimpleNamespace(state_dispatcher_map=dispatch_map)
+
+    import d810.recon.flow.indirect_jump_table_analysis as indirect_analysis
+
+    monkeypatch.setattr(
+        indirect_analysis,
+        "analyze_tigress_indirect_dispatcher_from_config",
+        _analyze,
+    )
+
+    config = {"0x401000": {"table_address": "0x402000"}}
+    profile = tigress_indirect_dispatcher_profile(goto_table_info=config)
+    maps = profile.collect_state_dispatcher_maps(
+        mba,
+        analysis=object(),
+        collector_dispatchers=(),
+    )
+
+    assert maps == (dispatch_map,)
+    assert calls == [(mba, config)]
+
+
+def test_tigress_switch_profile_collects_live_transition_facts(monkeypatch) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_GLBOPT1)
+    calls = []
+
+    def _collect(*, mba, dispatch_map, profile_name):
+        calls.append((mba, dispatch_map, profile_name))
+        return ("fact",)
+
+    monkeypatch.setattr(
+        switch_case_transition_analysis,
+        "collect_switch_case_transition_facts_from_mba",
+        _collect,
+    )
+
+    profile = tigress_switch_dispatcher_profile()
+    facts = profile.collect_switch_case_transition_facts(
+        mba,
+        state_dispatcher_map=dispatch_map,
+    )
+
+    assert facts == ("fact",)
+    assert calls == [(mba, dispatch_map, "tigress_switch")]
+
+
+def test_ollvm_profile_supplies_carrier_facts_via_profile(monkeypatch) -> None:
+    mba = SimpleNamespace(qty=1, maturity=ida_hexrays.MMAT_CALLS)
+    calls = []
+
+    def _collect(seen_mba):
+        calls.append(seen_mba)
+        return ("carrier_fact",)
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "collect_ollvm_post_execute_carrier_facts",
+        _collect,
+    )
+
+    profile = ollvm_state_dispatcher_map_profile()
+    assert profile.collect_post_execute_carrier_facts(mba) == ("carrier_fact",)
+    assert calls == [mba]
+
+
+def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate(
+    monkeypatch,
+) -> None:
+    facts = (SimpleNamespace(fact_id="carrier:1"),)
+    seen: list[tuple[str, tuple[object, ...]]] = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="carrier_fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            post_execute_carrier_fact_factory=lambda _mba: facts,
+        )
+    )
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_CALLS,
+        mark_chains_dirty=lambda: seen.append(("mark", ())),
+        optimize_local=lambda _arg: seen.append(("optimize", ())),
+    )
+    snapshot = AnalysisSnapshot(
+        mba=mba,
+        maturity=ida_hexrays.MMAT_CALLS,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={EMULATED_DISPATCHER_MODIFICATIONS_KEY: ()},
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_carrier_output_alias_repair",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("output", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_local_alias_mem2reg",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("alias", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_same_carrier_alias_repairs",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("same", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "mba_deep_cleaning",
+        lambda _mba, _final: seen.append(("deep_clean", ())) or 0,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "safe_verify",
+        lambda _mba, _context, logger_func=None: seen.append(("verify", ())),
+    )
+
+    assert family.post_execute_cleanup(mba, snapshot=snapshot, total_changes=1) == 1
+    assert ("output", facts) in seen
+    assert ("alias", facts) in seen
+    assert ("same", facts) in seen
+
+
+def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({"profile": "tigress_switch", "diagnostics_only": True})
+
+    assert rule._family._profile.name == "tigress_switch"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+    assert rule.diagnostics_only is True
+
+
+def test_emulated_dispatcher_unflattener_accepts_tigress_indirect_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "tigress_indirect",
+        "diagnostics_only": True,
+        "goto_table_info": {"0x401000": {"table_address": "0x402000"}},
+    })
+
+    assert rule._family._profile.name == "tigress_indirect"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+    assert rule._family._profile.lowering_mode == "indirect_jump_table_diagnostics"
+    assert rule.diagnostics_only is True
+
+
+def test_tigress_indirect_profile_can_materialize_targets(monkeypatch) -> None:
+    calls = []
+
+    def _materialize(config):
+        calls.append(config)
+        return ()
+
+    import d810.hexrays.preanalysis.indirect_jump_labels as indirect_labels
+
+    monkeypatch.setattr(
+        indirect_labels,
+        "materialize_indirect_label_targets_from_config",
+        _materialize,
+    )
+
+    config = {
+        "0x401000": {
+            "table_address": "0x402000",
+            "table_nb_elt": 2,
+            "label_end": "0x401100",
+        }
+    }
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "tigress_indirect",
+        "diagnostics_only": True,
+        "materialize_indirect_targets": True,
+        "goto_table_info": config,
+    })
+
+    assert calls == [config]
+    assert rule._family._profile.name == "tigress_indirect"
+
+
+def test_emulated_dispatcher_unflattener_accepts_ollvm_materialization_guard() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({
+        "profile": "ollvm_state_map",
+        "enable_terminal_payload_materialization": True,
+    })
+
+    assert rule._family._profile.name == "ollvm_state_map"
+    assert rule._family._profile.enable_terminal_payload_materialization is True
+
+
+def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 17
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        collector_dispatchers=(dispatcher_info,),
+        analysis_dispatchers=(99,),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 17
+
+
+def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map() -> None:
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 17
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        state_dispatcher_entries=(23,),
+        collector_dispatchers=(dispatcher_info,),
+        analysis_dispatchers=(99,),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 23
+
+
+def test_emulated_dispatcher_family_primary_entry_uses_analysis_root_for_conditional_chain() -> None:
+    family = EmulatedDispatcherStrategyFamily()
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="conditional_chain",
+        state_dispatcher_entries=(3, 7, 10),
+        analysis_dispatchers=(2, 3, 6, 7, 10),
+    )
+
+    assert family._primary_dispatcher_entry_serial(detection) == 2
+
+
+def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
+    monkeypatch,
+) -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    switch_fact_calls = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    def _switch_fact_factory(mba, seen_dispatch_map, profile_name):
+        switch_fact_calls.append((mba, seen_dispatch_map, profile_name))
+        return (switch_fact,)
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="tigress_switch",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            state_dispatcher_map_factory=lambda *_args: (),
+            switch_case_transition_fact_factory=_switch_fact_factory,
+        )
+    )
+    mba = SimpleNamespace(
+        qty=3,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+    )
+    flow_graph = _flow_graph_with_conditional_shape()
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "analyze_bst_dispatcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("BST analysis should not run for map-backed profile")
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_detect_state_var_stkoff",
+        lambda *_args, **_kwargs: (0x3C, None),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_find_pre_header_state",
+        lambda *_args, **_kwargs: (1, 0x20),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "recover_dynamic_state_write_transitions",
+        lambda **kwargs: kwargs["transition_result"],
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(nodes=(), edges=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_linearized_state_program",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            variant_name="semantic_reference_like",
+            lines=(),
+            nodes=(),
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "render_linearized_state_program",
+        lambda _program: "",
+    )
+
+    artifact, context = family._build_phase_artifact(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_maps=(dispatch_map,),
+            state_dispatcher_entries=(2,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            state_constants=(0x10, 0x20),
+        ),
+        flow_graph=flow_graph,
+    )
+
+    assert artifact is not None
+    assert context is not None
+    assert artifact.dispatcher_entry_serial == 2
+    assert artifact.pre_header_serial == 1
+    assert artifact.state_var_stkoff == 0x3C
+    assert artifact.initial_state == 0x10
+    assert artifact.handler_state_map == ((5, 0x10), (7, 0x20))
+    assert context.state_dispatcher_map is dispatch_map
+    assert context.switch_case_transition_facts == (switch_fact,)
+    assert switch_fact_calls == [(mba, dispatch_map, "tigress_switch")]
+
+
+def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_analysis_root(
+    monkeypatch,
+) -> None:
+    suffix_a = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=3,
+        state=0x10,
+        target=4,
+    )
+    suffix_b = _conditional_chain_state_dispatcher_map(
+        dispatcher_entry=7,
+        state=0x20,
+        target=8,
+    )
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return []
+
+    class _Resolver:
+        pass
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="ollvm_state_map",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            state_dispatcher_map_factory=lambda *_args: (),
+        )
+    )
+    mba = SimpleNamespace(
+        qty=9,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        entry_ea=0x401000,
+    )
+    flow_graph = _flow_graph_with_conditional_shape()
+    seen_preheader_entries = []
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "analyze_bst_dispatcher",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("map-backed conditional chain should use exact rows")
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_detect_state_var_stkoff",
+        lambda *_args, **_kwargs: (0x3C, None),
+    )
+
+    def _fake_find_pre_header_state(_mba, dispatcher_entry, state_var_stkoff):
+        seen_preheader_entries.append((dispatcher_entry, state_var_stkoff))
+        return 1, 0x10
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_find_pre_header_state",
+        _fake_find_pre_header_state,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "recover_dynamic_state_write_transitions",
+        lambda **kwargs: kwargs["transition_result"],
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_dispatcher_transition_report_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(rows=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_live_linearized_state_dag_from_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(nodes=(), edges=()),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "build_linearized_state_program",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            variant_name="semantic_reference_like",
+            lines=(),
+            nodes=(),
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "render_linearized_state_program",
+        lambda _program: "",
+    )
+
+    artifact, context = family._build_phase_artifact(
+        mba,
+        EmulatedDispatcherDetection(
+            state_dispatcher_maps=(suffix_a, suffix_b),
+            state_dispatcher_entries=(3, 7),
+            analysis_dispatchers=(2, 3, 6, 7),
+            dispatcher_shape="conditional_chain",
+            state_transport="state_dispatcher_map",
+            state_constants=(0x10, 0x20),
+        ),
+        flow_graph=flow_graph,
+    )
+
+    assert artifact is not None
+    assert context is not None
+    assert seen_preheader_entries == [(2, 0x3C)]
+    assert artifact.dispatcher_entry_serial == 2
+    assert artifact.pre_header_serial == 1
+    assert artifact.initial_state == 0x10
+    assert artifact.bst_node_blocks == (2, 3, 7)
+    assert artifact.handler_state_map == ((4, 0x10), (8, 0x20))
+    assert context.state_dispatcher_map is not None
+    assert context.state_dispatcher_map.dispatcher_entry_block == 2
+    assert context.state_dispatcher_map.dispatcher_blocks == frozenset({2, 3, 7})
+
+
+def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=2),
+        initial_state=None,
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=5,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                serial=2,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(5, 7),
+                preds=(1, 5),
+                flags=0,
+                start_ea=0x401002,
+                insn_snapshots=(),
+            ),
+            5: BlockSnapshot(
+                serial=5,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x401005,
+                insn_snapshots=(),
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(2,),
+                flags=0,
+                start_ea=0x401007,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+            initial_state=0x10,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+        ),
+    )
+
+    assert blockers == ()
+    assert modifications == (
+        RedirectGoto(from_serial=1, old_target=2, new_target=5),
+        RedirectGoto(from_serial=5, old_target=2, new_target=7),
+    )
+
+
+def test_switch_transition_facts_lower_guard_reentry_redirect() -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily()
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=3,
+            pre_header_serial=None,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+        ),
+    )
+
+    assert modifications == (
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+    )
+    assert blockers == ("tigress_switch_transition_initial_redirect_unproven",)
+
+
+def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None:
+    terminal_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=7:unresolved:direct_target_not_in_switch_rows",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=7,
+        case_entry_block=13,
+        next_states=(0xFF,),
+        reason="direct_target_not_in_switch_rows",
+    )
+    conditional_unresolved = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=1:unresolved:conditional_case_transition_unresolved",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.UNRESOLVED,
+        source_state=1,
+        case_entry_block=5,
+        next_states=(2, 3),
+        reason="conditional_case_transition_unresolved",
+    )
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_visible_state_not_lowered",
+    ))
+    assert emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+            "tigress_switch_transition_initial_redirect_unproven",
+        ),
+        facts=(terminal_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering(
+        (
+            "tigress_switch_transition_fact_unresolved",
+        ),
+        facts=(conditional_unresolved,),
+    )
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_initial_redirect_unproven",
+        "tigress_switch_transition_source_not_owned",
+    ))
+    assert not emulated_family_module._switch_transition_blockers_allow_partial_lowering((
+        "tigress_switch_transition_conditional_untrusted",
+    ))
+
+
+def test_switch_transition_partial_lowering_records_partial_rewrite_reasons(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=tigress_switch_dispatcher_profile(
+            allow_incomplete_switch_transition_facts=True,
+        ),
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+        switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (
+            EmulatedDispatcherPhaseArtifact(
+                dispatcher_entry_serial=3,
+                pre_header_serial=None,
+            ),
+            phase_context,
+        ),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_state_dag_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+
+    snapshot = family.build_snapshot(
+        _fake_mba(),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_constants=(0x10, 0x20),
+            state_dispatcher_entries=(3,),
+        ),
+    )
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "tigress_switch_transition_facts"
+    assert metadata.rejection_reasons == ()
+    assert metadata.partial_rewrite_reasons == (
+        "tigress_switch_transition_initial_redirect_unproven",
+    )
+    assert metadata.is_partial is True
+    modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
+    assert modifications == (
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+    )
+    assert all(getattr(mod, "from_serial", None) not in {2, 3} for mod in modifications)
+
+
+def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatch) -> None:
+    dispatch_map = replace(
+        _state_dispatcher_map(dispatcher_entry=3),
+        initial_state=None,
+        dispatcher_blocks=frozenset({2, 3}),
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="ollvm:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=6,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (3, 9), (1, 6), 0, 0x401002, ()),
+            3: BlockSnapshot(3, ida_hexrays.BLT_2WAY, (5, 7), (2,), 0, 0x401003, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_1WAY, (6,), (3,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (3,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=2,
+        func_ea=0x401000,
+    )
+    loop_recovery_modifications = (
+        RedirectGoto(from_serial=5, old_target=6, new_target=7),
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=tigress_switch_dispatcher_profile(
+            allow_incomplete_switch_transition_facts=True,
+        ),
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+        switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (
+            EmulatedDispatcherPhaseArtifact(
+                dispatcher_entry_serial=3,
+                pre_header_serial=None,
+            ),
+            phase_context,
+        ),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_state_dag_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_loop_recovery_modifications",
+        lambda *_args, **_kwargs: (loop_recovery_modifications, ()),
+    )
+
+    snapshot = family.build_snapshot(
+        _fake_mba(),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="switch_table",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("switch_table",),
+            state_constants=(0x10, 0x20),
+            collector_dispatchers=(object(),),
+            collector_dispatcher_entries=(3,),
+            state_dispatcher_entries=(3,),
+        ),
+    )
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "dispatcher_loop_recovery"
+    assert metadata.rejection_reasons == ()
+    assert metadata.partial_rewrite_reasons == ()
+    assert metadata.is_partial is False
+    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
+        loop_recovery_modifications
+    )
+
+
+def test_tigress_switch_transition_facts_lower_conditional_arm_exits() -> None:
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(0x10, 5, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+            StateDispatcherRow(0x20, 7, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+            StateDispatcherRow(0x30, 9, 2, 2, "switch_case", DispatcherType.SWITCH_TABLE),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        source=DispatcherType.SWITCH_TABLE,
+        initial_state=0x10,
+    )
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:conditional",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.CONDITIONAL,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20, 0x30),
+        exit_block=6,
+        ordered_path=(5, 6),
+        proof=BranchOwnershipProof(
+            proof_id="tigress_switch:case=16:conditional",
+            proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
+            trusted=True,
+            reason="conditional_case_transition_source_predicate",
+            source_state=0x10,
+            source_block=5,
+            predicate_block=5,
+            dispatcher_entry_block=2,
+            oracle_kind="switch_case_branch_ownership",
+        ),
+        payload={
+            "arm_exit_blocks": (6, 8),
+            "arm_ordered_paths": ((5, 6), (5, 8)),
+        },
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(1, ida_hexrays.BLT_1WAY, (2,), (), 0, 0x401001, ()),
+            2: BlockSnapshot(2, ida_hexrays.BLT_2WAY, (5, 7, 9), (1, 6, 8), 0, 0x401002, ()),
+            5: BlockSnapshot(5, ida_hexrays.BLT_2WAY, (6, 8), (2,), 0, 0x401005, ()),
+            6: BlockSnapshot(6, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401006, ()),
+            8: BlockSnapshot(8, ida_hexrays.BLT_1WAY, (2,), (5,), 0, 0x401008, ()),
+            7: BlockSnapshot(7, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401007, ()),
+            9: BlockSnapshot(9, ida_hexrays.BLT_0WAY, (), (2,), 0, 0x401009, ()),
+        },
+        entry_serial=1,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(
+                fact,
+                _switch_return_fact(0x20, 7),
+                _switch_return_fact(0x30, 9),
+            ),
+        ),
+    )
+
+    assert blockers == ()
+    assert modifications == (
+        RedirectGoto(from_serial=1, old_target=2, new_target=5),
+        RedirectGoto(from_serial=6, old_target=2, new_target=7),
+        RedirectGoto(from_serial=8, old_target=2, new_target=9),
+    )
+
+
+def test_tigress_switch_transition_facts_reject_shared_source() -> None:
+    dispatch_map = _state_dispatcher_map(dispatcher_entry=2)
+    fact = switch_case_transition_analysis.SwitchCaseTransitionFact(
+        fact_id="tigress_switch:case=16:direct",
+        transition_kind=switch_case_transition_analysis.SwitchCaseTransitionKind.DIRECT,
+        source_state=0x10,
+        case_entry_block=5,
+        next_states=(0x20,),
+        exit_block=5,
+        reason="direct_case_transition",
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            1: BlockSnapshot(
+                serial=1,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(),
+                flags=0,
+                start_ea=0x401001,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                serial=2,
+                block_type=ida_hexrays.BLT_2WAY,
+                succs=(5, 7),
+                preds=(1, 5),
+                flags=0,
+                start_ea=0x401002,
+                insn_snapshots=(),
+            ),
+            5: BlockSnapshot(
+                serial=5,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(2,),
+                preds=(0, 1),
+                flags=0,
+                start_ea=0x401005,
+                insn_snapshots=(),
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(2,),
+                flags=0,
+                start_ea=0x401007,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(profile=tigress_switch_dispatcher_profile())
+    modifications, blockers = family._collect_tigress_switch_transition_modifications(
+        flow_graph=flow_graph,
+        phase_artifact=EmulatedDispatcherPhaseArtifact(
+            dispatcher_entry_serial=2,
+            pre_header_serial=1,
+        ),
+        phase_context=EmulatedDispatcherPhaseContext(
+            bst_result=object(),
+            transition_result=object(),
+            transition_report=object(),
+            dag=object(),
+            semantic_reference_program=object(),
+            state_dispatcher_map=dispatch_map,
+            switch_case_transition_facts=(fact, _switch_return_fact(0x20, 7)),
+        ),
+    )
+
+    assert modifications == ()
+    assert "tigress_switch_transition_source_not_owned" in blockers
+    assert "tigress_switch_transition_visible_state_not_lowered" in blockers
+
+
+def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
+    monkeypatch,
+) -> None:
+    switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(nodes=(), edges=()),
+        semantic_reference_program=object(),
+        switch_case_transition_facts=(switch_fact,),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={EMULATED_DISPATCHER_PHASE_CONTEXT_KEY: context},
+    )
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=flow_graph,
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=0,
+            transition_count=0,
+        ),
+    )
+    observed = []
+
+    monkeypatch.setattr(
+        hexrays_observability,
+        "request_capture_mba_snapshot",
+        lambda **_kwargs: "snap",
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag_local_facts",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_rendered_program",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_switch_case_transition_facts",
+        lambda snap, facts: observed.append((snap, tuple(facts))),
+    )
+
+    EmulatedDispatcherStrategyFamily(
+        profile=tigress_switch_dispatcher_profile(),
+    ).observe_phase_diagnostics(
+        snapshot.mba,
+        snapshot,
+    )
+
+    assert observed == [("snap", (switch_fact,))]
+
+
+def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
+    monkeypatch,
+) -> None:
+    class SinglePassDag:
+        def __init__(self, edges):
+            self.nodes = ()
+            self._edges = tuple(edges)
+            self._consumed = False
+
+        @property
+        def edges(self):
+            if self._consumed:
+                return iter(())
+            self._consumed = True
+            return iter(self._edges)
+
+    edge = SimpleNamespace(
+        kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+        source_key=SimpleNamespace(state_const=0x10),
+        target_key=SimpleNamespace(state_const=0x20),
+        source_anchor=SimpleNamespace(block_serial=5, branch_arm=0),
+        target_entry_anchor=9,
+        ordered_path=(5, 9),
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SinglePassDag((edge,)),
+        semantic_reference_program=object(),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={EMULATED_DISPATCHER_PHASE_CONTEXT_KEY: context},
+    )
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=flow_graph,
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=0,
+            transition_count=0,
+        ),
+    )
+    observed = []
+
+    monkeypatch.setattr(
+        hexrays_observability,
+        "request_capture_mba_snapshot",
+        lambda **_kwargs: "snap",
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_dag_local_facts",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_rendered_program",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_branch_ownership_proofs",
+        lambda snap, proofs: observed.append((snap, tuple(proofs))),
+    )
+
+    EmulatedDispatcherStrategyFamily(
+        profile=ollvm_state_dispatcher_map_profile(),
+    ).observe_phase_diagnostics(
+        snapshot.mba,
+        snapshot,
+    )
+
+    assert observed
+    snap, proofs = observed[0]
+    assert snap == "snap"
+    assert proofs[0]["proof_kind"] == BranchOwnershipProofKind.UNRESOLVED.value
+    assert proofs[0]["source_block"] == 5
+    assert proofs[0]["branch_arm"] == 0
+
+
+def test_guarded_entry_setup_pre_header_region_allows_guard_returns() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (2, 3), (0,)),
+            2: _snapshot(2, (), (1,)),
+            3: _snapshot(3, (4, 5), (1,)),
+            4: _snapshot(4, (), (3,)),
+            5: _snapshot(5, (6,), (3,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (6,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == (0, 1, 2, 3, 4, 5)
+
+
+def test_guarded_entry_setup_pre_header_region_rejects_handler_entry_leak() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_2WAY if len(succs) == 2 else (
+                ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY
+            ),
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (5, 7), (0,)),
+            5: _snapshot(5, (6,), (1,)),
+            6: _snapshot(6, (7,), (5, 7)),
+            7: _snapshot(7, (6,), (1, 6)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+
+    region = emulated_family_module._guarded_entry_setup_pre_header_region(
+        flow_graph,
+        pre_header_serial=5,
+        dispatcher_entry_serial=6,
+        forbidden_serials={6, 7},
+    )
+
+    assert region == ()
+
+
+def test_emulated_dispatcher_family_blocks_residual_terminal_phase_reconstruction() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            0: _snapshot(0, (1,), ()),
+            1: _snapshot(1, (), (0,)),
+            2: _snapshot(2, (), (5,)),
+            5: _snapshot(5, (2,), (8,)),
+            7: _snapshot(7, (), (2,)),
+            8: _snapshot(8, (5,), (7,)),
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily()
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=5,
+        initial_state=0x10,
+        bst_node_blocks=(2,),
+        handler_state_map=((5, 0x10), (7, 0x20)),
+        semantic_reference_variant="semantic_reference_like",
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(
+            edges=(
+                SimpleNamespace(kind=SemanticEdgeKind.CONDITIONAL_RETURN),
+            ),
+        ),
+        semantic_reference_program=object(),
+    )
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="conditional_chain",
+        state_transport="state_dispatcher_map",
+        lowering_mode="generic_graph_modifications",
+        state_constants=(0x10, 0x20),
+    )
+
+    modifications, blockers = family._collect_phase_reconstruction_modifications(
+        mba=_fake_mba(),
+        flow_graph=flow_graph,
+        detection=detection,
+        phase_artifact=artifact,
+        phase_context=context,
+    )
+
+    assert modifications == ()
+    assert blockers == (
+        "phase_reconstruction_residual_terminal_frontier_not_loop_aware",
+    )
+
+
+def test_tigress_indirect_phase_reconstruction_allowed_at_locopt() -> None:
+    family = EmulatedDispatcherStrategyFamily(
+        profile=tigress_indirect_dispatcher_profile(),
+    )
+    detection = EmulatedDispatcherDetection(
+        dispatcher_shape="indirect_jump",
+        state_transport="state_dispatcher_map",
+        lowering_mode="indirect_jump_table_diagnostics",
+        state_dispatcher_entries=(16,),
+    )
+
+    assert family._phase_reconstruction_allowed(
+        SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT),
+        detection,
+    )
+
+
+def test_tigress_indirect_blocks_coalesced_dispatcher_handler_row() -> None:
+    family = EmulatedDispatcherStrategyFamily(
+        profile=tigress_indirect_dispatcher_profile(),
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x23,
+                target_block=11,
+                dispatcher_block=11,
+                compare_block=None,
+                branch_kind="indirect_jump_table",
+                source=DispatcherType.INDIRECT_JUMP,
+            ),
+        ),
+        dispatcher_entry_block=11,
+        dispatcher_blocks=frozenset({11}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=0x22,
+    )
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=11,
+        state_var_stkoff=0x30,
+        pre_header_serial=0,
+        initial_state=0x22,
+        handler_state_map=((11, 0x23),),
+        semantic_reference_variant="semantic_reference_like",
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(edges=()),
+        semantic_reference_program=object(),
+        state_dispatcher_map=dispatch_map,
+    )
+
+    modifications, blockers = family._collect_phase_reconstruction_modifications(
+        mba=_fake_mba(),
+        flow_graph=_flow_graph(),
+        detection=EmulatedDispatcherDetection(
+            dispatcher_shape="indirect_jump",
+            state_transport="state_dispatcher_map",
+            lowering_mode="indirect_jump_table_diagnostics",
+        ),
+        phase_artifact=artifact,
+        phase_context=context,
+    )
+
+    assert modifications == ()
+    assert blockers == (
+        "phase_reconstruction_indirect_handler_coalesced_with_dispatcher",
+    )
+
+
+@pytest.mark.parametrize(
+    ("edge_kind", "edge_target_state"),
+    (
+        (SemanticEdgeKind.CONDITIONAL_RETURN, None),
+        (SemanticEdgeKind.TRANSITION, 0x1B),
+    ),
+)
+def test_tigress_indirect_repairs_terminal_state_write_stub(
+    edge_kind,
+    edge_target_state,
+) -> None:
+    state_write = InsnSnapshot(
+        opcode=ida_hexrays.m_mov,
+        ea=0x180017719,
+        operands=(),
+        l=MopSnapshot(
+            t=ida_hexrays.mop_n,
+            size=4,
+            value=0x1B,
+        ),
+        d=MopSnapshot(
+            t=ida_hexrays.mop_S,
+            size=4,
+            stkoff=0x30,
+        ),
+    )
+    flow_graph = FlowGraph(
+        blocks={
+            9: BlockSnapshot(
+                serial=9,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(10,),
+                preds=(18,),
+                flags=0,
+                start_ea=0x180017711,
+                insn_snapshots=(state_write,),
+            ),
+            10: BlockSnapshot(
+                serial=10,
+                block_type=ida_hexrays.BLT_0WAY,
+                succs=(),
+                preds=(9,),
+                flags=0,
+                start_ea=0x18001772F,
+                insn_snapshots=(),
+            ),
+            27: BlockSnapshot(
+                serial=27,
+                block_type=ida_hexrays.BLT_1WAY,
+                succs=(16,),
+                preds=(),
+                flags=0,
+                start_ea=0x18001790B,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=9,
+        func_ea=0x1800175C0,
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x1B,
+                target_block=27,
+                dispatcher_block=16,
+                compare_block=None,
+                branch_kind="indirect_jump_table",
+                source=DispatcherType.INDIRECT_JUMP,
+            ),
+        ),
+        dispatcher_entry_block=16,
+        dispatcher_blocks=frozenset({16}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+        initial_state=0x22,
+    )
+    edge = SimpleNamespace(
+        kind=edge_kind,
+        target_state=edge_target_state,
+        ordered_path=(9, 10),
+    )
+
+    modifications = (
+        emulated_family_module
+        ._collect_tigress_indirect_terminal_stub_modifications(
+            dag=SimpleNamespace(edges=(edge,)),
+            flow_graph=flow_graph,
+            dispatch_map=dispatch_map,
+            state_var_stkoff=0x30,
+            constant_result=SimpleNamespace(in_stk_maps={}, in_reg_maps={}),
+        )
+    )
+
+    assert modifications == (
+        RedirectGoto(
+            from_serial=9,
+            old_target=10,
+            new_target=27,
+        ),
+    )
+
+
+def test_emulated_dispatcher_family_uses_injected_resolver_for_lowering() -> None:
+    profile_calls = []
+    histories = (object(),)
+    father = SimpleNamespace(serial=5, nsucc=lambda: 1, succ=lambda _idx: 2)
+    target = SimpleNamespace(serial=9, nsucc=lambda: 0, tail=None, nextb=None)
+    dispatcher_info = object()
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def configure_resolver(self, resolver, *, mba, detection):
+            profile_calls.append(("configure", mba.maturity))
+            resolver.mba = mba
+            resolver.cur_maturity = mba.maturity
+            resolver.cur_maturity_pass = 0
+            resolver.dispatcher_list = list(detection.collector_dispatchers)
+            return resolver
+
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("entry_serial",))
+            return 2
+
+        def dispatcher_predecessor_serials(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("predecessors",))
+            return (5,)
+
+        def collect_dispatcher_father_histories(
+            self,
+            resolver,
+            dispatcher_father,
+            seen_dispatcher_info,
+        ):
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("histories", dispatcher_father.serial))
+            return histories
+
+        def histories_resolved(self, resolver, seen_histories):
+            profile_calls.append(("resolved", seen_histories is histories))
+            return True
+
+        def resolve_state_values(self, seen_histories, seen_dispatcher_info):
+            assert seen_histories is histories
+            assert seen_dispatcher_info is dispatcher_info
+            profile_calls.append(("values",))
+            return [[0x1234]]
+
+        def state_values_complete(self, values):
+            profile_calls.append(("complete", values == [[0x1234]]))
+            return True
+
+        def emulate_dispatcher_target(self, seen_dispatcher_info, history):
+            assert seen_dispatcher_info is dispatcher_info
+            assert history is histories[0]
+            profile_calls.append(("emulate",))
+            return target, ()
+
+        def filter_dependency_safe_copies(
+            self,
+            resolver,
+            dispatcher_father,
+            raw_ins_to_copy,
+        ):
+            profile_calls.append(("copies", dispatcher_father.serial, len(raw_ins_to_copy)))
+            return list(raw_ins_to_copy)
+
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+        entry_ea=0x401000,
+        get_mblock=lambda serial: father if serial == 5 else None,
+    )
+
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x401000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            2: _snapshot(2, (), (5,)),
+            5: _snapshot(5, (2,), ()),
+            9: _snapshot(9, (), ()),
+        },
+        entry_serial=5,
+        func_ea=0x401000,
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            provenance_hints=("fixture_profile",),
+        )
+    )
+    detection = EmulatedDispatcherDetection(
+        collector_dispatchers=(dispatcher_info,),
+        collector_dispatcher_entries=(2,),
+        analysis_dispatchers=(2,),
+        dispatcher_shape="profile_kind",
+        state_transport="fixture_transport",
+        lowering_mode="fixture_lowering",
+        provenance_hints=("fixture_profile",),
+        state_constants=(0x1234,),
+    )
+
+    modifications, blockers, records = family._collect_lowering_candidates(
+        mba,
+        detection,
+        flow_graph=flow_graph,
+    )
+
+    assert modifications == (
+        RedirectGoto(from_serial=5, old_target=2, new_target=9),
+    )
+    assert blockers == ()
+    assert records[0].selection_reason == "direct_redirect"
+    assert ("configure", ida_hexrays.MMAT_GLBOPT2) in profile_calls
+    assert ("predecessors",) in profile_calls
+    assert ("histories", 5) in profile_calls
+    assert ("resolved", True) in profile_calls
+    assert ("values",) in profile_calls
+    assert ("complete", True) in profile_calls
+    assert ("emulate",) in profile_calls
+    assert ("copies", 5, 0) in profile_calls
+
+
+def test_emulated_dispatcher_family_dynamic_transition_uses_profile_selector(
+    monkeypatch,
+) -> None:
+    dispatcher_info = object()
+    selected_transition = SimpleNamespace(
+        from_block=5,
+        to_state=0x1234,
+        provenance_kind="profile_specific_state_write",
+    )
+    source_handler = SimpleNamespace(check_block=5, transitions=(selected_transition,))
+    target_handler = SimpleNamespace(check_block=9, transitions=())
+    transition_result = SimpleNamespace(
+        handlers={
+            0x1111: source_handler,
+            0x1234: target_handler,
+        }
+    )
+    profile_calls = []
+
+    class _Collector:
+        def get_dispatcher_list(self):
+            return [dispatcher_info]
+
+    class _Resolver:
+        pass
+
+    class _Profile(GenericDispatcherEngineProfile):
+        def dispatcher_entry_serial(self, seen_dispatcher_info):
+            assert seen_dispatcher_info is dispatcher_info
+            return 2
+
+        def select_dynamic_transition(self, seen_transition_result, *, father_serial):
+            assert seen_transition_result is transition_result
+            profile_calls.append(("select", father_serial))
+            return selected_transition, source_handler
+
+        def dynamic_guard_fallthrough(
+            self,
+            seen_transition_result,
+            *,
+            target_state,
+            target_serial,
+            father_serial,
+        ):
+            assert seen_transition_result is transition_result
+            profile_calls.append(("fallthrough", target_state, target_serial, father_serial))
+            return 11
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=_Profile(
+            name="fixture",
+            collector_factory=_Collector,
+            resolver_factory=_Resolver,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+        )
+    )
+    monkeypatch.setattr(
+        family,
+        "_find_dispatcher_ref_block_for_state",
+        lambda *_args, **_kwargs: 7,
+    )
+    father = SimpleNamespace(serial=5, nsucc=lambda: 1, succ=lambda _idx: 2)
+    phase_artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x20,
+    )
+    phase_context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=transition_result,
+        transition_report=object(),
+        dag=object(),
+        semantic_reference_program=object(),
+    )
+
+    result = family._build_dynamic_transition_candidate(
+        mba=object(),
+        dispatcher_father=father,
+        dispatcher_info=dispatcher_info,
+        phase_artifact=phase_artifact,
+        phase_context=phase_context,
+        scc_memberships={},
+    )
+
+    assert result is not None
+    modifications, record = result
+    assert modifications == (
+        CreateConditionalRedirect(
+            source_block=5,
+            ref_block=7,
+            conditional_target=9,
+            fallthrough_target=11,
+        ),
+    )
+    assert record.selection_reason == "dynamic_state_write_conditional_redirect"
+    assert profile_calls == [
+        ("select", 5),
+        ("fallthrough", 0x1234, 9, 5),
+    ]
+
+
 def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata(
     monkeypatch,
 ) -> None:
@@ -507,11 +4798,11 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
         state_constants=(0xF6A1E, 0xF6A1F),
         collector_dispatchers=(),
         planning_ready=False,
-        planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+            planning_blocker="phase_linear_chain_not_supported_dispatcher",
         candidate_count=0,
-        rejected_fathers=0,
+        rejected_fathers=1,
         candidate_kinds=(),
-        rejection_reasons=(),
+            rejection_reasons=("phase_linear_chain_not_supported_dispatcher",),
         selected_lowering_mode="generic_graph_modifications",
     )
 
@@ -532,7 +4823,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     monkeypatch.setattr(
         family,
         "_collect_lowering_candidates",
-        lambda _mba, _det, *, flow_graph: (
+        lambda _mba, _det, *, flow_graph, **_kwargs: (
             (RedirectGoto(from_serial=0, old_target=1, new_target=1),),
             ("dispatcher_source_shape_not_lowered",),
             (),
@@ -592,7 +4883,7 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
     monkeypatch.setattr(
         family,
         "_collect_lowering_candidates",
-        lambda _mba, _det, *, flow_graph: (
+        lambda _mba, _det, *, flow_graph, **_kwargs: (
             (
                 CreateConditionalRedirect(
                     source_block=0,
@@ -864,8 +5155,9 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "state_transport": "father_history_emulation",
         "lowering_mode": "generic_graph_modifications",
         "provenance_hints": (),
-        "analysis_dispatchers": (7,),
-        "state_constants": (),
+            "analysis_dispatchers": (7,),
+            "state_dispatcher_entries": (),
+            "state_constants": (),
         "collector_dispatchers": (),
         "planning_ready": False,
         "planning_blocker": "dispatcher_cache_detected_but_collector_found_none",
@@ -873,6 +5165,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         "rejected_fathers": 0,
         "candidate_kinds": (),
         "rejection_reasons": (),
+        "partial_rewrite_reasons": (),
         "candidate_records": (),
         "phase_artifact": None,
         "selected_lowering_mode": None,
@@ -924,6 +5217,63 @@ def test_emulated_dispatcher_strategy_plans_validated_snapshot_modifications() -
     assert fragment.metadata["safeguard_min_required"] == 1
     assert fragment.modifications == [
         RedirectGoto(from_serial=0, old_target=1, new_target=1),
+    ]
+
+
+def test_emulated_dispatcher_strategy_plans_scalar_promotions() -> None:
+    strategy = EmulatedDispatcherStrategy()
+    snapshot = AnalysisSnapshot(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1, entry_ea=0x401000),
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={
+                "emulated_dispatcher": EmulatedDispatcherMetadata(
+                    dispatcher_shape="conditional_chain",
+                    state_transport="state_dispatcher_map",
+                    lowering_mode="semantic_carrier_hoist",
+                    provenance_hints=("equality_chain",),
+                    analysis_dispatchers=(7,),
+                    collector_dispatchers=(),
+                    planning_ready=True,
+                    planning_blocker=None,
+                    candidate_count=1,
+                    rejected_fathers=0,
+                    candidate_kinds=("PromoteOperandToScalar",),
+                    rejection_reasons=(),
+                    selected_lowering_mode="semantic_carrier_hoist",
+                    selected_modification_count=1,
+                ),
+                EMULATED_DISPATCHER_MODIFICATIONS_KEY: (
+                    PromoteOperandToScalar(
+                        block_serial=0,
+                        host_ea=0x401000,
+                        host_opcode=ida_hexrays.m_stx,
+                        operand_side="l",
+                    ),
+                ),
+            },
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    fragment = strategy.plan(snapshot)
+
+    assert fragment is not None
+    assert fragment.strategy_name == "emulated_dispatcher"
+    assert fragment.modifications == [
+        PromoteOperandToScalar(
+            block_serial=0,
+            host_ea=0x401000,
+            host_opcode=ida_hexrays.m_stx,
+            operand_side="l",
+        ),
     ]
 
 
@@ -1250,6 +5600,77 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
 
 class TestEmulatedDispatcherManagedContext:
     binary_name = _get_default_binary()
+
+    def test_tigress_minmaxarray_transition_fact_validation_selects_mode(
+        self,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        monkeypatch,
+    ) -> None:
+        func_ea = get_func_ea("tigress_minmaxarray")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("Function 'tigress_minmaxarray' not found")
+
+        captured: dict[str, object] = {}
+        original_build_snapshot = EmulatedDispatcherStrategyFamily.build_snapshot
+
+        def _wrapped_build_snapshot(self, mba, detection):
+            snapshot = original_build_snapshot(self, mba, detection)
+            metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+            if metadata is not None and (
+                metadata.selected_lowering_mode == "tigress_switch_transition_facts"
+                or metadata.selected_modification_count
+                > int(captured.get("selected_modification_count", -1))
+            ):
+                captured["selected_modification_count"] = (
+                    metadata.selected_modification_count
+                )
+                captured["snapshot"] = asdict(metadata)
+            return snapshot
+
+        monkeypatch.setattr(
+            EmulatedDispatcherStrategyFamily,
+            "build_snapshot",
+            _wrapped_build_snapshot,
+        )
+
+        project_name = "default_unflattening_tigress_engine_transition_facts.json"
+        with d810_state() as state:
+            state.stop_d810()
+            project_index = _resolve_test_project_index(state, project_name)
+            state.load_project(project_index)
+            with state.for_project(project_name) as ctx:
+                dispatcher_rule = next(
+                    (
+                        rule
+                        for rule in ctx.active_blk_rules
+                        if type(rule).__name__ == "EmulatedDispatcherUnflattener"
+                    ),
+                    None,
+                )
+                assert dispatcher_rule is not None
+                state.stats.reset()
+                state.start_d810()
+                previous_override = _force_rule_scope_to_current_profile(
+                    state,
+                    ctx,
+                    func_ea,
+                )
+                try:
+                    cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+                    assert cfunc is not None
+                    rendered = pseudocode_to_string(cfunc.get_pseudocode())
+                finally:
+                    _restore_forced_rule_scope(state, func_ea, previous_override)
+            state.stop_d810()
+
+        snapshot = captured.get("snapshot")
+        assert snapshot is not None
+        assert snapshot["selected_lowering_mode"] == "tigress_switch_transition_facts"
+        assert snapshot["planning_ready"] is True
+        assert snapshot["selected_modification_count"] >= 18
+        assert "for (" in rendered
 
     def test_approov_real_pattern_post_apply_dump_preserves_verify_in_managed_context(
         self,
@@ -1668,20 +6089,21 @@ class TestEmulatedDispatcherManagedContext:
         assert handler_state_map[5] == 0xF6A1E
         assert handler_state_map[9] == 0xF6A1F
         assert artifact["dag_node_count"] == 6
-        assert artifact["dag_edge_count"] == 13
+        assert artifact["dag_edge_count"] == 12
         assert artifact["semantic_reference_variant"] == "semantic_reference_like"
         assert artifact["semantic_reference_line_count"] >= 30
         assert artifact["semantic_reference_node_count"] == 6
-        assert "STATE_000F6A1F:" in artifact["semantic_reference_program"]
+        assert "STATE_000F6A1F__" in artifact["semantic_reference_program"]
         assert "STATE_000F6A1E:" in artifact["semantic_reference_program"]
         # The rendered reference program may canonicalize range/anonymous
         # entries to STATE_00000000, but the structured labels retain the
         # recovered state identity. Assert the stable structured contract here.
-        assert "0x000F6A20" in artifact["semantic_state_labels"]
+        assert "0x000F6A26" in artifact["semantic_state_labels"]
+        assert "s000F6A20" in artifact["semantic_reference_program"]
         assert "goto STATE_000F6A1E;" in artifact["semantic_reference_program"]
-        assert "goto STATE_000F6A1F;" in artifact["semantic_reference_program"]
+        assert "goto STATE_000F6A1F__" in artifact["semantic_reference_program"]
 
-    def test_approov_vm_dispatcher_keeps_loop_recovery_disabled_without_phase_contract(
+    def test_approov_vm_dispatcher_lowers_dynamic_state_write_with_guard(
         self,
         libobfuscated_setup,
         d810_state,
@@ -1698,12 +6120,15 @@ class TestEmulatedDispatcherManagedContext:
         def _wrapped_build_snapshot(self, mba, detection):
             snapshot = original_build_snapshot(self, mba, detection)
             metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+            artifact = extract_emulated_dispatcher_phase_artifact(snapshot.flow_graph)
             if (
                 metadata is not None
                 and metadata.candidate_count >= int(captured.get("candidate_count", -1))
             ):
                 captured["candidate_count"] = metadata.candidate_count
                 captured["snapshot"] = asdict(metadata)
+                if artifact is not None:
+                    captured["phase_artifact"] = asdict(artifact)
             return snapshot
 
         monkeypatch.setattr(
@@ -1733,10 +6158,33 @@ class TestEmulatedDispatcherManagedContext:
             state.stop_d810()
 
         snapshot = captured["snapshot"]
-        assert snapshot["candidate_count"] > 0
+        assert snapshot["candidate_count"] == 3
         assert snapshot["selected_lowering_mode"] == "generic_graph_modifications"
         assert snapshot["loop_recovery_modification_count"] == 0
-        assert snapshot["planning_ready"] is False
+        assert snapshot["planning_ready"] is True
+        assert snapshot["selected_modification_count"] == 3
+        assert snapshot["candidate_kinds"] == (
+            "InsertBlock",
+            "CreateConditionalRedirect",
+            "InsertBlock",
+        )
+        dynamic_record = next(
+            record
+            for record in snapshot["candidate_records"]
+            if record["selection_reason"]
+            == "dynamic_state_write_conditional_redirect"
+        )
+        assert dynamic_record["father_serial"] == 7
+        assert dynamic_record["target_serial"] == 8
+        assert dynamic_record["state_signature"] == (0xF6A20,)
+        assert dynamic_record["selected_modification_summaries"] == (
+            "CreateConditionalRedirect(src=7,ref=4,jcc=8,ft=6,insns=0)",
+        )
+        artifact = captured["phase_artifact"]
+        program = artifact["semantic_reference_program"]
+        f6a1f_block = program.split("STATE_000F6A1F:", 1)[1].split("\n\n", 1)[0]
+        assert "goto STATE_000F6A20;" in f6a1f_block
+        assert "goto STATE_000F6A1F;" not in f6a1f_block
 
     def test_dispatcher_loop_recovery_guard_rejects_returning_fallback_artifact(
         self,
@@ -1996,7 +6444,7 @@ class TestEmulatedDispatcherManagedContext:
             ),
         )
 
-    def test_approov_multistate_cluster_grouping_experiment(
+    def test_approov_multistate_cluster_grouping_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -2005,43 +6453,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for cluster grouping experiment"
+            "libclang required for cluster grouping engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                    captured["final_maturity"] = int(blk.mba.maturity)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, clustered: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -2058,120 +6476,16 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _clustered_execute(snapshot, planned, **kwargs):
-                modifications = extract_emulated_dispatcher_modifications(
-                    snapshot.flow_graph
-                )
-                records = extract_emulated_dispatcher_candidate_records(
-                    snapshot.flow_graph
-                )
-                captured["candidate_records"] = tuple(asdict(record) for record in records)
-
-                grouped: dict[tuple[str, ...], list[EmulatedDispatcherCandidateRecord]] = {}
-                for record in records:
-                    if record.cluster_candidate:
-                        grouped.setdefault(record.cluster_key, []).append(record)
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-                # create_standalone_block() inserts at the current stop-block
-                # serial and shifts the stop block to the new tail.
-                next_serial = int(snapshot.mba.qty) - 1
-                consumed_indexes: set[int] = set()
-                cluster_payloads: list[tuple[str, ...]] = []
-
-                for cluster_key in sorted(grouped):
-                    cluster = sorted(grouped[cluster_key], key=lambda item: item.father_serial)
-                    anchor = cluster[0]
-                    followers = cluster[1:]
-                    anchor_index = anchor.selected_modification_indexes[0]
-                    anchor_mod = modifications[anchor_index]
-                    instructions = ()
-                    if isinstance(anchor_mod, InsertBlock):
-                        instructions = anchor_mod.instructions
-                    elif isinstance(anchor_mod, RedirectGoto):
-                        instructions = ()
-                    else:
-                        raise AssertionError(
-                            f"Unexpected clustered modification in experiment: {anchor_mod}"
-                        )
-                    cluster_payloads.append(anchor.payload_signature)
-                    modifier.queue_create_and_redirect(
-                        source_block_serial=int(anchor.father_serial),
-                        final_target_serial=int(anchor.target_serial),
-                        instructions_to_copy=list(instructions),
-                        expected_serial=next_serial,
-                        description=f"cluster anchor {anchor.father_serial}->{anchor.target_serial}",
-                    )
-                    consumed_indexes.update(anchor.selected_modification_indexes)
-                    for follower in followers:
-                        modifier.queue_goto_change(
-                            block_serial=int(follower.father_serial),
-                            new_target=next_serial,
-                            description=f"cluster follower {follower.father_serial}->{next_serial}",
-                        )
-                        consumed_indexes.update(follower.selected_modification_indexes)
-                    next_serial += 1
-
-                for record in records:
-                    if any(idx in consumed_indexes for idx in record.selected_modification_indexes):
-                        continue
-                    idx = record.selected_modification_indexes[0]
-                    mod = modifications[idx]
-                    if isinstance(mod, InsertBlock):
-                        modifier.queue_create_and_redirect(
-                            source_block_serial=int(mod.pred_serial),
-                            final_target_serial=int(mod.succ_serial),
-                            instructions_to_copy=list(mod.instructions),
-                            expected_serial=next_serial,
-                            description=f"standalone insert {mod.pred_serial}->{mod.succ_serial}",
-                        )
-                        next_serial += 1
-                    elif isinstance(mod, RedirectGoto):
-                        modifier.queue_goto_change(
-                            block_serial=int(mod.from_serial),
-                            new_target=int(mod.new_target),
-                            description=f"standalone redirect {mod.from_serial}->{mod.new_target}",
-                        )
-                    else:
-                        raise AssertionError(f"Unexpected modification in experiment: {mod}")
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["cluster_payloads"] = tuple(cluster_payloads)
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
             def _wrapped_execute(snapshot, planned, **kwargs):
-                if not clustered:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
+                executed = original_execute(snapshot, planned, **kwargs)
+                captured["candidate_records"] = tuple(
+                    asdict(record)
+                    for record in extract_emulated_dispatcher_candidate_records(
+                        snapshot.flow_graph
                     )
-                    captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                    return executed
-                return _clustered_execute(snapshot, planned, **kwargs)
+                )
+                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
+                return executed
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -2191,55 +6505,41 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(clustered=False)
-        experimental_code, experimental_capture = _run_engine(clustered=True)
+        current_code, current_capture = _run_engine()
 
         current_payloads = tuple(
             tuple(record["payload_signature"])
             for record in current_capture["candidate_records"]
             if record["cluster_candidate"]
         )
-        experimental_payloads = tuple(experimental_capture.get("cluster_payloads", ()))
-
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(
             current_capture["final_flow_graph"],
             payload_signatures=current_payloads,
         )
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"],
-            payload_signatures=experimental_payloads,
-        )
+        cluster_groups: dict[tuple[str, ...], list[int]] = {}
+        for record in current_capture["candidate_records"]:
+            if record["cluster_candidate"]:
+                cluster_groups.setdefault(record["cluster_key"], []).append(
+                    record["father_serial"]
+                )
 
         summary = {
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "cluster_groups": {
+                key: tuple(sorted(value)) for key, value in cluster_groups.items()
+            },
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_CLUSTER_GROUPING_ENGINE_CONTRACT", summary)
 
         assert current_capture["candidate_records"]
-        assert experimental_capture["candidate_records"]
         assert current_shape["payload_blocks"]
-        assert experimental_shape["payload_blocks"]
+        assert sorted(
+            tuple(sorted(fathers)) for fathers in cluster_groups.values()
+        ) == [(2, 6), (7, 11)]
 
-    @pytest.mark.xfail(
-        reason=(
-            "Experimental phase-SCC monkeypatch assumes phase header records "
-            "select InsertBlock edits. Current planning can select bookkeeping "
-            "edits such as ZeroStateWrite, so this is no longer a valid "
-            "contract test."
-        ),
-        strict=False,
-    )
-    def test_approov_multistate_first_phase_scc_experiment(
+    def test_approov_multistate_handler_subgraph_engine_contract(
         self,
         libobfuscated_setup,
         d810_state,
@@ -2248,42 +6548,13 @@ class TestEmulatedDispatcherManagedContext:
         monkeypatch,
     ) -> None:
         assert code_comparator is not None, (
-            "libclang required for first-phase SCC experiment"
+            "libclang required for handler-subgraph engine contract"
         )
         func_ea = get_func_ea("approov_multistate")
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, phase_experiment: bool) -> tuple[str, dict[str, object]]:
+        def _run_engine() -> tuple[str, dict[str, object]]:
             import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
             captured: dict[str, object] = {}
@@ -2300,10 +6571,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["final_flow_graph"] = lift_mba(mba)
                 return cleaned
 
-            def _phase_execute(snapshot, planned, **kwargs):
-                modifications = extract_emulated_dispatcher_modifications(
-                    snapshot.flow_graph
-                )
+            def _wrapped_execute(snapshot, planned, **kwargs):
                 records = extract_emulated_dispatcher_candidate_records(
                     snapshot.flow_graph
                 )
@@ -2311,134 +6579,7 @@ class TestEmulatedDispatcherManagedContext:
                 captured["phase_role_map"] = _summarize_approov_multistate_phase_roles(
                     records
                 )
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-                next_serial = int(snapshot.mba.qty) - 1
-                consumed_indexes: set[int] = set()
-                phase_payloads: list[tuple[str, ...]] = []
-
-                phase1_header = sorted(
-                    (
-                        record
-                        for record in records
-                        if _approov_multistate_phase_role(record) == "phase1_header"
-                    ),
-                    key=lambda item: item.father_serial,
-                )
-                if phase1_header:
-                    anchor = phase1_header[0]
-                    anchor_mod = next(
-                        (
-                            modifications[idx]
-                            for idx in anchor.selected_modification_indexes
-                            if isinstance(modifications[idx], InsertBlock)
-                        ),
-                        None,
-                    )
-                    assert isinstance(anchor_mod, InsertBlock)
-                    phase_payloads.append(anchor.payload_signature)
-                    modifier.queue_create_and_redirect(
-                        source_block_serial=int(anchor.father_serial),
-                        final_target_serial=int(anchor.target_serial),
-                        instructions_to_copy=list(anchor_mod.instructions),
-                        expected_serial=next_serial,
-                        description=f"phase1 header anchor {anchor.father_serial}->{anchor.target_serial}",
-                    )
-                    consumed_indexes.update(anchor.selected_modification_indexes)
-                    for follower in phase1_header[1:]:
-                        modifier.queue_goto_change(
-                            block_serial=int(follower.father_serial),
-                            new_target=next_serial,
-                            description=f"phase1 header follower {follower.father_serial}->{next_serial}",
-                        )
-                        consumed_indexes.update(follower.selected_modification_indexes)
-                    next_serial += 1
-
-                for record in records:
-                    if _approov_multistate_phase_role(record) != "phase1_update":
-                        continue
-                    mod = next(
-                        (
-                            modifications[idx]
-                            for idx in record.selected_modification_indexes
-                            if isinstance(modifications[idx], InsertBlock)
-                        ),
-                        None,
-                    )
-                    assert isinstance(mod, InsertBlock)
-                    phase_payloads.append(record.payload_signature)
-                    modifier.queue_create_and_redirect(
-                        source_block_serial=int(mod.pred_serial),
-                        final_target_serial=int(mod.succ_serial),
-                        instructions_to_copy=list(mod.instructions),
-                        expected_serial=next_serial,
-                        description=f"phase1 update {mod.pred_serial}->{mod.succ_serial}",
-                    )
-                    consumed_indexes.update(record.selected_modification_indexes)
-                    next_serial += 1
-
-                for record in records:
-                    if any(idx in consumed_indexes for idx in record.selected_modification_indexes):
-                        continue
-                    idx = record.selected_modification_indexes[0]
-                    mod = modifications[idx]
-                    if isinstance(mod, InsertBlock):
-                        modifier.queue_create_and_redirect(
-                            source_block_serial=int(mod.pred_serial),
-                            final_target_serial=int(mod.succ_serial),
-                            instructions_to_copy=list(mod.instructions),
-                            expected_serial=next_serial,
-                            description=f"non-phase insert {mod.pred_serial}->{mod.succ_serial}",
-                        )
-                        next_serial += 1
-                    elif isinstance(mod, RedirectGoto):
-                        modifier.queue_goto_change(
-                            block_serial=int(mod.from_serial),
-                            new_target=int(mod.new_target),
-                            description=f"non-phase redirect {mod.from_serial}->{mod.new_target}",
-                        )
-                    else:
-                        raise AssertionError(f"Unexpected modification in experiment: {mod}")
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["phase_payloads"] = tuple(phase_payloads)
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
-            def _wrapped_execute(snapshot, planned, **kwargs):
-                if not phase_experiment:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    records = extract_emulated_dispatcher_candidate_records(
-                        snapshot.flow_graph
-                    )
-                    captured["candidate_records"] = tuple(
-                        asdict(record) for record in records
-                    )
-                    captured["phase_role_map"] = _summarize_approov_multistate_phase_roles(
-                        records
-                    )
-                    return executed
-                return _phase_execute(snapshot, planned, **kwargs)
+                return original_execute(snapshot, planned, **kwargs)
 
             with monkeypatch.context() as patch_ctx:
                 patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
@@ -2458,260 +6599,17 @@ class TestEmulatedDispatcherManagedContext:
             assert "final_flow_graph" in captured
             return rendered, captured
 
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(phase_experiment=False)
-        experimental_code, experimental_capture = _run_engine(phase_experiment=True)
+        current_code, current_capture = _run_engine()
 
-        current_payloads = tuple(
-            tuple(record["payload_signature"])
-            for record in current_capture["candidate_records"]
-            if _approov_multistate_phase_role(record) in ("phase1_header", "phase1_update")
-        )
-        experimental_payloads = tuple(experimental_capture.get("phase_payloads", ()))
-
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
-        current_shape = _summarize_cfg_shape(
-            current_capture["final_flow_graph"],
-            payload_signatures=current_payloads,
-        )
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"],
-            payload_signatures=experimental_payloads,
-        )
-
-        summary = {
-            "phase_role_map": experimental_capture["phase_role_map"],
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
-        }
-        print("APPROOV_MULTISTATE_FIRST_PHASE_SCC_EXPERIMENT", summary)
-
-        assert summary["phase_role_map"]["phase1_header"] == (
-            (2, 9, ("InsertBlock",)),
-            (6, 9, ("InsertBlock",)),
-        )
-        assert summary["phase_role_map"]["phase1_update"] == (
-            (10, 5, ("InsertBlock",)),
-        )
-        assert summary["legacy_ast"]["ifs"] == 1
-        assert summary["current_ast"]["ifs"] == 2
-        assert summary["experimental_ast"]["ifs"] == 2
-        assert experimental_shape["block_count"] <= current_shape["block_count"]
-
-    def test_approov_multistate_handler_subgraph_experiment(
-        self,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        monkeypatch,
-    ) -> None:
-        assert code_comparator is not None, (
-            "libclang required for handler-subgraph experiment"
-        )
-        func_ea = get_func_ea("approov_multistate")
-        if func_ea == idaapi.BADADDR:
-            pytest.skip("Function 'approov_multistate' not found")
-
-        def _run_legacy() -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener as legacy_mod
-
-            captured: dict[str, object] = {}
-            original_optimize = legacy_mod.Unflattener.optimize
-
-            def _wrapped_optimize(rule, blk):
-                result = original_optimize(rule, blk)
-                if getattr(blk.mba, "entry_ea", None) == func_ea:
-                    captured["final_flow_graph"] = lift_mba(blk.mba)
-                return result
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(
-                    legacy_mod.Unflattener,
-                    "optimize",
-                    _wrapped_optimize,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=False,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        def _run_engine(*, experiment: bool) -> tuple[str, dict[str, object]]:
-            import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
-
-            captured: dict[str, object] = {}
-            original_execute = engine_mod.execute_family_pipeline
-            original_cleanup = EmulatedDispatcherStrategyFamily.post_execute_cleanup
-
-            def _wrap_cleanup(self, mba, *, snapshot, total_changes):
-                cleaned = original_cleanup(
-                    self,
-                    mba,
-                    snapshot=snapshot,
-                    total_changes=total_changes,
-                )
-                captured["final_flow_graph"] = lift_mba(mba)
-                return cleaned
-
-            def _handler_execute(snapshot, planned, **kwargs):
-                records = extract_emulated_dispatcher_candidate_records(
-                    snapshot.flow_graph
-                )
-                captured["candidate_records"] = tuple(asdict(record) for record in records)
-                captured["phase_role_map"] = _summarize_approov_multistate_phase_roles(
-                    records
-                )
-
-                modifier = DeferredGraphModifier(snapshot.mba)
-
-                modifier.queue_zero_state_write(
-                    2,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=2,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_goto_change(
-                    2,
-                    9,
-                    description="phase loop entry 2 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    6,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=6,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_header"],
-                    ),
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_goto_change(
-                    6,
-                    9,
-                    description="phase loop latch 6 -> 9",
-                )
-                modifier.queue_zero_state_write(
-                    10,
-                    _find_state_write_ea(
-                        snapshot.mba,
-                        block_serial=10,
-                        expected_state=_APPROOV_MULTISTATE_PHASE_STATES["phase1_update"],
-                    ),
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_goto_change(
-                    10,
-                    5,
-                    description="phase loop body 10 -> 5",
-                )
-                modifier.queue_conditional_target_change(
-                    9,
-                    12,
-                    description="phase1 header taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    5,
-                    12,
-                    description="phase1 update taken -> phase2",
-                )
-                modifier.queue_conditional_target_change(
-                    12,
-                    12,
-                    description="phase2 taken -> phase2 self loop",
-                )
-
-                changes = modifier.apply(
-                    run_optimize_local=True,
-                    run_deep_cleaning=False,
-                )
-                captured["post_execute_flow_graph"] = lift_mba(snapshot.mba)
-                strategy_name = (
-                    planned.pipeline[0].strategy_name
-                    if planned.pipeline
-                    else "emulated_dispatcher"
-                )
-                return ExecutedPipeline(
-                    pipeline=planned.pipeline,
-                    results=[
-                        StageResult(
-                            strategy_name=strategy_name,
-                            edits_applied=changes,
-                            success=True,
-                        )
-                    ],
-                    provenance=planned.provenance,
-                    total_changes=changes,
-                    executor=None,
-                )
-
-            def _wrapped_execute(snapshot, planned, **kwargs):
-                if not experiment:
-                    executed = original_execute(snapshot, planned, **kwargs)
-                    captured["candidate_records"] = tuple(
-                        asdict(record)
-                        for record in extract_emulated_dispatcher_candidate_records(
-                            snapshot.flow_graph
-                        )
-                    )
-                    return executed
-                return _handler_execute(snapshot, planned, **kwargs)
-
-            with monkeypatch.context() as patch_ctx:
-                patch_ctx.setattr(engine_mod, "execute_family_pipeline", _wrapped_execute)
-                patch_ctx.setattr(
-                    EmulatedDispatcherStrategyFamily,
-                    "post_execute_cleanup",
-                    _wrap_cleanup,
-                )
-                with d810_state() as state:
-                    rendered = _decompile_with_project(
-                        state,
-                        func_ea,
-                        "example_libobfuscated.json",
-                        pseudocode_to_string,
-                        engine_wrappers_only=True,
-                    )
-            assert "final_flow_graph" in captured
-            return rendered, captured
-
-        legacy_code, legacy_capture = _run_legacy()
-        current_code, current_capture = _run_engine(experiment=False)
-        experimental_code, experimental_capture = _run_engine(experiment=True)
-
-        legacy_shape = _summarize_cfg_shape(legacy_capture["final_flow_graph"])
         current_shape = _summarize_cfg_shape(current_capture["final_flow_graph"])
-        experimental_shape = _summarize_cfg_shape(
-            experimental_capture["final_flow_graph"]
-        )
 
         summary = {
-            "phase_role_map": experimental_capture["phase_role_map"],
-            "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-            "current_ast": code_comparator.count_ast_statements(current_code),
-            "experimental_ast": code_comparator.count_ast_statements(experimental_code),
-            "legacy_shape": legacy_shape,
-            "current_shape": current_shape,
-            "experimental_shape": experimental_shape,
-            "legacy_code": legacy_code,
-            "current_code": current_code,
-            "experimental_code": experimental_code,
+            "phase_role_map": current_capture["phase_role_map"],
+            "ast": code_comparator.count_ast_statements(current_code),
+            "shape": current_shape,
+            "code": current_code,
         }
-        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_EXPERIMENT", summary)
+        print("APPROOV_MULTISTATE_HANDLER_SUBGRAPH_ENGINE_CONTRACT", summary)
 
         assert summary["phase_role_map"]["phase1_header"] == (
             (2, 9, ("InsertBlock",)),

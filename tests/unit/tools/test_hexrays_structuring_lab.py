@@ -29,6 +29,9 @@ def test_registry_loads_initial_cases() -> None:
         "terminal_tail_shared_convergence",
         "terminal_tail_split_guard",
         "terminal_tail_unique_continuation",
+        "badwhile_direct_triangle_case",
+        "badwhile_trampoline_triangle_case",
+        "badwhile_duplicate_group_triangle",
     }
 
 

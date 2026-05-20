@@ -11,7 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.graph_modification import GraphModification, RedirectGoto
-from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
+from d810.cfg.loop_bound_writer_guard import (
+    InsnKindClassifier,
+    OperandKindClassifier,
+    collect_const_var_refs_in_block,
+)
 from d810.core import logging
 from d810.core.typing import Any
 
@@ -30,6 +34,7 @@ class ReturnCarrierFactRejection:
     fact_status: str
     overlap: tuple[str, ...]
     const_written: tuple[str, ...]
+    reason: str = "const_feed"
 
 
 def _payload(site: Any) -> dict:
@@ -93,6 +98,31 @@ def _sites_for_block(
     return tuple(sites)
 
 
+def _return_writer_sites_for_block(
+    fact_view: Any,
+    target_block: int,
+) -> tuple[tuple[str, Any], ...]:
+    try:
+        target = int(target_block)
+    except (TypeError, ValueError):
+        return ()
+    sites: list[tuple[str, Any]] = []
+    for site in getattr(fact_view, "active_observations", ()) or ():
+        if getattr(site, "kind", None) != "ReturnCarrierFact":
+            continue
+        payload = _payload(site)
+        raw = payload.get("block_serial")
+        if raw is None:
+            continue
+        try:
+            if int(raw) != target:
+                continue
+        except (TypeError, ValueError):
+            continue
+        sites.append(("active_writer", site))
+    return tuple(sites)
+
+
 def _candidate_target_blocks(mba: Any, target_block: int) -> tuple[int, ...]:
     candidates = [target_block]
     try:
@@ -122,6 +152,9 @@ def filter_return_carrier_fact_redirects(
     fact_view: Any | None,
     dispatcher_serial: int,
     stale_hazard_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
+    reject_carrier_writer_bypass: bool = False,
+    insn_kind_classifier: InsnKindClassifier | None = None,
+    operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> tuple[list[GraphModification], tuple[ReturnCarrierFactRejection, ...]]:
     """Reject fact-proven return-carrier constant-feed redirects.
 
@@ -148,25 +181,97 @@ def filter_return_carrier_fact_redirects(
             filtered.append(mod)
             continue
 
-        const_written = collect_const_var_refs_in_block(mba, source)
-        if not const_written:
-            filtered.append(mod)
-            continue
-
-        rejected = False
         candidate_sites: list[tuple[int, str, Any]] = []
+        bypass_sites: list[tuple[int, str, Any]] = []
+        seen_bypass_sites: set[tuple[int, str, str]] = set()
         for candidate_target in _candidate_target_blocks(mba, target):
             for fact_status, site in _sites_for_block(fact_view, candidate_target):
                 candidate_sites.append((candidate_target, fact_status, site))
+                fact_id = str(getattr(site, "fact_id", "<unknown>"))
+                seen_bypass_sites.add((candidate_target, fact_status, fact_id))
+                bypass_sites.append((candidate_target, fact_status, site))
+            if reject_carrier_writer_bypass:
+                for fact_status, site in _return_writer_sites_for_block(
+                    fact_view,
+                    candidate_target,
+                ):
+                    fact_id = str(getattr(site, "fact_id", "<unknown>"))
+                    key = (candidate_target, fact_status, fact_id)
+                    if key in seen_bypass_sites:
+                        continue
+                    seen_bypass_sites.add(key)
+                    bypass_sites.append((candidate_target, fact_status, site))
+        if not candidate_sites and not bypass_sites:
+            filtered.append(mod)
+            continue
 
-        for hazard_block, fact_status, site in candidate_sites:
+        const_written = collect_const_var_refs_in_block(
+            mba,
+            source,
+            insn_kind_classifier=insn_kind_classifier,
+            operand_kind_classifier=operand_kind_classifier,
+        )
+
+        rejected = False
+        for hazard_block, fact_status, site in bypass_sites:
             read_refs = _return_carrier_read_refs(site)
-            if not read_refs:
+            fact_id = str(getattr(site, "fact_id", "<unknown>"))
+            override_key = (source, old_target, target)
+            if (
+                fact_status == "stale_hazard"
+                and override_key in stale_hazard_override_keys
+            ):
+                if const_written and read_refs and (const_written & read_refs):
+                    logger.info(
+                        "RETURN_CARRIER_FACT_REDIRECT_STALE_HAZARD_OVERRIDDEN "
+                        "src=blk[%d] target=blk[%d] hazard=blk[%d] old=blk[%d] "
+                        "fact_id=%s overlap=%s const_written=%s",
+                        source,
+                        target,
+                        hazard_block,
+                        old_target,
+                        fact_id,
+                        sorted(const_written & read_refs),
+                        sorted(const_written),
+                    )
+                continue
+
+            if reject_carrier_writer_bypass and int(hazard_block) != source:
+                rejection = ReturnCarrierFactRejection(
+                    source_block=source,
+                    target_block=target,
+                    hazard_block=hazard_block,
+                    old_target=old_target,
+                    fact_id=fact_id,
+                    fact_status=fact_status,
+                    overlap=(),
+                    const_written=tuple(sorted(const_written)),
+                    reason="carrier_writer_bypass",
+                )
+                rejections.append(rejection)
+                logger.info(
+                    "RECON_REDIRECT_REJECTED_RETURN_CARRIER_BYPASS "
+                    "RETURN_CARRIER_FACT_REDIRECT_BYPASS_REJECTED "
+                    "src=blk[%d] target=blk[%d] hazard=blk[%d] old=blk[%d] "
+                    "fact_id=%s fact_status=%s const_written=%s",
+                    source,
+                    target,
+                    hazard_block,
+                    old_target,
+                    fact_id,
+                    fact_status,
+                    list(rejection.const_written),
+                )
+                rejected = True
+                break
+
+            if fact_status == "active_writer":
+                continue
+            if not const_written or not read_refs:
                 continue
             overlap = const_written & read_refs
             if not overlap:
                 continue
-            fact_id = str(getattr(site, "fact_id", "<unknown>"))
             rejection = ReturnCarrierFactRejection(
                 source_block=source,
                 target_block=target,
@@ -177,23 +282,6 @@ def filter_return_carrier_fact_redirects(
                 overlap=tuple(sorted(overlap)),
                 const_written=tuple(sorted(const_written)),
             )
-            if (
-                fact_status == "stale_hazard"
-                and (source, old_target, target) in stale_hazard_override_keys
-            ):
-                logger.info(
-                    "RETURN_CARRIER_FACT_REDIRECT_STALE_HAZARD_OVERRIDDEN "
-                    "src=blk[%d] target=blk[%d] hazard=blk[%d] old=blk[%d] "
-                    "fact_id=%s overlap=%s const_written=%s",
-                    source,
-                    target,
-                    hazard_block,
-                    old_target,
-                    fact_id,
-                    list(rejection.overlap),
-                    list(rejection.const_written),
-                )
-                continue
             rejections.append(rejection)
             logger.info(
                 "RECON_REDIRECT_REJECTED_RETURN_CARRIER_CONST_FEED "
@@ -213,4 +301,8 @@ def filter_return_carrier_fact_redirects(
             break
         if not rejected:
             filtered.append(mod)
+    if reject_carrier_writer_bypass and any(
+        rejection.reason == "carrier_writer_bypass" for rejection in rejections
+    ):
+        return [], tuple(rejections)
     return filtered, tuple(rejections)

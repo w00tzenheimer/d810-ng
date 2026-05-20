@@ -1,0 +1,43 @@
+# Planning/proof/strategy code should emit graph modifications, not mutate MBA.
+
+id: no-direct-mutation-in-proof-strategy-modules
+language: python
+severity: error
+
+files:
+  - "src/d810/cfg/**/*.py"
+  - "src/d810/recon/flow/**/*.py"
+  - "src/d810/evaluator/**/*.py"
+  - "src/d810/optimizers/microcode/flow/flattening/**/*.py"
+
+ignores:
+  # Backend/materialization/emission and known legacy mutators.
+  - "src/d810/evaluator/hexrays_microcode/tracker.py"
+  - "src/d810/optimizers/microcode/flow/flattening/abc_block_splitter.py"
+  - "src/d810/optimizers/microcode/flow/flattening/block_merge.py"
+  - "src/d810/optimizers/microcode/flow/flattening/fix_pred_cond_jump_block.py"
+  - "src/d810/optimizers/microcode/flow/flattening/hodur/unflattener.py"
+  - "src/d810/optimizers/microcode/flow/flattening/services.py"
+  - "src/d810/optimizers/microcode/flow/flattening/unflattener_cf.py"
+  - "src/d810/optimizers/microcode/flow/flattening/unflattener_fake_jump.py"
+
+message: |
+  Proof, planning, and strategy modules must not directly mutate Hex-Rays MBA.
+
+  Emit cfg GraphModification/PatchPlan objects and let Hex-Rays mutation
+  backends perform live rewrites.
+
+rule:
+  any:
+    - pattern: change_1way_block_successor($$$)
+    - pattern: change_2way_block_conditional_successor($$$)
+    - pattern: change_2way_block_fallthrough_successor($$$)
+    - pattern: $BLK.make_nop($$$)
+    - pattern: $MBA.insert_block($$$)
+    - pattern: $MBA.copy_block($$$)
+    - pattern: $BLK.insert_into_block($$$)
+    - pattern: $BLK.remove_from_block($$$)
+
+note: |
+  Legacy mutators are explicitly ignored. Do not add new exceptions without a
+  migration ticket and a reason the operation cannot be represented as a plan.

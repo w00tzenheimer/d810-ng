@@ -1,23 +1,29 @@
 """Experimental lowering for exact conditional nodes with two semantic exits."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import os
 import re
-
-import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
-from d810.cfg.graph_modification import NopInstructions, ZeroStateWrite
-from d810.cfg.semantic_region_lowering import (
-    _collect_semantic_entry_by_label,
-    _collect_semantic_successors_by_state,
+from d810.cfg.graph_modification import GraphModification, ZeroStateWrite
+from d810.cfg.semantic_reference import (
+    collect_semantic_entry_by_label,
+    collect_semantic_successors_by_state,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.cfg.state_variable import StateVariableRef
+from d810.cfg.semantic_conditional_lowering import (
+    ConditionalForkExactNodeArm,
+    ConditionalForkExactNodeSite,
+    ExactConditionalForkInventory,
+    collect_conditional_fork_scope,
+    normalize_clean_conditional_fork_arms,
+    ordered_path_first_hop,
+)
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -27,16 +33,20 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
     _SUB7FFD_FUNC_EA,
     build_semantic_exact_round_summary,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+    accepts_exact_sub7ffd_glbopt1,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
     _conditional_distance_to_return,
     _compute_postdominator_tree,
     _edge_kind_name,
     _site_key,
 )
-from d810.recon.flow.path_horizon import resolve_transition_path_horizon
-from d810.recon.flow.residual_handoff_resolution import (
-    resolve_effective_target_entry,
+from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+    ConstantFixpointBackend,
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
+from d810.recon.flow.path_horizon import resolve_transition_path_horizon
 from d810.recon.flow.residual_handoff_discovery import (
     resolve_normalized_alias_entry_for_state,
     resolve_redirect_safe_entry_from_node,
@@ -48,13 +58,27 @@ from d810.recon.flow.target_entry_resolution import (
     resolve_semantic_reference_entry_for_state,
 )
 from d810.recon.flow.graph_reachability import collect_residual_dispatcher_predecessors
-from d810.recon.flow.state_machine_analysis import (
-    run_snapshot_constant_fixpoint,
+from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
+    HexRaysInstructionCaptureBackend,
+    StateWriteCleanupEvidenceBackend,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+    EffectiveTargetEvidenceBackend,
+    HexRaysEffectiveTargetEvidenceBackend,
 )
 
 logger = logging.getLogger(
     "D810.hodur.strategy.exact_conditional_fork",
     logging.DEBUG,
+)
+_STATE_WRITE_CLEANUP_BACKEND: StateWriteCleanupEvidenceBackend = (
+    HexRaysInstructionCaptureBackend()
+)
+_EFFECTIVE_TARGET_BACKEND: EffectiveTargetEvidenceBackend = (
+    HexRaysEffectiveTargetEvidenceBackend()
+)
+_CONSTANT_FIXPOINT_BACKEND: ConstantFixpointBackend = (
+    DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND
 )
 
 _STATE_LABEL_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:_fallback)?$")
@@ -67,35 +91,6 @@ __all__ = [
     "analyze_exact_conditional_fork_sites",
     "collect_exact_conditional_fork_sites",
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class ConditionalForkExactNodeArm:
-    target_state: int
-    target_entry: int
-    first_hop: int
-    tail: int
-    ordered_path: tuple[int, ...]
-    transition_edge: object
-    return_distance: int | None
-
-
-@dataclass(frozen=True, slots=True)
-class ConditionalForkExactNodeSite:
-    source_block: int
-    follow_block: int | None
-    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm]
-
-
-@dataclass(frozen=True, slots=True)
-class ExactConditionalForkInventory:
-    selected_count: int
-    candidate_blocks: tuple[int, ...]
-    plannable_incomplete_blocks: tuple[int, ...]
-    shape_rejected_blocks: tuple[int, ...]
-    clean_fork_blocks: tuple[int, ...] = ()
-    boundary_preservation_blocks: tuple[int, ...] = ()
-    alias_handled_blocks: tuple[int, ...] = ()
 
 
 def _require_clean_fork_paths() -> bool:
@@ -112,137 +107,6 @@ def _require_clean_fork_paths() -> bool:
         os.environ.get("D810_EXACT_CONDITIONAL_FORK_REQUIRE_CLEAN", "1").strip()
         != "0"
     )
-
-
-def _path_from_source(
-    *,
-    source_block: int,
-    first_hop: int,
-    ordered_path: tuple[int, ...],
-) -> tuple[int, ...] | None:
-    if not ordered_path:
-        return None
-    try:
-        source_index = ordered_path.index(int(source_block))
-    except ValueError:
-        return None
-    path = ordered_path[source_index:]
-    if len(path) < 2:
-        return None
-    if int(path[1]) != int(first_hop):
-        return None
-    return path
-
-
-def _path_edges_exist(flow_graph, path: tuple[int, ...]) -> bool:
-    for current, nxt in zip(path, path[1:]):
-        block = flow_graph.get_block(int(current))
-        if block is None:
-            return False
-        succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
-        if int(nxt) not in succs:
-            return False
-    return True
-
-
-def _single_pred_path_blocks(flow_graph, path: tuple[int, ...]) -> bool:
-    for block_serial in path:
-        block = flow_graph.get_block(int(block_serial))
-        if block is None:
-            return False
-        if int(getattr(block, "npred", 0)) != 1:
-            return False
-    return True
-
-
-def _normalize_clean_fork_arms(
-    flow_graph,
-    *,
-    source_block: int,
-    arms: tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm],
-    dispatcher_region: set[int],
-) -> tuple[ConditionalForkExactNodeArm, ConditionalForkExactNodeArm] | None:
-    paths: list[tuple[int, ...]] = []
-    for arm in arms:
-        path = _path_from_source(
-            source_block=source_block,
-            first_hop=arm.first_hop,
-            ordered_path=arm.ordered_path,
-        )
-        if path is None or not _path_edges_exist(flow_graph, path):
-            return None
-        paths.append(path)
-
-    terminal_blocks = {int(path[-1]) for path in paths}
-    if len(terminal_blocks) == len(arms):
-        if all(_single_pred_path_blocks(flow_graph, path[1:]) for path in paths):
-            return arms
-        return None
-
-    if len(terminal_blocks) != 1:
-        return None
-
-    shared_join = next(iter(terminal_blocks))
-    join_block = flow_graph.get_block(shared_join)
-    if join_block is None:
-        return None
-    if shared_join in dispatcher_region:
-        return None
-    join_succs = tuple(int(succ) for succ in getattr(join_block, "succs", ()) or ())
-    if len(join_succs) != 1:
-        return None
-    if any(succ in dispatcher_region for succ in join_succs):
-        return None
-    if tuple(getattr(join_block, "insn_snapshots", ()) or ()):
-        return None
-
-    if any(len(path) < 3 for path in paths):
-        return None
-    arm_tails = tuple(int(path[-2]) for path in paths)
-    if len(set(arm_tails)) != len(arms):
-        return None
-    join_preds = {int(pred) for pred in getattr(join_block, "preds", ()) or ()}
-    if join_preds != set(arm_tails):
-        return None
-    if int(getattr(join_block, "npred", 0)) != len(arms):
-        return None
-
-    seen_path_blocks: set[int] = set()
-    for path in paths:
-        arm_path = path[1:-1]
-        if not _single_pred_path_blocks(flow_graph, arm_path):
-            return None
-        for block_serial in arm_path:
-            if int(block_serial) in seen_path_blocks:
-                return None
-            seen_path_blocks.add(int(block_serial))
-
-    return tuple(
-        replace(arm, tail=int(path[-2]))
-        for arm, path in zip(arms, paths)
-    )
-
-
-def _collect_conditional_fork_scope(
-    dag: object,
-    *,
-    source_block: int,
-) -> tuple[set[int], set[tuple[int, int]]]:
-    owned_blocks: set[int] = {source_block}
-    owned_edges: set[tuple[int, int]] = set()
-
-    for sibling in getattr(dag, "edges", ()) or ():
-        key = _site_key(sibling)
-        if key is None or key[1] != source_block:
-            continue
-        if _edge_kind_name(sibling) != "CONDITIONAL_TRANSITION":
-            continue
-        path = tuple(int(node) for node in getattr(sibling, "ordered_path", ()) or ())
-        if not path:
-            continue
-        owned_blocks.update(path)
-        owned_edges.update(zip(path, path[1:]))
-    return owned_blocks, owned_edges
 
 
 def _effective_transition_target_entry(
@@ -315,18 +179,28 @@ def _effective_transition_target_entry(
             return int(normalized_alias_entry)
         if exact_dag_entry is not None and exact_dag_entry != source_block:
             return int(exact_dag_entry)
+    state_variable = (
+        None
+        if state_var_stkoff is None
+        else StateVariableRef(stkoff=int(state_var_stkoff))
+    )
     try:
-        effective_target_entry = resolve_effective_target_entry(
+        effective_target_evidence = _EFFECTIVE_TARGET_BACKEND.resolve_effective_target_entry(
             dag,
             edge,
             bst_node_blocks=bst_node_blocks,
-            state_var_stkoff=state_var_stkoff,
+            state_variable=state_variable,
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
             mba=mba,
         )
     except Exception:
-        effective_target_entry = None
+        effective_target_evidence = None
+    effective_target_entry = (
+        None
+        if effective_target_evidence is None
+        else effective_target_evidence.target_entry
+    )
     if effective_target_entry is not None:
         if (
             normalized_alias_entry is not None
@@ -435,23 +309,6 @@ def _resolve_semantic_target_override_entry(
     return None
 
 
-def _ordered_path_first_hop(
-    ordered_path: tuple[int, ...],
-    *,
-    source_block: int,
-) -> int | None:
-    if not ordered_path:
-        return None
-    try:
-        source_index = ordered_path.index(int(source_block))
-    except ValueError:
-        return int(ordered_path[1]) if len(ordered_path) >= 2 else None
-    next_index = source_index + 1
-    if next_index >= len(ordered_path):
-        return None
-    return int(ordered_path[next_index])
-
-
 def _safe_zero_state_write_modification(
     *,
     setup,
@@ -492,7 +349,7 @@ def _trivial_tail_state_write_cleanup_modification(
     flow_graph,
     tail_block_serial: int,
     expected_state: int,
-) -> NopInstructions | None:
+) -> GraphModification | None:
     """Remove a trivial local ``state = CONST`` handoff before a redirected goto.
 
     This is the preferred cleanup for leaf fork-arm tails shaped like:
@@ -511,35 +368,14 @@ def _trivial_tail_state_write_cleanup_modification(
     block = flow_graph.get_block(int(tail_block_serial))
     if block is None:
         return None
-    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
-    if len(insns) != 2:
+    request = _STATE_WRITE_CLEANUP_BACKEND.classify_trivial_tail_state_write_cleanup(
+        block,
+        state_variable=int(state_var_stkoff),
+        expected_state=int(expected_state),
+    )
+    if request is None:
         return None
-
-    write_insn, tail_insn = insns
-    if getattr(write_insn, "opcode", None) != ida_hexrays.m_mov:
-        return None
-    if getattr(tail_insn, "opcode", None) != ida_hexrays.m_goto:
-        return None
-
-    dest = getattr(write_insn, "d", None)
-    src = getattr(write_insn, "l", None)
-    if dest is None or src is None:
-        return None
-    if getattr(dest, "t", None) != ida_hexrays.mop_S:
-        return None
-    if getattr(dest, "stkoff", None) != int(state_var_stkoff):
-        return None
-    if getattr(src, "t", None) != ida_hexrays.mop_n:
-        return None
-    value = getattr(src, "value", None)
-    if value is None:
-        return None
-    if (int(value) & 0xFFFFFFFF) != (int(expected_state) & 0xFFFFFFFF):
-        return None
-    insn_ea = int(getattr(write_insn, "ea", 0) or 0)
-    if insn_ea == 0:
-        return None
-    return setup.builder.nop_instruction(int(tail_block_serial), insn_ea)
+    return setup.builder.state_write_cleanup(request)
 
 
 def _fallback_zero_state_write_modification(
@@ -549,7 +385,7 @@ def _fallback_zero_state_write_modification(
     tail_block_serial: int,
     expected_state: int,
     debug_label: str | None = None,
-) -> ZeroStateWrite | None:
+) -> GraphModification | None:
     """Zero a redirected arm's local state write when the tail block proves it directly.
 
     This is narrower than the path-horizon helper above. It only fires when the
@@ -576,62 +412,16 @@ def _fallback_zero_state_write_modification(
                 tail_block_serial,
             )
         return None
-
-    matched_insn_ea: int | None = None
-    state_write_count = 0
-    expected_state = int(expected_state) & 0xFFFFFFFF
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
-            continue
-        dest = getattr(insn, "d", None)
-        src = getattr(insn, "l", None)
-        if dest is None or src is None:
-            continue
-        if getattr(dest, "t", None) != ida_hexrays.mop_S:
-            continue
-        if getattr(dest, "stkoff", None) != int(state_var_stkoff):
-            continue
-        state_write_count += 1
-        if getattr(src, "t", None) != ida_hexrays.mop_n:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (nonconst_state_write blk=%d ea=0x%x src_t=%s)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                    getattr(src, "t", None),
-                )
-            return None
-        value = getattr(src, "value", None)
-        if value is None:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (missing_state_value blk=%d ea=0x%x)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                )
-            return None
-        if (int(value) & 0xFFFFFFFF) != expected_state:
-            if debug_label is not None:
-                logger.info(
-                    "EXACT CONDITIONAL FORK: %s zero-state fallback rejected (state_mismatch blk=%d ea=0x%x saw=0x%08X expected=0x%08X)",
-                    debug_label,
-                    tail_block_serial,
-                    int(getattr(insn, "ea", 0) or 0),
-                    int(value) & 0xFFFFFFFF,
-                    expected_state,
-                )
-            return None
-        matched_insn_ea = int(getattr(insn, "ea", 0) or 0)
-
-    if state_write_count != 1 or matched_insn_ea in (None, 0):
+    request = _STATE_WRITE_CLEANUP_BACKEND.classify_matching_state_write_cleanup(
+        block,
+        state_variable=int(state_var_stkoff),
+        expected_state=int(expected_state),
+    )
+    if request is None:
         if debug_label is not None:
             logger.info(
-                "EXACT CONDITIONAL FORK: %s zero-state fallback skipped (state_write_count=%d matched_ea=%s)",
+                "EXACT CONDITIONAL FORK: %s zero-state fallback skipped (no_matching_state_write)",
                 debug_label,
-                state_write_count,
-                "None" if matched_insn_ea in (None, 0) else hex(int(matched_insn_ea)),
             )
         return None
     if debug_label is not None:
@@ -639,9 +429,9 @@ def _fallback_zero_state_write_modification(
             "EXACT CONDITIONAL FORK: %s zero-state fallback accepted blk=%d ea=0x%x",
             debug_label,
             tail_block_serial,
-            int(matched_insn_ea),
+            int(request.insn_ea),
         )
-    return setup.builder.zero_state_write(int(tail_block_serial), int(matched_insn_ea))
+    return setup.builder.state_write_cleanup(request)
 
 
 def analyze_exact_conditional_fork_sites(
@@ -663,10 +453,10 @@ def analyze_exact_conditional_fork_sites(
         for state in tuple(getattr(region, "state_values", ()) or ())
     }
     semantic_reference_program = getattr(round_summary, "semantic_reference_program", None)
-    semantic_successors_by_state = _collect_semantic_successors_by_state(
+    semantic_successors_by_state = collect_semantic_successors_by_state(
         semantic_reference_program
     )
-    semantic_entry_by_label = _collect_semantic_entry_by_label(
+    semantic_entry_by_label = collect_semantic_entry_by_label(
         semantic_reference_program
     )
     bst_blocks = {int(block) for block in (bst_node_blocks or set())}
@@ -697,7 +487,7 @@ def analyze_exact_conditional_fork_sites(
         unique: dict[tuple[int, int, int], object] = {}
         for edge in transition_edges_by_source.get(source_block, []):
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=int(source_block),
             )
@@ -807,7 +597,7 @@ def analyze_exact_conditional_fork_sites(
         dag_arms = []
         for edge in dag_edges:
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=source_block,
             )
@@ -841,7 +631,7 @@ def analyze_exact_conditional_fork_sites(
         arms_by_first_hop: dict[int, ConditionalForkExactNodeArm] = {}
         for edge in dag_edges:
             ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
-            first_hop = _ordered_path_first_hop(
+            first_hop = ordered_path_first_hop(
                 ordered_path,
                 source_block=source_block,
             )
@@ -896,7 +686,7 @@ def analyze_exact_conditional_fork_sites(
             continue
 
         arms = tuple(arms_by_first_hop[succ] for succ in succs)
-        clean_arms = _normalize_clean_fork_arms(
+        clean_arms = normalize_clean_conditional_fork_arms(
             flow_graph,
             source_block=source_block,
             arms=arms,
@@ -977,6 +767,9 @@ def collect_exact_conditional_fork_sites(round_summary, flow_graph) -> tuple[Con
 )
 class ExactConditionalForkNodeLoweringStrategy:
     prerequisites: list[str] = []
+    _constant_fixpoint_backend: ConstantFixpointBackend = (
+        _CONSTANT_FIXPOINT_BACKEND
+    )
 
     @property
     def name(self) -> str:
@@ -987,10 +780,10 @@ class ExactConditionalForkNodeLoweringStrategy:
         return FAMILY_DIRECT
 
     def is_applicable(self, snapshot) -> bool:
-        mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
-            return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        if not accepts_exact_sub7ffd_glbopt1(
+            snapshot,
+            expected_entry_ea=_SUB7FFD_FUNC_EA,
+        ):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None
@@ -1053,12 +846,12 @@ class ExactConditionalForkNodeLoweringStrategy:
         owned_edges: set[tuple[int, int]] = set()
         owned_transitions: set[tuple[int, int]] = set()
         accepted_edges: list[tuple[int, int]] = []
-        constant_result = run_snapshot_constant_fixpoint(
+        constant_result = self._constant_fixpoint_backend.compute(
             flow_graph,
             int(setup.state_var_stkoff),
         )
         for site in sites:
-            site_blocks, site_edges = _collect_conditional_fork_scope(
+            site_blocks, site_edges = collect_conditional_fork_scope(
                 round_summary.dag,
                 source_block=site.source_block,
             )
