@@ -9,7 +9,6 @@ from d810.core import getLogger
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
-    legacy_father_history_dispatcher_profile,
     ollvm_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
@@ -125,22 +124,9 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
             )
         elif profile_name in {
             "ollvm_father_history",
-            "ollvm_father_history_compat",
-            "legacy_father_history",
-            "ollvm_legacy_father_history",
-            "father_history",
-            "ollvm",
         }:
             self._family = EmulatedDispatcherStrategyFamily(
-                profile=(
-                    legacy_father_history_dispatcher_profile()
-                    if profile_name in {
-                        "legacy_father_history",
-                        "ollvm_legacy_father_history",
-                        "father_history",
-                    }
-                    else ollvm_father_history_dispatcher_profile()
-                )
+                profile=ollvm_father_history_dispatcher_profile()
             )
         elif profile_name in {
             "tigress_switch",

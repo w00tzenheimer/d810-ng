@@ -46,7 +46,6 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
-    legacy_father_history_dispatcher_profile,
     ollvm_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
@@ -3047,12 +3046,6 @@ def test_ollvm_father_history_profile_is_explicit_opt_in() -> None:
     assert profile.resolver_factory.__name__ == "OllvmFatherHistoryResolver"
 
 
-def test_legacy_father_history_profile_aliases_explicit_ollvm_name() -> None:
-    profile = legacy_father_history_dispatcher_profile()
-
-    assert profile.name == "ollvm_father_history"
-
-
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
@@ -3285,20 +3278,31 @@ def test_emulated_dispatcher_unflattener_defaults_to_state_dispatcher_map() -> N
     assert rule._family._profile.state_transport == "state_dispatcher_map"
 
 
-def test_emulated_dispatcher_unflattener_accepts_legacy_father_history_profile() -> None:
-    rule = EmulatedDispatcherUnflattener()
-    rule.configure({"profile": "legacy_father_history"})
-
-    assert rule._family._profile.name == "ollvm_father_history"
-    assert rule._family._profile.state_transport == "father_history_emulation"
-
-
 def test_emulated_dispatcher_unflattener_accepts_ollvm_father_history_profile() -> None:
     rule = EmulatedDispatcherUnflattener()
     rule.configure({"profile": "ollvm_father_history"})
 
     assert rule._family._profile.name == "ollvm_father_history"
     assert rule._family._profile.state_transport == "father_history_emulation"
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    [
+        "legacy_father_history",
+        "ollvm_legacy_father_history",
+        "father_history",
+        "ollvm",
+        "ollvm_father_history_compat",
+    ],
+)
+def test_emulated_dispatcher_unflattener_rejects_old_father_history_aliases(
+    profile_name,
+) -> None:
+    rule = EmulatedDispatcherUnflattener()
+
+    with pytest.raises(ValueError, match="Unknown EmulatedDispatcherUnflattener profile"):
+        rule.configure({"profile": profile_name})
 
 
 def test_emulated_dispatcher_unflattener_rejects_unknown_profile() -> None:

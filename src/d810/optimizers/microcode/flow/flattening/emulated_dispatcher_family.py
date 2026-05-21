@@ -187,7 +187,6 @@ __all__ = [
     "GenericDispatcherCollectorProtocol",
     "GenericDispatcherEngineProfile",
     "GenericDispatcherResolverProtocol",
-    "legacy_father_history_dispatcher_profile",
     "ollvm_father_history_dispatcher_profile",
     "ollvm_state_dispatcher_map_profile",
     "tigress_indirect_dispatcher_profile",
@@ -4744,12 +4743,6 @@ def ollvm_father_history_dispatcher_profile() -> GenericDispatcherEngineProfile:
         fact_observation_factory=collect_ollvm_profile_fact_observations,
         branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
     )
-
-
-def legacy_father_history_dispatcher_profile() -> GenericDispatcherEngineProfile:
-    """Compatibility alias for old project files that still request the legacy name."""
-
-    return ollvm_father_history_dispatcher_profile()
 
 
 def ollvm_state_dispatcher_map_profile(
