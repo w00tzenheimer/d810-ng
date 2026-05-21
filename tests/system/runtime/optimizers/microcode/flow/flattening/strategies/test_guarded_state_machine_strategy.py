@@ -182,6 +182,71 @@ def _guarded_cfg(
     return FlowGraph(blocks=blocks, entry_serial=67, func_ea=0x1000)
 
 
+def _inline_choice_guarded_cfg() -> FlowGraph:
+    range_value = _reg(1)
+    state = _reg(20)
+    choice_one = _reg(10)
+    choice_two = _reg(11)
+    copied_state = _reg(31)
+    blocks = {
+        97: _block(97, (98,), ()),
+        98: _block(
+            98,
+            (99, 100),
+            (97,),
+            _mov(_num(CHOICE_ONE_OK), choice_one),
+            _cond(range_value, _num(0xAAAA), 100),
+        ),
+        99: _block(99, (100,), (98,), _mov(_num(DEFAULT), choice_one)),
+        100: _block(
+            100,
+            (101, 102),
+            (98, 99),
+            _mov(_num(DEFAULT), choice_two),
+            _cond(range_value, _num(0xBBBB), 102),
+        ),
+        101: _block(101, (102,), (100,), _mov(_num(CHOICE_TWO_OK), choice_two)),
+        102: _block(
+            102,
+            (104,),
+            (100, 101),
+            _mov(_num(INIT), state),
+        ),
+        103: _block(103, (104,), (106,), _mov(_num(OK), state)),
+        104: _block(104, (105, 108), (102, 103, 107, 108, 109, 110, 112)),
+        105: _block(105, (106, 111), (104,)),
+        106: _block(
+            106,
+            (107, 103),
+            (105,),
+            _eq(state, _num(CHOICE_ONE_OK), 103),
+        ),
+        107: _block(107, (104,), (106,), _mov(_num(FAIL), state)),
+        108: _block(
+            108,
+            (109, 104),
+            (104,),
+            _mov(choice_one, state),
+            _eq(copied_state, _num(CHOICE_TWO_OK), 104),
+        ),
+        109: _block(
+            109,
+            (110, 104),
+            (108,),
+            _mov(copied_state, state),
+            _eq(copied_state, _num(INIT), 104),
+        ),
+        110: _block(110, (104,), (109,), _mov(choice_two, state)),
+        111: _block(111, (112, 113), (105,), _eq(state, _num(OK), 113)),
+        112: _block(112, (104,), (111,), _mov(_num(SUCCESS), state)),
+        113: _block(113, (114, 116), (111,), _eq(state, _num(SUCCESS), 116)),
+        114: _block(114, (), (113,), _unknown()),
+        116: _block(116, (117,), (113,)),
+        117: _block(117, (), (116,)),
+    }
+    return FlowGraph(blocks=blocks, entry_serial=97, func_ea=0x1000)
+
+
 def test_guarded_state_machine_strategy_has_expected_identity() -> None:
     strategy = GuardedStateMachineStrategy()
 
@@ -233,6 +298,49 @@ def test_guarded_state_machine_strategy_plans_redirects() -> None:
         RedirectBranch(from_serial=70, old_target=72, new_target=84),
         RedirectGoto(from_serial=71, old_target=72, new_target=86),
         RedirectBranch(from_serial=68, old_target=70, new_target=84),
+    ]
+
+
+def test_collect_guarded_state_machine_fixes_proves_inline_choice_shell() -> None:
+    cfg = _inline_choice_guarded_cfg()
+
+    assert collect_guarded_state_machine_fixes(cfg) == (
+        GuardedStateMachineFix(
+            outer_guard_block=98,
+            outer_guard_old_target=99,
+            inner_guard_block=100,
+            inner_guard_old_target=102,
+            inner_override_block=101,
+            inner_override_old_target=102,
+            invalid_target=114,
+            success_target=116,
+        ),
+    )
+
+
+def test_guarded_state_machine_strategy_plans_inline_choice_redirects() -> None:
+    cfg = _inline_choice_guarded_cfg()
+    fixes = collect_guarded_state_machine_fixes(cfg)
+    cfg = replace(
+        cfg,
+        metadata={
+            GUARDED_STATE_MACHINE_FIXES_METADATA_KEY: (
+                serialize_guarded_state_machine_fixes(fixes)
+            )
+        },
+    )
+
+    fragment = GuardedStateMachineStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.ownership.blocks == frozenset({98, 100, 101})
+    assert fragment.ownership.edges == frozenset({(98, 99), (100, 102), (101, 102)})
+    assert fragment.modifications == [
+        RedirectBranch(from_serial=100, old_target=102, new_target=114),
+        RedirectGoto(from_serial=101, old_target=102, new_target=116),
+        RedirectBranch(from_serial=98, old_target=99, new_target=114),
     ]
 
 
