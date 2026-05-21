@@ -1,5 +1,7 @@
-"""Test for x*(x+1)%2==0 opaque predicate rule."""
+"""Test adjacent-product modulo opaque predicate rules."""
 from __future__ import annotations
+
+import importlib
 
 import pytest
 
@@ -25,23 +27,49 @@ def test_jnz_rule_mod_identity_exists():
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
-def test_jnz_rule_mod_identity_pattern_structure():
-    """Test the pattern has correct structure for smod/umod."""
-    from d810.optimizers.microcode.flow.jumps.opaque import JnzRuleModIdentity
-    from d810.hexrays.expr.ast import AstNode
-    
-    rule = JnzRuleModIdentity()
-    
-    # LEFT_PATTERN should be a choice between smod and umod
-    assert hasattr(rule.LEFT_PATTERN, 'choice_list') or rule.LEFT_PATTERN.opcode in [ida_hexrays.m_smod, ida_hexrays.m_umod]
+@pytest.mark.parametrize(
+    ("rule_name", "mod_opcode_name", "step_opcode_name"),
+    (
+        ("JnzRuleModIdentity", "m_smod", "m_add"),
+        ("JnzRuleSmodSubIdentity", "m_smod", "m_sub"),
+        ("JnzRuleUmodAddIdentity", "m_umod", "m_add"),
+        ("JnzRuleUmodSubIdentity", "m_umod", "m_sub"),
+    ),
+)
+def test_jnz_rule_mod_identity_variant_pattern_structure(
+    rule_name,
+    mod_opcode_name,
+    step_opcode_name,
+):
+    """Test each adjacent-product variant matches the intended modulo shape."""
+    opaque = importlib.import_module("d810.optimizers.microcode.flow.jumps.opaque")
+
+    rule = getattr(opaque, rule_name)()
+
+    mod_opcode = getattr(ida_hexrays, mod_opcode_name)
+    step_opcode = getattr(ida_hexrays, step_opcode_name)
+    assert rule.LEFT_PATTERN.opcode == mod_opcode
+    assert rule.LEFT_PATTERN.left.opcode == ida_hexrays.m_mul
+    assert rule.LEFT_PATTERN.left.right.opcode == step_opcode
+    assert rule.LEFT_PATTERN.right.value == 2
+    assert rule.RIGHT_PATTERN.value == 0
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
-def test_jnz_rule_mod_identity_check_candidate_jnz():
+@pytest.mark.parametrize(
+    "rule_name",
+    (
+        "JnzRuleModIdentity",
+        "JnzRuleSmodSubIdentity",
+        "JnzRuleUmodAddIdentity",
+        "JnzRuleUmodSubIdentity",
+    ),
+)
+def test_jnz_rule_mod_identity_check_candidate_jnz(rule_name):
     """Test check_candidate selects fallthrough for jnz (left==right => NOT taken)."""
-    from d810.optimizers.microcode.flow.jumps.opaque import JnzRuleModIdentity
+    opaque = importlib.import_module("d810.optimizers.microcode.flow.jumps.opaque")
 
-    rule = JnzRuleModIdentity()
+    rule = getattr(opaque, rule_name)()
     rule.jump_original_block_serial = 100
     rule.direct_block_serial = 200
 
@@ -52,11 +80,20 @@ def test_jnz_rule_mod_identity_check_candidate_jnz():
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
-def test_jnz_rule_mod_identity_check_candidate_jz():
+@pytest.mark.parametrize(
+    "rule_name",
+    (
+        "JnzRuleModIdentity",
+        "JnzRuleSmodSubIdentity",
+        "JnzRuleUmodAddIdentity",
+        "JnzRuleUmodSubIdentity",
+    ),
+)
+def test_jnz_rule_mod_identity_check_candidate_jz(rule_name):
     """Test check_candidate selects jump target for jz (left==right => jump taken)."""
-    from d810.optimizers.microcode.flow.jumps.opaque import JnzRuleModIdentity
+    opaque = importlib.import_module("d810.optimizers.microcode.flow.jumps.opaque")
 
-    rule = JnzRuleModIdentity()
+    rule = getattr(opaque, rule_name)()
     rule.jump_original_block_serial = 100
     rule.direct_block_serial = 200
 
