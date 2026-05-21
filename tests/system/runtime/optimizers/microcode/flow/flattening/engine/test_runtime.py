@@ -15,9 +15,11 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
+    ExecutorPolicy,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
+    make_transactional_executor_factory,
     plan_family_pipeline,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -65,8 +67,13 @@ def _provenance(*names: str) -> PipelineProvenance:
 
 
 def test_engine_package_re_exports_runtime_types() -> None:
+    assert engine.ExecutorPolicy is ExecutorPolicy
     assert engine.PlannedPipeline is PlannedPipeline
     assert engine.ExecutedPipeline is ExecutedPipeline
+    assert (
+        engine.make_transactional_executor_factory
+        is make_transactional_executor_factory
+    )
     assert engine.plan_family_pipeline is plan_family_pipeline
     assert engine.execute_family_pipeline is execute_family_pipeline
     assert (
@@ -97,6 +104,36 @@ def test_plan_family_pipeline_delegates_to_planner() -> None:
 
     assert planned == PlannedPipeline(pipeline=[fragment], provenance=provenance)
     assert calls == [(snapshot, strategies, "planner_inputs")]
+
+
+def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None:
+    seen: list[object] = []
+
+    class _Executor:
+        total_changes = 0
+
+        def __init__(self, mba, *, gate, allow_legacy_block_creation, safeguard_profile):
+            seen.append((mba, gate, allow_legacy_block_creation, safeguard_profile))
+
+        def execute_pipeline(self, pipeline, total_handlers):
+            return []
+
+    from d810.optimizers.microcode.flow.flattening.engine import executor as executor_mod
+
+    monkeypatch.setattr(executor_mod, "TransactionalExecutor", _Executor)
+    gate = object()
+    factory = make_transactional_executor_factory(
+        ExecutorPolicy(
+            gate=gate,
+            allow_legacy_block_creation=False,
+            safeguard_profile="hodur",
+        )
+    )
+
+    executor = factory("mba")
+
+    assert isinstance(executor, _Executor)
+    assert seen == [("mba", gate, False, "hodur")]
 
 
 def test_execute_family_pipeline_skips_executor_for_empty_pipeline() -> None:

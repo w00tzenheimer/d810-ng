@@ -22,9 +22,11 @@ from .provenance import (
 )
 from .runtime import (
     ExecutedPipeline,
+    ExecutorPolicy,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
+    make_transactional_executor_factory,
     plan_family_pipeline,
 )
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
@@ -51,6 +53,7 @@ __all__ = [
     "DecisionRecord",
     "DetectionResult",
     "ExecutedPipeline",
+    "ExecutorPolicy",
     "FAMILY_CLEANUP",
     "FAMILY_DIRECT",
     "FAMILY_FALLBACK",
@@ -73,6 +76,7 @@ __all__ = [
     "VerificationGate",
     "execute_family_pipeline",
     "handler_coverage",
+    "make_transactional_executor_factory",
     "plan_family_pipeline",
     "structure_quality_score",
 ]

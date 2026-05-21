@@ -91,7 +91,9 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
+    ExecutorPolicy,
     execute_family_pipeline,
+    make_transactional_executor_factory,
     plan_family_pipeline,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
@@ -680,9 +682,12 @@ class HodurUnflattener(ComposedUnflatteningRule):
             executed = execute_family_pipeline(
                 snapshot,
                 planned,
-                executor_factory=self._family.make_executor_factory(
-                    gate=self._gate,
-                    allow_legacy_block_creation=self.allow_legacy_block_creation,
+                executor_factory=make_transactional_executor_factory(
+                    ExecutorPolicy(
+                        safeguard_profile="hodur",
+                        gate=self._gate,
+                        allow_legacy_block_creation=self.allow_legacy_block_creation,
+                    )
                 ),
                 flow_context=self.flow_context,
             )
