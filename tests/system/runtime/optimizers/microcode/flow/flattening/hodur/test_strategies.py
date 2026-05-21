@@ -142,7 +142,10 @@ def test_hodur_profile_owns_default_strategy_order():
     assert profile.enables_audit_hook("return_frontier_post_pipeline")
     assert profile.enables_audit_hook("terminal_return_persistence")
     assert profile.enables_post_apply_hook("bst_cleanup")
+    assert profile.enables_post_apply_hook("pipeline_summary")
+    assert profile.enables_post_apply_hook("post_pipeline_audit")
     assert profile.enables_post_apply_hook("post_pipeline_diagnostic_snapshot")
+    assert profile.enables_post_apply_hook("bst_cleanup_reiteration_suppression")
     assert profile.enables_post_apply_hook("tag_all_mbl_keep")
     assert profile.enables_post_apply_hook("tail_shaping")
 

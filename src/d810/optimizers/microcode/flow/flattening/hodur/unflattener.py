@@ -32,6 +32,7 @@ import traceback
 import ida_hexrays
 from pathlib import Path
 
+from d810.core.typing import Callable
 from d810.core import logging
 from d810.cfg.dispatcher_residue_cleanup_planning import (
     plan_dispatcher_residue_cleanup,
@@ -106,10 +107,13 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     FamilyAnalysis,
     FamilyContext,
     PlannedPipeline,
+    FamilyPostPipelineContext,
+    FamilyRuntimePolicy,
     execute_family_pipeline,
     make_transactional_executor_factory,
     plan_family_pipeline,
-    run_family_pass,
+    run_configured_family_pass,
+    run_ordered_family_hooks,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
 from d810.cfg.mbl_keep_selection import (
@@ -644,6 +648,25 @@ class HodurUnflattener(ComposedUnflatteningRule):
         """Select the active Hodur strategy set for this runtime pass."""
         return self._family.strategies_for_maturity(context.maturity)
 
+    def _family_runtime_policy(self) -> FamilyRuntimePolicy:
+        """Build the generic runtime policy for the current Hodur pass."""
+        return FamilyRuntimePolicy(
+            planner=self._planner,
+            executor_policy=ExecutorPolicy(
+                safeguard_profile=self._profile.executor_safeguard_profile,
+                gate=self._gate,
+                allow_legacy_block_creation=self.allow_legacy_block_creation,
+            ),
+            build_planner_inputs=self._build_family_planner_inputs,
+            select_strategies=self._select_family_strategies,
+            plan_pipeline=plan_family_pipeline,
+            execute_pipeline=execute_family_pipeline,
+            executor_factory_builder=make_transactional_executor_factory,
+            on_analysis=self._on_family_analysis,
+            on_planned=self._on_family_planned,
+            on_executed=self._on_family_executed,
+        )
+
     def _on_family_planned(
         self,
         context: FamilyContext,
@@ -796,6 +819,157 @@ class HodurUnflattener(ComposedUnflatteningRule):
     def _post_apply_hook_enabled(self, hook_name: str) -> bool:
         """Return whether this profile declares a named post-apply hook."""
         return self._profile.enables_post_apply_hook(hook_name)
+
+    def _post_pipeline_hook_handlers(
+        self,
+    ) -> dict[str, Callable[[FamilyPostPipelineContext], None]]:
+        """Return Hodur hook handlers keyed by profile hook name."""
+        return {
+            "bst_cleanup": self._hook_bst_cleanup,
+            "pipeline_summary": self._hook_pipeline_summary,
+            "post_pipeline_audit": self._hook_post_pipeline_audit,
+            "reachability_snapshot": self._hook_nested_bst_cleanup_capability,
+            "dispatcher_residue_cache": self._hook_nested_bst_cleanup_capability,
+            "post_pipeline_diagnostic_snapshot": (
+                self._hook_post_pipeline_diagnostic_snapshot
+            ),
+            "sub7ffd_bundle_stabilization": self._hook_sub7ffd_bundle_stabilization,
+            "inline_add_stkvar_canonicalization": (
+                self._hook_inline_add_stkvar_canonicalization
+            ),
+            "terminal_byte_mbl_keep": self._hook_terminal_byte_mbl_keep,
+            "tag_all_mbl_keep": self._hook_tag_all_mbl_keep,
+            "tail_shaping": self._hook_tail_shaping,
+            "may_only_probe": self._hook_may_only_probe,
+            "bst_cleanup_reiteration_suppression": (
+                self._hook_bst_cleanup_reiteration_suppression
+            ),
+            "may_only_probe_rerun": self._hook_may_only_probe_rerun,
+            "reachable_mbl_keep": self._hook_reachable_mbl_keep,
+        }
+
+    def _run_profile_post_pipeline_hooks(
+        self,
+        family_result,
+    ) -> int:
+        """Run profile-declared Hodur post-pipeline hooks via generic runtime."""
+        hook_context = FamilyPostPipelineContext(
+            analysis=family_result.analysis,
+            planned=family_result.planned,
+            executed=family_result.executed,
+            total_changes=family_result.total_changes,
+            state={
+                "bst_cleanup_ran": False,
+                "live_residual_dispatcher_preds_by_strategy": (
+                    self._last_live_residual_dispatcher_preds_by_strategy
+                ),
+                "probe_blocks": (),
+                "probe_targets": (),
+            },
+        )
+        run_ordered_family_hooks(
+            self._profile.post_apply_hooks,
+            self._post_pipeline_hook_handlers(),
+            hook_context,
+        )
+        return hook_context.total_changes
+
+    def _hook_nested_bst_cleanup_capability(
+        self,
+        _context: FamilyPostPipelineContext,
+    ) -> None:
+        """Profile marker for work executed inside the BST cleanup hook."""
+
+    def _hook_bst_cleanup(self, context: FamilyPostPipelineContext) -> None:
+        context.total_changes, bst_cleanup_ran = self._run_post_apply_bst_cleanup_hook(
+            context.snapshot,
+            context.pipeline,
+            context.results,
+            context.total_changes,
+            context.state.get("live_residual_dispatcher_preds_by_strategy", {}),
+        )
+        context.state["bst_cleanup_ran"] = bst_cleanup_ran
+
+    def _hook_pipeline_summary(self, context: FamilyPostPipelineContext) -> None:
+        self._record_family_pipeline_summary(
+            context.results,
+            context.provenance,
+            context.total_changes,
+        )
+
+    def _hook_post_pipeline_audit(self, context: FamilyPostPipelineContext) -> None:
+        self._run_post_pipeline_audit_hooks(context.snapshot)
+
+    def _hook_post_pipeline_diagnostic_snapshot(
+        self,
+        _context: FamilyPostPipelineContext,
+    ) -> None:
+        self._capture_post_pipeline_diagnostic_snapshot()
+
+    def _hook_sub7ffd_bundle_stabilization(
+        self,
+        context: FamilyPostPipelineContext,
+    ) -> None:
+        if not context.pipeline:
+            return
+        context.total_changes = self._run_sub7ffd_bundle_stabilization_hook(
+            context.total_changes
+        )
+
+    def _hook_inline_add_stkvar_canonicalization(
+        self,
+        context: FamilyPostPipelineContext,
+    ) -> None:
+        if context.pipeline:
+            self._run_inline_add_stkvar_canonicalization_hook()
+
+    def _hook_terminal_byte_mbl_keep(
+        self,
+        context: FamilyPostPipelineContext,
+    ) -> None:
+        if context.pipeline:
+            self._run_terminal_byte_mbl_keep_hook(context.snapshot)
+
+    def _hook_tag_all_mbl_keep(self, context: FamilyPostPipelineContext) -> None:
+        if context.pipeline:
+            self._run_tag_all_mbl_keep_hook()
+
+    def _hook_tail_shaping(self, context: FamilyPostPipelineContext) -> None:
+        if context.pipeline:
+            self._run_tail_shaping_hook(context.snapshot)
+
+    def _hook_may_only_probe(self, context: FamilyPostPipelineContext) -> None:
+        if not context.pipeline:
+            return
+        probe_blocks, probe_targets = self._run_may_only_probe_hook(
+            context.pipeline,
+            context.results,
+        )
+        context.state["probe_blocks"] = probe_blocks
+        context.state["probe_targets"] = probe_targets
+
+    def _hook_bst_cleanup_reiteration_suppression(
+        self,
+        context: FamilyPostPipelineContext,
+    ) -> None:
+        if not context.pipeline:
+            return
+        context.total_changes = self._suppress_reiteration_after_bst_cleanup(
+            bst_cleanup_ran=bool(context.state.get("bst_cleanup_ran", False)),
+            nb_changes=context.total_changes,
+        )
+
+    def _hook_may_only_probe_rerun(self, context: FamilyPostPipelineContext) -> None:
+        if not context.pipeline:
+            return
+        self._rerun_may_only_probe_hook(
+            probe_blocks=tuple(context.state.get("probe_blocks", ())),
+            probe_targets=tuple(context.state.get("probe_targets", ())),
+        )
+
+    def _hook_reachable_mbl_keep(self, context: FamilyPostPipelineContext) -> None:
+        if context.pipeline:
+            self._run_reachable_mbl_keep_hook()
 
     def _run_post_apply_bst_cleanup_hook(
         self,
@@ -1365,7 +1539,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
             self._last_redirect_meta = None
 
         self._last_live_residual_dispatcher_preds_by_strategy = {}
-        family_result = run_family_pass(
+        family_result = run_configured_family_pass(
             self._family,
             FamilyContext(
                 mba=self.mba,
@@ -1374,81 +1548,9 @@ class HodurUnflattener(ComposedUnflatteningRule):
                 flow_context=self.flow_context,
                 log_dir=self.log_dir,
             ),
-            planner=self._planner,
-            executor_policy=ExecutorPolicy(
-                safeguard_profile=self._profile.executor_safeguard_profile,
-                gate=self._gate,
-                allow_legacy_block_creation=self.allow_legacy_block_creation,
-            ),
-            build_planner_inputs=self._build_family_planner_inputs,
-            select_strategies=self._select_family_strategies,
-            plan_pipeline=plan_family_pipeline,
-            execute_pipeline=execute_family_pipeline,
-            executor_factory_builder=make_transactional_executor_factory,
-            on_analysis=self._on_family_analysis,
-            on_planned=self._on_family_planned,
-            on_executed=self._on_family_executed,
+            self._family_runtime_policy(),
         )
-        snapshot = family_result.analysis.snapshot
-        pipeline = family_result.pipeline
-        results = family_result.results
-        provenance = family_result.provenance
-        nb_changes = family_result.total_changes
-        live_residual_dispatcher_preds_by_strategy = (
-            self._last_live_residual_dispatcher_preds_by_strategy
-        )
-
-        bst_cleanup_ran = False
-        if self._post_apply_hook_enabled("bst_cleanup"):
-            nb_changes, bst_cleanup_ran = self._run_post_apply_bst_cleanup_hook(
-                snapshot,
-                pipeline,
-                results,
-                nb_changes,
-                live_residual_dispatcher_preds_by_strategy,
-            )
-
-        self._record_family_pipeline_summary(results, provenance, nb_changes)
-        self._run_post_pipeline_audit_hooks(snapshot)
-        if self._post_apply_hook_enabled("post_pipeline_diagnostic_snapshot"):
-            self._capture_post_pipeline_diagnostic_snapshot()
-
-        if not pipeline:
-            return 0
-
-        if self._post_apply_hook_enabled("sub7ffd_bundle_stabilization"):
-            nb_changes = self._run_sub7ffd_bundle_stabilization_hook(nb_changes)
-        if self._post_apply_hook_enabled("inline_add_stkvar_canonicalization"):
-            self._run_inline_add_stkvar_canonicalization_hook()
-        if self._post_apply_hook_enabled("terminal_byte_mbl_keep"):
-            self._run_terminal_byte_mbl_keep_hook(snapshot)
-        if self._post_apply_hook_enabled("tag_all_mbl_keep"):
-            self._run_tag_all_mbl_keep_hook()
-        if self._post_apply_hook_enabled("tail_shaping"):
-            self._run_tail_shaping_hook(snapshot)
-
-        probe_blocks: tuple[int, ...] = ()
-        probe_targets: tuple[int, ...] = ()
-        if self._post_apply_hook_enabled("may_only_probe"):
-            probe_blocks, probe_targets = self._run_may_only_probe_hook(
-                pipeline, results
-            )
-
-        if self._post_apply_hook_enabled("bst_cleanup"):
-            nb_changes = self._suppress_reiteration_after_bst_cleanup(
-                bst_cleanup_ran=bst_cleanup_ran,
-                nb_changes=nb_changes,
-            )
-
-        if self._post_apply_hook_enabled("may_only_probe"):
-            self._rerun_may_only_probe_hook(
-                probe_blocks=probe_blocks,
-                probe_targets=probe_targets,
-            )
-        if self._post_apply_hook_enabled("reachable_mbl_keep"):
-            self._run_reachable_mbl_keep_hook()
-
-        return nb_changes
+        return self._run_profile_post_pipeline_hooks(family_result)
 
     def _tag_terminal_byte_mbl_keep(self, snapshot: AnalysisSnapshot) -> int:
         fact_view = getattr(snapshot, "diagnostic_fact_view", None)

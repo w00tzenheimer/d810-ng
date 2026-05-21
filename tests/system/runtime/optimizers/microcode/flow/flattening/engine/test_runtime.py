@@ -19,13 +19,17 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     FamilyContext,
     FamilyPassResult,
     ExecutorPolicy,
+    FamilyPostPipelineContext,
     FamilyRunState,
+    FamilyRuntimePolicy,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
     make_transactional_executor_factory,
     plan_family_pipeline,
+    run_configured_family_pass,
     run_family_pass,
+    run_ordered_family_hooks,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
@@ -76,7 +80,9 @@ def test_engine_package_re_exports_runtime_types() -> None:
     assert engine.FamilyAnalysis is FamilyAnalysis
     assert engine.FamilyContext is FamilyContext
     assert engine.FamilyPassResult is FamilyPassResult
+    assert engine.FamilyPostPipelineContext is FamilyPostPipelineContext
     assert engine.FamilyRunState is FamilyRunState
+    assert engine.FamilyRuntimePolicy is FamilyRuntimePolicy
     assert engine.PlannedPipeline is PlannedPipeline
     assert engine.ExecutedPipeline is ExecutedPipeline
     assert (
@@ -84,7 +90,9 @@ def test_engine_package_re_exports_runtime_types() -> None:
         is make_transactional_executor_factory
     )
     assert engine.plan_family_pipeline is plan_family_pipeline
+    assert engine.run_configured_family_pass is run_configured_family_pass
     assert engine.run_family_pass is run_family_pass
+    assert engine.run_ordered_family_hooks is run_ordered_family_hooks
     assert engine.execute_family_pipeline is execute_family_pipeline
     assert (
         engine.apply_execution_results_to_provenance
@@ -238,6 +246,96 @@ def test_run_family_pass_orchestrates_detection_planning_and_execution() -> None
     ]
     assert any(call[0] == "executor_policy" for call in calls)
     assert any(call[0] == "on_executed" for call in calls)
+
+
+def test_run_ordered_family_hooks_uses_profile_order_and_mutable_context() -> None:
+    analysis = FamilyAnalysis(
+        detection=SimpleNamespace(detected=True),
+        snapshot=SimpleNamespace(),
+    )
+    planned = PlannedPipeline(pipeline=[], provenance=_provenance())
+    executed = ExecutedPipeline(
+        pipeline=[],
+        results=[],
+        provenance=planned.provenance,
+        total_changes=0,
+    )
+    context = FamilyPostPipelineContext(
+        analysis=analysis,
+        planned=planned,
+        executed=executed,
+        total_changes=1,
+    )
+    calls: list[str] = []
+
+    def first(ctx: FamilyPostPipelineContext) -> None:
+        calls.append("first")
+        ctx.total_changes += 2
+        ctx.state["seen"] = "first"
+
+    def second(ctx: FamilyPostPipelineContext) -> None:
+        calls.append(f"second:{ctx.state['seen']}")
+        ctx.total_changes *= 3
+
+    result = run_ordered_family_hooks(
+        ("first", "second"),
+        {"first": first, "second": second},
+        context,
+    )
+
+    assert result is context
+    assert calls == ["first", "second:first"]
+    assert context.total_changes == 9
+
+
+def test_run_configured_family_pass_uses_bound_runtime_policy() -> None:
+    fragment = _fragment("configured")
+    provenance = _provenance("configured")
+    calls: list[object] = []
+    detection = SimpleNamespace(detected=True)
+    snapshot = SimpleNamespace(mba="mba", handler_count=1)
+    context = FamilyContext(mba="mba", maturity=8, pass_number=1)
+
+    class _Family:
+        def begin_pass(self, pass_number):
+            calls.append(("begin_pass", pass_number))
+
+        def detect(self, mba):
+            calls.append(("detect", mba))
+            return detection
+
+        def build_snapshot(self, mba, detection_arg):
+            calls.append(("build_snapshot", mba, detection_arg))
+            return snapshot
+
+    policy = FamilyRuntimePolicy(
+        planner="planner",
+        executor_policy=ExecutorPolicy(safeguard_profile="configured"),
+        build_planner_inputs=lambda ctx, analysis: (
+            calls.append(("inputs", ctx, analysis)) or None
+        ),
+        select_strategies=lambda ctx, analysis: (
+            calls.append(("strategies", ctx, analysis)) or ["strategy"]
+        ),
+        plan_pipeline=lambda snap, strategies, *, planner, inputs=None: (
+            calls.append(("plan", snap, strategies, planner, inputs))
+            or PlannedPipeline([fragment], provenance)
+        ),
+        execute_pipeline=lambda snap, planned, *, executor_factory, flow_context=None: (
+            calls.append(("execute", snap, planned, executor_factory, flow_context))
+            or ExecutedPipeline(planned.pipeline, [], provenance, 2)
+        ),
+        executor_factory_builder=lambda executor_policy: (
+            calls.append(("factory", executor_policy)) or "factory"
+        ),
+    )
+
+    result = run_configured_family_pass(_Family(), context, policy)
+
+    assert result.pipeline == [fragment]
+    assert result.total_changes == 2
+    assert ("factory", policy.executor_policy) in calls
+    assert any(call[0] == "execute" for call in calls)
 
 
 def test_execute_family_pipeline_skips_executor_for_empty_pipeline() -> None:
