@@ -2,10 +2,10 @@
 """Phase 15: Implement full strategy logic (not just stubs).
 
 This codemod replaces the stub strategy implementations with full implementations
-that wrap existing logic from generic.py and other sources.
+that wrap existing legacy flow logic and other sources.
 
 Creates:
-1. strategies/ollvm_strategy.py - Full implementation wrapping GenericDispatcherInfo
+1. strategies/ollvm_strategy.py - Full implementation wrapping legacy OLLVM flow logic
 2. strategies/cleanup_strategy.py - Full implementation for dead code removal
 3. strategies/__init__.py - Updated exports
 

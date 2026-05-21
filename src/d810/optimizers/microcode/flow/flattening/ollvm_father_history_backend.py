@@ -1,9 +1,13 @@
 """
-Generic unflattening base classes for control flow deobfuscation.
+OLLVM father-history compatibility backend.
 
 CFG MODIFICATION APPROACH
 =========================
-This module handles ABC (Arithmetic/Bitwise/Constant) patterns that use magic
+This module contains the retired "generic dispatcher" implementation that is
+still used only by the explicit legacy OLLVM father-history profile. It is not
+the shared lifecycle substrate for modern unflattening families.
+
+The backend handles ABC (Arithmetic/Bitwise/Constant) patterns that use magic
 numbers in the range 1010000-1011999 (0xF6950-0xF719F).
 
 All CFG modifications now use deferred patterns:
@@ -172,7 +176,7 @@ class UnflatteningEvent:
 unflat_logger = getLogger("D810.unflat")
 
 
-class GenericDispatcherBlockInfo(object):
+class FatherHistoryDispatcherBlockInfo(object):
 
     def __init__(self, blk, father=None):
         self.blk = blk
@@ -193,7 +197,7 @@ class GenericDispatcherBlockInfo(object):
     def serial(self) -> int:
         return self._serial
 
-    def register_father(self, father: GenericDispatcherBlockInfo):
+    def register_father(self, father: FatherHistoryDispatcherBlockInfo):
         self.father = father
         self.assume_def_list = [x for x in father.assume_def_list]
 
@@ -240,7 +244,7 @@ class GenericDispatcherBlockInfo(object):
                 return False
         return True
 
-    def recursive_get_father(self) -> list[GenericDispatcherBlockInfo]:
+    def recursive_get_father(self) -> list[FatherHistoryDispatcherBlockInfo]:
         if self.father is None:
             return [self]
         else:
@@ -267,7 +271,7 @@ class GenericDispatcherBlockInfo(object):
         )
 
 
-class GenericDispatcherInfo(object):
+class FatherHistoryDispatcherInfo(object):
     def __init__(self, mba: ida_hexrays.mba_t):
         self.mba = mba
         self.mop_compared: ida_hexrays.mop_t | None = None
@@ -297,7 +301,7 @@ class GenericDispatcherInfo(object):
         return False
 
     def get_shared_internal_blocks(
-        self, other_dispatcher: GenericDispatcherInfo
+        self, other_dispatcher: FatherHistoryDispatcherInfo
     ) -> list[ida_hexrays.mblock_t]:
         my_dispatcher_block_serial = [
             blk_info.serial for blk_info in self.dispatcher_internal_blocks
@@ -312,7 +316,7 @@ class GenericDispatcherInfo(object):
             if blk_serial in other_dispatcher_block_serial
         ]
 
-    def is_sub_dispatcher(self, other_dispatcher: GenericDispatcherInfo) -> bool:
+    def is_sub_dispatcher(self, other_dispatcher: FatherHistoryDispatcherInfo) -> bool:
         shared_blocks = self.get_shared_internal_blocks(other_dispatcher)
         if (len(shared_blocks) > 0) and (
             self.entry_block.blk.npred() < other_dispatcher.entry_block.blk.npred()
@@ -394,8 +398,8 @@ class GenericDispatcherInfo(object):
                 exit_blk.show_history()
 
 
-class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
-    DISPATCHER_CLASS = GenericDispatcherInfo
+class FatherHistoryDispatcherCollector(ida_hexrays.minsn_visitor_t):
+    DISPATCHER_CLASS = FatherHistoryDispatcherInfo
     DEFAULT_DISPATCHER_MIN_INTERNAL_BLOCK = 2
     DEFAULT_DISPATCHER_MIN_EXIT_BLOCK = 2
     DEFAULT_DISPATCHER_MIN_COMPARISON_VALUE = 2
@@ -425,7 +429,7 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
                 "min_dispatcher_comparison_value"
             ]
 
-    def specific_checks(self, disp_info: GenericDispatcherInfo) -> bool:
+    def specific_checks(self, disp_info: FatherHistoryDispatcherInfo) -> bool:
         unflat_logger.debug(
             "DispatcherInfo %s : %s internals, %s exits, %s comparison",
             self.blk.serial,
@@ -479,12 +483,12 @@ class GenericDispatcherCollector(ida_hexrays.minsn_visitor_t):
         self.dispatcher_list = []
         self.explored_blk_serials = []
 
-    def get_dispatcher_list(self) -> list[GenericDispatcherInfo]:
+    def get_dispatcher_list(self) -> list[FatherHistoryDispatcherInfo]:
         self.remove_sub_dispatchers()
         return self.dispatcher_list
 
 
-class GenericUnflatteningRule(FlowOptimizationRule):
+class FatherHistoryUnflatteningRule(FlowOptimizationRule):
     """Base class for O-LLVM-style dispatcher unflattening rules.
 
     Gate operation mode: ``GATE_ONLY``
@@ -732,7 +736,7 @@ class GenericUnflatteningRule(FlowOptimizationRule):
                     self.maturities,
                 )
             return False
-        # Rules with their own dispatcher collector (i.e. GenericDispatcherUnflatteningRule
+        # Rules with their own dispatcher collector (i.e. FatherHistoryDispatcherUnflatteningRule
         # subclasses) perform their own structural detection and must not be pre-screened
         # by the lightweight flow-context heuristic, which can produce false negatives for
         # patterns like OLLVM whose CFG signatures differ from what the gate expects.
@@ -757,16 +761,16 @@ class GenericUnflatteningRule(FlowOptimizationRule):
         raise NotImplementedError
 
 
-class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
+class FatherHistoryDispatcherUnflatteningRule(FatherHistoryUnflatteningRule):
     # Signals that this rule uses its own dispatcher collector for structural
     # detection.  The flow-context pre-screening gate in
-    # GenericUnflatteningRule.check_if_rule_should_be_used() checks this flag
+    # FatherHistoryUnflatteningRule.check_if_rule_should_be_used() checks this flag
     # and skips the lightweight heuristic for these rules so that patterns
     # whose CFG signatures differ from the gate's expectations (e.g. OLLVM
     # functions classified as UNKNOWN) are not incorrectly blocked.
     HAS_OWN_DISPATCHER_COLLECTOR: bool = True
 
-    CONFIG_SCHEMA = GenericUnflatteningRule.CONFIG_SCHEMA + (
+    CONFIG_SCHEMA = FatherHistoryUnflatteningRule.CONFIG_SCHEMA + (
         ConfigParam("max_passes", int, 5, "Maximum optimization passes"),
         ConfigParam(
             "max_duplication_passes",
@@ -911,7 +915,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     @property
     @abc.abstractmethod
-    def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
+    def DISPATCHER_COLLECTOR_CLASS(self) -> type[FatherHistoryDispatcherCollector]:
         """Return the class of the dispatcher collector."""
         raise NotImplementedError
 
@@ -1345,7 +1349,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         return nb_change
 
     def ensure_dispatcher_fathers_are_direct(
-        self, dispatcher_info: GenericDispatcherInfo
+        self, dispatcher_info: FatherHistoryDispatcherInfo
     ) -> int:
         nb_change = 0
         modifier = DeferredGraphModifier(self.mba)
@@ -1368,8 +1372,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def get_dispatcher_father_histories(
         self,
         dispatcher_father: ida_hexrays.mblock_t,
-        dispatcher_entry_block: GenericDispatcherBlockInfo,
-        dispatcher_info: GenericDispatcherInfo,
+        dispatcher_entry_block: FatherHistoryDispatcherBlockInfo,
+        dispatcher_info: FatherHistoryDispatcherInfo,
     ) -> list[MopHistory]:
         return collect_dispatcher_father_histories(
             dispatcher_father=dispatcher_father,
@@ -1397,8 +1401,8 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def ensure_dispatcher_father_is_resolvable(
         self,
         dispatcher_father: ida_hexrays.mblock_t,
-        dispatcher_entry_block: GenericDispatcherBlockInfo,
-        dispatcher_info: GenericDispatcherInfo,
+        dispatcher_entry_block: FatherHistoryDispatcherBlockInfo,
+        dispatcher_info: FatherHistoryDispatcherInfo,
     ) -> int:
         if self._is_past_deadline():
             unflat_logger.warning(
@@ -1783,7 +1787,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     #     mba.mark_chains_dirty()
     #     safe_verify(
     #         mba,
-    #         "optimizing GenericDispatcherUnflatteningRule.father_patcher_abc_create_blocks",
+    #         "optimizing FatherHistoryDispatcherUnflatteningRule.father_patcher_abc_create_blocks",
     #         logger_func=unflat_logger.error,
     #     )
     #     return new_block0, new_block1
@@ -2241,7 +2245,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     def resolve_dispatcher_father(
         self,
         dispatcher_father: ida_hexrays.mblock_t,
-        dispatcher_info: GenericDispatcherInfo,
+        dispatcher_info: FatherHistoryDispatcherInfo,
         deferred_modifier: DeferredGraphModifier,
     ) -> int:
         """Resolve a dispatcher father block by redirecting it to the target.
@@ -2652,7 +2656,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self,
         dispatcher_father,
         dispatcher_entry_block,
-        dispatcher_info: GenericDispatcherInfo,
+        dispatcher_info: FatherHistoryDispatcherInfo,
     ):
         """Collect ABC dispatcher-father evidence without mutating live CFG.
 
@@ -3229,7 +3233,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             self.mba.optimize_local(0)
         safe_verify(
             self.mba,
-            "optimizing GenericDispatcherUnflatteningRule.optimize",
+            "optimizing FatherHistoryDispatcherUnflatteningRule.optimize",
             logger_func=unflat_logger.error,
         )
         # Safety: detect cross-case topology that crashes IDA's structurer

@@ -5,7 +5,7 @@ Deferred Graph Modifier Control Plane Events
 Lifecycle events emitted by :class:`DeferredGraphModifier` to enable
 safe, observable CFG modification.
 
-Consumers (e.g. :class:`GenericDispatcherUnflatteningRule`) subscribe to
+Consumers (e.g. the OLLVM father-history backend) subscribe to
 these events to implement safety policies such as verify-failure quarantine
 without coupling tightly to the modifier internals.
 
@@ -38,7 +38,7 @@ Producer (inside DeferredGraphModifier)::
         "description": "redirect",
     })
 
-Consumer (inside GenericDispatcherUnflatteningRule)::
+Consumer (inside an optimizer backend)::
 
     from d810.hexrays.mutation.deferred_events import DeferredEvent
 

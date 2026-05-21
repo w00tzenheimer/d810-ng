@@ -2,7 +2,7 @@
  * ABC XOR Dispatch Pattern Test
  *
  * This sample tests the father_patcher_abc_from_or_xor_* methods in
- * GenericDispatcherUnflatteningRule. It uses XOR-based state transitions
+ * OLLVM father-history backend. It uses XOR-based state transitions
  * instead of simple assignment, which exercises the ABC (Arithmetic/Bitwise/Constant)
  * patching logic.
  *

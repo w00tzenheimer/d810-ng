@@ -23,7 +23,9 @@ from d810.core import getLogger
 from d810.hexrays.utils.hexrays_helpers import dup_mop
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.generic import GenericDispatcherInfo
+    from d810.optimizers.microcode.flow.flattening.ollvm_father_history_backend import (
+        FatherHistoryDispatcherInfo,
+    )
     from d810.evaluator.hexrays_microcode.tracker import MopHistory
 
 logger = getLogger("D810.abc_splitter")
@@ -70,7 +72,7 @@ class ConditionalStateResolver:
     """
 
     mba: ida_hexrays.mba_t
-    dispatcher_info: GenericDispatcherInfo
+    dispatcher_info: FatherHistoryDispatcherInfo
 
     # Magic number range for ABC patterns
     ABC_CONST_MIN: int = 1010000

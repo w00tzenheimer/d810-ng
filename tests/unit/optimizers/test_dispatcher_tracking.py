@@ -4,7 +4,7 @@ The dispatcher father tracking mechanism prevents duplicate processing of the sa
 (source_block, target_block) pairs during control flow graph unflattening.
 
 This module tests the pure set-operation logic without importing IDA modules.
-The actual GenericDispatcherUnflatteningRule uses a set[tuple[int, int]] attribute
+The actual FatherHistoryDispatcherUnflatteningRule uses a set[tuple[int, int]] attribute
 named _processed_dispatcher_fathers to track (dispatcher_father.serial, target_blk.serial) pairs.
 
 These tests validate the mathematical properties of that tracking mechanism:

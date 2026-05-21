@@ -5,11 +5,11 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.utils.hexrays_helpers import append_mop_if_not_in_list, extract_num_mop
-from d810.optimizers.microcode.flow.flattening.generic import (
-    GenericDispatcherBlockInfo,
-    GenericDispatcherCollector,
-    GenericDispatcherInfo,
-    GenericDispatcherUnflatteningRule,
+from d810.optimizers.microcode.flow.flattening.ollvm_father_history_backend import (
+    FatherHistoryDispatcherBlockInfo,
+    FatherHistoryDispatcherCollector,
+    FatherHistoryDispatcherInfo,
+    FatherHistoryDispatcherUnflatteningRule,
 )
 
 unflat_logger = getLogger("D810.unflat.ollvm_dispatcher")
@@ -29,11 +29,11 @@ FLATTENING_JUMP_OPCODES = [
 MIN_NUM_COMPARISONS = 4
 
 
-class OllvmDispatcherBlockInfo(GenericDispatcherBlockInfo):
+class OllvmDispatcherBlockInfo(FatherHistoryDispatcherBlockInfo):
     pass
 
 
-class OllvmDispatcherInfo(GenericDispatcherInfo):
+class OllvmDispatcherInfo(FatherHistoryDispatcherInfo):
     def get_last_blk_in_first_blks(self) -> int:
         """Return the last initialization block before the outer dispatcher."""
         lif = -1
@@ -252,7 +252,7 @@ class OllvmDispatcherInfo(GenericDispatcherInfo):
         return dispatcher_blocks_with_external_father
 
 
-class OllvmDispatcherCollector(GenericDispatcherCollector):
+class OllvmDispatcherCollector(FatherHistoryDispatcherCollector):
     DISPATCHER_CLASS = OllvmDispatcherInfo
     DEFAULT_DISPATCHER_MIN_INTERNAL_BLOCK = 2
     DEFAULT_DISPATCHER_MIN_EXIT_BLOCK = 3
@@ -275,7 +275,7 @@ class OllvmDispatcherCollector(GenericDispatcherCollector):
             self.max_entropy = kwargs["max_entropy"]
 
 
-class OllvmFatherHistoryResolver(GenericDispatcherUnflatteningRule):
+class OllvmFatherHistoryResolver(FatherHistoryDispatcherUnflatteningRule):
     """Father-history resolver backend used by the OLLVM engine profile."""
 
     DESCRIPTION = "Resolve OLLVM dispatcher fathers for the engine profile"
@@ -288,7 +288,7 @@ class OllvmFatherHistoryResolver(GenericDispatcherUnflatteningRule):
     DEFAULT_MAX_PASSES = 5
 
     @property
-    def DISPATCHER_COLLECTOR_CLASS(self) -> type[GenericDispatcherCollector]:
+    def DISPATCHER_COLLECTOR_CLASS(self) -> type[FatherHistoryDispatcherCollector]:
         return OllvmDispatcherCollector
 
 

@@ -17,9 +17,9 @@ def should_apply_bulk_cfg_modifications(
 ) -> bool:
     """Bulk CFG reconstruction safeguard.
 
-    Gates bulk dispatcher-elimination rewrites (Hodur, GenericDispatcher,
-    UnflattenerCF) by requiring a minimum number of resolved transitions
-    before applying modifications. Prevents destructive partial rewrites.
+    Gates bulk dispatcher-elimination rewrites (Hodur, OLLVM father-history,
+    UnflattenerCF) by requiring a minimum number of resolved transitions before
+    applying modifications. Prevents destructive partial rewrites.
 
     NOT for targeted per-block rules (FixPredecessor, FakeJump) — those
     use structural preconditions, not edge-count thresholds.

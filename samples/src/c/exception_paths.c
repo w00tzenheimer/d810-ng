@@ -2,7 +2,7 @@
  * Exception Path Test Cases
  *
  * This sample tests edge cases and exception handling paths in
- * GenericDispatcherUnflatteningRule:
+ * OLLVM father-history backend:
  *
  *   - NotResolvableFatherException: State cannot be resolved to a constant
  *   - NotDuplicableFatherException: Path cannot be safely duplicated
