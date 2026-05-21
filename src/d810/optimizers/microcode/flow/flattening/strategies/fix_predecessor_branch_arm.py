@@ -187,7 +187,7 @@ def _build_ownership(
 
 
 class FixPredecessorBranchArmStrategy:
-    """Engine strategy wrapper for FixPredecessor arm=1 clone-as-goto edits."""
+    """Engine strategy wrapper for known-arm FixPredecessor clone-as-goto edits."""
 
     name = "fix_predecessor_branch_arm"
     family = FAMILY_CLEANUP

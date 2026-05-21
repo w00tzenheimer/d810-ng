@@ -44,7 +44,6 @@ class FixPredecessorRejectReason(str, Enum):
     SELF_LOOP_TARGET = "self_loop_target"
     TARGET_NOT_SINGLE_PRED = "target_not_single_pred"
     CONDITIONAL_HAS_SIDE_EFFECTS = "conditional_has_side_effects"
-    PRED_FALLTHROUGH_ARM_NOT_SUPPORTED = "pred_fallthrough_arm_not_supported"
 
 
 @dataclass(frozen=True)
