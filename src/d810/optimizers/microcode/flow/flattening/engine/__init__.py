@@ -23,12 +23,16 @@ from .provenance import (
 from .runtime import (
     ExecutedPipeline,
     ExecutorPolicy,
+    FamilyAnalysis,
+    FamilyContext,
+    FamilyPassResult,
     FamilyRunState,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
     make_transactional_executor_factory,
     plan_family_pipeline,
+    run_family_pass,
 )
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
 from .strategy import (
@@ -55,6 +59,9 @@ __all__ = [
     "DetectionResult",
     "ExecutedPipeline",
     "ExecutorPolicy",
+    "FamilyAnalysis",
+    "FamilyContext",
+    "FamilyPassResult",
     "FamilyRunState",
     "FAMILY_CLEANUP",
     "FAMILY_DIRECT",
@@ -80,6 +87,7 @@ __all__ = [
     "handler_coverage",
     "make_transactional_executor_factory",
     "plan_family_pipeline",
+    "run_family_pass",
     "structure_quality_score",
 ]
 

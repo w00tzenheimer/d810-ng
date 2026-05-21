@@ -20,11 +20,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExecutorPolicy",
+    "FamilyAnalysis",
+    "FamilyContext",
+    "FamilyPassResult",
     "FamilyRunState",
     "PlannedPipeline",
     "ExecutedPipeline",
     "make_transactional_executor_factory",
     "plan_family_pipeline",
+    "run_family_pass",
     "apply_execution_results_to_provenance",
     "execute_family_pipeline",
 ]
@@ -85,6 +89,29 @@ class FamilyRunState:
 
 
 @dataclass(frozen=True)
+class FamilyContext:
+    """Runtime context for one family pass."""
+
+    mba: object
+    maturity: int
+    pass_number: int
+    flow_context: Any | None = None
+    log_dir: object | None = None
+
+
+@dataclass(frozen=True)
+class FamilyAnalysis:
+    """Detection plus immutable snapshot for one family pass."""
+
+    detection: object
+    snapshot: AnalysisSnapshot
+
+    @property
+    def detected(self) -> bool:
+        return bool(getattr(self.detection, "detected", False))
+
+
+@dataclass(frozen=True)
 class PlannedPipeline:
     """Planner output for one family pass."""
 
@@ -101,6 +128,31 @@ class ExecutedPipeline:
     provenance: PipelineProvenance
     total_changes: int
     executor: object | None = None
+
+
+@dataclass(frozen=True)
+class FamilyPassResult:
+    """Complete generic runtime result for one family pass."""
+
+    analysis: FamilyAnalysis
+    planned: PlannedPipeline
+    executed: ExecutedPipeline
+
+    @property
+    def pipeline(self) -> list[PlanFragment]:
+        return self.executed.pipeline
+
+    @property
+    def results(self) -> list[StageResult]:
+        return self.executed.results
+
+    @property
+    def provenance(self) -> PipelineProvenance:
+        return self.executed.provenance
+
+    @property
+    def total_changes(self) -> int:
+        return self.executed.total_changes
 
 
 def make_transactional_executor_factory(
@@ -240,4 +292,73 @@ def execute_family_pipeline(
         provenance=provenance,
         total_changes=executor.total_changes,
         executor=executor,
+    )
+
+
+def run_family_pass(
+    family: object,
+    context: FamilyContext,
+    *,
+    planner: UnflatteningPlanner,
+    executor_policy: ExecutorPolicy,
+    build_planner_inputs: Callable[[FamilyContext, FamilyAnalysis], PlannerInputs | None],
+    select_strategies: Callable[[FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]],
+    plan_pipeline: Callable[..., PlannedPipeline] = plan_family_pipeline,
+    execute_pipeline: Callable[..., ExecutedPipeline] = execute_family_pipeline,
+    executor_factory_builder: Callable[
+        [ExecutorPolicy], Callable[[object], _PipelineExecutor]
+    ] = make_transactional_executor_factory,
+    on_analysis: Callable[[FamilyContext, FamilyAnalysis], None] | None = None,
+    on_planned: Callable[[FamilyContext, FamilyAnalysis, PlannedPipeline], None]
+    | None = None,
+    on_executed: Callable[
+        [FamilyContext, FamilyAnalysis, PlannedPipeline, ExecutedPipeline], None
+    ]
+    | None = None,
+) -> FamilyPassResult:
+    """Run the generic detect -> snapshot -> plan -> execute family pipeline."""
+    begin_pass = getattr(family, "begin_pass", None)
+    if callable(begin_pass):
+        begin_pass(context.pass_number)
+
+    detection = family.detect(context.mba)
+    snapshot = family.build_snapshot(context.mba, detection)
+    analysis = FamilyAnalysis(detection=detection, snapshot=snapshot)
+    if on_analysis is not None:
+        on_analysis(context, analysis)
+
+    planner_inputs = build_planner_inputs(context, analysis)
+    strategies = select_strategies(context, analysis)
+    planned = plan_pipeline(
+        snapshot,
+        strategies,
+        planner=planner,
+        inputs=planner_inputs,
+    )
+    if on_planned is not None:
+        on_planned(context, analysis, planned)
+
+    if planned.pipeline:
+        executed = execute_pipeline(
+            snapshot,
+            planned,
+            executor_factory=executor_factory_builder(executor_policy),
+            flow_context=context.flow_context,
+        )
+    else:
+        executed = ExecutedPipeline(
+            pipeline=[],
+            results=[],
+            provenance=planned.provenance,
+            total_changes=0,
+            executor=None,
+        )
+
+    if on_executed is not None:
+        on_executed(context, analysis, planned, executed)
+
+    return FamilyPassResult(
+        analysis=analysis,
+        planned=planned,
+        executed=executed,
     )
