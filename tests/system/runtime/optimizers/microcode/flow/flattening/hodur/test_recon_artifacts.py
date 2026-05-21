@@ -14,6 +14,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
 from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
     prepare_return_frontier_audit,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+    collect_live_residual_dispatcher_preds,
+    collect_post_apply_bst_cleanup_blockers,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     OwnershipScope,
@@ -1182,7 +1186,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_unflattener,
         "collect_post_apply_bst_cleanup_blockers",
         lambda *args, **kwargs: {},
     )
@@ -1535,7 +1539,7 @@ def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment, skipped_fragment],
         [
             StageResult(
@@ -1552,6 +1556,34 @@ def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
     )
 
     assert blockers == {"linearized_flow_graph": (95, 131)}
+
+
+def test_collect_live_residual_dispatcher_preds_uses_strategy_collector():
+    calls: list[object] = []
+    strategy = SimpleNamespace(
+        name="linearized_flow_graph",
+        _collect_dispatcher_predecessors=lambda flow_graph, dispatcher, **kwargs: (
+            calls.append((flow_graph, dispatcher, kwargs)) or (95, 131)
+        ),
+    )
+    cfg_translator = SimpleNamespace(lift=lambda mba: "live_flow_graph")
+    snapshot = SimpleNamespace(
+        bst_result=SimpleNamespace(bst_node_blocks={5, 6}),
+        bst_dispatcher_serial=42,
+    )
+
+    residual_preds = collect_live_residual_dispatcher_preds(
+        "mba",
+        snapshot,
+        strategies=[strategy],
+        strategy_name="linearized_flow_graph",
+        cfg_translator=cfg_translator,
+    )
+
+    assert residual_preds == (95, 131)
+    assert calls == [
+        ("live_flow_graph", 42, {"bst_node_blocks": {5, 6}}),
+    ]
 
 
 def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_sets():
@@ -1573,7 +1605,7 @@ def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_set
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(
@@ -1607,7 +1639,7 @@ def test_collect_post_apply_bst_cleanup_blockers_preserves_reason_without_preds(
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(
@@ -1640,7 +1672,7 @@ def test_collect_post_apply_bst_cleanup_blockers_prefers_live_residual_pred_sets
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(

@@ -85,6 +85,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
     prepare_return_frontier_audit,
     record_return_frontier_stage,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+    collect_live_residual_dispatcher_preds,
+    collect_post_apply_bst_cleanup_blockers,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
@@ -722,10 +726,13 @@ class HodurUnflattener(ComposedUnflatteningRule):
                 and not isinstance(group_name, str)
             ):
                 continue
-            residual_preds = self._family.collect_live_residual_dispatcher_preds(
+            residual_preds = collect_live_residual_dispatcher_preds(
                 self.mba,
                 snapshot,
+                strategies=self._family.strategies,
                 strategy_name=strategy_name,
+                cfg_translator=self._family.cfg_translator,
+                logger=unflat_logger,
             )
             live_residual_dispatcher_preds_by_strategy[strategy_name] = residual_preds
             if isinstance(group_name, str):
@@ -776,7 +783,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
         # The cleanup invalidates subsequent state-machine analysis, so once it
         # runs we suppress further Hodur iteration below.
         bst_cleanup_ran = False
-        bst_cleanup_blockers = self._family.collect_post_apply_bst_cleanup_blockers(
+        bst_cleanup_blockers = collect_post_apply_bst_cleanup_blockers(
             pipeline,
             results,
             live_residual_dispatcher_preds_by_strategy=(
