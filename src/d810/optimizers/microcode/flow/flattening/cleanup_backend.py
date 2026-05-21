@@ -43,6 +43,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     FixPredecessorBranchArmFix,
     collect_live_fix_predecessor_branch_arm_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
+    GuardedStateMachineFix,
+    collect_guarded_state_machine_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationConvertFix,
     SingleIterationPredFix,
@@ -284,6 +288,7 @@ class SimpleFlatteningCleanupDetection:
     ] = ()
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
+    guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -300,6 +305,7 @@ class SimpleFlatteningCleanupDetection:
             or self.bad_while_loop_trampoline_isolation_candidates
             or self.fix_predecessor_branch_arm_fixes
             or self.tail_goto_merges
+            or self.guarded_state_machine_fixes
         )
 
     @property
@@ -344,6 +350,7 @@ class SimpleFlatteningCleanupDetection:
             f" fix_predecessor_branch_arm="
             f"{len(self.fix_predecessor_branch_arm_fixes)}"
             f" tail_goto_merge={len(self.tail_goto_merges)}"
+            f" guarded_state_machine={len(self.guarded_state_machine_fixes)}"
         )
 
 
@@ -368,10 +375,17 @@ class LiveSimpleFlatteningCleanupBackend:
         fake_jump_max_nb_block: int = 100,
         fake_jump_max_path: int = 100,
         allowed_maturities: tuple[int, ...] = (ida_hexrays.MMAT_GLBOPT1,),
+        guarded_state_machine_maturities: tuple[int, ...] = (
+            ida_hexrays.MMAT_GLBOPT1,
+            ida_hexrays.MMAT_GLBOPT2,
+        ),
     ) -> None:
         self.fake_jump_max_nb_block = int(fake_jump_max_nb_block)
         self.fake_jump_max_path = int(fake_jump_max_path)
         self.allowed_maturities = tuple(int(maturity) for maturity in allowed_maturities)
+        self.guarded_state_machine_maturities = tuple(
+            int(maturity) for maturity in guarded_state_machine_maturities
+        )
 
     def collect(
         self,
@@ -654,6 +668,20 @@ class LiveSimpleFlatteningCleanupBackend:
                     exc_info=True,
                 )
 
+        guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
+        try:
+            if maturity in self.guarded_state_machine_maturities:
+                guarded_state_machine_fixes = collect_guarded_state_machine_fixes(
+                    IDAIRTranslator().lift(mba)
+                )
+        except Exception as exc:
+            errors.append(f"guarded_state_machine:{type(exc).__name__}")
+            if logger is not None:
+                logger.debug(
+                    "Failed to collect guarded state-machine cleanup candidates",
+                    exc_info=True,
+                )
+
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
@@ -680,6 +708,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 fix_predecessor_branch_arm_fixes
             ),
             tail_goto_merges=tuple(tail_goto_merges),
+            guarded_state_machine_fixes=tuple(guarded_state_machine_fixes),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,

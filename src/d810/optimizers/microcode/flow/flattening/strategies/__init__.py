@@ -35,6 +35,15 @@ from .fake_jump import (
     serialize_fake_jump_fixes,
     should_skip_fake_jump_predecessor,
 )
+from .guarded_state_machine import (
+    GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
+    GuardedStateMachineFix,
+    GuardedStateMachineStrategy,
+    build_guarded_state_machine_modifications,
+    collect_guarded_state_machine_fixes,
+    extract_guarded_state_machine_fixes,
+    serialize_guarded_state_machine_fixes,
+)
 from .emulated_dispatcher_strategy import (
     DispatcherLoopRecoveryStrategy,
     EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY,
@@ -77,6 +86,9 @@ __all__ = [
     "FakeJumpPredFix",
     "FakeJumpResolution",
     "FakeJumpStrategy",
+    "GUARDED_STATE_MACHINE_FIXES_METADATA_KEY",
+    "GuardedStateMachineFix",
+    "GuardedStateMachineStrategy",
     "EMULATED_DISPATCHER_METADATA_KEY",
     "EMULATED_DISPATCHER_MODIFICATIONS_KEY",
     "EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY",
@@ -89,6 +101,8 @@ __all__ = [
     "SingleIterationStrategy",
     "build_bad_while_loop_modifications",
     "build_fake_jump_modifications",
+    "build_guarded_state_machine_modifications",
+    "collect_guarded_state_machine_fixes",
     "build_single_iteration_modifications",
     "collect_live_bad_while_loop_analysis",
     "collect_live_bad_while_loop_edits",
@@ -97,6 +111,7 @@ __all__ = [
     "extract_bad_while_loop_edits",
     "extract_bad_while_loop_follow_up",
     "extract_fake_jump_fixes",
+    "extract_guarded_state_machine_fixes",
     "extract_emulated_dispatcher_fallback_modifications",
     "extract_emulated_dispatcher_metadata",
     "extract_emulated_dispatcher_modifications",
@@ -106,6 +121,7 @@ __all__ = [
     "serialize_bad_while_loop_edits",
     "serialize_bad_while_loop_follow_up",
     "serialize_fake_jump_fixes",
+    "serialize_guarded_state_machine_fixes",
     "serialize_single_iteration_fixes",
     "should_skip_fake_jump_predecessor",
 ]
