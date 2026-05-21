@@ -290,15 +290,31 @@ class JaeRule1(JumpOptimizationRule):
         return True
 
 
-class JnzRuleModIdentity(JumpOptimizationRule):
+class _JnzModuloEvenIdentityRule(JumpOptimizationRule):
+    """Base for adjacent-product modulo predicates that are always equal to 0."""
+
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
+    RIGHT_PATTERN = AstConstant("0", 0)
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        # x*(x+1) % 2 == 0 and x*(x-1) % 2 == 0 are always true because one
+        # adjacent factor is even. The matched condition is therefore equality
+        # against zero.
+        if opcode == ida_hexrays.m_jnz:
+            self.jump_replacement_block_serial = self.direct_block_serial
+        else:
+            self.jump_replacement_block_serial = self.jump_original_block_serial
+        return True
+
+
+class JnzRuleModIdentity(_JnzModuloEvenIdentityRule):
     """Opaque predicate for x*(x+1)%2 == 0 (always true).
 
     This mathematical identity holds because either x or (x+1) is even,
     so their product is always divisible by 2. The modulo 2 always yields 0.
-    Pattern currently matches the signed-mod variant (smod).
-    The umod form can be added as a sibling rule if it appears in samples.
+    This rule handles the signed-mod x+1 variant.
     """
-    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
     # Pattern: smod(mul(X, add(X, 1)), 2) == 0
     # AstChoice was removed from the AST API; this keeps the opaque identity
     # optimization active without relying on a non-existent node type.
@@ -311,19 +327,48 @@ class JnzRuleModIdentity(JumpOptimizationRule):
         ),
         AstConstant("2", 2)
     )
-    RIGHT_PATTERN = AstConstant("0", 0)
-    REPLACEMENT_OPCODE = ida_hexrays.m_goto
 
-    def check_candidate(self, opcode, left_candidate, right_candidate):
-        # x*(x+1) % 2 == 0 is ALWAYS true (left operand always equals right operand 0).
-        # Condition: left == right is TRUE
-        # - m_jnz (jump if NOT equal): condition FALSE -> jump NOT taken -> fallthrough (direct_block_serial)
-        # - m_jz (jump if equal): condition TRUE -> jump taken -> go to jump_original_block_serial
-        if opcode == ida_hexrays.m_jnz:
-            self.jump_replacement_block_serial = self.direct_block_serial
-        else:
-            self.jump_replacement_block_serial = self.jump_original_block_serial
-        return True
+
+class JnzRuleSmodSubIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x-1)%2 == 0 using signed modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_smod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+
+
+class JnzRuleUmodAddIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x+1)%2 == 0 using unsigned modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_umod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+
+
+class JnzRuleUmodSubIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x-1)%2 == 0 using unsigned modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_umod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
 
 
 class JmpRuleZ3Const(JumpOptimizationRule):

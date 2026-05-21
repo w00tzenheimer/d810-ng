@@ -943,6 +943,10 @@
           "JnzRule6",
           "JnzRule7",
           "JnzRule8",
+          "JnzRuleModIdentity",
+          "JnzRuleSmodSubIdentity",
+          "JnzRuleUmodAddIdentity",
+          "JnzRuleUmodSubIdentity",
           "JmpRuleZ3Const"
         ]
       }
