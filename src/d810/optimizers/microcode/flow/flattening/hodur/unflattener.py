@@ -99,7 +99,6 @@ from d810.cfg.mbl_keep_selection import (
     TerminalByteKeepTarget,
     select_terminal_byte_keep_targets,
 )
-from d810.hexrays.mutation.cfg_mutations import MBL_KEEP
 
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     StageResult,
@@ -115,6 +114,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
 from d810.recon.facts.model import FactConsumerRecord, FactStatus
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
+MBL_KEEP = getattr(ida_hexrays, "MBL_KEEP", 0x10000)
 
 
 _SUB7FFD_FUNC_EA = 0x180012B60

@@ -7,7 +7,7 @@
 
 id: no-direct-hexrays-mutation-outside-deferred-modifier
 language: python
-severity: warning
+severity: error
 
 files:
   - "src/d810/hexrays/mutation/**/*.py"
@@ -46,6 +46,6 @@ rule:
     - pattern: $BLK.predset.clear()
 
 note: |
-  This is warning-level while existing materializers are migrated.  Do not add
-  new direct mutation sites; prefer PatchPlan/GraphModification lowering into
-  DeferredGraphModifier queue_* calls.
+  This is error-level now that existing materializers route through DGM. Do not
+  add new direct mutation sites; prefer PatchPlan/GraphModification lowering
+  into DeferredGraphModifier queue_* calls.
