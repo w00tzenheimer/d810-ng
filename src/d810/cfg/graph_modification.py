@@ -219,6 +219,7 @@ class EdgeRedirectViaPredSplit:
     new_target: int
     via_pred: int
     clone_until: int | None = None
+    source_new_target: int | None = None
     rule_priority: int = 550
 
 

@@ -357,6 +357,7 @@ class PatchEdgeSplitCorridor:
     new_target: int
     clone_until: int
     corridor_serials: tuple[int, ...]
+    source_new_target: int | None = None
     rule_priority: int = 0
 
     def to_graph_modification(self) -> EdgeRedirectViaPredSplit:
@@ -366,6 +367,7 @@ class PatchEdgeSplitCorridor:
             new_target=self.new_target,
             via_pred=self.via_pred,
             clone_until=self.clone_until,
+            source_new_target=self.source_new_target,
             rule_priority=self.rule_priority,
         )
 
@@ -1511,6 +1513,15 @@ def _compile_edge_split_corridor_step(
         raise ValueError(
             "EdgeRedirectViaPredSplit corridor final target would self-loop"
         )
+    if modification.source_new_target is not None:
+        if modification.source_new_target == modification.src_block:
+            raise ValueError(
+                "EdgeRedirectViaPredSplit source target would self-loop"
+            )
+        if cfg.get_block(modification.source_new_target) is None:
+            raise ValueError(
+                f"EdgeRedirectViaPredSplit source target {modification.source_new_target} not found"
+            )
 
     clone_ids = tuple(allocator.alloc("edge_split_corridor") for _ in corridor_serials)
     specs: list[PatchBlockSpec] = []
@@ -1748,6 +1759,7 @@ def _finalize_step(
                 via_pred=pred,
                 clone_until=clone_until,
                 rule_priority=rule_priority,
+                source_new_target=source_new_target,
             ),
             corridor_serials=corridor_serials,
             clone_block_ids=clone_ids,
@@ -1769,6 +1781,7 @@ def _finalize_step(
                 new_target=new,
                 clone_until=clone_until,
                 corridor_serials=tuple(corridor_serials),
+                source_new_target=source_new_target,
                 rule_priority=rule_priority,
             )
 

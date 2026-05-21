@@ -868,6 +868,8 @@ class GraphModification:
     via_pred: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
     clone_until: int | None = None
+    # For EDGE_REDIRECT_VIA_PRED_SPLIT corridor: optional target for original source
+    source_new_target: int | None = None
     # For EDGE_SPLIT_TRAMPOLINE: expected final serial assigned by PatchPlan compilation
     expected_serial: int | None = None
     # For block-creation operations that materialize multiple blocks
@@ -2066,6 +2068,7 @@ class DeferredGraphModifier:
         new_target: int,
         via_pred: int | None = None,
         clone_until: int | None = None,
+        source_new_target: int | None = None,
         description: str = "",
         rule_priority: int = 0,
     ) -> None:
@@ -2088,6 +2091,8 @@ class DeferredGraphModifier:
             clone_until: Optional strict 1-way corridor endpoint. When set, the
                 backend clones the corridor ``src_block .. clone_until`` and
                 rewires ``via_pred`` to the first clone.
+            source_new_target: Optional target for the original source block
+                after cloning a corridor.
             description: Optional logging description.
             rule_priority: Conflict-resolution priority (higher wins).
         """
@@ -2114,6 +2119,7 @@ class DeferredGraphModifier:
             old_target=old_target,
             via_pred=via_pred,
             clone_until=clone_until,
+            source_new_target=source_new_target,
         ))
         logger.debug(
             "Queued edge_redirect_via_pred_split: pred=%d src=%d old=%d new=%d "
@@ -5693,7 +5699,12 @@ class DeferredGraphModifier:
 
         elif mod.mod_type == ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT:
             return self._apply_edge_redirect_via_pred_split(
-                blk, mod.old_target, mod.new_target, mod.via_pred, mod.clone_until
+                blk,
+                mod.old_target,
+                mod.new_target,
+                mod.via_pred,
+                mod.clone_until,
+                mod.source_new_target,
             )
 
         elif mod.mod_type == ModificationType.EDGE_SPLIT_TRAMPOLINE:
@@ -10126,6 +10137,7 @@ class DeferredGraphModifier:
         new_target: int,
         via_pred: int,
         clone_until: int | None,
+        source_new_target: int | None = None,
     ) -> bool:
         """Clone ``blk`` and rewire ``via_pred``'s edge from ``blk`` to the clone.
 
@@ -10150,6 +10162,7 @@ class DeferredGraphModifier:
                 new_target=new_target,
                 via_pred=via_pred,
                 clone_until=clone_until,
+                source_new_target=source_new_target,
             )
 
         mba = self.mba
@@ -10265,6 +10278,7 @@ class DeferredGraphModifier:
         new_target: int,
         via_pred: int,
         clone_until: int,
+        source_new_target: int | None = None,
     ) -> bool:
         """Clone a strict 1-way corridor and redirect one predecessor to it.
 
@@ -10299,15 +10313,29 @@ class DeferredGraphModifier:
             )
             return False
 
-        if blk.nsucc() != 1 or blk.succ(0) != old_target:
+        if blk.nsucc() != 1:
             logger.warning(
-                "edge_redirect_via_pred_split corridor: src blk[%d] does not start old_target=%d (nsucc=%d succ0=%s)",
+                "edge_redirect_via_pred_split corridor: src blk[%d] has nsucc=%d, expected 1",
                 blk.serial,
-                old_target,
                 blk.nsucc(),
-                blk.succ(0) if blk.nsucc() else None,
             )
             return False
+        current_target = blk.succ(0)
+        if current_target != old_target:
+            if int(clone_until) != blk.serial:
+                logger.warning(
+                    "edge_redirect_via_pred_split corridor: src blk[%d] does not start old_target=%d (succ0=%d)",
+                    blk.serial,
+                    old_target,
+                    current_target,
+                )
+                return False
+            logger.info(
+                "edge_redirect_via_pred_split corridor: accepting one-block old_target drift src=%d planned_old=%d live_old=%d",
+                blk.serial,
+                old_target,
+                current_target,
+            )
 
         corridor_serials = [blk.serial]
         corridor_seen = {blk.serial}
@@ -10440,14 +10468,28 @@ class DeferredGraphModifier:
                 )
                 return False
 
+            if source_new_target is not None:
+                if not change_1way_block_successor(
+                    blk,
+                    int(source_new_target),
+                    verify=False,
+                ):
+                    logger.warning(
+                        "edge_redirect_via_pred_split corridor: failed to retarget original src blk[%d] -> blk[%d]",
+                        blk.serial,
+                        int(source_new_target),
+                    )
+                    return False
+
             mba.mark_chains_dirty()
             logger.info(
-                "edge_redirect_via_pred_split corridor: pred=%d src=%d corridor=%s clones=%s final_target=%d",
+                "edge_redirect_via_pred_split corridor: pred=%d src=%d corridor=%s clones=%s final_target=%d source_target=%s",
                 via_pred_blk.serial,
                 blk.serial,
                 corridor_serials,
                 cloned_serials,
                 int(new_target),
+                int(source_new_target) if source_new_target is not None else None,
             )
             return True
         except Exception as exc:
