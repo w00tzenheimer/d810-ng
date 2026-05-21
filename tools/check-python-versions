@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Repo-local wrapper for the Python version compatibility checker."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from python_versions import main  # noqa: E402
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

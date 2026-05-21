@@ -50,7 +50,7 @@ jobs:
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system -e .
                   uv pip install --system "z3-solver>=4.13,<4.15.5"
-                  uv pip install --system pytest pytest-cov import-linter
+                  uv pip install --system pytest pytest-cov import-linter vermin
 
             - name: Install repo-local speedups helper
               run: |
@@ -58,6 +58,10 @@ jobs:
             - name: Check import boundaries
               run: |
                   lint-imports
+            - name: Check Python version compatibility
+              if: contains(fromJSON('["3.10", "3.11", "3.12"]'), matrix.python-version)
+              run: |
+                  python tools/check-python-versions
             - name: Check borrowed mop_t patterns
               run: |
                   pip install ast-grep-cli
