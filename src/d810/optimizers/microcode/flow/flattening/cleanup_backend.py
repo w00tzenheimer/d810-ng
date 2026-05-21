@@ -47,6 +47,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine 
     GuardedStateMachineFix,
     collect_guarded_state_machine_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+    LocalSelectLoopFix,
+    collect_local_select_loop_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationConvertFix,
     SingleIterationPredFix,
@@ -289,6 +293,7 @@ class SimpleFlatteningCleanupDetection:
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
     guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
+    local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -306,6 +311,7 @@ class SimpleFlatteningCleanupDetection:
             or self.fix_predecessor_branch_arm_fixes
             or self.tail_goto_merges
             or self.guarded_state_machine_fixes
+            or self.local_select_loop_fixes
         )
 
     @property
@@ -351,6 +357,7 @@ class SimpleFlatteningCleanupDetection:
             f"{len(self.fix_predecessor_branch_arm_fixes)}"
             f" tail_goto_merge={len(self.tail_goto_merges)}"
             f" guarded_state_machine={len(self.guarded_state_machine_fixes)}"
+            f" local_select_loop={len(self.local_select_loop_fixes)}"
         )
 
 
@@ -669,16 +676,21 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
+        local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
         try:
             if maturity in self.guarded_state_machine_maturities:
+                cleanup_graph = IDAIRTranslator().lift(mba)
                 guarded_state_machine_fixes = collect_guarded_state_machine_fixes(
-                    IDAIRTranslator().lift(mba)
+                    cleanup_graph
+                )
+                local_select_loop_fixes = collect_local_select_loop_fixes(
+                    cleanup_graph
                 )
         except Exception as exc:
-            errors.append(f"guarded_state_machine:{type(exc).__name__}")
+            errors.append(f"guarded_state_machine_or_local_select:{type(exc).__name__}")
             if logger is not None:
                 logger.debug(
-                    "Failed to collect guarded state-machine cleanup candidates",
+                    "Failed to collect local state-machine cleanup candidates",
                     exc_info=True,
                 )
 
@@ -709,6 +721,7 @@ class LiveSimpleFlatteningCleanupBackend:
             ),
             tail_goto_merges=tuple(tail_goto_merges),
             guarded_state_machine_fixes=tuple(guarded_state_machine_fixes),
+            local_select_loop_fixes=tuple(local_select_loop_fixes),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,
