@@ -1307,6 +1307,60 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypat
     ]
 
 
+def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
+    monkeypatch,
+):
+    mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
+    modifier = dm.DeferredGraphModifier(mba)
+    trace: list[tuple] = []
+
+    # pred's explicit branch arm targets the other successor, so source blk[5]
+    # is reached through pred's implicit fallthrough arm.
+    pred.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x1006,
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=40),
+    )
+
+    monkeypatch.setattr(dm, "copy_block_keep", lambda *_a, **_k: clone)
+
+    def _convert(blk, target, **_kwargs):
+        trace.append(("convert", blk.serial, target))
+        return True
+
+    def _rewire_fallthrough(self, blk, new_target, *, old_target):
+        trace.append(("rewire_fallthrough", blk.serial, old_target, new_target))
+        return True
+
+    monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
+    monkeypatch.setattr(
+        dm,
+        "change_2way_block_conditional_successor",
+        lambda *_a, **_k: pytest.fail("branch-arm helper must not handle arm=0"),
+    )
+    monkeypatch.setattr(
+        dm.DeferredGraphModifier,
+        "_apply_fallthrough_change",
+        _rewire_fallthrough,
+    )
+
+    ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
+        source_blk=source,
+        pred_serial=pred.serial,
+        pred_arm=0,
+        goto_target_serial=30,
+        expected_serial=9,
+    )
+
+    assert ok is True
+    assert modifier._serial_remap[9] == 7
+    assert list(clone.predset) == []
+    assert trace == [
+        ("convert", 7, 30),
+        ("rewire_fallthrough", 6, 5, 7),
+    ]
+
+
 def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
     monkeypatch,
 ):
@@ -1338,15 +1392,10 @@ def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
     assert ok is False
 
 
-def test_clone_conditional_as_goto_from_branch_arm_refuses_fallthrough_arm(
+def test_clone_conditional_as_goto_from_branch_arm_refuses_branch_arm_mismatch(
     monkeypatch,
 ):
     """Apply path rejects when pred's explicit branch arm doesn't point at source.
-
-    The legacy live rule bails on the fallthrough-arm case in
-    ``update_blk_successor``; the engine path's planner already declines via
-    ``PRED_FALLTHROUGH_ARM_NOT_SUPPORTED``.  This is the apply-time defense
-    in depth against a stale queue.
     """
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
     modifier = dm.DeferredGraphModifier(mba)
