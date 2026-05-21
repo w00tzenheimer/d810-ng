@@ -484,9 +484,9 @@ class PatchCloneConditionalAsGotoFromBranchArm:
 
     Sibling of :class:`PatchCloneConditionalAsGoto` for the case where the
     predecessor is itself a 2-way conditional whose ``pred_arm`` reaches the
-    cloned source.  Only ``pred_arm == 1`` (explicit branch arm) is supported
-    by the engine path today; ``pred_arm == 0`` records stay in legacy
-    fallback because no tested fallthrough-rewrite helper exists.
+    cloned source.  ``pred_arm == 1`` rewires the explicit conditional branch;
+    ``pred_arm == 0`` materializes the implicit fallthrough through the
+    mutation backend's adjacent helper-block path.
     """
 
     block_id: VirtualBlockId
@@ -1126,10 +1126,8 @@ def _compile_clone_conditional_as_goto_from_branch_arm_step(
 
     Mirrors :func:`_compile_clone_conditional_as_goto_step` but validates a
     2-way predecessor and threads ``pred_arm`` + pred-side arm targets so the
-    backend translator can pick ``change_2way_block_conditional_successor``
-    instead of ``change_1way_block_successor``.  Only ``pred_arm == 1`` is
-    supported by the engine path today (mirrors planner constraint
-    PRED_FALLTHROUGH_ARM_NOT_SUPPORTED).
+    backend translator can pick the explicit-branch or fallthrough-arm mutation
+    path instead of ``change_1way_block_successor``.
     """
     source_block = cfg.get_block(modification.source_block)
     pred_block = cfg.get_block(modification.pred_serial)
