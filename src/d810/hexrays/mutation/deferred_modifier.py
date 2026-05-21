@@ -7901,17 +7901,16 @@ class DeferredGraphModifier:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
                 return False
 
-            if not make_2way_block_goto(cloned_blk, int(target_serial), verify=False):
-                logger.warning(
-                    "clone_conditional_as_goto_from_branch_arm: failed to convert "
-                    "clone blk[%d] to goto blk[%d]",
-                    cloned_blk.serial,
-                    target_serial,
-                )
-                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
-                return False
-
             if pred_arm == 1:
+                if not make_2way_block_goto(cloned_blk, int(target_serial), verify=False):
+                    logger.warning(
+                        "clone_conditional_as_goto_from_branch_arm: failed to convert "
+                        "clone blk[%d] to goto blk[%d]",
+                        cloned_blk.serial,
+                        target_serial,
+                    )
+                    mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                    return False
                 rewired = change_2way_block_conditional_successor(
                     pred_blk,
                     cloned_blk.serial,
@@ -7919,11 +7918,33 @@ class DeferredGraphModifier:
                     old_target=int(source_blk.serial),
                 )
             else:
+                clone_serial_before_rewire = int(cloned_blk.serial)
                 rewired = self._apply_fallthrough_change(
                     pred_blk,
-                    cloned_blk.serial,
+                    clone_serial_before_rewire,
                     old_target=int(source_blk.serial),
                 )
+                if rewired:
+                    cloned_serial = self._resolve_serial(clone_serial_before_rewire)
+                    cloned_blk = self.mba.get_mblock(cloned_serial) or cloned_blk
+                    target_serial = self._resolve_serial(goto_target_serial)
+                    if self.mba.get_mblock(target_serial) is None:
+                        logger.warning(
+                            "clone_conditional_as_goto_from_branch_arm: target blk[%d] "
+                            "missing after fallthrough helper insertion",
+                            target_serial,
+                        )
+                        mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                        return False
+                    if not make_2way_block_goto(cloned_blk, int(target_serial), verify=False):
+                        logger.warning(
+                            "clone_conditional_as_goto_from_branch_arm: failed to convert "
+                            "clone blk[%d] to goto blk[%d] after fallthrough helper insertion",
+                            cloned_blk.serial,
+                            target_serial,
+                        )
+                        mba_deep_cleaning(self.mba, call_mba_combine_block=False)
+                        return False
             if not rewired:
                 logger.warning(
                     "clone_conditional_as_goto_from_branch_arm: failed to rewire "

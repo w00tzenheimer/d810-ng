@@ -1328,21 +1328,34 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
         trace.append(("convert", blk.serial, target))
         return True
 
-    def _rewire_fallthrough(self, blk, new_target, *, old_target):
-        trace.append(("rewire_fallthrough", blk.serial, old_target, new_target))
-        return True
-
     monkeypatch.setattr(dm, "make_2way_block_goto", _convert)
     monkeypatch.setattr(
         dm,
         "change_2way_block_conditional_successor",
         lambda *_a, **_k: pytest.fail("branch-arm helper must not handle arm=0"),
     )
-    monkeypatch.setattr(
-        dm.DeferredGraphModifier,
-        "_apply_fallthrough_change",
-        _rewire_fallthrough,
-    )
+
+    def _insert_helper(blk):
+        assert blk.serial == pred.serial
+        helper = _FakeBlock(7)
+        shifted_blocks = {}
+        for serial, block in sorted(mba.blocks.items(), reverse=True):
+            if serial >= 7:
+                block.serial = serial + 1
+                shifted_blocks[serial + 1] = block
+            else:
+                shifted_blocks[serial] = block
+        shifted_blocks[7] = helper
+        mba.blocks = shifted_blocks
+        mba.qty += 1
+        return helper
+
+    def _rewire_helper(blk, new_target, **_kwargs):
+        trace.append(("rewire_fallthrough", blk.serial, blk.succ(0), new_target))
+        return True
+
+    monkeypatch.setattr(dm, "insert_nop_blk", _insert_helper)
+    monkeypatch.setattr(dm, "change_1way_block_successor", _rewire_helper)
 
     ok = modifier._apply_clone_conditional_as_goto_from_branch_arm(
         source_blk=source,
@@ -1353,11 +1366,11 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
     )
 
     assert ok is True
-    assert modifier._serial_remap[9] == 7
+    assert modifier._serial_remap[9] == 8
     assert list(clone.predset) == []
     assert trace == [
-        ("convert", 7, 30),
-        ("rewire_fallthrough", 6, 5, 7),
+        ("rewire_fallthrough", 7, 0, 8),
+        ("convert", 8, 31),
     ]
 
 
