@@ -7464,7 +7464,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return (), return_carrier_blockers, tuple(records)
 
         self._logger.info(
-            "DispatcherLoopRecovery selected %d state-map predecessor-fact rewrite(s)",
+            "DispatcherLoopRecovery selected %d state-map DAG-edge rewrite(s)",
             len(batch),
         )
         return (
