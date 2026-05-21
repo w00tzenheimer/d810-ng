@@ -288,6 +288,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
         # family surface rather than owning those responsibilities directly.
         self._cfg_translator = IDAIRTranslator()
         profile = default_hodur_profile()
+        self._profile = profile
         self._family = HodurStrategyFamily(
             cfg_translator=self._cfg_translator,
             disabled_strategy_names={
@@ -572,6 +573,17 @@ class HodurUnflattener(ComposedUnflatteningRule):
         self._last_bst_block_eas = set()
         self._last_dispatcher_ea = 0
 
+    def _return_frontier_audit_enabled(self, hook_name: str) -> bool:
+        """Return whether a named return-frontier audit hook is active."""
+        return (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and self._profile.enables_audit_hook(hook_name)
+        )
+
+    def _terminal_return_persistence_enabled(self) -> bool:
+        """Return whether terminal-return executor audit persistence is active."""
+        return self._profile.enables_audit_hook("terminal_return_persistence")
+
     def _on_family_analysis(
         self,
         context: FamilyContext,
@@ -641,7 +653,10 @@ class HodurUnflattener(ComposedUnflatteningRule):
         snapshot = analysis.snapshot
         self._last_provenance = planned.provenance
 
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and snapshot.state_machine is not None:
+        if (
+            self._return_frontier_audit_enabled("return_frontier_pre_plan")
+            and snapshot.state_machine is not None
+        ):
             handler_paths = self._extract_handler_paths_from_fragments(planned.pipeline)
             try:
                 self._audit_return_sites = prepare_return_frontier_audit(
@@ -671,7 +686,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
         unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
 
         if (
-            self.RETURN_FRONTIER_AUDIT_ENABLED
+            self._return_frontier_audit_enabled("return_frontier_post_plan")
             and snapshot.state_machine is not None
             and self._audit_return_sites
         ):
@@ -748,15 +763,16 @@ class HodurUnflattener(ComposedUnflatteningRule):
             ),
         )
 
-        persist_terminal_return_audit(
-            results,
-            func_ea=context.mba.entry_ea,
-            maturity=context.maturity,
-            log_dir=context.log_dir,
-        )
+        if self._terminal_return_persistence_enabled():
+            persist_terminal_return_audit(
+                results,
+                func_ea=context.mba.entry_ea,
+                maturity=context.maturity,
+                log_dir=context.log_dir,
+            )
 
         if (
-            self.RETURN_FRONTIER_AUDIT_ENABLED
+            self._return_frontier_audit_enabled("return_frontier_post_apply")
             and snapshot.state_machine is not None
             and self._audit_return_sites
         ):
@@ -807,7 +823,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
             ),
             planner=self._planner,
             executor_policy=ExecutorPolicy(
-                safeguard_profile="hodur",
+                safeguard_profile=self._profile.executor_safeguard_profile,
                 gate=self._gate,
                 allow_legacy_block_creation=self.allow_legacy_block_creation,
             ),
@@ -1038,7 +1054,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
 
         # Return frontier audit: post_pipeline stage + artifact write
         if (
-            self.RETURN_FRONTIER_AUDIT_ENABLED
+            self._return_frontier_audit_enabled("return_frontier_post_pipeline")
             and snapshot.state_machine is not None
             and self._audit_return_sites
         ):
@@ -1058,7 +1074,10 @@ class HodurUnflattener(ComposedUnflatteningRule):
 
         # Observability-only: classify return-frontier carrier identity.
         # Default off; gated by D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT=1.
-        if is_return_carrier_audit_enabled():
+        if (
+            self._profile.enables_audit_hook("return_frontier_carrier_post_pipeline")
+            and is_return_carrier_audit_enabled()
+        ):
             try:
                 corridors: tuple[tuple[int, ...], ...] = ()
                 dag = getattr(snapshot, "dag", None)
