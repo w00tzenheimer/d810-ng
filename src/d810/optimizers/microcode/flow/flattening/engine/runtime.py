@@ -1,7 +1,7 @@
 """Generic runtime helpers for family-driven unflattening pipelines."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.core.typing import TYPE_CHECKING, Any, Callable, Protocol
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ExecutorPolicy",
+    "FamilyRunState",
     "PlannedPipeline",
     "ExecutedPipeline",
     "make_transactional_executor_factory",
@@ -45,6 +46,42 @@ class ExecutorPolicy:
     gate: object | None = None
     allow_legacy_block_creation: bool = True
     safeguard_profile: str = "engine"
+
+
+@dataclass(frozen=True)
+class FamilyRunState:
+    """Runtime-owned pass bookkeeping shared by family adapters."""
+
+    pass_number: int = 0
+    resolved_transitions: frozenset[tuple[int | None, int]] = frozenset()
+    initial_transitions: tuple[object, ...] = ()
+
+    def begin_pass(self, pass_number: int) -> "FamilyRunState":
+        """Return run state for the next family pass."""
+        return replace(self, pass_number=int(pass_number))
+
+    def remember_initial_transitions(
+        self, transitions: object
+    ) -> "FamilyRunState":
+        """Capture pass-0 transitions once for later supplementation."""
+        if self.pass_number != 0 or self.initial_transitions:
+            return self
+        return replace(self, initial_transitions=tuple(transitions or ()))
+
+    def record_resolved_transitions(
+        self, transitions: object
+    ) -> "FamilyRunState":
+        """Record transition keys covered by a successful execution pass."""
+        resolved = set(self.resolved_transitions)
+        for transition in transitions or ():
+            to_state = getattr(transition, "to_state", None)
+            if not isinstance(to_state, int):
+                continue
+            from_state = getattr(transition, "from_state", None)
+            if from_state is not None and not isinstance(from_state, int):
+                continue
+            resolved.add((from_state, to_state))
+        return replace(self, resolved_transitions=frozenset(resolved))
 
 
 @dataclass(frozen=True)
