@@ -265,6 +265,25 @@ logger = getLogger("D810.deferred_modifier")
 _MAX_CAPTURE_HISTORY = 12
 
 
+def _is_redirectable_conditional_tail(tail: object | None) -> bool:
+    """Return true when ``tail.d.b`` is the conditional/taken edge."""
+    if tail is None:
+        return False
+    return int(tail.opcode) in {
+        int(ida_hexrays.m_jcnd),
+        int(ida_hexrays.m_jnz),
+        int(ida_hexrays.m_jz),
+        int(ida_hexrays.m_jae),
+        int(ida_hexrays.m_jb),
+        int(ida_hexrays.m_ja),
+        int(ida_hexrays.m_jbe),
+        int(ida_hexrays.m_jg),
+        int(ida_hexrays.m_jge),
+        int(ida_hexrays.m_jl),
+        int(ida_hexrays.m_jle),
+    }
+
+
 def _env_flag(name: str) -> bool:
     value = os.environ.get(name, "").strip().lower()
     return value in ("1", "true", "yes", "on")
@@ -5793,14 +5812,8 @@ class DeferredGraphModifier:
         if blk.tail is None:
             return False
 
-        # Check if it's a conditional jump
-        if blk.tail.opcode not in [
-            ida_hexrays.m_jnz, ida_hexrays.m_jz,
-            ida_hexrays.m_jae, ida_hexrays.m_jb,
-            ida_hexrays.m_ja, ida_hexrays.m_jbe,
-            ida_hexrays.m_jg, ida_hexrays.m_jge,
-            ida_hexrays.m_jl, ida_hexrays.m_jle,
-        ]:
+        # Check if it's a conditional jump.
+        if not _is_redirectable_conditional_tail(blk.tail):
             logger.warning(
                 "Block %d doesn't end with conditional jump",
                 blk.serial
@@ -10880,14 +10893,8 @@ class ImmediateGraphModifier:
         if blk.tail is None:
             return False
 
-        # Check if it's a conditional jump
-        if blk.tail.opcode not in [
-            ida_hexrays.m_jnz, ida_hexrays.m_jz,
-            ida_hexrays.m_jae, ida_hexrays.m_jb,
-            ida_hexrays.m_ja, ida_hexrays.m_jbe,
-            ida_hexrays.m_jg, ida_hexrays.m_jge,
-            ida_hexrays.m_jl, ida_hexrays.m_jle,
-        ]:
+        # Check if it's a conditional jump.
+        if not _is_redirectable_conditional_tail(blk.tail):
             logger.warning(
                 "Block %d doesn't end with conditional jump",
                 blk.serial
