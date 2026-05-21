@@ -1128,6 +1128,66 @@ def _ordered_path_predecessor(
     return int(ordered_path[source_index - 1])
 
 
+@dataclass(frozen=True, slots=True)
+class LoopRecoveryEdgePlan:
+    """Planner-facing view of a selected semantic DAG edge."""
+
+    edge: DagParentEdge
+    source_block: int
+    branch_arm: int | None
+    target_state: int | None
+    target_entry_anchor: int
+    last_write_site: tuple[int, int] | None
+    semantic_kind: str
+    proof_source: str
+
+
+def select_loop_recovery_edges(
+    dag_index: StateDagIndex,
+) -> tuple[tuple[LoopRecoveryEdgePlan, ...], tuple[str, ...]]:
+    """Select semantic DAG edges that are unique enough for loop recovery."""
+
+    candidates = tuple(
+        edge
+        for edge in dag_index.edges
+        if edge.semantic_kind in {"TRANSITION", "CONDITIONAL_TRANSITION"}
+        and edge.target_entry_anchor is not None
+    )
+    if not candidates:
+        return (), ("dispatcher_loop_recovery_no_state_map_edges",)
+
+    by_anchor: dict[tuple[int, int | None], list[DagParentEdge]] = {}
+    for edge in candidates:
+        by_anchor.setdefault((edge.source_block, edge.branch_arm), []).append(edge)
+    ambiguous_anchors = {
+        anchor
+        for anchor, edges in by_anchor.items()
+        if len({(edge.target_state, edge.target_entry_anchor) for edge in edges}) > 1
+    }
+    selected = tuple(
+        LoopRecoveryEdgePlan(
+            edge=edge,
+            source_block=edge.source_block,
+            branch_arm=edge.branch_arm,
+            target_state=edge.target_state,
+            target_entry_anchor=int(edge.target_entry_anchor),
+            last_write_site=edge.last_write_site,
+            semantic_kind=edge.semantic_kind,
+            proof_source=edge.proof_source,
+        )
+        for edge in candidates
+        if (edge.source_block, edge.branch_arm) not in ambiguous_anchors
+    )
+    if ambiguous_anchors and not selected:
+        return (), ("dispatcher_loop_recovery_ambiguous_dag_edges",)
+    blockers = (
+        ("dispatcher_loop_recovery_ambiguous_dag_edges",)
+        if ambiguous_anchors
+        else ()
+    )
+    return selected, blockers
+
+
 def _switch_dispatcher_reentry_targets(
     flow_graph: FlowGraph,
     *,
@@ -7041,45 +7101,33 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         snapshot_flow_graph: FlowGraph,
         phase_artifact: EmulatedDispatcherPhaseArtifact | None,
         phase_context: EmulatedDispatcherPhaseContext | None,
-        candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...],
-    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
+    ) -> tuple[
+        tuple[GraphModification, ...],
+        tuple[str, ...],
+        tuple[EmulatedDispatcherCandidateRecord, ...],
+    ]:
         if phase_artifact is None or phase_context is None:
-            return (), ()
+            return (), (), ()
         if phase_artifact.state_var_stkoff is None:
-            return (), ("dispatcher_loop_recovery_missing_state_var",)
+            return (), ("dispatcher_loop_recovery_missing_state_var",), ()
         artifact_blockers = self._dispatcher_loop_recovery_artifact_blockers(
             phase_artifact
         )
         if artifact_blockers:
-            return (), artifact_blockers
+            return (), artifact_blockers, ()
 
-        direct_batch, direct_blockers = self._collect_phase_redirect_loop_recovery(
+        modifications, blockers, records = self._collect_state_map_loop_recovery_modifications(
             mba=mba,
+            snapshot_flow_graph=snapshot_flow_graph,
             phase_artifact=phase_artifact,
-            candidate_records=candidate_records,
+            phase_context=phase_context,
         )
-        if direct_batch:
-            return_carrier_blockers = _return_carrier_preservation_blockers(
-                mba=mba,
-                flow_graph=snapshot_flow_graph,
-                modifications=direct_batch,
-                phase_context=phase_context,
-                phase_artifact=phase_artifact,
-                allow_live_repair=True,
-            )
-            if return_carrier_blockers:
-                return (), return_carrier_blockers
+        if modifications and not blockers:
             self._logger.info(
-                "DispatcherLoopRecovery selected %d direct phase rewrite(s) from %d fallback candidates",
-                len(direct_batch),
-                len(candidate_records),
+                "DispatcherLoopRecovery selected %d edge-planned rewrite(s)",
+                len(modifications),
             )
-            return direct_batch, ()
-        # Keep loop recovery on the explicit phase-cycle contract only.
-        # The broader DAG reconstruction fallback overfires on samples like
-        # approov_vm_dispatcher, where recon sees a dispatcher but does not
-        # yet prove a loop phase strong enough for structural recovery.
-        return (), direct_blockers
+        return modifications, blockers, records
 
     def _collect_state_map_loop_recovery_modifications(
         self,
@@ -7131,20 +7179,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if semantic_label_count <= handler_state_count:
             return (), ("dispatcher_loop_recovery_no_supplemental_dag_state",), ()
 
-        facts = tuple(
-            fact
-            for fact in getattr(
-                phase_context, "predecessor_dispatcher_target_facts", ()
-            ) or ()
-            if isinstance(fact, PredecessorDispatcherTargetFact)
-            and int(fact.dispatcher_entry_serial)
-            == int(phase_artifact.dispatcher_entry_serial)
-            and fact.transition_provenance_kind
-            in {"state_dag_transition", "state_dag_conditional_transition"}
-        )
         dag_index = StateDagIndex.from_dag(getattr(phase_context, "dag", None))
-        if not facts and not dag_index.edges:
-            return (), ("dispatcher_loop_recovery_missing_predecessor_facts",), ()
+        edge_plans, edge_selection_blockers = select_loop_recovery_edges(dag_index)
+        if not edge_plans:
+            return (), edge_selection_blockers, ()
 
         scc_memberships = self._compute_scc_memberships(snapshot_flow_graph)
         modifications: list[GraphModification] = []
@@ -7159,6 +7197,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             target: int,
             state_signature: tuple[int, ...],
             reason: str,
+            proof_source: str | None = None,
             modification: GraphModification | None = None,
             raw_side_effect_count: int = 0,
             safe_side_effect_count: int = 0,
@@ -7181,6 +7220,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 raw_side_effect_count=raw_side_effect_count,
                 safe_side_effect_count=safe_side_effect_count,
                 selection_reason=reason,
+                proof_source=proof_source,
                 selected_modification_indexes=selected_indexes,
                 selected_modification_kinds=selected_kinds,
                 selected_modification_summaries=selected_summaries,
@@ -7194,6 +7234,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     f"target={target}",
                     "payload=",
                     "state_dispatcher_map_loop_recovery",
+                    f"proof={proof_source or ''}",
                     f"source_scc={','.join(str(value) for value in source_scc)}",
                     f"target_scc={','.join(str(value) for value in target_scc)}",
                     "source_nsucc=1",
@@ -7207,6 +7248,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             modification: GraphModification,
             state_signature: tuple[int, ...],
             reason: str,
+            proof_source: str | None = None,
             raw_side_effect_count: int = 0,
             safe_side_effect_count: int = 0,
         ) -> None:
@@ -7216,6 +7258,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     target=target,
                     state_signature=state_signature,
                     reason=reason,
+                    proof_source=proof_source,
                     modification=modification,
                     raw_side_effect_count=raw_side_effect_count,
                     safe_side_effect_count=safe_side_effect_count,
@@ -7223,219 +7266,76 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             )
             modifications.append(modification)
 
-        def _state_map_target_for_state(state_const: int) -> int | None:
-            normalized_state = int(state_const) & 0xFFFFFFFFFFFFFFFF
-            state_to_handler = {
-                int(state) & 0xFFFFFFFFFFFFFFFF: int(serial)
-                for serial, state in phase_artifact.handler_state_map
-            }
-            exact_target = state_to_handler.get(normalized_state)
-            if exact_target is not None:
-                return exact_target
-            for node in getattr(getattr(phase_context, "dag", None), "nodes", ()) or ():
-                key = getattr(node, "key", None)
-                node_state = getattr(key, "state_const", None)
-                if node_state is None:
-                    continue
-                if (
-                    int(node_state) & 0xFFFFFFFFFFFFFFFF
-                ) != normalized_state:
-                    continue
-                handler = int(getattr(node, "handler_serial", -1))
-                if handler in snapshot_flow_graph.blocks:
-                    return handler
-            point_targets = set(state_to_handler.values())
-            range_targets = tuple(
-                sorted(
-                    {
-                        int(serial)
-                        for serial, _lo, _hi in phase_artifact.handler_range_map
-                        if int(serial) not in point_targets
-                    }
-                )
-            )
-            if len(range_targets) == 1:
-                return int(range_targets[0])
-            return None
-
-        def _dag_edges_for_condition(
-            *,
-            condition_block: int,
-            source_state_const: int | None,
-        ) -> tuple[DagParentEdge, ...]:
-            normalized_source = (
-                None
-                if source_state_const is None
-                else int(source_state_const) & 0xFFFFFFFFFFFFFFFF
-            )
-            matches: list[DagParentEdge] = []
-            seen_keys: set[tuple[int, int | None, int | None, int | None]] = set()
-            for edge in dag_index.edges_from_anchor(condition_block):
-                if edge.target_state is None:
-                    continue
-                state_matches = (
-                    normalized_source is None
-                    or edge.source_state is None
-                    or edge.source_state == normalized_source
-                )
-                if not state_matches:
-                    continue
-                key = (
-                    edge.source_block,
-                    edge.branch_arm,
-                    edge.target_state,
-                    edge.target_entry_anchor,
-                )
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                matches.append(edge)
-            return tuple(matches)
-
-        phase_cycle_records: list[EmulatedDispatcherCandidateRecord] = []
         dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
-        dispatcher_block = snapshot_flow_graph.get_block(dispatcher_entry)
-        dispatcher_predecessors = (
-            tuple(int(pred) for pred in getattr(dispatcher_block, "preds", ()) or ())
-            if dispatcher_block is not None
-            else ()
-        )
-        facts_by_predecessor: dict[int, PredecessorDispatcherTargetFact] = {}
-        for fact in facts:
-            facts_by_predecessor.setdefault(int(fact.predecessor_block_serial), fact)
 
-        for predecessor in dispatcher_predecessors:
-            block = snapshot_flow_graph.get_block(predecessor)
-            if block is None or int(block.nsucc) != 1:
-                continue
-            if int(block.succs[0]) != dispatcher_entry:
-                continue
-            live_block = mba.get_mblock(predecessor)
-            written_state: int | None = None
-            if live_block is not None:
-                try:
-                    written_state = _extract_state_from_block(
-                        live_block,
-                        int(phase_artifact.state_var_stkoff),
-                        mba=mba,
-                    )
-                except Exception:
-                    self._logger.debug(
-                        "State-map loop recovery failed to inspect predecessor blk[%d]",
-                        predecessor,
-                        exc_info=True,
-                    )
-            fact = facts_by_predecessor.get(predecessor)
-            target: int | None = None
-            state_signature: tuple[int, ...] = ()
-            raw_side_effect_count = 0
-            safe_side_effect_count = 0
-            reason = "state_map_predecessor_fact_redirect"
-            if written_state is not None:
-                state = int(written_state) & 0xFFFFFFFFFFFFFFFF
-                target = _state_map_target_for_state(state)
-                state_signature = (state,)
-                raw_side_effect_count = 1
-                safe_side_effect_count = 1
-                reason = "state_map_live_state_write_recovery"
-            elif fact is not None:
-                target = int(fact.target_block_serial)
-                state_signature = (int(fact.state_const),)
-            if target is None or target not in snapshot_flow_graph.blocks:
-                continue
-            phase_cycle_records.append(
-                _make_record(
-                    source=predecessor,
-                    target=int(target),
-                    state_signature=state_signature,
-                    reason=reason,
-                    raw_side_effect_count=raw_side_effect_count,
-                    safe_side_effect_count=safe_side_effect_count,
-                )
-            )
-
-        if phase_cycle_records:
-            phase_cycle = self._build_interval_phase_loop_recovery(
-                mba=mba,
-                phase_artifact=phase_artifact,
-                candidate_records=tuple(phase_cycle_records),
-            )
-            if phase_cycle is not None:
-                return_carrier_blockers = _return_carrier_preservation_blockers(
-                    mba=mba,
-                    flow_graph=snapshot_flow_graph,
-                    modifications=phase_cycle,
-                    phase_context=phase_context,
-                    phase_artifact=phase_artifact,
-                    allow_live_repair=True,
-                )
-                if return_carrier_blockers:
-                    return (), return_carrier_blockers, tuple(phase_cycle_records)
-                self._logger.info(
-                    "DispatcherLoopRecovery selected %d state-map phase-cycle rewrite(s)",
-                    len(phase_cycle),
-                )
-                return (
-                    phase_cycle,
-                    (),
-                    self._annotate_cluster_candidates(tuple(phase_cycle_records)),
-                )
-
-        def _matching_state_arm(
+        def _build_state_write_rewrite(
             *,
-            condition_block: int,
-            state_const: int,
-        ) -> tuple[int, int] | None:
-            block = snapshot_flow_graph.get_block(int(condition_block))
-            if block is None or int(block.nsucc) != 2:
-                return None
-            for succ in tuple(int(serial) for serial in block.succs):
-                succ_block = snapshot_flow_graph.get_block(succ)
-                if succ_block is None or int(succ_block.nsucc) != 1:
-                    continue
-                live_block = mba.get_mblock(succ)
-                if live_block is None:
-                    continue
-                try:
-                    written_state = _extract_state_from_block(
-                        live_block,
-                        int(phase_artifact.state_var_stkoff),
-                        mba=mba,
-                    )
-                except Exception:
-                    self._logger.debug(
-                        "State-map loop recovery failed to inspect arm blk[%d]",
-                        succ,
-                        exc_info=True,
-                    )
-                    continue
-                if written_state is None:
-                    continue
-                if (int(written_state) & 0xFFFFFFFFFFFFFFFF) != (
-                    int(state_const) & 0xFFFFFFFFFFFFFFFF
-                ):
-                    continue
-                return succ, int(succ_block.succs[0])
-            return None
-
-        def _append_dag_edge_state_write_rewrite(edge: DagParentEdge) -> bool:
-            if edge.target_state is None or edge.target_entry_anchor is None:
+            plan: LoopRecoveryEdgePlan,
+            serial: int,
+            reason: str,
+        ) -> bool:
+            if plan.target_state is None:
                 return False
-            target = int(edge.target_entry_anchor)
+            if serial in seen_sources:
+                return True
+            block = snapshot_flow_graph.get_block(serial)
+            if block is None or int(block.nsucc) != 1:
+                return False
+            old_target = int(block.succs[0])
+            if old_target == int(plan.target_entry_anchor):
+                return True
+            try:
+                state_write_rewrite = self._build_live_state_write_recovery(
+                    mba=mba,
+                    father_serial=serial,
+                    dispatcher_entry_serial=old_target,
+                    target_serial=plan.target_entry_anchor,
+                    expected_state=int(plan.target_state),
+                    state_var_stkoff=int(phase_artifact.state_var_stkoff),
+                )
+            except Exception:
+                self._logger.debug(
+                    "State-map loop recovery failed to build DAG-edge rewrite for blk[%d]",
+                    serial,
+                    exc_info=True,
+                )
+                state_write_rewrite = None
+            if state_write_rewrite is None:
+                blockers["dispatcher_loop_recovery_dag_state_write_unresolved"] += 1
+                return False
+            seen_sources.add(serial)
+            records.append(
+                _make_record(
+                    source=serial,
+                    target=plan.target_entry_anchor,
+                    state_signature=(int(plan.target_state),),
+                    reason=reason,
+                    proof_source=plan.proof_source,
+                    modification=state_write_rewrite[0],
+                    raw_side_effect_count=1,
+                    safe_side_effect_count=1,
+                )
+            )
+            modifications.extend(state_write_rewrite)
+            return True
+
+        def _append_dag_edge_state_write_rewrite(plan: LoopRecoveryEdgePlan) -> bool:
+            if plan.target_state is None:
+                return False
+            target = int(plan.target_entry_anchor)
             if target not in snapshot_flow_graph.blocks:
                 blockers["dispatcher_loop_recovery_dag_target_missing"] += 1
                 return False
-            dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
-            for serial in reversed(tuple(int(block) for block in edge.ordered_path)):
-                if serial == int(edge.source_block):
-                    continue
-                if serial in seen_sources:
-                    return True
-                block = snapshot_flow_graph.get_block(serial)
-                if block is None or int(block.nsucc) != 1:
-                    continue
-                old_target = int(block.succs[0])
-                if old_target != dispatcher_entry:
+
+            if plan.last_write_site is not None:
+                return _build_state_write_rewrite(
+                    plan=plan,
+                    serial=int(plan.last_write_site[0]),
+                    reason="state_map_dag_edge_last_write_recovery",
+                )
+
+            for serial in reversed(tuple(int(block) for block in plan.edge.ordered_path)):
+                if serial == int(plan.source_block):
                     continue
                 live_block = mba.get_mblock(serial)
                 if live_block is None:
@@ -7455,210 +7355,66 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     continue
                 if written_state is None:
                     continue
-                if (int(written_state) & 0xFFFFFFFFFFFFFFFF) != int(edge.target_state):
+                if (int(written_state) & 0xFFFFFFFFFFFFFFFF) != int(plan.target_state):
                     continue
-                try:
-                    state_write_rewrite = self._build_live_state_write_recovery(
-                        mba=mba,
-                        father_serial=serial,
-                        dispatcher_entry_serial=old_target,
-                        target_serial=target,
-                        expected_state=int(edge.target_state),
-                        state_var_stkoff=int(phase_artifact.state_var_stkoff),
-                    )
-                except Exception:
-                    self._logger.debug(
-                        "State-map loop recovery failed to build DAG-edge rewrite for blk[%d]",
-                        serial,
-                        exc_info=True,
-                    )
-                    state_write_rewrite = None
-                if state_write_rewrite is None:
-                    blockers["dispatcher_loop_recovery_dag_state_write_unresolved"] += 1
-                    return False
-                seen_sources.add(serial)
-                records.append(
-                    _make_record(
-                        source=serial,
-                        target=target,
-                        state_signature=(int(edge.target_state),),
-                        reason="state_map_dag_edge_state_write_recovery",
-                        modification=state_write_rewrite[0],
-                        raw_side_effect_count=1,
-                        safe_side_effect_count=1,
-                    )
-                )
-                modifications.extend(state_write_rewrite)
-                return True
+                if _build_state_write_rewrite(
+                    plan=plan,
+                    serial=serial,
+                    reason="state_map_dag_edge_state_write_recovery",
+                ):
+                    return True
 
-            source_block = snapshot_flow_graph.get_block(int(edge.source_block))
+            source_block = snapshot_flow_graph.get_block(int(plan.source_block))
+            if source_block is not None and int(source_block.nsucc) == 1:
+                old_target = int(source_block.succs[0])
+                if (
+                    old_target == dispatcher_entry
+                    and int(plan.source_block) not in seen_sources
+                ):
+                    seen_sources.add(int(plan.source_block))
+                    _append_recorded_modification(
+                        source=int(plan.source_block),
+                        target=target,
+                        modification=RedirectGoto(
+                            from_serial=int(plan.source_block),
+                            old_target=old_target,
+                            new_target=target,
+                        ),
+                        state_signature=(int(plan.target_state),),
+                        reason="state_map_dag_edge_source_redirect",
+                        proof_source=plan.proof_source,
+                    )
+                    return True
             if (
                 source_block is None
                 or int(source_block.nsucc) != 2
-                or edge.branch_arm is None
-                or int(edge.branch_arm) not in {0, 1}
+                or plan.branch_arm is None
+                or int(plan.branch_arm) not in {0, 1}
             ):
                 return False
             source_successors = tuple(int(succ) for succ in source_block.succs)
-            if source_successors[int(edge.branch_arm)] != dispatcher_entry:
+            if source_successors[int(plan.branch_arm)] != dispatcher_entry:
                 return False
-            if int(edge.source_block) in seen_condition_redirects:
+            if int(plan.source_block) in seen_condition_redirects:
                 return True
             branch_redirect = RedirectBranch(
-                from_serial=int(edge.source_block),
+                from_serial=int(plan.source_block),
                 old_target=dispatcher_entry,
                 new_target=target,
             )
             _append_recorded_modification(
-                source=int(edge.source_block),
+                source=int(plan.source_block),
                 target=target,
                 modification=branch_redirect,
-                state_signature=(int(edge.target_state),),
+                state_signature=(int(plan.target_state),),
                 reason="state_map_dag_edge_dispatcher_arm_redirect",
+                proof_source=plan.proof_source,
             )
-            seen_condition_redirects.add(int(edge.source_block))
+            seen_condition_redirects.add(int(plan.source_block))
             return True
 
-        for edge in dag_index.edges:
-            if edge.proof_kind not in {"CONDITIONAL_TRANSITION", "TRANSITION"}:
-                continue
-            _append_dag_edge_state_write_rewrite(edge)
-
-        for fact in facts:
-            target = int(fact.target_block_serial)
-            if target not in snapshot_flow_graph.blocks:
-                blockers["dispatcher_loop_recovery_target_missing"] += 1
-                continue
-            predecessor = int(fact.predecessor_block_serial)
-            state_signature = (int(fact.state_const),)
-            if fact.transition_provenance_kind == "state_dag_transition":
-                block = snapshot_flow_graph.get_block(predecessor)
-                if block is None:
-                    blockers["dispatcher_loop_recovery_predecessor_missing"] += 1
-                    continue
-                if int(block.nsucc) != 1:
-                    blockers["dispatcher_loop_recovery_requires_one_way_father"] += 1
-                    continue
-                old_target = int(block.succs[0])
-                if old_target != int(phase_artifact.dispatcher_entry_serial):
-                    blockers["dispatcher_loop_recovery_predecessor_not_dispatcher_edge"] += 1
-                    continue
-                if old_target == target:
-                    continue
-                if predecessor in seen_sources:
-                    continue
-                seen_sources.add(predecessor)
-                modification = RedirectGoto(
-                    from_serial=predecessor,
-                    old_target=old_target,
-                    new_target=target,
-                )
-                _append_recorded_modification(
-                    source=predecessor,
-                    target=target,
-                    modification=modification,
-                    state_signature=state_signature,
-                    reason="state_map_predecessor_fact_redirect",
-                )
-                continue
-
-            arm_edge = _matching_state_arm(
-                condition_block=predecessor,
-                state_const=int(fact.state_const),
-            )
-            if arm_edge is None:
-                blockers["dispatcher_loop_recovery_conditional_arm_unresolved"] += 1
-                continue
-            arm_serial, old_target = arm_edge
-            if old_target == target:
-                continue
-            if arm_serial in seen_sources:
-                continue
-            seen_sources.add(arm_serial)
-            try:
-                state_write_rewrite = self._build_live_state_write_recovery(
-                    mba=mba,
-                    father_serial=arm_serial,
-                    dispatcher_entry_serial=old_target,
-                    target_serial=target,
-                    expected_state=int(fact.state_const),
-                    state_var_stkoff=int(phase_artifact.state_var_stkoff),
-                )
-            except Exception:
-                self._logger.debug(
-                    "State-map loop recovery failed to build state-write recovery for blk[%d]",
-                    arm_serial,
-                    exc_info=True,
-                )
-                state_write_rewrite = None
-            if state_write_rewrite is not None:
-                records.append(
-                    _make_record(
-                        source=arm_serial,
-                        target=target,
-                        state_signature=state_signature,
-                        reason="state_map_conditional_arm_state_write_recovery",
-                        modification=state_write_rewrite[0],
-                        raw_side_effect_count=1,
-                        safe_side_effect_count=1,
-                    )
-                )
-                modifications.extend(state_write_rewrite)
-            else:
-                modification = RedirectGoto(
-                    from_serial=arm_serial,
-                    old_target=old_target,
-                    new_target=target,
-                )
-                _append_recorded_modification(
-                    source=arm_serial,
-                    target=target,
-                    modification=modification,
-                    state_signature=state_signature,
-                    reason="state_map_conditional_arm_redirect",
-                )
-
-            if predecessor in seen_condition_redirects:
-                continue
-            condition_block = snapshot_flow_graph.get_block(predecessor)
-            if (
-                condition_block is None
-                or int(condition_block.nsucc) != 2
-                or int(phase_artifact.dispatcher_entry_serial)
-                not in tuple(int(succ) for succ in condition_block.succs)
-            ):
-                continue
-            sibling_edges = tuple(
-                edge
-                for edge in _dag_edges_for_condition(
-                    condition_block=predecessor,
-                    source_state_const=fact.source_state_const,
-                )
-                if edge.target_state != (int(fact.state_const) & 0xFFFFFFFFFFFFFFFF)
-            )
-            if not sibling_edges:
-                continue
-            sibling_edge = sibling_edges[0]
-            sibling_target = sibling_edge.target_entry_anchor
-            if sibling_target is None:
-                sibling_target = _state_map_target_for_state(int(sibling_edge.target_state))
-            if sibling_target is None or sibling_target not in snapshot_flow_graph.blocks:
-                continue
-            if sibling_target == int(phase_artifact.dispatcher_entry_serial):
-                continue
-            branch_redirect = RedirectBranch(
-                from_serial=predecessor,
-                old_target=int(phase_artifact.dispatcher_entry_serial),
-                new_target=int(sibling_target),
-            )
-            _append_recorded_modification(
-                source=predecessor,
-                target=int(sibling_target),
-                modification=branch_redirect,
-                state_signature=(int(sibling_edge.target_state),),
-                reason="state_map_conditional_dispatcher_arm_redirect",
-            )
-            seen_condition_redirects.add(predecessor)
+        for plan in edge_plans:
+            _append_dag_edge_state_write_rewrite(plan)
 
         if not modifications:
             if blockers:
@@ -7940,70 +7696,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         )
         return tuple(modifications), tuple(sorted(blockers))
 
-    def _collect_phase_redirect_loop_recovery(
-        self,
-        *,
-        mba: ida_hexrays.mba_t,
-        phase_artifact: EmulatedDispatcherPhaseArtifact,
-        candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...],
-    ) -> tuple[tuple[GraphModification, ...], tuple[str, ...]]:
-        if not candidate_records:
-            return (), ()
-
-        phase_cycle = self._build_interval_phase_loop_recovery(
-            mba=mba,
-            phase_artifact=phase_artifact,
-            candidate_records=candidate_records,
-        )
-        if phase_cycle is not None:
-            return phase_cycle, ()
-
-        loop_recovery: list[GraphModification] = []
-        blockers: list[str] = []
-
-        for record in candidate_records:
-            if record.target_serial is None or record.source_nsucc != 1:
-                blockers.append("dispatcher_loop_recovery_requires_one_way_father")
-                break
-            branch_rewrite = self._build_phase_cycle_branch_recovery(
-                mba=mba,
-                phase_artifact=phase_artifact,
-                record=record,
-                candidate_records=candidate_records,
-            )
-            if branch_rewrite is not None:
-                loop_recovery.extend(branch_rewrite)
-                continue
-            if record.raw_side_effect_count == 0:
-                loop_recovery.append(
-                    RedirectGoto(
-                        from_serial=int(record.father_serial),
-                        old_target=int(record.dispatcher_entry_serial),
-                        new_target=int(record.target_serial),
-                    )
-                )
-                continue
-            if record.raw_side_effect_count != 1 or len(record.state_signature) != 1:
-                blockers.append("dispatcher_loop_recovery_requires_single_state_write")
-                break
-
-            rewrite = self._build_live_state_write_recovery(
-                mba=mba,
-                father_serial=int(record.father_serial),
-                dispatcher_entry_serial=int(record.dispatcher_entry_serial),
-                target_serial=int(record.target_serial),
-                expected_state=int(record.state_signature[0]),
-                state_var_stkoff=int(phase_artifact.state_var_stkoff),
-            )
-            if rewrite is None:
-                blockers.append("dispatcher_loop_recovery_non_state_write_insert")
-                break
-            loop_recovery.extend(rewrite)
-
-        if blockers:
-            return (), tuple(sorted(set(blockers)))
-        return tuple(loop_recovery), ()
-
     def _dispatcher_loop_recovery_artifact_blockers(
         self,
         phase_artifact: EmulatedDispatcherPhaseArtifact,
@@ -8017,216 +7709,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         ):
             blockers.append("dispatcher_loop_recovery_fallback_phase")
         return tuple(blockers)
-
-    def _build_interval_phase_loop_recovery(
-        self,
-        *,
-        mba: ida_hexrays.mba_t,
-        phase_artifact: EmulatedDispatcherPhaseArtifact,
-        candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...],
-    ) -> tuple[GraphModification, ...] | None:
-        if phase_artifact.state_var_stkoff is None or phase_artifact.initial_state is None:
-            return None
-
-        state_to_handler = {
-            int(state): int(serial)
-            for serial, state in phase_artifact.handler_state_map
-        }
-        if not state_to_handler:
-            return None
-
-        header_state = int(phase_artifact.initial_state)
-        header_target = state_to_handler.get(header_state)
-        if header_target is None:
-            return None
-
-        terminal_records = tuple(
-            record
-            for record in candidate_records
-            if record.target_serial is not None
-            and tuple(int(value) for value in record.state_signature)
-            and record.raw_side_effect_count == 0
-            and tuple(int(target) for target in record.target_scc)
-            == (int(record.target_serial),)
-        )
-        terminal_states = {
-            int(record.state_signature[0])
-            for record in terminal_records
-        }
-        body_states = tuple(
-            sorted(
-                state
-                for state in state_to_handler
-                if state not in {header_state, *terminal_states}
-            )
-        )
-        if len(body_states) != 1:
-            return None
-
-        body_state = int(body_states[0])
-        body_target = int(state_to_handler[body_state])
-
-        point_handler_targets = set(state_to_handler.values())
-        next_phase_targets = tuple(
-            sorted(
-                {
-                    int(serial)
-                    for serial, _lo, _hi in phase_artifact.handler_range_map
-                    if int(serial) not in point_handler_targets
-                }
-            )
-        )
-        if len(next_phase_targets) != 1:
-            return None
-        next_phase_target = int(next_phase_targets[0])
-
-        def _matching_records(expected_state: int, expected_target: int) -> tuple[EmulatedDispatcherCandidateRecord, ...]:
-            return tuple(
-                record
-                for record in candidate_records
-                if record.target_serial is not None
-                and tuple(int(value) for value in record.state_signature) == (expected_state,)
-                and int(record.target_serial) == expected_target
-                and int(record.source_nsucc) == 1
-                and int(record.raw_side_effect_count) == 1
-            )
-
-        header_records = _matching_records(header_state, header_target)
-        body_records = _matching_records(body_state, body_target)
-        next_phase_records = tuple(
-            record
-            for record in candidate_records
-            if record.target_serial is not None
-            and int(record.target_serial) == next_phase_target
-            and int(record.source_nsucc) == 1
-            and int(record.raw_side_effect_count) == 1
-        )
-        if not header_records or len(body_records) != 1 or len(next_phase_records) < 1:
-            return None
-
-        def _is_2way(serial: int) -> bool:
-            blk = mba.get_mblock(serial)
-            return blk is not None and int(blk.nsucc()) == 2
-
-        if not all(
-            _is_2way(serial)
-            for serial in (header_target, body_target, next_phase_target)
-        ):
-            return None
-
-        modifications: list[GraphModification] = []
-        for record in (*header_records, *body_records):
-            rewrite = self._build_live_state_write_recovery(
-                mba=mba,
-                father_serial=int(record.father_serial),
-                dispatcher_entry_serial=int(record.dispatcher_entry_serial),
-                target_serial=int(record.target_serial),
-                expected_state=int(record.state_signature[0]),
-                state_var_stkoff=int(phase_artifact.state_var_stkoff),
-            )
-            if rewrite is None:
-                return None
-            modifications.extend(rewrite)
-
-        modifications.extend(
-            (
-                RedirectBranch(
-                    from_serial=header_target,
-                    old_target=int(phase_artifact.dispatcher_entry_serial),
-                    new_target=next_phase_target,
-                ),
-                RedirectBranch(
-                    from_serial=body_target,
-                    old_target=int(phase_artifact.dispatcher_entry_serial),
-                    new_target=next_phase_target,
-                ),
-            )
-        )
-        if terminal_records:
-            # The next phase already has a concrete terminal arm.  Preserve it
-            # by sending the terminal state-write block to the real exit rather
-            # than folding that conditional arm into a self-loop.
-            for record in terminal_records:
-                modifications.append(
-                    RedirectGoto(
-                        from_serial=int(record.father_serial),
-                        old_target=int(phase_artifact.dispatcher_entry_serial),
-                        new_target=int(record.target_serial),
-                    )
-                )
-        else:
-            modifications.append(
-                RedirectBranch(
-                    from_serial=next_phase_target,
-                    old_target=int(phase_artifact.dispatcher_entry_serial),
-                    new_target=next_phase_target,
-                )
-            )
-        self._logger.info(
-            "DispatcherLoopRecovery phase-cycle lowering: header=%s body=%s next_phase=%s terminal=%s mods=%d",
-            tuple(int(record.father_serial) for record in header_records),
-            tuple(int(record.father_serial) for record in body_records),
-            tuple(int(record.father_serial) for record in next_phase_records),
-            tuple(int(record.father_serial) for record in terminal_records),
-            len(modifications),
-        )
-        return tuple(modifications)
-
-    def _build_phase_cycle_branch_recovery(
-        self,
-        *,
-        mba: ida_hexrays.mba_t,
-        phase_artifact: EmulatedDispatcherPhaseArtifact,
-        record: EmulatedDispatcherCandidateRecord,
-        candidate_records: tuple[EmulatedDispatcherCandidateRecord, ...],
-    ) -> tuple[GraphModification, ...] | None:
-        if phase_artifact.semantic_reference_variant != "semantic_reference_like":
-            return None
-        if record.target_serial is None or record.raw_side_effect_count != 0:
-            return None
-
-        father_blk = mba.get_mblock(int(record.father_serial))
-        if father_blk is None or father_blk.nsucc() != 1:
-            return None
-        if int(father_blk.succ(0)) != int(record.target_serial):
-            return None
-
-        predecessors = [mba.get_mblock(int(pred)) for pred in list(father_blk.predset)]
-        conditional_parents = [
-            parent
-            for parent in predecessors
-            if parent is not None
-            and int(parent.nsucc()) == 2
-            and int(record.father_serial) in {int(parent.succ(0)), int(parent.succ(1))}
-        ]
-        if len(conditional_parents) != 1:
-            return None
-
-        parent_blk = conditional_parents[0]
-        if tuple(int(target) for _, _, target in phase_artifact.handler_range_map) and int(
-            parent_blk.serial
-        ) not in {
-            int(target) for _, _, target in phase_artifact.handler_range_map
-        }:
-            return None
-        if tuple(int(target) for target in record.target_scc) != (
-            int(record.target_serial),
-        ):
-            return None
-
-        self._logger.info(
-            "DispatcherLoopRecovery phase-cycle branch: parent=%d terminal_bridge=%d -> self-loop %d",
-            int(parent_blk.serial),
-            int(record.father_serial),
-            int(parent_blk.serial),
-        )
-        return (
-            RedirectBranch(
-                from_serial=int(parent_blk.serial),
-                old_target=int(record.father_serial),
-                new_target=int(parent_blk.serial),
-            ),
-        )
 
     def _build_live_state_write_recovery(
         self,
@@ -8943,15 +8425,18 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         loop_recovery_modifications: tuple[GraphModification, ...] = ()
         loop_recovery_blockers: tuple[str, ...] = ()
         if mba.maturity >= ida_hexrays.MMAT_GLBOPT1 and detection.collector_dispatchers:
-            loop_recovery_modifications, loop_recovery_blockers = (
-                self._collect_loop_recovery_modifications(
-                    mba=mba,
-                    snapshot_flow_graph=flow_graph,
-                    phase_artifact=phase_artifact,
-                    phase_context=phase_context,
-                    candidate_records=candidate_records,
-                )
+            (
+                loop_recovery_modifications,
+                loop_recovery_blockers,
+                loop_recovery_records,
+            ) = self._collect_loop_recovery_modifications(
+                mba=mba,
+                snapshot_flow_graph=flow_graph,
+                phase_artifact=phase_artifact,
+                phase_context=phase_context,
             )
+            if loop_recovery_records:
+                candidate_records = loop_recovery_records
         elif (
             mba.maturity >= ida_hexrays.MMAT_GLBOPT1
             and self._profile.state_transport == "state_dispatcher_map"
