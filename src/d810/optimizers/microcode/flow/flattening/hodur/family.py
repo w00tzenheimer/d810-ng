@@ -47,6 +47,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.state_machine_adapters import (
+    detect_switch_table_state_machine,
+)
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
@@ -1001,80 +1004,14 @@ class HodurStrategyFamily(CFFStrategyFamily):
     def try_switch_table_detection(
         self, mba: ida_hexrays.mba_t,
     ) -> DispatcherStateMachine | None:
-        from d810.recon.flow.switch_table_analysis import (
-            analyze_switch_table_dispatcher,
+        adapter_result = detect_switch_table_state_machine(
+            mba,
+            logger=self._logger,
         )
-        from d810.recon.flow.transition_builder import (
-            StateHandler,
-            StateTransition,
-        )
-        from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
-
-        result = analyze_switch_table_dispatcher(mba)
-        if result is None:
+        if adapter_result is None:
             return None
 
-        state_dispatcher_map = result.state_dispatcher_map
-        handler_map = state_dispatcher_map.to_dispatcher_handler_map()
-        state_var_mop = result.state_var_mop
-
-        self._logger.info(
-            "Switch-table dispatcher detected: %d handlers at blk[%d]",
-            len(handler_map.handler_state_map),
-            handler_map.dispatcher_serial,
-        )
-
-        state_machine = DispatcherStateMachine(mba=mba, state_var=state_var_mop)
-        state_machine.state_constants = set(handler_map.handler_state_map.values())
-
-        handler_entry_blocks = set(handler_map.handler_state_map.keys())
-        dispatcher_blocks_set = set(handler_map.dispatcher_blocks)
-
-        for handler_serial, state_const in handler_map.handler_state_map.items():
-            handler = StateHandler(
-                state_value=state_const,
-                check_block=handler_serial,
-                handler_blocks=[handler_serial],
-            )
-            state_machine.add_handler(handler)
-
-        for handler_serial, state_const in handler_map.handler_state_map.items():
-            try:
-                paths = evaluate_handler_paths(
-                    mba,
-                    entry_serial=handler_serial,
-                    incoming_state=state_const,
-                    bst_node_blocks=dispatcher_blocks_set,
-                    state_var_stkoff=handler_map.state_var_stkoff,
-                    handler_entry_blocks=handler_entry_blocks,
-                )
-            except Exception:
-                self._logger.debug(
-                    "Forward eval failed for switch handler blk[%d] (state=%d)",
-                    handler_serial,
-                    state_const,
-                )
-                continue
-
-            for path_result in paths:
-                if path_result.final_state is None:
-                    continue
-                target = handler_map.resolve_target(path_result.final_state)
-                if target is None:
-                    continue
-                transition = StateTransition(
-                    from_state=state_const,
-                    to_state=path_result.final_state,
-                    from_block=path_result.exit_block,
-                )
-                state_machine.add_transition(transition)
-
-        self._logger.info(
-            "Switch-table state machine: %d handlers, %d transitions",
-            len(state_machine.handlers),
-            len(state_machine.transitions),
-        )
-
-        self._switch_table_map = state_dispatcher_map
+        state_machine = adapter_result.state_machine
+        self._switch_table_map = adapter_result.state_dispatcher_map
         self._state_machine = state_machine
         return state_machine
