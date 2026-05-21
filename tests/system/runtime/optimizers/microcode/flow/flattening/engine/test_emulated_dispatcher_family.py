@@ -47,6 +47,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
     legacy_father_history_dispatcher_profile,
+    ollvm_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -3038,12 +3039,18 @@ def test_implicit_family_profile_does_not_use_father_history() -> None:
     assert type(family._profile.resolver_factory()).__name__ == "_NoopDispatcherResolver"
 
 
-def test_legacy_father_history_profile_is_explicit_opt_in() -> None:
-    profile = legacy_father_history_dispatcher_profile()
+def test_ollvm_father_history_profile_is_explicit_opt_in() -> None:
+    profile = ollvm_father_history_dispatcher_profile()
 
-    assert profile.name == "legacy_father_history"
+    assert profile.name == "ollvm_father_history"
     assert profile.state_transport == "father_history_emulation"
     assert profile.resolver_factory.__name__ == "OllvmFatherHistoryResolver"
+
+
+def test_legacy_father_history_profile_aliases_explicit_ollvm_name() -> None:
+    profile = legacy_father_history_dispatcher_profile()
+
+    assert profile.name == "ollvm_father_history"
 
 
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
@@ -3282,7 +3289,15 @@ def test_emulated_dispatcher_unflattener_accepts_legacy_father_history_profile()
     rule = EmulatedDispatcherUnflattener()
     rule.configure({"profile": "legacy_father_history"})
 
-    assert rule._family._profile.name == "legacy_father_history"
+    assert rule._family._profile.name == "ollvm_father_history"
+    assert rule._family._profile.state_transport == "father_history_emulation"
+
+
+def test_emulated_dispatcher_unflattener_accepts_ollvm_father_history_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({"profile": "ollvm_father_history"})
+
+    assert rule._family._profile.name == "ollvm_father_history"
     assert rule._family._profile.state_transport == "father_history_emulation"
 
 
