@@ -46,6 +46,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
+    legacy_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -70,6 +71,11 @@ from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_e
     EmulatedDispatcherUnflattener,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_discovery_facts import (
+    DISPATCHER_INITIAL_STATE_FACT_TYPE,
+    STATE_DISPATCHER_TOPOLOGY_FACT_TYPE,
+    STATE_VARIABLE_IDENTITY_FACT_TYPE,
+)
 from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -2792,7 +2798,7 @@ def _build_approov_multistate_phase_cycle(role_map: dict[str, tuple[tuple[int, i
     )
 
 
-def test_default_ollvm_profile_uses_state_map_evidence(
+def test_implicit_profile_uses_state_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=13)
@@ -2848,7 +2854,7 @@ def test_default_ollvm_profile_uses_state_map_evidence(
     assert detection.planning_blocker is None
 
 
-def test_default_ollvm_profile_prefers_switch_map_evidence(
+def test_implicit_profile_prefers_switch_map_evidence(
     monkeypatch,
 ) -> None:
     dispatch_map = _state_dispatcher_map(dispatcher_entry=21)
@@ -3022,6 +3028,22 @@ def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
         assert type(resolver).__name__ == "_NoopDispatcherResolver"
         assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
         assert resolver.check_if_histories_are_resolved(None) is False
+
+
+def test_implicit_family_profile_does_not_use_father_history() -> None:
+    family = EmulatedDispatcherStrategyFamily()
+
+    assert family._profile.name == "ollvm_state_map"
+    assert family._profile.state_transport == "state_dispatcher_map"
+    assert type(family._profile.resolver_factory()).__name__ == "_NoopDispatcherResolver"
+
+
+def test_legacy_father_history_profile_is_explicit_opt_in() -> None:
+    profile = legacy_father_history_dispatcher_profile()
+
+    assert profile.name == "legacy_father_history"
+    assert profile.state_transport == "father_history_emulation"
+    assert profile.resolver_factory.__name__ == "OllvmFatherHistoryResolver"
 
 
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
@@ -3246,6 +3268,29 @@ def test_tigress_indirect_profile_can_materialize_targets(monkeypatch) -> None:
 
     assert calls == [config]
     assert rule._family._profile.name == "tigress_indirect"
+
+
+def test_emulated_dispatcher_unflattener_defaults_to_state_dispatcher_map() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({})
+
+    assert rule._family._profile.name == "ollvm_state_map"
+    assert rule._family._profile.state_transport == "state_dispatcher_map"
+
+
+def test_emulated_dispatcher_unflattener_accepts_legacy_father_history_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+    rule.configure({"profile": "legacy_father_history"})
+
+    assert rule._family._profile.name == "legacy_father_history"
+    assert rule._family._profile.state_transport == "father_history_emulation"
+
+
+def test_emulated_dispatcher_unflattener_rejects_unknown_profile() -> None:
+    rule = EmulatedDispatcherUnflattener()
+
+    with pytest.raises(ValueError, match="Unknown EmulatedDispatcherUnflattener profile"):
+        rule.configure({"profile": "typo_state_map"})
 
 
 def test_emulated_dispatcher_unflattener_accepts_ollvm_materialization_guard() -> None:
@@ -3551,6 +3596,19 @@ def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_ana
     assert context.state_dispatcher_map is not None
     assert context.state_dispatcher_map.dispatcher_entry_block == 2
     assert context.state_dispatcher_map.dispatcher_blocks == frozenset({2, 3, 7})
+    discovery_by_kind = {
+        observation.kind: observation
+        for observation in context.dispatcher_discovery_fact_observations
+    }
+    assert discovery_by_kind[STATE_DISPATCHER_TOPOLOGY_FACT_TYPE].payload[
+        "dispatcher_blocks"
+    ] == [2, 3, 7]
+    assert discovery_by_kind[STATE_VARIABLE_IDENTITY_FACT_TYPE].payload[
+        "state_var_stkoff"
+    ] == 0x3C
+    assert discovery_by_kind[DISPATCHER_INITIAL_STATE_FACT_TYPE].payload[
+        "initial_state"
+    ] == 0x10
 
 
 def test_tigress_switch_transition_facts_lower_direct_case_redirect() -> None:
@@ -4120,6 +4178,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     monkeypatch,
 ) -> None:
     switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
+    dispatcher_observation = SimpleNamespace(kind=STATE_DISPATCHER_TOPOLOGY_FACT_TYPE)
     context = EmulatedDispatcherPhaseContext(
         bst_result=object(),
         transition_result=object(),
@@ -4127,6 +4186,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         dag=SimpleNamespace(nodes=(), edges=()),
         semantic_reference_program=object(),
         switch_case_transition_facts=(switch_fact,),
+        dispatcher_discovery_fact_observations=(dispatcher_observation,),
     )
     flow_graph = FlowGraph(
         blocks={
@@ -4155,6 +4215,7 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         ),
     )
     observed = []
+    observed_fact_rows = []
 
     monkeypatch.setattr(
         hexrays_observability,
@@ -4181,6 +4242,12 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         "d810.recon.observability.observe_switch_case_transition_facts",
         lambda snap, facts: observed.append((snap, tuple(facts))),
     )
+    monkeypatch.setattr(
+        "d810.recon.observability.observe_fact_observation",
+        lambda snap, func_ea, observations: observed_fact_rows.append(
+            (snap, func_ea, tuple(observations))
+        ),
+    )
 
     EmulatedDispatcherStrategyFamily(
         profile=tigress_switch_dispatcher_profile(),
@@ -4190,6 +4257,9 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
     )
 
     assert observed == [("snap", (switch_fact,))]
+    assert observed_fact_rows == [
+        ("snap", 0x401000, (dispatcher_observation,))
+    ]
 
 
 def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
@@ -5063,12 +5133,14 @@ def test_emulated_dispatcher_family_inserts_safe_copies_before_conditional_targe
         ),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
-        lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
+        GenericDispatcherEngineProfile,
+        "resolve_state_values",
+        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
-        lambda _values: True,
+        GenericDispatcherEngineProfile,
+        "state_values_complete",
+        lambda _self, _values: True,
     )
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",
@@ -5114,12 +5186,14 @@ def test_emulated_dispatcher_family_reuses_deferred_side_effects_after_calls(
         nextb=None,
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.collect_possible_history_values",
-        lambda _histories, _use_before_def_list, verbose=False: [[0xF6A20]],
+        GenericDispatcherEngineProfile,
+        "resolve_state_values",
+        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.all_history_values_found",
-        lambda _values: True,
+        GenericDispatcherEngineProfile,
+        "state_values_complete",
+        lambda _self, _values: True,
     )
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",

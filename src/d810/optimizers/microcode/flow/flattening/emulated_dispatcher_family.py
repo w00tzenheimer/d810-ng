@@ -13,6 +13,10 @@ import ida_hexrays
 
 from d810.core.typing import Protocol
 from d810.cfg.dominator import compute_dom_tree
+from d810.cfg.dispatcher_rewrite_planning import (
+    DispatcherPredecessorRewriteInput,
+    plan_dispatcher_predecessor_rewrite,
+)
 from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
@@ -44,8 +48,8 @@ from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkva
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
-from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import (
     IDAIRTranslator,
     capture_insn_snapshot,
@@ -103,6 +107,9 @@ from d810.recon.flow.branch_ownership import (
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
+from d810.recon.flow.dispatcher_discovery_facts import (
+    collect_state_dispatcher_discovery_fact_observations,
+)
 from d810.recon.flow.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
@@ -180,7 +187,7 @@ __all__ = [
     "GenericDispatcherCollectorProtocol",
     "GenericDispatcherEngineProfile",
     "GenericDispatcherResolverProtocol",
-    "default_ollvm_dispatcher_profile",
+    "legacy_father_history_dispatcher_profile",
     "ollvm_state_dispatcher_map_profile",
     "tigress_indirect_dispatcher_profile",
     "tigress_switch_dispatcher_profile",
@@ -3003,10 +3010,6 @@ def _apply_local_alias_mem2reg(
     qty = int(getattr(mba, "qty", 0) or 0)
     setup_moves_removed = 0
     fact_ids: set[str] = set()
-    try:
-        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    except Exception:
-        return 0
     modifier = DeferredGraphModifier(mba)
     queued_keys: set[tuple[int, int, int, str, str]] = set()
     for serial in range(qty):
@@ -3413,11 +3416,6 @@ def _apply_semantic_carrier_promotions(
     scalarized = 0
     touched_blocks: set[int] = set()
     fact_ids: set[str] = set()
-    try:
-        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
-    except Exception:
-        return 0
-
     modifier = DeferredGraphModifier(mba)
     qty = int(getattr(mba, "qty", 0) or 0)
     for serial in range(qty):
@@ -4728,11 +4726,11 @@ class GenericDispatcherEngineProfile:
         return fallthrough_serial
 
 
-def default_ollvm_dispatcher_profile() -> GenericDispatcherEngineProfile:
-    """Return the default OLLVM-backed dispatcher profile."""
+def legacy_father_history_dispatcher_profile() -> GenericDispatcherEngineProfile:
+    """Return the legacy OLLVM father-history dispatcher profile."""
 
     return GenericDispatcherEngineProfile(
-        name="ollvm",
+        name="legacy_father_history",
         collector_factory=OllvmDispatcherCollector,
         resolver_factory=OllvmFatherHistoryResolver,
         state_transport="father_history_emulation",
@@ -4752,15 +4750,15 @@ def ollvm_state_dispatcher_map_profile(
     enable_terminal_payload_materialization: bool = False,
     enable_phase_reorder: bool = False,
 ) -> GenericDispatcherEngineProfile:
-    """Return the recon-owned OLLVM equality-chain profile.
+    """Return the recon-owned OLLVM state-dispatcher-map profile.
 
-    OLLVM equality-chain dispatchers are now modelled through the neutral
-    ``StateDispatcherMap`` recon surface.  Keeping the legacy OLLVM collector
-    active here makes father-history emulation compete with the exact row map:
-    the collector can still find a broad dispatcher, but it cannot explain all
-    side effects and conditional states in large FLA+BCF samples.  That leaves
-    the family in the old "some fathers unresolved" posture and prevents the
-    phase-level recon paths from owning lowering.
+    OLLVM equality-chain and switch-table dispatchers are now modelled through
+    the neutral ``StateDispatcherMap`` recon surface.  Keeping the legacy OLLVM
+    collector active here makes father-history emulation compete with the exact
+    row map: the collector can still find a broad dispatcher, but it cannot
+    explain all side effects and conditional states in large FLA+BCF samples.
+    That leaves the family in the old "some fathers unresolved" posture and
+    prevents the phase-level recon paths from owning lowering.
 
     Use no-op collector/resolver objects so detection and lowering are driven
     by exact equality-chain rows plus transition facts.  If a future change
@@ -4774,10 +4772,12 @@ def ollvm_state_dispatcher_map_profile(
         resolver_factory=_NoopDispatcherResolver,
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
-        provenance_hints=("equality_chain",),
+        provenance_hints=(),
         enable_terminal_payload_materialization=enable_terminal_payload_materialization,
         enable_phase_reorder=enable_phase_reorder,
-        state_dispatcher_map_factory=_ollvm_state_dispatcher_maps,
+        allow_incomplete_switch_transition_facts=True,
+        state_dispatcher_map_factory=_ollvm_state_dispatcher_map_fallback,
+        switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
         post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
         fact_observation_factory=collect_ollvm_profile_fact_observations,
         branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
@@ -4864,7 +4864,7 @@ class EmulatedDispatcherDetection:
 
 
 class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
-    """Engine-family adapter over the legacy generic dispatcher collector."""
+    """Engine-family adapter over profile-composed dispatcher evidence."""
 
     def __init__(
         self,
@@ -4875,7 +4875,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
     ) -> None:
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._logger = logger or family_logger
-        self._profile = profile or default_ollvm_dispatcher_profile()
+        self._profile = profile or ollvm_state_dispatcher_map_profile()
         self._strategies = [
             DispatcherLoopRecoveryStrategy(),
             EmulatedDispatcherStrategy(),
@@ -7217,6 +7217,24 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 state_var_stkoff=state_var_stkoff,
             )
         )
+        dispatcher_snapshot = flow_graph.get_block(dispatcher_entry_serial)
+        dispatcher_predecessor_serials = (
+            tuple(int(serial) for serial in getattr(dispatcher_snapshot, "preds", ()) or ())
+            if dispatcher_snapshot is not None
+            else ()
+        )
+        dispatcher_discovery_fact_observations = (
+            collect_state_dispatcher_discovery_fact_observations(
+                state_dispatcher_map=state_dispatcher_map,
+                maturity=self._maturity_name(int(getattr(mba, "maturity", 0) or 0)),
+                phase="pre_d810",
+                profile_name=self._profile.name,
+                predecessor_serials=dispatcher_predecessor_serials,
+                initial_state=recovered_initial_state,
+                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+                predecessor_target_facts=predecessor_dispatcher_target_facts,
+            )
+        )
         artifact = EmulatedDispatcherPhaseArtifact(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
@@ -7260,6 +7278,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             state_dispatcher_map=state_dispatcher_map,
             switch_case_transition_facts=switch_case_transition_facts,
             predecessor_dispatcher_target_facts=predecessor_dispatcher_target_facts,
+            dispatcher_discovery_fact_observations=(
+                dispatcher_discovery_fact_observations
+            ),
         )
         return artifact, context
 
@@ -8184,177 +8205,75 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 }
             )
 
-        def _build_conditional_redirect_candidate(
-            instructions: tuple[object, ...] = (),
-        ) -> tuple[
-            tuple[GraphModification, ...],
-            None,
-            EmulatedDispatcherCandidateRecord,
-        ] | tuple[None, str, EmulatedDispatcherCandidateRecord] | None:
-            if (
-                target_blk.nsucc() != 2
-                or target_blk.tail is None
-                or not ida_hexrays.is_mcode_jcond(target_blk.tail.opcode)
-            ):
-                return None
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_conditional_target_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if target_blk.nextb is None:
-                reason = "dispatcher_target_missing_fallthrough"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            conditional_target = int(target_blk.tail.d.b)
-            fallthrough_target = int(target_blk.nextb.serial)
-            if conditional_target == dispatcher_father.serial:
-                reason = "dispatcher_conditional_target_self_loop"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if fallthrough_target == dispatcher_father.serial:
-                reason = "dispatcher_fallthrough_target_self_loop"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                CreateConditionalRedirect(
-                    source_block=int(dispatcher_father.serial),
-                    ref_block=int(target_blk.serial),
-                    conditional_target=conditional_target,
-                    fallthrough_target=fallthrough_target,
-                    instructions=instructions,
+        safe_copy_snapshots = tuple(
+            capture_insn_snapshot(insn) for insn in safe_copy_insns
+        )
+        source_old_target = (
+            int(dispatcher_father.succ(0))
+            if int(dispatcher_father.nsucc()) >= 1
+            else None
+        )
+        source_tail = getattr(dispatcher_father, "tail", None)
+        source_is_conditional = bool(
+            source_tail is not None
+            and ida_hexrays.is_mcode_jcond(source_tail.opcode)
+        )
+        target_tail = getattr(target_blk, "tail", None)
+        target_is_conditional = bool(
+            target_tail is not None and ida_hexrays.is_mcode_jcond(target_tail.opcode)
+        )
+        target_conditional_target = None
+        target_fallthrough_target = None
+        if target_is_conditional:
+            target_dest = getattr(getattr(target_tail, "d", None), "b", None)
+            if target_dest is not None:
+                target_conditional_target = int(target_dest)
+            if target_blk.nextb is not None:
+                target_fallthrough_target = int(target_blk.nextb.serial)
+        clone_conditional_targets = (
+            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        decision = plan_dispatcher_predecessor_rewrite(
+            DispatcherPredecessorRewriteInput(
+                source_serial=int(dispatcher_father.serial),
+                source_nsucc=int(dispatcher_father.nsucc()),
+                source_old_target=source_old_target,
+                source_is_conditional=source_is_conditional,
+                target_serial=int(target_blk.serial),
+                target_nsucc=int(target_blk.nsucc()),
+                target_is_conditional=target_is_conditional,
+                target_conditional_target=target_conditional_target,
+                target_fallthrough_target=target_fallthrough_target,
+                safe_copy_instructions=safe_copy_snapshots,
+                deferred_side_effect_instructions=tuple(deferred_side_effects or ()),
+                raw_side_effect_count=len(raw_ins_to_copy),
+                safe_side_effect_count=len(safe_copy_insns),
+                defer_side_effects=(
+                    bool(safe_copy_snapshots)
+                    and resolver.mba.maturity == ida_hexrays.MMAT_CALLS
                 ),
+                clone_conditional_targets=clone_conditional_targets,
             )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if raw_ins_to_copy and not safe_copy_insns:
-            reason = "dispatcher_side_effects_not_dependency_safe"
-            return None, reason, _blocked_record(
-                reason,
+        )
+        if decision.defer_side_effects and safe_copy_snapshots:
+            self._deferred_side_effects[
+                (
+                    int(resolver.mba.entry_ea),
+                    int(entry_serial),
+                    state_signature,
+                )
+            ] = safe_copy_snapshots
+        if decision.blocker is not None:
+            return None, decision.blocker, _blocked_record(
+                decision.blocker,
                 state_signature=state_signature,
                 target_serial=int(target_blk.serial),
                 raw_side_effect_count=len(raw_ins_to_copy),
                 safe_side_effect_count=len(safe_copy_insns),
             )
-
-        if safe_copy_insns:
-            safe_copy_snapshots = tuple(
-                capture_insn_snapshot(insn) for insn in safe_copy_insns
-            )
-            if resolver.mba.maturity == ida_hexrays.MMAT_CALLS:
-                self._deferred_side_effects[
-                    (
-                        int(resolver.mba.entry_ea),
-                        int(entry_serial),
-                        state_signature,
-                    )
-                ] = safe_copy_snapshots
-                reason = "dispatcher_side_effects_deferred_to_later_maturity"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_insert_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                InsertBlock(
-                    pred_serial=int(dispatcher_father.serial),
-                    succ_serial=int(target_blk.serial),
-                    instructions=safe_copy_snapshots,
-                    old_target_serial=int(dispatcher_father.succ(0)),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if deferred_side_effects:
-            if dispatcher_father.nsucc() != 1:
-                reason = "dispatcher_insert_requires_one_way_source"
-                return None, reason, _blocked_record(
-                    reason,
-                    state_signature=state_signature,
-                    target_serial=int(target_blk.serial),
-                    raw_side_effect_count=len(raw_ins_to_copy),
-                    safe_side_effect_count=len(safe_copy_insns),
-                )
-            modifications = (
-                InsertBlock(
-                    pred_serial=int(dispatcher_father.serial),
-                    succ_serial=int(target_blk.serial),
-                    instructions=deferred_side_effects,
-                    old_target_serial=int(dispatcher_father.succ(0)),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        clone_conditional_targets = (
-            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        if clone_conditional_targets:
-            conditional_redirect = _build_conditional_redirect_candidate()
-            if conditional_redirect is not None:
-                return conditional_redirect
-
-        if dispatcher_father.nsucc() == 1:
-            modifications = (
-                RedirectGoto(
-                    from_serial=int(dispatcher_father.serial),
-                    old_target=int(dispatcher_father.succ(0)),
-                    new_target=int(target_blk.serial),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        if (
-            dispatcher_father.nsucc() == 2
-            and dispatcher_father.tail is not None
-            and ida_hexrays.is_mcode_jcond(dispatcher_father.tail.opcode)
-        ):
-            modifications = (
-                ConvertToGoto(
-                    block_serial=int(dispatcher_father.serial),
-                    goto_target=int(target_blk.serial),
-                ),
-            )
-            return modifications, None, _record_for_modifications(modifications)
-
-        reason = "dispatcher_source_shape_not_lowered"
-        return None, reason, _blocked_record(
-            reason,
-            state_signature=state_signature,
-            target_serial=int(target_blk.serial),
-            raw_side_effect_count=len(raw_ins_to_copy),
-            safe_side_effect_count=len(safe_copy_insns),
-        )
+        modifications = decision.modifications
+        return modifications, None, _record_for_modifications(modifications)
 
     def _mop_const_value(self, mop) -> int | None:
         if mop is None or getattr(mop, "t", None) != ida_hexrays.mop_n:
@@ -9196,17 +9115,32 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     len(switch_case_transition_facts),
                     self._profile.name,
                 )
+            dispatcher_discovery_fact_observations = tuple(
+                getattr(
+                    phase_context,
+                    "dispatcher_discovery_fact_observations",
+                    (),
+                )
+                or ()
+            )
             profile_fact_observations = self._profile.collect_fact_observations(mba)
-            if profile_fact_observations:
+            fact_observations = (
+                *dispatcher_discovery_fact_observations,
+                *profile_fact_observations,
+            )
+            if fact_observations:
                 observe_fact_observation(
                     snap_ref,
                     int(getattr(mba, "entry_ea", 0) or 0),
-                    profile_fact_observations,
+                    fact_observations,
                 )
                 self._logger.info(
-                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s",
-                    len(profile_fact_observations),
+                    "PROFILE_FACT_OBSERVATIONS: emitted %d rows for profile=%s "
+                    "(dispatcher_discovery=%d profile_specific=%d)",
+                    len(fact_observations),
                     self._profile.name,
+                    len(dispatcher_discovery_fact_observations),
+                    len(profile_fact_observations),
                 )
             observe_rendered_program(
                 snap_ref,
@@ -9436,7 +9370,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             )
             return int(semantic_carrier_changes)
 
-        nb_clean = mba_deep_cleaning(mba, False)
+        nb_clean = DeferredGraphModifier(mba).run_deep_cleaning(
+            call_mba_combine_block=False,
+        )
         if total_changes + nb_clean + semantic_carrier_changes > 0:
             mba.mark_chains_dirty()
             mba.optimize_local(0)

@@ -100,6 +100,7 @@ class EmulatedDispatcherPhaseContext:
     state_dispatcher_map: object | None = None
     switch_case_transition_facts: tuple[object, ...] = ()
     predecessor_dispatcher_target_facts: tuple[object, ...] = ()
+    dispatcher_discovery_fact_observations: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True)
