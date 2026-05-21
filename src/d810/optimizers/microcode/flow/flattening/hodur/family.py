@@ -53,9 +53,6 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     serialize_single_iteration_fixes,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
-from d810.recon.flow.graph_reachability import (
-    collect_residual_dispatcher_predecessors,
-)
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )
@@ -100,11 +97,11 @@ class HodurStrategyFamily(CFFStrategyFamily):
     - strategy registration
     - successful-strategy bookkeeping
     - FlowGraph metadata enrichment
-    - return-frontier artifact persistence helpers
-    - family-local post-execution helpers
 
     The live ``HodurUnflattener`` remains responsible for pass lifecycle,
-    compatibility accessors and concrete CFG cleanup.
+    compatibility accessors and concrete CFG cleanup.  Shared runtime helpers
+    own executor construction, pass bookkeeping, audit persistence, and
+    post-apply cleanup gating.
     """
 
     def __init__(
@@ -188,6 +185,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
     @property
     def switch_table_map(self) -> object | None:
         return self._switch_table_map
+
+    @property
+    def cfg_translator(self) -> IDAIRTranslator:
+        return self._cfg_translator
 
     @property
     def resolved_transitions(self) -> frozenset[tuple[int | None, int]]:
@@ -527,98 +528,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 maturity_name,
                 len(residual_preds),
             )
-
-    def collect_live_residual_dispatcher_preds(
-        self,
-        mba: ida_hexrays.mba_t,
-        snapshot: AnalysisSnapshot,
-        *,
-        strategy_name: str,
-    ) -> tuple[int, ...]:
-        """Collect live residual non-BST predecessors to the dispatcher."""
-        bst_result = snapshot.bst_result
-        if bst_result is None or snapshot.bst_dispatcher_serial < 0:
-            return ()
-        strategy = next(
-            (
-                candidate
-                for candidate in self._strategies
-                if getattr(candidate, "name", None) == strategy_name
-            ),
-            None,
-        )
-        collector = getattr(strategy, "_collect_residual_dispatcher_predecessors", None)
-        if collector is None:
-            collector = collect_residual_dispatcher_predecessors
-        try:
-            flow_graph = self._cfg_translator.lift(mba)
-            raw_collector = getattr(strategy, "_collect_dispatcher_predecessors", None)
-            active_collector = raw_collector or collector
-            return active_collector(
-                flow_graph,
-                snapshot.bst_dispatcher_serial,
-                bst_node_blocks=set(bst_result.bst_node_blocks),
-            )
-        except Exception:
-            self._logger.debug(
-                "Failed to collect live residual dispatcher preds for %s",
-                strategy_name,
-                exc_info=True,
-            )
-            return ()
-
-    def collect_live_lfg_residual_dispatcher_preds(
-        self,
-        mba: ida_hexrays.mba_t,
-        snapshot: AnalysisSnapshot,
-    ) -> tuple[int, ...]:
-        return self.collect_live_residual_dispatcher_preds(
-            mba,
-            snapshot,
-            strategy_name="linearized_flow_graph",
-        )
-
-    @staticmethod
-    def collect_post_apply_bst_cleanup_blockers(
-        pipeline: list[PlanFragment],
-        results: list[StageResult],
-        *,
-        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] | None = None,
-    ) -> dict[str, tuple[int, ...]]:
-        blockers: dict[str, tuple[int, ...]] = {}
-        live_residual_dispatcher_preds_by_strategy = (
-            live_residual_dispatcher_preds_by_strategy or {}
-        )
-        for fragment, result in zip(pipeline, results):
-            if not (result.success and result.edits_applied > 0):
-                continue
-            if fragment.metadata.get("allow_post_apply_bst_cleanup", True):
-                continue
-            cleanup_reason = fragment.metadata.get("post_apply_bst_cleanup_reason")
-            group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
-            if isinstance(group_name, str):
-                residual_source = live_residual_dispatcher_preds_by_strategy.get(
-                    f"group:{group_name}"
-                )
-                if residual_source is not None:
-                    residual_preds = tuple(int(serial) for serial in residual_source)
-                    if not residual_preds:
-                        continue
-                    blockers[fragment.strategy_name] = residual_preds
-                    continue
-            residual_preds = tuple(
-                int(serial)
-                for serial in live_residual_dispatcher_preds_by_strategy.get(
-                    fragment.strategy_name,
-                    tuple(fragment.metadata.get("residual_dispatcher_preds", ())),
-                )
-            )
-            if residual_preds:
-                blockers[fragment.strategy_name] = residual_preds
-                continue
-            if isinstance(cleanup_reason, str) and cleanup_reason:
-                blockers[fragment.strategy_name] = ()
-        return blockers
 
     def attach_fake_jump_fixes_to_flow_graph(
         self,
