@@ -47,7 +47,6 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
     GenericDispatcherEngineProfile,
-    ollvm_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -2835,10 +2834,6 @@ def test_implicit_profile_uses_state_map_evidence(
         SimpleNamespace(get_or_create=lambda _mba: cache),
     )
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
-        _Collector,
-    )
-    monkeypatch.setattr(
         emulated_family_module,
         "extract_state_dispatcher_map_from_mba",
         _extract_state_dispatcher_map,
@@ -2877,10 +2872,6 @@ def test_implicit_profile_prefers_switch_map_evidence(
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
         SimpleNamespace(get_or_create=lambda _mba: cache),
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.OllvmDispatcherCollector",
-        _Collector,
     )
     monkeypatch.setattr(
         emulated_family_module,
@@ -3040,14 +3031,6 @@ def test_implicit_family_profile_does_not_use_father_history() -> None:
     assert family._profile.name == "ollvm_state_map"
     assert family._profile.state_transport == "state_dispatcher_map"
     assert type(family._profile.resolver_factory()).__name__ == "_NoopDispatcherResolver"
-
-
-def test_ollvm_father_history_profile_is_explicit_opt_in() -> None:
-    profile = ollvm_father_history_dispatcher_profile()
-
-    assert profile.name == "ollvm_father_history"
-    assert profile.state_transport == "father_history_emulation"
-    assert profile.resolver_factory.__name__ == "OllvmFatherHistoryResolver"
 
 
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
@@ -3282,17 +3265,10 @@ def test_emulated_dispatcher_unflattener_defaults_to_state_dispatcher_map() -> N
     assert rule._family._profile.state_transport == "state_dispatcher_map"
 
 
-def test_emulated_dispatcher_unflattener_accepts_ollvm_father_history_profile() -> None:
-    rule = EmulatedDispatcherUnflattener()
-    rule.configure({"profile": "ollvm_father_history"})
-
-    assert rule._family._profile.name == "ollvm_father_history"
-    assert rule._family._profile.state_transport == "father_history_emulation"
-
-
 @pytest.mark.parametrize(
     "profile_name",
     [
+        "ollvm_father_history",
         "legacy_father_history",
         "ollvm_legacy_father_history",
         "father_history",

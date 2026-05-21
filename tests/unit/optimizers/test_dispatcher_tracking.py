@@ -1,11 +1,11 @@
-"""Unit tests for dispatcher father tracking logic.
+"""Unit tests for dispatcher predecessor tracking logic.
 
-The dispatcher father tracking mechanism prevents duplicate processing of the same
+The dispatcher predecessor tracking mechanism prevents duplicate processing of the same
 (source_block, target_block) pairs during control flow graph unflattening.
 
 This module tests the pure set-operation logic without importing IDA modules.
-The actual FatherHistoryDispatcherUnflatteningRule uses a set[tuple[int, int]] attribute
-named _processed_dispatcher_fathers to track (dispatcher_father.serial, target_blk.serial) pairs.
+The retired dispatcher rewrite path used a set[tuple[int, int]] attribute to track
+(dispatcher_predecessor.serial, target_blk.serial) pairs.
 
 These tests validate the mathematical properties of that tracking mechanism:
 - Initialization creates empty set
@@ -18,7 +18,7 @@ import pytest
 
 
 @pytest.mark.pure_python
-class TestDispatcherFatherTrackingLogic:
+class TestDispatcherPredecessorTrackingLogic:
     """Tests for set-based (source, target) pair tracking logic."""
 
     def test_initialization_creates_empty_set(self):
