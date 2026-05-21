@@ -472,17 +472,6 @@ def plan_fix_predecessor_clone_from_branch_arm(
             FixPredecessorRejectReason.PRED_ARM_AMBIGUOUS,
             f"pred blk[{pred_serial}] arm reaching cond is not resolvable",
         )
-    # Engine-path lowering only supports rewiring the explicit-branch arm of
-    # the predecessor (arm == 1) via change_2way_block_conditional_successor.
-    # Rewiring the fallthrough arm (arm == 0) currently has no tested helper
-    # — the legacy live rule bails on that case as well — so we keep the
-    # planner strict and route those records back to legacy fallback.
-    if pred_arm != 1:
-        return FixPredecessorCloneAsGotoFromBranchArmDecision.reject(
-            FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED,
-            f"pred blk[{pred_serial}] fallthrough arm rewiring is not supported",
-        )
-
     if conditional_block.nsucc != 2:
         return FixPredecessorCloneAsGotoFromBranchArmDecision.reject(
             FixPredecessorRejectReason.SOURCE_NOT_CONDITIONAL_2WAY,
