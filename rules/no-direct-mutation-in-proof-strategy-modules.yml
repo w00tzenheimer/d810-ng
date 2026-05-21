@@ -10,11 +10,6 @@ files:
   - "src/d810/evaluator/**/*.py"
   - "src/d810/optimizers/microcode/flow/flattening/**/*.py"
 
-ignores:
-  # Backend/materialization/emission and known legacy mutators.
-  - "src/d810/optimizers/microcode/flow/flattening/hodur/unflattener.py"
-  - "src/d810/optimizers/microcode/flow/flattening/unflattener_cf.py"
-
 message: |
   Proof, planning, and strategy modules must not directly mutate Hex-Rays MBA.
 
