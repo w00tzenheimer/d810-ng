@@ -963,6 +963,46 @@ def _branch_arm_clone_cfg() -> FlowGraph:
     )
 
 
+def _branch_arm_clone_fallthrough_cfg() -> FlowGraph:
+    """CFG with a 2-way predecessor whose fallthrough arm targets the cond."""
+    return FlowGraph(
+        blocks={
+            7: _block(
+                7,
+                (10, 20),
+                (),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1007,
+                        operands=(_BlockRef(20),),
+                        operand_slots=(("d", _BlockRef(20)),),
+                    ),
+                ),
+            ),
+            8: _block(8, (10,), ()),
+            10: _block(
+                10,
+                (11, 12),
+                (7, 8),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(12),),
+                        operand_slots=(("d", _BlockRef(12)),),
+                    ),
+                ),
+            ),
+            11: _block(11, (), (10,)),
+            12: _block(12, (), (10,)),
+            20: _block(20, (), (7,)),
+        },
+        entry_serial=7,
+        func_ea=0,
+    )
+
+
 def test_clone_conditional_as_goto_from_branch_arm_projects_clone_and_arm_redirect():
     patch_plan = compile_patch_plan(
         [
@@ -1003,6 +1043,38 @@ def test_clone_conditional_as_goto_from_branch_arm_projects_clone_and_arm_redire
     clone = projected.get_block(step.assigned_serial)
     assert clone is not None
     assert clone.succs == (12,)
+
+
+def test_clone_conditional_as_goto_from_fallthrough_arm_projects_clone_and_redirect():
+    patch_plan = compile_patch_plan(
+        [
+            CloneConditionalAsGotoFromBranchArm(
+                source_block=10,
+                pred_serial=7,
+                pred_arm=0,
+                goto_target=11,
+            )
+        ],
+        _branch_arm_clone_fallthrough_cfg(),
+    )
+
+    assert patch_plan.contains_block_creation
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchCloneConditionalAsGotoFromBranchArm)
+    assert step.pred_arm == 0
+    assert step.goto_target == 11
+    assert step.pred_branch_target_serial >= 20
+    assert step.pred_fallthrough_target_serial == 10
+    assert step.conditional_target == 12
+    assert step.fallthrough_target == 11
+
+    projected = project_post_state(_branch_arm_clone_fallthrough_cfg(), patch_plan)
+    pred = projected.get_block(7)
+    assert pred is not None
+    assert step.assigned_serial in pred.succs
+    clone = projected.get_block(step.assigned_serial)
+    assert clone is not None
+    assert clone.succs == (11,)
 
 
 def test_compile_patch_plan_rejects_clone_conditional_as_goto_from_branch_arm_without_cfg():

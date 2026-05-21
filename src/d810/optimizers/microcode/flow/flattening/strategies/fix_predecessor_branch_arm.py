@@ -5,11 +5,9 @@ corpus-evidence rationale in ticket d81-4zm8.  It emits the typed
 :class:`CloneConditionalAsGotoFromBranchArm` primitive when (and only when)
 the dedicated branch-arm planner admits each candidate fix:
 
-* 2-way predecessor with the conditional source on its explicit branch arm
-  (``pred_arm == 1``).  Fallthrough-arm cases (``pred_arm == 0``) remain
-  rejected by the planner via
-  :class:`FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED`
-  because no fallthrough-rewrite helper exists yet.
+* 2-way predecessor with the conditional source on a known arm
+  (``pred_arm == 1`` for the explicit conditional branch, ``pred_arm == 0``
+  for the implicit fallthrough).
 * 2-way conditional source with an unambiguous explicit branch arm.
 * Selected target has at most one predecessor in the snapshot.
 * Conditional source has no non-tail side effects.
@@ -109,9 +107,9 @@ def build_fix_predecessor_branch_arm_modifications(
     Every candidate is re-validated through
     :func:`plan_fix_predecessor_clone_from_branch_arm` against the snapshot
     ``flow_graph``.  Rejections fall back to legacy (the caller does not
-    receive a primitive for them), preserving the strict acceptance gate
-    that ``pred_arm == 0`` records stay deferred as
-    ``PRED_FALLTHROUGH_ARM_NOT_SUPPORTED``.
+    receive a primitive for them), preserving the strict acceptance gate for
+    ambiguous or side-effect-bearing records while allowing either proven
+    predecessor arm.
     """
     if side_effect_blocks is None:
         side_effect_blocks = frozenset()
@@ -189,7 +187,7 @@ def _build_ownership(
 
 
 class FixPredecessorBranchArmStrategy:
-    """Engine strategy wrapper for FixPredecessor arm=1 clone-as-goto edits."""
+    """Engine strategy wrapper for known-arm FixPredecessor clone-as-goto edits."""
 
     name = "fix_predecessor_branch_arm"
     family = FAMILY_CLEANUP
