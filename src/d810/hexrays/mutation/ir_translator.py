@@ -860,6 +860,7 @@ class IDAIRTranslator:
                 old_target=old,
                 new_target=new,
                 clone_until=clone_until,
+                source_new_target=source_new_target,
                 rule_priority=priority,
             ):
                 modifier.queue_edge_redirect(
@@ -868,6 +869,7 @@ class IDAIRTranslator:
                     new_target=new,
                     via_pred=pred,
                     clone_until=clone_until,
+                    source_new_target=source_new_target,
                     rule_priority=priority,
                     description=(
                         f"edge-split corridor pred={pred} src={src} "

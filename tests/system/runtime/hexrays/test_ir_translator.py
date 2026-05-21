@@ -332,6 +332,7 @@ class _FakeDeferredGraphModifier:
         new_target: int,
         via_pred: int,
         clone_until: int | None = None,
+        source_new_target: int | None = None,
         rule_priority: int,
         description: str = "",
     ) -> None:
@@ -343,6 +344,7 @@ class _FakeDeferredGraphModifier:
                 new_target,
                 via_pred,
                 clone_until,
+                source_new_target,
                 rule_priority,
                 description,
             )
@@ -811,7 +813,7 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_redirect"
-        assert created[0].calls[0][1:7] == (45, 46, 2, 44, 46, 550)
+        assert created[0].calls[0][1:8] == (45, 46, 2, 44, 46, None, 550)
 
     def test_lower_rejects_legacy_block_creation_when_disabled(
         self,

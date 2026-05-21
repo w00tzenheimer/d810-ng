@@ -648,9 +648,11 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             case PatchEdgeSplitCorridor(
                 source_serial=src,
                 via_pred=pred,
+                old_target=old,
                 new_target=new,
                 clone_assigned_serials=clone_serials,
                 corridor_serials=corridor_serials,
+                source_new_target=source_new_target,
             ):
                 for idx, clone_serial in enumerate(clone_serials):
                     next_serial = (
@@ -677,6 +679,15 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         new_target=clone_serials[0],
                     )
                 )
+                if source_new_target is not None:
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="edge_split_corridor_source_redirect",
+                            source=src,
+                            old_target=old,
+                            new_target=source_new_target,
+                        )
+                    )
 
             case PatchConditionalRedirect(
                 source_serial=src,

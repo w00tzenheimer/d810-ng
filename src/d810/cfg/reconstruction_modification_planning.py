@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from d810.core import logging
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
+    EdgeRedirectViaPredSplit,
     GraphModification,
     RedirectBranch,
     RedirectGoto,
@@ -43,6 +43,71 @@ def _is_sub7ffd_poll_suffix_shared_group(
             for pred, target in per_pred_targets
         ) == _SUB7FFD_POLL_SUFFIX_PER_PRED_TARGETS
     )
+
+
+def _one_block_corridor_clone_for_shared_group(
+    flow_graph,
+    *,
+    shared_block: int,
+    old_target: int | None,
+    shared_preds: tuple[int, ...],
+    per_pred_targets: tuple[tuple[int, int], ...],
+) -> tuple[GraphModification, ...] | None:
+    if old_target is None:
+        return None
+    if {int(pred) for pred, _target in per_pred_targets} != {
+        int(pred) for pred in shared_preds
+    }:
+        return None
+
+    if len(per_pred_targets) < 2:
+        return None
+
+    original_pred, original_target = per_pred_targets[0]
+    clone_pred, clone_target = per_pred_targets[-1]
+    selected_rows = (
+        (int(original_pred), int(original_target)),
+        (int(clone_pred), int(clone_target)),
+    )
+    for pred_serial, target_serial in selected_rows:
+        pred_serial = int(pred_serial)
+        target_serial = int(target_serial)
+        if target_serial == int(old_target):
+            continue
+        if target_serial == int(shared_block):
+            return None
+        if flow_graph.get_block(target_serial) is None:
+            return None
+
+        pred_block = flow_graph.get_block(pred_serial)
+        if pred_block is None:
+            return None
+        pred_succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+        if pred_succs != (int(shared_block),):
+            return None
+
+    if int(clone_target) == int(old_target):
+        return None
+
+    if int(clone_pred) == int(original_pred):
+        return None
+
+    return (
+        EdgeRedirectViaPredSplit(
+            src_block=int(shared_block),
+            old_target=int(old_target),
+            new_target=int(clone_target),
+            via_pred=int(clone_pred),
+            clone_until=int(shared_block),
+            source_new_target=(
+                int(original_target)
+                if int(original_target) != int(old_target)
+                else None
+            ),
+            rule_priority=550,
+        ),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class ReconstructionModificationPlan:
@@ -425,19 +490,32 @@ def plan_shared_group_reconstruction_modifications(
                 emission_mode="per_pred_redirect",
             )
 
-    return SharedGroupModificationPlan(
-        accepted=True,
-        modifications=(
-            DuplicateAndRedirect(
-                source_serial=int(shared_block),
-                per_pred_targets=per_pred_targets,
+    if corridor_clone_modifications := _one_block_corridor_clone_for_shared_group(
+        flow_graph,
+        shared_block=int(shared_block),
+        old_target=old_target,
+        shared_preds=shared_preds_tuple,
+        per_pred_targets=per_pred_targets,
+    ):
+        return SharedGroupModificationPlan(
+            accepted=True,
+            modifications=corridor_clone_modifications,
+            ordered_via_preds=tuple(
+                int(candidate.via_pred)
+                for candidate in lowering_decision.ordered_candidates
             ),
-        ),
+            per_pred_targets=per_pred_targets,
+            emission_mode="one_block_corridor_split",
+        )
+
+    return SharedGroupModificationPlan(
+        accepted=False,
         ordered_via_preds=tuple(
             int(candidate.via_pred) for candidate in lowering_decision.ordered_candidates
         ),
         per_pred_targets=per_pred_targets,
-        emission_mode="duplicate_and_redirect",
+        emission_mode="clone_safety_gap",
+        rejection_reason="shared_group_clone_safety_gap",
     )
 
 
