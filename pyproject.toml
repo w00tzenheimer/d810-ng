@@ -25,6 +25,7 @@ dev = [
     "pytest-forked>=1.6.0",
     "coverage[toml]>=7.0.0",
     "import-linter>=2.0",
+    "vermin>=1.8.0",
 ]
 
 [project.scripts]

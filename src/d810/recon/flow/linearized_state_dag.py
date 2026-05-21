@@ -7422,9 +7422,8 @@ def render_linearized_state_dag_dot(
 
     if not expanded:
         for node in sorted_nodes:
-            attrs = [
-                f'label="{_dot_escape(f"{node.state_label}\\nblk[{node.entry_anchor}]")}"'
-            ]
+            label = f"{node.state_label}\nblk[{node.entry_anchor}]"
+            attrs = [f'label="{_dot_escape(label)}"']
             if node.kind == StateNodeKind.RANGE_BACKED:
                 attrs.extend(["style=filled", "fillcolor=lightblue"])
             lines.append(f"    {_dot_state_id(node.key)} [{', '.join(attrs)}];")
@@ -7439,9 +7438,8 @@ def render_linearized_state_dag_dot(
             lines.append(f"    subgraph {cluster_id} {{")
             lines.append(f'        label="{_dot_escape(cluster_label)}";')
             lines.append("        color=lightgrey;")
-            header_attrs = [
-                f'label="{_dot_escape(f"{node.state_label}\\nentry blk[{node.entry_anchor}]")}"'
-            ]
+            header_label = f"{node.state_label}\nentry blk[{node.entry_anchor}]"
+            header_attrs = [f'label="{_dot_escape(header_label)}"']
             if node.kind == StateNodeKind.RANGE_BACKED:
                 header_attrs.extend(["style=filled", "fillcolor=lightblue"])
             lines.append(f"        {header_id} [{', '.join(header_attrs)}];")
