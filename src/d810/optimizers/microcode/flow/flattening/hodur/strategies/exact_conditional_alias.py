@@ -47,7 +47,7 @@ __all__ = [
     summary="Lower duplicate-arm exact conditional nodes by collapsing alias-equivalent semantic exits to one canonical target.",
     use_cases=(
         "Handle conditional exact sources whose semantic arms are not real forks because every arm resolves to the same tail and target entry.",
-        "Prefer pred-split or duplicate-and-redirect on the shared tail instead of treating the source as a fork or missing-return hammock.",
+        "Prefer pred-split on the shared tail instead of treating the source as a fork or missing-return hammock.",
     ),
     examples=(
         "Collapse the duplicate-arm `blk[28]` family to one canonical tail/entry and rewrite the shared tail corridor.",
@@ -146,19 +146,14 @@ class ExactConditionalAliasNodeLoweringStrategy:
                     )
                     emission_mode = "alias_tail_pred_split"
                 else:
-                    per_pred_targets = [(int(site.source_block), int(site.canonical_target_entry))]
-                    per_pred_targets.extend(
-                        (int(pred), int(old_target))
-                        for pred in sorted(tail_preds)
-                        if int(pred) != int(site.source_block)
+                    logger.info(
+                        "EXACT CONDITIONAL ALIAS: abstaining from alias tail clone "
+                        "without corridor/replay proof source blk=%d common_tail=%d target=%d",
+                        site.source_block,
+                        site.common_tail,
+                        site.canonical_target_entry,
                     )
-                    modifications.append(
-                        setup.builder.duplicate_and_redirect(
-                            int(site.common_tail),
-                            per_pred_targets,
-                        )
-                    )
-                    emission_mode = "alias_duplicate_and_redirect"
+                    continue
             else:
                 modifications.append(
                     setup.builder.edge_redirect(

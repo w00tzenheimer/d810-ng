@@ -7,7 +7,6 @@ from enum import Enum
 
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
     GraphModification,
@@ -1136,9 +1135,9 @@ def build_dispatcher_cleanup_modification(
         candidate.exit_shape == CleanupExitShape.SHARED_ONE_WAY_BY_PRED
         and candidate.rewrite_intent == CleanupRewriteIntent.DUPLICATE_AND_REDIRECT
     ):
-        return DuplicateAndRedirect(
-            source_serial=candidate.source_serial,
-            per_pred_targets=candidate.per_pred_targets,
+        raise ValueError(
+            "BadWhileLoop duplicate-and-redirect cleanup requires replay or "
+            "corridor proof before lowering"
         )
     if (
         isinstance(candidate, CleanupSideEffectReplayCandidate)
