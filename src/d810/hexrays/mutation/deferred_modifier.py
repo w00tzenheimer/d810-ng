@@ -182,9 +182,9 @@ Best Practices
 
 See Also
 ========
-- ConditionalStateResolver: Reference implementation of ABC target resolution
+- Computed-state transition evidence: read-only dispatcher target resolution
 - Conditional-clone rewrites: deferred predecessor repair example
-- OLLVM father-history backend: Orchestrates multiple deferred rules
+- Deferred graph modification: orchestrates ordered CFG mutation rules
 """
 from __future__ import annotations
 
