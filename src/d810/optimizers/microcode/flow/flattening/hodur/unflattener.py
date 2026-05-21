@@ -102,9 +102,14 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutorPolicy,
+    ExecutedPipeline,
+    FamilyAnalysis,
+    FamilyContext,
+    PlannedPipeline,
     execute_family_pipeline,
     make_transactional_executor_factory,
     plan_family_pipeline,
+    run_family_pass,
 )
 from d810.cfg.flow.graph_checks import SemanticGate
 from d810.cfg.mbl_keep_selection import (
@@ -318,6 +323,9 @@ class HodurUnflattener(ComposedUnflatteningRule):
         self._return_site_provider = HodurReturnSiteProvider()
         self._audit_return_sites: tuple = ()  # Populated at pre_plan, reused across stages
         self._fact_view_observed_keys: set[tuple[int, int, int]] = set()
+        self._last_live_residual_dispatcher_preds_by_strategy: dict[
+            str, tuple[int, ...]
+        ] = {}
 
     def set_flow_context(self, flow_context):
         """Propagate the fact-view provider down to the family adapter.
@@ -564,6 +572,210 @@ class HodurUnflattener(ComposedUnflatteningRule):
         self._last_bst_block_eas = set()
         self._last_dispatcher_ea = 0
 
+    def _on_family_analysis(
+        self,
+        context: FamilyContext,
+        analysis: FamilyAnalysis,
+    ) -> None:
+        """Handle Hodur-specific analysis observation after snapshot build."""
+        snapshot = analysis.snapshot
+        if snapshot.state_machine is None:
+            unflat_logger.info(
+                "No Hodur state machine detected; evaluating cleanup-only strategies"
+            )
+            self._clear_cached_dispatcher_context()
+            self._audit_return_sites = ()
+        else:
+            self._log_state_machine()
+        self._observe_induction_fact_view(snapshot)
+
+    def _build_family_planner_inputs(
+        self,
+        context: FamilyContext,
+        analysis: FamilyAnalysis,
+    ) -> PlannerInputs:
+        """Load Hodur recon artifacts consumed by the shared planner."""
+        snapshot = analysis.snapshot
+        if snapshot.state_machine is None:
+            transition_report = None
+            return_frontier_audit = None
+            terminal_return_audit = None
+        else:
+            transition_report = load_transition_report_from_store(
+                func_ea=context.mba.entry_ea,
+                maturity=context.maturity,
+                log_dir=context.log_dir,
+            )
+            return_frontier_audit = load_return_frontier_audit_from_store(
+                func_ea=context.mba.entry_ea,
+                maturity=context.maturity,
+                log_dir=context.log_dir,
+            )
+            terminal_return_audit = load_terminal_return_audit_from_store(
+                func_ea=context.mba.entry_ea,
+                maturity=context.maturity,
+                log_dir=context.log_dir,
+            )
+        return PlannerInputs(
+            total_handlers=snapshot.handler_count,
+            handler_transitions=transition_report,
+            return_frontier=return_frontier_audit,
+            terminal_return_audit=terminal_return_audit,
+        )
+
+    def _select_family_strategies(
+        self,
+        context: FamilyContext,
+        analysis: FamilyAnalysis,
+    ) -> list:
+        """Select the active Hodur strategy set for this runtime pass."""
+        return self._family.strategies_for_maturity(context.maturity)
+
+    def _on_family_planned(
+        self,
+        context: FamilyContext,
+        analysis: FamilyAnalysis,
+        planned: PlannedPipeline,
+    ) -> None:
+        """Run Hodur pre/post-plan audit hooks around generic planning."""
+        snapshot = analysis.snapshot
+        self._last_provenance = planned.provenance
+
+        if self.RETURN_FRONTIER_AUDIT_ENABLED and snapshot.state_machine is not None:
+            handler_paths = self._extract_handler_paths_from_fragments(planned.pipeline)
+            try:
+                self._audit_return_sites = prepare_return_frontier_audit(
+                    snapshot,
+                    current_return_sites=tuple(self._audit_return_sites),
+                    return_site_provider=self._return_site_provider,
+                    func_ea=context.mba.entry_ea,
+                    maturity=context.maturity,
+                    log_dir=context.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                    handler_paths=handler_paths,
+                    state_var_stkoff=self._family.get_effective_state_var_stkoff(
+                        snapshot.state_machine
+                    ),
+                    logger=unflat_logger,
+                )
+            except Exception:
+                unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
+
+        if not planned.pipeline:
+            unflat_logger.info(
+                "No strategy produced a plan fragment; continuing in recon-only diagnostic mode"
+            )
+            return
+
+        unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
+
+        if (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and snapshot.state_machine is not None
+            and self._audit_return_sites
+        ):
+            try:
+                record_return_frontier_stage(
+                    return_sites=tuple(self._audit_return_sites),
+                    stage_name="post_plan",
+                    func_ea=context.mba.entry_ea,
+                    maturity=context.maturity,
+                    log_dir=context.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                    logger=unflat_logger,
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "_record_audit_stage(post_plan) failed (non-critical)"
+                )
+
+    def _on_family_executed(
+        self,
+        context: FamilyContext,
+        analysis: FamilyAnalysis,
+        planned: PlannedPipeline,
+        executed: ExecutedPipeline,
+    ) -> None:
+        """Record Hodur execution outcomes after the generic runtime executes."""
+        snapshot = analysis.snapshot
+        pipeline = executed.pipeline
+        results = executed.results
+        nb_changes = executed.total_changes
+        self._last_provenance = executed.provenance
+
+        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] = {}
+        successful_fragments = [
+            fragment
+            for fragment, result in zip(pipeline, results)
+            if result.success and result.edits_applied > 0
+        ]
+        for fragment in successful_fragments:
+            strategy_name = fragment.strategy_name
+            group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
+            if (
+                strategy_name
+                not in {"linearized_flow_graph", "exact_node_frontier_bypass"}
+                and not isinstance(group_name, str)
+            ):
+                continue
+            residual_preds = collect_live_residual_dispatcher_preds(
+                context.mba,
+                snapshot,
+                strategies=self._family.strategies,
+                strategy_name=strategy_name,
+                cfg_translator=self._family.cfg_translator,
+                logger=unflat_logger,
+            )
+            live_residual_dispatcher_preds_by_strategy[strategy_name] = residual_preds
+            if isinstance(group_name, str):
+                live_residual_dispatcher_preds_by_strategy[f"group:{group_name}"] = (
+                    residual_preds
+                )
+        self._last_live_residual_dispatcher_preds_by_strategy = (
+            live_residual_dispatcher_preds_by_strategy
+        )
+
+        self._family.record_execution_outcome(
+            pipeline,
+            results,
+            func_ea=context.mba.entry_ea,
+            maturity=context.maturity,
+            nb_changes=nb_changes,
+            residual_dispatcher_preds_by_strategy=(
+                live_residual_dispatcher_preds_by_strategy
+            ),
+        )
+
+        persist_terminal_return_audit(
+            results,
+            func_ea=context.mba.entry_ea,
+            maturity=context.maturity,
+            log_dir=context.log_dir,
+        )
+
+        if (
+            self.RETURN_FRONTIER_AUDIT_ENABLED
+            and snapshot.state_machine is not None
+            and self._audit_return_sites
+        ):
+            try:
+                record_return_frontier_stage(
+                    return_sites=tuple(self._audit_return_sites),
+                    stage_name="post_apply",
+                    func_ea=context.mba.entry_ea,
+                    maturity=context.maturity,
+                    log_dir=context.log_dir,
+                    successors=self._build_successor_map(),
+                    exits=self._find_exit_blocks(),
+                    logger=unflat_logger,
+                )
+            except Exception:
+                unflat_logger.debug(
+                    "_record_audit_stage(post_apply) failed (non-critical)"
+                )
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         """Main optimization entry point — planner + strategy pipeline."""
         self.mba = blk.mba
@@ -583,200 +795,39 @@ class HodurUnflattener(ComposedUnflatteningRule):
             self._pass0_handler_entries = set()
             self._last_redirect_meta = None
 
-        # 1. Detect family-specific state model via the shared family surface.
-        self._family.begin_pass(self._actual_pass_count)
-        detection = self._family.detect(self.mba)
-        # 2. Build immutable snapshot through the family adapter.
-        snapshot = self._family.build_snapshot(self.mba, detection)
-        state_machine = snapshot.state_machine
-        if state_machine is None:
-            unflat_logger.info(
-                "No Hodur state machine detected; evaluating cleanup-only strategies"
-            )
-            self._clear_cached_dispatcher_context()
-            self._audit_return_sites = ()
-        else:
-            self._log_state_machine()
-        self._observe_induction_fact_view(snapshot)
-
-        # 3-4. PLANNER_AUTHORITY: planner owns strategy polling + pipeline composition
-        if state_machine is None:
-            transition_report = None
-            return_frontier_audit = None
-            terminal_return_audit = None
-        else:
-            transition_report = load_transition_report_from_store(
-                func_ea=self.mba.entry_ea,
+        self._last_live_residual_dispatcher_preds_by_strategy = {}
+        family_result = run_family_pass(
+            self._family,
+            FamilyContext(
+                mba=self.mba,
                 maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-            )
-            return_frontier_audit = load_return_frontier_audit_from_store(
-                func_ea=self.mba.entry_ea,
-                maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-            )
-            terminal_return_audit = load_terminal_return_audit_from_store(
-                func_ea=self.mba.entry_ea,
-                maturity=self.cur_maturity,
-                log_dir=self.log_dir,
-            )
-        planner_inputs = PlannerInputs(
-            total_handlers=snapshot.handler_count,
-            handler_transitions=transition_report,
-            return_frontier=return_frontier_audit,
-            terminal_return_audit=terminal_return_audit,
-        )
-        active_strategies = self._family.strategies_for_maturity(self.cur_maturity)
-        planned = plan_family_pipeline(
-            snapshot,
-            active_strategies,
-            planner=self._planner,
-            inputs=planner_inputs,
-        )
-        self._last_provenance = planned.provenance
-
-        # Return frontier audit: pre_plan stage (after fragment collection so
-        # handler_paths from DirectLinearization strategy are available)
-        if self.RETURN_FRONTIER_AUDIT_ENABLED and snapshot.state_machine is not None:
-            handler_paths = self._extract_handler_paths_from_fragments(planned.pipeline)
-            try:
-                self._audit_return_sites = prepare_return_frontier_audit(
-                    snapshot,
-                    current_return_sites=tuple(self._audit_return_sites),
-                    return_site_provider=self._return_site_provider,
-                    func_ea=self.mba.entry_ea,
-                    maturity=self.cur_maturity,
-                    log_dir=self.log_dir,
-                    successors=self._build_successor_map(),
-                    exits=self._find_exit_blocks(),
-                    handler_paths=handler_paths,
-                    state_var_stkoff=self._family.get_effective_state_var_stkoff(
-                        snapshot.state_machine
-                    ),
-                    logger=unflat_logger,
-                )
-            except Exception:
-                unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
-
-        if not planned.pipeline:
-            unflat_logger.info(
-                "No strategy produced a plan fragment; continuing in recon-only diagnostic mode"
-            )
-            pipeline = []
-            results = []
-            provenance = planned.provenance
-            nb_changes = 0
-        else:
-            unflat_logger.info("Planner provenance: %s", planned.provenance.summary())
-
-            # Return frontier audit: post_plan stage (mods queued but not applied)
-            if (
-                self.RETURN_FRONTIER_AUDIT_ENABLED
-                and snapshot.state_machine is not None
-                and self._audit_return_sites
-            ):
-                try:
-                    record_return_frontier_stage(
-                        return_sites=tuple(self._audit_return_sites),
-                        stage_name="post_plan",
-                        func_ea=self.mba.entry_ea,
-                        maturity=self.cur_maturity,
-                        log_dir=self.log_dir,
-                        successors=self._build_successor_map(),
-                        exits=self._find_exit_blocks(),
-                        logger=unflat_logger,
-                    )
-                except Exception:
-                    unflat_logger.debug(
-                        "_record_audit_stage(post_plan) failed (non-critical)"
-                    )
-
-            # 5. EXECUTOR_BOUNDARY: runtime consumes planner output in-order,
-            # delegates to the configured executor, and projects executor outcomes
-            # back onto provenance.
-            executed = execute_family_pipeline(
-                snapshot,
-                planned,
-                executor_factory=make_transactional_executor_factory(
-                    ExecutorPolicy(
-                        safeguard_profile="hodur",
-                        gate=self._gate,
-                        allow_legacy_block_creation=self.allow_legacy_block_creation,
-                    )
-                ),
+                pass_number=self._actual_pass_count,
                 flow_context=self.flow_context,
-            )
-            pipeline = executed.pipeline
-            results = executed.results
-            provenance = executed.provenance
-            nb_changes = executed.total_changes
-            self._last_provenance = provenance
-
-        live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] = {}
-        successful_fragments = [
-            fragment
-            for fragment, result in zip(pipeline, results)
-            if result.success and result.edits_applied > 0
-        ]
-        for fragment in successful_fragments:
-            strategy_name = fragment.strategy_name
-            group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
-            if (
-                strategy_name not in {"linearized_flow_graph", "exact_node_frontier_bypass"}
-                and not isinstance(group_name, str)
-            ):
-                continue
-            residual_preds = collect_live_residual_dispatcher_preds(
-                self.mba,
-                snapshot,
-                strategies=self._family.strategies,
-                strategy_name=strategy_name,
-                cfg_translator=self._family.cfg_translator,
-                logger=unflat_logger,
-            )
-            live_residual_dispatcher_preds_by_strategy[strategy_name] = residual_preds
-            if isinstance(group_name, str):
-                live_residual_dispatcher_preds_by_strategy[f"group:{group_name}"] = (
-                    residual_preds
-                )
-
-        self._family.record_execution_outcome(
-            pipeline,
-            results,
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            nb_changes=nb_changes,
-            residual_dispatcher_preds_by_strategy=(
-                live_residual_dispatcher_preds_by_strategy
+                log_dir=self.log_dir,
             ),
+            planner=self._planner,
+            executor_policy=ExecutorPolicy(
+                safeguard_profile="hodur",
+                gate=self._gate,
+                allow_legacy_block_creation=self.allow_legacy_block_creation,
+            ),
+            build_planner_inputs=self._build_family_planner_inputs,
+            select_strategies=self._select_family_strategies,
+            plan_pipeline=plan_family_pipeline,
+            execute_pipeline=execute_family_pipeline,
+            executor_factory_builder=make_transactional_executor_factory,
+            on_analysis=self._on_family_analysis,
+            on_planned=self._on_family_planned,
+            on_executed=self._on_family_executed,
         )
-
-        persist_terminal_return_audit(
-            results,
-            func_ea=self.mba.entry_ea,
-            maturity=self.cur_maturity,
-            log_dir=self.log_dir,
+        snapshot = family_result.analysis.snapshot
+        pipeline = family_result.pipeline
+        results = family_result.results
+        provenance = family_result.provenance
+        nb_changes = family_result.total_changes
+        live_residual_dispatcher_preds_by_strategy = (
+            self._last_live_residual_dispatcher_preds_by_strategy
         )
-
-        # Return frontier audit: post_apply stage
-        if (
-            self.RETURN_FRONTIER_AUDIT_ENABLED
-            and snapshot.state_machine is not None
-            and self._audit_return_sites
-        ):
-            try:
-                record_return_frontier_stage(
-                    return_sites=tuple(self._audit_return_sites),
-                    stage_name="post_apply",
-                    func_ea=self.mba.entry_ea,
-                    maturity=self.cur_maturity,
-                    log_dir=self.log_dir,
-                    successors=self._build_successor_map(),
-                    exits=self._find_exit_blocks(),
-                    logger=unflat_logger,
-                )
-            except Exception:
-                unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
 
         # 5c. Post-apply: disconnect BST comparison nodes and dispatcher.
         # Run this on the first pass where no live dispatcher blockers remain.
