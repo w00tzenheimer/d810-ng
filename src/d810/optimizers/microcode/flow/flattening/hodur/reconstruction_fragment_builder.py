@@ -12,16 +12,10 @@ Conflict-resolution filter cascade (uee-jrgq Phase 6 — retirement gate)
 =======================================================================
 
 When ``finalize_reconstruction_fragment`` runs, modifications flow through
-three filters in this order.  Each filter is single-purpose; together they
+two filters in this order.  Each filter is single-purpose; together they
 form a cascade with a clear retirement criterion.
 
-  1. ``_drop_intra_fragment_dup_conflicts`` — intra-fragment overlap
-     between ``DuplicateAndRedirect`` and ``RedirectGoto``/``ConvertToGoto``
-     on the same source.  DupAndRedirect always wins (per-pred routing is
-     strictly more expressive than uniform redirect).  Pure intra-fragment
-     pass; does NOT consult the cumulative view.
-
-  2. ``filter_dag_disagreements`` (Phase 3 of uee-jrgq) — the shared
+  1. ``filter_dag_disagreements`` (Phase 3 of uee-jrgq) — the shared
      engine DAG-as-arbiter check.  When
      ``cumulative_planner_view.dag_authority`` is present, each redirect
      mod is validated against the recon DAG's canonical decision.  Drops
@@ -30,7 +24,7 @@ form a cascade with a clear retirement criterion.
      ``DagDisagreementRecord`` (Phase 5) for the pipeline-level audit
      summary.
 
-  3. ``_drop_conflicting_redirects`` — legacy "first-fragment-wins"
+  2. ``_drop_conflicting_redirects`` — legacy "first-fragment-wins"
      Mode 1 filter.  Fallback for DAG_GAP regions where the DAG cannot
      answer authoritatively.  Reads ``cumulative_planner_view``'s
      ``LinearizationDecision`` aggregates (echoed from prior fragments'
@@ -38,20 +32,18 @@ form a cascade with a clear retirement criterion.
 
 Retirement gate
 ---------------
-Filters (1) and (3) and the mod-echo logic in
-``_build_planner_context_contribution`` are CONCEPTUALLY redundant once
+Filter (2) and the mod-echo logic in
+``_build_planner_context_contribution`` are conceptually redundant once
 the DAG arbiter has authoritative coverage of every emission decision
-point.  Today the DAG returns ``DAG_GAP`` for ``DuplicateAndRedirect``
-and ``ZeroStateWrite`` mods (covered by extension tickets uee-7wcd,
-uee-7snc, uee-qli0, uee-bwdk) and for sources the
+point.  Today the DAG returns ``DAG_GAP`` for sources the
 ``LinearizedStateDag`` doesn't enumerate as in-scope edges.  Until
-those gaps close, retiring the legacy filters would regress observable
+those gaps close, retiring the legacy filter would regress observable
 behaviour — e.g., on sub_7FFD3338C040 the legacy filter catches 5 of 8
 Mode 1 drops in DAG_GAP regions that the arbiter cannot yet see.
 
 Retirement criterion: when ``PipelineProvenance.dag_audit_records``
-shows zero ``DAG_GAP``-bucket drops on the corpus AND filters (1)+(3)
-fire zero times across the corpus for a full release cycle, both can
+shows zero ``DAG_GAP``-bucket drops on the corpus AND filter (2)
+fires zero times across the corpus for a full release cycle, it can
 be deleted along with the mod-echo in ``_build_planner_context_contribution``.
 
 This module's docstring + Phase 6 commit (uee-6yu7) formalises the
@@ -63,7 +55,6 @@ from __future__ import annotations
 from d810.core import logging
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
@@ -113,19 +104,6 @@ def _build_planner_context_contribution(
     redirect. Owned blocks populate ``claimed_sources`` so the same
     strategies can also call ``view.is_claimed(src)`` for broader scope.
 
-    Every :class:`DuplicateAndRedirect` also becomes a
-    :class:`LinearizationDecision` keyed on its ``source_serial`` (uee-dnhk
-    extension).  DupAndRedirect mutates the source block's goto to its
-    first per-pred target, so it is a linearization decision in the same
-    sense as a RedirectGoto from the cumulative view's perspective.
-    Tracking it lets a later strategy that emits a plain RedirectGoto on
-    a shared block (a less-specific decision) be dropped by the existing
-    Mode 1 filter — empirically observed on sub_7FFD where SRW emits
-    DupAndRedirect on shared blocks {10, 32, 35, 64, 100, 104, 156, 184,
-    187, 192, 195, 200, 203} while later residual/conditional strategies
-    emit overlapping RedirectGotos.  The source's ``source_serial`` is
-    also added to ``claimed_sources``.
-
     ``StateWriteNeutralization`` contributions are deliberately omitted in
     this first pass — building them would require threading the original
     state constant through the emission path (``ZeroStateWrite`` stores
@@ -142,34 +120,10 @@ def _build_planner_context_contribution(
         for mod in modifications
         if isinstance(mod, RedirectGoto)
     )
-    dup_linearizations = tuple(
-        LinearizationDecision(
-            src=int(mod.source_serial),
-            # DupAndRedirect's first per-pred entry is the goto target
-            # the original block ends up with (later per-pred entries get
-            # their own duplicated copies).  Use that as the linearization
-            # target so the cumulative view can detect later RedirectGotos
-            # that disagree.  Empty per_pred_targets is a planner bug, but
-            # we defensively skip rather than crash.
-            tgt=int(mod.per_pred_targets[0][1]),
-            reason=f"{strategy_name}_duplicate_and_redirect",
-            strategy=strategy_name,
-            round_index=round_index,
-        )
-        for mod in modifications
-        if isinstance(mod, DuplicateAndRedirect) and mod.per_pred_targets
-    )
-    dup_claimed_sources = frozenset(
-        int(mod.source_serial) for mod in modifications
-        if isinstance(mod, DuplicateAndRedirect)
-    )
     return PlannerContextContribution(
-        linearizations=redirect_linearizations + dup_linearizations,
+        linearizations=redirect_linearizations,
         neutralizations=(),
-        claimed_sources=(
-            frozenset(int(blk) for blk in owned_blocks)
-            | dup_claimed_sources
-        ),
+        claimed_sources=frozenset(int(blk) for blk in owned_blocks),
     )
 
 
@@ -189,75 +143,6 @@ def _redirect_target(mod: object) -> int | None:
     if isinstance(mod, ConvertToGoto):
         return int(mod.goto_target)
     return None
-
-
-def _drop_intra_fragment_dup_conflicts(
-    modifications: list,
-    *,
-    strategy_name: str,
-) -> list:
-    """Drop RedirectGoto/ConvertToGoto when a DupAndRedirect targets the same source.
-
-    Tracer-revealed conflict (uee-dnhk): when one planner emits
-    ``DuplicateAndRedirect(source_serial=X, per_pred_targets=[(p1, t1),
-    (p2, t2)])`` and another emits ``RedirectGoto(from_serial=X,
-    new_target=T)``, both reach the fragment.  Outcomes if both apply:
-
-      * If all per_pred_targets equal T, the RedirectGoto is redundant
-        (DupAndRedirect's first per_pred entry already sets blk[X]'s
-        goto to t1, and t1 == T).
-      * If any per_pred_target differs from T, the result depends on
-        apply order: whichever ran last wins on blk[X]'s goto, while
-        per-pred routing emitted by DupAndRedirect remains.  Pred-level
-        targets diverge from RedirectGoto's uniform intent.
-
-    Resolution policy: **DupAndRedirect always wins**.  Per-pred routing
-    is strictly more expressive than uniform RedirectGoto on a shared
-    block; the planner that emitted DupAndRedirect knew about the
-    multi-pred nature, the one that emitted plain RedirectGoto did not.
-    Drop every RedirectGoto/ConvertToGoto whose source matches a
-    DupAndRedirect's source_serial.
-
-    This filter does NOT consult ``cumulative_planner_view`` — it is
-    purely an intra-fragment pass.  Cross-fragment DupAndRedirect-vs-
-    RedirectGoto coordination would require extending the cumulative
-    view's contribution model and is tracked separately.
-
-    Returns the filtered list.  Non-redirect, non-dup mods untouched.
-    """
-    dup_sources = {
-        int(mod.source_serial) for mod in modifications
-        if isinstance(mod, DuplicateAndRedirect)
-    }
-    if not dup_sources:
-        return modifications
-    kept: list = []
-    dropped: list[tuple[str, int, int]] = []  # (mod_type, src, dropped_tgt)
-    for mod in modifications:
-        if isinstance(mod, DuplicateAndRedirect):
-            kept.append(mod)
-            continue
-        src = _redirect_source(mod)
-        if src is None or src not in dup_sources:
-            kept.append(mod)
-            continue
-        # Conflict: same source has both a RedirectGoto/ConvertToGoto
-        # and a DupAndRedirect.  Drop the redirect, keep the dup.
-        tgt = _redirect_target(mod)
-        dropped.append((type(mod).__name__, src, tgt if tgt is not None else -1))
-    if dropped:
-        logger.warning(
-            "RECON: dropped %d redirect mod(s) from strategy %r as "
-            "intra-fragment duplicates of DuplicateAndRedirect on the "
-            "same source (per-pred routing is more specific): %s",
-            len(dropped),
-            strategy_name,
-            "; ".join(
-                f"{mtype}(src={src} dropped_tgt={dtgt})"
-                for mtype, src, dtgt in dropped[:10]
-            ),
-        )
-    return kept
 
 
 def _drop_conflicting_redirects(
@@ -360,11 +245,6 @@ def finalize_reconstruction_fragment(
             len(pts_mods),
         )
         modifications = non_pts_mods
-
-    modifications = _drop_intra_fragment_dup_conflicts(
-        modifications,
-        strategy_name=strategy_name,
-    )
 
     # Phase 3 of uee-jrgq: DAG-as-arbiter conformance check runs
     # BEFORE the legacy prior-fragment-wins filter.  When the DAG can

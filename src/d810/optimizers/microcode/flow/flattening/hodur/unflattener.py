@@ -790,7 +790,6 @@ class HodurUnflattener(ComposedUnflatteningRule):
                     val = getattr(mod, attr, None)
                     if isinstance(val, int):
                         self._reconstruction_live_blocks.add(val)
-                # DuplicateAndRedirect: per_pred_targets
                 ppt = getattr(mod, "per_pred_targets", None)
                 if ppt is not None:
                     for _pred, _tgt in ppt:

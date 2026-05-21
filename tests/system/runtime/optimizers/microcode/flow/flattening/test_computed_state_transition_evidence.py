@@ -1,19 +1,19 @@
-"""Runtime tests for read-only ABC evidence collection."""
+"""Runtime tests for read-only computed-state transition evidence."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
-    ABCPatternInfo,
-    ConditionalStateResolver,
+from d810.optimizers.microcode.flow.flattening.computed_state_transition_evidence import (
+    ComputedStatePattern,
+    ComputedStateTransitionResolver,
 )
 
 
-class _ABCResolverForTest(ConditionalStateResolver):
-    def _find_abc_pattern(self, block, predecessor_history=None):
-        return ABCPatternInfo(
+class _ComputedStateResolverForTest(ComputedStateTransitionResolver):
+    def _find_computed_state_pattern(self, block, predecessor_history=None):
+        return ComputedStatePattern(
             block_serial=block.serial,
             instruction_ea=0x401000,
             cnst=1010001,
@@ -30,8 +30,8 @@ class _ABCResolverForTest(ConditionalStateResolver):
         return SimpleNamespace(serial=target_serials[state_value])
 
 
-def test_conditional_abc_resolution_returns_evidence_without_live_mutation():
-    resolver = _ABCResolverForTest(SimpleNamespace(), SimpleNamespace())
+def test_computed_state_transition_returns_evidence_without_live_mutation():
+    resolver = _ComputedStateResolverForTest(SimpleNamespace(), SimpleNamespace())
     block = SimpleNamespace(serial=7)
 
     evidence = resolver.collect_resolution(block)

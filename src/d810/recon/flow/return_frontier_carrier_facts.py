@@ -11,7 +11,7 @@ runs against the live ``mba_t`` *post*-pipeline), this detector runs
 at FlowGraph-build time against the pre-mutation snapshot.  The
 intent is to provide HCC's plan-emission stage with a stable,
 immutable record of the carrier's def-chain blocks BEFORE any
-``RedirectGoto`` / ``DuplicateAndRedirect`` / ``InsertBlock`` mod can
+``RedirectGoto`` / typed clone / ``InsertBlock`` mod can
 collapse the def chain into a copy-prop-vulnerable shape.
 
 Outputs are pure data (``ReturnFrontierCarrierFact`` records). The

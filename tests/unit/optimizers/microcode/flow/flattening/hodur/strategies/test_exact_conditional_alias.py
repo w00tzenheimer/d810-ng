@@ -8,7 +8,7 @@ from d810.cfg.flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import DuplicateAndRedirect, NopInstructions
+from d810.cfg.graph_modification import NopInstructions
 from d810.cfg.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
     ExactConditionalAliasNodeLoweringStrategy,
@@ -652,7 +652,7 @@ def test_alias_sites_are_removed_from_hammock_missing_return_and_fork_incomplete
     assert 28 not in fork_inventory.plannable_incomplete_blocks
 
 
-def test_exact_conditional_alias_strategy_uses_duplicate_and_redirect_when_tail_is_shared(monkeypatch):
+def test_exact_conditional_alias_strategy_abstains_when_tail_clone_needs_proof(monkeypatch):
     flow_graph, round_summary = _make_alias_fixture()
     builder = ModificationBuilder.from_snapshot(
         SimpleNamespace(flow_graph=flow_graph, mba=SimpleNamespace())
@@ -678,8 +678,7 @@ def test_exact_conditional_alias_strategy_uses_duplicate_and_redirect_when_tail_
 
     fragment = ExactConditionalAliasNodeLoweringStrategy().plan(snapshot)
 
-    assert fragment is not None
-    assert any(isinstance(mod, DuplicateAndRedirect) for mod in fragment.modifications)
+    assert fragment is None
 
 
 def test_exact_conditional_fork_uses_semantic_target_entry_from_target_key():

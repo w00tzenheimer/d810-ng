@@ -8,7 +8,6 @@ from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
@@ -804,7 +803,7 @@ def execute_shared_group_reconstruction(
 
         # Guard 2 (bound writer): if any via_pred is the unique
         # constant-mask writer for a loop bound, cloning the
-        # shared_block via DuplicateAndRedirect routes the writer
+        # shared_block routes the writer
         # through a fresh predecessor topology and IDA store-forwards
         # the writer into the test, erasing the counter side.
         bound_writer_match: tuple[int, LoopBoundWriterDiagnostic] | None = None
@@ -1077,7 +1076,7 @@ def apply_shared_group_reachability_fallback(
                 continue
             if int(result.shared_block) in forced_clone_block_set:
                 logger.info(
-                    "RECON: forcing DuplicateAndRedirect for semantically protected shared group %d at late fallback",
+                    "RECON: forcing typed shared-group clone for semantically protected shared group %d at late fallback",
                     int(result.shared_block),
                 )
                 kept_results[int(result.shared_block)] = execute_shared_group_reconstruction(
@@ -1116,7 +1115,7 @@ def apply_shared_group_reachability_fallback(
 
             logger.info(
                 "RECON: per-pred redirect for %d made handlers unreachable: %s "
-                "— falling back to DuplicateAndRedirect for this shared group only",
+                "— falling back to typed shared-group clone for this shared group only",
                 int(result.shared_block),
                 sorted(unreachable_handlers)[:10],
             )

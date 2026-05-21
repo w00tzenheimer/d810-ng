@@ -1,16 +1,18 @@
 """
-ABC conditional-state resolver for ABC pattern handling.
+Computed state-transition evidence for emulated dispatcher profiles.
 
-This module provides approaches for handling ABC (Arithmetic/Bitwise/Constant)
-patterns in control flow unflattening. ConditionalStateResolver discovers targets
-directly without creating new blocks:
+This module handles dispatcher-family patterns where a handler computes the next
+state using a small binary expression and the emulated dispatcher can resolve
+that state to a concrete target.  It discovers targets directly without
+creating new blocks:
 
-- Detects ABC patterns: state = x + magic (where magic in 1010000-1011999)
+- Detects computed-state patterns: state = x OP magic (where magic is in the
+  profile-specific computed-state range)
 - Resolves both possible targets (x=0 and x!=0) via dispatcher emulation
 
-The retired ABCBlockSplitter block-insertion path is intentionally absent from
-this module. New ABC materialization should go through typed CFG primitives and
-Hex-Rays materialization, not direct live-CFG helpers here.
+The retired block-insertion path is intentionally absent from this module. New
+materialization should go through typed CFG primitives and Hex-Rays
+materialization, not direct live-CFG helpers here.
 """
 from __future__ import annotations
 
@@ -25,12 +27,12 @@ from d810.hexrays.utils.hexrays_helpers import dup_mop
 if TYPE_CHECKING:
     from d810.evaluator.hexrays_microcode.tracker import MopHistory
 
-logger = getLogger("D810.abc_splitter")
+logger = getLogger("D810.computed_state_transition")
 
 
 @dataclass
-class ABCPatternInfo:
-    """Info about an ABC pattern found in a block."""
+class ComputedStatePattern:
+    """Info about a computed state-transition pattern found in a block."""
     block_serial: int
     instruction_ea: int
     cnst: int  # Magic constant
@@ -42,19 +44,19 @@ class ABCPatternInfo:
 
 
 @dataclass(frozen=True)
-class ABCResolutionEvidence:
-    """Read-only ABC pattern evidence resolved against the dispatcher."""
+class ComputedStateTransitionEvidence:
+    """Read-only computed transition evidence resolved against the dispatcher."""
 
-    pattern: ABCPatternInfo
+    pattern: ComputedStatePattern
     target0_serial: int | None = None
     target1_serial: int | None = None
     resolved_target_serial: int | None = None
 
 
 @dataclass
-class ConditionalStateResolver:
+class ComputedStateTransitionResolver:
     """
-    Resolves conditional state patterns to target evidence without new blocks.
+    Resolves computed state patterns to target evidence without new blocks.
 
     Detects patterns where state is computed from a binary condition:
         state = x OP magic_constant  (where OP is add/sub/or/xor)
@@ -63,7 +65,7 @@ class ConditionalStateResolver:
     resolves possible outcomes via dispatcher emulation and returns evidence.
 
     Usage:
-        resolver = ConditionalStateResolver(mba, dispatcher_info)
+        resolver = ComputedStateTransitionResolver(mba, dispatcher_info)
         for block in blocks_to_analyze:
             resolver.collect_resolution(block)
     """
@@ -71,13 +73,13 @@ class ConditionalStateResolver:
     mba: ida_hexrays.mba_t
     dispatcher_info: object
 
-    # Magic number range for ABC patterns
-    ABC_CONST_MIN: int = 1010000
-    ABC_CONST_MAX: int = 1011999
+    # Profile-specific computed-state range used by the emulated dispatcher family.
+    COMPUTED_STATE_MIN: int = 1010000
+    COMPUTED_STATE_MAX: int = 1011999
     observed_blocks: set[int] = field(default_factory=set)
 
-    def _is_abc_state(self, value: int) -> bool:
-        return self.ABC_CONST_MIN < int(value) < self.ABC_CONST_MAX
+    def _is_computed_state(self, value: int) -> bool:
+        return self.COMPUTED_STATE_MIN < int(value) < self.COMPUTED_STATE_MAX
 
     @staticmethod
     def _mask_for_size(size: int) -> int:
@@ -141,17 +143,17 @@ class ConditionalStateResolver:
         self,
         block: ida_hexrays.mblock_t,
         predecessor_history: MopHistory | None = None,
-    ) -> ABCResolutionEvidence | None:
-        """Analyze a block for ABC patterns and return read-only target evidence."""
+    ) -> ComputedStateTransitionEvidence | None:
+        """Analyze a block for computed-state patterns and return read-only evidence."""
         if block.serial in self.observed_blocks:
             return None
 
-        pattern = self._find_abc_pattern(block, predecessor_history)
+        pattern = self._find_computed_state_pattern(block, predecessor_history)
         if pattern is None:
             return None
 
         logger.debug(
-            "ConditionalStateResolver: Found %s ABC pattern in block %d, "
+            "ComputedStateTransitionResolver: Found %s pattern in block %d, "
             "const=%d, opcode=%d, resolved_state=%s",
             pattern.pattern_kind,
             block.serial,
@@ -164,19 +166,19 @@ class ConditionalStateResolver:
             self.observed_blocks.add(block.serial)
         return evidence
 
-    def _find_abc_pattern(
+    def _find_computed_state_pattern(
         self,
         block: ida_hexrays.mblock_t,
         predecessor_history: MopHistory | None = None,
-    ) -> ABCPatternInfo | None:
-        """Find ABC pattern in block. Returns info or None."""
+    ) -> ComputedStatePattern | None:
+        """Find a computed-state pattern in block. Returns info or None."""
         curr_inst = block.head
         while curr_inst is not None:
-            result = self._check_instruction_for_abc(curr_inst)
+            result = self._check_instruction_for_computed_state(curr_inst)
             if result is not None:
                 cnst, condition_mop, state_mop, opcode = result
-                if self._is_abc_state(cnst):
-                    return ABCPatternInfo(
+                if self._is_computed_state(cnst):
+                    return ComputedStatePattern(
                         block_serial=block.serial,
                         instruction_ea=curr_inst.ea,
                         cnst=cnst,
@@ -201,10 +203,10 @@ class ConditionalStateResolver:
         inst: ida_hexrays.minsn_t,
         block_serial: int,
         predecessor_history: MopHistory | None,
-    ) -> ABCPatternInfo | None:
+    ) -> ComputedStatePattern | None:
         """Detect self-referential transitions like state = state ^ K."""
         # Start with XOR self-updates (state = state ^ K), which are the
-        # stable/validated case for ABC F6 dispatchers.
+        # stable/validated case for computed-state dispatchers.
         # Other self-referential ops (OR/AND/ADD/SUB) need stronger
         # per-path state validation to avoid over-redirection.
         if inst.opcode != ida_hexrays.m_xor:
@@ -240,10 +242,10 @@ class ConditionalStateResolver:
 
         mask = self._mask_for_size(state_mop.size)
         resolved_state = (int(current_state) ^ int(transition_const)) & mask
-        if resolved_state is None or not self._is_abc_state(resolved_state):
+        if resolved_state is None or not self._is_computed_state(resolved_state):
             return None
 
-        return ABCPatternInfo(
+        return ComputedStatePattern(
             block_serial=block_serial,
             instruction_ea=inst.ea,
             cnst=transition_const,
@@ -254,11 +256,11 @@ class ConditionalStateResolver:
             resolved_state=resolved_state,
         )
 
-    def _check_instruction_for_abc(
+    def _check_instruction_for_computed_state(
         self, inst: ida_hexrays.minsn_t
     ) -> tuple[int, ida_hexrays.mop_t, ida_hexrays.mop_t, int] | None:
         """
-        Check if instruction is ABC pattern.
+        Check if instruction is a computed-state pattern.
 
         Returns (magic_const, condition_mop, state_mop, opcode) or None.
         """
@@ -283,7 +285,7 @@ class ConditionalStateResolver:
         state_mop = dup_mop(inst.d)
         return (cnst, condition_mop, state_mop, inst.opcode)
 
-    def _calculate_state_values(self, pattern: ABCPatternInfo) -> tuple[int, int]:
+    def _calculate_state_values(self, pattern: ComputedStatePattern) -> tuple[int, int]:
         """Calculate state values for x=0 and x=1."""
         magic = pattern.cnst
         opcode = pattern.opcode
@@ -334,8 +336,8 @@ class ConditionalStateResolver:
 
     def _resolve_pattern_targets(
         self,
-        pattern: ABCPatternInfo,
-    ) -> ABCResolutionEvidence | None:
+        pattern: ComputedStatePattern,
+    ) -> ComputedStateTransitionEvidence | None:
         """Resolve pattern targets without mutating live CFG."""
         if pattern.pattern_kind == "self_update":
             if pattern.resolved_state is None:
@@ -343,12 +345,12 @@ class ConditionalStateResolver:
             target = self._resolve_target_for_state(pattern.resolved_state)
             if target is None:
                 logger.warning(
-                    "ABC self-update: Could not resolve target for block %d, state=%d",
+                    "Computed-state self-update: Could not resolve target for block %d, state=%d",
                     pattern.block_serial,
                     pattern.resolved_state,
                 )
                 return None
-            return ABCResolutionEvidence(
+            return ComputedStateTransitionEvidence(
                 pattern=pattern,
                 resolved_target_serial=int(target.serial),
             )
@@ -356,7 +358,7 @@ class ConditionalStateResolver:
         state0, state1 = self._calculate_state_values(pattern)
 
         logger.info(
-            "ABC evidence: block %d, magic=%d, states=(%d, %d)",
+            "Computed-state evidence: block %d, magic=%d, states=(%d, %d)",
             pattern.block_serial, pattern.cnst, state0, state1
         )
 
@@ -366,16 +368,16 @@ class ConditionalStateResolver:
 
         if target0 is None or target1 is None:
             logger.warning(
-                "ABC evidence: Could not resolve targets for block %d (state0=%d->%s, state1=%d->%s)",
+                "Computed-state evidence: Could not resolve targets for block %d (state0=%d->%s, state1=%d->%s)",
                 pattern.block_serial, state0, target0, state1, target1
             )
             return None
 
         logger.info(
-            "ABC evidence: block %d -> targets (%d, %d)",
+            "Computed-state evidence: block %d -> targets (%d, %d)",
             pattern.block_serial, target0.serial, target1.serial
         )
-        return ABCResolutionEvidence(
+        return ComputedStateTransitionEvidence(
             pattern=pattern,
             target0_serial=int(target0.serial),
             target1_serial=int(target1.serial),

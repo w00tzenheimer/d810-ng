@@ -28,6 +28,7 @@ from d810.cfg.plan import (
     PatchConvertToGoto,
     PatchDuplicateBlock,
     PatchDirectTerminalLoweringGroup,
+    PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchPlan,
@@ -160,6 +161,7 @@ def _block_kind_for_projected_shape(
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
         "direct_terminal_lowering_clone",
+        "edge_split_corridor_clone",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -203,6 +205,7 @@ def _tail_kind_for_projected_block(
     if kind.endswith("fallthrough") or kind in {
         "clone_conditional_as_goto",
         "direct_terminal_lowering_clone",
+        "edge_split_corridor_clone",
         "edge_split_trampoline",
         "insert_block",
     }:
@@ -642,6 +645,50 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                     )
                 )
 
+            case PatchEdgeSplitCorridor(
+                source_serial=src,
+                via_pred=pred,
+                old_target=old,
+                new_target=new,
+                clone_assigned_serials=clone_serials,
+                corridor_serials=corridor_serials,
+                source_new_target=source_new_target,
+            ):
+                for idx, clone_serial in enumerate(clone_serials):
+                    next_serial = (
+                        clone_serials[idx + 1]
+                        if idx < len(clone_serials) - 1
+                        else new
+                    )
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="edge_split_corridor_clone",
+                            source=corridor_serials[idx],
+                            old_target=-1,
+                            new_target=next_serial,
+                            created_serial=clone_serial,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        )
+                    )
+                simulated.append(
+                    SimulatedEdit(
+                        kind="edge_split_corridor_anchor",
+                        source=pred,
+                        old_target=src,
+                        new_target=clone_serials[0],
+                    )
+                )
+                if source_new_target is not None:
+                    simulated.append(
+                        SimulatedEdit(
+                            kind="edge_split_corridor_source_redirect",
+                            source=src,
+                            old_target=old,
+                            new_target=source_new_target,
+                        )
+                    )
+
             case PatchConditionalRedirect(
                 source_serial=src,
                 ref_block=ref,
@@ -1067,6 +1114,7 @@ def simulate_edits(
         if edit.kind in (
             "private_terminal_suffix_anchor",
             "direct_terminal_lowering_anchor",
+            "edge_split_corridor_anchor",
         ):
             # Fail-closed: anchor MUST still target shared_entry (old_target).
             # Backend rejects this op otherwise; simulator must match.
@@ -1242,6 +1290,7 @@ def simulate_edits(
         elif edit.kind in (
             "private_terminal_suffix_clone",
             "direct_terminal_lowering_clone",
+            "edge_split_corridor_clone",
         ):
             clone_serial = edit.created_serial
             if clone_serial is None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     RedirectGoto,
 )
@@ -97,7 +96,7 @@ class TestPlanPathTailEmission:
             rule_priority=550,
         )
 
-    def test_emits_duplicate_when_pred_split_is_not_valid(self):
+    def test_rejects_clone_only_tail_when_pred_split_is_not_valid(self):
         plan = plan_path_tail_emission(
             source_block=20,
             target_entry=30,
@@ -118,12 +117,8 @@ class TestPlanPathTailEmission:
             other_preds=(11,),
         )
 
-        assert plan.accepted
-        assert plan.kind == PathTailEmissionKind.DUPLICATE
-        assert plan.modification == DuplicateAndRedirect(
-            source_serial=20,
-            per_pred_targets=((11, 6), (10, 30)),
-        )
+        assert not plan.accepted
+        assert plan.rejection_reason == "path_tail_clone_safety_gap"
 
 
 class TestPlanPathTailRedirect:
@@ -206,7 +201,7 @@ class TestPlanPathTailRedirect:
 
 
 class TestApplyPathTailEmissionPlan:
-    def test_applies_duplicate_claims_and_owned_blocks(self):
+    def test_does_not_apply_rejected_clone_only_tail(self):
         plan = plan_path_tail_emission(
             source_block=20,
             target_entry=30,
@@ -227,39 +222,9 @@ class TestApplyPathTailEmissionPlan:
             other_preds=(11,),
         )
 
-        modifications = []
-        owned_blocks: set[int] = set()
-        owned_edges: set[tuple[int, int]] = set()
-        owned_transitions: set[tuple[int, int]] = set()
-        emitted: set[tuple[int, int]] = set()
-        claimed_1way: dict[int, int] = {}
-        claimed_exits: dict[int, int] = {}
-        claimed_path_edges: dict[tuple[int, int], int] = {}
-        blocked_sources: set[int] = set()
-
-        apply_path_tail_emission_plan(
-            plan,
-            modifications=modifications,
-            owned_blocks=owned_blocks,
-            owned_edges=owned_edges,
-            owned_transitions=owned_transitions,
-            emitted=emitted,
-            claimed_1way=claimed_1way,
-            claimed_exits=claimed_exits,
-            claimed_path_edges=claimed_path_edges,
-            blocked_sources=blocked_sources,
-            owned_transition=(0x11, 0x22),
-        )
-
-        assert modifications == [plan.modification]
-        assert emitted == {(20, 30)}
-        assert owned_blocks == {20, 10, 11}
-        assert owned_edges == {(20, 30)}
-        assert owned_transitions == {(0x11, 0x22)}
-        assert claimed_1way == {}
-        assert claimed_exits == {}
-        assert claimed_path_edges == {}
-        assert blocked_sources == {10}
+        assert not plan.accepted
+        assert plan.modification is None
+        assert plan.rejection_reason == "path_tail_clone_safety_gap"
 
 
 class TestLoopBoundWriterGuard:

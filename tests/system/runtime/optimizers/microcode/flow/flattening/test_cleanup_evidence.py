@@ -7,7 +7,6 @@ import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
     InsertBlock,
@@ -181,7 +180,7 @@ def test_bad_while_loop_duplicate_adapter_builds_neutral_candidate() -> None:
     )
 
 
-def test_duplicate_candidate_validates_and_lowers_to_duplicate_and_redirect() -> None:
+def test_duplicate_candidate_validates_but_requires_replay_or_corridor_proof() -> None:
     edit = BadWhileLoopDuplicateRedirect(
         dispatcher_entry=2,
         source_serial=5,
@@ -191,10 +190,8 @@ def test_duplicate_candidate_validates_and_lowers_to_duplicate_and_redirect() ->
     assert candidate is not None
 
     assert validate_dispatcher_cleanup_candidate(_duplicate_cfg(), candidate) is True
-    assert build_dispatcher_cleanup_modification(candidate) == DuplicateAndRedirect(
-        source_serial=5,
-        per_pred_targets=((8, 3), (9, 4)),
-    )
+    with pytest.raises(ValueError, match="requires replay or corridor proof"):
+        build_dispatcher_cleanup_modification(candidate)
 
 
 def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_insert() -> None:

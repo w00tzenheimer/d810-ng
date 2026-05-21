@@ -167,7 +167,7 @@ def snapshot_reconstruction_post_apply(
                 # carries different field names for "where the edge starts /
                 # ends / used to end."  The previous getattr chain only matched
                 # RedirectGoto/RedirectBranch/EdgeRedirectViaPredSplit, leaving
-                # InsertBlock/DuplicateAndRedirect/CreateConditionalRedirect/
+                # InsertBlock/CreateConditionalRedirect/
                 # DuplicateBlock with all three columns NULL — making the
                 # modifications table useless for tracing corridor topology
                 # mutations driven by HCC's bulk-splice operations.
@@ -182,7 +182,7 @@ def snapshot_reconstruction_post_apply(
                                           # ConvertToGoto, RemoveEdge,
                                           # CreateConditionalRedirect,
                                           # DuplicateBlock
-                    "source_serial",      # DuplicateAndRedirect, ReorderBlocks
+                    "source_serial",      # ReorderBlocks
                     "pred_serial",        # InsertBlock
                     "block_serial",       # NopInstructions, ZeroStateWrite,
                                           # PromoteOperandToScalar
@@ -197,8 +197,7 @@ def snapshot_reconstruction_post_apply(
                     "new_target",         # RedirectGoto, RedirectBranch,
                                           # EdgeRedirectViaPredSplit
                     "goto_target",        # ConvertToGoto
-                    "conditional_target", # CreateConditionalRedirect,
-                                          # DuplicateAndRedirect (per-pred)
+                    "conditional_target", # CreateConditionalRedirect
                     "succ_serial",        # InsertBlock
                     "target_block",       # DuplicateBlock
                     "to_serial",          # RemoveEdge
