@@ -106,6 +106,18 @@ class FamilyContext:
     flow_context: Any | None = None
     log_dir: object | None = None
 
+    @classmethod
+    def from_rule(cls, rule: object, blk: object) -> "FamilyContext":
+        """Build a family context from an optimizer rule callback."""
+        mba = getattr(blk, "mba")
+        return cls(
+            mba=mba,
+            maturity=int(getattr(rule, "cur_maturity")),
+            pass_number=int(getattr(rule, "_actual_pass_count", 0)),
+            flow_context=getattr(rule, "flow_context", None),
+            log_dir=getattr(rule, "log_dir", None),
+        )
+
 
 @dataclass(frozen=True)
 class FamilyAnalysis:

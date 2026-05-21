@@ -1,4 +1,4 @@
-"""Tests for HodurUnflattener._queue_handler_redirect.
+"""Tests for HodurRuleServices._queue_handler_redirect.
 
 The helper is intentionally disabled.  It used to queue direct
 ``DeferredGraphModifier`` mutations, bypassing the modern PlanFragment ->
@@ -6,7 +6,7 @@ PatchPlan path.  These tests keep that disabled contract visible so a future
 caller cannot silently revive the old direct-deferred mutation path.
 
 Pure-logic unit test.  The only IDA dependency is the import of
-``HodurUnflattener`` itself (which transitively imports ``ida_hexrays``).
+``HodurRuleServices`` itself (which transitively imports ``ida_hexrays``).
 The method under test uses only duck-typed ``self.mba`` / ``self.deferred``
 protocols, so the test doubles are plain Python classes.
 """
@@ -21,15 +21,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
 )
 
 try:
-    from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
-        HodurUnflattener,
+    from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
+        HodurRuleServices,
     )
 except ImportError:
-    HodurUnflattener = None  # type: ignore[assignment,misc]
+    HodurRuleServices = None  # type: ignore[assignment,misc]
 
 pytestmark = pytest.mark.skipif(
-    HodurUnflattener is None,
-    reason="HodurUnflattener requires ida_hexrays at import time",
+    HodurRuleServices is None,
+    reason="HodurRuleServices requires ida_hexrays at import time",
 )
 
 
@@ -87,17 +87,14 @@ class _FakeMba:
 
 
 class _FakeInstance:
-    """Test double standing in for HodurUnflattener ``self``."""
+    """Test double standing in for the hosted rule state."""
 
     def __init__(self, blocks: dict[int, _FakeMblock]) -> None:
         self.mba = _FakeMba(blocks)
         self.deferred = _FakeDeferred()
         self._last_redirect_meta = None
-        # Bind the REAL production method to this instance.
-        assert HodurUnflattener is not None
-        self._queue_handler_redirect = (
-            HodurUnflattener._queue_handler_redirect.__get__(self)
-        )
+        assert HodurRuleServices is not None
+        self._support = HodurRuleServices(self)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +116,7 @@ def _call(
     ck = claimed_edges if claimed_edges is not None else {}
     bn = bst_node_blocks if bst_node_blocks is not None else set()
     instance = _FakeInstance(blocks)
-    result = instance._queue_handler_redirect(
+    result = instance._support._queue_handler_redirect(
         path=path,
         target=target,
         reason=reason,
