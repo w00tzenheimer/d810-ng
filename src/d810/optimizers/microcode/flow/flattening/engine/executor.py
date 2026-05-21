@@ -58,7 +58,16 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.plan import ExecutionPolicy, PatchEdgeSplitTrampoline, PatchPlan, compile_patch_plan
+from d810.cfg.plan import (
+    ExecutionPolicy,
+    PatchConvertToGoto,
+    PatchEdgeSplitTrampoline,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+    PatchReorderBlocks,
+    compile_patch_plan,
+)
 from d810.core import logging
 from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     prove_terminal_returns,
@@ -879,15 +888,63 @@ class TransactionalExecutor:
         Returns:
             Tuple of (filtered_modifications, recompiled_patch_plan, removed_count).
         """
+        removed_count = 0
+        reorder_materialized_targets: set[int] = set()
+        for step in patch_plan.steps:
+            if not isinstance(step, PatchReorderBlocks):
+                continue
+            reorder_materialized_targets.update(
+                int(new_serial) for _old_serial, new_serial in step.old_to_new
+            )
+            reorder_materialized_targets.update(
+                int(new_serial)
+                for _old_serial, new_serial in step.two_way_old_to_trampoline
+            )
+        if reorder_materialized_targets and patch_plan.planner_modifications:
+            if patch_plan.relocation_map.stop_serial_after is not None:
+                reorder_materialized_targets.add(
+                    int(patch_plan.relocation_map.stop_serial_after)
+                )
+            filtered_modifications: list[GraphModification] = []
+            removed_reorder_target_count = 0
+            for mod, step in zip(patch_plan.planner_modifications, patch_plan.steps):
+                step_target: int | None = None
+                if isinstance(step, (PatchRedirectGoto, PatchRedirectBranch)):
+                    step_target = int(step.new_target)
+                elif isinstance(step, PatchConvertToGoto):
+                    step_target = int(step.goto_target)
+                if (
+                    step_target is not None
+                    and step_target in reorder_materialized_targets
+                ):
+                    removed_reorder_target_count += 1
+                    executor_logger.warning(
+                        "executor filter: rejecting %s because it targets "
+                        "reorder-materialized blk[%d] before REORDER_BLOCKS "
+                        "can materialize it",
+                        type(mod).__name__,
+                        step_target,
+                    )
+                    continue
+                filtered_modifications.append(mod)
+            if removed_reorder_target_count:
+                modifications = filtered_modifications
+                patch_plan = compile_patch_plan(
+                    modifications,
+                    pre_cfg,
+                    patch_plan.execution_policy,
+                )
+                removed_count += removed_reorder_target_count
+
         if not self._supports_live_mba():
-            return modifications, patch_plan, 0
+            return modifications, patch_plan, removed_count
         trampoline_steps = tuple(
             step
             for step in patch_plan.concrete_operations
             if isinstance(step, PatchEdgeSplitTrampoline)
         )
         if not patch_plan.planner_modifications or not trampoline_steps:
-            return modifications, patch_plan, 0
+            return modifications, patch_plan, removed_count
 
         from d810.hexrays.mutation import deferred_modifier
 
@@ -920,7 +977,7 @@ class TransactionalExecutor:
             )
 
         if not rejected_edges:
-            return modifications, patch_plan, 0
+            return modifications, patch_plan, removed_count
 
         def _depends_on_rejected_edge_split(mod: GraphModification) -> bool:
             if isinstance(mod, EdgeRedirectViaPredSplit):
@@ -961,19 +1018,19 @@ class TransactionalExecutor:
                 continue
             filtered_modifications.append(mod)
 
-        removed_count = len(patch_plan.planner_modifications) - len(
+        edge_split_removed_count = len(patch_plan.planner_modifications) - len(
             filtered_modifications
         )
         remaining_count = len(filtered_modifications)
         executor_logger.info(
             "executor filter: backend_removed=%d, remaining=%d",
-            removed_count,
+            edge_split_removed_count,
             remaining_count,
         )
         return (
             filtered_modifications,
             compile_patch_plan(filtered_modifications, pre_cfg, patch_plan.execution_policy),
-            removed_count,
+            removed_count + edge_split_removed_count,
         )
 
     @property

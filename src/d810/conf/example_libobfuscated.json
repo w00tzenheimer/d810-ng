@@ -970,7 +970,7 @@
       "name": "EmulatedDispatcherUnflattener",
       "is_activated": true,
       "config": {
-        "profile": "ollvm_father_history"
+        "profile": "state_dispatcher_map"
       }
     },
     {

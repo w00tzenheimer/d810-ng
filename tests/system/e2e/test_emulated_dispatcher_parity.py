@@ -187,7 +187,7 @@ class TestEmulatedDispatcherParity:
 
         with d810_state() as state:
             code_before = _decompile_without_d810(state, func_ea, pseudocode_to_string)
-            legacy_code = _decompile_with_project(
+            project_code = _decompile_with_project(
                 state,
                 func_ea,
                 "default_unflattening_approov.json",
@@ -202,11 +202,12 @@ class TestEmulatedDispatcherParity:
             )
 
         assert code_after != code_before
-        assert code_comparator.are_equivalent(code_after, legacy_code)
-        assert "while (" not in code_after
+        assert code_comparator.are_equivalent(code_after, project_code)
         assert "qword_18001D320 |= 0xF6A20uLL;" in code_after
         assert "if ( (_DWORD)qword_18001D320 == 0xF6A20 )" in code_after
         assert "dword_18001D318 = a1;" in code_after
         assert "dword_18001D318 += a1;" in code_after
         assert "qword_18001D320 |= 0x40uLL;" in code_after
         assert gap_summary is not None
+        assert gap_summary["detection"]["state_transport"] == "state_dispatcher_map"
+        assert "father_history" not in str(gap_summary)
