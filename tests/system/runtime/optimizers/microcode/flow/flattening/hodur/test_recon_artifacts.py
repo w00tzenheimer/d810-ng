@@ -19,6 +19,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
+    ExecutorPolicy,
     PlannedPipeline,
 )
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
@@ -774,10 +775,10 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
-        "make_executor_factory",
-        lambda *, gate, allow_legacy_block_creation: (
-            calls.append(("make_executor_factory", gate, allow_legacy_block_creation))
+        hodur_unflattener,
+        "make_transactional_executor_factory",
+        lambda policy: (
+            calls.append(("make_transactional_executor_factory", policy))
             or executor_factory_sentinel
         ),
     )
@@ -799,7 +800,7 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     factory_calls = [
         call
         for call in calls
-        if isinstance(call, tuple) and call[0] == "make_executor_factory"
+        if isinstance(call, tuple) and call[0] == "make_transactional_executor_factory"
     ]
     outcome_calls = [
         call
@@ -822,9 +823,11 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     assert planned_pipeline.pipeline == [fragment]
     assert seen_flow_context is unflattener.flow_context
     assert _executor_factory is executor_factory_sentinel
-    _, seen_gate, seen_allow_legacy = factory_calls[0]
-    assert seen_gate is unflattener._gate
-    assert seen_allow_legacy is unflattener.allow_legacy_block_creation
+    _, seen_policy = factory_calls[0]
+    assert isinstance(seen_policy, ExecutorPolicy)
+    assert seen_policy.gate is unflattener._gate
+    assert seen_policy.safeguard_profile == "hodur"
+    assert seen_policy.allow_legacy_block_creation is unflattener.allow_legacy_block_creation
     _, seen_pipeline, seen_results, seen_kwargs = outcome_calls[0]
     assert seen_pipeline == [fragment]
     assert len(seen_results) == 1
@@ -1153,12 +1156,10 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
-        "make_executor_factory",
-        lambda *, gate, allow_legacy_block_creation: (
-            calls.append(("make_executor_factory", gate, allow_legacy_block_creation))
-            or object()
-        ),
+        hodur_unflattener,
+        "make_transactional_executor_factory",
+        lambda policy: calls.append(("make_transactional_executor_factory", policy))
+        or object(),
     )
     monkeypatch.setattr(
         unflattener._family,

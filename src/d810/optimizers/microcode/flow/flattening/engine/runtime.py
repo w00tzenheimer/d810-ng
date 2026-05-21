@@ -19,8 +19,10 @@ if TYPE_CHECKING:
     from .strategy import UnflatteningStrategy
 
 __all__ = [
+    "ExecutorPolicy",
     "PlannedPipeline",
     "ExecutedPipeline",
+    "make_transactional_executor_factory",
     "plan_family_pipeline",
     "apply_execution_results_to_provenance",
     "execute_family_pipeline",
@@ -34,6 +36,15 @@ class _PipelineExecutor(Protocol):
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
     ) -> list[StageResult]: ...
+
+
+@dataclass(frozen=True)
+class ExecutorPolicy:
+    """Runtime-owned configuration for transactional executor construction."""
+
+    gate: object | None = None
+    allow_legacy_block_creation: bool = True
+    safeguard_profile: str = "engine"
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,24 @@ class ExecutedPipeline:
     provenance: PipelineProvenance
     total_changes: int
     executor: object | None = None
+
+
+def make_transactional_executor_factory(
+    policy: ExecutorPolicy,
+) -> Callable[[object], _PipelineExecutor]:
+    """Build a transactional executor factory from shared runtime policy."""
+
+    def _factory(mba: object) -> _PipelineExecutor:
+        from .executor import TransactionalExecutor
+
+        return TransactionalExecutor(
+            mba,
+            gate=policy.gate,
+            allow_legacy_block_creation=policy.allow_legacy_block_creation,
+            safeguard_profile=policy.safeguard_profile,
+        )
+
+    return _factory
 
 
 def plan_family_pipeline(

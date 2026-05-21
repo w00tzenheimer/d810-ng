@@ -104,7 +104,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
     - detection
     - immutable snapshot construction
     - strategy registration
-    - executor construction policy
     - successful-strategy bookkeeping
     - FlowGraph metadata enrichment
     - return-frontier artifact persistence helpers
@@ -468,27 +467,6 @@ class HodurStrategyFamily(CFFStrategyFamily):
             self._resolved_transitions.add(
                 (transition.from_state, transition.to_state)
             )
-
-    def make_executor_factory(
-        self,
-        *,
-        gate: object,
-        allow_legacy_block_creation: bool,
-    ):
-        """Return the live executor factory for the Hodur family."""
-        from d810.optimizers.microcode.flow.flattening.engine.executor import (
-            TransactionalExecutor,
-        )
-
-        def _factory(mba: ida_hexrays.mba_t):
-            return TransactionalExecutor(
-                mba,
-                gate=gate,
-                allow_legacy_block_creation=allow_legacy_block_creation,
-                safeguard_profile="hodur",
-            )
-
-        return _factory
 
     def record_execution_outcome(
         self,
