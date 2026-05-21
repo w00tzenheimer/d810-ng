@@ -124,13 +124,13 @@ class ConditionalStateResolver:
 
     def _resolve_state_from_history(
         self,
-        father_history: MopHistory | None,
+        predecessor_history: MopHistory | None,
         state_mop: ida_hexrays.mop_t,
     ) -> int | None:
-        if father_history is None:
+        if predecessor_history is None:
             return None
         try:
-            value = father_history.get_mop_constant_value(state_mop)
+            value = predecessor_history.get_mop_constant_value(state_mop)
         except Exception:
             return None
         if value is None:
@@ -140,13 +140,13 @@ class ConditionalStateResolver:
     def collect_resolution(
         self,
         block: ida_hexrays.mblock_t,
-        father_history: MopHistory | None = None,
+        predecessor_history: MopHistory | None = None,
     ) -> ABCResolutionEvidence | None:
         """Analyze a block for ABC patterns and return read-only target evidence."""
         if block.serial in self.observed_blocks:
             return None
 
-        pattern = self._find_abc_pattern(block, father_history)
+        pattern = self._find_abc_pattern(block, predecessor_history)
         if pattern is None:
             return None
 
@@ -167,7 +167,7 @@ class ConditionalStateResolver:
     def _find_abc_pattern(
         self,
         block: ida_hexrays.mblock_t,
-        father_history: MopHistory | None = None,
+        predecessor_history: MopHistory | None = None,
     ) -> ABCPatternInfo | None:
         """Find ABC pattern in block. Returns info or None."""
         curr_inst = block.head
@@ -188,7 +188,7 @@ class ConditionalStateResolver:
             self_update_pattern = self._check_instruction_for_self_update(
                 curr_inst,
                 block.serial,
-                father_history,
+                predecessor_history,
             )
             if self_update_pattern is not None:
                 return self_update_pattern
@@ -200,7 +200,7 @@ class ConditionalStateResolver:
         self,
         inst: ida_hexrays.minsn_t,
         block_serial: int,
-        father_history: MopHistory | None,
+        predecessor_history: MopHistory | None,
     ) -> ABCPatternInfo | None:
         """Detect self-referential transitions like state = state ^ K."""
         # Start with XOR self-updates (state = state ^ K), which are the
@@ -231,7 +231,10 @@ class ConditionalStateResolver:
         current_state = self._resolve_dispatcher_case_value(block_serial)
         if current_state is None:
             # Fallback for non-jtbl dispatchers where case-value mapping is unavailable.
-            current_state = self._resolve_state_from_history(father_history, state_mop)
+            current_state = self._resolve_state_from_history(
+                predecessor_history,
+                state_mop,
+            )
         if current_state is None:
             return None
 

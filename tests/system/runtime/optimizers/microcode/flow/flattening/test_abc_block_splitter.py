@@ -12,7 +12,7 @@ from d810.optimizers.microcode.flow.flattening.abc_block_splitter import (
 
 
 class _ABCResolverForTest(ConditionalStateResolver):
-    def _find_abc_pattern(self, block, father_history=None):
+    def _find_abc_pattern(self, block, predecessor_history=None):
         return ABCPatternInfo(
             block_serial=block.serial,
             instruction_ea=0x401000,
