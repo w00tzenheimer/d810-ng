@@ -2406,6 +2406,91 @@ def _patch_suffix_dependencies(monkeypatch, mba):
     return state
 
 
+class TestEdgeRedirectViaPredSplitCorridor:
+    """Apply-time guards for typed predecessor-scoped corridor splits."""
+
+    def test_one_block_corridor_accepts_prior_source_retarget(self, monkeypatch):
+        """A one-block corridor may run after the source was already retargeted.
+
+        This models the shared-block reconstruction plan: one predecessor keeps
+        the live source block after an earlier rewrite, while later predecessors
+        get private one-block copies routed to their own targets.
+        """
+        pred = _make_suffix_block(24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto)
+        src = _make_suffix_block(32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto)
+        current_target = _make_suffix_block(62, nsucc=1, succ_serial=99)
+        new_target = _make_suffix_block(70, nsucc=1, succ_serial=99)
+        src.predset.push_back(24)
+
+        mba = _build_suffix_mba({24: pred, 32: src, 62: current_target, 70: new_target})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_edge_redirect_via_pred_split_corridor(
+            blk=src,
+            old_target=2,
+            new_target=70,
+            via_pred=24,
+            clone_until=32,
+        )
+
+        assert ok is True
+        assert len(state["clones_created"]) == 1
+        template_serial, clone_serial, is_0_way, target_serial = state["clones_created"][0]
+        assert (template_serial, is_0_way, target_serial) == (32, False, 70)
+        assert state["successor_changes"] == [(24, clone_serial)]
+        assert src.succ(0) == 62
+
+    def test_one_block_corridor_can_clone_when_source_already_on_target(self, monkeypatch):
+        """The private-copy proof remains valid after the original source retargets."""
+        pred = _make_suffix_block(24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto)
+        src = _make_suffix_block(32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto)
+        target = _make_suffix_block(62, nsucc=1, succ_serial=99)
+        src.predset.push_back(24)
+
+        mba = _build_suffix_mba({24: pred, 32: src, 62: target})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_edge_redirect_via_pred_split_corridor(
+            blk=src,
+            old_target=2,
+            new_target=62,
+            via_pred=24,
+            clone_until=32,
+        )
+
+        assert ok is True
+        assert len(state["clones_created"]) == 1
+        template_serial, clone_serial, is_0_way, target_serial = state["clones_created"][0]
+        assert (template_serial, is_0_way, target_serial) == (32, False, 62)
+        assert state["successor_changes"] == [(24, clone_serial)]
+        assert src.succ(0) == 62
+
+    def test_multi_block_corridor_rejects_prior_source_retarget(self, monkeypatch):
+        """Multi-block corridor proof remains tied to the planned old target."""
+        pred = _make_suffix_block(9, nsucc=1, succ_serial=10, tail_opcode=ida_hexrays.m_goto)
+        src = _make_suffix_block(10, nsucc=1, succ_serial=11, tail_opcode=ida_hexrays.m_goto)
+        tail = _make_suffix_block(11, nsucc=1, succ_serial=12, tail_opcode=ida_hexrays.m_goto)
+        src.predset.push_back(9)
+
+        mba = _build_suffix_mba({9: pred, 10: src, 11: tail})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+
+        ok = modifier._apply_edge_redirect_via_pred_split_corridor(
+            blk=src,
+            old_target=2,
+            new_target=70,
+            via_pred=9,
+            clone_until=11,
+        )
+
+        assert ok is False
+        assert state["clones_created"] == []
+        assert state["successor_changes"] == []
+
+
 # ---------------------------------------------------------------------------
 #  TestPrivateTerminalSuffix
 # ---------------------------------------------------------------------------

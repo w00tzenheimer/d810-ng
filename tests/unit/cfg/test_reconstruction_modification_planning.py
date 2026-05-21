@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
+    EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
 )
@@ -140,9 +140,13 @@ class TestPlanSharedGroupReconstructionModifications:
             RedirectGoto(from_serial=8, old_target=10, new_target=30),
         )
 
-    def test_returns_duplicate_and_redirect(self):
+    def test_returns_typed_corridor_splits_for_shared_group_clone(self):
         flow_graph = _DummyFlowGraph({
             10: ((8, 9), (2,)),
+            24: ((), ()),
+            30: ((), ()),
+            8: ((), (10,)),
+            9: ((), (10,)),
         })
 
         plan = plan_shared_group_reconstruction_modifications(
@@ -156,20 +160,27 @@ class TestPlanSharedGroupReconstructionModifications:
         )
 
         assert plan.accepted
-        assert plan.emission_mode == "duplicate_and_redirect"
+        assert plan.emission_mode == "one_block_corridor_split"
         assert plan.ordered_via_preds == (8, 9)
+        assert plan.per_pred_targets == ((8, 24), (9, 30))
         assert plan.modifications == (
-            DuplicateAndRedirect(
-                source_serial=10,
-                per_pred_targets=((8, 24), (9, 30)),
+            EdgeRedirectViaPredSplit(
+                src_block=10,
+                old_target=2,
+                new_target=30,
+                via_pred=9,
+                clone_until=10,
+                source_new_target=24,
+                rule_priority=550,
             ),
         )
 
-    def test_force_clone_emits_duplicate_and_redirect(self):
+    def test_force_clone_uses_typed_corridor_split_when_old_target_is_preserved(self):
         flow_graph = _DummyFlowGraph({
             8: ((), (10,)),
             11: ((), (10,)),
             10: ((8, 11), (2,)),
+            24: ((), ()),
         })
 
         plan = plan_shared_group_reconstruction_modifications(
@@ -183,11 +194,16 @@ class TestPlanSharedGroupReconstructionModifications:
         )
 
         assert plan.accepted
-        assert plan.emission_mode == "duplicate_and_redirect"
+        assert plan.emission_mode == "one_block_corridor_split"
+        assert plan.per_pred_targets == ((11, 2), (8, 24))
         assert plan.modifications == (
-            DuplicateAndRedirect(
-                source_serial=10,
-                per_pred_targets=((11, 2), (8, 24)),
+            EdgeRedirectViaPredSplit(
+                src_block=10,
+                old_target=2,
+                new_target=24,
+                via_pred=8,
+                clone_until=10,
+                rule_priority=550,
             ),
         )
 

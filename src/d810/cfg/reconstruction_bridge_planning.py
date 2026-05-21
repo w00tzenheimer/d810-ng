@@ -450,14 +450,14 @@ def plan_reconstruction_feeder_modifications(
             if not lowering.accepted:
                 continue
             if lowering.kind == SharedFeederLoweringKind.PRED_SCOPED_CLONE:
-                feeder_mods.append(
-                    builder.duplicate_and_redirect(
-                        source_block=src_serial,
-                        per_pred_targets=[(lowering.via_pred, target_entry)],
-                    )
+                logger.info(
+                    "RECON BRIDGE: abstaining from pred-scoped clone without "
+                    "corridor/replay proof source=%d via_pred=%s target=%d",
+                    src_serial,
+                    "None" if lowering.via_pred is None else str(lowering.via_pred),
+                    target_entry,
                 )
-                feeder_tag += " pred-scoped"
-                claimed_sources.add(src_serial)
+                continue
             elif (
                 lowering.kind == SharedFeederLoweringKind.PRED_EDGE_PEEL
                 and lowering.via_pred is not None

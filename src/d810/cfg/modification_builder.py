@@ -25,7 +25,6 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DirectTerminalLoweringGroup,
     DirectTerminalLoweringSite,
-    DuplicateAndRedirect,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -344,27 +343,6 @@ class ModificationBuilder:
             patch_kind=patch_kind,
             conditional_target=conditional_target,
             fallthrough_target=fallthrough_target,
-        )
-
-    def duplicate_and_redirect(
-        self,
-        source_block: int,
-        per_pred_targets: list[tuple[int, int]],
-    ) -> DuplicateAndRedirect:
-        """Emit a multi-pred duplication: one copy per (pred, target) pair.
-
-        Args:
-            source_block: Serial of the shared block to duplicate.
-            per_pred_targets: List of ``(pred_serial, target_serial)`` pairs.
-                The first entry keeps the original block; subsequent entries
-                get freshly duplicated copies.
-
-        Returns:
-            A frozen :class:`DuplicateAndRedirect` modification intent.
-        """
-        return DuplicateAndRedirect(
-            source_serial=source_block,
-            per_pred_targets=tuple(per_pred_targets),
         )
 
     def private_terminal_suffix(

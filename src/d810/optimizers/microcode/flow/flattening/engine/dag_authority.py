@@ -29,10 +29,8 @@ Phase 1 (this module) ships:
 * :func:`DagAuthority.permits_redirect_goto` and
   :func:`DagAuthority.permits_convert_to_goto` — the two arbiter methods
   whose underlying queries are fully covered by the existing DAG.
-* :func:`DagAuthority.permits_duplicate_and_redirect` and
-  :func:`DagAuthority.permits_zero_state_write` — return ``DAG_GAP``
-  refusals until the four extension tickets close (uee-7wcd, uee-7snc,
-  uee-qli0, uee-bwdk).
+* :func:`DagAuthority.permits_zero_state_write` — returns ``ALLOW`` for
+  the consolidated zero-state-write emitter added in Phase 4.
 
 Per the deferral decision recorded in semantic memory (mem_52073043),
 the authority is built **once per pipeline run**. Per-round rederivation
@@ -52,7 +50,6 @@ from dataclasses import dataclass
 
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     RedirectGoto,
     ZeroStateWrite,
@@ -407,20 +404,6 @@ class DagAuthority:
             mod_kind="ConvertToGoto",
         )
 
-    def permits_duplicate_and_redirect(
-        self, mod: DuplicateAndRedirect
-    ) -> DagDecision:
-        """Validate a DuplicateAndRedirect against the DAG.
-
-        Currently strict-refuses with ``DAG_GAP:duplicate_and_redirect_safety``
-        — the DAG marks ``shared_suffix_blocks`` but does not expose
-        clone-impact analysis (no liveness summary, no clones-would-
-        break-join check). The R1 catalog flagged this gap; closing it
-        requires extending the DAG with per-block clone-safety
-        annotations. Tracked under the uee-jrgq epic.
-        """
-        return DagDecision.gap("duplicate_and_redirect_safety")
-
     def permits_zero_state_write(self, mod: ZeroStateWrite) -> DagDecision:
         """Validate a ZeroStateWrite against the DAG.
 
@@ -613,8 +596,6 @@ class DagAuthority:
             return self.permits_redirect_goto(mod)  # type: ignore[arg-type]
         if kind == "ConvertToGoto":
             return self.permits_convert_to_goto(mod)  # type: ignore[arg-type]
-        if kind == "DuplicateAndRedirect":
-            return self.permits_duplicate_and_redirect(mod)  # type: ignore[arg-type]
         if kind == "ZeroStateWrite":
             return self.permits_zero_state_write(mod)  # type: ignore[arg-type]
         if kind == "EdgeRedirectViaPredSplit":

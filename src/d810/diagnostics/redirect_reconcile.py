@@ -49,15 +49,15 @@ def _hex_tok(stkoff: int | None) -> str | None:
 
 
 def load_persisted_dup_sources(conn: sqlite3.Connection) -> frozenset[int]:
-    """Source blocks that emitted a ``DuplicateAndRedirect`` mod.
+    """Source blocks that emitted a typed clone/split mod.
 
-    The DupAndRedirect path may not produce per-source log lines but the
+    The typed clone path may not produce per-source log lines but the
     ``modifications`` table is ground truth for "this source was redirected
     via per-pred routing", so we merge these into the HCC_DUP bucket.
     """
     rows = conn.execute(
         "SELECT DISTINCT source_block FROM modifications "
-        "WHERE mod_type='DuplicateAndRedirect' AND status='emitted' "
+        "WHERE mod_type='EdgeRedirectViaPredSplit' AND status='emitted' "
         "AND source_block IS NOT NULL"
     ).fetchall()
     return frozenset(int(r[0]) for r in rows)

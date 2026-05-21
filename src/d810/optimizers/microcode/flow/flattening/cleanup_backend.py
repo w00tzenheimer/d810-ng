@@ -17,13 +17,11 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
     CleanupTrampolineIsolationCandidate,
-    bad_while_loop_duplicate_candidate,
     explain_bad_while_loop_conditional_redirect,
     validate_conditional_duplicate_cleanup_edit,
     validate_conditional_redirect_cleanup_edit,
     validate_duplicate_group_replay_candidate,
     validate_side_effect_replay_candidate,
-    validate_dispatcher_cleanup_candidate,
     validate_trampoline_isolation_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
@@ -85,12 +83,7 @@ def _is_plannable_bad_while_loop_edit(
     if isinstance(edit, safe_edit_types):
         return True
     if isinstance(edit, BadWhileLoopDuplicateRedirect):
-        candidate = bad_while_loop_duplicate_candidate(edit)
-        return (
-            candidate is not None
-            and cfg is not None
-            and validate_dispatcher_cleanup_candidate(cfg, candidate)
-        )
+        return False
     if isinstance(edit, BadWhileLoopConditionalDuplicate):
         return cfg is not None and validate_conditional_duplicate_cleanup_edit(
             cfg,

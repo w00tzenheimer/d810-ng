@@ -46,7 +46,7 @@ def _fixpoint_claimed_sources(
 ) -> set[int]:
     """Return the source claims that should block fixpoint feeder rewrites.
 
-    ``owned_blocks`` and ``DuplicateAndRedirect.source_serial`` are intentionally
+    ``owned_blocks`` and typed-clone source claims are intentionally
     conservative for most planning phases, but they are too coarse for the
     final fixpoint-feeder pass.  Earlier reconstruction can legitimately claim
     a shared block while redirecting all old local predecessors away from it,

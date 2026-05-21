@@ -106,8 +106,8 @@ class LiveMbaAdapter:
     the end of the MBA via ``mba.copy_block``, NOPs all inherited
     instructions, appends a single ``m_goto`` to the successor, and
     rewires pred/succ sets.  Mid-CFG ``mba.insert_block`` is avoided
-    because it corrupts IDA internal state (see
-    ``abc_block_splitter.py:669``).
+    because the retired live block-splitting path showed it can corrupt IDA
+    internal state.
     """
 
     def __init__(self, mba) -> None:  # mba: ida_hexrays.mba_t

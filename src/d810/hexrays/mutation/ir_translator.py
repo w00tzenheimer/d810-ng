@@ -21,7 +21,6 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     CreateConditionalRedirect,
-    DuplicateAndRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
     InsertBlock,
@@ -48,6 +47,7 @@ from d810.cfg.plan import (
     PatchConvertToGoto,
     PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
+    PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchLowerConditionalStateTransition,
@@ -592,7 +592,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchEdgeSplitCorridor() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -630,8 +630,6 @@ class IDAIRTranslator:
                 case LegacyBlockOperation(modification=CreateConditionalRedirect()):
                     continue
                 case LegacyBlockOperation(modification=EdgeRedirectViaPredSplit()):
-                    continue
-                case LegacyBlockOperation(modification=DuplicateAndRedirect()):
                     continue
                 case LegacyBlockOperation(
                     modification=InsertBlock(pred_serial=pred, succ_serial=succ)
@@ -850,6 +848,29 @@ class IDAIRTranslator:
                     description=(
                         f"edge-split trampoline pred={pred} src={src} "
                         f"{old}->{new} via {assigned}"
+                    ),
+                )
+
+            case PatchEdgeSplitCorridor(
+                source_serial=src,
+                via_pred=pred,
+                old_target=old,
+                new_target=new,
+                clone_until=clone_until,
+                source_new_target=source_new_target,
+                rule_priority=priority,
+            ):
+                modifier.queue_edge_redirect(
+                    src_block=src,
+                    old_target=old,
+                    new_target=new,
+                    via_pred=pred,
+                    clone_until=clone_until,
+                    source_new_target=source_new_target,
+                    rule_priority=priority,
+                    description=(
+                        f"edge-split corridor pred={pred} src={src} "
+                        f"{old}->{new} until {clone_until}"
                     ),
                 )
 
@@ -1154,48 +1175,6 @@ class IDAIRTranslator:
                         f"arm={arm} src={src} target={target}: {reason}"
                     ),
                 )
-
-            case DuplicateAndRedirect(
-                source_serial=src,
-                per_pred_targets=per_pred,
-            ):
-                # Emit a single atomic queue_duplicate_block that clones
-                # the source for pred[1] AND redirects the original for
-                # pred[0], avoiding the coalescer conflict between a
-                # separate GOTO_CHANGE and DUPLICATE on the same serial.
-                if len(per_pred) == 2:
-                    keep_pred, keep_target = per_pred[0]
-                    clone_pred, clone_target = per_pred[1]
-                    modifier.queue_duplicate_block(
-                        source_block_serial=src,
-                        pred_serial=clone_pred,
-                        target_serial=clone_target,
-                        original_redirect_target=keep_target,
-                        description=(
-                            f"duplicate_and_redirect: clone blk[{src}] "
-                            f"for pred={clone_pred} -> {clone_target}, "
-                            f"redirect original -> {keep_target}"
-                        ),
-                    )
-                else:
-                    # Fallback for >2 preds: first gets original redirect,
-                    # rest get clones.
-                    original_target = per_pred[0][1] if per_pred else None
-                    for idx, (pred, target) in enumerate(per_pred):
-                        if idx == 0:
-                            continue  # handled via original_redirect_target
-                        modifier.queue_duplicate_block(
-                            source_block_serial=src,
-                            pred_serial=pred,
-                            target_serial=target,
-                            original_redirect_target=(
-                                original_target if idx == 1 else None
-                            ),
-                            description=(
-                                f"duplicate_and_redirect: clone blk[{src}] "
-                                f"for pred={pred} -> {target}"
-                            ),
-                        )
 
             case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
                 logger.warning(

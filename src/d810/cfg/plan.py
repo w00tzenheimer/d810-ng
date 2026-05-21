@@ -45,7 +45,6 @@ from d810.cfg.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
-    DuplicateAndRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
@@ -346,6 +345,33 @@ class PatchEdgeSplitTrampoline:
 
 
 @dataclass(frozen=True)
+class PatchEdgeSplitCorridor:
+    """Finalized strict 1-way corridor clone for an edge split."""
+
+    clone_block_ids: tuple[VirtualBlockId, ...]
+    clone_assigned_serials: tuple[int, ...]
+    source_serial: int
+    via_pred: int
+    old_target: int
+    new_target: int
+    clone_until: int
+    corridor_serials: tuple[int, ...]
+    source_new_target: int | None = None
+    rule_priority: int = 0
+
+    def to_graph_modification(self) -> EdgeRedirectViaPredSplit:
+        return EdgeRedirectViaPredSplit(
+            src_block=self.source_serial,
+            old_target=self.old_target,
+            new_target=self.new_target,
+            via_pred=self.via_pred,
+            clone_until=self.clone_until,
+            source_new_target=self.source_new_target,
+            rule_priority=self.rule_priority,
+        )
+
+
+@dataclass(frozen=True)
 class PatchConditionalRedirect:
     """Finalized materialization of a cloned conditional block plus NOP fallthrough."""
 
@@ -603,7 +629,6 @@ BlockCreatingGraphModification = Union[
     DuplicateBlock,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
@@ -644,6 +669,7 @@ PatchOperation = Union[
     PatchScalarizeLocalAliasAccess,
     PatchPhaseCycleLowering,
     PatchEdgeSplitTrampoline,
+    PatchEdgeSplitCorridor,
     PatchConditionalRedirect,
     PatchInsertBlock,
     PatchDuplicateBlock,
@@ -718,6 +744,13 @@ class _VirtualIdAllocator:
 class _PendingEdgeSplitTrampoline:
     modification: EdgeRedirectViaPredSplit
     block_id: VirtualBlockId
+
+
+@dataclass(frozen=True)
+class _PendingEdgeSplitCorridor:
+    modification: EdgeRedirectViaPredSplit
+    corridor_serials: tuple[int, ...]
+    clone_block_ids: tuple[VirtualBlockId, ...]
 
 
 @dataclass(frozen=True)
@@ -810,7 +843,6 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             DuplicateBlock,
             CloneConditionalAsGoto,
             CloneConditionalAsGotoFromBranchArm,
-            DuplicateAndRedirect,
             DuplicateReplayAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
@@ -1415,6 +1447,112 @@ def _compile_duplicate_block_step(
     )
 
 
+def _compile_edge_split_corridor_step(
+    modification: EdgeRedirectViaPredSplit,
+    cfg: FlowGraph,
+    allocator: _VirtualIdAllocator,
+) -> tuple[_PendingEdgeSplitCorridor, tuple[PatchBlockSpec, ...]]:
+    if modification.clone_until is None:
+        raise ValueError("EdgeRedirectViaPredSplit corridor requires clone_until")
+
+    pred_block = cfg.get_block(modification.via_pred)
+    source_block = cfg.get_block(modification.src_block)
+    if pred_block is None:
+        raise ValueError(
+            f"EdgeRedirectViaPredSplit via_pred {modification.via_pred} not found"
+        )
+    if source_block is None:
+        raise ValueError(
+            f"EdgeRedirectViaPredSplit source {modification.src_block} not found"
+        )
+    if pred_block.succs != (modification.src_block,):
+        raise ValueError(
+            f"EdgeRedirectViaPredSplit via_pred {modification.via_pred} "
+            f"does not target source {modification.src_block}"
+        )
+    if source_block.succs != (modification.old_target,):
+        raise ValueError(
+            f"EdgeRedirectViaPredSplit source {modification.src_block} "
+            f"does not start old_target {modification.old_target}"
+        )
+
+    corridor_serials: list[int] = [modification.src_block]
+    seen = {modification.src_block}
+    cursor = source_block
+    while cursor.serial != modification.clone_until:
+        if cursor.nsucc != 1:
+            raise ValueError(
+                f"EdgeRedirectViaPredSplit corridor block {cursor.serial} "
+                f"has {cursor.nsucc} successors; expected 1"
+            )
+        next_serial = cursor.succs[0]
+        if next_serial in seen:
+            raise ValueError(
+                f"EdgeRedirectViaPredSplit corridor cycle at {cursor.serial}->{next_serial}"
+            )
+        next_block = cfg.get_block(next_serial)
+        if next_block is None:
+            raise ValueError(
+                f"EdgeRedirectViaPredSplit corridor missing block {next_serial}"
+            )
+        corridor_serials.append(next_serial)
+        seen.add(next_serial)
+        cursor = next_block
+
+    if cursor.nsucc != 1:
+        raise ValueError(
+            f"EdgeRedirectViaPredSplit clone_until {cursor.serial} "
+            f"has {cursor.nsucc} successors; expected 1"
+        )
+    if modification.new_target == cursor.serial:
+        raise ValueError(
+            "EdgeRedirectViaPredSplit corridor final target would self-loop"
+        )
+    if modification.source_new_target is not None:
+        if modification.source_new_target == modification.src_block:
+            raise ValueError(
+                "EdgeRedirectViaPredSplit source target would self-loop"
+            )
+        if cfg.get_block(modification.source_new_target) is None:
+            raise ValueError(
+                f"EdgeRedirectViaPredSplit source target {modification.source_new_target} not found"
+            )
+
+    clone_ids = tuple(allocator.alloc("edge_split_corridor") for _ in corridor_serials)
+    specs: list[PatchBlockSpec] = []
+    for index, (source_serial, clone_id) in enumerate(zip(corridor_serials, clone_ids)):
+        incoming_source: PatchBlockRef = (
+            modification.via_pred if index == 0 else clone_ids[index - 1]
+        )
+        incoming_target = modification.src_block if index == 0 else source_serial
+        outgoing_target: PatchBlockRef = (
+            modification.new_target
+            if index == len(clone_ids) - 1
+            else clone_ids[index + 1]
+        )
+        specs.append(
+            PatchBlockSpec(
+                block_id=clone_id,
+                kind="edge_split_corridor_clone",
+                template_block=source_serial,
+                incoming_edge=PatchEdgeRef(
+                    source=incoming_source,
+                    target=incoming_target,
+                ),
+                outgoing_edges=(PatchEdgeRef(source=clone_id, target=outgoing_target),),
+            )
+        )
+
+    return (
+        _PendingEdgeSplitCorridor(
+            modification=modification,
+            corridor_serials=tuple(corridor_serials),
+            clone_block_ids=clone_ids,
+        ),
+        tuple(specs),
+    )
+
+
 def _compile_duplicate_replay_and_redirect_step(
     modification: DuplicateReplayAndRedirect,
     cfg: FlowGraph,
@@ -1536,7 +1674,7 @@ def _compile_duplicate_replay_and_redirect_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingDirectTerminalLoweringGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingEdgeSplitCorridor | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingDirectTerminalLoweringGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1606,6 +1744,40 @@ def _finalize_step(
                 apply_old_target=relocation_map.rewrite_serial(old),
                 new_target=relocation_map.rewrite_serial(new),
                 template_block=src,
+            )
+
+        case _PendingEdgeSplitCorridor(
+            modification=EdgeRedirectViaPredSplit(
+                src_block=src,
+                old_target=old,
+                new_target=new,
+                via_pred=pred,
+                clone_until=clone_until,
+                rule_priority=rule_priority,
+                source_new_target=source_new_target,
+            ),
+            corridor_serials=corridor_serials,
+            clone_block_ids=clone_ids,
+        ):
+            if clone_until is None:
+                raise ValueError("Missing clone_until for edge-split corridor")
+            assigned: list[int] = []
+            for clone_id in clone_ids:
+                serial = relocation_map.assigned_serial_for(clone_id)
+                if serial is None:
+                    raise ValueError(f"Missing assigned serial for {clone_id}")
+                assigned.append(serial)
+            return PatchEdgeSplitCorridor(
+                clone_block_ids=clone_ids,
+                clone_assigned_serials=tuple(assigned),
+                source_serial=src,
+                via_pred=pred,
+                old_target=old,
+                new_target=new,
+                clone_until=clone_until,
+                corridor_serials=tuple(corridor_serials),
+                source_new_target=source_new_target,
+                rule_priority=rule_priority,
             )
 
         case _PendingConditionalRedirect(
@@ -1989,7 +2161,21 @@ def compile_patch_plan(
 ) -> PatchPlan:
     """Compile planner modifications into ordered PatchPlan steps."""
     allocator = _VirtualIdAllocator()
-    raw_steps: list[PatchStep | _PendingEdgeSplitTrampoline] = []
+    raw_steps: list[
+        PatchStep
+        | _PendingEdgeSplitTrampoline
+        | _PendingEdgeSplitCorridor
+        | _PendingConditionalRedirect
+        | _PendingInsertBlock
+        | _PendingDuplicateBlock
+        | _PendingDuplicateReplayAndRedirect
+        | _PendingCloneConditionalAsGoto
+        | _PendingCloneConditionalAsGotoFromBranchArm
+        | _PendingPrivateTerminalSuffix
+        | _PendingPrivateTerminalSuffixGroup
+        | _PendingDirectTerminalLoweringGroup
+        | _PendingReorderBlocks
+    ] = []
     new_blocks: list[PatchBlockSpec] = []
 
     for modification in modifications:
@@ -2145,7 +2331,13 @@ def compile_patch_plan(
                         "compile_patch_plan requires FlowGraph context for EdgeRedirectViaPredSplit"
                     )
                 if clone_until is not None:
-                    raw_steps.append(LegacyBlockOperation(modification=modification))
+                    pending, specs = _compile_edge_split_corridor_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
+                    raw_steps.append(pending)
+                    new_blocks.extend(specs)
                     continue
                 block_id = allocator.alloc("edge_split")
                 new_blocks.append(
@@ -2322,28 +2514,6 @@ def compile_patch_plan(
                 )
                 raw_steps.append(pending_step)
                 new_blocks.append(clone_spec)
-
-            case DuplicateAndRedirect(
-                source_serial=src,
-                per_pred_targets=per_pred,
-            ):
-                # Block-creating modification — handle as a single legacy
-                # block operation to bypass the projected contract checker
-                # (which cannot simulate new blocks from duplication).
-                # The ir_translator dispatches the redirect + duplication
-                # calls directly on the live MBA.
-                block_id = allocator.alloc("duplicate_and_redirect")
-                raw_steps.append(
-                    LegacyBlockOperation(
-                        modification=modification,
-                        block_id=block_id,
-                    )
-                )
-                # No PatchBlockSpec entries — the LegacyBlockOperation
-                # handles all duplication + edge wiring on the live MBA.
-                # PatchBlockSpec entries cause projected contract failures
-                # (CFG_50856_BAD_NSUCC) because the simulator can't
-                # properly model block duplication side effects.
 
             case PrivateTerminalSuffix(
                 anchor_serial=anchor,
@@ -2579,6 +2749,7 @@ __all__ = [
     "PatchScalarizeLocalAliasAccess",
     "PatchPhaseCycleLowering",
     "PatchEdgeSplitTrampoline",
+    "PatchEdgeSplitCorridor",
     "PatchConditionalRedirect",
     "PatchInsertBlock",
     "PatchDuplicateBlock",

@@ -14,8 +14,8 @@ from d810.cfg.flowgraph import (
     OperandKind,
 )
 from d810.cfg.graph_modification import (
+    ConvertToGoto,
     CreateConditionalRedirect,
-    DuplicateAndRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
     InsertBlock,
@@ -413,9 +413,9 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert detection.single_iteration_fixes == (single_iteration_fix,)
     assert detection.bad_while_loop_edits == (
         bad_while_loop_edit,
-        safe_bad_while_loop_duplicate,
     )
     assert detection.bad_while_loop_deferred_edits == (
+        safe_bad_while_loop_duplicate,
         unsafe_bad_while_loop_duplicate,
         unsafe_bad_while_loop_conditional_duplicate,
         unsafe_bad_while_loop_conditional_redirect,
@@ -985,7 +985,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert detection.detected is True
     assert extract_fake_jump_fixes(snapshot.flow_graph) == (fake_jump_fix,)
     assert extract_single_iteration_fixes(snapshot.flow_graph) == single_iteration_fixes
-    assert extract_bad_while_loop_edits(snapshot.flow_graph) == bad_while_loop_edits
+    assert extract_bad_while_loop_edits(snapshot.flow_graph) == bad_while_loop_edits[:2]
     assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (
         bad_while_loop_follow_up
     )
@@ -1013,7 +1013,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.collected_single_iteration_fixes == 2
     assert metadata.selected_single_iteration_fixes == 2
     assert metadata.collected_bad_while_loop_edits == 3
-    assert metadata.selected_bad_while_loop_edits == 3
+    assert metadata.selected_bad_while_loop_edits == 2
     assert metadata.deferred_bad_while_loop_edits == 0
     assert metadata.bad_while_loop_follow_up == 1
     assert metadata.collected_tail_goto_merges == 1
@@ -1022,21 +1022,13 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
 
     fragment = BadWhileLoopStrategy().plan(snapshot)
     assert fragment is not None
-    assert DuplicateAndRedirect(
-        source_serial=50,
-        per_pred_targets=((51, 42), (52, 43)),
-    ) in fragment.modifications
+    assert fragment.modifications == [
+        RedirectGoto(from_serial=40, old_target=41, new_target=42),
+        ConvertToGoto(block_serial=44, goto_target=43),
+    ]
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
-    assert any(
-        isinstance(step, LegacyBlockOperation)
-        and step.modification
-        == DuplicateAndRedirect(
-            source_serial=50,
-            per_pred_targets=((51, 42), (52, 43)),
-        )
-        for step in patch_plan.steps
-    )
+    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_tail_goto_merge_strategy_emits_relaxed_nop_cleanup() -> None:

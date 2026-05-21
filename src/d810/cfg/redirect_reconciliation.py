@@ -61,7 +61,7 @@ class StrategyLogSignals:
     """Per-source veto / conflict signals parsed from d810.log.
 
     The HCC fields capture region-collapse ownership: when HCC composes
-    a region around a handler/pred/target, its DuplicateAndRedirect or
+    a region around a handler/pred/target, its typed clone or
     InsertBlock+region splice supersedes any plain RedirectGoto from
     later strategies. The trampoline-skip emission is silently dropped
     by intra-fragment dedup.
@@ -123,7 +123,7 @@ _RX_LOGGED_INTENT = re.compile(
     r"trampoline skip: blk\[(\d+)\] state=0x([0-9A-Fa-f]+) -> blk\[(\d+)\]"
 )
 _RX_HCC_INTRA_DUP = re.compile(
-    r"intra-fragment duplicates of DuplicateAndRedirect on the same source.*?"
+    r"intra-fragment duplicates of typed clone on the same source.*?"
     r"RedirectGoto\(src=(\d+) dropped_tgt=\d+\)",
     re.DOTALL,
 )
@@ -224,7 +224,7 @@ def reconcile_edge(
             bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_PLANNER_CTX
         elif src_serial in log_signals.hcc_dup_redirect_sources:
             bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT
-            note = "intra-fragment dedup vs DuplicateAndRedirect on same source"
+            note = "intra-fragment dedup vs typed clone on same source"
         elif src_serial in log_signals.hcc_region_handlers:
             bucket = ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_HANDLER
             note = "src is a handler in an HCC composed region"
