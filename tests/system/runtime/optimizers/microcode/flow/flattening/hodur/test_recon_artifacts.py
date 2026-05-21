@@ -11,6 +11,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     save_transition_report_to_store,
     write_return_frontier_artifact_from_store,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+    prepare_return_frontier_audit,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     OwnershipScope,
@@ -165,7 +168,7 @@ def test_audit_pre_plan_prefers_recon_store_transition_report(monkeypatch, tmp_p
         fail_if_built,
     )
 
-    unflattener._audit_return_sites = unflattener._family.prepare_return_frontier_audit(
+    unflattener._audit_return_sites = prepare_return_frontier_audit(
         snapshot,
         current_return_sites=tuple(),
         return_site_provider=unflattener._return_site_provider,
@@ -196,7 +199,7 @@ def test_audit_pre_plan_persists_fallback_report_to_store(monkeypatch, tmp_path)
         lambda *_args, **_kwargs: report,
     )
 
-    unflattener._audit_return_sites = unflattener._family.prepare_return_frontier_audit(
+    unflattener._audit_return_sites = prepare_return_frontier_audit(
         snapshot,
         current_return_sites=tuple(),
         return_site_provider=unflattener._return_site_provider,
@@ -1122,7 +1125,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_unflattener,
         "prepare_return_frontier_audit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not prepare return-frontier audit")
@@ -1172,7 +1175,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_unflattener,
         "persist_terminal_return_audit",
         lambda results, **kwargs: calls.append(
             ("persist_terminal_return_audit", results, kwargs)
@@ -1184,7 +1187,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_unflattener,
         "finalize_return_frontier_audit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not finalize return-frontier audit")

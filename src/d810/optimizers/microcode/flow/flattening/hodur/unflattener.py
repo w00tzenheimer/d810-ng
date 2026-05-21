@@ -79,6 +79,12 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 from d810.optimizers.microcode.flow.flattening.hodur.family import (
     HodurStrategyFamily,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+    finalize_return_frontier_audit,
+    persist_terminal_return_audit,
+    prepare_return_frontier_audit,
+    record_return_frontier_stage,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
@@ -630,7 +636,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
         if self.RETURN_FRONTIER_AUDIT_ENABLED and snapshot.state_machine is not None:
             handler_paths = self._extract_handler_paths_from_fragments(planned.pipeline)
             try:
-                self._audit_return_sites = self._family.prepare_return_frontier_audit(
+                self._audit_return_sites = prepare_return_frontier_audit(
                     snapshot,
                     current_return_sites=tuple(self._audit_return_sites),
                     return_site_provider=self._return_site_provider,
@@ -640,6 +646,10 @@ class HodurUnflattener(ComposedUnflatteningRule):
                     successors=self._build_successor_map(),
                     exits=self._find_exit_blocks(),
                     handler_paths=handler_paths,
+                    state_var_stkoff=self._family.get_effective_state_var_stkoff(
+                        snapshot.state_machine
+                    ),
+                    logger=unflat_logger,
                 )
             except Exception:
                 unflat_logger.debug("_audit_pre_plan failed (non-critical), continuing")
@@ -662,7 +672,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
                 and self._audit_return_sites
             ):
                 try:
-                    self._family.record_return_frontier_stage(
+                    record_return_frontier_stage(
                         return_sites=tuple(self._audit_return_sites),
                         stage_name="post_plan",
                         func_ea=self.mba.entry_ea,
@@ -670,6 +680,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
                         log_dir=self.log_dir,
                         successors=self._build_successor_map(),
                         exits=self._find_exit_blocks(),
+                        logger=unflat_logger,
                     )
                 except Exception:
                     unflat_logger.debug(
@@ -733,7 +744,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
             ),
         )
 
-        self._family.persist_terminal_return_audit(
+        persist_terminal_return_audit(
             results,
             func_ea=self.mba.entry_ea,
             maturity=self.cur_maturity,
@@ -747,7 +758,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
             and self._audit_return_sites
         ):
             try:
-                self._family.record_return_frontier_stage(
+                record_return_frontier_stage(
                     return_sites=tuple(self._audit_return_sites),
                     stage_name="post_apply",
                     func_ea=self.mba.entry_ea,
@@ -755,6 +766,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
                     log_dir=self.log_dir,
                     successors=self._build_successor_map(),
                     exits=self._find_exit_blocks(),
+                    logger=unflat_logger,
                 )
             except Exception:
                 unflat_logger.debug("_record_audit_stage(post_apply) failed (non-critical)")
@@ -973,7 +985,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
             and self._audit_return_sites
         ):
             try:
-                self._family.finalize_return_frontier_audit(
+                finalize_return_frontier_audit(
                     tuple(self._audit_return_sites),
                     func_ea=self.mba.entry_ea,
                     maturity=self.cur_maturity,
@@ -981,6 +993,7 @@ class HodurUnflattener(ComposedUnflatteningRule):
                     artifact_dir=Path(f".tmp/recon/{self.cur_maturity}"),
                     successors=self._build_successor_map(),
                     exits=self._find_exit_blocks(),
+                    logger=unflat_logger,
                 )
             except Exception:
                 unflat_logger.debug("post_pipeline audit failed (non-critical)")
