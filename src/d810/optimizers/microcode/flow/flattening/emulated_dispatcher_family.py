@@ -1188,6 +1188,30 @@ def select_loop_recovery_edges(
     return selected, blockers
 
 
+def _has_selectable_loop_recovery_edges(
+    phase_context: EmulatedDispatcherPhaseContext | None,
+) -> bool:
+    """Return whether DAG evidence can drive GLBOPT1 loop recovery."""
+
+    if phase_context is None:
+        return False
+    selected, _blockers = select_loop_recovery_edges(
+        StateDagIndex.from_dag(getattr(phase_context, "dag", None))
+    )
+    return bool(selected)
+
+
+def _loop_recovery_blockers_allow_partial_lowering(
+    blockers: tuple[str, ...],
+) -> bool:
+    """Return whether blockers are audit-only for selected loop recovery edges."""
+
+    return bool(blockers) and all(
+        blocker == "dispatcher_loop_recovery_ambiguous_dag_edges"
+        for blocker in blockers
+    )
+
+
 def _switch_dispatcher_reentry_targets(
     flow_graph: FlowGraph,
     *,
@@ -7420,8 +7444,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             _append_dag_edge_state_write_rewrite(plan)
 
         if not modifications:
-            if blockers:
-                return (), tuple(sorted(blockers)), ()
+            combined_blockers = tuple(
+                sorted(set(edge_selection_blockers) | set(blockers))
+            )
+            if combined_blockers:
+                return (), combined_blockers, ()
             return (), ("dispatcher_loop_recovery_no_state_map_edges",), ()
 
         batch = tuple(modifications)
@@ -7440,7 +7467,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             "DispatcherLoopRecovery selected %d state-map predecessor-fact rewrite(s)",
             len(batch),
         )
-        return batch, (), self._annotate_cluster_candidates(tuple(records))
+        return (
+            batch,
+            tuple(sorted(set(edge_selection_blockers))),
+            self._annotate_cluster_candidates(tuple(records)),
+        )
 
     def _collect_tigress_switch_transition_modifications(
         self,
@@ -8481,9 +8512,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and phase_artifact is not None
             and phase_artifact.semantic_reference_variant == "semantic_reference_like"
             and phase_artifact.state_var_stkoff is not None
-            and bool(getattr(phase_context, "predecessor_dispatcher_target_facts", ()) or ())
+            and _has_selectable_loop_recovery_edges(phase_context)
             and len(tuple(getattr(phase_artifact, "semantic_state_labels", ()) or ()))
             > len(tuple(getattr(phase_artifact, "handler_state_map", ()) or ()))
+        )
+        loop_recovery_partial_allowed = _loop_recovery_blockers_allow_partial_lowering(
+            loop_recovery_blockers
         )
         switch_transition_partial_allowed = (
             self._profile.allow_incomplete_switch_transition_facts
@@ -8560,11 +8594,19 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             selected_lowering_mode = "dispatcher_loop_recovery"
             selected_blockers = loop_recovery_blockers
             selected_partial_rewrite_reasons = ()
-        if loop_recovery_modifications and not loop_recovery_blockers:
+        if loop_recovery_modifications and (
+            not loop_recovery_blockers or loop_recovery_partial_allowed
+        ):
             selected_modifications = loop_recovery_modifications
             selected_lowering_mode = "dispatcher_loop_recovery"
-            selected_blockers = ()
-            selected_partial_rewrite_reasons = ()
+            selected_blockers = (
+                () if loop_recovery_partial_allowed else loop_recovery_blockers
+            )
+            selected_partial_rewrite_reasons = (
+                tuple(sorted(set(loop_recovery_blockers)))
+                if loop_recovery_partial_allowed
+                else ()
+            )
         if (
             semantic_carrier_modifications
             and not selected_modifications
