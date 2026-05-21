@@ -59,6 +59,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.runtime_services import (
 from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
     HodurRuleServices,
 )
+from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (
+    StateMachineRuleServices,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
     HodurSnapshotPolicy,
 )
@@ -279,8 +282,27 @@ def test_hodur_unflattener_does_not_own_runtime_policy_callbacks():
     } & set(vars(HodurUnflattener))
     unflattener = HodurUnflattener()
     assert isinstance(unflattener._rule_services, HodurRuleServices)
+    assert isinstance(unflattener._rule_services, StateMachineRuleServices)
     assert isinstance(unflattener._services, HodurRuntimeServices)
     assert unflattener._services.owner is unflattener._rule_services
+
+
+def test_hodur_rule_services_only_owns_hodur_specific_adapters():
+    assert not {
+        "_tag_terminal_byte_mbl_keep",
+        "_build_successor_map",
+        "_find_exit_blocks",
+        "_capture_post_pipeline_diagnostic_snapshot",
+        "_capture_intermediate_snapshot",
+        "_extract_handler_paths_from_fragments",
+        "_log_state_machine",
+        "_log_pipeline_results",
+        "_collect_post_apply_may_only_probe_blocks",
+        "_apply_post_apply_may_only_probe",
+        "_post_apply_bst_cleanup",
+        "_nop_unreachable_blocks_after_bst_cleanup",
+        "_diagnostic_backward_scan",
+    } & set(vars(HodurRuleServices))
 
 
 def test_hodur_family_uses_generic_state_machine_snapshot_builder():
