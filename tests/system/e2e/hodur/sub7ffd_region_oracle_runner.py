@@ -532,13 +532,14 @@ def render_region_oracle_report(
     conn: sqlite3.Connection,
     *,
     func_ea_hex: str,
+    func_name: str | None = None,
     snap17: int | None = None,
     snap18: int | None = None,
     microblocks: bool = False,
     json_output: bool = False,
 ) -> str:
     func_ea_hex = _normalize_func_ea_hex(func_ea_hex)
-    spec = spec_for(func_ea_hex)
+    spec = spec_for(func_ea_hex, func_name=func_name)
     if spec is None:
         return _no_ref_spec_stub(func_ea_hex)
 
@@ -672,12 +673,14 @@ def write_region_oracle_report(
     conn: sqlite3.Connection,
     *,
     func_ea_hex: str,
+    func_name: str | None = None,
     output_path: Path,
     microblocks: bool = False,
 ) -> Path:
     body = render_region_oracle_report(
         conn,
         func_ea_hex=func_ea_hex,
+        func_name=func_name,
         microblocks=microblocks,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
