@@ -30,6 +30,9 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     ReachabilityInfo,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
+from d810.optimizers.microcode.flow.flattening.engine.state_machine_snapshot_builder import (
+    StateMachineSnapshotBuilder,
+)
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
@@ -38,7 +41,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
-    HodurSnapshotBuilder,
+    HodurSnapshotPolicy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.state_machine_adapters import (
     detect_switch_table_state_machine,
@@ -133,9 +136,12 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self._constant_fixpoint_backend: ConstantFixpointBackend = (
             _CONSTANT_FIXPOINT_BACKEND
         )
-        self._snapshot_builder = HodurSnapshotBuilder(
-            cfg_translator=self._cfg_translator,
+        self._snapshot_policy = HodurSnapshotPolicy(
             constant_fixpoint_backend=self._constant_fixpoint_backend,
+            logger=self._logger,
+        )
+        self._snapshot_builder = StateMachineSnapshotBuilder(
+            cfg_translator=self._cfg_translator,
             logger=self._logger,
         )
         selected_strategy_classes = (
@@ -213,7 +219,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self,
         mba: object,
     ) -> FunctionAnalysisPriors:
-        return self._snapshot_builder.function_analysis_priors_for_mba(
+        return self._snapshot_policy.function_analysis_priors_for_mba(
             mba,
             self._fact_runtime,
         )
@@ -268,37 +274,50 @@ class HodurStrategyFamily(CFFStrategyFamily):
         mba: object,
         detection: HodurDetection,
     ) -> AnalysisSnapshot:
-        self._snapshot_builder.constant_fixpoint_backend = (
+        self._snapshot_policy.constant_fixpoint_backend = (
             self._constant_fixpoint_backend
         )
         snapshot = self._snapshot_builder.build_snapshot(
             mba,
             detection,
             run_state=self._run_state,
-            switch_table_map=self._switch_table_map,
-            fact_runtime=self._fact_runtime,
-            state_var_stkoff_resolver=self.get_effective_state_var_stkoff,
-            dispatcher_cache_factory=DispatcherCache.get_or_create,
-            transition_builder=build_transition_result_from_state_machine,
-            discovery_builder=build_round_discovery_context,
+            flow_graph_adapter=self._adapt_snapshot_flow_graph,
+            dispatcher_cache_factory=lambda mba_arg: DispatcherCache.get_or_create(
+                mba_arg
+            ),
             reachability_builder=self.compute_reachability_info,
+            fact_view_resolver=self._resolve_fact_view,
+            function_priors_resolver=self._function_analysis_priors_for_mba,
+            bst_evidence_resolver=self._resolve_snapshot_bst_evidence,
+            transition_supplementer=self._supplement_initial_transitions,
+            discovery_builder=self._build_snapshot_discovery_context,
+        )
+        self._state_machine = detection.state_machine
+        return snapshot
+
+    def _adapt_snapshot_flow_graph(
+        self,
+        mba: object,
+        flow_graph: FlowGraph,
+        state_machine: DispatcherStateMachine | None,
+    ) -> FlowGraph:
+        """Enrich the immutable CFG snapshot for this family pass."""
+        return self._snapshot_policy.adapt_flow_graph(
+            mba,
+            flow_graph,
+            state_machine,
             attach_fake_jump_fixes=self.attach_fake_jump_fixes_to_flow_graph,
             attach_single_iteration_fixes=(
                 self.attach_single_iteration_fixes_to_flow_graph
             ),
         )
-        self._state_machine = detection.state_machine
-        return snapshot
 
     def _build_snapshot_flow_graph(self, mba: object) -> FlowGraph:
-        """Lift and enrich the immutable CFG snapshot for this family pass."""
-        return self._snapshot_builder.build_snapshot_flow_graph(
+        """Compatibility helper for tests that inspect Hodur flow enrichment."""
+        return self._adapt_snapshot_flow_graph(
             mba,
-            state_machine=self._state_machine,
-            attach_fake_jump_fixes=self.attach_fake_jump_fixes_to_flow_graph,
-            attach_single_iteration_fixes=(
-                self.attach_single_iteration_fixes_to_flow_graph
-            ),
+            self._cfg_translator.lift(mba),
+            self._state_machine,
         )
 
     def _build_cleanup_snapshot(
@@ -328,7 +347,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         state_machine: DispatcherStateMachine,
     ) -> tuple[object | None, int]:
         """Resolve concrete or synthetic BST evidence for a state-machine snapshot."""
-        return self._snapshot_builder.resolve_snapshot_bst_evidence(
+        return self._snapshot_policy.resolve_snapshot_bst_evidence(
             mba,
             state_machine,
             switch_table_map=self._switch_table_map,
@@ -338,11 +357,13 @@ class HodurStrategyFamily(CFFStrategyFamily):
     def _supplement_initial_transitions(
         self,
         state_machine: DispatcherStateMachine,
+        *,
+        run_state: FamilyRunState | None = None,
     ) -> None:
         """Carry unresolved pass-0 transitions into later state-machine snapshots."""
-        self._snapshot_builder.supplement_initial_transitions(
+        self._snapshot_policy.supplement_initial_transitions(
             state_machine,
-            run_state=self._run_state,
+            run_state=run_state or self._run_state,
         )
 
     def _build_snapshot_discovery_context(
@@ -353,20 +374,21 @@ class HodurStrategyFamily(CFFStrategyFamily):
         flow_graph: FlowGraph,
         bst_result: object | None,
         bst_dispatcher_serial: int,
-        function_priors: FunctionAnalysisPriors,
+        function_priors: FunctionAnalysisPriors | None,
+        run_state: FamilyRunState | None = None,
     ) -> object | None:
         """Build the canonical per-round discovery context for strategies."""
-        self._snapshot_builder.constant_fixpoint_backend = (
+        self._snapshot_policy.constant_fixpoint_backend = (
             self._constant_fixpoint_backend
         )
-        return self._snapshot_builder.build_snapshot_discovery_context(
+        return self._snapshot_policy.build_snapshot_discovery_context(
             mba,
             state_machine=state_machine,
             flow_graph=flow_graph,
             bst_result=bst_result,
             bst_dispatcher_serial=bst_dispatcher_serial,
-            function_priors=function_priors,
-            run_state=self._run_state,
+            function_priors=function_priors or FunctionAnalysisPriors(),
+            run_state=run_state or self._run_state,
             state_var_stkoff_resolver=self.get_effective_state_var_stkoff,
             transition_builder=build_transition_result_from_state_machine,
             discovery_builder=build_round_discovery_context,
@@ -452,7 +474,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         flow_graph: FlowGraph,
     ) -> FlowGraph:
         """Attach live FakeJump analysis results to FlowGraph metadata."""
-        return self._snapshot_builder.attach_fake_jump_fixes_to_flow_graph(
+        return self._snapshot_policy.attach_fake_jump_fixes_to_flow_graph(
             mba,
             flow_graph,
             state_machine=self._state_machine,
@@ -466,7 +488,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         flow_graph: FlowGraph,
     ) -> FlowGraph:
         """Attach live single-iteration redirects to FlowGraph metadata."""
-        return self._snapshot_builder.attach_single_iteration_fixes_to_flow_graph(
+        return self._snapshot_policy.attach_single_iteration_fixes_to_flow_graph(
             mba,
             flow_graph,
             collector=collect_live_single_iteration_fixes,
@@ -501,10 +523,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         runtime fails to produce a view.  Strategy consumers must tolerate
         ``None`` (no heuristic fallback).
         """
-        return self._snapshot_builder.resolve_fact_view(mba, self._fact_runtime)
+        return self._snapshot_policy.resolve_fact_view(mba, self._fact_runtime)
 
     def compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
-        return self._snapshot_builder.compute_reachability_info(mba)
+        return self._snapshot_policy.compute_reachability_info(mba)
 
     def build_state_machine_from_cache(
         self, analysis: object

@@ -30,6 +30,9 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     FamilyRunState,
     PlannedPipeline,
 )
+from d810.optimizers.microcode.flow.flattening.engine.state_machine_snapshot_builder import (
+    StateMachineSnapshotBuilder,
+)
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
 )
@@ -42,6 +45,15 @@ from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
     HodurUnflattener,
 )
 from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    post_pipeline_hooks as hodur_post_pipeline_hooks,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.post_pipeline_hooks import (
+    HodurPostPipelineHooks,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
+    HodurSnapshotPolicy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
 )
@@ -237,6 +249,22 @@ def test_hodur_unflattener_uses_hodur_strategy_family():
 
     assert isinstance(unflattener._family, HodurStrategyFamily)
     assert unflattener._strategies is unflattener._family.strategies
+
+
+def test_hodur_unflattener_does_not_own_profile_hook_implementations():
+    assert not [
+        name
+        for name in vars(HodurUnflattener)
+        if name.startswith("_hook_") or name.startswith("_run_") and name.endswith("_hook")
+    ]
+    assert "bst_cleanup" in HodurPostPipelineHooks(object(), hook_runner=lambda *_a, **_k: None).handlers()
+
+
+def test_hodur_family_uses_generic_state_machine_snapshot_builder():
+    family = HodurStrategyFamily()
+
+    assert isinstance(family._snapshot_builder, StateMachineSnapshotBuilder)
+    assert isinstance(family._snapshot_policy, HodurSnapshotPolicy)
 
 
 def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
@@ -1214,12 +1242,12 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_post_pipeline_hooks,
         "collect_post_apply_bst_cleanup_blockers",
         lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_post_pipeline_hooks,
         "finalize_return_frontier_audit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not finalize return-frontier audit")
