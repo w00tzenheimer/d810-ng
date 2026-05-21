@@ -20,6 +20,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
     ExecutorPolicy,
+    FamilyRunState,
     PlannedPipeline,
 )
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
@@ -240,8 +241,10 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     unflattener._family._state_machine = state_machine
     unflattener._family._detector = detector
     unflattener._family._switch_table_map = switch_table_map
-    unflattener._family._resolved_transitions = {(1, 2)}
-    unflattener._family._initial_transitions = ["initial"]
+    unflattener._family._run_state = FamilyRunState(
+        resolved_transitions=frozenset({(1, 2)}),
+        initial_transitions=("initial",),
+    )
 
     assert unflattener.state_machine is state_machine
     assert unflattener._detector is detector

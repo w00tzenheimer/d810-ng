@@ -23,6 +23,7 @@ from .provenance import (
 from .runtime import (
     ExecutedPipeline,
     ExecutorPolicy,
+    FamilyRunState,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
@@ -54,6 +55,7 @@ __all__ = [
     "DetectionResult",
     "ExecutedPipeline",
     "ExecutorPolicy",
+    "FamilyRunState",
     "FAMILY_CLEANUP",
     "FAMILY_DIRECT",
     "FAMILY_FALLBACK",

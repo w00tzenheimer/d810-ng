@@ -39,6 +39,7 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )
+from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
@@ -197,11 +198,11 @@ class HodurStrategyFamily(CFFStrategyFamily):
 
     @property
     def resolved_transitions(self) -> frozenset[tuple[int | None, int]]:
-        return frozenset(self._resolved_transitions)
+        return self._run_state.resolved_transitions
 
     @property
     def initial_transitions(self) -> tuple:
-        return tuple(self._initial_transitions or ())
+        return self._run_state.initial_transitions
 
     def configure_detection(
         self,
@@ -245,12 +246,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self._state_machine: DispatcherStateMachine | None = None
         self._detector: HodurStateMachineDetector | None = None
         self._switch_table_map: object | None = None
-        self._resolved_transitions: set[tuple[int | None, int]] = set()
-        self._initial_transitions: list | None = None
-        self._pass_number: int = 0
+        self._run_state = FamilyRunState()
 
     def begin_pass(self, pass_number: int) -> None:
-        self._pass_number = int(pass_number)
+        self._run_state = self._run_state.begin_pass(pass_number)
         self._switch_table_map = None
 
     def detect(self, mba: object) -> HodurDetection:
@@ -277,8 +276,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 detection_source = "switch_table"
 
         self._state_machine = state_machine
-        if state_machine is not None and self._pass_number == 0:
-            self._initial_transitions = list(state_machine.transitions)
+        if state_machine is not None:
+            self._run_state = self._run_state.remember_initial_transitions(
+                state_machine.transitions
+            )
 
         return HodurDetection(
             state_machine=state_machine,
@@ -314,7 +315,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 dispatcher_cache=dispatcher_cache,
                 reachability=reachability,
                 maturity=mba.maturity,
-                pass_number=self._pass_number,
+                pass_number=self._run_state.pass_number,
                 flow_graph=flow_graph,
                 diagnostic_fact_view=fact_view,
             )
@@ -348,15 +349,15 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 bst_dispatcher_serial,
             )
 
-        if self._pass_number > 0 and self._initial_transitions is not None:
+        if self._run_state.pass_number > 0 and self._run_state.initial_transitions:
             detected_keys = {
                 (t.from_state, t.to_state) for t in state_machine.transitions
             }
             supplemented = 0
-            for transition in self._initial_transitions:
+            for transition in self._run_state.initial_transitions:
                 key = (transition.from_state, transition.to_state)
                 if (
-                    key not in self._resolved_transitions
+                    key not in self._run_state.resolved_transitions
                     and key not in detected_keys
                 ):
                     state_machine.transitions.append(transition)
@@ -366,7 +367,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                     "HodurStrategyFamily: supplemented %d transitions from initial detection "
                     "(resolved=%d, re-detected=%d)",
                     supplemented,
-                    len(self._resolved_transitions),
+                    len(self._run_state.resolved_transitions),
                     len(detected_keys),
                 )
 
@@ -399,7 +400,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
                 discovery = build_round_discovery_context(
                     func_ea=int(getattr(mba, "entry_ea", 0) or 0),
                     maturity=int(mba.maturity),
-                    pass_number=int(self._pass_number),
+                    pass_number=int(self._run_state.pass_number),
                     flow_graph=flow_graph,
                     transition_result=transition_result,
                     dispatcher_entry_serial=bst_dispatcher_serial,
@@ -452,9 +453,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
             ),
             reachability=reachability,
             maturity=mba.maturity,
-            pass_number=self._pass_number,
-            resolved_transitions=frozenset(self._resolved_transitions),
-            initial_transitions=tuple(self._initial_transitions or ()),
+            pass_number=self._run_state.pass_number,
+            resolved_transitions=self._run_state.resolved_transitions,
+            initial_transitions=self._run_state.initial_transitions,
             flow_graph=flow_graph,
             discovery=discovery,
             diagnostic_fact_view=fact_view,
@@ -463,10 +464,9 @@ class HodurStrategyFamily(CFFStrategyFamily):
     def record_progress(self, *, nb_changes: int) -> None:
         if nb_changes <= 0 or self._state_machine is None:
             return
-        for transition in self._state_machine.transitions:
-            self._resolved_transitions.add(
-                (transition.from_state, transition.to_state)
-            )
+        self._run_state = self._run_state.record_resolved_transitions(
+            self._state_machine.transitions
+        )
 
     def record_execution_outcome(
         self,

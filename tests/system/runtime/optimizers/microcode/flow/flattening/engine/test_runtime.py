@@ -16,6 +16,7 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
     ExecutorPolicy,
+    FamilyRunState,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
@@ -68,6 +69,7 @@ def _provenance(*names: str) -> PipelineProvenance:
 
 def test_engine_package_re_exports_runtime_types() -> None:
     assert engine.ExecutorPolicy is ExecutorPolicy
+    assert engine.FamilyRunState is FamilyRunState
     assert engine.PlannedPipeline is PlannedPipeline
     assert engine.ExecutedPipeline is ExecutedPipeline
     assert (
@@ -134,6 +136,24 @@ def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None
 
     assert isinstance(executor, _Executor)
     assert seen == [("mba", gate, False, "hodur")]
+
+
+def test_family_run_state_tracks_pass_and_transitions() -> None:
+    pass0 = FamilyRunState().begin_pass(0)
+    transitions = [
+        SimpleNamespace(from_state=None, to_state=1),
+        SimpleNamespace(from_state=1, to_state=2),
+    ]
+
+    pass0 = pass0.remember_initial_transitions(transitions)
+    assert pass0.pass_number == 0
+    assert pass0.initial_transitions == tuple(transitions)
+
+    pass1 = pass0.begin_pass(1)
+    assert pass1.initial_transitions == tuple(transitions)
+
+    resolved = pass1.record_resolved_transitions(transitions)
+    assert resolved.resolved_transitions == frozenset({(None, 1), (1, 2)})
 
 
 def test_execute_family_pipeline_skips_executor_for_empty_pipeline() -> None:
