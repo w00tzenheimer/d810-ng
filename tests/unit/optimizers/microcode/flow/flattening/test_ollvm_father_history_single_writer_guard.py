@@ -13,8 +13,8 @@ def _repo_root() -> Path:
     raise RuntimeError("repo root not found from test path")
 
 
-def test_generic_has_no_direct_jtbl_target_assignment():
-    generic_path = (
+def test_ollvm_father_history_has_no_direct_jtbl_target_assignment():
+    backend_path = (
         _repo_root()
         / "src"
         / "d810"
@@ -22,12 +22,12 @@ def test_generic_has_no_direct_jtbl_target_assignment():
         / "microcode"
         / "flow"
         / "flattening"
-        / "generic.py"
+        / "ollvm_father_history_backend.py"
     )
     pattern = re.compile(r"\b(?:targets|cases\.targets)\s*\[[^\]]+\]\s*=")
     violations: list[str] = []
 
-    with generic_path.open("r", encoding="utf-8") as fh:
+    with backend_path.open("r", encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -36,7 +36,8 @@ def test_generic_has_no_direct_jtbl_target_assignment():
                 violations.append(f"{lineno}: {line.rstrip()}")
 
     assert not violations, (
-        "Direct jump-table target assignment is not allowed in generic.py. "
-        "Route all jtbl target rewrites through cfg_mutations helpers.\n"
+        "Direct jump-table target assignment is not allowed in "
+        "ollvm_father_history_backend.py. Route all jtbl target rewrites "
+        "through cfg_mutations helpers.\n"
         + "\n".join(violations)
     )

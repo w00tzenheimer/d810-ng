@@ -2,14 +2,14 @@
  * ABC F6 Constants Pattern Test
  *
  * This sample specifically tests the father_patcher_abc_* code path in
- * GenericDispatcherUnflatteningRule. It uses constants in the specific range
+ * OLLVM father-history backend. It uses constants in the specific range
  * that the ABC code detects:
  *
  * Magic constant range: 1010000-1011999 (decimal) = 0xF6950-0xF719F (hex)
  *
  * The ABC code checks: cnst > 1010000 && cnst < 1011999
  *
- * See: src/d810/optimizers/microcode/flow/flattening/generic.py:919
+ * See: src/d810/optimizers/microcode/flow/flattening/ollvm_father_history_backend.py
  */
 
 #include "ida_types.h"

@@ -48,7 +48,7 @@ This pattern separates analysis from modification, preventing stale pointers::
         target_serial: int
         description: str = ""
 
-    class MyDeferredOptimizer(GenericUnflatteningRule):
+    class MyDeferredOptimizer(FlowOptimizationRule):
         '''Optimizer using deferred CFG modification pattern.'''
 
         def __init__(self):
@@ -113,7 +113,7 @@ Use this pattern only when modifications are isolated::
 
     from d810.hexrays.mutation.deferred_modifier import ImmediateGraphModifier
 
-    class MyImmediateOptimizer(GenericUnflatteningRule):
+    class MyImmediateOptimizer(FlowOptimizationRule):
         '''Optimizer using immediate CFG modification pattern.
 
         WARNING: Only use when changes don't affect other blocks being
@@ -184,7 +184,7 @@ See Also
 ========
 - ConditionalStateResolver: Reference implementation of ABC target resolution
 - Conditional-clone rewrites: deferred predecessor repair example
-- GenericDispatcherUnflatteningRule: Orchestrates multiple deferred rules
+- OLLVM father-history backend: Orchestrates multiple deferred rules
 """
 from __future__ import annotations
 
@@ -970,7 +970,7 @@ class DeferredGraphModifier:
 
     Integration with Optimizer::
 
-        class MyOptimizer(GenericUnflatteningRule):
+        class MyOptimizer(FlowOptimizationRule):
             def optimize(self, blk: mblock_t) -> int:
                 modifier = DeferredGraphModifier(self.mba)
 

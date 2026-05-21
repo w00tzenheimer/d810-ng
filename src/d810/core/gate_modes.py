@@ -11,7 +11,7 @@ Current mapping of existing entry points
 +-------------------------------+-----------------+-----------------------------------+
 | Entry point                   | Effective mode  | Notes                             |
 +-------------------------------+-----------------+-----------------------------------+
-| GenericUnflatteningRule       | GATE_ONLY       | evaluate_unflattening_gate()      |
+| OLLVM father-history backend  | GATE_ONLY       | evaluate_unflattening_gate()      |
 |                               |                 | enforced; no planner influence    |
 +-------------------------------+-----------------+-----------------------------------+
 | FixPredecessor                | GATE_ONLY       | evaluate_fix_predecessor_gate()   |

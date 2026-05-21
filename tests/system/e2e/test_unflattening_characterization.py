@@ -1,4 +1,4 @@
-"""Characterization tests for GenericDispatcherUnflatteningRule.
+"""Characterization tests for FatherHistoryDispatcherUnflatteningRule.
 
 These tests capture the current behavior of the control flow unflattening
 logic as ground truth, enabling safe refactoring of the monolithic rule
@@ -56,7 +56,7 @@ class TestABCPatternCharacterization:
     """Characterization tests for ABC (Arithmetic/Bitwise/Constant) pattern handling.
 
     These tests exercise the father_patcher_abc_from_or_xor_* methods in
-    GenericDispatcherUnflatteningRule.
+    FatherHistoryDispatcherUnflatteningRule.
     """
 
     binary_name = _get_default_binary()
@@ -417,11 +417,12 @@ class TestABCF6ConstantsCharacterization:
     """Characterization tests for ABC magic number range (0xF6xxx / 1010000-1011999).
 
     These tests exercise the father_patcher_abc_* code path in
-    GenericDispatcherUnflatteningRule that handles constants in the specific range:
+    FatherHistoryDispatcherUnflatteningRule that handles constants in the specific range:
     - Magic constant range: 1010000-1011999 (decimal) = 0xF6950-0xF719F (hex)
     - Checks: cnst > 1010000 && cnst < 1011999
 
-    See: src/d810/optimizers/microcode/flow/flattening/generic.py:919
+    See:
+    src/d810/optimizers/microcode/flow/flattening/ollvm_father_history_backend.py
     """
 
     binary_name = _get_default_binary()
@@ -754,7 +755,8 @@ class TestApproovFlatteningCharacterization:
     - jz eax.4, #0xF6A1E.4, @XX style comparisons
     - 64-bit constants with high 32 bits in ABC range (1010000-1011999)
 
-    See: src/d810/optimizers/microcode/flow/flattening/generic.py
+    See:
+    src/d810/optimizers/microcode/flow/flattening/ollvm_father_history_backend.py
     See: src/d810/optimizers/microcode/flow/flattening/cleanup_family.py
     """
 

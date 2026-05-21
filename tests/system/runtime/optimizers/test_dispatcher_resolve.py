@@ -7,7 +7,7 @@ mba_t/mblock_t objects obtained from decompilation rather than mocks.
 Test Strategy
 =============
 1. Decompile functions from libobfuscated binary at specific maturity levels
-2. Use GenericDispatcherUnflatteningRule to analyze real dispatcher patterns
+2. Use FatherHistoryDispatcherUnflatteningRule to analyze real dispatcher patterns
 3. Verify resolve_dispatcher_father behavior against real microcode structures
 4. Test layout signal collection and event emission with actual dispatcher info
 
@@ -37,11 +37,11 @@ import ida_hexrays
 import ida_name
 import idaapi
 
-from d810.optimizers.microcode.flow.flattening.generic import (
-    GenericDispatcherUnflatteningRule,
-    GenericDispatcherCollector,
-    GenericDispatcherInfo,
-    GenericDispatcherBlockInfo,
+from d810.optimizers.microcode.flow.flattening.ollvm_father_history_backend import (
+    FatherHistoryDispatcherUnflatteningRule,
+    FatherHistoryDispatcherCollector,
+    FatherHistoryDispatcherInfo,
+    FatherHistoryDispatcherBlockInfo,
     UnflatteningEvent,
 )
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
@@ -85,10 +85,10 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int) -> "mba_t | None":
     return mba
 
 
-class MinimalDispatcherCollector(GenericDispatcherCollector):
+class MinimalDispatcherCollector(FatherHistoryDispatcherCollector):
     """Minimal collector implementation for testing."""
 
-    DISPATCHER_CLASS = GenericDispatcherInfo
+    DISPATCHER_CLASS = FatherHistoryDispatcherInfo
     DEFAULT_DISPATCHER_MIN_INTERNAL_BLOCK = 1
     DEFAULT_DISPATCHER_MIN_EXIT_BLOCK = 1
 
@@ -113,12 +113,12 @@ class TestDispatcherFatherResolveIntegration:
     binary_name = _get_default_binary()
 
     def _create_test_rule(self):
-        """Create a test dispatcher rule that extends GenericDispatcherUnflatteningRule.
+        """Create a test dispatcher rule that extends FatherHistoryDispatcherUnflatteningRule.
 
         This is a minimal concrete implementation for testing the base class methods.
         """
 
-        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+        class TestDispatcherRule(FatherHistoryDispatcherUnflatteningRule):
             @property
             def DISPATCHER_COLLECTOR_CLASS(self):
                 return MinimalDispatcherCollector
@@ -129,18 +129,18 @@ class TestDispatcherFatherResolveIntegration:
         rule.defer_calls_on_conditional_entry_father = False
         return rule
 
-    def _create_minimal_dispatcher_info(self, mba: "mba_t") -> GenericDispatcherInfo:
-        """Create a minimal GenericDispatcherInfo using real microcode blocks.
+    def _create_minimal_dispatcher_info(self, mba: "mba_t") -> FatherHistoryDispatcherInfo:
+        """Create a minimal FatherHistoryDispatcherInfo using real microcode blocks.
 
-        This creates a GenericDispatcherInfo with a real entry block wrapped in
-        GenericDispatcherBlockInfo (no anonymous types).
+        This creates a FatherHistoryDispatcherInfo with a real entry block wrapped in
+        FatherHistoryDispatcherBlockInfo (no anonymous types).
         """
-        dispatcher_info = GenericDispatcherInfo(mba)
+        dispatcher_info = FatherHistoryDispatcherInfo(mba)
 
-        # Use real first block and wrap it in GenericDispatcherBlockInfo
+        # Use real first block and wrap it in FatherHistoryDispatcherBlockInfo
         if mba.qty > 0:
             entry_blk = mba.get_mblock(0)
-            entry_block_info = GenericDispatcherBlockInfo(entry_blk)
+            entry_block_info = FatherHistoryDispatcherBlockInfo(entry_blk)
             # Parse the block to populate use_before_def_list and other attributes
             entry_block_info.parse()
             dispatcher_info.entry_block = entry_block_info
@@ -272,7 +272,7 @@ class TestLayoutSignalCollection:
     def _create_test_rule(self):
         """Create a test dispatcher rule for signal collection testing."""
 
-        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+        class TestDispatcherRule(FatherHistoryDispatcherUnflatteningRule):
             @property
             def DISPATCHER_COLLECTOR_CLASS(self):
                 return MinimalDispatcherCollector
@@ -283,15 +283,15 @@ class TestLayoutSignalCollection:
         rule.log_calls_layout_signals = False
         return rule
 
-    def _create_dispatcher_info(self, mba: "mba_t", entry_blk: "mblock_t") -> GenericDispatcherInfo:
-        """Create a GenericDispatcherInfo with specified real entry block.
+    def _create_dispatcher_info(self, mba: "mba_t", entry_blk: "mblock_t") -> FatherHistoryDispatcherInfo:
+        """Create a FatherHistoryDispatcherInfo with specified real entry block.
 
-        Uses GenericDispatcherBlockInfo to wrap the real mblock_t object.
+        Uses FatherHistoryDispatcherBlockInfo to wrap the real mblock_t object.
         """
-        dispatcher_info = GenericDispatcherInfo(mba)
+        dispatcher_info = FatherHistoryDispatcherInfo(mba)
 
-        # Wrap the real block in GenericDispatcherBlockInfo
-        entry_block_info = GenericDispatcherBlockInfo(entry_blk)
+        # Wrap the real block in FatherHistoryDispatcherBlockInfo
+        entry_block_info = FatherHistoryDispatcherBlockInfo(entry_blk)
         entry_block_info.parse()
         dispatcher_info.entry_block = entry_block_info
 
@@ -457,7 +457,7 @@ class TestOptimizeLayoutSignalIntegration:
     def _create_test_rule(self):
         """Create a test rule with deferred CALLS handling enabled."""
 
-        class TestDispatcherRule(GenericDispatcherUnflatteningRule):
+        class TestDispatcherRule(FatherHistoryDispatcherUnflatteningRule):
             @property
             def DISPATCHER_COLLECTOR_CLASS(self):
                 return MinimalDispatcherCollector

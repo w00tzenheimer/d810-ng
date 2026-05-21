@@ -2,7 +2,7 @@
  * Nested Dispatcher Pattern Test
  *
  * This sample tests the sub-dispatcher detection and removal logic in
- * GenericDispatcherUnflatteningRule. It contains nested while-switch
+ * OLLVM father-history backend. It contains nested while-switch
  * structures where inner dispatchers are embedded within outer ones.
  *
  * Tests:

@@ -327,7 +327,7 @@ class TestPayloadSchema:
 
 class _FakeQuarantineTarget:
     """Minimal stub that replicates the quarantine logic from
-    GenericDispatcherUnflatteningRule without importing IDA.
+    FatherHistoryDispatcherUnflatteningRule without importing IDA.
 
     We test the logic here; the integration with the real class is covered
     by the imports and subscription wire-up which are verified separately.
@@ -338,13 +338,13 @@ class _FakeQuarantineTarget:
         self._func_ea = func_ea
 
     def _on_deferred_verify_failed(self, payload: dict) -> None:
-        """Mirrors GenericDispatcherUnflatteningRule._on_deferred_verify_failed."""
+        """Mirrors FatherHistoryDispatcherUnflatteningRule._on_deferred_verify_failed."""
         function_ea = payload.get("function_ea")
         if isinstance(function_ea, int) and function_ea > 0:
             self._quarantined_function_eas.add(function_ea)
 
     def _is_function_quarantined(self) -> bool:
-        """Mirrors GenericDispatcherUnflatteningRule._is_function_quarantined."""
+        """Mirrors FatherHistoryDispatcherUnflatteningRule._is_function_quarantined."""
         if not self._quarantined_function_eas:
             return False
         return self._func_ea in self._quarantined_function_eas
