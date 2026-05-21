@@ -53,6 +53,7 @@ class EmulatedDispatcherCandidateRecord:
     raw_side_effect_count: int = 0
     safe_side_effect_count: int = 0
     selection_reason: str | None = None
+    proof_source: str | None = None
     blocker: str | None = None
     selected_modification_indexes: tuple[int, ...] = ()
     selected_modification_kinds: tuple[str, ...] = ()
