@@ -104,6 +104,13 @@ class HodurPostPipelineHooks:
         """Return whether this profile declares a named post-apply hook."""
         return self.owner._profile.enables_post_apply_hook(hook_name)
 
+    def _return_frontier_audit_enabled(self, hook_name: str) -> bool:
+        """Return whether a named return-frontier audit hook is active."""
+        return (
+            self.owner.RETURN_FRONTIER_AUDIT_ENABLED
+            and self.owner._profile.enables_audit_hook(hook_name)
+        )
+
     def _hook_nested_bst_cleanup_capability(
         self,
         _context: FamilyPostPipelineContext,
@@ -435,7 +442,7 @@ class HodurPostPipelineHooks:
         """Run profile-declared post-pipeline audit hooks."""
         owner = self.owner
         if (
-            owner._return_frontier_audit_enabled("return_frontier_post_pipeline")
+            self._return_frontier_audit_enabled("return_frontier_post_pipeline")
             and snapshot.state_machine is not None
             and owner._audit_return_sites
         ):

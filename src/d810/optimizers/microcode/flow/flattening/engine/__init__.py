@@ -40,6 +40,11 @@ from .runtime import (
 )
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
 from .state_machine_snapshot_builder import StateMachineSnapshotBuilder
+from .state_machine_runtime import (
+    StateMachineFamilyPassResult,
+    StateMachineFamilyRuntimeServices,
+    run_state_machine_family_pass,
+)
 from .strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -88,6 +93,8 @@ __all__ = [
     "StateModelSummary",
     "StageResult",
     "StateMachineSnapshotBuilder",
+    "StateMachineFamilyPassResult",
+    "StateMachineFamilyRuntimeServices",
     "UnflatteningPlanner",
     "UnflatteningStrategy",
     "VerificationGate",
@@ -98,6 +105,7 @@ __all__ = [
     "run_configured_family_pass",
     "run_family_pass",
     "run_ordered_family_hooks",
+    "run_state_machine_family_pass",
     "structure_quality_score",
 ]
 
