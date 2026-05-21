@@ -45,6 +45,7 @@ from d810.cfg.plan import (
     PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
     PatchEdgeRef,
+    PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchLowerConditionalStateTransition,
@@ -92,6 +93,20 @@ def _cfg() -> FlowGraph:
             9: _block(9, (10,), ()),
             10: _block(10, (11,), (9,)),
             11: _block(11, (), (10,)),
+        },
+        entry_serial=9,
+        func_ea=0,
+    )
+
+
+def _corridor_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            9: _block(9, (10,), ()),
+            10: _block(10, (11,), (9,)),
+            11: _block(11, (13,), (10,)),
+            12: _block(12, (), ()),
+            13: _block(13, (), (11,)),
         },
         entry_serial=9,
         func_ea=0,
@@ -248,7 +263,7 @@ def test_compile_patch_plan_finalizes_edge_split_trampoline():
     assert patch_plan.legacy_block_operations == ()
 
 
-def test_compile_patch_plan_preserves_corridor_edge_split_as_legacy_block_op():
+def test_compile_patch_plan_finalizes_corridor_edge_split():
     modification = EdgeRedirectViaPredSplit(
         src_block=10,
         old_target=11,
@@ -257,14 +272,29 @@ def test_compile_patch_plan_preserves_corridor_edge_split_as_legacy_block_op():
         clone_until=11,
     )
 
-    patch_plan = compile_patch_plan([modification], _cfg())
+    patch_plan = compile_patch_plan([modification], _corridor_cfg())
 
-    assert patch_plan.steps == (LegacyBlockOperation(modification=modification),)
-    assert patch_plan.legacy_block_operations == (
-        LegacyBlockOperation(modification=modification),
+    assert patch_plan.steps == (
+        PatchEdgeSplitCorridor(
+            clone_block_ids=(
+                VirtualBlockId(namespace="edge_split_corridor", ordinal=0),
+                VirtualBlockId(namespace="edge_split_corridor", ordinal=1),
+            ),
+            clone_assigned_serials=(13, 14),
+            source_serial=10,
+            via_pred=9,
+            old_target=11,
+            new_target=12,
+            clone_until=11,
+            corridor_serials=(10, 11),
+            rule_priority=550,
+        ),
     )
-    assert patch_plan.new_blocks == ()
-
+    assert [spec.kind for spec in patch_plan.new_blocks] == [
+        "edge_split_corridor_clone",
+        "edge_split_corridor_clone",
+    ]
+    assert patch_plan.legacy_block_operations == ()
 
 def test_compile_patch_plan_finalizes_conditional_redirect():
     patch_plan = compile_patch_plan(

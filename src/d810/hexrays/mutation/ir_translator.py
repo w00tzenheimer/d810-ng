@@ -48,6 +48,7 @@ from d810.cfg.plan import (
     PatchConvertToGoto,
     PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
+    PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     PatchLowerConditionalStateTransition,
@@ -592,7 +593,7 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchEdgeSplitCorridor() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -850,6 +851,27 @@ class IDAIRTranslator:
                     description=(
                         f"edge-split trampoline pred={pred} src={src} "
                         f"{old}->{new} via {assigned}"
+                    ),
+                )
+
+            case PatchEdgeSplitCorridor(
+                source_serial=src,
+                via_pred=pred,
+                old_target=old,
+                new_target=new,
+                clone_until=clone_until,
+                rule_priority=priority,
+            ):
+                modifier.queue_edge_redirect(
+                    src_block=src,
+                    old_target=old,
+                    new_target=new,
+                    via_pred=pred,
+                    clone_until=clone_until,
+                    rule_priority=priority,
+                    description=(
+                        f"edge-split corridor pred={pred} src={src} "
+                        f"{old}->{new} until {clone_until}"
                     ),
                 )
 

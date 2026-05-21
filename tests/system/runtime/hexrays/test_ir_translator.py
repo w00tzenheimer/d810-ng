@@ -91,6 +91,19 @@ def _cfg() -> FlowGraph:
     )
 
 
+def _corridor_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            44: _block(44, (45,), ()),
+            45: _block(45, (46,), (44,)),
+            46: _block(46, (2,), (45,)),
+            2: _block(2, (), (46,)),
+        },
+        entry_serial=44,
+        func_ea=0,
+    )
+
+
 def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
     assert _block_kind_from_hexrays(ida_hexrays.BLT_2WAY) == BlockKind.TWO_WAY
     assert _block_kind_from_hexrays(ida_hexrays.BLT_1WAY) == BlockKind.ONE_WAY
@@ -757,6 +770,48 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_split_trampoline"
         assert created[0].calls[0][1:6] == (45, 122, 2, 2, 199)
+
+    def test_lower_applies_edge_split_corridor_patch_plan(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            _factory,
+        )
+
+        backend = IDAIRTranslator()
+        patch_plan = compile_patch_plan(
+            [
+                EdgeRedirectViaPredSplit(
+                    src_block=45,
+                    old_target=46,
+                    new_target=2,
+                    via_pred=44,
+                    clone_until=46,
+                    rule_priority=550,
+                )
+            ],
+            _corridor_cfg(),
+        )
+
+        count = backend.lower(patch_plan, object())
+
+        assert count == 1
+        assert len(created) == 1
+        assert created[0].calls[0][0] == "edge_redirect"
+        assert created[0].calls[0][1:7] == (45, 46, 2, 44, 46, 550)
 
     def test_lower_rejects_legacy_block_creation_when_disabled(
         self,
