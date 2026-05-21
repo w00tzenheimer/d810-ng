@@ -4849,6 +4849,38 @@ def test_loop_recovery_edge_selection_abstains_on_ambiguous_anchor() -> None:
     assert blockers == ("dispatcher_loop_recovery_ambiguous_dag_edges",)
 
 
+def test_loop_recovery_edge_selection_reports_mixed_ambiguity() -> None:
+    def _edge(source, target_state, target_entry):
+        return SimpleNamespace(
+            kind=SimpleNamespace(name="TRANSITION"),
+            source_key=SimpleNamespace(state_const=0x100, handler_serial=source),
+            target_key=SimpleNamespace(
+                state_const=target_state,
+                handler_serial=target_entry,
+            ),
+            target_state=target_state,
+            target_entry_anchor=target_entry,
+            source_anchor=SimpleNamespace(block_serial=source, branch_arm=None),
+            ordered_path=(source,),
+            proof_source="state_dispatcher_map",
+        )
+
+    selected, blockers = select_loop_recovery_edges(
+        StateDagIndex.from_dag(
+            SimpleNamespace(
+                edges=(
+                    _edge(5, 0x200, 9),
+                    _edge(5, 0x300, 12),
+                    _edge(6, 0x400, 14),
+                )
+            )
+        )
+    )
+
+    assert tuple(plan.source_block for plan in selected) == (6,)
+    assert blockers == ("dispatcher_loop_recovery_ambiguous_dag_edges",)
+
+
 def test_state_map_loop_recovery_requires_dispatcher_edge_for_write_site() -> None:
     def _snapshot(serial, succs, preds):
         return BlockSnapshot(
@@ -4911,6 +4943,202 @@ def test_state_map_loop_recovery_requires_dispatcher_edge_for_write_site() -> No
     assert modifications == ()
     assert blockers == ("dispatcher_loop_recovery_predecessor_not_dispatcher_edge",)
     assert records == ()
+
+
+def test_state_map_loop_recovery_records_mixed_ambiguous_edges_as_partial(
+    monkeypatch,
+) -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x404000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            3: _snapshot(3, (14,), (6,)),
+            5: _snapshot(5, (3,), ()),
+            6: _snapshot(6, (3,), ()),
+            9: _snapshot(9, (), ()),
+            12: _snapshot(12, (), ()),
+            14: _snapshot(14, (), (3,)),
+        },
+        entry_serial=3,
+        func_ea=0x404000,
+    )
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=3,
+        state_var_stkoff=4,
+        handler_state_map=((9, 0x200),),
+        semantic_reference_variant="semantic_reference_like",
+        semantic_state_labels=("0x100", "0x200"),
+    )
+
+    def _edge(source, target_state, target_entry):
+        return SimpleNamespace(
+            kind=SimpleNamespace(name="TRANSITION"),
+            source_key=SimpleNamespace(state_const=0x100, handler_serial=source),
+            target_key=SimpleNamespace(
+                state_const=target_state,
+                handler_serial=target_entry,
+            ),
+            target_state=target_state,
+            target_entry_anchor=target_entry,
+            source_anchor=SimpleNamespace(block_serial=source, branch_arm=None),
+            ordered_path=(source,),
+            proof_source="state_dispatcher_map",
+        )
+
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(5, 0x200, 9),
+                _edge(5, 0x300, 12),
+                _edge(6, 0x400, 14),
+            )
+        ),
+        semantic_reference_program=object(),
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=ollvm_state_dispatcher_map_profile(),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_return_carrier_preservation_blockers",
+        lambda **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (artifact, context),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_reconstruction_modifications",
+        lambda *_args, **_kwargs: ((), ()),
+    )
+    snapshot = family.build_snapshot(
+        SimpleNamespace(
+            qty=1,
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+            entry_ea=0x404000,
+            get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+            for_all_topinsns=lambda collector: None,
+        ),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="conditional_chain",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("equality_chain",),
+            state_constants=(0x100, 0x200, 0x300, 0x400),
+            collector_dispatcher_entries=(),
+        ),
+    )
+
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+    assert metadata is not None
+    assert metadata.planning_ready is True
+    assert metadata.selected_lowering_mode == "dispatcher_loop_recovery"
+    assert metadata.rejection_reasons == ()
+    assert metadata.partial_rewrite_reasons == (
+        "dispatcher_loop_recovery_ambiguous_dag_edges",
+    )
+    assert metadata.is_partial is True
+    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == (
+        RedirectGoto(from_serial=6, old_target=3, new_target=14),
+    )
+
+
+def test_state_map_loop_recovery_defers_locopt_from_dag_edges(monkeypatch) -> None:
+    flow_graph = _flow_graph_with_edge()
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=3,
+        state_var_stkoff=4,
+        handler_state_map=((9, 0x200),),
+        semantic_reference_variant="semantic_reference_like",
+        semantic_state_labels=("0x100", "0x200"),
+    )
+    edge = SimpleNamespace(
+        kind=SimpleNamespace(name="TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x100, handler_serial=6),
+        target_key=SimpleNamespace(state_const=0x200, handler_serial=9),
+        target_state=0x200,
+        target_entry_anchor=9,
+        source_anchor=SimpleNamespace(block_serial=6, branch_arm=None),
+        ordered_path=(6,),
+        proof_source="state_dispatcher_map",
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(edges=(edge,)),
+        semantic_reference_program=object(),
+        predecessor_dispatcher_target_facts=(),
+    )
+    family = EmulatedDispatcherStrategyFamily(
+        cfg_translator=SimpleNamespace(lift=lambda _mba: flow_graph),
+        profile=ollvm_state_dispatcher_map_profile(),
+    )
+    monkeypatch.setattr(
+        family,
+        "_build_phase_artifact",
+        lambda *_args, **_kwargs: (artifact, context),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_lowering_candidates",
+        lambda *_args, **_kwargs: ((), (), ()),
+    )
+    monkeypatch.setattr(
+        family,
+        "_collect_phase_reconstruction_modifications",
+        lambda *_args, **_kwargs: (
+            (RedirectGoto(from_serial=0, old_target=1, new_target=2),),
+            (),
+        ),
+    )
+
+    snapshot = family.build_snapshot(
+        SimpleNamespace(
+            qty=1,
+            maturity=ida_hexrays.MMAT_LOCOPT,
+            entry_ea=0x401000,
+            get_mblock=lambda _serial: SimpleNamespace(nsucc=lambda: 0),
+            for_all_topinsns=lambda collector: None,
+        ),
+        EmulatedDispatcherDetection(
+            analysis_dispatchers=(3,),
+            dispatcher_shape="conditional_chain",
+            state_transport="state_dispatcher_map",
+            lowering_mode="generic_graph_modifications",
+            provenance_hints=("equality_chain",),
+            state_constants=(0x100, 0x200),
+            collector_dispatcher_entries=(),
+        ),
+    )
+
+    metadata = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
+    assert metadata is not None
+    assert metadata.planning_ready is False
+    assert metadata.planning_blocker == "state_map_loop_recovery_deferred_to_glbopt1"
+    assert metadata.selected_lowering_mode == "generic_graph_modifications"
+    assert extract_emulated_dispatcher_modifications(snapshot.flow_graph) == ()
 
 
 def test_tigress_indirect_phase_reconstruction_allowed_at_locopt() -> None:
