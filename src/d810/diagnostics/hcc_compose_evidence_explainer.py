@@ -69,7 +69,6 @@ from d810.diagnostics.hcc_byte_cascade_trace import (
 _REDIRECT_KINDS: frozenset[str] = frozenset({
     "RedirectGoto",
     "RedirectBranch",
-    "DuplicateAndRedirect",
     "ConvertToGoto",
     "EdgeRedirectViaPredSplit",
     "CreateConditionalRedirect",

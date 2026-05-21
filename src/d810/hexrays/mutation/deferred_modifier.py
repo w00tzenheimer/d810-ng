@@ -7465,7 +7465,7 @@ class DeferredGraphModifier:
                 return False
 
             # Optionally redirect the original block's successor (atomic
-            # DuplicateAndRedirect: clone + redirect clone + redirect original).
+            # Typed clone/split: clone + redirect clone + redirect original).
             if original_redirect_target is not None:
                 if source_blk.nsucc() != 1:
                     logger.warning(
