@@ -58,6 +58,29 @@ def collect_live_fake_jump_block_fixes(
         if pred_blk is None or pred_blk.tail is None:
             continue
 
+        branch_arm_target = _resolve_fake_jump_branch_arm_target(
+            blk,
+            pred_blk,
+            op_compared,
+        )
+        if branch_arm_target is not None:
+            if logger is not None:
+                logger.info(
+                    "Pred %s resolves fake jump via direct branch-arm assignment: "
+                    "%s -> %s",
+                    pred_blk.serial,
+                    blk.serial,
+                    branch_arm_target,
+                )
+            fixes.append(
+                FakeJumpPredFix(
+                    fake_block=int(blk.serial),
+                    pred_block=int(pred_blk.serial),
+                    new_target=int(branch_arm_target),
+                )
+            )
+            continue
+
         cmp_variable_tracker = MopTracker(
             [op_compared],
             max_nb_block=max_nb_block,
@@ -146,6 +169,58 @@ def collect_live_fake_jump_block_fixes(
         )
 
     return tuple(fixes)
+
+
+def _live_block_successors(blk: object) -> tuple[int, ...]:
+    if blk is None:
+        return ()
+    try:
+        nsucc = int(blk.nsucc())
+    except (AttributeError, TypeError, ValueError):
+        return ()
+
+    successors: list[int] = []
+    for index in range(nsucc):
+        try:
+            successors.append(int(blk.succ(index)))
+        except (AttributeError, TypeError, ValueError):
+            return ()
+    return tuple(successors)
+
+
+def _resolve_fake_jump_branch_arm_target(
+    blk: object,
+    pred_blk: object,
+    op_compared: object,
+) -> int | None:
+    """Resolve a direct 2-way predecessor arm without merging sibling histories."""
+    if blk is None or pred_blk is None or op_compared is None:
+        return None
+    if getattr(blk, "tail", None) is None or getattr(pred_blk, "tail", None) is None:
+        return None
+    if getattr(blk, "nextb", None) is None:
+        return None
+
+    pred_successors = _live_block_successors(pred_blk)
+    if len(pred_successors) != 2 or int(blk.serial) not in pred_successors:
+        return None
+
+    direct_const = _find_live_state_assignment(pred_blk, op_compared)
+    if direct_const is None:
+        return None
+
+    resolution = resolve_fake_jump_target(
+        opcode=int(blk.tail.opcode),
+        compared_value=int(blk.tail.r.nnn.value),
+        pred_comparison_values=(int(direct_const),),
+        taken_target=int(blk.tail.d.b),
+        fallthrough_target=int(blk.nextb.serial),
+        jz_opcode=ida_hexrays.m_jz,
+        jnz_opcode=ida_hexrays.m_jnz,
+    )
+    if resolution.new_target is None:
+        return None
+    return int(resolution.new_target)
 
 
 def collect_live_fake_jump_fixes(

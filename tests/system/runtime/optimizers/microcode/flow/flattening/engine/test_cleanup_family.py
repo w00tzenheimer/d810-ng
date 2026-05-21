@@ -442,7 +442,14 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert calls["fake_jump"][0] is mba
     assert calls["fake_jump"][1]["max_nb_block"] == 100
     assert calls["fake_jump"][1]["max_path"] == 100
+    assert calls["fake_jump"][1]["allowed_maturities"] == (
+        ida_hexrays.MMAT_GLBOPT1,
+        ida_hexrays.MMAT_GLBOPT2,
+    )
     assert calls["single_iteration"][0] is mba
+    assert calls["single_iteration"][1]["allowed_maturities"] == (
+        ida_hexrays.MMAT_GLBOPT1,
+    )
     assert calls["bad_while_loop"][0] is mba
 
 def test_live_cleanup_backend_promotes_safe_conditional_cleanup_edits(

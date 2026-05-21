@@ -388,6 +388,10 @@ class LiveSimpleFlatteningCleanupBackend:
         *,
         fake_jump_max_nb_block: int = 100,
         fake_jump_max_path: int = 100,
+        fake_jump_allowed_maturities: tuple[int, ...] = (
+            ida_hexrays.MMAT_GLBOPT1,
+            ida_hexrays.MMAT_GLBOPT2,
+        ),
         allowed_maturities: tuple[int, ...] = (ida_hexrays.MMAT_GLBOPT1,),
         guarded_state_machine_maturities: tuple[int, ...] = (
             ida_hexrays.MMAT_GLBOPT1,
@@ -396,6 +400,9 @@ class LiveSimpleFlatteningCleanupBackend:
     ) -> None:
         self.fake_jump_max_nb_block = int(fake_jump_max_nb_block)
         self.fake_jump_max_path = int(fake_jump_max_path)
+        self.fake_jump_allowed_maturities = tuple(
+            int(maturity) for maturity in fake_jump_allowed_maturities
+        )
         self.allowed_maturities = tuple(int(maturity) for maturity in allowed_maturities)
         self.guarded_state_machine_maturities = tuple(
             int(maturity) for maturity in guarded_state_machine_maturities
@@ -418,7 +425,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 logger=logger,
                 max_nb_block=self.fake_jump_max_nb_block,
                 max_path=self.fake_jump_max_path,
-                allowed_maturities=self.allowed_maturities,
+                allowed_maturities=self.fake_jump_allowed_maturities,
             )
         except Exception as exc:
             errors.append(f"fake_jump:{type(exc).__name__}")
