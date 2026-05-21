@@ -866,6 +866,8 @@ class GraphModification:
     old_target: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: predecessor whose edge gets redirected to clone
     via_pred: int | None = None
+    # For CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM: predecessor arm to rewire
+    pred_arm: int | None = None
     # For EDGE_REDIRECT_VIA_PRED_SPLIT: future corridor cloning endpoint (unused, stub)
     clone_until: int | None = None
     # For EDGE_SPLIT_TRAMPOLINE: expected final serial assigned by PatchPlan compilation
@@ -1163,6 +1165,7 @@ class DeferredGraphModifier:
             "target_ref_kind": mod.target_ref_kind.name,
             "priority": mod.priority,
             "rule_priority": mod.rule_priority,
+            "pred_arm": mod.pred_arm,
             "description": mod.description,
         })
         return payload
@@ -2016,26 +2019,25 @@ class DeferredGraphModifier:
         """Queue FixPredecessor's 2-way branch-arm clone-as-goto primitive.
 
         Sibling of :meth:`queue_clone_conditional_as_goto` for the case where
-        the predecessor is a 2-way conditional whose explicit branch arm
-        (``pred_arm == 1``) targets ``source_block_serial``.  The operation
+        the predecessor is a 2-way conditional with a known arm targeting
+        ``source_block_serial``.  The operation
         clones the source, clears inherited clone predecessors, converts the
         clone to a one-way goto targeting ``goto_target_serial``, then
-        rewires the predecessor's explicit branch arm to the clone.
-
-        ``pred_arm`` is currently restricted to ``1`` by the engine path —
-        rewiring the fallthrough arm has no tested helper.  See
-        :class:`FixPredecessorRejectReason.PRED_FALLTHROUGH_ARM_NOT_SUPPORTED`.
+        rewires the selected predecessor arm to the clone.  ``pred_arm == 1``
+        uses the explicit conditional branch helper; ``pred_arm == 0`` uses the
+        fallthrough helper-block path.
         """
-        if pred_arm != 1:
+        if pred_arm not in (0, 1):
             raise ValueError(
                 "queue_clone_conditional_as_goto_from_branch_arm currently "
-                f"only supports pred_arm=1, got pred_arm={pred_arm}"
+                f"only supports pred_arm=0 or 1, got pred_arm={pred_arm}"
             )
         self.modifications.append(GraphModification(
             mod_type=ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
             block_serial=source_block_serial,
             new_target=goto_target_serial,
             via_pred=pred_serial,
+            pred_arm=pred_arm,
             expected_serial=expected_serial,
             priority=5,
             rule_priority=rule_priority,
@@ -2759,6 +2761,7 @@ class DeferredGraphModifier:
                     mod.mod_type,
                     mod.block_serial,
                     mod.via_pred,
+                    mod.pred_arm,
                     mod.new_target,
                     mod.expected_serial,
                 )
@@ -5688,6 +5691,7 @@ class DeferredGraphModifier:
                 source_blk=blk,
                 pred_serial=mod.via_pred,
                 goto_target_serial=mod.new_target,
+                pred_arm=mod.pred_arm,
                 expected_serial=mod.expected_serial,
             )
 
@@ -7836,22 +7840,23 @@ class DeferredGraphModifier:
         source_blk: ida_hexrays.mblock_t,
         pred_serial: int | None,
         goto_target_serial: int | None,
+        pred_arm: int | None = 1,
         expected_serial: int | None = None,
     ) -> bool:
         """Clone a 2-way conditional block as a goto and rewire one 2-way predecessor's branch arm.
 
         Sibling of :meth:`_apply_clone_conditional_as_goto` for the
         ``two_way_predecessor_arm_known`` shape.  The mechanical difference
-        is the final rewire step: this method uses
-        ``change_2way_block_conditional_successor`` to swap the explicit
-        branch arm of a 2-way predecessor, instead of
-        ``change_1way_block_successor``.
+        is the final rewire step: explicit branch arms use
+        ``change_2way_block_conditional_successor`` and fallthrough arms use
+        the adjacent helper-block fallthrough rewrite.
         """
         if not self._check_clone_conditional_as_goto_preconditions(
             source_block_serial=source_blk.serial,
             pred_serial=pred_serial,
             goto_target_serial=goto_target_serial,
             pred_topology="two_way_branch_arm",
+            pred_arm=pred_arm,
         ):
             return False
 
@@ -7906,16 +7911,25 @@ class DeferredGraphModifier:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
                 return False
 
-            if not change_2way_block_conditional_successor(
-                pred_blk,
-                cloned_blk.serial,
-                verify=False,
-                old_target=int(source_blk.serial),
-            ):
+            if pred_arm == 1:
+                rewired = change_2way_block_conditional_successor(
+                    pred_blk,
+                    cloned_blk.serial,
+                    verify=False,
+                    old_target=int(source_blk.serial),
+                )
+            else:
+                rewired = self._apply_fallthrough_change(
+                    pred_blk,
+                    cloned_blk.serial,
+                    old_target=int(source_blk.serial),
+                )
+            if not rewired:
                 logger.warning(
                     "clone_conditional_as_goto_from_branch_arm: failed to rewire "
-                    "pred blk[%d] explicit branch arm to clone blk[%d]",
+                    "pred blk[%d] arm=%s to clone blk[%d]",
                     pred_blk.serial,
+                    pred_arm,
                     cloned_blk.serial,
                 )
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
@@ -7923,9 +7937,10 @@ class DeferredGraphModifier:
 
             self.mba.mark_chains_dirty()
             logger.debug(
-                "clone_conditional_as_goto_from_branch_arm: pred=%d arm=1 -> "
+                "clone_conditional_as_goto_from_branch_arm: pred=%d arm=%s -> "
                 "clone=%d -> target=%d (source=%d preserved)",
                 pred_blk.serial,
+                pred_arm,
                 cloned_blk.serial,
                 target_serial,
                 source_blk.serial,
@@ -9709,14 +9724,15 @@ class DeferredGraphModifier:
         pred_serial: int | None,
         goto_target_serial: int | None,
         pred_topology: str = "one_way",
+        pred_arm: int | None = None,
     ) -> bool:
         """Validate FixPredecessor clone-as-goto topology without mutation.
 
         ``pred_topology`` selects the predecessor-side check.  ``"one_way"``
         (default) requires ``pred.nsucc() == 1`` and ``pred.succ(0) == source``
         — the legacy live shape.  ``"two_way_branch_arm"`` instead requires
-        ``pred.nsucc() == 2`` with ``pred.tail.d.b == source`` (the
-        ``two_way_predecessor_arm_known`` engine-path shape).
+        ``pred.nsucc() == 2`` and validates that ``pred_arm`` reaches the
+        source.
         """
         if (
             self.mba is None
@@ -9821,11 +9837,27 @@ class DeferredGraphModifier:
                     pred_blk.nsucc(),
                 )
                 return False
+            if pred_arm not in (0, 1):
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: pred blk[%d] "
+                    "has invalid pred_arm=%s",
+                    pred_blk.serial,
+                    pred_arm,
+                )
+                return False
             if (
                 pred_blk.tail is None
                 or pred_blk.tail.d is None
-                or int(pred_blk.tail.d.b) != int(source_blk.serial)
+                or pred_blk.tail.d.t != ida_hexrays.mop_b
+                or not ida_hexrays.is_mcode_jcond(pred_blk.tail.opcode)
             ):
+                logger.warning(
+                    "clone_conditional_as_goto_from_branch_arm: pred blk[%d] "
+                    "does not end with a conditional branch",
+                    pred_blk.serial,
+                )
+                return False
+            if pred_arm == 1 and int(pred_blk.tail.d.b) != int(source_blk.serial):
                 actual_d = (
                     int(pred_blk.tail.d.b)
                     if pred_blk.tail is not None and pred_blk.tail.d is not None
@@ -9839,6 +9871,17 @@ class DeferredGraphModifier:
                     source_blk.serial,
                 )
                 return False
+            if pred_arm == 0:
+                fallthrough_target = _get_fallthrough_successor_serial(pred_blk)
+                if fallthrough_target is None or int(fallthrough_target) != int(source_blk.serial):
+                    logger.warning(
+                        "clone_conditional_as_goto_from_branch_arm: pred blk[%d] "
+                        "fallthrough arm targets %s, expected source blk[%d]",
+                        pred_blk.serial,
+                        fallthrough_target,
+                        source_blk.serial,
+                    )
+                    return False
         else:
             logger.warning(
                 "clone_conditional_as_goto: unknown pred_topology=%r",
