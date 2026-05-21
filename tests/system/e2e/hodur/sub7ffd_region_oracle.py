@@ -98,18 +98,25 @@ def _normalize_func_ea_hex(func_ea_hex: str) -> str:
 
 
 _REF_SPEC_BY_FUNC: dict[str, RefSpec] = {}
+_REF_SPEC_BY_NAME: dict[str, RefSpec] = {}
 
 
 def _register_spec(spec: RefSpec) -> None:
     _REF_SPEC_BY_FUNC[_normalize_func_ea_hex(spec.func_ea_hex)] = spec
+    _REF_SPEC_BY_NAME[spec.func_name] = spec
 
 
-def spec_for(func_ea_hex: str) -> RefSpec | None:
-    return _REF_SPEC_BY_FUNC.get(_normalize_func_ea_hex(func_ea_hex))
+def spec_for(func_ea_hex: str, *, func_name: str | None = None) -> RefSpec | None:
+    spec = _REF_SPEC_BY_FUNC.get(_normalize_func_ea_hex(func_ea_hex))
+    if spec is not None:
+        return spec
+    if func_name is not None:
+        return _REF_SPEC_BY_NAME.get(func_name)
+    return None
 
 
-def is_registered(func_ea_hex: str) -> bool:
-    return spec_for(func_ea_hex) is not None
+def is_registered(func_ea_hex: str, *, func_name: str | None = None) -> bool:
+    return spec_for(func_ea_hex, func_name=func_name) is not None
 
 
 # ---------------------------------------------------------------------------

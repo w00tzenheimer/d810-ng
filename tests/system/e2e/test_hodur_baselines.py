@@ -245,7 +245,13 @@ class TestHodurBaselines:
             report = render_region_oracle_report(
                 diag_conn,
                 func_ea_hex=f"0x{func_ea:016x}",
+                func_name=func_name,
             )
+            if "Status: no_ref_spec" in report:
+                pytest.fail(
+                    "sub7FFD region oracle did not bind its REF spec; "
+                    "the semantic guardrail is inactive"
+                )
             artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
             artifact_dir.mkdir(parents=True, exist_ok=True)
             report_path = artifact_dir / "sub7ffd_region_oracle.md"

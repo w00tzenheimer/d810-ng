@@ -162,6 +162,25 @@ def test_render_report_emits_concrete_d810_feature_values() -> None:
     assert snap18["byte_emit_3_present"] is False
 
 
+def test_render_report_resolves_moved_sub7ffd_by_function_name() -> None:
+    conn = sqlite3.connect(":memory:")
+    create_tables(conn)
+    _insert_snapshot(conn, 17, "post_bundle_stabilize")
+    _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
+    _insert_byte_fact(conn, 17)
+    _insert_block(conn, 17, 161)
+    conn.commit()
+
+    body = render_region_oracle_report(
+        conn,
+        func_ea_hex="0x0000000180013910",
+        func_name="sub_7FFD3338C040",
+    )
+
+    assert "Status: no_ref_spec" not in body
+    assert "Function: sub_7FFD3338C040 (0x0000000180013910)" in body
+
+
 def test_render_report_includes_microblock_evidence() -> None:
     conn = sqlite3.connect(":memory:")
     create_tables(conn)
