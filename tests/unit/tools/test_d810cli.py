@@ -86,9 +86,16 @@ def test_dump_help_recommends_full_diagnostics_recipe() -> None:
     result = _run_tool("d810cli.py", "dump", "--help")
 
     assert result.returncode == 0, (result.returncode, result.stderr)
+    normalized_stdout = " ".join(result.stdout.split()).replace("- ", "-")
     assert "--full-diagnostics" in result.stdout
     assert "d810cli dump -f FUNC_NAME" in result.stdout
-    assert "default: current root checkout" in result.stdout
+    if d810cli.DEFAULT_WORKTREE:
+        assert (
+            f"default: {d810cli.DEFAULT_WORKTREE}, inferred from script path"
+            in normalized_stdout
+        )
+    else:
+        assert "default: current root checkout" in normalized_stdout
     assert "short name" in result.stdout
     assert "Unflattening debug recipe" in result.stdout
     assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout

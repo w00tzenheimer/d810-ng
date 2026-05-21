@@ -1081,7 +1081,8 @@ def _add_worktree(p: argparse.ArgumentParser) -> None:
     if DEFAULT_WORKTREE:
         help_text = (
             "override checkout with a worktree name under .worktrees/ "
-            f"(default: {DEFAULT_WORKTREE}, inferred from script path)"
+            f"(default: {DEFAULT_WORKTREE}, inferred from script path; pass "
+            "short name, e.g. -w engine-wrapper-parity)"
         )
     else:
         help_text = (
