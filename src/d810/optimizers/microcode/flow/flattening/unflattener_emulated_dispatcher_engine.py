@@ -9,7 +9,6 @@ from d810.core import getLogger
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (
     EmulatedDispatcherDetection,
     EmulatedDispatcherStrategyFamily,
-    ollvm_father_history_dispatcher_profile,
     ollvm_state_dispatcher_map_profile,
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
@@ -123,12 +122,6 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
                 )
             )
         elif profile_name in {
-            "ollvm_father_history",
-        }:
-            self._family = EmulatedDispatcherStrategyFamily(
-                profile=ollvm_father_history_dispatcher_profile()
-            )
-        elif profile_name in {
             "tigress_switch",
             "switch_table",
             "switch_state_map",
@@ -180,7 +173,7 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
             raise ValueError(
                 "Unknown EmulatedDispatcherUnflattener profile "
                 f"{profile_name!r}; expected state_dispatcher_map, "
-                "ollvm_father_history, tigress_switch, or tigress_indirect"
+                "tigress_switch, or tigress_indirect"
             )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:

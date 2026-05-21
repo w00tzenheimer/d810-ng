@@ -1,7 +1,7 @@
-"""Characterization tests for FatherHistoryDispatcherUnflatteningRule.
+"""Characterization tests for state-dispatcher-map unflattening.
 
 These tests capture the current behavior of the control flow unflattening
-logic as ground truth, enabling safe refactoring of the monolithic rule
+logic as ground truth, enabling safe retirement of legacy dispatcher code
 without functional regression.
 
 Test Categories:
@@ -55,8 +55,8 @@ def libobfuscated_test_setup(
 class TestABCPatternCharacterization:
     """Characterization tests for ABC (Arithmetic/Bitwise/Constant) pattern handling.
 
-    These tests exercise the father_patcher_abc_from_or_xor_* methods in
-    FatherHistoryDispatcherUnflatteningRule.
+    These tests exercise ABC state-transition recovery through the active
+    engine-wrapper dispatcher profile.
     """
 
     binary_name = _get_default_binary()
@@ -71,7 +71,7 @@ class TestABCPatternCharacterization:
     ):
         """Test XOR-based state dispatch pattern.
 
-        Tests father_patcher_abc_from_or_xor_v1:
+        Tests XOR-based state-transition recovery:
         - State transitions use: state = state ^ CONSTANT
         - Dispatcher uses: switch ((state ^ KEY) & MASK)
         """
@@ -130,7 +130,7 @@ class TestABCPatternCharacterization:
     ):
         """Test OR-based state manipulation pattern.
 
-        Tests father_patcher_abc_from_or_xor_v2/v3:
+        Tests OR/XOR-based state-transition recovery:
         - State transitions use: state = (state & ~mask) | value
         """
         func_ea = get_func_ea("abc_or_dispatch")
@@ -416,13 +416,10 @@ class TestNestedDispatcherCharacterization:
 class TestABCF6ConstantsCharacterization:
     """Characterization tests for ABC magic number range (0xF6xxx / 1010000-1011999).
 
-    These tests exercise the father_patcher_abc_* code path in
-    FatherHistoryDispatcherUnflatteningRule that handles constants in the specific range:
+    These tests exercise the active dispatcher-profile path for constants in
+    the specific range:
     - Magic constant range: 1010000-1011999 (decimal) = 0xF6950-0xF719F (hex)
     - Checks: cnst > 1010000 && cnst < 1011999
-
-    See:
-    src/d810/optimizers/microcode/flow/flattening/ollvm_father_history_backend.py
     """
 
     binary_name = _get_default_binary()
@@ -437,7 +434,7 @@ class TestABCF6ConstantsCharacterization:
     ):
         """Test ADD-based state dispatch with 0xF6xxx/101xxxx constants.
 
-        Tests father_patcher_abc_extract_mop for m_add opcode.
+        Tests ABC state extraction for m_add opcode.
         """
         func_ea = get_func_ea("abc_f6_add_dispatch")
         if func_ea == idaapi.BADADDR:
@@ -485,7 +482,7 @@ class TestABCF6ConstantsCharacterization:
     ):
         """Test SUB-based state dispatch with 0xF6xxx constants.
 
-        Tests father_patcher_abc_extract_mop for m_sub opcode.
+        Tests ABC state extraction for m_sub opcode.
         """
         func_ea = get_func_ea("abc_f6_sub_dispatch")
         if func_ea == idaapi.BADADDR:
@@ -550,7 +547,7 @@ class TestABCF6ConstantsCharacterization:
     ):
         """Test XOR-based state dispatch with 0xF6xxx constants.
 
-        Tests father_patcher_abc_extract_mop for m_xor opcode.
+        Tests ABC state extraction for m_xor opcode.
         """
         func_ea = get_func_ea("abc_f6_xor_dispatch")
         if func_ea == idaapi.BADADDR:
@@ -596,7 +593,7 @@ class TestABCF6ConstantsCharacterization:
     ):
         """Test OR-based state dispatch with 0xF6xxx constants.
 
-        Tests father_patcher_abc_extract_mop for m_or opcode.
+        Tests ABC state extraction for m_or opcode.
         """
         func_ea = get_func_ea("abc_f6_or_dispatch")
         if func_ea == idaapi.BADADDR:
@@ -662,7 +659,7 @@ class TestABCF6ConstantsCharacterization:
     ):
         """Test nested conditions with 0xF6xxx constants.
 
-        Tests the recursive nature of father_history_patcher_abc.
+        Tests recursive ABC state recovery.
         """
         func_ea = get_func_ea("abc_f6_nested")
         if func_ea == idaapi.BADADDR:
@@ -755,8 +752,6 @@ class TestApproovFlatteningCharacterization:
     - jz eax.4, #0xF6A1E.4, @XX style comparisons
     - 64-bit constants with high 32 bits in ABC range (1010000-1011999)
 
-    See:
-    src/d810/optimizers/microcode/flow/flattening/ollvm_father_history_backend.py
     See: src/d810/optimizers/microcode/flow/flattening/cleanup_family.py
     """
 

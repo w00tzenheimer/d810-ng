@@ -68,10 +68,6 @@ from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
     collect_ollvm_post_execute_carrier_facts,
     collect_ollvm_profile_fact_observations,
 )
-from d810.optimizers.microcode.flow.flattening.ollvm_dispatcher_analysis import (
-    OllvmDispatcherCollector,
-    OllvmFatherHistoryResolver,
-)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
@@ -188,7 +184,6 @@ __all__ = [
     "GenericDispatcherCollectorProtocol",
     "GenericDispatcherEngineProfile",
     "GenericDispatcherResolverProtocol",
-    "ollvm_father_history_dispatcher_profile",
     "ollvm_state_dispatcher_map_profile",
     "tigress_indirect_dispatcher_profile",
     "tigress_switch_dispatcher_profile",
@@ -4727,25 +4722,6 @@ class GenericDispatcherEngineProfile:
         return fallthrough_serial
 
 
-def ollvm_father_history_dispatcher_profile() -> GenericDispatcherEngineProfile:
-    """Return the explicit OLLVM father-history compatibility profile."""
-
-    return GenericDispatcherEngineProfile(
-        name="ollvm_father_history",
-        collector_factory=OllvmDispatcherCollector,
-        resolver_factory=OllvmFatherHistoryResolver,
-        state_transport="father_history_emulation",
-        lowering_mode="generic_graph_modifications",
-        provenance_hints=(),
-        allow_incomplete_switch_transition_facts=True,
-        state_dispatcher_map_factory=_ollvm_state_dispatcher_map_fallback,
-        switch_case_transition_fact_factory=_tigress_switch_case_transition_facts,
-        post_execute_carrier_fact_factory=collect_ollvm_post_execute_carrier_facts,
-        fact_observation_factory=collect_ollvm_profile_fact_observations,
-        branch_ownership_refiner_factory=collect_ollvm_branch_ownership_refiners,
-    )
-
-
 def ollvm_state_dispatcher_map_profile(
     *,
     enable_terminal_payload_materialization: bool = False,
@@ -4754,17 +4730,13 @@ def ollvm_state_dispatcher_map_profile(
     """Return the recon-owned OLLVM state-dispatcher-map profile.
 
     OLLVM equality-chain and switch-table dispatchers are now modelled through
-    the neutral ``StateDispatcherMap`` recon surface.  Keeping the legacy OLLVM
-    collector active here makes father-history emulation compete with the exact
-    row map: the collector can still find a broad dispatcher, but it cannot
-    explain all side effects and conditional states in large FLA+BCF samples.
-    That leaves the family in the old "some fathers unresolved" posture and
-    prevents the phase-level recon paths from owning lowering.
+    the neutral ``StateDispatcherMap`` recon surface.  The retired father-history
+    backend is intentionally not available as a fallback: if exact rows or
+    transition facts are missing, the engine should expose that proof gap instead
+    of silently switching to late predecessor emulation.
 
     Use no-op collector/resolver objects so detection and lowering are driven
-    by exact equality-chain rows plus transition facts.  If a future change
-    needs father-history emulation, it should opt into the default profile
-    explicitly instead of silently reintroducing legacy ownership here.
+    by exact equality-chain rows plus transition facts.
     """
 
     return GenericDispatcherEngineProfile(
