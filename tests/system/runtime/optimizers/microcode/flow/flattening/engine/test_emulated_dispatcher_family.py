@@ -2920,19 +2920,6 @@ def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
         def get_dispatcher_list(self):
             return [SimpleNamespace(entry_block=SimpleNamespace(serial=11))]
 
-    class _Resolver:
-        def get_dispatcher_father_histories(self, *_args):
-            return ()
-
-        def check_if_histories_are_resolved(self, _histories):
-            return False
-
-        def _filter_dependency_safe_copies(self, _father, insns):
-            return list(insns)
-
-        def ensure_all_dispatcher_fathers_are_direct(self):
-            return 0
-
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
         SimpleNamespace(get_or_create=lambda _mba: cache),
@@ -2945,7 +2932,6 @@ def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
         profile=GenericDispatcherEngineProfile(
             name="fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="fixture_transport",
             lowering_mode="fixture_lowering",
             provenance_hints=("fixture_profile",),
@@ -2981,10 +2967,6 @@ def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
     )
     cache = SimpleNamespace(analyze=lambda: analysis)
 
-
-    class _Resolver:
-        pass
-
     monkeypatch.setattr(
         "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
         SimpleNamespace(get_or_create=lambda _mba: cache),
@@ -2994,7 +2976,6 @@ def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
         profile=GenericDispatcherEngineProfile(
             name="switch_fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="state_dispatcher_map",
             lowering_mode="generic_graph_modifications",
             provenance_hints=("switch_table",),
@@ -3013,24 +2994,11 @@ def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
     assert detection.state_transport == "state_dispatcher_map"
 
 
-def test_map_backed_profiles_do_not_instantiate_legacy_resolver() -> None:
-    for profile in (
-        ollvm_state_dispatcher_map_profile(),
-        tigress_switch_dispatcher_profile(),
-        tigress_indirect_dispatcher_profile(),
-    ):
-        resolver = profile.resolver_factory()
-        assert type(resolver).__name__ == "_NoopDispatcherResolver"
-        assert resolver.ensure_all_dispatcher_fathers_are_direct() == 0
-        assert resolver.check_if_histories_are_resolved(None) is False
-
-
-def test_implicit_family_profile_does_not_use_father_history() -> None:
+def test_implicit_family_profile_uses_state_dispatcher_map() -> None:
     family = EmulatedDispatcherStrategyFamily()
 
     assert family._profile.name == "ollvm_state_map"
     assert family._profile.state_transport == "state_dispatcher_map"
-    assert type(family._profile.resolver_factory()).__name__ == "_NoopDispatcherResolver"
 
 
 def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None:
@@ -3127,15 +3095,10 @@ def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate
     facts = (SimpleNamespace(fact_id="carrier:1"),)
     seen: list[tuple[str, tuple[object, ...]]] = []
 
-
-    class _Resolver:
-        pass
-
     family = EmulatedDispatcherStrategyFamily(
         profile=GenericDispatcherEngineProfile(
             name="carrier_fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="fixture_transport",
             lowering_mode="fixture_lowering",
             post_execute_carrier_fact_factory=lambda _mba: facts,
@@ -3310,9 +3273,6 @@ def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
         def get_dispatcher_list(self):
             return [dispatcher_info]
 
-    class _Resolver:
-        pass
-
     class _Profile(GenericDispatcherEngineProfile):
         def dispatcher_entry_serial(self, seen_dispatcher_info):
             assert seen_dispatcher_info is dispatcher_info
@@ -3322,7 +3282,6 @@ def test_emulated_dispatcher_family_primary_entry_uses_profile() -> None:
         profile=_Profile(
             name="fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="fixture_transport",
             lowering_mode="fixture_lowering",
         )
@@ -3341,10 +3300,6 @@ def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map()
     class _Collector:
         def get_dispatcher_list(self):
             return [dispatcher_info]
-
-    class _Resolver:
-        pass
-
     class _Profile(GenericDispatcherEngineProfile):
         def dispatcher_entry_serial(self, seen_dispatcher_info):
             assert seen_dispatcher_info is dispatcher_info
@@ -3354,7 +3309,6 @@ def test_emulated_dispatcher_family_primary_entry_prefers_state_dispatcher_map()
         profile=_Profile(
             name="fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="fixture_transport",
             lowering_mode="fixture_lowering",
         )
@@ -3386,10 +3340,6 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
     switch_fact = SimpleNamespace(fact_id="tigress_switch:case=16:direct")
     switch_fact_calls = []
 
-
-    class _Resolver:
-        pass
-
     def _switch_fact_factory(mba, seen_dispatch_map, profile_name):
         switch_fact_calls.append((mba, seen_dispatch_map, profile_name))
         return (switch_fact,)
@@ -3398,7 +3348,6 @@ def test_emulated_dispatcher_family_builds_phase_artifact_from_dispatcher_map(
         profile=GenericDispatcherEngineProfile(
             name="tigress_switch",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="state_dispatcher_map",
             lowering_mode="generic_graph_modifications",
             state_dispatcher_map_factory=lambda *_args: (),
@@ -3497,15 +3446,10 @@ def test_emulated_dispatcher_family_anchors_conditional_chain_suffix_maps_to_ana
         target=8,
     )
 
-
-    class _Resolver:
-        pass
-
     family = EmulatedDispatcherStrategyFamily(
         profile=GenericDispatcherEngineProfile(
             name="ollvm_state_map",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="state_dispatcher_map",
             lowering_mode="generic_graph_modifications",
             state_dispatcher_map_factory=lambda *_args: (),
@@ -3981,14 +3925,10 @@ def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatc
 def test_predecessor_target_lowering_is_recon_only_until_safe_materialization(
     monkeypatch,
 ) -> None:
-    class _Resolver:
-        pass
-
     family = EmulatedDispatcherStrategyFamily(
         profile=GenericDispatcherEngineProfile(
             name="fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="state_dispatcher_map",
             lowering_mode="generic_graph_modifications",
             enable_predecessor_dispatcher_target_lowering=True,
@@ -5042,146 +4982,6 @@ def test_tigress_indirect_repairs_terminal_state_write_stub(
     )
 
 
-def test_emulated_dispatcher_family_uses_injected_resolver_for_lowering() -> None:
-    profile_calls = []
-    histories = (object(),)
-    father = SimpleNamespace(serial=5, nsucc=lambda: 1, succ=lambda _idx: 2)
-    target = SimpleNamespace(serial=9, nsucc=lambda: 0, tail=None, nextb=None)
-    dispatcher_info = object()
-
-    class _Collector:
-        def get_dispatcher_list(self):
-            return [dispatcher_info]
-
-    class _Resolver:
-        pass
-
-    class _Profile(GenericDispatcherEngineProfile):
-        def configure_resolver(self, resolver, *, mba, detection):
-            profile_calls.append(("configure", mba.maturity))
-            resolver.mba = mba
-            resolver.cur_maturity = mba.maturity
-            resolver.cur_maturity_pass = 0
-            resolver.dispatcher_list = list(detection.collector_dispatchers)
-            return resolver
-
-        def dispatcher_entry_serial(self, seen_dispatcher_info):
-            assert seen_dispatcher_info is dispatcher_info
-            profile_calls.append(("entry_serial",))
-            return 2
-
-        def dispatcher_predecessor_serials(self, seen_dispatcher_info):
-            assert seen_dispatcher_info is dispatcher_info
-            profile_calls.append(("predecessors",))
-            return (5,)
-
-        def collect_dispatcher_father_histories(
-            self,
-            resolver,
-            dispatcher_father,
-            seen_dispatcher_info,
-        ):
-            assert seen_dispatcher_info is dispatcher_info
-            profile_calls.append(("histories", dispatcher_father.serial))
-            return histories
-
-        def histories_resolved(self, resolver, seen_histories):
-            profile_calls.append(("resolved", seen_histories is histories))
-            return True
-
-        def resolve_state_values(self, seen_histories, seen_dispatcher_info):
-            assert seen_histories is histories
-            assert seen_dispatcher_info is dispatcher_info
-            profile_calls.append(("values",))
-            return [[0x1234]]
-
-        def state_values_complete(self, values):
-            profile_calls.append(("complete", values == [[0x1234]]))
-            return True
-
-        def emulate_dispatcher_target(self, seen_dispatcher_info, history):
-            assert seen_dispatcher_info is dispatcher_info
-            assert history is histories[0]
-            profile_calls.append(("emulate",))
-            return target, ()
-
-        def filter_dependency_safe_copies(
-            self,
-            resolver,
-            dispatcher_father,
-            raw_ins_to_copy,
-        ):
-            profile_calls.append(("copies", dispatcher_father.serial, len(raw_ins_to_copy)))
-            return list(raw_ins_to_copy)
-
-    mba = SimpleNamespace(
-        maturity=ida_hexrays.MMAT_GLBOPT2,
-        entry_ea=0x401000,
-        get_mblock=lambda serial: father if serial == 5 else None,
-    )
-
-    def _snapshot(serial, succs, preds):
-        return BlockSnapshot(
-            serial=serial,
-            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
-            succs=tuple(succs),
-            preds=tuple(preds),
-            flags=0,
-            start_ea=0x401000 + serial,
-            insn_snapshots=(),
-        )
-
-    flow_graph = FlowGraph(
-        blocks={
-            2: _snapshot(2, (), (5,)),
-            5: _snapshot(5, (2,), ()),
-            9: _snapshot(9, (), ()),
-        },
-        entry_serial=5,
-        func_ea=0x401000,
-    )
-    family = EmulatedDispatcherStrategyFamily(
-        profile=_Profile(
-            name="fixture",
-            collector_factory=_Collector,
-            resolver_factory=_Resolver,
-            state_transport="fixture_transport",
-            lowering_mode="fixture_lowering",
-            provenance_hints=("fixture_profile",),
-        )
-    )
-    detection = EmulatedDispatcherDetection(
-        collector_dispatchers=(dispatcher_info,),
-        collector_dispatcher_entries=(2,),
-        analysis_dispatchers=(2,),
-        dispatcher_shape="profile_kind",
-        state_transport="fixture_transport",
-        lowering_mode="fixture_lowering",
-        provenance_hints=("fixture_profile",),
-        state_constants=(0x1234,),
-    )
-
-    modifications, blockers, records = family._collect_lowering_candidates(
-        mba,
-        detection,
-        flow_graph=flow_graph,
-    )
-
-    assert modifications == (
-        RedirectGoto(from_serial=5, old_target=2, new_target=9),
-    )
-    assert blockers == ()
-    assert records[0].selection_reason == "direct_redirect"
-    assert ("configure", ida_hexrays.MMAT_GLBOPT2) in profile_calls
-    assert ("predecessors",) in profile_calls
-    assert ("histories", 5) in profile_calls
-    assert ("resolved", True) in profile_calls
-    assert ("values",) in profile_calls
-    assert ("complete", True) in profile_calls
-    assert ("emulate",) in profile_calls
-    assert ("copies", 5, 0) in profile_calls
-
-
 def test_emulated_dispatcher_family_dynamic_transition_uses_profile_selector(
     monkeypatch,
 ) -> None:
@@ -5204,10 +5004,6 @@ def test_emulated_dispatcher_family_dynamic_transition_uses_profile_selector(
     class _Collector:
         def get_dispatcher_list(self):
             return [dispatcher_info]
-
-    class _Resolver:
-        pass
-
     class _Profile(GenericDispatcherEngineProfile):
         def dispatcher_entry_serial(self, seen_dispatcher_info):
             assert seen_dispatcher_info is dispatcher_info
@@ -5234,7 +5030,6 @@ def test_emulated_dispatcher_family_dynamic_transition_uses_profile_selector(
         profile=_Profile(
             name="fixture",
             collector_factory=_Collector,
-            resolver_factory=_Resolver,
             state_transport="fixture_transport",
             lowering_mode="fixture_lowering",
         )
@@ -5299,7 +5094,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
     detection = EmulatedDispatcherDetection(
         analysis_dispatchers=(3, 5),
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         state_constants=(0xF6A1E, 0xF6A1F),
@@ -5318,7 +5113,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
     )
     assert observation == EmulatedDispatcherMetadata(
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         analysis_dispatchers=(3, 5),
@@ -5359,7 +5154,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     detection = EmulatedDispatcherDetection(
         analysis_dispatchers=(3,),
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         state_constants=(0xF6A1E,),
@@ -5371,7 +5166,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     modifications = extract_emulated_dispatcher_modifications(snapshot.flow_graph)
     assert observation == EmulatedDispatcherMetadata(
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         analysis_dispatchers=(3,),
@@ -5426,7 +5221,7 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
     detection = EmulatedDispatcherDetection(
         analysis_dispatchers=(3,),
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         state_constants=(0xF6A1E,),
@@ -5439,7 +5234,7 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
 
     assert observation == EmulatedDispatcherMetadata(
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         analysis_dispatchers=(3,),
@@ -5464,152 +5259,6 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
     )
 
 
-def test_emulated_dispatcher_family_inserts_safe_copies_before_conditional_target(
-    monkeypatch,
-) -> None:
-    family = EmulatedDispatcherStrategyFamily()
-    safe_insn = SimpleNamespace(opcode=ida_hexrays.m_mov, name="safe")
-    histories = (object(),)
-    resolver = SimpleNamespace(
-        mba=SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_GLBOPT2),
-        get_dispatcher_father_histories=lambda *_args: histories,
-        check_if_histories_are_resolved=lambda _histories: True,
-        _filter_dependency_safe_copies=lambda _father, insns: list(insns),
-    )
-    dispatcher_father = SimpleNamespace(
-        serial=9,
-        nsucc=lambda: 1,
-        succ=lambda _idx: 4,
-    )
-    target_blk = SimpleNamespace(
-        serial=1,
-        nsucc=lambda: 2,
-        tail=SimpleNamespace(opcode=ida_hexrays.m_jnz, d=SimpleNamespace(b=2)),
-        nextb=SimpleNamespace(serial=3),
-    )
-    dispatcher_info = SimpleNamespace(
-        entry_block=SimpleNamespace(serial=7, use_before_def_list=()),
-        emulate_dispatcher_with_father_history=lambda _history, resolve_conditional_exits=True: (
-            target_blk,
-            [safe_insn],
-        ),
-    )
-    monkeypatch.setattr(
-        GenericDispatcherEngineProfile,
-        "resolve_state_values",
-        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
-    )
-    monkeypatch.setattr(
-        GenericDispatcherEngineProfile,
-        "state_values_complete",
-        lambda _self, _values: True,
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",
-        lambda insn: f"snap:{insn.name}",
-    )
-
-    candidate, reason, _record = family._build_lowering_candidate(
-        resolver,
-        dispatcher_father,
-        dispatcher_info,
-        scc_memberships={},
-    )
-
-    assert reason is None
-    assert candidate == (
-        InsertBlock(
-            pred_serial=9,
-            succ_serial=1,
-            instructions=("snap:safe",),
-            old_target_serial=4,
-        ),
-    )
-
-
-def test_emulated_dispatcher_family_reuses_deferred_side_effects_after_calls(
-    monkeypatch,
-) -> None:
-    family = EmulatedDispatcherStrategyFamily()
-    safe_insn = SimpleNamespace(opcode=ida_hexrays.m_mov, name="safe")
-    histories = (object(),)
-    dispatcher_info = SimpleNamespace(
-        entry_block=SimpleNamespace(serial=7, use_before_def_list=()),
-    )
-    dispatcher_father = SimpleNamespace(
-        serial=9,
-        nsucc=lambda: 1,
-        succ=lambda _idx: 4,
-    )
-    target_blk = SimpleNamespace(
-        serial=1,
-        nsucc=lambda: 1,
-        tail=None,
-        nextb=None,
-    )
-    monkeypatch.setattr(
-        GenericDispatcherEngineProfile,
-        "resolve_state_values",
-        lambda _self, _histories, _dispatcher_info: [[0xF6A20]],
-    )
-    monkeypatch.setattr(
-        GenericDispatcherEngineProfile,
-        "state_values_complete",
-        lambda _self, _values: True,
-    )
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.capture_insn_snapshot",
-        lambda insn: f"snap:{insn.name}",
-    )
-
-    resolver_calls = SimpleNamespace(
-        mba=SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_CALLS),
-        get_dispatcher_father_histories=lambda *_args: histories,
-        check_if_histories_are_resolved=lambda _histories: True,
-        _filter_dependency_safe_copies=lambda _father, insns: list(insns),
-    )
-    dispatcher_info.emulate_dispatcher_with_father_history = (
-        lambda _history, resolve_conditional_exits=True: (target_blk, [safe_insn])
-    )
-
-    candidate, reason, _record = family._build_lowering_candidate(
-        resolver_calls,
-        dispatcher_father,
-        dispatcher_info,
-        scc_memberships={},
-    )
-
-    assert candidate is None
-    assert reason == "dispatcher_side_effects_deferred_to_later_maturity"
-
-    resolver_glbopt = SimpleNamespace(
-        mba=SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_GLBOPT2),
-        get_dispatcher_father_histories=lambda *_args: histories,
-        check_if_histories_are_resolved=lambda _histories: True,
-        _filter_dependency_safe_copies=lambda _father, insns: list(insns),
-    )
-    dispatcher_info.emulate_dispatcher_with_father_history = (
-        lambda _history, resolve_conditional_exits=True: (target_blk, [])
-    )
-
-    candidate, reason, _record = family._build_lowering_candidate(
-        resolver_glbopt,
-        dispatcher_father,
-        dispatcher_info,
-        scc_memberships={},
-    )
-
-    assert reason is None
-    assert candidate == (
-        InsertBlock(
-            pred_serial=9,
-            succ_serial=1,
-            instructions=("snap:safe",),
-            old_target_serial=4,
-        ),
-    )
-
-
 def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
     monkeypatch,
 ) -> None:
@@ -5627,7 +5276,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
     detection = EmulatedDispatcherDetection(
         analysis_dispatchers=(7,),
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         planning_blocker="dispatcher_cache_detected_but_collector_found_none",
@@ -5642,7 +5291,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
             metadata={
                 "emulated_dispatcher": EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(7,),
@@ -5683,7 +5332,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
     assert outcomes == [(rule._last_provenance, "planner")]
     assert rule.get_last_observation()["snapshot"] == {
         "dispatcher_shape": "unknown",
-        "state_transport": "father_history_emulation",
+        "state_transport": "state_dispatcher_map",
         "lowering_mode": "generic_graph_modifications",
         "provenance_hints": (),
             "analysis_dispatchers": (7,),
@@ -5717,7 +5366,7 @@ def test_emulated_dispatcher_strategy_plans_validated_snapshot_modifications() -
             metadata={
                 "emulated_dispatcher": EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(7,),
@@ -5816,17 +5465,17 @@ def test_emulated_dispatcher_strategy_rejects_partial_lowering_when_blockers_exi
         metadata={
             EMULATED_DISPATCHER_METADATA_KEY: EmulatedDispatcherMetadata(
                 dispatcher_shape="unknown",
-                state_transport="father_history_emulation",
+                state_transport="state_dispatcher_map",
                 lowering_mode="generic_graph_modifications",
                 provenance_hints=(),
                 analysis_dispatchers=(7,),
                 collector_dispatchers=(2,),
                 planning_ready=False,
-                planning_blocker="dispatcher_history_missing_values",
+                planning_blocker="dispatcher_state_values_missing",
                 candidate_count=1,
                 rejected_fathers=1,
                 candidate_kinds=("RedirectGoto",),
-                rejection_reasons=("dispatcher_history_missing_values",),
+                rejection_reasons=("dispatcher_state_values_missing",),
             ),
             EMULATED_DISPATCHER_MODIFICATIONS_KEY: (
                 RedirectGoto(from_serial=0, old_target=1, new_target=1),
@@ -5868,7 +5517,7 @@ def test_emulated_dispatcher_unflattener_counts_family_post_execute_cleanup(
             metadata={
                 "emulated_dispatcher": EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(7,),
@@ -5895,7 +5544,7 @@ def test_emulated_dispatcher_unflattener_counts_family_post_execute_cleanup(
         lambda _mba: EmulatedDispatcherDetection(
             analysis_dispatchers=(7,),
             dispatcher_shape="unknown",
-            state_transport="father_history_emulation",
+            state_transport="state_dispatcher_map",
             lowering_mode="generic_graph_modifications",
             provenance_hints=(),
         ),
@@ -5946,7 +5595,7 @@ def test_emulated_dispatcher_family_skips_deep_cleaning_for_insert_block(
             metadata={
                 EMULATED_DISPATCHER_METADATA_KEY: EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(7,),
@@ -6101,7 +5750,7 @@ def test_emulated_dispatcher_family_skips_deep_cleaning_for_conditional_redirect
             metadata={
                 EMULATED_DISPATCHER_METADATA_KEY: EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(7,),
@@ -6162,7 +5811,7 @@ def test_emulated_dispatcher_unflattener_builds_snapshot_from_detection(
     initial_detection = EmulatedDispatcherDetection(
         analysis_dispatchers=(2,),
         dispatcher_shape="unknown",
-        state_transport="father_history_emulation",
+        state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
         collector_dispatcher_entries=(2,),
@@ -6177,7 +5826,7 @@ def test_emulated_dispatcher_unflattener_builds_snapshot_from_detection(
             metadata={
                 "emulated_dispatcher": EmulatedDispatcherMetadata(
                     dispatcher_shape="unknown",
-                    state_transport="father_history_emulation",
+                    state_transport="state_dispatcher_map",
                     lowering_mode="generic_graph_modifications",
                     provenance_hints=(),
                     analysis_dispatchers=(2, 3),
@@ -6780,7 +6429,6 @@ class TestEmulatedDispatcherManagedContext:
 
         snapshot = captured["snapshot"]
         assert snapshot["state_transport"] == "state_dispatcher_map"
-        assert "father_history" not in str(snapshot)
         assert snapshot["selected_lowering_mode"] in {
             "generic_graph_modifications",
             "state_region_reconstruction",
