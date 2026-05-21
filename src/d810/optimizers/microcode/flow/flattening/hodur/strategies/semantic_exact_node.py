@@ -208,8 +208,8 @@ def _append_residual_shared_group_redirects(
     - ``single_pred_redirect``
     - ``per_pred_redirect``
 
-    If a source would require ``duplicate_and_redirect`` or a sample-specific
-    deferred corridor clone, it is left alone for now.
+    If a source would require a sample-specific deferred corridor clone, it is
+    left alone for now.
     """
     by_source: dict[int, dict[int, int]] = {}
     pred_split_indexes: dict[int, list[int]] = {}

@@ -95,7 +95,6 @@ from d810.cfg.flowgraph import InsnSnapshot
 from d810.cfg.frontier_override_emission import emit_frontier_overrides
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     InsertBlock,
     RedirectBranch,
@@ -1772,10 +1771,10 @@ class HandlerChainComposerStrategy:
     # to the cfg_provenance ``ref_blk=236`` cascade (the
     # ``InsertBlock(pred=125, succ=66, old_target=127)`` shape on
     # sub_7FFD3338C040).  Because ``_apply_fusable_tail_extension`` does
-    # not produce the bound-writer ``DuplicateAndRedirect(source=184)``
-    # cascade (that originates in ``path_tail_modification_planning``),
-    # this gate effectively short-circuits the routine for the 237
-    # cascade only.  Used as bisection infrastructure to determine
+    # not produce the bound-writer typed corridor split for source 184
+    # (that originates in shared path-tail/reconstruction planning), this
+    # gate effectively short-circuits the routine for the 237 cascade only.
+    # Used as bisection infrastructure to determine
     # whether the inner-loop fold at EA 0x180013b0e requires the
     # ``237->66`` multi-pred injection in addition to the ``183->224``
     # bound-writer redirect, or whether ``183->224`` alone is sufficient.
@@ -3673,10 +3672,10 @@ class HandlerChainComposerStrategy:
             if int(mod.block_serial) in region_anchor_blocks:
                 return True
             return False
-        if isinstance(mod, DuplicateAndRedirect):
-            if int(mod.source_serial) in region_anchor_blocks:
+        if isinstance(mod, EdgeRedirectViaPredSplit) and mod.clone_until is not None:
+            if int(mod.src_block) in region_anchor_blocks:
                 return True
-            if int(mod.source_serial) in region_pred_serials:
+            if int(mod.src_block) in region_pred_serials:
                 return True
             return False
         # Other mod kinds (NopInstructions, ZeroStateWrite, etc.) leave the
@@ -3719,9 +3718,8 @@ class HandlerChainComposerStrategy:
           * ``RedirectBranch`` with the same shape.
           * ``InsertBlock(pred, succ)`` where ``(pred, succ)`` matches a
             corridor edge (splitting the corridor with an inserted block).
-          * ``DuplicateAndRedirect(source_serial)`` where
-            ``source_serial`` is in the corridor (cloning a corridor
-            block destroys the ordered cascade).
+          * corridor-clone edits where the cloned source is in the
+            corridor (cloning a corridor block destroys the ordered cascade).
 
         Diagnostic-rich logger: each rejection logs the rule that fired
         and the offending modification's serial fields.
@@ -3761,8 +3759,8 @@ class HandlerChainComposerStrategy:
                         f"would split corridor edge {pred}->{succ} "
                         f"with an inserted block"
                     )
-            elif isinstance(mod, DuplicateAndRedirect):
-                src = int(getattr(mod, "source_serial", -1))
+            elif isinstance(mod, EdgeRedirectViaPredSplit) and mod.clone_until is not None:
+                src = int(getattr(mod, "src_block", -1))
                 if src in corridor_blocks:
                     reject_reason = (
                         f"would duplicate corridor block {src}"
@@ -3829,7 +3827,7 @@ class HandlerChainComposerStrategy:
             ``via_pred`` is in any ``fact.writer_path_blocks``.
           * InsertBlock where ``pred_serial`` OR ``succ_serial`` is in
             any ``fact.writer_path_blocks`` (corridor split).
-          * DuplicateAndRedirect where ``source_serial`` is in any
+          * corridor clone where ``src_block`` is in any
             ``fact.writer_path_blocks`` (cloning the carrier-def block
             destroys the SSA value identity).
 
@@ -3917,8 +3915,8 @@ class HandlerChainComposerStrategy:
                     offending_blocks = tuple(
                         b for b in (pred, succ) if b in union_protected
                     )
-            elif isinstance(mod, DuplicateAndRedirect):
-                src = int(getattr(mod, "source_serial", -1))
+            elif isinstance(mod, EdgeRedirectViaPredSplit) and mod.clone_until is not None:
+                src = int(getattr(mod, "src_block", -1))
                 if src in union_protected:
                     reject_reason = (
                         f"would clone carrier-def block blk[{src}], "

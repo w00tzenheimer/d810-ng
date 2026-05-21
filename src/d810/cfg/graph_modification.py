@@ -22,7 +22,6 @@ These frozen types map to DeferredGraphModifier modification types:
 - EdgeRedirectViaPredSplit -> EDGE_REDIRECT_VIA_PRED_SPLIT
 - CreateConditionalRedirect -> BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT
 - DuplicateBlock     -> (future use, backend currently warns/skips)
-- DuplicateAndRedirect -> (multi-pred duplication, maps to N x BLOCK_DUPLICATE_AND_REDIRECT)
 - DuplicateReplayAndRedirect -> duplicate per predecessor, replay captured body, redirect
 - CloneConditionalAsGoto -> CLONE_CONDITIONAL_AS_GOTO
 - InsertBlock        -> BLOCK_CREATE_WITH_REDIRECT
@@ -67,7 +66,7 @@ _TRACE_REDIRECT_GOTO = (
     os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"
 )
 # Unified knob that turns on construction traces for every graph-mod type
-# (RedirectGoto, RedirectBranch, DuplicateAndRedirect, ZeroStateWrite).
+# (RedirectGoto, RedirectBranch, ZeroStateWrite).
 # ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` is an alias for backwards
 # compat; new callers should use ``D810_TRACE_MOD_CONSTRUCTION=1``.
 _TRACE_MOD_CONSTRUCTION = (
@@ -533,48 +532,6 @@ class ReorderBlocks:
 
 
 @dataclass(frozen=True)
-class DuplicateAndRedirect:
-    """Duplicate a shared block and redirect each predecessor to its copy.
-
-    Used when a block has multiple predecessors that each need different
-    redirect targets (e.g., multi-pred dispatcher exit blocks where each
-    incoming path writes a different state value).
-
-    The block is duplicated once per (pred_serial, target) pair. Each
-    copy is redirected to its own target. The original block keeps the
-    first predecessor.
-
-    Attributes:
-        source_serial: Block to duplicate.
-        per_pred_targets: Ordered pairs of (pred_serial, target_serial).
-            The first entry keeps the original block; subsequent entries
-            get freshly duplicated copies.
-
-    Example:
-        >>> mod = DuplicateAndRedirect(
-        ...     source_serial=42,
-        ...     per_pred_targets=((10, 50), (20, 60)),
-        ... )
-        >>> mod.source_serial
-        42
-        >>> len(mod.per_pred_targets)
-        2
-    """
-    source_serial: int
-    per_pred_targets: tuple[tuple[int, int], ...]
-
-    def __post_init__(self) -> None:
-        if not _TRACE_MOD_CONSTRUCTION:
-            return
-        _redirect_goto_tracer.info(
-            "DUPLICATE_AND_REDIRECT_CONSTRUCTED src=%s per_pred_targets=%s caller=%s",
-            self.source_serial,
-            list(self.per_pred_targets),
-            _construction_caller(),
-        )
-
-
-@dataclass(frozen=True)
 class DuplicateReplayEntry:
     """Per-predecessor replay placement for a shared-source duplicate group."""
 
@@ -587,16 +544,15 @@ class DuplicateReplayEntry:
 class DuplicateReplayAndRedirect:
     """Duplicate a shared source and replay copied side effects per predecessor.
 
-    This is intentionally separate from ``InsertBlock`` and
-    ``DuplicateAndRedirect``.  A duplicate-group copied-side-effect path has
+    This is intentionally separate from ``InsertBlock``.  A duplicate-group
+    copied-side-effect path has
     topology ``pred_i -> shared_source -> dispatcher`` and must become
     ``pred_i -> source/clone_i -> replay_insert_i -> target_i``.
     ``InsertBlock(shared_source -> target)`` cannot express distinct
     per-predecessor targets; ``InsertBlock(pred_i -> target)`` would skip the
     shared source body; ``DuplicateBlock`` preserves that body but has no replay
-    payload; and ``DuplicateAndRedirect`` carries no replay payload and still has
-    legacy lowering.  This primitive keeps the composite rewrite atomic at the
-    neutral graph layer.
+    payload.  This primitive keeps the composite rewrite atomic at the neutral
+    graph layer.
     """
 
     source_serial: int
@@ -736,7 +692,6 @@ GraphModification = Union[
     DuplicateBlock,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     LowerConditionalStateTransition,
     NormalizeNWayDispatcherExit,
@@ -765,7 +720,6 @@ __all__ = [
     "DuplicateBlock",
     "CloneConditionalAsGoto",
     "CloneConditionalAsGotoFromBranchArm",
-    "DuplicateAndRedirect",
     "DuplicateReplayEntry",
     "DuplicateReplayAndRedirect",
     "LowerConditionalStateTransition",

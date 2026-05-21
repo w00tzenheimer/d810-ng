@@ -9,7 +9,6 @@ from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
     DirectTerminalLoweringGroup,
-    DuplicateAndRedirect,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -264,7 +263,6 @@ def _coerce_selected_emulated_dispatcher_modifications(
         InsertBlock,
         PromoteOperandToScalar,
         DuplicateBlock,
-        DuplicateAndRedirect,
         PrivateTerminalSuffix,
         PrivateTerminalSuffixGroup,
         DirectTerminalLoweringGroup,
@@ -397,15 +395,6 @@ def _is_valid_emulated_dispatcher_modification(
         if mod.fallthrough_target is not None and mod.fallthrough_target not in cfg.blocks:
             return False
         return True
-    if isinstance(mod, DuplicateAndRedirect):
-        if mod.source_serial not in cfg.blocks or not mod.per_pred_targets:
-            return False
-        return all(
-            pred in cfg.blocks
-            and target in cfg.blocks
-            and pred != target
-            for pred, target in mod.per_pred_targets
-        )
     if isinstance(mod, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)):
         return True
     if isinstance(mod, DirectTerminalLoweringGroup):
@@ -487,11 +476,6 @@ def _build_ownership(
                 for target_block in (target, conditional, fallthrough):
                     if target_block is not None:
                         blocks.add(target_block)
-            case DuplicateAndRedirect(source_serial=src, per_pred_targets=targets):
-                blocks.add(src)
-                for pred, target in targets:
-                    blocks.add(pred)
-                    blocks.add(target)
             case ReorderBlocks():
                 pass
     return OwnershipScope(

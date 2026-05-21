@@ -45,7 +45,6 @@ from d810.cfg.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
-    DuplicateAndRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
@@ -630,7 +629,6 @@ BlockCreatingGraphModification = Union[
     DuplicateBlock,
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     InsertBlock,
     PrivateTerminalSuffix,
@@ -845,7 +843,6 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             DuplicateBlock,
             CloneConditionalAsGoto,
             CloneConditionalAsGotoFromBranchArm,
-            DuplicateAndRedirect,
             DuplicateReplayAndRedirect,
             InsertBlock,
             PrivateTerminalSuffix,
@@ -2519,28 +2516,6 @@ def compile_patch_plan(
                 )
                 raw_steps.append(pending_step)
                 new_blocks.append(clone_spec)
-
-            case DuplicateAndRedirect(
-                source_serial=src,
-                per_pred_targets=per_pred,
-            ):
-                # Block-creating modification — handle as a single legacy
-                # block operation to bypass the projected contract checker
-                # (which cannot simulate new blocks from duplication).
-                # The ir_translator dispatches the redirect + duplication
-                # calls directly on the live MBA.
-                block_id = allocator.alloc("duplicate_and_redirect")
-                raw_steps.append(
-                    LegacyBlockOperation(
-                        modification=modification,
-                        block_id=block_id,
-                    )
-                )
-                # No PatchBlockSpec entries — the LegacyBlockOperation
-                # handles all duplication + edge wiring on the live MBA.
-                # PatchBlockSpec entries cause projected contract failures
-                # (CFG_50856_BAD_NSUCC) because the simulator can't
-                # properly model block duplication side effects.
 
             case PrivateTerminalSuffix(
                 anchor_serial=anchor,

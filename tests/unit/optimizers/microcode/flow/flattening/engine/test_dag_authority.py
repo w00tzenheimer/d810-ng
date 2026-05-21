@@ -9,7 +9,6 @@ import pytest
 
 from d810.cfg.graph_modification import (
     ConvertToGoto,
-    DuplicateAndRedirect,
     RedirectGoto,
     ZeroStateWrite,
 )
@@ -336,22 +335,11 @@ class TestPermitsConvertToGoto:
 
 
 class TestStrictGapRefusals:
-    """DupAndRedirect remains a strict DAG_GAP until the safety
-    annotations land (uee-7wcd, uee-7snc, uee-qli0, uee-bwdk).
-    ZSW was previously gap-refused; Phase 4 (uee-rjo8) consolidated
+    """ZSW was previously gap-refused; Phase 4 (uee-rjo8) consolidated
     the three legacy collectors into a single emitter that enforces
     the canonical-owner invariant by construction, so ZSW is now
     permitted (see test_zero_state_write_allows_post_phase4_consolidation).
     """
-
-    def test_dup_and_redirect_refuses_with_named_gap(self):
-        dag = _dag()
-        auth = DagAuthority(dag)
-        decision = auth.permits_duplicate_and_redirect(
-            DuplicateAndRedirect(source_serial=10, per_pred_targets=((9, 20), (8, 21)))
-        )
-        assert decision.is_gap
-        assert decision.reason == "DAG_GAP:duplicate_and_redirect_safety"
 
     def test_zero_state_write_allows_post_phase4_consolidation(self):
         """ZSW collector consolidation (uee-rjo8, Phase 4) replaced the
@@ -397,14 +385,6 @@ class TestPermitsDispatcher:
         auth = DagAuthority(dag)
         decision = auth.permits(ConvertToGoto(block_serial=10, goto_target=20))
         assert decision.allowed
-
-    def test_dispatches_dup_to_gap(self):
-        dag = _dag()
-        auth = DagAuthority(dag)
-        decision = auth.permits(
-            DuplicateAndRedirect(source_serial=10, per_pred_targets=((9, 20),))
-        )
-        assert decision.is_gap
 
     def test_dispatches_zsw_to_allow(self):
         """Post-Phase-4 (uee-rjo8): ZSW dispatch ALLOWS via the

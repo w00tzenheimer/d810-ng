@@ -18,7 +18,6 @@ from d810.cfg.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
     DuplicateBlock,
@@ -296,23 +295,6 @@ def test_compile_patch_plan_finalizes_corridor_edge_split():
         "edge_split_corridor_clone",
     ]
     assert patch_plan.legacy_block_operations == ()
-
-
-def test_compile_patch_plan_keeps_duplicate_and_redirect_legacy_pending_clone_safety():
-    modification = DuplicateAndRedirect(
-        source_serial=10,
-        per_pred_targets=((8, 11), (9, 12)),
-    )
-
-    patch_plan = compile_patch_plan([modification], _corridor_cfg())
-
-    assert patch_plan.steps == (
-        LegacyBlockOperation(
-            modification=modification,
-            block_id=VirtualBlockId(namespace="duplicate_and_redirect", ordinal=0),
-        ),
-    )
-    assert patch_plan.new_blocks == ()
 
 
 def test_compile_patch_plan_finalizes_conditional_redirect():

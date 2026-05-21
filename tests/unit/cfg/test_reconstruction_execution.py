@@ -7,7 +7,6 @@ import d810.cfg.reconstruction_emission as exec_mod
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
@@ -81,6 +80,24 @@ def _candidate(
     )
 
 
+def _shared_group_corridor_split(
+    *,
+    source_serial: int,
+    keep_target: int,
+    clone_pred: int,
+    clone_target: int,
+    old_target: int = 2,
+) -> EdgeRedirectViaPredSplit:
+    return EdgeRedirectViaPredSplit(
+        src_block=source_serial,
+        old_target=old_target,
+        new_target=clone_target,
+        via_pred=clone_pred,
+        clone_until=source_serial,
+        source_new_target=keep_target,
+    )
+
+
 @dataclass(frozen=True)
 class _SourceKey:
     state_const: int
@@ -110,7 +127,7 @@ class TestExecuteSharedGroupReconstruction:
                 rejection_reason=None,
                 ordered_via_preds=(8, 9),
                 per_pred_targets=((8, 24), (9, 30)),
-                emission_mode="duplicate_and_redirect",
+                emission_mode="one_block_corridor_split",
                 modifications=[("dup", 20)],
             ),
         )
@@ -148,7 +165,7 @@ class TestExecuteSharedGroupReconstruction:
         assert owned_blocks == {20}
         assert owned_edges == {(20, 24), (20, 30)}
         assert [candidate.via_pred for candidate in result.accepted_candidates] == [8, 9]
-        assert result.emission_mode == "duplicate_and_redirect"
+        assert result.emission_mode == "one_block_corridor_split"
 
     def test_skips_shared_group_predecessor_edge_already_owned(self, monkeypatch) -> None:
         def _plan(**_kwargs):
@@ -198,7 +215,7 @@ class TestExecuteSharedGroupReconstruction:
                 rejection_reason=None,
                 ordered_via_preds=(8,),
                 per_pred_targets=((9, 2), (8, 24)),
-                emission_mode="duplicate_and_redirect",
+                emission_mode="one_block_corridor_split",
                 modifications=[("dup", 20)],
             )
 
@@ -236,7 +253,7 @@ class TestExecuteSharedGroupReconstruction:
                 rejection_reason=None,
                 ordered_via_preds=(8, 9),
                 per_pred_targets=((8, 24), (9, 30)),
-                emission_mode="duplicate_and_redirect",
+                emission_mode="one_block_corridor_split",
                 modifications=[("dup", 20)],
             ),
         )
@@ -285,7 +302,7 @@ class TestExecuteSharedGroupReconstruction:
         assert modifications == [("dup", 20)]
         assert owned_blocks == {20}
         assert owned_edges == {(20, 24), (20, 30)}
-        assert result.emission_mode == "duplicate_and_redirect"
+        assert result.emission_mode == "one_block_corridor_split"
         assert [
             (candidate.via_pred, candidate.target_entry, candidate.edge.source_key.state_const)
             for candidate in result.accepted_candidates
@@ -308,11 +325,13 @@ class TestExecutePrimaryReconstructionModifications:
                     rejection_reason=None,
                     ordered_via_preds=(8, 9),
                     per_pred_targets=((8, 24), (9, 30)),
-                    emission_mode="duplicate_and_redirect",
+                    emission_mode="one_block_corridor_split",
                     modifications=[
-                        DuplicateAndRedirect(
+                        _shared_group_corridor_split(
                             source_serial=kwargs["shared_block"],
-                            per_pred_targets=((8, 24), (9, 30)),
+                            keep_target=24,
+                            clone_pred=9,
+                            clone_target=30,
                         )
                     ],
                 )
@@ -378,12 +397,14 @@ class TestExecutePrimaryReconstructionModifications:
 
         assert call_force_clone == [False, True]
         assert modifications == [
-            DuplicateAndRedirect(
+            _shared_group_corridor_split(
                 source_serial=20,
-                per_pred_targets=((8, 24), (9, 30)),
+                keep_target=24,
+                clone_pred=9,
+                clone_target=30,
             )
         ]
-        assert result[0].emission_mode == "duplicate_and_redirect"
+        assert result[0].emission_mode == "one_block_corridor_split"
 
     def test_selective_shared_group_fallback_keeps_safe_per_pred_groups(self, monkeypatch) -> None:
         call_force_clone: list[tuple[int, bool]] = []
@@ -399,11 +420,13 @@ class TestExecutePrimaryReconstructionModifications:
                         rejection_reason=None,
                         ordered_via_preds=(8, 9),
                         per_pred_targets=((8, 24), (9, 30)),
-                        emission_mode="duplicate_and_redirect",
+                        emission_mode="one_block_corridor_split",
                         modifications=[
-                            DuplicateAndRedirect(
+                            _shared_group_corridor_split(
                                 source_serial=20,
-                                per_pred_targets=((8, 24), (9, 30)),
+                                keep_target=24,
+                                clone_pred=9,
+                                clone_target=30,
                             )
                         ],
                     )
@@ -412,11 +435,13 @@ class TestExecutePrimaryReconstructionModifications:
                     rejection_reason=None,
                     ordered_via_preds=(18, 19),
                     per_pred_targets=((18, 44), (19, 50)),
-                    emission_mode="duplicate_and_redirect",
+                    emission_mode="one_block_corridor_split",
                     modifications=[
-                        DuplicateAndRedirect(
+                        _shared_group_corridor_split(
                             source_serial=40,
-                            per_pred_targets=((18, 44), (19, 50)),
+                            keep_target=44,
+                            clone_pred=19,
+                            clone_target=50,
                         )
                     ],
                 )
@@ -535,14 +560,16 @@ class TestExecutePrimaryReconstructionModifications:
 
         assert call_force_clone == [(20, False), (40, False), (40, True)]
         assert result[0].emission_mode == "per_pred_redirect"
-        assert result[1].emission_mode == "duplicate_and_redirect"
+        assert result[1].emission_mode == "one_block_corridor_split"
         assert modifications == [
             RedirectGoto(from_serial=8, old_target=20, new_target=24),
             RedirectGoto(from_serial=9, old_target=20, new_target=30),
             RedirectGoto(from_serial=20, old_target=24, new_target=24),
-            DuplicateAndRedirect(
+            _shared_group_corridor_split(
                 source_serial=40,
-                per_pred_targets=((18, 44), (19, 50)),
+                keep_target=44,
+                clone_pred=19,
+                clone_target=50,
             ),
         ]
 
@@ -559,11 +586,13 @@ class TestExecutePrimaryReconstructionModifications:
                     rejection_reason=None,
                     ordered_via_preds=(8, 9),
                     per_pred_targets=((8, 24), (9, 30)),
-                    emission_mode="duplicate_and_redirect",
+                    emission_mode="one_block_corridor_split",
                     modifications=[
-                        DuplicateAndRedirect(
+                        _shared_group_corridor_split(
                             source_serial=shared_block,
-                            per_pred_targets=((8, 24), (9, 30)),
+                            keep_target=24,
+                            clone_pred=9,
+                            clone_target=30,
                         )
                     ],
                 )
@@ -629,11 +658,13 @@ class TestExecutePrimaryReconstructionModifications:
         )
 
         assert call_force_clone == [(20, False), (20, True)]
-        assert result[0].emission_mode == "duplicate_and_redirect"
+        assert result[0].emission_mode == "one_block_corridor_split"
         assert modifications == [
-            DuplicateAndRedirect(
+            _shared_group_corridor_split(
                 source_serial=20,
-                per_pred_targets=((8, 24), (9, 30)),
+                keep_target=24,
+                clone_pred=9,
+                clone_target=30,
             )
         ]
 

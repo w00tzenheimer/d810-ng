@@ -1,4 +1,4 @@
-"""Tests for RedirectGoto/RedirectBranch/DuplicateAndRedirect/ZeroStateWrite
+"""Tests for RedirectGoto/RedirectBranch/ZeroStateWrite
 construction tracing in d810.cfg.graph_modification.
 
 The tracer is opt-in via ``D810_TRACE_MOD_CONSTRUCTION=1`` (or the legacy
@@ -55,10 +55,6 @@ class TestDefaultOff:
         gm_module.RedirectBranch(from_serial=1, old_target=2, new_target=3)
         assert "REDIRECT_BRANCH_CONSTRUCTED" not in caplog.text
 
-    def test_duplicate_and_redirect_default_off(self, caplog) -> None:
-        gm_module.DuplicateAndRedirect(source_serial=1, per_pred_targets=((2, 3),))
-        assert "DUPLICATE_AND_REDIRECT_CONSTRUCTED" not in caplog.text
-
     def test_zero_state_write_default_off(self, caplog) -> None:
         gm_module.ZeroStateWrite(block_serial=1, insn_ea=0x1000)
         assert "ZERO_STATE_WRITE_CONSTRUCTED" not in caplog.text
@@ -72,11 +68,6 @@ class TestEnabledEmission:
     def test_redirect_branch_emits(self, _capture_tracer) -> None:
         gm_module.RedirectBranch(from_serial=100, old_target=2, new_target=21)
         assert "REDIRECT_BRANCH_CONSTRUCTED from_serial=100 old=2 new=21" in _capture_tracer.text
-
-    def test_duplicate_and_redirect_emits(self, _capture_tracer) -> None:
-        gm_module.DuplicateAndRedirect(source_serial=42, per_pred_targets=((10, 50), (20, 60)))
-        assert "DUPLICATE_AND_REDIRECT_CONSTRUCTED src=42" in _capture_tracer.text
-        assert "per_pred_targets=[(10, 50), (20, 60)]" in _capture_tracer.text
 
     def test_zero_state_write_emits(self, _capture_tracer) -> None:
         gm_module.ZeroStateWrite(block_serial=76, insn_ea=0x180013d94)

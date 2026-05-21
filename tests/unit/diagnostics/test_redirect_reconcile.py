@@ -39,7 +39,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
       - modifications:
           (a) RedirectGoto: source_block=10, old_target=20, target_block=20
               -- AGREE_FULL with resolver/intent
-          (b) DuplicateAndRedirect: source_block=30 -- HCC_DUP
+          (b) EdgeRedirectViaPredSplit: source_block=30 -- HCC_DUP
     """
     db = tmp_path / "diag.sqlite3"
     conn = sqlite3.connect(str(db))
@@ -84,10 +84,10 @@ def _make_diag_db(tmp_path: Path) -> Path:
             "INSERT INTO modifications VALUES (?,?,?,?,?)",
             ("RedirectGoto", "emitted", 10, 20, 20),
         )
-        # Persisted DuplicateAndRedirect at source 30 -- HCC_DUP.
+        # Persisted typed clone/split at source 30 -- HCC_DUP.
         conn.execute(
             "INSERT INTO modifications VALUES (?,?,?,?,?)",
-            ("DuplicateAndRedirect", "emitted", 30, None, None),
+            ("EdgeRedirectViaPredSplit", "emitted", 30, None, None),
         )
         conn.commit()
     finally:
@@ -121,7 +121,7 @@ def test_load_persisted_dup_sources_ignores_dropped_status(tmp_path: Path) -> No
         conn.executescript(
             "CREATE TABLE modifications(mod_type TEXT, status TEXT,"
             " source_block INTEGER, old_target INTEGER, target_block INTEGER);"
-            "INSERT INTO modifications VALUES ('DuplicateAndRedirect',"
+            "INSERT INTO modifications VALUES ('EdgeRedirectViaPredSplit',"
             " 'dropped', 99, NULL, NULL);"
         )
         conn.commit()
@@ -278,7 +278,7 @@ def test_run_reconcile_show_edges_appends_detail_section(
 def test_run_reconcile_persisted_dup_source_merges_into_log_signals(
     tmp_path: Path, diag_db: Path,
 ) -> None:
-    """When the modifications table records DuplicateAndRedirect for a
+    """When the modifications table records a typed clone/split for a
     source that's missing from the d810.log, run_reconcile should still
     propagate it as an HCC_DUP signal (so the AGREE_INTENT_DROPPED_HCC_DUP
     bucket can fire downstream)."""
