@@ -37,20 +37,15 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
+    HodurSnapshotBuilder,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.state_machine_adapters import (
     detect_switch_table_state_machine,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
-)
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
-    FAKE_JUMP_FIXES_METADATA_KEY,
-    serialize_fake_jump_fixes,
-)
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
-    SINGLE_ITERATION_FIXES_METADATA_KEY,
-    serialize_single_iteration_fixes,
 )
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.flow.round_discovery_context import (
@@ -138,6 +133,11 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self._constant_fixpoint_backend: ConstantFixpointBackend = (
             _CONSTANT_FIXPOINT_BACKEND
         )
+        self._snapshot_builder = HodurSnapshotBuilder(
+            cfg_translator=self._cfg_translator,
+            constant_fixpoint_backend=self._constant_fixpoint_backend,
+            logger=self._logger,
+        )
         selected_strategy_classes = (
             list(strategy_classes)
             if strategy_classes is not None
@@ -213,28 +213,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self,
         mba: object,
     ) -> FunctionAnalysisPriors:
-        try:
-            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        except (TypeError, ValueError):
-            return FunctionAnalysisPriors()
-        runtime = self._fact_runtime
-        if runtime is None:
-            return FunctionAnalysisPriors()
-        provider = getattr(runtime, "function_analysis_priors", None)
-        if not callable(provider):
-            return FunctionAnalysisPriors()
-        try:
-            priors = provider(func_ea)
-        except Exception:
-            family_logger.debug(
-                "Function analysis priors lookup failed for 0x%x",
-                func_ea,
-                exc_info=True,
-            )
-            return FunctionAnalysisPriors()
-        if isinstance(priors, FunctionAnalysisPriors):
-            return priors
-        return FunctionAnalysisPriors()
+        return self._snapshot_builder.function_analysis_priors_for_mba(
+            mba,
+            self._fact_runtime,
+        )
 
     def reset_runtime_state(self) -> None:
         self._state_machine: DispatcherStateMachine | None = None
@@ -286,66 +268,38 @@ class HodurStrategyFamily(CFFStrategyFamily):
         mba: object,
         detection: HodurDetection,
     ) -> AnalysisSnapshot:
-        state_machine = detection.state_machine
-        flow_graph = self._build_snapshot_flow_graph(mba)
-        dispatcher_cache = DispatcherCache.get_or_create(mba)
-        reachability = self.compute_reachability_info(mba)
-        fact_view = self._resolve_fact_view(mba)
-        function_priors = self._function_analysis_priors_for_mba(mba)
-
-        if state_machine is None:
-            return self._build_cleanup_snapshot(
-                mba,
-                detection=detection,
-                flow_graph=flow_graph,
-                dispatcher_cache=dispatcher_cache,
-                reachability=reachability,
-                fact_view=fact_view,
-            )
-
-        bst_result, bst_dispatcher_serial = self._resolve_snapshot_bst_evidence(
-            mba,
-            state_machine,
+        self._snapshot_builder.constant_fixpoint_backend = (
+            self._constant_fixpoint_backend
         )
-        self._supplement_initial_transitions(state_machine)
-        self._state_machine = state_machine
-        discovery = self._build_snapshot_discovery_context(
+        snapshot = self._snapshot_builder.build_snapshot(
             mba,
-            state_machine=state_machine,
-            flow_graph=flow_graph,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
-            function_priors=function_priors,
-        )
-
-        return AnalysisSnapshot(
-            mba=mba,
-            state_machine=state_machine,
-            detector=detection.detector,
-            dispatcher_cache=dispatcher_cache,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
-            dispatcher_blocks=frozenset(
-                int(block)
-                for block in (
-                    getattr(bst_result, "bst_node_blocks", set()) or set()
-                )
+            detection,
+            run_state=self._run_state,
+            switch_table_map=self._switch_table_map,
+            fact_runtime=self._fact_runtime,
+            state_var_stkoff_resolver=self.get_effective_state_var_stkoff,
+            dispatcher_cache_factory=DispatcherCache.get_or_create,
+            transition_builder=build_transition_result_from_state_machine,
+            discovery_builder=build_round_discovery_context,
+            reachability_builder=self.compute_reachability_info,
+            attach_fake_jump_fixes=self.attach_fake_jump_fixes_to_flow_graph,
+            attach_single_iteration_fixes=(
+                self.attach_single_iteration_fixes_to_flow_graph
             ),
-            reachability=reachability,
-            maturity=mba.maturity,
-            pass_number=self._run_state.pass_number,
-            resolved_transitions=self._run_state.resolved_transitions,
-            initial_transitions=self._run_state.initial_transitions,
-            flow_graph=flow_graph,
-            discovery=discovery,
-            diagnostic_fact_view=fact_view,
         )
+        self._state_machine = detection.state_machine
+        return snapshot
 
     def _build_snapshot_flow_graph(self, mba: object) -> FlowGraph:
         """Lift and enrich the immutable CFG snapshot for this family pass."""
-        flow_graph = self._cfg_translator.lift(mba)
-        flow_graph = self.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
-        return self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
+        return self._snapshot_builder.build_snapshot_flow_graph(
+            mba,
+            state_machine=self._state_machine,
+            attach_fake_jump_fixes=self.attach_fake_jump_fixes_to_flow_graph,
+            attach_single_iteration_fixes=(
+                self.attach_single_iteration_fixes_to_flow_graph
+            ),
+        )
 
     def _build_cleanup_snapshot(
         self,
@@ -358,15 +312,14 @@ class HodurStrategyFamily(CFFStrategyFamily):
         fact_view: object | None,
     ) -> AnalysisSnapshot:
         """Build a cleanup-only snapshot when no Hodur state machine exists."""
-        return AnalysisSnapshot(
-            mba=mba,
-            detector=detection.detector,
+        return self._snapshot_builder.build_cleanup_snapshot(
+            mba,
+            detection=detection,
+            flow_graph=flow_graph,
             dispatcher_cache=dispatcher_cache,
             reachability=reachability,
-            maturity=mba.maturity,
-            pass_number=self._run_state.pass_number,
-            flow_graph=flow_graph,
-            diagnostic_fact_view=fact_view,
+            fact_view=fact_view,
+            run_state=self._run_state,
         )
 
     def _resolve_snapshot_bst_evidence(
@@ -375,66 +328,22 @@ class HodurStrategyFamily(CFFStrategyFamily):
         state_machine: DispatcherStateMachine,
     ) -> tuple[object | None, int]:
         """Resolve concrete or synthetic BST evidence for a state-machine snapshot."""
-        bst_result = None
-        bst_dispatcher_serial = -1
-        if state_machine.handlers and self._switch_table_map is None:
-            entry_serial = list(state_machine.handlers.values())[0].check_block
-            bst_stkoff = self.get_effective_state_var_stkoff(state_machine)
-            try:
-                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
-
-                raw_bst = analyze_bst_dispatcher(
-                    mba,
-                    dispatcher_entry_serial=entry_serial,
-                    state_var_stkoff=bst_stkoff,
-                )
-                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
-                    return raw_bst, entry_serial
-            except Exception:
-                bst_result = None
-
-        if bst_result is None and self._switch_table_map is not None:
-            switch_handler_map = self._switch_table_map.to_dispatcher_handler_map()
-            bst_result = switch_handler_map.to_bst_result()
-            bst_dispatcher_serial = self._switch_table_map.dispatcher_entry_block
-            self._logger.debug(
-                "Using synthetic BST from switch-table analysis: %d handlers, dispatcher=blk[%d]",
-                len(bst_result.handler_state_map),
-                bst_dispatcher_serial,
-            )
-        return bst_result, bst_dispatcher_serial
+        return self._snapshot_builder.resolve_snapshot_bst_evidence(
+            mba,
+            state_machine,
+            switch_table_map=self._switch_table_map,
+            state_var_stkoff_resolver=self.get_effective_state_var_stkoff,
+        )
 
     def _supplement_initial_transitions(
         self,
         state_machine: DispatcherStateMachine,
     ) -> None:
         """Carry unresolved pass-0 transitions into later state-machine snapshots."""
-        if not (
-            self._run_state.pass_number > 0
-            and self._run_state.initial_transitions
-        ):
-            return
-        detected_keys = {
-            (transition.from_state, transition.to_state)
-            for transition in state_machine.transitions
-        }
-        supplemented = 0
-        for transition in self._run_state.initial_transitions:
-            key = (transition.from_state, transition.to_state)
-            if (
-                key not in self._run_state.resolved_transitions
-                and key not in detected_keys
-            ):
-                state_machine.transitions.append(transition)
-                supplemented += 1
-        if supplemented:
-            self._logger.debug(
-                "HodurStrategyFamily: supplemented %d transitions from initial detection "
-                "(resolved=%d, re-detected=%d)",
-                supplemented,
-                len(self._run_state.resolved_transitions),
-                len(detected_keys),
-            )
+        self._snapshot_builder.supplement_initial_transitions(
+            state_machine,
+            run_state=self._run_state,
+        )
 
     def _build_snapshot_discovery_context(
         self,
@@ -447,57 +356,21 @@ class HodurStrategyFamily(CFFStrategyFamily):
         function_priors: FunctionAnalysisPriors,
     ) -> object | None:
         """Build the canonical per-round discovery context for strategies."""
-        state_var_stkoff = self.get_effective_state_var_stkoff(state_machine)
-        if not (
-            bst_result is not None
-            and bst_dispatcher_serial >= 0
-            and state_var_stkoff is not None
-            and flow_graph is not None
-        ):
-            return None
-        try:
-            transition_result = build_transition_result_from_state_machine(
-                state_machine,
-                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
-                strategy_name="hodur_round_discovery_context",
-            )
-            constant_fixpoint = self._constant_fixpoint_backend.compute(
-                flow_graph,
-                state_var_stkoff,
-            )
-            return build_round_discovery_context(
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=int(mba.maturity),
-                pass_number=int(self._run_state.pass_number),
-                flow_graph=flow_graph,
-                transition_result=transition_result,
-                dispatcher_entry_serial=bst_dispatcher_serial,
-                state_var_stkoff=state_var_stkoff,
-                structured_regions=(),
-                constant_fixpoint=constant_fixpoint,
-                bst_result=bst_result,
-                initial_state=state_machine.initial_state,
-                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
-                handler_range_map=(
-                    getattr(bst_result, "handler_range_map", {}) or {}
-                ),
-                bst_node_blocks=tuple(
-                    sorted(getattr(bst_result, "bst_node_blocks", set()) or set())
-                ),
-                diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
-                dispatcher=getattr(bst_result, "dispatcher", None),
-                mba=mba,
-                prefer_local_corridors=True,
-                return_frontier_artifact_priors=(
-                    function_priors.return_frontier_artifacts
-                ),
-            )
-        except Exception as exc:
-            family_logger.debug(
-                "ReconRoundDiscoveryContext build failed (phase A): %s",
-                exc,
-            )
-            return None
+        self._snapshot_builder.constant_fixpoint_backend = (
+            self._constant_fixpoint_backend
+        )
+        return self._snapshot_builder.build_snapshot_discovery_context(
+            mba,
+            state_machine=state_machine,
+            flow_graph=flow_graph,
+            bst_result=bst_result,
+            bst_dispatcher_serial=bst_dispatcher_serial,
+            function_priors=function_priors,
+            run_state=self._run_state,
+            state_var_stkoff_resolver=self.get_effective_state_var_stkoff,
+            transition_builder=build_transition_result_from_state_machine,
+            discovery_builder=build_round_discovery_context,
+        )
 
     def record_progress(self, *, nb_changes: int) -> None:
         if nb_changes <= 0 or self._state_machine is None:
@@ -579,76 +452,12 @@ class HodurStrategyFamily(CFFStrategyFamily):
         flow_graph: FlowGraph,
     ) -> FlowGraph:
         """Attach live FakeJump analysis results to FlowGraph metadata."""
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
-            return flow_graph
-
-        try:
-            fixes = collect_live_fake_jump_fixes(
-                mba,
-                logger=self._logger,
-                max_nb_block=100,
-                max_path=100,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception:
-            self._logger.debug(
-                "Failed to collect FakeJump fixes for FlowGraph metadata",
-                exc_info=True,
-            )
-            return flow_graph
-
-        if not fixes:
-            return flow_graph
-
-        try:
-            dispatcher_cache = DispatcherCache.get_or_create(mba)
-            dispatcher_analysis = dispatcher_cache.analyze()
-        except Exception:
-            dispatcher_cache = None
-            dispatcher_analysis = None
-
-        if (
-            dispatcher_cache is not None
-            and dispatcher_analysis is not None
-            and dispatcher_analysis.is_conditional_chain
-        ):
-            original_count = len(fixes)
-            fixes = tuple(
-                fix
-                for fix in fixes
-                if not dispatcher_cache.is_dispatcher(fix.fake_block)
-            )
-            dropped = original_count - len(fixes)
-            if dropped > 0:
-                self._logger.info(
-                    "Dropped %d FakeJump fixes targeting conditional-chain dispatcher blocks",
-                    dropped,
-                )
-            if not fixes:
-                return flow_graph
-
-        if (
-            self._state_machine is None
-            and dispatcher_analysis is not None
-            and tuple(getattr(dispatcher_analysis, "dispatchers", ()))
-        ):
-            self._logger.info(
-                "Skipping FakeJump fixes during cleanup-only pass with live "
-                "emulated-dispatcher candidates"
-            )
-            return flow_graph
-
-        metadata = dict(flow_graph.metadata)
-        metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(fixes)
-        self._logger.info(
-            "Attached %d FakeJump predecessor redirects to FlowGraph metadata",
-            len(fixes),
-        )
-        return FlowGraph(
-            blocks=flow_graph.blocks,
-            entry_serial=flow_graph.entry_serial,
-            func_ea=flow_graph.func_ea,
-            metadata=metadata,
+        return self._snapshot_builder.attach_fake_jump_fixes_to_flow_graph(
+            mba,
+            flow_graph,
+            state_machine=self._state_machine,
+            dispatcher_cache_factory=DispatcherCache.get_or_create,
+            collector=collect_live_fake_jump_fixes,
         )
 
     def attach_single_iteration_fixes_to_flow_graph(
@@ -657,38 +466,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         flow_graph: FlowGraph,
     ) -> FlowGraph:
         """Attach live single-iteration redirects to FlowGraph metadata."""
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
-            return flow_graph
-
-        try:
-            fixes = collect_live_single_iteration_fixes(
-                mba,
-                logger=self._logger,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-            )
-        except Exception:
-            self._logger.debug(
-                "Failed to collect single-iteration fixes for FlowGraph metadata",
-                exc_info=True,
-            )
-            return flow_graph
-
-        if not fixes:
-            return flow_graph
-
-        metadata = dict(flow_graph.metadata)
-        metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = serialize_single_iteration_fixes(
-            fixes
-        )
-        self._logger.info(
-            "Attached %d single-iteration predecessor redirects to FlowGraph metadata",
-            len(fixes),
-        )
-        return FlowGraph(
-            blocks=flow_graph.blocks,
-            entry_serial=flow_graph.entry_serial,
-            func_ea=flow_graph.func_ea,
-            metadata=metadata,
+        return self._snapshot_builder.attach_single_iteration_fixes_to_flow_graph(
+            mba,
+            flow_graph,
+            collector=collect_live_single_iteration_fixes,
         )
 
     def get_effective_state_var_stkoff(
@@ -720,34 +501,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         runtime fails to produce a view.  Strategy consumers must tolerate
         ``None`` (no heuristic fallback).
         """
-        runtime = self._fact_runtime
-        if runtime is None:
-            return None
-        try:
-            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-            maturity = getattr(mba, "maturity", 0)
-            return runtime.validated_fact_view(func_ea, maturity_to_string(maturity))
-        except Exception:
-            return None
+        return self._snapshot_builder.resolve_fact_view(mba, self._fact_runtime)
 
     def compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
-        qty = mba.qty
-        visited: set[int] = set()
-        queue = [0]
-        while queue:
-            serial = queue.pop()
-            if serial in visited or serial < 0 or serial >= qty:
-                continue
-            visited.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is not None:
-                for i in range(blk.nsucc()):
-                    queue.append(blk.succ(i))
-        return ReachabilityInfo(
-            entry_serial=0,
-            reachable_blocks=frozenset(visited),
-            total_blocks=qty,
-        )
+        return self._snapshot_builder.compute_reachability_info(mba)
 
     def build_state_machine_from_cache(
         self, analysis: object
