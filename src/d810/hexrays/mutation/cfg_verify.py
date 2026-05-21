@@ -15,7 +15,6 @@ from d810.core.typing import Any
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.utils.hexrays_formatters import block_printer
 
 helper_logger = getLogger(__name__)
 
@@ -44,15 +43,7 @@ def log_block_info(blk: ida_hexrays.mblock_t, logger_func=helper_logger.info, ct
         return
     if ctx:
         logger_func("%s", ctx)
-    vp = block_printer()
-    blk._print(vp)
-    logger_func(
-        "Block %s with successors %s and predecessors %s:\n%s",
-        blk.serial,
-        list(blk.succset),
-        list(blk.predset),
-        vp.get_block_mc(),
-    )
+    logger_func("Block snapshot: %s", snapshot_block_for_capture(blk))
 
 
 def safe_verify(
