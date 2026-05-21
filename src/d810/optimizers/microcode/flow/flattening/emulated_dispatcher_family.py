@@ -171,6 +171,7 @@ from d810.recon.flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
     run_snapshot_constant_fixpoint,
 )
+from d810.recon.flow.state_dag_index import DagParentEdge, StateDagIndex
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
@@ -4928,9 +4929,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         views after a root phase is peeled.  Re-lowering the exact same
         dispatcher/pre-header/initial-state root can mechanically verify while
         bypassing semantic side effects that were still waiting to structure.
-        Treat a successful lowering of that exact root as ownership evidence
-        for the rest of the maturity, but keep distinct residual pre-headers
-        eligible because they represent different live corridors.
+        Treat a successful state-region or dispatcher-loop recovery of that
+        exact root as ownership evidence for the rest of the maturity, but
+        keep distinct residual pre-headers eligible because they represent
+        different live corridors.
         """
 
         if total_changes <= 0 or snapshot.flow_graph is None:
@@ -4940,7 +4942,10 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         )
         if not isinstance(metadata, EmulatedDispatcherMetadata):
             return
-        if metadata.selected_lowering_mode != "state_region_reconstruction":
+        if metadata.selected_lowering_mode not in {
+            "state_region_reconstruction",
+            "dispatcher_loop_recovery",
+        }:
             return
         phase_artifact = metadata.phase_artifact
         if phase_artifact is None:
@@ -4986,6 +4991,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return True
         return (
             self._profile.state_transport == "state_dispatcher_map"
+            and detection.dispatcher_shape == "conditional_chain"
             and maturity >= int(ida_hexrays.MMAT_CALLS)
         )
 
@@ -5972,6 +5978,55 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             )
         modifications = filtered_modifications
 
+        state_var_stkoff = int(phase_artifact.state_var_stkoff)
+        use_def_vetoes: list[tuple[RedirectGoto | RedirectBranch, tuple[object, ...]]] = []
+        for modification in modifications:
+            if not isinstance(modification, (RedirectGoto, RedirectBranch)):
+                continue
+            try:
+                violations = check_redirect_severs_use_def(
+                    modification,
+                    mba,
+                    flow_graph,
+                )
+            except Exception:
+                self._logger.debug(
+                    "Residual terminal postprocess use-def check failed for "
+                    "blk[%d] -> blk[%d]",
+                    int(modification.from_serial),
+                    int(modification.new_target),
+                    exc_info=True,
+                )
+                continue
+            real_violations = tuple(
+                violation
+                for violation in violations
+                if int(getattr(violation, "var_stkoff", -1)) != state_var_stkoff
+            )
+            if real_violations:
+                use_def_vetoes.append((modification, real_violations))
+
+        if use_def_vetoes:
+            for modification, violations in use_def_vetoes:
+                self._logger.warning(
+                    "Residual terminal postprocess vetoed redirect "
+                    "blk[%d] -> blk[%d] for non-state use-def severance "
+                    "orphaned_uses=%d details=%s",
+                    int(modification.from_serial),
+                    int(modification.new_target),
+                    len(violations),
+                    _format_use_def_violations(violations),
+                )
+                _emit_use_def_veto_provenance(
+                    mba=mba,
+                    modification=modification,
+                    action="VETO_REDIRECT",
+                    reason_prefix="residual_terminal_postprocess",
+                    target_state_text="unknown",
+                    violations=violations,
+                )
+            return (), ("phase_reconstruction_residual_terminal_use_def_veto",)
+
         mod_counts = Counter(type(mod).__name__ for mod in modifications)
         self._logger.info(
             "Residual terminal postprocess selected %d edit(s): mods=%s "
@@ -6760,6 +6815,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             bool(self._profile.enable_phase_reorder)
             or (
                 self._profile.name == "ollvm_state_map"
+                and detection.dispatcher_shape == "conditional_chain"
                 and os.environ.get("D810_OLLVM_PHASE_REORDER", "").strip() == "1"
             )
         )
@@ -7331,6 +7387,608 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         # yet prove a loop phase strong enough for structural recovery.
         return (), direct_blockers
 
+    def _collect_state_map_loop_recovery_modifications(
+        self,
+        *,
+        mba: ida_hexrays.mba_t,
+        snapshot_flow_graph: FlowGraph,
+        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
+        phase_context: EmulatedDispatcherPhaseContext | None,
+    ) -> tuple[
+        tuple[GraphModification, ...],
+        tuple[str, ...],
+        tuple[EmulatedDispatcherCandidateRecord, ...],
+    ]:
+        """Recover a proven state-map dispatcher loop from recon facts.
+
+        The father-history backend produced candidate records by emulating each
+        dispatcher predecessor.  A state-dispatcher map already has the same
+        target proof as recon facts, but those facts intentionally stay
+        diagnostic for broad lowering.  This adapter consumes them only for the
+        narrow dispatcher-loop-recovery mode, where the semantic phase already
+        has a complete non-fallback DAG and return-carrier preservation remains
+        enforced before any edit is selected.
+        """
+
+        if phase_artifact is None or phase_context is None:
+            return (), (), ()
+        if phase_artifact.state_var_stkoff is None:
+            return (), ("dispatcher_loop_recovery_missing_state_var",), ()
+        artifact_blockers = self._dispatcher_loop_recovery_artifact_blockers(
+            phase_artifact
+        )
+        if artifact_blockers:
+            return (), artifact_blockers, ()
+        root_key = self._phase_reconstruction_root_key(
+            mba=mba,
+            phase_artifact=phase_artifact,
+        )
+        if (
+            root_key is not None
+            and root_key in self._executed_phase_reconstruction_roots
+        ):
+            return (), ("dispatcher_loop_recovery_root_already_consumed",), ()
+        semantic_label_count = len(
+            tuple(getattr(phase_artifact, "semantic_state_labels", ()) or ())
+        )
+        handler_state_count = len(
+            tuple(getattr(phase_artifact, "handler_state_map", ()) or ())
+        )
+        if semantic_label_count <= handler_state_count:
+            return (), ("dispatcher_loop_recovery_no_supplemental_dag_state",), ()
+
+        facts = tuple(
+            fact
+            for fact in getattr(
+                phase_context, "predecessor_dispatcher_target_facts", ()
+            ) or ()
+            if isinstance(fact, PredecessorDispatcherTargetFact)
+            and int(fact.dispatcher_entry_serial)
+            == int(phase_artifact.dispatcher_entry_serial)
+            and fact.transition_provenance_kind
+            in {"state_dag_transition", "state_dag_conditional_transition"}
+        )
+        dag_index = StateDagIndex.from_dag(getattr(phase_context, "dag", None))
+        if not facts and not dag_index.edges:
+            return (), ("dispatcher_loop_recovery_missing_predecessor_facts",), ()
+
+        scc_memberships = self._compute_scc_memberships(snapshot_flow_graph)
+        modifications: list[GraphModification] = []
+        records: list[EmulatedDispatcherCandidateRecord] = []
+        seen_sources: set[int] = set()
+        seen_condition_redirects: set[int] = set()
+        blockers: Counter[str] = Counter()
+
+        def _make_record(
+            *,
+            source: int,
+            target: int,
+            state_signature: tuple[int, ...],
+            reason: str,
+            modification: GraphModification | None = None,
+            raw_side_effect_count: int = 0,
+            safe_side_effect_count: int = 0,
+        ) -> EmulatedDispatcherCandidateRecord:
+            source_scc = scc_memberships.get(source, ())
+            target_scc = scc_memberships.get(target, ())
+            selected_indexes: tuple[int, ...] = ()
+            selected_kinds: tuple[str, ...] = ()
+            selected_summaries: tuple[str, ...] = ()
+            if modification is not None:
+                selected_indexes = (len(modifications),)
+                selected_kinds = (type(modification).__name__,)
+                selected_summaries = (self._summarize_modification(modification),)
+            return EmulatedDispatcherCandidateRecord(
+                dispatcher_entry_serial=int(phase_artifact.dispatcher_entry_serial),
+                father_serial=source,
+                state_signature=state_signature,
+                target_serial=target,
+                source_nsucc=1,
+                raw_side_effect_count=raw_side_effect_count,
+                safe_side_effect_count=safe_side_effect_count,
+                selection_reason=reason,
+                selected_modification_indexes=selected_indexes,
+                selected_modification_kinds=selected_kinds,
+                selected_modification_summaries=selected_summaries,
+                legacy_analogue_kind="redirect_goto",
+                semantically_valid=True,
+                structurally_legacy_equivalent=None,
+                source_scc=source_scc,
+                target_scc=target_scc,
+                cluster_key=(
+                    "state=" + ",".join(str(value) for value in state_signature),
+                    f"target={target}",
+                    "payload=",
+                    "state_dispatcher_map_loop_recovery",
+                    f"source_scc={','.join(str(value) for value in source_scc)}",
+                    f"target_scc={','.join(str(value) for value in target_scc)}",
+                    "source_nsucc=1",
+                ),
+            )
+
+        def _append_recorded_modification(
+            *,
+            source: int,
+            target: int,
+            modification: GraphModification,
+            state_signature: tuple[int, ...],
+            reason: str,
+            raw_side_effect_count: int = 0,
+            safe_side_effect_count: int = 0,
+        ) -> None:
+            records.append(
+                _make_record(
+                    source=source,
+                    target=target,
+                    state_signature=state_signature,
+                    reason=reason,
+                    modification=modification,
+                    raw_side_effect_count=raw_side_effect_count,
+                    safe_side_effect_count=safe_side_effect_count,
+                )
+            )
+            modifications.append(modification)
+
+        def _state_map_target_for_state(state_const: int) -> int | None:
+            normalized_state = int(state_const) & 0xFFFFFFFFFFFFFFFF
+            state_to_handler = {
+                int(state) & 0xFFFFFFFFFFFFFFFF: int(serial)
+                for serial, state in phase_artifact.handler_state_map
+            }
+            exact_target = state_to_handler.get(normalized_state)
+            if exact_target is not None:
+                return exact_target
+            for node in getattr(getattr(phase_context, "dag", None), "nodes", ()) or ():
+                key = getattr(node, "key", None)
+                node_state = getattr(key, "state_const", None)
+                if node_state is None:
+                    continue
+                if (
+                    int(node_state) & 0xFFFFFFFFFFFFFFFF
+                ) != normalized_state:
+                    continue
+                handler = int(getattr(node, "handler_serial", -1))
+                if handler in snapshot_flow_graph.blocks:
+                    return handler
+            point_targets = set(state_to_handler.values())
+            range_targets = tuple(
+                sorted(
+                    {
+                        int(serial)
+                        for serial, _lo, _hi in phase_artifact.handler_range_map
+                        if int(serial) not in point_targets
+                    }
+                )
+            )
+            if len(range_targets) == 1:
+                return int(range_targets[0])
+            return None
+
+        def _dag_edges_for_condition(
+            *,
+            condition_block: int,
+            source_state_const: int | None,
+        ) -> tuple[DagParentEdge, ...]:
+            normalized_source = (
+                None
+                if source_state_const is None
+                else int(source_state_const) & 0xFFFFFFFFFFFFFFFF
+            )
+            matches: list[DagParentEdge] = []
+            seen_keys: set[tuple[int, int | None, int | None, int | None]] = set()
+            for edge in dag_index.edges_from_anchor(condition_block):
+                if edge.target_state is None:
+                    continue
+                state_matches = (
+                    normalized_source is None
+                    or edge.source_state is None
+                    or edge.source_state == normalized_source
+                )
+                if not state_matches:
+                    continue
+                key = (
+                    edge.source_block,
+                    edge.branch_arm,
+                    edge.target_state,
+                    edge.target_entry_anchor,
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                matches.append(edge)
+            return tuple(matches)
+
+        phase_cycle_records: list[EmulatedDispatcherCandidateRecord] = []
+        dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
+        dispatcher_block = snapshot_flow_graph.get_block(dispatcher_entry)
+        dispatcher_predecessors = (
+            tuple(int(pred) for pred in getattr(dispatcher_block, "preds", ()) or ())
+            if dispatcher_block is not None
+            else ()
+        )
+        facts_by_predecessor: dict[int, PredecessorDispatcherTargetFact] = {}
+        for fact in facts:
+            facts_by_predecessor.setdefault(int(fact.predecessor_block_serial), fact)
+
+        for predecessor in dispatcher_predecessors:
+            block = snapshot_flow_graph.get_block(predecessor)
+            if block is None or int(block.nsucc) != 1:
+                continue
+            if int(block.succs[0]) != dispatcher_entry:
+                continue
+            live_block = mba.get_mblock(predecessor)
+            written_state: int | None = None
+            if live_block is not None:
+                try:
+                    written_state = _extract_state_from_block(
+                        live_block,
+                        int(phase_artifact.state_var_stkoff),
+                        mba=mba,
+                    )
+                except Exception:
+                    self._logger.debug(
+                        "State-map loop recovery failed to inspect predecessor blk[%d]",
+                        predecessor,
+                        exc_info=True,
+                    )
+            fact = facts_by_predecessor.get(predecessor)
+            target: int | None = None
+            state_signature: tuple[int, ...] = ()
+            raw_side_effect_count = 0
+            safe_side_effect_count = 0
+            reason = "state_map_predecessor_fact_redirect"
+            if written_state is not None:
+                state = int(written_state) & 0xFFFFFFFFFFFFFFFF
+                target = _state_map_target_for_state(state)
+                state_signature = (state,)
+                raw_side_effect_count = 1
+                safe_side_effect_count = 1
+                reason = "state_map_live_state_write_recovery"
+            elif fact is not None:
+                target = int(fact.target_block_serial)
+                state_signature = (int(fact.state_const),)
+            if target is None or target not in snapshot_flow_graph.blocks:
+                continue
+            phase_cycle_records.append(
+                _make_record(
+                    source=predecessor,
+                    target=int(target),
+                    state_signature=state_signature,
+                    reason=reason,
+                    raw_side_effect_count=raw_side_effect_count,
+                    safe_side_effect_count=safe_side_effect_count,
+                )
+            )
+
+        if phase_cycle_records:
+            phase_cycle = self._build_interval_phase_loop_recovery(
+                mba=mba,
+                phase_artifact=phase_artifact,
+                candidate_records=tuple(phase_cycle_records),
+            )
+            if phase_cycle is not None:
+                return_carrier_blockers = _return_carrier_preservation_blockers(
+                    mba=mba,
+                    flow_graph=snapshot_flow_graph,
+                    modifications=phase_cycle,
+                    phase_context=phase_context,
+                    phase_artifact=phase_artifact,
+                    allow_live_repair=True,
+                )
+                if return_carrier_blockers:
+                    return (), return_carrier_blockers, tuple(phase_cycle_records)
+                self._logger.info(
+                    "DispatcherLoopRecovery selected %d state-map phase-cycle rewrite(s)",
+                    len(phase_cycle),
+                )
+                return (
+                    phase_cycle,
+                    (),
+                    self._annotate_cluster_candidates(tuple(phase_cycle_records)),
+                )
+
+        def _matching_state_arm(
+            *,
+            condition_block: int,
+            state_const: int,
+        ) -> tuple[int, int] | None:
+            block = snapshot_flow_graph.get_block(int(condition_block))
+            if block is None or int(block.nsucc) != 2:
+                return None
+            for succ in tuple(int(serial) for serial in block.succs):
+                succ_block = snapshot_flow_graph.get_block(succ)
+                if succ_block is None or int(succ_block.nsucc) != 1:
+                    continue
+                live_block = mba.get_mblock(succ)
+                if live_block is None:
+                    continue
+                try:
+                    written_state = _extract_state_from_block(
+                        live_block,
+                        int(phase_artifact.state_var_stkoff),
+                        mba=mba,
+                    )
+                except Exception:
+                    self._logger.debug(
+                        "State-map loop recovery failed to inspect arm blk[%d]",
+                        succ,
+                        exc_info=True,
+                    )
+                    continue
+                if written_state is None:
+                    continue
+                if (int(written_state) & 0xFFFFFFFFFFFFFFFF) != (
+                    int(state_const) & 0xFFFFFFFFFFFFFFFF
+                ):
+                    continue
+                return succ, int(succ_block.succs[0])
+            return None
+
+        def _append_dag_edge_state_write_rewrite(edge: DagParentEdge) -> bool:
+            if edge.target_state is None or edge.target_entry_anchor is None:
+                return False
+            target = int(edge.target_entry_anchor)
+            if target not in snapshot_flow_graph.blocks:
+                blockers["dispatcher_loop_recovery_dag_target_missing"] += 1
+                return False
+            dispatcher_entry = int(phase_artifact.dispatcher_entry_serial)
+            for serial in reversed(tuple(int(block) for block in edge.ordered_path)):
+                if serial == int(edge.source_block):
+                    continue
+                if serial in seen_sources:
+                    return True
+                block = snapshot_flow_graph.get_block(serial)
+                if block is None or int(block.nsucc) != 1:
+                    continue
+                old_target = int(block.succs[0])
+                if old_target != dispatcher_entry:
+                    continue
+                live_block = mba.get_mblock(serial)
+                if live_block is None:
+                    continue
+                try:
+                    written_state = _extract_state_from_block(
+                        live_block,
+                        int(phase_artifact.state_var_stkoff),
+                        mba=mba,
+                    )
+                except Exception:
+                    self._logger.debug(
+                        "State-map loop recovery failed to inspect DAG path blk[%d]",
+                        serial,
+                        exc_info=True,
+                    )
+                    continue
+                if written_state is None:
+                    continue
+                if (int(written_state) & 0xFFFFFFFFFFFFFFFF) != int(edge.target_state):
+                    continue
+                try:
+                    state_write_rewrite = self._build_live_state_write_recovery(
+                        mba=mba,
+                        father_serial=serial,
+                        dispatcher_entry_serial=old_target,
+                        target_serial=target,
+                        expected_state=int(edge.target_state),
+                        state_var_stkoff=int(phase_artifact.state_var_stkoff),
+                    )
+                except Exception:
+                    self._logger.debug(
+                        "State-map loop recovery failed to build DAG-edge rewrite for blk[%d]",
+                        serial,
+                        exc_info=True,
+                    )
+                    state_write_rewrite = None
+                if state_write_rewrite is None:
+                    blockers["dispatcher_loop_recovery_dag_state_write_unresolved"] += 1
+                    return False
+                seen_sources.add(serial)
+                records.append(
+                    _make_record(
+                        source=serial,
+                        target=target,
+                        state_signature=(int(edge.target_state),),
+                        reason="state_map_dag_edge_state_write_recovery",
+                        modification=state_write_rewrite[0],
+                        raw_side_effect_count=1,
+                        safe_side_effect_count=1,
+                    )
+                )
+                modifications.extend(state_write_rewrite)
+                return True
+
+            source_block = snapshot_flow_graph.get_block(int(edge.source_block))
+            if (
+                source_block is None
+                or int(source_block.nsucc) != 2
+                or edge.branch_arm is None
+                or int(edge.branch_arm) not in {0, 1}
+            ):
+                return False
+            source_successors = tuple(int(succ) for succ in source_block.succs)
+            if source_successors[int(edge.branch_arm)] != dispatcher_entry:
+                return False
+            if int(edge.source_block) in seen_condition_redirects:
+                return True
+            branch_redirect = RedirectBranch(
+                from_serial=int(edge.source_block),
+                old_target=dispatcher_entry,
+                new_target=target,
+            )
+            _append_recorded_modification(
+                source=int(edge.source_block),
+                target=target,
+                modification=branch_redirect,
+                state_signature=(int(edge.target_state),),
+                reason="state_map_dag_edge_dispatcher_arm_redirect",
+            )
+            seen_condition_redirects.add(int(edge.source_block))
+            return True
+
+        for edge in dag_index.edges:
+            if edge.proof_kind not in {"CONDITIONAL_TRANSITION", "TRANSITION"}:
+                continue
+            _append_dag_edge_state_write_rewrite(edge)
+
+        for fact in facts:
+            target = int(fact.target_block_serial)
+            if target not in snapshot_flow_graph.blocks:
+                blockers["dispatcher_loop_recovery_target_missing"] += 1
+                continue
+            predecessor = int(fact.predecessor_block_serial)
+            state_signature = (int(fact.state_const),)
+            if fact.transition_provenance_kind == "state_dag_transition":
+                block = snapshot_flow_graph.get_block(predecessor)
+                if block is None:
+                    blockers["dispatcher_loop_recovery_predecessor_missing"] += 1
+                    continue
+                if int(block.nsucc) != 1:
+                    blockers["dispatcher_loop_recovery_requires_one_way_father"] += 1
+                    continue
+                old_target = int(block.succs[0])
+                if old_target != int(phase_artifact.dispatcher_entry_serial):
+                    blockers["dispatcher_loop_recovery_predecessor_not_dispatcher_edge"] += 1
+                    continue
+                if old_target == target:
+                    continue
+                if predecessor in seen_sources:
+                    continue
+                seen_sources.add(predecessor)
+                modification = RedirectGoto(
+                    from_serial=predecessor,
+                    old_target=old_target,
+                    new_target=target,
+                )
+                _append_recorded_modification(
+                    source=predecessor,
+                    target=target,
+                    modification=modification,
+                    state_signature=state_signature,
+                    reason="state_map_predecessor_fact_redirect",
+                )
+                continue
+
+            arm_edge = _matching_state_arm(
+                condition_block=predecessor,
+                state_const=int(fact.state_const),
+            )
+            if arm_edge is None:
+                blockers["dispatcher_loop_recovery_conditional_arm_unresolved"] += 1
+                continue
+            arm_serial, old_target = arm_edge
+            if old_target == target:
+                continue
+            if arm_serial in seen_sources:
+                continue
+            seen_sources.add(arm_serial)
+            try:
+                state_write_rewrite = self._build_live_state_write_recovery(
+                    mba=mba,
+                    father_serial=arm_serial,
+                    dispatcher_entry_serial=old_target,
+                    target_serial=target,
+                    expected_state=int(fact.state_const),
+                    state_var_stkoff=int(phase_artifact.state_var_stkoff),
+                )
+            except Exception:
+                self._logger.debug(
+                    "State-map loop recovery failed to build state-write recovery for blk[%d]",
+                    arm_serial,
+                    exc_info=True,
+                )
+                state_write_rewrite = None
+            if state_write_rewrite is not None:
+                records.append(
+                    _make_record(
+                        source=arm_serial,
+                        target=target,
+                        state_signature=state_signature,
+                        reason="state_map_conditional_arm_state_write_recovery",
+                        modification=state_write_rewrite[0],
+                        raw_side_effect_count=1,
+                        safe_side_effect_count=1,
+                    )
+                )
+                modifications.extend(state_write_rewrite)
+            else:
+                modification = RedirectGoto(
+                    from_serial=arm_serial,
+                    old_target=old_target,
+                    new_target=target,
+                )
+                _append_recorded_modification(
+                    source=arm_serial,
+                    target=target,
+                    modification=modification,
+                    state_signature=state_signature,
+                    reason="state_map_conditional_arm_redirect",
+                )
+
+            if predecessor in seen_condition_redirects:
+                continue
+            condition_block = snapshot_flow_graph.get_block(predecessor)
+            if (
+                condition_block is None
+                or int(condition_block.nsucc) != 2
+                or int(phase_artifact.dispatcher_entry_serial)
+                not in tuple(int(succ) for succ in condition_block.succs)
+            ):
+                continue
+            sibling_edges = tuple(
+                edge
+                for edge in _dag_edges_for_condition(
+                    condition_block=predecessor,
+                    source_state_const=fact.source_state_const,
+                )
+                if edge.target_state != (int(fact.state_const) & 0xFFFFFFFFFFFFFFFF)
+            )
+            if not sibling_edges:
+                continue
+            sibling_edge = sibling_edges[0]
+            sibling_target = sibling_edge.target_entry_anchor
+            if sibling_target is None:
+                sibling_target = _state_map_target_for_state(int(sibling_edge.target_state))
+            if sibling_target is None or sibling_target not in snapshot_flow_graph.blocks:
+                continue
+            if sibling_target == int(phase_artifact.dispatcher_entry_serial):
+                continue
+            branch_redirect = RedirectBranch(
+                from_serial=predecessor,
+                old_target=int(phase_artifact.dispatcher_entry_serial),
+                new_target=int(sibling_target),
+            )
+            _append_recorded_modification(
+                source=predecessor,
+                target=int(sibling_target),
+                modification=branch_redirect,
+                state_signature=(int(sibling_edge.target_state),),
+                reason="state_map_conditional_dispatcher_arm_redirect",
+            )
+            seen_condition_redirects.add(predecessor)
+
+        if not modifications:
+            if blockers:
+                return (), tuple(sorted(blockers)), ()
+            return (), ("dispatcher_loop_recovery_no_state_map_edges",), ()
+
+        batch = tuple(modifications)
+        return_carrier_blockers = _return_carrier_preservation_blockers(
+            mba=mba,
+            flow_graph=snapshot_flow_graph,
+            modifications=batch,
+            phase_context=phase_context,
+            phase_artifact=phase_artifact,
+            allow_live_repair=True,
+        )
+        if return_carrier_blockers:
+            return (), return_carrier_blockers, tuple(records)
+
+        self._logger.info(
+            "DispatcherLoopRecovery selected %d state-map predecessor-fact rewrite(s)",
+            len(batch),
+        )
+        return batch, (), self._annotate_cluster_candidates(tuple(records))
+
     def _collect_tigress_switch_transition_modifications(
         self,
         *,
@@ -7890,7 +8548,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if blk is None:
             return None
 
-        matched_ea: int | None = None
+        matched_insn = None
         insn = blk.head
         while insn is not None:
             if (
@@ -7904,21 +8562,51 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 and int(getattr(getattr(getattr(insn, "l", None), "nnn", None), "value", -1))
                 == expected_state
             ):
-                matched_ea = int(insn.ea)
+                matched_insn = insn
                 break
             insn = insn.next
 
-        if matched_ea is None:
+        if matched_insn is None:
             return None
 
-        return (
-            ZeroStateWrite(block_serial=father_serial, insn_ea=matched_ea),
-            RedirectGoto(
-                from_serial=father_serial,
-                old_target=dispatcher_entry_serial,
-                new_target=target_serial,
-            ),
+        matched_snapshot = capture_insn_snapshot(matched_insn)
+
+        target_blk = mba.get_mblock(target_serial)
+        if target_blk is None:
+            return None
+        target_tail = getattr(target_blk, "tail", None)
+        target_is_conditional = bool(
+            target_tail is not None and ida_hexrays.is_mcode_jcond(target_tail.opcode)
         )
+        target_conditional_target = None
+        target_fallthrough_target = None
+        if target_is_conditional:
+            target_dest = getattr(getattr(target_tail, "d", None), "b", None)
+            if target_dest is not None:
+                target_conditional_target = int(target_dest)
+            if target_blk.nextb is not None:
+                target_fallthrough_target = int(target_blk.nextb.serial)
+
+        decision = plan_dispatcher_predecessor_rewrite(
+            DispatcherPredecessorRewriteInput(
+                source_serial=int(father_serial),
+                source_nsucc=int(blk.nsucc()),
+                source_old_target=int(dispatcher_entry_serial),
+                source_is_conditional=False,
+                target_serial=int(target_serial),
+                target_nsucc=int(target_blk.nsucc()),
+                target_is_conditional=target_is_conditional,
+                target_conditional_target=target_conditional_target,
+                target_fallthrough_target=target_fallthrough_target,
+                safe_copy_instructions=(matched_snapshot,),
+                raw_side_effect_count=1,
+                safe_side_effect_count=1,
+                defer_side_effects=False,
+            )
+        )
+        if decision.blocker is not None:
+            return None
+        return decision.modifications
 
     def _format_snapshot_mop(self, mop: object | None) -> str:
         if mop is None:
@@ -8755,6 +9443,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if (
             not fallback_modifications
             and not fallback_blockers
+            and not phase_reconstruction_modifications
             and not detection.collector_dispatchers
             and mba.maturity >= ida_hexrays.MMAT_GLBOPT1
         ):
@@ -8797,6 +9486,23 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                     candidate_records=candidate_records,
                 )
             )
+        elif (
+            mba.maturity >= ida_hexrays.MMAT_GLBOPT1
+            and self._profile.state_transport == "state_dispatcher_map"
+            and detection.dispatcher_shape == "conditional_chain"
+        ):
+            (
+                loop_recovery_modifications,
+                loop_recovery_blockers,
+                loop_recovery_records,
+            ) = self._collect_state_map_loop_recovery_modifications(
+                mba=mba,
+                snapshot_flow_graph=flow_graph,
+                phase_artifact=phase_artifact,
+                phase_context=phase_context,
+            )
+            if loop_recovery_records:
+                candidate_records = loop_recovery_records
         semantic_carrier_modifications: tuple[GraphModification, ...] = ()
         if mba.maturity >= ida_hexrays.MMAT_GLBOPT1:
             carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
@@ -8815,6 +9521,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_lowering_mode = detection.lowering_mode
         selected_blockers = fallback_blockers
         selected_partial_rewrite_reasons: tuple[str, ...] = ()
+        state_map_loop_recovery_deferred = (
+            self._profile.state_transport == "state_dispatcher_map"
+            and mba.maturity < ida_hexrays.MMAT_GLBOPT1
+            and phase_artifact is not None
+            and phase_artifact.semantic_reference_variant == "semantic_reference_like"
+            and phase_artifact.state_var_stkoff is not None
+            and bool(getattr(phase_context, "predecessor_dispatcher_target_facts", ()) or ())
+            and len(tuple(getattr(phase_artifact, "semantic_state_labels", ()) or ()))
+            > len(tuple(getattr(phase_artifact, "handler_state_map", ()) or ()))
+        )
         switch_transition_partial_allowed = (
             self._profile.allow_incomplete_switch_transition_facts
             and _switch_transition_blockers_allow_partial_lowering(
@@ -8838,7 +9554,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 selected_partial_rewrite_reasons = tuple(
                     sorted(set(switch_transition_blockers))
                 )
-        elif phase_reconstruction_modifications and not phase_reconstruction_blockers:
+        elif (
+            phase_reconstruction_modifications
+            and not phase_reconstruction_blockers
+            and not state_map_loop_recovery_deferred
+        ):
             if (
                 fallback_modifications
                 and not fallback_blockers
@@ -8868,6 +9588,11 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 )
         elif not selected_modifications and phase_reconstruction_blockers:
             selected_blockers = phase_reconstruction_blockers
+        elif (
+            not selected_modifications
+            and state_map_loop_recovery_deferred
+        ):
+            selected_blockers = ("state_map_loop_recovery_deferred_to_glbopt1",)
         elif not selected_modifications and state_dag_blockers:
             selected_blockers = state_dag_blockers
         elif not selected_modifications and switch_transition_blockers:
@@ -8915,7 +9640,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             collector_dispatchers=detection.collector_dispatcher_entries,
             planning_ready=planning_ready,
             planning_blocker=planning_blocker,
-            candidate_count=len(fallback_modifications),
+            candidate_count=(
+                len(candidate_records) if candidate_records else len(fallback_modifications)
+            ),
             rejected_fathers=len(fallback_blockers),
             candidate_kinds=tuple(type(mod).__name__ for mod in selected_modifications),
             rejection_reasons=tuple(sorted(set(selected_blockers))),
