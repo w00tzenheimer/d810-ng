@@ -311,6 +311,7 @@ def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
     assert [strategy.name for strategy in family.strategies] == [
         "fake_jump",
         "single_iteration",
+        "guarded_state_machine",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
         "tail_goto_merge",
@@ -1004,6 +1005,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.strategy_names == (
         "fake_jump",
         "single_iteration",
+        "guarded_state_machine",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
         "tail_goto_merge",
@@ -1018,6 +1020,8 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.bad_while_loop_follow_up == 1
     assert metadata.collected_tail_goto_merges == 1
     assert metadata.selected_tail_goto_merges == 1
+    assert metadata.collected_guarded_state_machine_fixes == 0
+    assert metadata.selected_guarded_state_machine_fixes == 0
     assert metadata.planning_ready is True
 
     fragment = BadWhileLoopStrategy().plan(snapshot)
