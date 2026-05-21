@@ -1,3 +1,7 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
 # Prevent hook-layer regressions where hexrays hooks directly import optimizer
 # runtime modules. Wiring must go through manager composition/injection.
 

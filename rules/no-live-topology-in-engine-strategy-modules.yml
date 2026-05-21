@@ -1,3 +1,7 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
 # Engine strategies should consume snapshots/backends, not probe live mba_t.
 
 id: no-live-topology-in-engine-strategy-modules
@@ -9,13 +13,6 @@ files:
   - "src/d810/optimizers/microcode/flow/flattening/strategies/**/*.py"
   - "src/d810/optimizers/microcode/flow/flattening/cleanup_backend.py"
   - "src/d810/optimizers/microcode/flow/flattening/cleanup_family.py"
-
-ignores:
-  # Existing live collectors/guards. New strategy files should use backend
-  # adapters or FlowGraph snapshots instead of adding direct topology probes.
-  - "src/d810/optimizers/microcode/flow/flattening/cleanup_family.py"
-  - "src/d810/optimizers/microcode/flow/flattening/engine/return_carrier_fact_guard.py"
-  - "src/d810/optimizers/microcode/flow/flattening/engine/terminal_byte_emit_fact_guard.py"
 
 message: |
   Engine strategy modules must not probe live MBA topology directly.

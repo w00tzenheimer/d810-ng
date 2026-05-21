@@ -1,3 +1,7 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
 # Keep optimizer/runtime strategy code from becoming diagnostic storage/query code.
 #
 # Optimizers may publish observations through domain facades. SQLite diagnostic

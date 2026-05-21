@@ -412,6 +412,7 @@ class TransactionalExecutor:
                 mba=self.mba,
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
+                flow_graph=pre_cfg,
                 stale_hazard_override_keys=stale_hazard_override_keys,
                 reject_carrier_writer_bypass=(
                     fragment.strategy_name == "dispatcher_loop_recovery"
@@ -443,6 +444,7 @@ class TransactionalExecutor:
                 mba=self.mba,
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
+                flow_graph=pre_cfg,
                 dag_frontier_override_keys=(
                     terminal_byte_emit_dag_frontier_overrides
                 ),

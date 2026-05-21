@@ -1,3 +1,7 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
 # Detect isinstance() with concrete classes that may break on hot reload
 # Use @runtime_checkable Protocol instead for structural typing
 #

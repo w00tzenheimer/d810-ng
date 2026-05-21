@@ -1,3 +1,7 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
 # Hex-Rays materialization must queue through DeferredGraphModifier.
 #
 # The central mutation backend owns live mba_t/mblock_t rewrites, bookkeeping,

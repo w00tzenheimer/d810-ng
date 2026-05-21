@@ -1,6 +1,7 @@
 """Tests for the executor return-carrier fact guard."""
 from __future__ import annotations
 
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine import return_carrier_fact_guard
 from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
@@ -9,17 +10,27 @@ from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard 
 from d810.recon.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView
 
 
-class _FakeBlock:
-    def __init__(self, succs: tuple[int, ...]) -> None:
-        self.succset = succs
-
-
-class _FakeMba:
-    def __init__(self, succs_by_block: dict[int, tuple[int, ...]]) -> None:
-        self._succs_by_block = succs_by_block
-
-    def get_mblock(self, serial: int) -> _FakeBlock:
-        return _FakeBlock(self._succs_by_block.get(int(serial), ()))
+def _flow_graph(succs_by_block: dict[int, tuple[int, ...]]) -> FlowGraph:
+    serials = set(succs_by_block)
+    for succs in succs_by_block.values():
+        serials.update(int(succ) for succ in succs)
+    preds_by_block = {int(serial): set() for serial in serials}
+    for serial, succs in succs_by_block.items():
+        for succ in succs:
+            preds_by_block.setdefault(int(succ), set()).add(int(serial))
+    blocks = {
+        int(serial): BlockSnapshot(
+            serial=int(serial),
+            block_type=0,
+            succs=tuple(int(succ) for succ in succs_by_block.get(int(serial), ())),
+            preds=tuple(sorted(preds_by_block.get(int(serial), ()))),
+            flags=0,
+            start_ea=int(serial),
+            insn_snapshots=(),
+        )
+        for serial in serials
+    }
+    return FlowGraph(blocks=blocks, entry_serial=min(serials or {0}), func_ea=0)
 
 
 def _return_carrier_fact(
@@ -190,7 +201,8 @@ def test_stale_hazard_on_immediate_successor_rejects_redirect(monkeypatch) -> No
 
     filtered, rejections = filter_return_carrier_fact_redirects(
         [RedirectGoto(from_serial=132, old_target=2, new_target=93)],
-        mba=_FakeMba({93: (94, 95)}),
+        mba=object(),
+        flow_graph=_flow_graph({93: (94, 95)}),
         fact_view=view,
         dispatcher_serial=2,
     )
@@ -222,7 +234,8 @@ def test_dag_frontier_override_bypasses_only_matching_stale_hazard(monkeypatch) 
 
     filtered, rejections = filter_return_carrier_fact_redirects(
         [redirect],
-        mba=_FakeMba({93: (94, 95)}),
+        mba=object(),
+        flow_graph=_flow_graph({93: (94, 95)}),
         fact_view=view,
         dispatcher_serial=2,
         stale_hazard_override_keys=frozenset({(132, 2, 93)}),
