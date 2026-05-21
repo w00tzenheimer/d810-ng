@@ -123,25 +123,18 @@ def _return_writer_sites_for_block(
     return tuple(sites)
 
 
-def _candidate_target_blocks(mba: Any, target_block: int) -> tuple[int, ...]:
-    candidates = [target_block]
-    try:
-        blk = mba.get_mblock(target_block)
-    except Exception:
-        blk = None
-    if blk is None:
+def _candidate_target_blocks(flow_graph: Any | None, target_block: int) -> tuple[int, ...]:
+    candidates = [int(target_block)]
+    if flow_graph is None:
         return tuple(candidates)
     try:
-        for succ in getattr(blk, "succset", ()):
-            succ_int = int(succ)
-            if succ_int not in candidates:
-                candidates.append(succ_int)
+        successors = tuple(int(succ) for succ in flow_graph.successors(target_block))
     except Exception:
-        logger.debug(
-            "RETURN_CARRIER_FACT_GUARD: successor scan failed for blk[%d]",
-            target_block,
-            exc_info=True,
-        )
+        block = getattr(flow_graph, "get_block", lambda _serial: None)(target_block)
+        successors = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+    for succ in successors:
+        if succ not in candidates:
+            candidates.append(succ)
     return tuple(candidates)
 
 
@@ -151,6 +144,7 @@ def filter_return_carrier_fact_redirects(
     mba: Any,
     fact_view: Any | None,
     dispatcher_serial: int,
+    flow_graph: Any | None = None,
     stale_hazard_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
     reject_carrier_writer_bypass: bool = False,
     insn_kind_classifier: InsnKindClassifier | None = None,
@@ -184,7 +178,7 @@ def filter_return_carrier_fact_redirects(
         candidate_sites: list[tuple[int, str, Any]] = []
         bypass_sites: list[tuple[int, str, Any]] = []
         seen_bypass_sites: set[tuple[int, str, str]] = set()
-        for candidate_target in _candidate_target_blocks(mba, target):
+        for candidate_target in _candidate_target_blocks(flow_graph, target):
             for fact_status, site in _sites_for_block(fact_view, candidate_target):
                 candidate_sites.append((candidate_target, fact_status, site))
                 fact_id = str(getattr(site, "fact_id", "<unknown>"))

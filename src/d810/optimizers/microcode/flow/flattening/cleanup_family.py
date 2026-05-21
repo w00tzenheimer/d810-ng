@@ -70,6 +70,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import
     extract_tail_goto_merge_candidates,
     serialize_tail_goto_merge_candidates,
 )
+from d810.recon.flow.graph_reachability import compute_reachable_blocks
 
 family_logger = getLogger("D810.unflat.cleanup_family")
 
@@ -165,7 +166,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         flow_graph = self._attach_cleanup_metadata(flow_graph, detection)
         return AnalysisSnapshot(
             mba=mba,
-            reachability=self.compute_reachability_info(mba),
+            reachability=self.compute_reachability_info(flow_graph),
             maturity=int(getattr(mba, "maturity", 0) or 0),
             flow_graph=flow_graph,
             state_summary=StateModelSummary(
@@ -418,22 +419,13 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata=metadata,
         )
 
-    def compute_reachability_info(self, mba: object) -> ReachabilityInfo:
-        qty = int(getattr(mba, "qty", 0) or 0)
-        visited: set[int] = set()
-        queue = [0]
-        while queue:
-            serial = queue.pop()
-            if serial in visited or serial < 0 or serial >= qty:
-                continue
-            visited.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is None:
-                continue
-            for index in range(blk.nsucc()):
-                queue.append(int(blk.succ(index)))
+    def compute_reachability_info(self, flow_graph: FlowGraph) -> ReachabilityInfo:
+        reachable = compute_reachable_blocks(
+            flow_graph,
+            start_serial=flow_graph.entry_serial,
+        )
         return ReachabilityInfo(
-            entry_serial=0,
-            reachable_blocks=frozenset(visited),
-            total_blocks=qty,
+            entry_serial=int(flow_graph.entry_serial),
+            reachable_blocks=frozenset(reachable or ()),
+            total_blocks=int(flow_graph.block_count),
         )

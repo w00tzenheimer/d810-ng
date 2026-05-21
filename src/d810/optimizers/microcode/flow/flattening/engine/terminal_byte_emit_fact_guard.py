@@ -38,12 +38,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.cfg.graph_modification import (
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringSite,
     GraphModification,
-    PrivateTerminalSuffix,
-    PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
 )
@@ -148,15 +143,25 @@ def _candidate_pair(mod: GraphModification) -> tuple[int, int, int] | None:
         return None
 
 
-def _iter_block_insns(mba: Any, block_serial: int):
-    try:
-        blk = mba.get_mblock(int(block_serial))
-    except Exception:
+def _iter_block_insns(flow_graph: Any | None, block_serial: int):
+    if flow_graph is None:
         return
-    insn = getattr(blk, "head", None)
-    while insn is not None:
-        yield insn
-        insn = getattr(insn, "next", None)
+    get_block = getattr(flow_graph, "get_block", None)
+    block = get_block(int(block_serial)) if callable(get_block) else None
+    if block is None:
+        return
+    iter_insns = getattr(block, "iter_insns", None)
+    if callable(iter_insns):
+        yield from iter_insns()
+        return
+    yield from getattr(block, "insn_snapshots", ()) or ()
+
+
+def _insn_slot(insn: Any, slot_name: str) -> Any:
+    for name, operand in getattr(insn, "operand_slots", ()) or ():
+        if name == slot_name:
+            return operand
+    return getattr(insn, slot_name, None)
 
 
 def _stkoff(mop: Any) -> int | None:
@@ -202,8 +207,8 @@ def _mop_text(mop: Any) -> str:
 def _mov_const_to_stack_slot(insn: Any) -> int | None:
     if getattr(insn, "opcode", None) != int(ida_hexrays.m_mov):
         return None
-    src = getattr(insn, "l", None)
-    dst = getattr(insn, "d", None)
+    src = _insn_slot(insn, "l")
+    dst = _insn_slot(insn, "d")
     if _const_value(src) is None:
         return None
     return _stkoff(dst)
@@ -212,9 +217,9 @@ def _mov_const_to_stack_slot(insn: Any) -> int | None:
 def _xdu_state_to_stack_slot(insn: Any, *, state_var_token: str) -> int | None:
     if getattr(insn, "opcode", None) != int(ida_hexrays.m_xdu):
         return None
-    src = getattr(insn, "l", None)
+    src = _insn_slot(insn, "l")
     src_stkoff = _stkoff(src)
-    dst_stkoff = _stkoff(getattr(insn, "d", None))
+    dst_stkoff = _stkoff(_insn_slot(insn, "d"))
     if src_stkoff is None or dst_stkoff is None:
         return None
     src_token = f"{src_stkoff:x}".lower()
@@ -227,8 +232,8 @@ def _xdu_state_to_stack_slot(insn: Any, *, state_var_token: str) -> int | None:
     return dst_stkoff
 
 
-def _source_state_return_slot(mba: Any, source_block: int) -> int | None:
-    for insn in _iter_block_insns(mba, source_block):
+def _source_state_return_slot(flow_graph: Any | None, source_block: int) -> int | None:
+    for insn in _iter_block_insns(flow_graph, source_block):
         slot = _xdu_state_to_stack_slot(insn, state_var_token=_STATE_VAR_REF_TOKEN)
         if slot is not None:
             return slot
@@ -236,7 +241,7 @@ def _source_state_return_slot(mba: Any, source_block: int) -> int | None:
 
 
 def _constant_terminal_return_materializer_for_successor(
-    mba: Any,
+    flow_graph: Any | None,
     *,
     old_target: int,
     source_block: int,
@@ -251,13 +256,17 @@ def _constant_terminal_return_materializer_for_successor(
     then jumps to the same suffix.  When that sibling is unique, it is the
     safe target for the zero-residual artifact path.
     """
-    return_slot = _source_state_return_slot(mba, source_block)
+    if flow_graph is None:
+        return None
+    return_slot = _source_state_return_slot(flow_graph, source_block)
 
     try:
-        suffix_blk = mba.get_mblock(int(old_target))
+        preds = tuple(int(pred) for pred in flow_graph.predecessors(int(old_target)))
     except Exception:
-        return None
-    preds = tuple(int(pred) for pred in getattr(suffix_blk, "predset", ()) or ())
+        suffix_block = getattr(flow_graph, "get_block", lambda _serial: None)(
+            int(old_target)
+        )
+        preds = tuple(int(pred) for pred in getattr(suffix_block, "preds", ()) or ())
 
     matching_slot_candidates: list[int] = []
     constant_candidates: list[int] = []
@@ -265,13 +274,13 @@ def _constant_terminal_return_materializer_for_successor(
         if pred == int(source_block):
             continue
         try:
-            pred_blk = mba.get_mblock(pred)
+            succs = tuple(int(succ) for succ in flow_graph.successors(pred))
         except Exception:
-            continue
-        succs = tuple(int(succ) for succ in getattr(pred_blk, "succset", ()) or ())
+            pred_block = getattr(flow_graph, "get_block", lambda _serial: None)(pred)
+            succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()) or ())
         if int(old_target) not in succs:
             continue
-        for insn in _iter_block_insns(mba, pred):
+        for insn in _iter_block_insns(flow_graph, pred):
             const_slot = _mov_const_to_stack_slot(insn)
             if const_slot is None:
                 continue
@@ -286,21 +295,6 @@ def _constant_terminal_return_materializer_for_successor(
     if len(unique) != 1:
         return None
     return int(unique[0])
-
-
-def _literal_return_const_for_materializer(mba: Any, materializer_block: int) -> int | None:
-    """Return the literal written by a constant-return materializer block."""
-    for insn in _iter_block_insns(mba, materializer_block):
-        if getattr(insn, "opcode", None) != int(ida_hexrays.m_mov):
-            continue
-        const_value = _const_value(getattr(insn, "l", None))
-        if const_value is None:
-            continue
-        dst = getattr(insn, "d", None)
-        if _stkoff(dst) is None and getattr(dst, "t", None) != int(ida_hexrays.mop_r):
-            continue
-        return int(const_value)
-    return None
 
 
 def _replacement_redirect(
@@ -321,194 +315,6 @@ def _replacement_redirect(
             new_target=int(replacement_target),
         )
     return mod
-
-
-def _private_suffix_for_anchor(
-    modifications: list[GraphModification],
-    *,
-    anchor_serial: int,
-    shared_entry_serial: int,
-) -> tuple[int, tuple[int, ...]] | None:
-    for mod in modifications:
-        if isinstance(mod, PrivateTerminalSuffix):
-            if (
-                int(mod.anchor_serial) == int(anchor_serial)
-                and int(mod.shared_entry_serial) == int(shared_entry_serial)
-            ):
-                return int(mod.return_block_serial), tuple(
-                    int(serial) for serial in mod.suffix_serials
-                )
-        if isinstance(mod, PrivateTerminalSuffixGroup):
-            anchors = {int(anchor) for anchor in mod.anchors}
-            if (
-                int(anchor_serial) in anchors
-                and int(mod.shared_entry_serial) == int(shared_entry_serial)
-            ):
-                return int(mod.return_block_serial), tuple(
-                    int(serial) for serial in mod.suffix_serials
-                )
-    return None
-
-
-def _block_nsucc(block: Any) -> int | None:
-    nsucc = getattr(block, "nsucc", None)
-    if callable(nsucc):
-        try:
-            return int(nsucc())
-        except Exception:
-            return None
-    if nsucc is not None:
-        try:
-            return int(nsucc)
-        except (TypeError, ValueError):
-            return None
-    succset = getattr(block, "succset", None)
-    if succset is not None:
-        try:
-            return len(tuple(succset))
-        except TypeError:
-            return None
-    return None
-
-
-def _block_successors(block: Any) -> tuple[int, ...]:
-    nsucc = _block_nsucc(block)
-    succ = getattr(block, "succ", None)
-    if callable(succ) and nsucc is not None:
-        values: list[int] = []
-        for idx in range(max(0, nsucc)):
-            try:
-                values.append(int(succ(idx)))
-            except Exception:
-                return ()
-        return tuple(values)
-    succset = getattr(block, "succset", None)
-    if succset is not None:
-        try:
-            return tuple(int(serial) for serial in succset)
-        except TypeError:
-            return ()
-    return ()
-
-
-def _live_terminal_suffix_for_entry(
-    mba: Any,
-    *,
-    shared_entry_serial: int,
-) -> tuple[int, tuple[int, ...]] | None:
-    suffix: list[int] = []
-    seen: set[int] = set()
-    current = int(shared_entry_serial)
-    for _ in range(8):
-        if current in seen:
-            return None
-        seen.add(current)
-        try:
-            block = mba.get_mblock(current)
-        except Exception:
-            return None
-        if block is None:
-            return None
-        suffix.append(current)
-        nsucc = _block_nsucc(block)
-        if nsucc == 0:
-            return current, tuple(suffix)
-        if nsucc != 1:
-            return None
-        successors = _block_successors(block)
-        if len(successors) != 1:
-            return None
-        current = successors[0]
-    return None
-
-
-def _direct_lowering_for_private_materializer(
-    modifications: list[GraphModification],
-    *,
-    mba: Any,
-    source_block: int,
-    old_target: int,
-    replacement_target: int,
-) -> DirectTerminalLoweringGroup | None:
-    suffix = _private_suffix_for_anchor(
-        modifications,
-        anchor_serial=int(replacement_target),
-        shared_entry_serial=int(old_target),
-    )
-    if suffix is None:
-        suffix = _live_terminal_suffix_for_entry(
-            mba,
-            shared_entry_serial=int(old_target),
-        )
-    if suffix is None:
-        return None
-    return_block, suffix_serials = suffix
-    const_value = _literal_return_const_for_materializer(mba, int(replacement_target))
-    if const_value is not None:
-        return DirectTerminalLoweringGroup(
-            shared_entry_serial=int(old_target),
-            return_block_serial=int(return_block),
-            suffix_serials=suffix_serials,
-            sites=(
-                DirectTerminalLoweringSite(
-                    anchor_serial=int(source_block),
-                    kind=DirectTerminalLoweringKind.RETURN_CONST,
-                    const_value=int(const_value),
-                ),
-            ),
-            reason="terminal_zero_guard_constant_return",
-        )
-
-    materializer_serials = tuple(
-        dict.fromkeys((int(replacement_target), *tuple(suffix_serials[:-1])))
-    )
-    if not materializer_serials:
-        return None
-    return DirectTerminalLoweringGroup(
-        shared_entry_serial=int(old_target),
-        return_block_serial=int(return_block),
-        suffix_serials=suffix_serials,
-        sites=(
-            DirectTerminalLoweringSite(
-                anchor_serial=int(source_block),
-                kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
-                materializer_serials=materializer_serials,
-            ),
-        ),
-        reason="terminal_zero_guard_constant_materializer",
-    )
-
-
-def _direct_lowering_site_anchors(
-    modifications: list[GraphModification],
-) -> set[int]:
-    anchors: set[int] = set()
-    for mod in modifications:
-        if not isinstance(mod, DirectTerminalLoweringGroup):
-            continue
-        for site in mod.sites:
-            anchors.add(int(site.anchor_serial))
-    return anchors
-
-
-def _shared_entry_for_protected_non_carrier_fact(fact: Any) -> int | None:
-    try:
-        writer = int(getattr(fact, "writer_block"))
-    except (TypeError, ValueError):
-        return None
-    raw_path = getattr(fact, "walk_path", ()) or ()
-    try:
-        path = tuple(int(serial) for serial in raw_path)
-    except (TypeError, ValueError):
-        return None
-    if len(path) < 2:
-        return None
-    for idx, serial in enumerate(path):
-        if serial == writer:
-            if idx <= 0:
-                return None
-            return int(path[idx - 1])
-    return None
 
 
 def append_protected_non_carrier_return_writer_direct_lowerings(
@@ -550,6 +356,7 @@ def filter_terminal_byte_emit_fact_redirects(
     mba: Any,
     fact_view: Any | None,
     dispatcher_serial: int,
+    flow_graph: Any | None = None,
     dag_frontier_override_keys: frozenset[tuple[int, int, int]] = frozenset(),
     insn_kind_classifier: InsnKindClassifier | None = None,
     operand_kind_classifier: OperandKindClassifier | None = None,
@@ -613,7 +420,7 @@ def filter_terminal_byte_emit_fact_redirects(
             byte_index = _byte_index(site)
             upstream_ea = _byte_emit_source_ea(site)
             replacement_target = _constant_terminal_return_materializer_for_successor(
-                mba,
+                flow_graph,
                 old_target=old_target,
                 source_block=source,
             )

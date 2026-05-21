@@ -360,7 +360,6 @@ class SimpleFlatteningCleanupBackend(Protocol):
         """Return live cleanup candidates for one MBA."""
         ...
 
-
 class LiveSimpleFlatteningCleanupBackend:
     """Default IDA-backed collector for simple cleanup evidence."""
 

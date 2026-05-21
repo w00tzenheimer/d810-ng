@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.cfg.graph_modification import (
     DirectTerminalLoweringGroup,
     DirectTerminalLoweringKind,
@@ -125,6 +126,55 @@ def _xdu_state_to_stack(dst_stkoff: int) -> SimpleNamespace:
 
 def _fake_mba(blocks: dict[int, SimpleNamespace]) -> SimpleNamespace:
     return SimpleNamespace(get_mblock=lambda serial: blocks[int(serial)])
+
+
+def _fake_insn_snapshots(head: SimpleNamespace | None) -> tuple[InsnSnapshot, ...]:
+    snapshots: list[InsnSnapshot] = []
+    insn = head
+    while insn is not None:
+        slots = tuple(
+            (name, getattr(insn, name))
+            for name in ("l", "r", "d")
+            if getattr(insn, name, None) is not None
+        )
+        snapshots.append(
+            InsnSnapshot(
+                opcode=int(getattr(insn, "opcode", -1)),
+                ea=0,
+                operands=tuple(operand for _name, operand in slots),
+                operand_slots=slots,
+                l=getattr(insn, "l", None),
+                r=getattr(insn, "r", None),
+                d=getattr(insn, "d", None),
+            )
+        )
+        insn = getattr(insn, "next", None)
+    return tuple(snapshots)
+
+
+def _fake_flow_graph(blocks: dict[int, SimpleNamespace]) -> FlowGraph:
+    serials = set(blocks)
+    for block in blocks.values():
+        serials.update(int(serial) for serial in getattr(block, "predset", ()) or ())
+        serials.update(int(serial) for serial in getattr(block, "succset", ()) or ())
+
+    snapshots = {}
+    for serial in serials:
+        block = blocks.get(serial, SimpleNamespace(predset=(), succset=(), head=None))
+        snapshots[int(serial)] = BlockSnapshot(
+            serial=int(serial),
+            block_type=0,
+            succs=tuple(int(succ) for succ in getattr(block, "succset", ()) or ()),
+            preds=tuple(int(pred) for pred in getattr(block, "predset", ()) or ()),
+            flags=0,
+            start_ea=int(serial),
+            insn_snapshots=_fake_insn_snapshots(getattr(block, "head", None)),
+        )
+    return FlowGraph(
+        blocks=snapshots,
+        entry_serial=min(serials) if serials else 0,
+        func_ea=0,
+    )
 
 
 def test_state_flow_source_into_terminal_byte_emit_target_rejects(monkeypatch) -> None:
@@ -425,6 +475,7 @@ def test_zero_guard_retargeter_falls_back_to_unique_constant_sibling(
     filtered, rejections = filter_terminal_byte_emit_fact_redirects(
         [redirect],
         mba=_fake_mba(blocks),
+        flow_graph=_fake_flow_graph(blocks),
         fact_view=view,
         dispatcher_serial=2,
     )
@@ -474,6 +525,7 @@ def test_zero_guard_retargeter_matches_display_named_state_var(
     filtered, rejections = filter_terminal_byte_emit_fact_redirects(
         [redirect],
         mba=_fake_mba(blocks),
+        flow_graph=_fake_flow_graph(blocks),
         fact_view=view,
         dispatcher_serial=2,
     )
