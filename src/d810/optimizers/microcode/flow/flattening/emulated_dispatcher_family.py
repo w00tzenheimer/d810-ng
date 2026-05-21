@@ -40,10 +40,6 @@ from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.core import logging
-from d810.evaluator.hexrays_microcode.dispatcher_state_evaluation import (
-    all_history_values_found,
-    collect_possible_history_values,
-)
 from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
@@ -183,7 +179,6 @@ __all__ = [
     "EmulatedDispatcherStrategyFamily",
     "GenericDispatcherCollectorProtocol",
     "GenericDispatcherEngineProfile",
-    "GenericDispatcherResolverProtocol",
     "ollvm_state_dispatcher_map_profile",
     "tigress_indirect_dispatcher_profile",
     "tigress_switch_dispatcher_profile",
@@ -976,36 +971,6 @@ class GenericDispatcherCollectorProtocol(Protocol):
         """Return dispatcher candidates collected from the live MBA."""
 
 
-class GenericDispatcherResolverProtocol(Protocol):
-    """Resolver surface required by generic dispatcher lowering."""
-
-    mba: object
-    cur_maturity: int
-    cur_maturity_pass: int
-    dispatcher_list: list[object]
-
-    def get_dispatcher_father_histories(
-        self,
-        dispatcher_father: object,
-        dispatcher_entry_block: object,
-        dispatcher_info: object,
-    ) -> object:
-        """Return state histories for one dispatcher predecessor."""
-
-    def check_if_histories_are_resolved(self, histories: object) -> bool:
-        """Return whether *histories* fully resolve a state value."""
-
-    def _filter_dependency_safe_copies(
-        self,
-        father: object,
-        insns: list[object],
-    ) -> list[object]:
-        """Return copied side effects that can safely be replayed."""
-
-    def ensure_all_dispatcher_fathers_are_direct(self) -> int:
-        """Normalize dispatcher predecessors before late-maturity lowering."""
-
-
 class _NoopDispatcherCollector:
     """Collector used by profiles that are fully recon-map driven."""
 
@@ -1017,37 +982,6 @@ class _NoopDispatcherCollector:
 
     def get_dispatcher_list(self) -> list[object]:
         return []
-
-
-class _NoopDispatcherResolver:
-    """Resolver placeholder for profiles that never use father histories."""
-
-    def __init__(self) -> None:
-        self.mba = None
-        self.cur_maturity = 0
-        self.cur_maturity_pass = 0
-        self.dispatcher_list: list[object] = []
-
-    def get_dispatcher_father_histories(
-        self,
-        dispatcher_father: object,
-        dispatcher_entry_block: object,
-        dispatcher_info: object,
-    ) -> object:
-        return None
-
-    def check_if_histories_are_resolved(self, histories: object) -> bool:
-        return False
-
-    def _filter_dependency_safe_copies(
-        self,
-        father: object,
-        insns: list[object],
-    ) -> list[object]:
-        return []
-
-    def ensure_all_dispatcher_fathers_are_direct(self) -> int:
-        return 0
 
 
 def _empty_state_dispatcher_maps(
@@ -4422,7 +4356,6 @@ class GenericDispatcherEngineProfile:
 
     name: str
     collector_factory: Callable[[], GenericDispatcherCollectorProtocol]
-    resolver_factory: Callable[[], GenericDispatcherResolverProtocol]
     state_transport: str
     lowering_mode: str
     provenance_hints: tuple[str, ...] = ()
@@ -4451,21 +4384,6 @@ class GenericDispatcherEngineProfile:
         [object, object],
         tuple[object, ...],
     ] = _empty_branch_ownership_refiners
-
-    def configure_resolver(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-        *,
-        mba: ida_hexrays.mba_t,
-        detection: "EmulatedDispatcherDetection",
-    ) -> GenericDispatcherResolverProtocol:
-        """Bind live MBA context to a resolver instance for this profile."""
-
-        resolver.mba = mba
-        resolver.cur_maturity = mba.maturity
-        resolver.cur_maturity_pass = 0
-        resolver.dispatcher_list = list(detection.collector_dispatchers)
-        return resolver
 
     def dispatcher_entry_block(self, dispatcher_info: object) -> object | None:
         """Return the profile's dispatcher entry object, if one exists."""
@@ -4502,89 +4420,6 @@ class GenericDispatcherEngineProfile:
             return tuple(int(serial) for serial in list(predset))
         except Exception:
             return None
-
-    def collect_dispatcher_father_histories(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-        dispatcher_father: object,
-        dispatcher_info: object,
-    ) -> object:
-        """Return state histories for one dispatcher predecessor."""
-
-        entry_block = self.dispatcher_entry_block(dispatcher_info)
-        if entry_block is None:
-            return None
-        return resolver.get_dispatcher_father_histories(
-            dispatcher_father,
-            entry_block,
-            dispatcher_info,
-        )
-
-    def histories_resolved(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-        histories: object,
-    ) -> bool:
-        """Return whether predecessor histories are fully resolved."""
-
-        return bool(resolver.check_if_histories_are_resolved(histories))
-
-    def resolve_state_values(
-        self,
-        histories: object,
-        dispatcher_info: object,
-    ) -> object:
-        """Return possible state values carried by resolved histories."""
-
-        entry_block = self.dispatcher_entry_block(dispatcher_info)
-        use_before_def_list = (
-            getattr(entry_block, "use_before_def_list", ())
-            if entry_block is not None
-            else ()
-        )
-        return collect_possible_history_values(
-            histories,
-            use_before_def_list,
-            verbose=False,
-        )
-
-    def state_values_complete(self, values: object) -> bool:
-        """Return whether state-value recovery produced complete values."""
-
-        return bool(all_history_values_found(values))
-
-    def emulate_dispatcher_target(
-        self,
-        dispatcher_info: object,
-        history: object,
-    ) -> tuple[object | None, object]:
-        """Emulate one dispatcher history to a concrete target block."""
-
-        return dispatcher_info.emulate_dispatcher_with_father_history(
-            history,
-            resolve_conditional_exits=True,
-        )
-
-    def filter_dependency_safe_copies(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-        dispatcher_father: object,
-        raw_ins_to_copy: list[object],
-    ) -> list[object]:
-        """Filter copied dispatcher side effects for replay safety."""
-
-        return resolver._filter_dependency_safe_copies(
-            dispatcher_father,
-            raw_ins_to_copy,
-        )
-
-    def prepare_dispatcher_fathers(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-    ) -> int:
-        """Normalize dispatcher predecessors before late-maturity lowering."""
-
-        return int(resolver.ensure_all_dispatcher_fathers_are_direct())
 
     def collect_state_dispatcher_maps(
         self,
@@ -4742,7 +4577,6 @@ def ollvm_state_dispatcher_map_profile(
     return GenericDispatcherEngineProfile(
         name="ollvm_state_map",
         collector_factory=_NoopDispatcherCollector,
-        resolver_factory=_NoopDispatcherResolver,
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
@@ -4767,7 +4601,6 @@ def tigress_switch_dispatcher_profile(
     return GenericDispatcherEngineProfile(
         name="tigress_switch",
         collector_factory=_NoopDispatcherCollector,
-        resolver_factory=_NoopDispatcherResolver,
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=("switch_table",),
@@ -4788,7 +4621,6 @@ def tigress_indirect_dispatcher_profile(
     return GenericDispatcherEngineProfile(
         name="tigress_indirect",
         collector_factory=_NoopDispatcherCollector,
-        resolver_factory=_NoopDispatcherResolver,
         state_transport="state_dispatcher_map",
         lowering_mode="indirect_jump_table_diagnostics",
         provenance_hints=("indirect_jump_table",),
@@ -4967,18 +4799,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             and maturity >= int(ida_hexrays.MMAT_CALLS)
         )
 
-    def _make_resolver(
-        self,
-        mba: ida_hexrays.mba_t,
-        detection: EmulatedDispatcherDetection,
-    ) -> GenericDispatcherResolverProtocol:
-        resolver = self._profile.resolver_factory()
-        return self._profile.configure_resolver(
-            resolver,
-            mba=mba,
-            detection=detection,
-        )
-
     def detect(self, mba: object) -> EmulatedDispatcherDetection:
         cache = DispatcherCache.get_or_create(mba)
         analysis = cache.analyze()
@@ -5061,117 +4881,19 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         tuple[str, ...],
         tuple[EmulatedDispatcherCandidateRecord, ...],
     ]:
-        if not detection.collector_dispatchers:
-            # PredecessorDispatcherTargetFact proves which handler a state
-            # reaches, but not that the raw predecessor edge is safe to
-            # rewrite.  Keep these facts diagnostic/recon evidence until a
-            # planner-owned split/clone materialization primitive can consume
-            # them without bypassing dispatcher-owned structure.
-            return (), (), ()
-
-        resolver = self._make_resolver(mba, detection)
-        scc_memberships = self._compute_scc_memberships(flow_graph)
-
-        modifications: list[GraphModification] = []
-        blockers: list[str] = []
-        candidate_records: list[EmulatedDispatcherCandidateRecord] = []
-        seen_fathers: set[tuple[int, int]] = set()
-        dynamic_candidate_selected = False
-        deferred_dynamic_default_blockers: list[str] = []
-
-        for dispatcher_info in detection.collector_dispatchers:
-            entry_serial = self._profile.dispatcher_entry_serial(dispatcher_info)
-            pred_serials = self._profile.dispatcher_predecessor_serials(
-                dispatcher_info
-            )
-            if entry_serial is None or pred_serials is None:
-                blockers.append("collector_dispatcher_missing_entry_block")
-                continue
-
-            for pred_serial in pred_serials:
-                pred_blk = mba.get_mblock(pred_serial)
-                if pred_blk is None:
-                    blockers.append("dispatcher_predecessor_missing")
-                    continue
-                father_key = (int(entry_serial), int(pred_blk.serial))
-                if father_key in seen_fathers:
-                    continue
-                seen_fathers.add(father_key)
-                start_index = len(modifications)
-                candidate, reason, record = self._build_lowering_candidate(
-                    resolver,
-                    pred_blk,
-                    dispatcher_info,
-                    scc_memberships=scc_memberships,
-                )
-                if candidate is None and reason in {
-                    "dispatcher_history_missing_values",
-                    "dispatcher_history_unresolved",
-                    "dispatcher_history_missing",
-                }:
-                    dynamic_candidate = self._build_dynamic_transition_candidate(
-                        mba=mba,
-                        dispatcher_father=pred_blk,
-                        dispatcher_info=dispatcher_info,
-                        phase_artifact=phase_artifact,
-                        phase_context=phase_context,
-                        scc_memberships=scc_memberships,
-                    )
-                    if dynamic_candidate is not None:
-                        candidate, record = dynamic_candidate
-                        dynamic_candidate_selected = True
-                        reason = None
-                if candidate is not None:
-                    modifications.extend(candidate)
-                    record = EmulatedDispatcherCandidateRecord(
-                        **{
-                            **record.__dict__,
-                            "selected_modification_indexes": tuple(
-                                range(start_index, len(modifications))
-                            ),
-                        }
-                    )
-                candidate_records.append(record)
-                if reason is not None:
-                    if self._is_dynamic_default_blocker(
-                        record=record,
-                        reason=reason,
-                        phase_artifact=phase_artifact,
-                    ):
-                        deferred_dynamic_default_blockers.append(reason)
-                    else:
-                        blockers.append(reason)
-
-        if not dynamic_candidate_selected:
-            blockers.extend(deferred_dynamic_default_blockers)
-
-        return (
-            tuple(modifications),
-            tuple(blockers),
-            self._annotate_cluster_candidates(tuple(candidate_records)),
-        )
+        # Collector-dispatcher predecessor emulation belonged to the retired
+        # father-history backend.  The active profiles lower only from
+        # recon-owned state-dispatcher maps, phase DAGs, switch facts, and
+        # predecessor-target facts; keep this legacy hook inert so injected
+        # collectors remain useful for detection tests without reintroducing
+        # late state-emulation semantics.
+        return (), (), ()
 
     def _dynamic_transition_recovery_active(
         self,
         phase_context: EmulatedDispatcherPhaseContext | None,
     ) -> bool:
         return self._profile.dynamic_transition_recovery_active(phase_context)
-
-    def _is_dynamic_default_blocker(
-        self,
-        *,
-        record: EmulatedDispatcherCandidateRecord,
-        reason: str,
-        phase_artifact: EmulatedDispatcherPhaseArtifact | None,
-    ) -> bool:
-        if reason != "dispatcher_history_missing_values":
-            return False
-        if phase_artifact is None:
-            return False
-        point_handlers = {int(serial) for serial, _state in phase_artifact.handler_state_map}
-        range_handlers = {int(serial) for serial, _lo, _hi in phase_artifact.handler_range_map}
-        default_handlers = range_handlers - point_handlers
-        return int(record.father_serial) in default_handlers
 
     def _collect_phase_linear_chain_modifications(
         self,
@@ -5185,8 +4907,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         """Lower a fully resolved conditional-chain dispatcher as one unit.
 
         This path covers table-backed conditional chains where recon proves the
-        state chain from exact dispatcher rows rather than from per-predecessor
-        father histories.  The predecessor-local FixPredecessor rewrite can
+        state chain from exact dispatcher rows rather than from late
+        per-predecessor emulation.  The predecessor-local FixPredecessor rewrite can
         remove the terminal return for this shape, so this method emits one
         whole-chain edit batch instead: redirect the proven payload corridor,
         neutralize dead BST nodes, and copy/reorder the live payload blocks away
@@ -8708,233 +8430,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return "conditional_redirect_clone"
         return type(mod).__name__
 
-    def _build_lowering_candidate(
-        self,
-        resolver: GenericDispatcherResolverProtocol,
-        dispatcher_father: ida_hexrays.mblock_t,
-        dispatcher_info: object,
-        *,
-        scc_memberships: dict[int, tuple[int, ...]],
-    ) -> tuple[
-        tuple[GraphModification, ...] | None,
-        str | None,
-        EmulatedDispatcherCandidateRecord,
-    ]:
-        entry_serial = self._profile.dispatcher_entry_serial(dispatcher_info)
-        base_record = EmulatedDispatcherCandidateRecord(
-            dispatcher_entry_serial=int(entry_serial if entry_serial is not None else -1),
-            father_serial=int(dispatcher_father.serial),
-            source_nsucc=int(dispatcher_father.nsucc()),
-            source_scc=scc_memberships.get(int(dispatcher_father.serial), ()),
-        )
-        if entry_serial is None:
-            reason = "collector_dispatcher_missing_entry_block"
-            return None, reason, EmulatedDispatcherCandidateRecord(
-                **{
-                    **base_record.__dict__,
-                    "blocker": reason,
-                    "semantically_valid": False,
-                    "structurally_legacy_equivalent": None,
-                }
-            )
-
-        def _blocked_record(reason: str, **extra) -> EmulatedDispatcherCandidateRecord:
-            return EmulatedDispatcherCandidateRecord(
-                **{
-                    **base_record.__dict__,
-                    **extra,
-                    "blocker": reason,
-                    "semantically_valid": False,
-                    "structurally_legacy_equivalent": None,
-                }
-            )
-
-        histories = self._profile.collect_dispatcher_father_histories(
-            resolver,
-            dispatcher_father,
-            dispatcher_info,
-        )
-        if not histories:
-            reason = "dispatcher_history_missing"
-            return None, reason, _blocked_record(reason)
-        if not self._profile.histories_resolved(resolver, histories):
-            reason = "dispatcher_history_unresolved"
-            return None, reason, _blocked_record(reason)
-
-        values = self._profile.resolve_state_values(
-            histories,
-            dispatcher_info,
-        )
-        if not self._profile.state_values_complete(values):
-            reason = "dispatcher_history_missing_values"
-            return None, reason, _blocked_record(reason)
-        if any(candidate != values[0] for candidate in values[1:]):
-            reason = "dispatcher_history_ambiguous"
-            return None, reason, _blocked_record(reason)
-        state_signature = tuple(int(value) for value in values[0])
-        deferred_side_effects = self._deferred_side_effects.get(
-            (
-                int(resolver.mba.entry_ea),
-                int(entry_serial),
-                state_signature,
-            )
-        )
-
-        target_blk, disp_ins = self._profile.emulate_dispatcher_target(
-            dispatcher_info,
-            histories[0],
-        )
-        if target_blk is None:
-            reason = "dispatcher_emulation_returned_no_target"
-            return None, reason, _blocked_record(
-                reason,
-                state_signature=state_signature,
-            )
-        if target_blk.serial == dispatcher_father.serial:
-            reason = "dispatcher_target_self_loop"
-            return None, reason, _blocked_record(
-                reason,
-                state_signature=state_signature,
-                target_serial=int(target_blk.serial),
-            )
-
-        raw_ins_to_copy = [
-            ins
-            for ins in disp_ins
-            if ins is not None and ins.opcode not in CONTROL_FLOW_OPCODES
-        ]
-        safe_copy_insns = self._profile.filter_dependency_safe_copies(
-            resolver,
-            dispatcher_father,
-            raw_ins_to_copy,
-        )
-        base_record = EmulatedDispatcherCandidateRecord(
-            **{
-                **base_record.__dict__,
-                "state_signature": state_signature,
-                "target_serial": int(target_blk.serial),
-                "raw_side_effect_count": len(raw_ins_to_copy),
-                "safe_side_effect_count": len(safe_copy_insns),
-                "target_scc": scc_memberships.get(int(target_blk.serial), ()),
-            }
-        )
-
-        def _record_for_modifications(
-            modifications: tuple[GraphModification, ...],
-        ) -> EmulatedDispatcherCandidateRecord:
-            analogue_kind, _legacy_equivalent = self._legacy_analogue_for_candidate(
-                modifications=modifications,
-                source_nsucc=base_record.source_nsucc,
-            )
-            payload_signature: tuple[str, ...] = ()
-            if safe_copy_insns:
-                payload_signature = self._payload_signature(
-                    tuple(capture_insn_snapshot(insn) for insn in safe_copy_insns)
-                )
-            elif deferred_side_effects:
-                payload_signature = self._payload_signature(deferred_side_effects)
-            cluster_key = ()
-            if base_record.target_serial is not None:
-                cluster_key = (
-                    f"state={','.join(str(value) for value in base_record.state_signature)}",
-                    f"target={base_record.target_serial}",
-                    f"payload={';'.join(payload_signature)}",
-                    f"source_scc={','.join(str(value) for value in base_record.source_scc)}",
-                    f"target_scc={','.join(str(value) for value in base_record.target_scc)}",
-                    f"source_nsucc={base_record.source_nsucc}",
-                )
-            return EmulatedDispatcherCandidateRecord(
-                **{
-                    **base_record.__dict__,
-                    "selection_reason": self._selection_reason_for_candidate(
-                        modifications=modifications,
-                        raw_side_effect_count=len(raw_ins_to_copy),
-                        deferred_side_effect_count=len(deferred_side_effects or ()),
-                    ),
-                    "selected_modification_kinds": tuple(
-                        type(mod).__name__ for mod in modifications
-                    ),
-                    "selected_modification_summaries": tuple(
-                        self._summarize_modification(mod) for mod in modifications
-                    ),
-                    "legacy_analogue_kind": analogue_kind,
-                    "semantically_valid": True,
-                    "structurally_legacy_equivalent": None,
-                    "payload_signature": payload_signature,
-                    "cluster_key": cluster_key,
-                }
-            )
-
-        safe_copy_snapshots = tuple(
-            capture_insn_snapshot(insn) for insn in safe_copy_insns
-        )
-        source_old_target = (
-            int(dispatcher_father.succ(0))
-            if int(dispatcher_father.nsucc()) >= 1
-            else None
-        )
-        source_tail = getattr(dispatcher_father, "tail", None)
-        source_is_conditional = bool(
-            source_tail is not None
-            and ida_hexrays.is_mcode_jcond(source_tail.opcode)
-        )
-        target_tail = getattr(target_blk, "tail", None)
-        target_is_conditional = bool(
-            target_tail is not None and ida_hexrays.is_mcode_jcond(target_tail.opcode)
-        )
-        target_conditional_target = None
-        target_fallthrough_target = None
-        if target_is_conditional:
-            target_dest = getattr(getattr(target_tail, "d", None), "b", None)
-            if target_dest is not None:
-                target_conditional_target = int(target_dest)
-            if target_blk.nextb is not None:
-                target_fallthrough_target = int(target_blk.nextb.serial)
-        clone_conditional_targets = (
-            os.environ.get("D810_UNFLAT_CLONE_COND_TARGET", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        decision = plan_dispatcher_predecessor_rewrite(
-            DispatcherPredecessorRewriteInput(
-                source_serial=int(dispatcher_father.serial),
-                source_nsucc=int(dispatcher_father.nsucc()),
-                source_old_target=source_old_target,
-                source_is_conditional=source_is_conditional,
-                target_serial=int(target_blk.serial),
-                target_nsucc=int(target_blk.nsucc()),
-                target_is_conditional=target_is_conditional,
-                target_conditional_target=target_conditional_target,
-                target_fallthrough_target=target_fallthrough_target,
-                safe_copy_instructions=safe_copy_snapshots,
-                deferred_side_effect_instructions=tuple(deferred_side_effects or ()),
-                raw_side_effect_count=len(raw_ins_to_copy),
-                safe_side_effect_count=len(safe_copy_insns),
-                defer_side_effects=(
-                    bool(safe_copy_snapshots)
-                    and resolver.mba.maturity == ida_hexrays.MMAT_CALLS
-                ),
-                clone_conditional_targets=clone_conditional_targets,
-            )
-        )
-        if decision.defer_side_effects and safe_copy_snapshots:
-            self._deferred_side_effects[
-                (
-                    int(resolver.mba.entry_ea),
-                    int(entry_serial),
-                    state_signature,
-                )
-            ] = safe_copy_snapshots
-        if decision.blocker is not None:
-            return None, decision.blocker, _blocked_record(
-                decision.blocker,
-                state_signature=state_signature,
-                target_serial=int(target_blk.serial),
-                raw_side_effect_count=len(raw_ins_to_copy),
-                safe_side_effect_count=len(safe_copy_insns),
-            )
-        modifications = decision.modifications
-        return modifications, None, _record_for_modifications(modifications)
-
     def _mop_const_value(self, mop) -> int | None:
         if mop is None or getattr(mop, "t", None) != ida_hexrays.mop_n:
             return None
@@ -9344,7 +8839,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         mba: object,
         detection: EmulatedDispatcherDetection,
     ) -> AnalysisSnapshot:
-        self._prepare_dispatcher_fathers(mba, detection)
         flow_graph = self._cfg_translator.lift(mba)
         phase_artifact, phase_context = self._build_phase_artifact(
             mba,
@@ -9947,26 +9441,6 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             7: "MMAT_LVARS",
         }
         return names.get(int(maturity), f"MMAT_{int(maturity)}")
-
-    def _prepare_dispatcher_fathers(
-        self,
-        mba: ida_hexrays.mba_t,
-        detection: EmulatedDispatcherDetection,
-    ) -> int:
-        if mba.maturity != ida_hexrays.MMAT_CALLS:
-            return 0
-        if not detection.collector_dispatchers:
-            return 0
-
-        resolver = self._make_resolver(mba, detection)
-        total_changes = self._profile.prepare_dispatcher_fathers(resolver)
-        if total_changes > 0:
-            mba.mark_chains_dirty()
-            self._logger.info(
-                "Prepared emulated-dispatcher direct fathers: %d change(s)",
-                total_changes,
-            )
-        return int(total_changes)
 
     def compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
         visited: set[int] = set()
