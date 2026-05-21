@@ -15,6 +15,8 @@ def _edge(
     target_entry: int,
     source_key: object | None = None,
     target_key: object | None = None,
+    proof_source: str | None = None,
+    last_write_site: tuple[int, int] | None = None,
 ):
     if source_key is None:
         source_key = StateDagNodeKey(
@@ -36,6 +38,8 @@ def _edge(
         target_state=target_state,
         target_entry_anchor=target_entry,
         ordered_path=(source_block, target_entry),
+        proof_source=proof_source,
+        last_write_site=last_write_site,
         kind=SimpleNamespace(name="TRANSITION"),
     )
 
@@ -150,3 +154,25 @@ def test_parents_of_supports_range_only_node_keys() -> None:
     assert len(parents) == 1
     assert parents[0].source_block == 10
     assert index.incoming_for_state(0x2000) == ()
+
+
+def test_state_dag_index_preserves_loop_recovery_edge_metadata() -> None:
+    dag = SimpleNamespace(
+        edges=(
+            _edge(
+                source_block=10,
+                branch_arm=1,
+                source_state=0x1000,
+                target_state=0x2000,
+                target_entry=20,
+                proof_source="state_dispatcher_map",
+                last_write_site=(12, 0x401234),
+            ),
+        )
+    )
+
+    edge = StateDagIndex.from_dag(dag).incoming_to_entry(20)[0]
+
+    assert edge.semantic_kind == "TRANSITION"
+    assert edge.proof_source == "state_dispatcher_map"
+    assert edge.last_write_site == (12, 0x401234)
