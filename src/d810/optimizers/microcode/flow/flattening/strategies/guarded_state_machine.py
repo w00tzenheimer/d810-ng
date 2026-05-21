@@ -377,7 +377,9 @@ def _find_pre_guard(
     if len(inner_guard_preds) != 2:
         return None
     outer_guard: BlockSnapshot | None = None
-    outer_override: BlockSnapshot | None = None
+    outer_guard_value: int | None = None
+    outer_arm: BlockSnapshot | None = None
+    outer_arm_value: int | None = None
     for pred in inner_guard_preds:
         block = cfg.get_block(pred)
         if block is None:
@@ -387,21 +389,37 @@ def _find_pre_guard(
             return None
         _dst, value = assignment
         if block.nsucc == 2 and int(inner_guard.serial) in block.succs:
-            if int(value) == int(choice_one_success):
-                return None
             outer_guard = block
+            outer_guard_value = int(value)
         elif block.nsucc == 1 and int(block.succs[0]) == int(inner_guard.serial):
-            if int(value) != int(choice_one_success):
-                return None
-            outer_override = block
-    if outer_guard is None or outer_override is None:
+            outer_arm = block
+            outer_arm_value = int(value)
+    if (
+        outer_guard is None
+        or outer_guard_value is None
+        or outer_arm is None
+        or outer_arm_value is None
+    ):
         return None
-    if int(outer_override.serial) not in outer_guard.succs:
+    if int(outer_arm.serial) not in outer_guard.succs:
+        return None
+
+    if (
+        int(outer_guard_value) != int(choice_one_success)
+        and int(outer_arm_value) == int(choice_one_success)
+    ):
+        outer_guard_old_target = int(inner_guard.serial)
+    elif (
+        int(outer_guard_value) == int(choice_one_success)
+        and int(outer_arm_value) != int(choice_one_success)
+    ):
+        outer_guard_old_target = int(outer_arm.serial)
+    else:
         return None
 
     return GuardedStateMachineFix(
         outer_guard_block=int(outer_guard.serial),
-        outer_guard_old_target=int(inner_guard.serial),
+        outer_guard_old_target=int(outer_guard_old_target),
         inner_guard_block=int(inner_guard.serial),
         inner_guard_old_target=int(init_block.serial),
         inner_override_block=int(inner_override.serial),
