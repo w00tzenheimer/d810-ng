@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import logging
 import os
 import platform
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import pytest
 
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
-from d810.cfg.graph_modification import CreateConditionalRedirect
+from d810.cfg.graph_modification import CreateConditionalRedirect, InsertBlock
 from d810.cfg.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
@@ -1537,6 +1538,74 @@ def _build_real_emulated_dispatcher_modifier(
     return mba, modifier
 
 
+_APPROOV_EMULATED_DISPATCHER_CANDIDATES = (
+    ("approov_real_pattern", ida_hexrays.MMAT_GLBOPT1),
+    ("approov_real_pattern", ida_hexrays.MMAT_GLBOPT2),
+    ("approov_simplified", ida_hexrays.MMAT_GLBOPT1),
+    ("approov_simplified", ida_hexrays.MMAT_GLBOPT2),
+    ("approov_multistate", ida_hexrays.MMAT_GLBOPT1),
+    ("approov_multistate", ida_hexrays.MMAT_GLBOPT2),
+    ("approov_vm_dispatcher", ida_hexrays.MMAT_GLBOPT1),
+    ("approov_vm_dispatcher", ida_hexrays.MMAT_GLBOPT2),
+    ("approov_simple_loop", ida_hexrays.MMAT_GLBOPT1),
+    ("approov_simple_loop", ida_hexrays.MMAT_GLBOPT2),
+)
+
+
+def _build_real_emulated_dispatcher_modifier_with_backend_work():
+    skipped: list[str] = []
+    empty: list[str] = []
+    for func_name, maturity in _APPROOV_EMULATED_DISPATCHER_CANDIDATES:
+        label = f"{func_name}@{maturity}"
+        try:
+            mba, modifier = _build_real_emulated_dispatcher_modifier(
+                func_name,
+                maturity=maturity,
+            )
+        except pytest.skip.Exception as exc:
+            skipped.append(f"{label}: {exc}")
+            continue
+        if modifier.modifications:
+            return mba, modifier, label
+        empty.append(label)
+    pytest.fail(
+        "No real Approov emulated-dispatcher candidate translated to backend "
+        f"DeferredGraphModifier work; skipped={skipped!r}; empty={empty!r}"
+    )
+
+
+def _build_real_emulated_dispatcher_insertblock_plan():
+    skipped: list[str] = []
+    empty: list[str] = []
+    for func_name, maturity in _APPROOV_EMULATED_DISPATCHER_CANDIDATES:
+        label = f"{func_name}@{maturity}"
+        func_ea = get_func_ea(func_name)
+        if func_ea == 0xFFFFFFFFFFFFFFFF:
+            skipped.append(f"{label}: function not found")
+            continue
+        mba = gen_microcode_at_maturity(func_ea, maturity)
+        if mba is None:
+            skipped.append(f"{label}: microcode generation failed")
+            continue
+        modifications = _real_emulated_dispatcher_modifications(mba)
+        if not modifications:
+            skipped.append(f"{label}: no emulated-dispatcher modifications")
+            continue
+        patch_plan = compile_patch_plan(list(modifications))
+        insert_steps = tuple(
+            step
+            for step in patch_plan.steps
+            if isinstance(step.to_graph_modification(), InsertBlock)
+        )
+        if insert_steps:
+            return mba, patch_plan, label
+        empty.append(label)
+    pytest.fail(
+        "No real Approov emulated-dispatcher candidate produced an InsertBlock "
+        f"translation plan; skipped={skipped!r}; empty={empty!r}"
+    )
+
+
 @pytest.mark.ida_required
 class TestCreateConditionalRedirectIntegration:
     binary_name = _get_default_binary()
@@ -1579,9 +1648,9 @@ class TestCreateConditionalRedirectIntegration:
         libobfuscated_setup,
         monkeypatch,
     ) -> None:
-        mba, modifier = _build_real_emulated_dispatcher_modifier(
-            "approov_multistate",
-            maturity=ida_hexrays.MMAT_GLBOPT2,
+        mba, modifier, label = _build_real_emulated_dispatcher_modifier_with_backend_work()
+        assert modifier.modifications, (
+            f"{label} raw-apply gate must not accept a no-op translation"
         )
 
         calls = {"count": 0}
@@ -1604,24 +1673,26 @@ class TestCreateConditionalRedirectIntegration:
     def test_emulated_dispatcher_batch_real_approov_pattern_rejects_unsupported_batch_cleanly(
         self,
         libobfuscated_setup,
+        caplog,
     ) -> None:
-        func_ea = get_func_ea("approov_real_pattern")
-        if func_ea == 0xFFFFFFFFFFFFFFFF:
-            pytest.skip("Function 'approov_real_pattern' not found")
-
-        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_GLBOPT1)
-        if mba is None:
-            pytest.skip("Failed to generate GLBOPT1 microcode for approov_real_pattern")
-
-        modifications = _real_emulated_dispatcher_modifications(mba)
-        if not modifications:
-            pytest.skip("No emulated-dispatcher modifications found for approov_real_pattern")
-
+        mba, patch_plan, label = _build_real_emulated_dispatcher_insertblock_plan()
         translator = IDAIRTranslator()
-        patch_plan = compile_patch_plan(list(modifications))
         modifier = dm.DeferredGraphModifier(mba)
-        for step in patch_plan.steps:
-            translator._queue_patch_step(modifier, step)
+        insert_steps = tuple(
+            step
+            for step in patch_plan.steps
+            if isinstance(step.to_graph_modification(), InsertBlock)
+        )
+        assert insert_steps, f"{label} should provide InsertBlock unsupported coverage"
+
+        with caplog.at_level(logging.WARNING, logger="d810.hexrays.mutation.ir_translator"):
+            for step in patch_plan.steps:
+                translator._queue_patch_step(modifier, step)
+
+        assert any(
+            "requires InsnSnapshot->minsn_t conversion" in record.message
+            for record in caplog.records
+        )
 
         applied = modifier.apply(
             run_optimize_local=True,
