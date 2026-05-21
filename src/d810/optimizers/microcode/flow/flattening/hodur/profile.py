@@ -177,6 +177,8 @@ def default_hodur_profile() -> HodurUnflatteningProfile:
         ),
         post_apply_hooks=(
             "bst_cleanup",
+            "pipeline_summary",
+            "post_pipeline_audit",
             "reachability_snapshot",
             "dispatcher_residue_cache",
             "post_pipeline_diagnostic_snapshot",
@@ -186,6 +188,8 @@ def default_hodur_profile() -> HodurUnflatteningProfile:
             "tag_all_mbl_keep",
             "tail_shaping",
             "may_only_probe",
+            "bst_cleanup_reiteration_suppression",
+            "may_only_probe_rerun",
             "reachable_mbl_keep",
         ),
     )

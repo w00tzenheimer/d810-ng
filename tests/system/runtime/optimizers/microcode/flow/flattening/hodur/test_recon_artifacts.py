@@ -793,6 +793,21 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         ),
     )
     monkeypatch.setattr(
+        hodur_unflattener,
+        "run_ordered_family_hooks",
+        lambda hook_names, hook_handlers, hook_context, **_kwargs: (
+            calls.append(
+                (
+                    "post_pipeline_hooks",
+                    hook_names,
+                    tuple(hook_handlers),
+                    hook_context,
+                )
+            )
+            or hook_context
+        ),
+    )
+    monkeypatch.setattr(
         unflattener._family,
         "record_execution_outcome",
         lambda pipeline, results, **kwargs: calls.append(
@@ -817,10 +832,16 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         for call in calls
         if isinstance(call, tuple) and call[0] == "record_execution_outcome"
     ]
+    hook_calls = [
+        call
+        for call in calls
+        if isinstance(call, tuple) and call[0] == "post_pipeline_hooks"
+    ]
     assert len(plan_calls) == 1
     assert len(execute_calls) == 1
     assert len(factory_calls) == 1
     assert len(outcome_calls) == 1
+    assert len(hook_calls) == 1
     _, seen_snapshot, seen_strategies, seen_planner, seen_inputs = plan_calls[0]
     assert seen_snapshot is snapshot
     assert seen_strategies == unflattener._family.strategies_for_maturity(
@@ -845,6 +866,13 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     assert seen_kwargs["maturity"] == ida_hexrays.MMAT_GLBOPT1
     assert seen_kwargs["nb_changes"] == 0
     assert seen_kwargs["residual_dispatcher_preds_by_strategy"] == {}
+    _, seen_hook_names, seen_hook_handlers, seen_hook_context = hook_calls[0]
+    assert seen_hook_names == unflattener._profile.post_apply_hooks
+    assert "bst_cleanup" in seen_hook_handlers
+    assert "pipeline_summary" in seen_hook_handlers
+    assert "post_pipeline_audit" in seen_hook_handlers
+    assert seen_hook_context.pipeline == [fragment]
+    assert seen_hook_context.total_changes == 0
 
 
 def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machine(

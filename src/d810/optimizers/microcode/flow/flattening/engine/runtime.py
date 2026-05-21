@@ -1,9 +1,9 @@
 """Generic runtime helpers for family-driven unflattening pipelines."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
-from d810.core.typing import TYPE_CHECKING, Any, Callable, Protocol
+from d810.core.typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
 from .provenance import (
     DecisionPhase,
@@ -23,12 +23,16 @@ __all__ = [
     "FamilyAnalysis",
     "FamilyContext",
     "FamilyPassResult",
+    "FamilyPostPipelineContext",
     "FamilyRunState",
+    "FamilyRuntimePolicy",
     "PlannedPipeline",
     "ExecutedPipeline",
     "make_transactional_executor_factory",
     "plan_family_pipeline",
+    "run_configured_family_pass",
     "run_family_pass",
+    "run_ordered_family_hooks",
     "apply_execution_results_to_provenance",
     "execute_family_pipeline",
 ]
@@ -41,6 +45,10 @@ class _PipelineExecutor(Protocol):
     def execute_pipeline(
         self, pipeline: list[PlanFragment], total_handlers: int
     ) -> list[StageResult]: ...
+
+
+class FamilyHook(Protocol):
+    def __call__(self, context: "FamilyPostPipelineContext") -> None: ...
 
 
 @dataclass(frozen=True)
@@ -153,6 +161,51 @@ class FamilyPassResult:
     @property
     def total_changes(self) -> int:
         return self.executed.total_changes
+
+
+@dataclass
+class FamilyPostPipelineContext:
+    """Mutable state shared by ordered family post-pipeline hooks."""
+
+    analysis: FamilyAnalysis
+    planned: PlannedPipeline
+    executed: ExecutedPipeline
+    total_changes: int
+    state: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def snapshot(self) -> AnalysisSnapshot:
+        return self.analysis.snapshot
+
+    @property
+    def pipeline(self) -> list[PlanFragment]:
+        return self.executed.pipeline
+
+    @property
+    def results(self) -> list[StageResult]:
+        return self.executed.results
+
+    @property
+    def provenance(self) -> PipelineProvenance:
+        return self.executed.provenance
+
+
+def run_ordered_family_hooks(
+    hook_names: tuple[str, ...],
+    hook_handlers: Mapping[str, FamilyHook],
+    context: FamilyPostPipelineContext,
+    *,
+    strict: bool = True,
+) -> FamilyPostPipelineContext:
+    """Run profile-declared hooks in order against one family pass context."""
+    for hook_name in hook_names:
+        handler = hook_handlers.get(hook_name)
+        if handler is None:
+            if strict:
+                raise KeyError(f"family hook is not registered: {hook_name}")
+            continue
+        handler(context)
+    return context
 
 
 def make_transactional_executor_factory(
@@ -295,6 +348,26 @@ def execute_family_pipeline(
     )
 
 
+@dataclass(frozen=True)
+class FamilyRuntimePolicy:
+    """Callable policy for one configured family runtime pass."""
+
+    planner: UnflatteningPlanner
+    executor_policy: ExecutorPolicy
+    build_planner_inputs: Callable[[FamilyContext, FamilyAnalysis], PlannerInputs | None]
+    select_strategies: Callable[[FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]]
+    plan_pipeline: Callable[..., PlannedPipeline] = plan_family_pipeline
+    execute_pipeline: Callable[..., ExecutedPipeline] = execute_family_pipeline
+    executor_factory_builder: Callable[
+        [ExecutorPolicy], Callable[[object], _PipelineExecutor]
+    ] = make_transactional_executor_factory
+    on_analysis: Callable[[FamilyContext, FamilyAnalysis], None] | None = None
+    on_planned: Callable[[FamilyContext, FamilyAnalysis, PlannedPipeline], None] | None = None
+    on_executed: Callable[
+        [FamilyContext, FamilyAnalysis, PlannedPipeline, ExecutedPipeline], None
+    ] | None = None
+
+
 def run_family_pass(
     family: object,
     context: FamilyContext,
@@ -361,4 +434,26 @@ def run_family_pass(
         analysis=analysis,
         planned=planned,
         executed=executed,
+    )
+
+
+def run_configured_family_pass(
+    family: object,
+    context: FamilyContext,
+    policy: FamilyRuntimePolicy,
+) -> FamilyPassResult:
+    """Run a family pass using a pre-bound runtime policy."""
+    return run_family_pass(
+        family,
+        context,
+        planner=policy.planner,
+        executor_policy=policy.executor_policy,
+        build_planner_inputs=policy.build_planner_inputs,
+        select_strategies=policy.select_strategies,
+        plan_pipeline=policy.plan_pipeline,
+        execute_pipeline=policy.execute_pipeline,
+        executor_factory_builder=policy.executor_factory_builder,
+        on_analysis=policy.on_analysis,
+        on_planned=policy.on_planned,
+        on_executed=policy.on_executed,
     )
