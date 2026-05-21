@@ -247,10 +247,11 @@ class TestHodurBaselines:
                 func_ea_hex=f"0x{func_ea:016x}",
                 func_name=func_name,
             )
-            if "Status: no_ref_spec" in report:
+            if "Status:" in report:
                 pytest.fail(
-                    "sub7FFD region oracle did not bind its REF spec; "
-                    "the semantic guardrail is inactive"
+                    "sub7FFD region oracle did not produce an active report; "
+                    "the semantic guardrail is inactive:\n"
+                    f"{report}"
                 )
             artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
             artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -329,7 +330,10 @@ class TestSemanticReferenceRegression:
 
         diag_conn = get_diag_db(func_ea)
         if diag_conn is None:
-            pytest.skip("Diagnostic DB not available (D810_DIAG_SNAPSHOT not active)")
+            pytest.fail(
+                "sub_7FFD3338C040 semantic-reference guard requires a diag DB; "
+                "the semantic guardrail is inactive"
+            )
 
         # Find GLBOPT1/post_d810 snapshot
         snap_id = None
