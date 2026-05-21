@@ -1,11 +1,10 @@
 """Unit tests for FixPredecessorBranchArmStrategy.
 
-The strategy is the cleanup-family engine entry point for arm=1
-FixPredecessor shapes (d81-4zm8).  These tests pin the
-planner-driven gating: arm=1 fixes flow through as
-``CloneConditionalAsGotoFromBranchArm`` primitives, while arm=0,
-multi-pred-target, and side-effect-bearing candidates are dropped so
-they remain in legacy fallback.
+The strategy is the cleanup-family engine entry point for known predecessor-arm
+FixPredecessor shapes (d81-4zm8).  These tests pin the planner-driven gating:
+arm=1 and arm=0 fixes flow through as ``CloneConditionalAsGotoFromBranchArm``
+primitives, while multi-pred-target and side-effect-bearing candidates are
+dropped so they remain in legacy fallback.
 
 Synthetic ``FlowGraph`` metadata is used to seed candidate fixes
 because the live mba collector is intentionally a stub today (see
@@ -89,7 +88,7 @@ def _arm_one_admittable_cfg(metadata: dict | None = None) -> FlowGraph:
 
 
 def _arm_zero_cfg(metadata: dict | None = None) -> FlowGraph:
-    """arm=0 shape (cond is pred's fallthrough arm).  Planner rejects."""
+    """arm=0 shape (cond is pred's fallthrough arm)."""
     blocks = {
         7: _block(7, (10, 20), (), branch_target=20),
         8: _block(8, (10,), ()),
@@ -162,14 +161,14 @@ def test_strategy_admits_arm_one_candidate_into_typed_primitive() -> None:
     ] == (arm_one_fix,)
 
 
-def test_strategy_drops_arm_zero_candidate() -> None:
-    """arm=0 must remain in legacy fallback (PRED_FALLTHROUGH_ARM_NOT_SUPPORTED)."""
+def test_strategy_admits_arm_zero_candidate_into_typed_primitive() -> None:
     arm_zero_fix = FixPredecessorBranchArmFix(
         cond_block=10,
         pred_block=7,
         target=11,
         pred_arm=0,
         outcome=FixPredecessorOutcome.NEVER_TAKEN,
+        description="pred 7 arm=0 never takes jump in block 10",
     )
     flow_graph = _arm_zero_cfg(
         metadata={
@@ -179,11 +178,18 @@ def test_strategy_drops_arm_zero_candidate() -> None:
     snapshot = _snapshot_for(flow_graph)
     strategy = FixPredecessorBranchArmStrategy()
 
-    # The candidate is present but the planner refuses arm=0, so the
-    # strategy emits no primitives and returns no fragment.
     assert strategy.is_applicable(snapshot) is True
     fragment = strategy.plan(snapshot)
-    assert fragment is None
+    assert fragment is not None
+    assert fragment.modifications == [
+        CloneConditionalAsGotoFromBranchArm(
+            source_block=10,
+            pred_serial=7,
+            pred_arm=0,
+            goto_target=11,
+            reason="pred 7 arm=0 never takes jump in block 10",
+        )
+    ]
 
 
 def test_strategy_drops_multi_pred_target_candidate() -> None:
