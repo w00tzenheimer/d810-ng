@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
@@ -120,16 +120,45 @@ def test_fake_jump_strategy_plans_per_predecessor_redirects() -> None:
     ]
 
 
+def test_fake_jump_strategy_redirects_branch_arm_predecessors() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (17,), (), start_ea=0x1000),
+            17: _block(17, (18, 19), (0,), block_type=4, start_ea=0x1017),
+            18: _block(18, (19,), (17,), start_ea=0x1018),
+            19: _block(19, (20, 21), (17, 18), block_type=4, start_ea=0x1019),
+            20: _block(20, (), (19,), block_type=2, start_ea=0x1020),
+            21: _block(21, (), (19,), block_type=2, start_ea=0x1021),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+        metadata={FAKE_JUMP_FIXES_METADATA_KEY: {19: {17: 20, 18: 21}}},
+    )
+
+    fragment = FakeJumpStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.ownership.blocks == frozenset({17, 18})
+    assert fragment.ownership.edges == frozenset({(17, 19), (18, 19)})
+    assert fragment.modifications == [
+        RedirectBranch(from_serial=17, old_target=19, new_target=20),
+        RedirectGoto(from_serial=18, old_target=19, new_target=21),
+    ]
+
+
 def test_fake_jump_strategy_drops_invalid_targets_and_non_legacy_shapes() -> None:
     cfg = FlowGraph(
         blocks={
             2: _block(2, (10, 20), (5, 6, 7), block_type=4),
             5: _block(5, (2,), (), start_ea=0x1005),
-            6: _block(6, (2, 30), (), block_type=4, start_ea=0x1006),
+            6: _block(6, (30, 40), (), block_type=4, start_ea=0x1006),
             7: _block(7, (20,), (), start_ea=0x1007),
             10: _block(10, (), (2,), block_type=2),
             20: _block(20, (), (2, 7), block_type=2),
             30: _block(30, (), (6,), block_type=2),
+            40: _block(40, (), (6,), block_type=2),
         },
         entry_serial=5,
         func_ea=0x1000,
@@ -182,6 +211,34 @@ def test_build_fake_jump_modifications_emits_legacy_redirect_shape() -> None:
     assert modifications == [
         RedirectGoto(from_serial=5, old_target=2, new_target=10),
         RedirectGoto(from_serial=6, old_target=2, new_target=20),
+    ]
+
+
+def test_build_fake_jump_modifications_can_emit_branch_redirects() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (17,), (), start_ea=0x1000),
+            17: _block(17, (18, 19), (0,), block_type=4, start_ea=0x1017),
+            18: _block(18, (19,), (17,), start_ea=0x1018),
+            19: _block(19, (20, 21), (17, 18), block_type=4, start_ea=0x1019),
+            20: _block(20, (), (19,), block_type=2, start_ea=0x1020),
+            21: _block(21, (), (19,), block_type=2, start_ea=0x1021),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    modifications = build_fake_jump_modifications(
+        (
+            FakeJumpPredFix(fake_block=19, pred_block=17, new_target=20),
+            FakeJumpPredFix(fake_block=19, pred_block=18, new_target=21),
+        ),
+        cfg,
+    )
+
+    assert modifications == [
+        RedirectBranch(from_serial=17, old_target=19, new_target=20),
+        RedirectGoto(from_serial=18, old_target=19, new_target=21),
     ]
 
 

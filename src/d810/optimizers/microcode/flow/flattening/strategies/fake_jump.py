@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import GraphModification, RedirectGoto
+from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
@@ -131,9 +131,13 @@ def _is_valid_fake_jump_fix(cfg: FlowGraph, fix: FakeJumpPredFix) -> bool:
         return False
     if fix.new_target == fix.pred_block:
         return False
-    if pred_block.nsucc != 1:
-        return False
-    if pred_block.succs[0] != fix.fake_block:
+    if pred_block.nsucc == 1:
+        if pred_block.succs[0] != fix.fake_block:
+            return False
+    elif pred_block.nsucc == 2:
+        if fix.fake_block not in pred_block.succs:
+            return False
+    else:
         return False
     if fix.new_target not in fake_block.succs:
         return False
@@ -187,16 +191,33 @@ def extract_fake_jump_fixes(
 
 def build_fake_jump_modifications(
     fixes: Sequence[FakeJumpPredFix],
-) -> list[RedirectGoto]:
-    """Translate validated per-predecessor fixes into RedirectGoto edits."""
-    return [
-        RedirectGoto(
-            from_serial=fix.pred_block,
-            old_target=fix.fake_block,
-            new_target=fix.new_target,
+    flow_graph: FlowGraph | None = None,
+) -> list[GraphModification]:
+    """Translate validated per-predecessor fixes into graph edits."""
+    modifications: list[GraphModification] = []
+    for fix in fixes:
+        pred_block = (
+            flow_graph.blocks.get(fix.pred_block)
+            if flow_graph is not None
+            else None
         )
-        for fix in fixes
-    ]
+        if pred_block is not None and pred_block.nsucc == 2:
+            modifications.append(
+                RedirectBranch(
+                    from_serial=fix.pred_block,
+                    old_target=fix.fake_block,
+                    new_target=fix.new_target,
+                )
+            )
+            continue
+        modifications.append(
+            RedirectGoto(
+                from_serial=fix.pred_block,
+                old_target=fix.fake_block,
+                new_target=fix.new_target,
+            )
+        )
+    return modifications
 
 
 def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipScope:
@@ -204,7 +225,7 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
     edges: set[tuple[int, int]] = set()
 
     for mod in modifications:
-        if isinstance(mod, RedirectGoto):
+        if isinstance(mod, (RedirectBranch, RedirectGoto)):
             blocks.add(mod.from_serial)
             edges.add((mod.from_serial, mod.old_target))
 
@@ -229,7 +250,7 @@ class FakeJumpStrategy:
         if not fixes:
             return None
 
-        modifications = build_fake_jump_modifications(fixes)
+        modifications = build_fake_jump_modifications(fixes, snapshot.flow_graph)
         if not modifications:
             return None
 

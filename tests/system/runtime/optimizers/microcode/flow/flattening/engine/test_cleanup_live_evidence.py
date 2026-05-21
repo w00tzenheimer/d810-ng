@@ -9,8 +9,12 @@ from d810.optimizers.microcode.flow.flattening import (
     cleanup_live_evidence as live_evidence_module,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
+    collect_live_fake_jump_block_fixes,
     collect_live_single_iteration_convert_fixes,
     collect_live_single_iteration_block_fixes,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+    FakeJumpPredFix,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationConvertFix,
@@ -69,12 +73,16 @@ class _FakeBlock:
         succs: tuple[int, ...],
         preds: tuple[int, ...],
         tail: _FakeInsn,
+        *,
+        reginsn_qty: int = 1,
     ) -> None:
         self.serial = int(serial)
         self._succs = tuple(int(succ) for succ in succs)
         self.succset = set(self._succs)
         self.predset = set(int(pred) for pred in preds)
         self.tail = tail
+        self.nextb: _FakeBlock | None = None
+        self._reginsn_qty = int(reginsn_qty)
         self.mba: _FakeMba | None = None
 
     def nsucc(self) -> int:
@@ -82,6 +90,9 @@ class _FakeBlock:
 
     def succ(self, index: int) -> int:
         return self._succs[index]
+
+    def get_reginsn_qty(self) -> int:
+        return self._reginsn_qty
 
 
 class _FakeMba:
@@ -100,6 +111,77 @@ def _reg(name: str) -> _FakeMop:
 
 def _num(value: int) -> _FakeMop:
     return _FakeMop(ida_hexrays.mop_n, value=value)
+
+
+def test_fake_jump_resolves_direct_branch_arm_assignment(monkeypatch) -> None:
+    compared = _reg("eax")
+
+    fake_tail = _FakeInsn(
+        ida_hexrays.m_jz,
+        left=compared,
+        right=_num(0x5C1BC03F),
+        dest=SimpleNamespace(b=31),
+    )
+    fake_block = _FakeBlock(28, (29, 31), (26,), fake_tail)
+    fallthrough = _FakeBlock(
+        29,
+        (),
+        (28,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=29)),
+    )
+    taken = _FakeBlock(
+        31,
+        (),
+        (28,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=31)),
+    )
+    fake_block.nextb = fallthrough
+
+    branch_arm_assignment = _FakeInsn(
+        ida_hexrays.m_mov,
+        left=_num(0x0C1F9B7D),
+        dest=compared,
+    )
+    direct_branch_tail = _FakeInsn(
+        ida_hexrays.m_jnz,
+        left=_reg("cf"),
+        right=_num(0),
+        dest=SimpleNamespace(b=28),
+        prev=branch_arm_assignment,
+    )
+    branch_pred = _FakeBlock(26, (27, 28), (), direct_branch_tail)
+    sibling = _FakeBlock(
+        27,
+        (28,),
+        (26,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=28)),
+    )
+    _FakeMba(branch_pred, sibling, fake_block, fallthrough, taken)
+
+    class _MixedTracker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+        def search_backward(self, *_args, **_kwargs) -> list[object]:
+            return [
+                SimpleNamespace(is_resolved=lambda: True),
+                SimpleNamespace(is_resolved=lambda: True),
+            ]
+
+    monkeypatch.setattr(live_evidence_module.ida_hexrays, "mop_t", lambda mop: mop)
+    monkeypatch.setattr(live_evidence_module, "MopTracker", _MixedTracker)
+    monkeypatch.setattr(
+        live_evidence_module,
+        "get_all_possibles_values",
+        lambda _histories, _mops: [(0x0C1F9B7D,), (0x5C1BC03F,)],
+    )
+
+    assert collect_live_fake_jump_block_fixes(fake_block) == (
+        FakeJumpPredFix(fake_block=28, pred_block=26, new_target=29),
+    )
 
 
 def test_copied_carrier_jz_self_loop_produces_entry_redirect() -> None:
