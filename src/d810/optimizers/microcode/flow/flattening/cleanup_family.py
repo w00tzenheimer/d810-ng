@@ -70,6 +70,12 @@ from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop impo
     extract_local_select_loop_fixes,
     serialize_local_select_loop_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+    SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
+    SideEffectSelectLoopStrategy,
+    extract_side_effect_select_loop_fixes,
+    serialize_side_effect_select_loop_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
@@ -139,6 +145,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_guarded_state_machine_fixes: int = 0
     collected_local_select_loop_fixes: int = 0
     selected_local_select_loop_fixes: int = 0
+    collected_side_effect_select_loop_fixes: int = 0
+    selected_side_effect_select_loop_fixes: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -159,6 +167,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             SingleIterationStrategy(),
             GuardedStateMachineStrategy(),
             LocalSelectLoopStrategy(),
+            SideEffectSelectLoopStrategy(),
             BadWhileLoopStrategy(),
             FixPredecessorBranchArmStrategy(),
             TailGotoMergeStrategy(),
@@ -269,6 +278,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[LOCAL_SELECT_LOOP_FIXES_METADATA_KEY] = (
                 serialize_local_select_loop_fixes(detection.local_select_loop_fixes)
             )
+        if detection.side_effect_select_loop_fixes:
+            metadata[SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY] = (
+                serialize_side_effect_select_loop_fixes(
+                    detection.side_effect_select_loop_fixes
+                )
+            )
 
         graph_with_candidates = FlowGraph(
             blocks=flow_graph.blocks,
@@ -347,6 +362,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_local_select_loop_fixes = extract_local_select_loop_fixes(
             graph_with_candidates
         )
+        selected_side_effect_select_loop_fixes = (
+            extract_side_effect_select_loop_fixes(graph_with_candidates)
+        )
 
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
             selected_fake_jump_fixes
@@ -401,6 +419,11 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[LOCAL_SELECT_LOOP_FIXES_METADATA_KEY] = (
             serialize_local_select_loop_fixes(selected_local_select_loop_fixes)
         )
+        metadata[SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY] = (
+            serialize_side_effect_select_loop_fixes(
+                selected_side_effect_select_loop_fixes
+            )
+        )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
@@ -428,6 +451,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 or selected_tail_goto_merges
                 or selected_guarded_state_machine_fixes
                 or selected_local_select_loop_fixes
+                or selected_side_effect_select_loop_fixes
             ),
             collection_errors=detection.collection_errors,
             collected_bad_while_loop_edits=(
@@ -487,6 +511,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 detection.local_select_loop_fixes
             ),
             selected_local_select_loop_fixes=len(selected_local_select_loop_fixes),
+            collected_side_effect_select_loop_fixes=len(
+                detection.side_effect_select_loop_fixes
+            ),
+            selected_side_effect_select_loop_fixes=len(
+                selected_side_effect_select_loop_fixes
+            ),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,

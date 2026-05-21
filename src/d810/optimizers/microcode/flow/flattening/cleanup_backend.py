@@ -51,6 +51,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop impo
     LocalSelectLoopFix,
     collect_local_select_loop_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+    SideEffectSelectLoopFix,
+    collect_side_effect_select_loop_fixes,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
     SingleIterationConvertFix,
     SingleIterationPredFix,
@@ -294,6 +298,7 @@ class SimpleFlatteningCleanupDetection:
     tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
     guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
     local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
+    side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -312,6 +317,7 @@ class SimpleFlatteningCleanupDetection:
             or self.tail_goto_merges
             or self.guarded_state_machine_fixes
             or self.local_select_loop_fixes
+            or self.side_effect_select_loop_fixes
         )
 
     @property
@@ -358,6 +364,7 @@ class SimpleFlatteningCleanupDetection:
             f" tail_goto_merge={len(self.tail_goto_merges)}"
             f" guarded_state_machine={len(self.guarded_state_machine_fixes)}"
             f" local_select_loop={len(self.local_select_loop_fixes)}"
+            f" side_effect_select_loop={len(self.side_effect_select_loop_fixes)}"
         )
 
 
@@ -677,6 +684,7 @@ class LiveSimpleFlatteningCleanupBackend:
 
         guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
         local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
+        side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
         try:
             if maturity in self.guarded_state_machine_maturities:
                 cleanup_graph = IDAIRTranslator().lift(mba)
@@ -685,6 +693,9 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
                 local_select_loop_fixes = collect_local_select_loop_fixes(
                     cleanup_graph
+                )
+                side_effect_select_loop_fixes = (
+                    collect_side_effect_select_loop_fixes(cleanup_graph)
                 )
         except Exception as exc:
             errors.append(f"guarded_state_machine_or_local_select:{type(exc).__name__}")
@@ -722,6 +733,7 @@ class LiveSimpleFlatteningCleanupBackend:
             tail_goto_merges=tuple(tail_goto_merges),
             guarded_state_machine_fixes=tuple(guarded_state_machine_fixes),
             local_select_loop_fixes=tuple(local_select_loop_fixes),
+            side_effect_select_loop_fixes=tuple(side_effect_select_loop_fixes),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,
