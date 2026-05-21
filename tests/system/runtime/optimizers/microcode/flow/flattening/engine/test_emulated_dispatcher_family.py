@@ -4610,7 +4610,7 @@ def test_emulated_dispatcher_family_state_map_loop_recovery_uses_recon_facts(
             ),
             ordered_path=tuple(path),
             proof_source="state_dispatcher_map",
-            last_write_site=(9, 0x401009) if source_block == 7 else None,
+            last_write_site=(10, 0x40100A) if source_block == 7 else None,
         )
 
     context = EmulatedDispatcherPhaseContext(
@@ -4667,7 +4667,7 @@ def test_emulated_dispatcher_family_state_map_loop_recovery_uses_recon_facts(
     assert blockers == ()
     assert tuple(family._summarize_modification(mod) for mod in modifications) == (
         "RedirectGoto(2:3->7)",
-        "RedirectGoto(9:10->12)",
+        "RedirectGoto(10:3->12)",
         "RedirectGoto(11:3->5)",
     )
     assert tuple(record.selection_reason for record in records) == (
@@ -4847,6 +4847,70 @@ def test_loop_recovery_edge_selection_abstains_on_ambiguous_anchor() -> None:
 
     assert selected == ()
     assert blockers == ("dispatcher_loop_recovery_ambiguous_dag_edges",)
+
+
+def test_state_map_loop_recovery_requires_dispatcher_edge_for_write_site() -> None:
+    def _snapshot(serial, succs, preds):
+        return BlockSnapshot(
+            serial=serial,
+            block_type=ida_hexrays.BLT_1WAY if succs else ida_hexrays.BLT_0WAY,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0x403000 + serial,
+            insn_snapshots=(),
+        )
+
+    flow_graph = FlowGraph(
+        blocks={
+            3: _snapshot(3, (9,), ()),
+            6: _snapshot(6, (10,), ()),
+            9: _snapshot(9, (), (3,)),
+            10: _snapshot(10, (), (6,)),
+        },
+        entry_serial=3,
+        func_ea=0x403000,
+    )
+    artifact = EmulatedDispatcherPhaseArtifact(
+        dispatcher_entry_serial=3,
+        state_var_stkoff=4,
+        handler_state_map=((9, 0x200),),
+        semantic_reference_variant="semantic_reference_like",
+        semantic_state_labels=("0x100", "0x200"),
+    )
+    edge = SimpleNamespace(
+        kind=SimpleNamespace(name="TRANSITION"),
+        source_key=SimpleNamespace(state_const=0x100, handler_serial=6),
+        target_key=SimpleNamespace(state_const=0x200, handler_serial=9),
+        target_state=0x200,
+        target_entry_anchor=9,
+        source_anchor=SimpleNamespace(block_serial=6, branch_arm=None),
+        ordered_path=(6,),
+        last_write_site=(6, 0x403006),
+    )
+    context = EmulatedDispatcherPhaseContext(
+        bst_result=object(),
+        transition_result=object(),
+        transition_report=object(),
+        dag=SimpleNamespace(edges=(edge,)),
+        semantic_reference_program=object(),
+    )
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=ollvm_state_dispatcher_map_profile(),
+    )
+    modifications, blockers, records = (
+        family._collect_state_map_loop_recovery_modifications(
+            mba=SimpleNamespace(),
+            snapshot_flow_graph=flow_graph,
+            phase_artifact=artifact,
+            phase_context=context,
+        )
+    )
+
+    assert modifications == ()
+    assert blockers == ("dispatcher_loop_recovery_predecessor_not_dispatcher_edge",)
+    assert records == ()
 
 
 def test_tigress_indirect_phase_reconstruction_allowed_at_locopt() -> None:
