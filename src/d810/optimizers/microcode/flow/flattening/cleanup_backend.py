@@ -44,6 +44,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     collect_live_fix_predecessor_branch_arm_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SingleIterationConvertFix,
     SingleIterationPredFix,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
@@ -56,6 +57,7 @@ from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_block_fixes,
     collect_live_fake_jump_fixes,
+    collect_live_single_iteration_convert_fixes,
     collect_live_single_iteration_block_fixes,
     collect_live_single_iteration_fixes,
 )
@@ -71,6 +73,7 @@ __all__ = [
     "collect_live_fake_jump_block_fixes",
     "collect_live_fake_jump_fixes",
     "collect_live_single_iteration_block_fixes",
+    "collect_live_single_iteration_convert_fixes",
     "collect_live_single_iteration_fixes",
 ]
 
@@ -262,6 +265,7 @@ class SimpleFlatteningCleanupDetection:
 
     fake_jump_fixes: tuple[FakeJumpPredFix, ...] = ()
     single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
+    single_iteration_converts: tuple[SingleIterationConvertFix, ...] = ()
     bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     bad_while_loop_duplicate_replay_candidates: tuple[
@@ -289,6 +293,7 @@ class SimpleFlatteningCleanupDetection:
         return bool(
             self.fake_jump_fixes
             or self.single_iteration_fixes
+            or self.single_iteration_converts
             or self.bad_while_loop_edits
             or self.bad_while_loop_replay_candidates
             or self.bad_while_loop_duplicate_replay_candidates
@@ -327,6 +332,7 @@ class SimpleFlatteningCleanupDetection:
             "simple cleanup candidates detected: "
             f"fake_jump={len(self.fake_jump_fixes)} "
             f"single_iteration={len(self.single_iteration_fixes)} "
+            f"single_iteration_convert={len(self.single_iteration_converts)} "
             f"bad_while_loop={len(self.bad_while_loop_edits)} "
             f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
             f" bad_while_loop_duplicate_replay="
@@ -395,10 +401,18 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
+        single_iteration_converts: tuple[SingleIterationConvertFix, ...] = ()
         try:
             single_iteration_fixes = collect_live_single_iteration_fixes(
                 mba,
                 logger=logger,
+                allowed_maturities=self.allowed_maturities,
+            )
+            single_iteration_converts = collect_live_single_iteration_convert_fixes(
+                mba,
+                logger=logger,
+                max_nb_block=self.fake_jump_max_nb_block,
+                max_path=self.fake_jump_max_path,
                 allowed_maturities=self.allowed_maturities,
             )
         except Exception as exc:
@@ -643,6 +657,7 @@ class LiveSimpleFlatteningCleanupBackend:
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
+            single_iteration_converts=tuple(single_iteration_converts),
             bad_while_loop_edits=tuple(bad_while_loop_edits),
             bad_while_loop_replay_candidates=tuple(
                 bad_while_loop_replay_candidates

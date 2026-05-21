@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
+from d810.cfg.graph_modification import ConvertToGoto, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
@@ -10,11 +10,15 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
+    SingleIterationConvertFix,
     SingleIterationPredFix,
     SingleIterationStrategy,
     build_single_iteration_modifications,
+    extract_single_iteration_converts,
     extract_single_iteration_fixes,
+    serialize_single_iteration_converts,
     serialize_single_iteration_fixes,
 )
 
@@ -117,6 +121,30 @@ def test_single_iteration_strategy_plans_per_predecessor_redirects() -> None:
     ]
 
 
+def test_single_iteration_strategy_plans_header_conversions() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x1000),
+            1: _block(1, (2,), (0,), start_ea=0x1001),
+            2: _block(2, (3, 2), (1, 2), block_type=4),
+            3: _block(3, (), (2,), block_type=2),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+        metadata={SINGLE_ITERATION_CONVERTS_METADATA_KEY: {2: 3}},
+    )
+
+    fragment = SingleIterationStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.metadata[SINGLE_ITERATION_CONVERTS_METADATA_KEY] == {2: 3}
+    assert fragment.ownership.blocks == frozenset({2})
+    assert fragment.ownership.edges == frozenset()
+    assert fragment.modifications == [ConvertToGoto(block_serial=2, goto_target=3)]
+
+
 def test_single_iteration_strategy_drops_invalid_targets_and_shapes() -> None:
     cfg = FlowGraph(
         blocks={
@@ -179,6 +207,21 @@ def test_build_single_iteration_modifications_emits_legacy_redirect_shape() -> N
     ]
 
 
+def test_build_single_iteration_modifications_emits_header_conversions() -> None:
+    modifications = build_single_iteration_modifications(
+        (),
+        (
+            SingleIterationConvertFix(loop_header=2, new_target=3),
+            SingleIterationConvertFix(loop_header=5, new_target=6),
+        ),
+    )
+
+    assert modifications == [
+        ConvertToGoto(block_serial=2, goto_target=3),
+        ConvertToGoto(block_serial=5, goto_target=6),
+    ]
+
+
 def test_serialize_single_iteration_fixes_round_trips() -> None:
     fixes = (
         SingleIterationPredFix(loop_header=2, pred_block=1, new_target=3),
@@ -203,3 +246,30 @@ def test_serialize_single_iteration_fixes_round_trips() -> None:
     )
 
     assert extract_single_iteration_fixes(cfg) == fixes
+
+
+def test_serialize_single_iteration_converts_round_trips() -> None:
+    fixes = (
+        SingleIterationConvertFix(loop_header=2, new_target=3),
+        SingleIterationConvertFix(loop_header=5, new_target=6),
+    )
+
+    cfg = FlowGraph(
+        blocks={
+            0: _block(0, (1,), (), start_ea=0x1000),
+            1: _block(1, (2,), (0,), start_ea=0x1001),
+            2: _block(2, (3, 2), (1, 2), block_type=4),
+            3: _block(3, (), (2,), block_type=2),
+            5: _block(5, (6, 5), (4, 5), block_type=4),
+            6: _block(6, (), (5,), block_type=2),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+        metadata={
+            SINGLE_ITERATION_CONVERTS_METADATA_KEY: (
+                serialize_single_iteration_converts(fixes)
+            )
+        },
+    )
+
+    assert extract_single_iteration_converts(cfg) == fixes

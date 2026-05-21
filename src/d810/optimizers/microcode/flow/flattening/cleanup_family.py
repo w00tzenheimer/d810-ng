@@ -59,9 +59,12 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     serialize_fix_predecessor_branch_arm_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationStrategy,
+    extract_single_iteration_converts,
     extract_single_iteration_fixes,
+    serialize_single_iteration_converts,
     serialize_single_iteration_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
@@ -100,6 +103,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_single_iteration_fixes: int
     planning_ready: bool
     collection_errors: tuple[str, ...] = ()
+    collected_single_iteration_converts: int = 0
+    selected_single_iteration_converts: int = 0
     collected_bad_while_loop_edits: int = 0
     selected_bad_while_loop_edits: int = 0
     deferred_bad_while_loop_edits: int = 0
@@ -190,6 +195,10 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
                 serialize_single_iteration_fixes(detection.single_iteration_fixes)
             )
+        if detection.single_iteration_converts:
+            metadata[SINGLE_ITERATION_CONVERTS_METADATA_KEY] = (
+                serialize_single_iteration_converts(detection.single_iteration_converts)
+            )
         if detection.bad_while_loop_edits:
             metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
                 serialize_bad_while_loop_edits(detection.bad_while_loop_edits)
@@ -241,6 +250,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         selected_fake_jump_fixes = extract_fake_jump_fixes(graph_with_candidates)
         selected_single_iteration_fixes = extract_single_iteration_fixes(
+            graph_with_candidates
+        )
+        selected_single_iteration_converts = extract_single_iteration_converts(
             graph_with_candidates
         )
         selected_bad_while_loop_edits = extract_bad_while_loop_edits(
@@ -308,6 +320,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
             serialize_single_iteration_fixes(selected_single_iteration_fixes)
         )
+        metadata[SINGLE_ITERATION_CONVERTS_METADATA_KEY] = (
+            serialize_single_iteration_converts(selected_single_iteration_converts)
+        )
         metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
             serialize_bad_while_loop_edits(selected_bad_while_loop_edits)
         )
@@ -353,9 +368,16 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             selected_fake_jump_fixes=len(selected_fake_jump_fixes),
             collected_single_iteration_fixes=len(detection.single_iteration_fixes),
             selected_single_iteration_fixes=len(selected_single_iteration_fixes),
+            collected_single_iteration_converts=len(
+                detection.single_iteration_converts
+            ),
+            selected_single_iteration_converts=len(
+                selected_single_iteration_converts
+            ),
             planning_ready=bool(
                 selected_fake_jump_fixes
                 or selected_single_iteration_fixes
+                or selected_single_iteration_converts
                 or selected_bad_while_loop_edits
                 or selected_bad_while_loop_replay_candidates
                 or selected_bad_while_loop_duplicate_replay_candidates
