@@ -453,7 +453,7 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
     )
     verify_calls = {"count": 0}
 
-    monkeypatch.setattr(dm, "DeferredGraphModifier", _FakeModifier)
+    monkeypatch.setattr(edf, "DeferredGraphModifier", _FakeModifier)
     monkeypatch.setattr(
         edf,
         "_verify_ollvm_carrier_mutation",
