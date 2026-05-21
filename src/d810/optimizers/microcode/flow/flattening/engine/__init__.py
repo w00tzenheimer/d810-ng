@@ -39,6 +39,7 @@ from .runtime import (
     run_ordered_family_hooks,
 )
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
+from .state_machine_snapshot_builder import StateMachineSnapshotBuilder
 from .strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -86,6 +87,7 @@ __all__ = [
     "ReachabilityInfo",
     "StateModelSummary",
     "StageResult",
+    "StateMachineSnapshotBuilder",
     "UnflatteningPlanner",
     "UnflatteningStrategy",
     "VerificationGate",

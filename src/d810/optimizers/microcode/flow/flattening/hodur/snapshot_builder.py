@@ -1,25 +1,15 @@
-"""Hodur snapshot assembly helpers.
-
-This module keeps HodurStrategyFamily focused on detection, strategy
-registration, and runtime bookkeeping. Snapshot assembly lives here so future
-state-machine families can copy the same builder shape without growing their
-family adapter into a lifecycle orchestrator.
-"""
+"""Hodur policy providers for generic state-machine snapshot assembly."""
 from __future__ import annotations
 
 import ida_hexrays
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
-    AnalysisSnapshot,
-    ReachabilityInfo,
-)
+from d810.optimizers.microcode.flow.flattening.engine.snapshot import ReachabilityInfo
 from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
 from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
     ConstantFixpointBackend,
@@ -38,120 +28,30 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
 from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.recon.function_priors import FunctionAnalysisPriors
 
-__all__ = ["HodurSnapshotBuilder"]
+__all__ = ["HodurSnapshotPolicy"]
 
 
-class HodurSnapshotBuilder:
-    """Build immutable AnalysisSnapshot instances for the Hodur family."""
+class HodurSnapshotPolicy:
+    """Hodur-specific providers for StateMachineSnapshotBuilder."""
 
     def __init__(
         self,
         *,
-        cfg_translator: IDAIRTranslator,
         constant_fixpoint_backend: ConstantFixpointBackend,
         logger,
     ) -> None:
-        self.cfg_translator = cfg_translator
         self.constant_fixpoint_backend = constant_fixpoint_backend
         self.logger = logger
 
-    def build_snapshot(
+    def adapt_flow_graph(
         self,
         mba: object,
-        detection: object,
-        *,
-        run_state: FamilyRunState,
-        switch_table_map: object | None,
-        fact_runtime: object | None,
-        state_var_stkoff_resolver,
-        dispatcher_cache_factory=DispatcherCache.get_or_create,
-        transition_builder=None,
-        discovery_builder=None,
-        reachability_builder=None,
-        attach_fake_jump_fixes=None,
-        attach_single_iteration_fixes=None,
-    ) -> AnalysisSnapshot:
-        state_machine = detection.state_machine
-        flow_graph = self.build_snapshot_flow_graph(
-            mba,
-            state_machine=state_machine,
-            attach_fake_jump_fixes=attach_fake_jump_fixes,
-            attach_single_iteration_fixes=attach_single_iteration_fixes,
-        )
-        dispatcher_cache = dispatcher_cache_factory(mba)
-        if reachability_builder is None:
-            reachability = self.compute_reachability_info(mba)
-        else:
-            reachability = reachability_builder(mba)
-        fact_view = self.resolve_fact_view(mba, fact_runtime)
-        function_priors = self.function_analysis_priors_for_mba(mba, fact_runtime)
-
-        if state_machine is None:
-            return self.build_cleanup_snapshot(
-                mba,
-                detection=detection,
-                flow_graph=flow_graph,
-                dispatcher_cache=dispatcher_cache,
-                reachability=reachability,
-                fact_view=fact_view,
-                run_state=run_state,
-            )
-
-        bst_result, bst_dispatcher_serial = self.resolve_snapshot_bst_evidence(
-            mba,
-            state_machine,
-            switch_table_map=switch_table_map,
-            state_var_stkoff_resolver=state_var_stkoff_resolver,
-        )
-        self.supplement_initial_transitions(
-            state_machine,
-            run_state=run_state,
-        )
-        discovery = self.build_snapshot_discovery_context(
-            mba,
-            state_machine=state_machine,
-            flow_graph=flow_graph,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
-            function_priors=function_priors,
-            run_state=run_state,
-            state_var_stkoff_resolver=state_var_stkoff_resolver,
-            transition_builder=transition_builder,
-            discovery_builder=discovery_builder,
-        )
-
-        return AnalysisSnapshot(
-            mba=mba,
-            state_machine=state_machine,
-            detector=detection.detector,
-            dispatcher_cache=dispatcher_cache,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
-            dispatcher_blocks=frozenset(
-                int(block)
-                for block in (
-                    getattr(bst_result, "bst_node_blocks", set()) or set()
-                )
-            ),
-            reachability=reachability,
-            maturity=mba.maturity,
-            pass_number=run_state.pass_number,
-            resolved_transitions=run_state.resolved_transitions,
-            initial_transitions=run_state.initial_transitions,
-            flow_graph=flow_graph,
-            discovery=discovery,
-            diagnostic_fact_view=fact_view,
-        )
-
-    def build_snapshot_flow_graph(
-        self,
-        mba: object,
-        *,
+        flow_graph: FlowGraph,
         state_machine: DispatcherStateMachine | None,
+        *,
         attach_fake_jump_fixes=None,
         attach_single_iteration_fixes=None,
     ) -> FlowGraph:
-        flow_graph = self.cfg_translator.lift(mba)
         if attach_fake_jump_fixes is None:
             flow_graph = self.attach_fake_jump_fixes_to_flow_graph(
                 mba,
@@ -163,28 +63,6 @@ class HodurSnapshotBuilder:
         if attach_single_iteration_fixes is None:
             return self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
         return attach_single_iteration_fixes(mba, flow_graph)
-
-    def build_cleanup_snapshot(
-        self,
-        mba: object,
-        *,
-        detection: object,
-        flow_graph: FlowGraph,
-        dispatcher_cache: object,
-        reachability: ReachabilityInfo,
-        fact_view: object | None,
-        run_state: FamilyRunState,
-    ) -> AnalysisSnapshot:
-        return AnalysisSnapshot(
-            mba=mba,
-            detector=detection.detector,
-            dispatcher_cache=dispatcher_cache,
-            reachability=reachability,
-            maturity=mba.maturity,
-            pass_number=run_state.pass_number,
-            flow_graph=flow_graph,
-            diagnostic_fact_view=fact_view,
-        )
 
     def resolve_snapshot_bst_evidence(
         self,
