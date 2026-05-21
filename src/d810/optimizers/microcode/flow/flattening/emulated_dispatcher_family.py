@@ -7284,6 +7284,9 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             old_target = int(block.succs[0])
             if old_target == int(plan.target_entry_anchor):
                 return True
+            if old_target != dispatcher_entry:
+                blockers["dispatcher_loop_recovery_predecessor_not_dispatcher_edge"] += 1
+                return False
             try:
                 state_write_rewrite = self._build_live_state_write_recovery(
                     mba=mba,
