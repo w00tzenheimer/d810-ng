@@ -51,6 +51,17 @@ from d810.recon.microcode_dump import (
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
 
+_SUB7FFD_NAME = "sub_7FFD3338C040"
+_SUB7FFD_PROJECT = "hodur_flag2.json"
+_SUB7FFD_EXPECTED_DUMP_STATS = {
+    "lines": 268,
+    "returns": 8,
+    "whiles": 1,
+    "gotos": 10,
+    "calls": 10,
+    "ifs": 19,
+}
+
 
 def _extract_pseudocode_stats(text: str) -> dict:
     """Extract simple metrics from a pseudocode string.
@@ -175,6 +186,30 @@ def _get_func_ea(name: str) -> int:
     return ea
 
 
+def _is_sub7ffd_hodur_dump(
+    function_name: str,
+    project_name: str,
+    *,
+    use_project: bool,
+) -> bool:
+    return (
+        use_project
+        and function_name.lstrip("_") == _SUB7FFD_NAME
+        and project_name == _SUB7FFD_PROJECT
+    )
+
+
+def _configure_sub7ffd_dump_priors(state, func_ea: int) -> None:
+    """Mirror the Hodur baseline's sub7FFD priors in the dump harness."""
+    from tests.system.e2e.test_hodur_baselines import SUB_7FFD_FUNCTION_PRIORS
+
+    state.manager.add_function_analysis_priors(func_ea, SUB_7FFD_FUNCTION_PRIORS)
+    assert (
+        state.manager.function_analysis_priors_for_ea(func_ea)
+        == SUB_7FFD_FUNCTION_PRIORS
+    )
+
+
 @pytest.mark.pseudocode_dump
 class TestDumpFunctionPseudocode:
     """Ad-hoc pseudocode dump harness for local debugging."""
@@ -234,6 +269,13 @@ class TestDumpFunctionPseudocode:
                 func_ea = _get_func_ea(function_name)
                 if func_ea == idaapi.BADADDR:
                     raise AssertionError(f"Function '{function_name}' not found")
+                is_sub7ffd_hodur_dump = _is_sub7ffd_hodur_dump(
+                    function_name,
+                    project_name,
+                    use_project=use_project,
+                )
+                if is_sub7ffd_hodur_dump:
+                    _configure_sub7ffd_dump_priors(state, func_ea)
 
                 force_rettype = request.config.getoption(
                     "--dump-force-rettype", default=None
@@ -325,6 +367,18 @@ class TestDumpFunctionPseudocode:
                 stats_before = _extract_pseudocode_stats(code_before)
                 stats_after = _extract_pseudocode_stats(code_after)
                 print(_format_stats_block(function_name, stats_before, stats_after))
+                if is_sub7ffd_hodur_dump:
+                    assert stats_after == _SUB7FFD_EXPECTED_DUMP_STATS, (
+                        "sub_7FFD3338C040 dump drifted from the locked Hodur "
+                        f"baseline: expected {_SUB7FFD_EXPECTED_DUMP_STATS}, "
+                        f"got {stats_after}"
+                    )
+                    assert "return 0;" not in code_after, (
+                        "sub_7FFD3338C040 dump regressed to return 0"
+                    )
+                    assert "return 0x5644FD01B1049C4BLL;" in code_after, (
+                        "sub_7FFD3338C040 dump lost the expected return constant"
+                    )
 
                 # Dump dispatcher tree if available
                 manual_diag_handlers_installed = False
