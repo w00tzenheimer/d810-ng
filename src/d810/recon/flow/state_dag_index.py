@@ -54,6 +54,9 @@ class DagParentEdge:
     target_state: int | None
     target_entry_anchor: int | None
     ordered_path: tuple[int, ...]
+    last_write_site: tuple[int, int] | None
+    semantic_kind: str
+    proof_source: str
     proof_kind: str
 
 
@@ -90,6 +93,19 @@ class StateDagIndex:
             source_key = getattr(edge, "source_key", None)
             target_key = getattr(edge, "target_key", None)
             kind = getattr(edge, "kind", None)
+            kind_name = str(getattr(kind, "name", kind))
+            raw_proof_source = getattr(edge, "proof_source", None)
+            proof_source = (
+                kind_name
+                if raw_proof_source is None
+                else str(getattr(raw_proof_source, "name", raw_proof_source))
+            )
+            raw_last_write_site = getattr(edge, "last_write_site", None)
+            last_write_site = (
+                None
+                if raw_last_write_site is None
+                else (int(raw_last_write_site[0]), int(raw_last_write_site[1]))
+            )
             indexed.append(
                 DagParentEdge(
                     edge=edge,
@@ -111,7 +127,10 @@ class StateDagIndex:
                     ordered_path=tuple(
                         int(block) for block in (getattr(edge, "ordered_path", ()) or ())
                     ),
-                    proof_kind=str(getattr(kind, "name", kind)),
+                    last_write_site=last_write_site,
+                    semantic_kind=kind_name,
+                    proof_source=proof_source,
+                    proof_kind=kind_name,
                 )
             )
         return cls(tuple(indexed))
