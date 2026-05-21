@@ -9,7 +9,6 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     GraphModification,
     InsertBlock,
@@ -24,7 +23,6 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     CleanupPerPredReplay,
     CleanupSideEffectReplayCandidate,
     CleanupTrampolineIsolationCandidate,
-    bad_while_loop_duplicate_candidate,
     bad_while_loop_duplicate_group_replay_candidate,
     bad_while_loop_side_effect_replay_candidate,
     bad_while_loop_trampoline_isolation_candidate,
@@ -32,7 +30,6 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     extract_duplicate_group_replay_candidates,
     extract_side_effect_replay_candidates,
     extract_trampoline_isolation_candidates,
-    validate_dispatcher_cleanup_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
@@ -352,11 +349,7 @@ def _is_valid_bad_while_loop_edit(
                 return False
             return True
         case BadWhileLoopDuplicateRedirect():
-            candidate = bad_while_loop_duplicate_candidate(edit)
-            return candidate is not None and validate_dispatcher_cleanup_candidate(
-                cfg,
-                candidate,
-            )
+            return False
         case BadWhileLoopConditionalDuplicate(
             source_serial=src,
             pred_serial=pred_serial,
@@ -639,10 +632,7 @@ def build_bad_while_loop_modifications(
                 )
             )
         elif isinstance(edit, BadWhileLoopDuplicateRedirect):
-            candidate = bad_while_loop_duplicate_candidate(edit)
-            if candidate is None:
-                raise ValueError("Invalid BadWhileLoop duplicate redirect edit")
-            modifications.append(build_dispatcher_cleanup_modification(candidate))
+            continue
         elif isinstance(edit, BadWhileLoopConditionalDuplicate):
             modifications.append(
                 DuplicateBlock(
@@ -737,10 +727,6 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
             edges.add((mod.from_serial, mod.old_target))
         elif isinstance(mod, ConvertToGoto):
             blocks.add(mod.block_serial)
-        elif isinstance(mod, DuplicateAndRedirect):
-            blocks.add(mod.source_serial)
-            for pred_serial, _target_serial in mod.per_pred_targets:
-                edges.add((pred_serial, mod.source_serial))
         elif isinstance(mod, DuplicateReplayAndRedirect):
             blocks.add(mod.source_serial)
             for replay in mod.per_pred_replays:

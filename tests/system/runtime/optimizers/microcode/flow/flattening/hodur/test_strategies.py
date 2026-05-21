@@ -7,7 +7,6 @@ import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     NopInstructions,
     PrivateTerminalSuffix,
@@ -1226,16 +1225,11 @@ def test_state_write_reconstruction_shared_group_two_new_targets_falls_back_to_d
         rejected_metadata=rejected_metadata,
     )
 
-    assert emitted == 2
-    assert rejected_metadata == []
-    assert modifications == [
-        DuplicateAndRedirect(
-            source_serial=10,
-            per_pred_targets=((8, 24), (9, 30)),
-        )
-    ]
-    assert {site["emission_mode"] for site in accepted_metadata} == {
-        "duplicate_and_redirect"
+    assert emitted == 0
+    assert accepted_metadata == []
+    assert modifications == []
+    assert {site["rejection_reason"] for site in rejected_metadata} == {
+        "shared_group_clone_safety_gap"
     }
 
 

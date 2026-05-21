@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
     EdgeRedirectViaPredSplit,
     GraphModification,
     RedirectGoto,
@@ -199,23 +198,9 @@ def plan_path_tail_emission(
             )
         if other_preds:
             return PathTailEmissionPlan(
-                accepted=True,
-            kind=PathTailEmissionKind.DUPLICATE,
-            modification=DuplicateAndRedirect(
-                source_serial=int(source_block),
-                per_pred_targets=(
-                    (int(other_preds[0]), int(old_target)),
-                        (int(via_pred), int(target_entry)),
-                    ),
-                ),
-            block_source=int(source_block),
-            target_entry=int(target_entry),
-            via_pred=int(via_pred),
-            blocked_pred=int(via_pred),
-            extra_owned_blocks=(int(via_pred),) + tuple(
-                int(pred) for pred in other_preds
-            ),
-        )
+                accepted=False,
+                rejection_reason="path_tail_clone_safety_gap",
+            )
 
     return PathTailEmissionPlan(
         accepted=False,

@@ -10,7 +10,6 @@ from d810.cfg.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
-    DuplicateAndRedirect,
     DuplicateReplayAndRedirect,
     InsertBlock,
     RedirectGoto,
@@ -303,11 +302,6 @@ def test_extract_bad_while_loop_edits_round_trips() -> None:
     assert extract_bad_while_loop_edits(cfg) == (
         BadWhileLoopGotoRedirect(dispatcher_entry=2, from_serial=1, new_target=3),
         BadWhileLoopGotoConversion(dispatcher_entry=2, block_serial=6, goto_target=4),
-        BadWhileLoopDuplicateRedirect(
-            dispatcher_entry=2,
-            source_serial=5,
-            per_pred_targets=((8, 3), (9, 4)),
-        ),
         BadWhileLoopConditionalDuplicate(
             dispatcher_entry=2,
             source_serial=6,
@@ -425,7 +419,7 @@ def test_bad_while_loop_strategy_plans_redirects_and_conversions() -> None:
     ]
 
 
-def test_bad_while_loop_strategy_plans_duplicate_and_redirect() -> None:
+def test_bad_while_loop_strategy_defers_duplicate_and_redirect_without_replay_proof() -> None:
     cfg = FlowGraph(
         blocks={
             0: _block(0, (8, 9), (), block_type=4, start_ea=0x1000),
@@ -457,15 +451,7 @@ def test_bad_while_loop_strategy_plans_duplicate_and_redirect() -> None:
         AnalysisSnapshot(mba=object(), flow_graph=cfg),
     )
 
-    assert fragment is not None
-    assert fragment.ownership.blocks == frozenset({5})
-    assert fragment.ownership.edges == frozenset({(8, 5), (9, 5)})
-    assert fragment.modifications == [
-        DuplicateAndRedirect(
-            source_serial=5,
-            per_pred_targets=((8, 3), (9, 4)),
-        )
-    ]
+    assert fragment is None
 
 
 def test_bad_while_loop_strategy_plans_side_effect_replay_candidate() -> None:
@@ -726,7 +712,6 @@ def test_build_bad_while_loop_modifications_emits_expected_shapes() -> None:
     assert modifications == [
         RedirectGoto(from_serial=1, old_target=2, new_target=3),
         ConvertToGoto(block_serial=5, goto_target=4),
-        DuplicateAndRedirect(source_serial=6, per_pred_targets=((7, 3), (8, 4))),
         DuplicateBlock(
             source_block=9,
             target_block=None,
