@@ -287,150 +287,36 @@ class HodurStrategyFamily(CFFStrategyFamily):
         detection: HodurDetection,
     ) -> AnalysisSnapshot:
         state_machine = detection.state_machine
-        flow_graph = self._cfg_translator.lift(mba)
-        flow_graph = self.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
-        flow_graph = self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
+        flow_graph = self._build_snapshot_flow_graph(mba)
         dispatcher_cache = DispatcherCache.get_or_create(mba)
         reachability = self.compute_reachability_info(mba)
-
-        # Attach the recon fact view for this (func_ea, maturity), if a
-        # runtime is available.  Strategies may consult this for fact-rooted
-        # safety gates.  Never falls back to heuristics when absent.
         fact_view = self._resolve_fact_view(mba)
         function_priors = self._function_analysis_priors_for_mba(mba)
-        return_frontier_artifact_priors = (
-            function_priors.return_frontier_artifacts
-        )
 
         if state_machine is None:
-            return AnalysisSnapshot(
-                mba=mba,
-                detector=detection.detector,
+            return self._build_cleanup_snapshot(
+                mba,
+                detection=detection,
+                flow_graph=flow_graph,
                 dispatcher_cache=dispatcher_cache,
                 reachability=reachability,
-                maturity=mba.maturity,
-                pass_number=self._run_state.pass_number,
-                flow_graph=flow_graph,
-                diagnostic_fact_view=fact_view,
+                fact_view=fact_view,
             )
 
-        bst_result = None
-        bst_dispatcher_serial = -1
-        if state_machine.handlers and self._switch_table_map is None:
-            entry_serial = list(state_machine.handlers.values())[0].check_block
-            bst_stkoff = self.get_effective_state_var_stkoff(state_machine)
-            try:
-                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
-
-                raw_bst = analyze_bst_dispatcher(
-                    mba,
-                    dispatcher_entry_serial=entry_serial,
-                    state_var_stkoff=bst_stkoff,
-                )
-                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
-                    bst_result = raw_bst
-                    bst_dispatcher_serial = entry_serial
-            except Exception:
-                bst_result = None
-
-        if bst_result is None and self._switch_table_map is not None:
-            switch_handler_map = self._switch_table_map.to_dispatcher_handler_map()
-            bst_result = switch_handler_map.to_bst_result()
-            bst_dispatcher_serial = self._switch_table_map.dispatcher_entry_block
-            self._logger.debug(
-                "Using synthetic BST from switch-table analysis: %d handlers, dispatcher=blk[%d]",
-                len(bst_result.handler_state_map),
-                bst_dispatcher_serial,
-            )
-
-        if self._run_state.pass_number > 0 and self._run_state.initial_transitions:
-            detected_keys = {
-                (t.from_state, t.to_state) for t in state_machine.transitions
-            }
-            supplemented = 0
-            for transition in self._run_state.initial_transitions:
-                key = (transition.from_state, transition.to_state)
-                if (
-                    key not in self._run_state.resolved_transitions
-                    and key not in detected_keys
-                ):
-                    state_machine.transitions.append(transition)
-                    supplemented += 1
-            if supplemented:
-                self._logger.debug(
-                    "HodurStrategyFamily: supplemented %d transitions from initial detection "
-                    "(resolved=%d, re-detected=%d)",
-                    supplemented,
-                    len(self._run_state.resolved_transitions),
-                    len(detected_keys),
-                )
-
+        bst_result, bst_dispatcher_serial = self._resolve_snapshot_bst_evidence(
+            mba,
+            state_machine,
+        )
+        self._supplement_initial_transitions(state_machine)
         self._state_machine = state_machine
-
-        # Phase A scaffolding: build the canonical per-round discovery context
-        # once, as the family adapter — strategies are NOT yet switched over,
-        # they still use their local setup recipes. Tolerate partial inputs
-        # gracefully (no half-built contexts — skip to None).
-        discovery: object | None = None
-        state_var_stkoff = self.get_effective_state_var_stkoff(state_machine)
-        if (
-            bst_result is not None
-            and bst_dispatcher_serial >= 0
-            and state_var_stkoff is not None
-            and flow_graph is not None
-        ):
-            try:
-                transition_result = build_transition_result_from_state_machine(
-                    state_machine,
-                    pre_header_serial=getattr(
-                        bst_result, "pre_header_serial", None
-                    ),
-                    strategy_name="hodur_round_discovery_context",
-                )
-                constant_fixpoint = self._constant_fixpoint_backend.compute(
-                    flow_graph,
-                    state_var_stkoff,
-                )
-                discovery = build_round_discovery_context(
-                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                    maturity=int(mba.maturity),
-                    pass_number=int(self._run_state.pass_number),
-                    flow_graph=flow_graph,
-                    transition_result=transition_result,
-                    dispatcher_entry_serial=bst_dispatcher_serial,
-                    state_var_stkoff=state_var_stkoff,
-                    structured_regions=(),
-                    constant_fixpoint=constant_fixpoint,
-                    bst_result=bst_result,
-                    initial_state=state_machine.initial_state,
-                    pre_header_serial=getattr(
-                        bst_result, "pre_header_serial", None
-                    ),
-                    handler_range_map=(
-                        getattr(bst_result, "handler_range_map", {}) or {}
-                    ),
-                    bst_node_blocks=tuple(
-                        sorted(
-                            getattr(bst_result, "bst_node_blocks", set())
-                            or set()
-                        )
-                    ),
-                    diagnostics=tuple(
-                        getattr(bst_result, "diagnostics", ()) or ()
-                    ),
-                    dispatcher=getattr(bst_result, "dispatcher", None),
-                    mba=mba,
-                    prefer_local_corridors=True,
-                    return_frontier_artifact_priors=(
-                        return_frontier_artifact_priors
-                    ),
-                )
-            except Exception as exc:
-                family_logger.debug(
-                    "ReconRoundDiscoveryContext build failed (phase A): %s",
-                    exc,
-                )
-                discovery = None
+        discovery = self._build_snapshot_discovery_context(
+            mba,
+            state_machine=state_machine,
+            flow_graph=flow_graph,
+            bst_result=bst_result,
+            bst_dispatcher_serial=bst_dispatcher_serial,
+            function_priors=function_priors,
+        )
 
         return AnalysisSnapshot(
             mba=mba,
@@ -454,6 +340,164 @@ class HodurStrategyFamily(CFFStrategyFamily):
             discovery=discovery,
             diagnostic_fact_view=fact_view,
         )
+
+    def _build_snapshot_flow_graph(self, mba: object) -> FlowGraph:
+        """Lift and enrich the immutable CFG snapshot for this family pass."""
+        flow_graph = self._cfg_translator.lift(mba)
+        flow_graph = self.attach_fake_jump_fixes_to_flow_graph(mba, flow_graph)
+        return self.attach_single_iteration_fixes_to_flow_graph(mba, flow_graph)
+
+    def _build_cleanup_snapshot(
+        self,
+        mba: object,
+        *,
+        detection: HodurDetection,
+        flow_graph: FlowGraph,
+        dispatcher_cache: DispatcherCache,
+        reachability: ReachabilityInfo,
+        fact_view: object | None,
+    ) -> AnalysisSnapshot:
+        """Build a cleanup-only snapshot when no Hodur state machine exists."""
+        return AnalysisSnapshot(
+            mba=mba,
+            detector=detection.detector,
+            dispatcher_cache=dispatcher_cache,
+            reachability=reachability,
+            maturity=mba.maturity,
+            pass_number=self._run_state.pass_number,
+            flow_graph=flow_graph,
+            diagnostic_fact_view=fact_view,
+        )
+
+    def _resolve_snapshot_bst_evidence(
+        self,
+        mba: object,
+        state_machine: DispatcherStateMachine,
+    ) -> tuple[object | None, int]:
+        """Resolve concrete or synthetic BST evidence for a state-machine snapshot."""
+        bst_result = None
+        bst_dispatcher_serial = -1
+        if state_machine.handlers and self._switch_table_map is None:
+            entry_serial = list(state_machine.handlers.values())[0].check_block
+            bst_stkoff = self.get_effective_state_var_stkoff(state_machine)
+            try:
+                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
+
+                raw_bst = analyze_bst_dispatcher(
+                    mba,
+                    dispatcher_entry_serial=entry_serial,
+                    state_var_stkoff=bst_stkoff,
+                )
+                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
+                    return raw_bst, entry_serial
+            except Exception:
+                bst_result = None
+
+        if bst_result is None and self._switch_table_map is not None:
+            switch_handler_map = self._switch_table_map.to_dispatcher_handler_map()
+            bst_result = switch_handler_map.to_bst_result()
+            bst_dispatcher_serial = self._switch_table_map.dispatcher_entry_block
+            self._logger.debug(
+                "Using synthetic BST from switch-table analysis: %d handlers, dispatcher=blk[%d]",
+                len(bst_result.handler_state_map),
+                bst_dispatcher_serial,
+            )
+        return bst_result, bst_dispatcher_serial
+
+    def _supplement_initial_transitions(
+        self,
+        state_machine: DispatcherStateMachine,
+    ) -> None:
+        """Carry unresolved pass-0 transitions into later state-machine snapshots."""
+        if not (
+            self._run_state.pass_number > 0
+            and self._run_state.initial_transitions
+        ):
+            return
+        detected_keys = {
+            (transition.from_state, transition.to_state)
+            for transition in state_machine.transitions
+        }
+        supplemented = 0
+        for transition in self._run_state.initial_transitions:
+            key = (transition.from_state, transition.to_state)
+            if (
+                key not in self._run_state.resolved_transitions
+                and key not in detected_keys
+            ):
+                state_machine.transitions.append(transition)
+                supplemented += 1
+        if supplemented:
+            self._logger.debug(
+                "HodurStrategyFamily: supplemented %d transitions from initial detection "
+                "(resolved=%d, re-detected=%d)",
+                supplemented,
+                len(self._run_state.resolved_transitions),
+                len(detected_keys),
+            )
+
+    def _build_snapshot_discovery_context(
+        self,
+        mba: object,
+        *,
+        state_machine: DispatcherStateMachine,
+        flow_graph: FlowGraph,
+        bst_result: object | None,
+        bst_dispatcher_serial: int,
+        function_priors: FunctionAnalysisPriors,
+    ) -> object | None:
+        """Build the canonical per-round discovery context for strategies."""
+        state_var_stkoff = self.get_effective_state_var_stkoff(state_machine)
+        if not (
+            bst_result is not None
+            and bst_dispatcher_serial >= 0
+            and state_var_stkoff is not None
+            and flow_graph is not None
+        ):
+            return None
+        try:
+            transition_result = build_transition_result_from_state_machine(
+                state_machine,
+                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+                strategy_name="hodur_round_discovery_context",
+            )
+            constant_fixpoint = self._constant_fixpoint_backend.compute(
+                flow_graph,
+                state_var_stkoff,
+            )
+            return build_round_discovery_context(
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity=int(mba.maturity),
+                pass_number=int(self._run_state.pass_number),
+                flow_graph=flow_graph,
+                transition_result=transition_result,
+                dispatcher_entry_serial=bst_dispatcher_serial,
+                state_var_stkoff=state_var_stkoff,
+                structured_regions=(),
+                constant_fixpoint=constant_fixpoint,
+                bst_result=bst_result,
+                initial_state=state_machine.initial_state,
+                pre_header_serial=getattr(bst_result, "pre_header_serial", None),
+                handler_range_map=(
+                    getattr(bst_result, "handler_range_map", {}) or {}
+                ),
+                bst_node_blocks=tuple(
+                    sorted(getattr(bst_result, "bst_node_blocks", set()) or set())
+                ),
+                diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
+                dispatcher=getattr(bst_result, "dispatcher", None),
+                mba=mba,
+                prefer_local_corridors=True,
+                return_frontier_artifact_priors=(
+                    function_priors.return_frontier_artifacts
+                ),
+            )
+        except Exception as exc:
+            family_logger.debug(
+                "ReconRoundDiscoveryContext build failed (phase A): %s",
+                exc,
+            )
+            return None
 
     def record_progress(self, *, nb_changes: int) -> None:
         if nb_changes <= 0 or self._state_machine is None:
