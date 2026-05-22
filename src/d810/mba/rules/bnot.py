@@ -353,6 +353,24 @@ class Bnot_Rule_1(VerifiableRule):
     REFERENCE = "Absorption with NOT"
 
 
+class Bnot_FactorRule_5(VerifiableRule):
+    """Simplify: ~(~x ^ y) => x ^ y.
+
+    NOT flips one XOR operand:
+        ~(a ^ b) = ~a ^ b = a ^ ~b
+
+    Therefore:
+        ~(~x ^ y) = ~~x ^ y = x ^ y
+    """
+    maturities = _ALL_MATURITIES
+
+    PATTERN = ~(~x ^ y)
+    REPLACEMENT = x ^ y
+
+    DESCRIPTION = "Simplify ~(~x ^ y) to x ^ y"
+    REFERENCE = "NOT distribution over XOR"
+
+
 # ============================================================================
 # Summary
 # ============================================================================

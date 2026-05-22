@@ -378,6 +378,11 @@
       "config": {}
     },
     {
+      "name": "Bnot_FactorRule_5",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "BnotXor_FactorRule_1",
       "is_activated": true,
       "config": {}
