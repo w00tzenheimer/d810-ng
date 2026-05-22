@@ -182,7 +182,6 @@ def default_hodur_profile() -> HodurUnflatteningProfile:
             "reachability_snapshot",
             "dispatcher_residue_cache",
             "post_pipeline_diagnostic_snapshot",
-            "sub7ffd_bundle_stabilization",
             "inline_add_stkvar_canonicalization",
             "terminal_byte_mbl_keep",
             "tag_all_mbl_keep",

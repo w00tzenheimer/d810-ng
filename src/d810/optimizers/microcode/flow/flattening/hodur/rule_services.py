@@ -3,33 +3,20 @@ from __future__ import annotations
 
 import traceback
 
-from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
     HandlerPathResult,
 )
-from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (
-    StateMachineRuleServices,
+from d810.optimizers.microcode.flow.flattening.hodur.live_rule_services import (
+    HodurLiveRuleServices,
+    unflat_logger,
 )
 
 __all__ = ["HodurRuleServices"]
 
-unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 
-
-class HodurRuleServices(StateMachineRuleServices):
+class HodurRuleServices(HodurLiveRuleServices):
     """Hodur adapter for services that are not profile-generic yet."""
-
-    def _stabilize_sub7ffd_post_pipeline_bundle(self) -> int:
-        """Disabled sample-specific repair kept as an explicit Hodur shim."""
-        unflat_logger.warning(
-            "sub7ffd bundle stabilize DISABLED: direct DeferredGraphModifier path"
-            " bypasses PatchPlan; HodurRuleServices reached this compatibility"
-            " shim after a non-empty pipeline before post_bundle_stabilize\n"
-            "caller stack:\n%s",
-            "".join(traceback.format_stack()[-40:]),
-        )
-        return 0
 
     def _get_effective_state_var_stkoff(
         self,

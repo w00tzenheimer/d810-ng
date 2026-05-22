@@ -85,7 +85,6 @@ class HodurPostPipelineHooks:
             "post_pipeline_diagnostic_snapshot": (
                 self._hook_post_pipeline_diagnostic_snapshot
             ),
-            "sub7ffd_bundle_stabilization": self._hook_sub7ffd_bundle_stabilization,
             "inline_add_stkvar_canonicalization": (
                 self._hook_inline_add_stkvar_canonicalization
             ),
@@ -142,16 +141,6 @@ class HodurPostPipelineHooks:
         _context: FamilyPostPipelineContext,
     ) -> None:
         self.owner._capture_post_pipeline_diagnostic_snapshot()
-
-    def _hook_sub7ffd_bundle_stabilization(
-        self,
-        context: FamilyPostPipelineContext,
-    ) -> None:
-        if not context.pipeline:
-            return
-        context.total_changes = self._run_sub7ffd_bundle_stabilization_hook(
-            context.total_changes
-        )
 
     def _hook_inline_add_stkvar_canonicalization(
         self,
@@ -493,14 +482,6 @@ class HodurPostPipelineHooks:
                     "return-frontier carrier audit failed (non-critical)",
                     exc_info=True,
                 )
-
-    def _run_sub7ffd_bundle_stabilization_hook(self, nb_changes: int) -> int:
-        """Run the profile-declared sub7FFD stabilization hook."""
-        bundle_stabilized = self.owner._stabilize_sub7ffd_post_pipeline_bundle()
-        if bundle_stabilized:
-            nb_changes += bundle_stabilized
-        self.owner._capture_intermediate_snapshot("post_bundle_stabilize")
-        return nb_changes
 
     def _run_inline_add_stkvar_canonicalization_hook(self) -> None:
         """Canonicalize inline add operands onto matching stack aliases."""
