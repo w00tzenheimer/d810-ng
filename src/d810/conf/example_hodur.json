@@ -257,6 +257,11 @@
             "config": {}
         },
         {
+            "name": "Bnot_FactorRule_5",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "Bnot_HackersDelightRule_1",
             "is_activated": true,
             "config": {}

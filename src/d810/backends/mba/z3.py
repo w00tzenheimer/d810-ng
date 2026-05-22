@@ -171,17 +171,14 @@ class Z3VerificationEngine:
         bit_width = options.bit_width if options else 32
         timeout_ms = options.timeout_ms if options else 0
 
-        # Apply timeout if specified
-        if timeout_ms > 0:
-            z3.set_option("timeout", timeout_ms)
-
         # Delegate to the module-level function
         return prove_equivalence(
             pattern,
             replacement,
             z3_vars=variables,
             constraints=constraints,
-            bit_width=bit_width
+            bit_width=bit_width,
+            timeout_ms=timeout_ms,
         )
 
 
@@ -580,6 +577,7 @@ def prove_equivalence(
     z3_vars: dict[str, z3.BitVecRef] | None = None,
     constraints: list[Any] | None = None,
     bit_width: int = 32,
+    timeout_ms: int = 0,
 ) -> tuple[bool, dict[str, int] | None]:
     """Prove that two SymbolicExpressions are semantically equivalent using Z3.
 
@@ -596,6 +594,8 @@ def prove_equivalence(
         constraints: Optional list of Z3 constraint expressions (BoolRef objects).
                     These constraints must hold for the equivalence to be valid.
         bit_width: Bit width for Z3 variables (default 32).
+        timeout_ms: Per-solver timeout in milliseconds. This must remain
+                    solver-local; do not mutate process-global Z3 state inside IDA.
 
     Returns:
         A tuple of (is_equivalent, counterexample):
@@ -624,8 +624,14 @@ def prove_equivalence(
         # Conversion failed - expressions are invalid or contain unsupported operations
         return False, None
 
-    # Create solver and add constraints
+    # Create solver and add constraints. Timeout is solver-local because IDA can
+    # host multiple Z3-using plugins in one process.
     solver = z3.Solver()
+    if timeout_ms > 0:
+        try:
+            solver.set(timeout=timeout_ms)
+        except Exception as e:
+            logger.warning("Failed to set Z3 solver timeout: %s", e)
 
     if constraints:
         for constraint in constraints:
