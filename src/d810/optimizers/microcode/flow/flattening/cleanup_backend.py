@@ -700,26 +700,67 @@ class LiveSimpleFlatteningCleanupBackend:
         local_select_loop_fixes: tuple[LocalSelectLoopCandidate, ...] = ()
         side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
         selector_shell_facts: tuple[SelectorShellFact, ...] = ()
-        try:
-            if maturity in self.guarded_state_machine_maturities:
+        if maturity in self.guarded_state_machine_maturities:
+            cleanup_graph: FlowGraph | None = None
+            try:
                 cleanup_graph = IDAIRTranslator().lift(mba)
-                guarded_state_machine_fixes = collect_guarded_state_machine_fixes(
-                    cleanup_graph
-                )
-                local_select_loop_fixes = collect_local_select_loop_fixes(
-                    cleanup_graph
-                )
-                side_effect_select_loop_fixes = (
-                    collect_side_effect_select_loop_fixes(cleanup_graph)
-                )
-                selector_shell_facts = discover_selector_shell_facts(cleanup_graph)
-        except Exception as exc:
-            errors.append(f"guarded_state_machine_or_local_select:{type(exc).__name__}")
-            if logger is not None:
-                logger.debug(
-                    "Failed to collect local state-machine cleanup candidates",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                errors.append(f"normalized_cleanup_graph:{type(exc).__name__}")
+                if logger is not None:
+                    logger.debug(
+                        "Failed to lift normalized cleanup FlowGraph",
+                        exc_info=True,
+                    )
+
+            if cleanup_graph is not None:
+                try:
+                    guarded_state_machine_fixes = (
+                        collect_guarded_state_machine_fixes(cleanup_graph)
+                    )
+                except Exception as exc:
+                    errors.append(f"guarded_state_machine:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect guarded state-machine cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    local_select_loop_fixes = collect_local_select_loop_fixes(
+                        cleanup_graph
+                    )
+                except Exception as exc:
+                    errors.append(f"local_select_loop:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect local select-loop cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    side_effect_select_loop_fixes = (
+                        collect_side_effect_select_loop_fixes(cleanup_graph)
+                    )
+                except Exception as exc:
+                    errors.append(f"side_effect_select_loop:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect side-effect select-loop cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    selector_shell_facts = discover_selector_shell_facts(cleanup_graph)
+                except Exception as exc:
+                    errors.append(f"selector_shell:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect selector-shell cleanup candidates",
+                            exc_info=True,
+                        )
 
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),

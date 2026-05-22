@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
+from d810.recon.flow.instruction_semantics import is_branch, is_call, is_goto
 
 
 LOCAL_SELECT_LOOP_FIXES_METADATA_KEY = "local_select_loop_fixes"
@@ -12,9 +13,6 @@ LOCAL_SELECT_LOOP_FIXES_METADATA_KEY = "local_select_loop_fixes"
 
 VarId = tuple[str, int]
 VarUseId = tuple[str, int, int]
-
-_CONDITIONAL_JUMP_OPCODES = frozenset({42, 43, 44, 45, 46, 48, 49, 52})
-_GOTO_OPCODE = 55
 
 
 @dataclass(frozen=True)
@@ -169,42 +167,15 @@ def _is_forward_assign(insn: object | None) -> bool:
 
 
 def _is_conditional(insn: object | None) -> bool:
-    try:
-        opcode = int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
-    except (TypeError, ValueError):
-        opcode = -1
-    if opcode in _CONDITIONAL_JUMP_OPCODES:
-        return True
-    kind = getattr(insn, "kind", None)
-    if kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}:
-        return True
-    return _kind_name(insn) in {
-        "InsnKind.COND_JUMP",
-        "InsnKind.EQUALITY_JUMP",
-        "cond_jump",
-        "equality_jump",
-    }
+    return is_branch(insn)
 
 
 def _is_goto(insn: object | None) -> bool:
-    try:
-        opcode = int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
-    except (TypeError, ValueError):
-        opcode = -1
-    if opcode == _GOTO_OPCODE:
-        return True
-    kind = getattr(insn, "kind", None)
-    if kind is InsnKind.GOTO:
-        return True
-    return _kind_name(insn) in {"InsnKind.GOTO", "goto"}
+    return is_goto(insn)
 
 
 def _is_call(insn: object | None) -> bool:
-    try:
-        opcode = int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
-    except (TypeError, ValueError):
-        opcode = -1
-    return opcode in {56, 57}
+    return is_call(insn)
 
 
 def _last_insn(block: BlockSnapshot) -> object | None:

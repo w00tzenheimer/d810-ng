@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from d810.cfg.flowgraph import (
+    BranchPredicate,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -69,6 +70,7 @@ def _jz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=BranchPredicate.EQUAL,
     )
 
 
@@ -82,6 +84,7 @@ def _jnz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.COND_JUMP,
+        branch_predicate=BranchPredicate.NOT_EQUAL,
     )
 
 
@@ -131,12 +134,12 @@ def _selector_shell_cfg() -> FlowGraph:
     return FlowGraph(blocks=blocks, entry_serial=2, func_ea=0x1000)
 
 
-def _selector_shell_raw_opcode_cfg() -> FlowGraph:
+def _selector_shell_semantic_predicate_cfg() -> FlowGraph:
     cfg = _selector_shell_cfg()
     blocks = {}
     for serial, block in cfg.blocks.items():
         insns = tuple(
-            replace(insn, kind=InsnKind.UNKNOWN)
+            replace(insn, opcode=999, kind=InsnKind.UNKNOWN)
             if insn.opcode in {43, 44}
             else insn
             for insn in block.insn_snapshots
@@ -164,8 +167,8 @@ def test_discover_selector_shell_fact_proves_predecessor_continuation() -> None:
     )
 
 
-def test_discover_selector_shell_fact_uses_raw_branch_opcodes() -> None:
-    assert discover_selector_shell_facts(_selector_shell_raw_opcode_cfg()) == (
+def test_discover_selector_shell_fact_uses_semantic_branch_predicates() -> None:
+    assert discover_selector_shell_facts(_selector_shell_semantic_predicate_cfg()) == (
         SelectorShellFact(
             header_block=4,
             semantic_target=8,
