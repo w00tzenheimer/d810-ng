@@ -16,6 +16,11 @@ from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
+from d810.recon.flow.conditional_jump_eval import (
+    conditional_jump_opcode_name,
+    conditional_jump_taken,
+    conditional_operand_size,
+)
 from d810.recon.facts.value_flow import (
     CALL_RETURN_VALUE_FACT_TYPE,
     LOOP_PREDICATE_VALUE_FACT_TYPE,
@@ -963,28 +968,8 @@ def _constant_mop_value(mop: object) -> int | None:
 
 def _eval_conditional_tail(tail: object, left: int, right: int) -> bool | None:
     opcode = _opcode_name(tail)
-    size = _operand_size(getattr(tail, "l", None), getattr(tail, "r", None))
-    if opcode in {"m_jz", "jz", "op_44"}:
-        return left == right
-    if opcode in {"m_jnz", "jnz", "op_45"}:
-        return left != right
-    if opcode in {"m_jge", "jge", "op_50"}:
-        return _signed(left, size) >= _signed(right, size)
-    if opcode in {"m_jg", "jg", "op_49"}:
-        return _signed(left, size) > _signed(right, size)
-    if opcode in {"m_jle", "jle", "op_48"}:
-        return _signed(left, size) <= _signed(right, size)
-    if opcode in {"m_jl", "jl", "op_47"}:
-        return _signed(left, size) < _signed(right, size)
-    if opcode in {"m_jae", "jae"}:
-        return (left & _mask_for_size(size)) >= (right & _mask_for_size(size))
-    if opcode in {"m_ja", "ja"}:
-        return (left & _mask_for_size(size)) > (right & _mask_for_size(size))
-    if opcode in {"m_jbe", "jbe"}:
-        return (left & _mask_for_size(size)) <= (right & _mask_for_size(size))
-    if opcode in {"m_jb", "jb"}:
-        return (left & _mask_for_size(size)) < (right & _mask_for_size(size))
-    return None
+    size = conditional_operand_size(getattr(tail, "l", None), getattr(tail, "r", None))
+    return conditional_jump_taken(opcode, left, right, operand_size=size)
 
 
 def _eval_conditional_from_constants(
@@ -999,30 +984,6 @@ def _eval_conditional_from_constants(
     if right is None:
         return None
     return _eval_conditional_tail(tail, int(left), int(right))
-
-
-def _signed(value: int, size: int) -> int:
-    bits = max(1, int(size)) * 8
-    mask = (1 << bits) - 1
-    value &= mask
-    sign = 1 << (bits - 1)
-    return value - (1 << bits) if value & sign else value
-
-
-def _mask_for_size(size: int) -> int:
-    bits = max(1, int(size)) * 8
-    return (1 << bits) - 1
-
-
-def _operand_size(*mops: object | None) -> int:
-    for mop in mops:
-        size = getattr(mop, "size", None)
-        if size is not None:
-            try:
-                return int(size)
-            except (TypeError, ValueError):
-                pass
-    return 4
 
 
 def _opcode_name(tail: object) -> str:
@@ -1058,30 +1019,20 @@ def _opcode_name(tail: object) -> str:
 
 
 def _opcode_sense(opcode: str) -> str:
+    canonical = conditional_jump_opcode_name(opcode) or opcode
     return {
-        "m_jz": "jump_if_equal",
         "jz": "jump_if_equal",
-        "m_jnz": "jump_if_not_equal",
         "jnz": "jump_if_not_equal",
-        "m_jcnd": "jump_if_nonzero",
         "jcnd": "jump_if_nonzero",
-        "m_jb": "jump_if_unsigned_below",
         "jb": "jump_if_unsigned_below",
-        "m_jae": "jump_if_unsigned_above_or_equal",
         "jae": "jump_if_unsigned_above_or_equal",
-        "m_ja": "jump_if_unsigned_above",
         "ja": "jump_if_unsigned_above",
-        "m_jbe": "jump_if_unsigned_below_or_equal",
         "jbe": "jump_if_unsigned_below_or_equal",
-        "m_jl": "jump_if_signed_less",
         "jl": "jump_if_signed_less",
-        "m_jge": "jump_if_signed_greater_or_equal",
         "jge": "jump_if_signed_greater_or_equal",
-        "m_jg": "jump_if_signed_greater",
         "jg": "jump_if_signed_greater",
-        "m_jle": "jump_if_signed_less_or_equal",
         "jle": "jump_if_signed_less_or_equal",
-    }.get(opcode, opcode)
+    }.get(canonical, opcode)
 
 
 def _mop_block_ref(mop: object | None) -> int | None:

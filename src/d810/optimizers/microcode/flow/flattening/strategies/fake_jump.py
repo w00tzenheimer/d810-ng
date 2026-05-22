@@ -13,6 +13,9 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
+from d810.recon.flow.conditional_jump_eval import (
+    conditional_jump_outcome_for_values,
+)
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
@@ -59,35 +62,49 @@ def resolve_fake_jump_target(
     fallthrough_target: int,
     jz_opcode: int,
     jnz_opcode: int,
+    jae_opcode: int | None = None,
+    jb_opcode: int | None = None,
+    ja_opcode: int | None = None,
+    jbe_opcode: int | None = None,
+    jg_opcode: int | None = None,
+    jge_opcode: int | None = None,
+    jl_opcode: int | None = None,
+    jle_opcode: int | None = None,
+    operand_size: int = 4,
 ) -> FakeJumpResolution:
     """Resolve the deterministic target for a fake conditional jump."""
-    if not pred_comparison_values:
+    opcode_names = {
+        jz_opcode: "m_jz",
+        jnz_opcode: "m_jnz",
+        jae_opcode: "m_jae",
+        jb_opcode: "m_jb",
+        ja_opcode: "m_ja",
+        jbe_opcode: "m_jbe",
+        jg_opcode: "m_jg",
+        jge_opcode: "m_jge",
+        jl_opcode: "m_jl",
+        jle_opcode: "m_jle",
+    }
+    opcode_names = {
+        key: value for key, value in opcode_names.items() if key is not None
+    }
+    outcome = conditional_jump_outcome_for_values(
+        opcode,
+        pred_comparison_values,
+        compared_value,
+        operand_size=operand_size,
+        opcode_names=opcode_names,
+    )
+    if outcome is None:
         return FakeJumpResolution(new_target=None)
 
-    if opcode == jz_opcode:
-        always_taken = all(
-            value == compared_value for value in pred_comparison_values
-        )
-        always_not_taken = all(
-            value != compared_value for value in pred_comparison_values
-        )
-    elif opcode == jnz_opcode:
-        always_taken = all(
-            value != compared_value for value in pred_comparison_values
-        )
-        always_not_taken = all(
-            value == compared_value for value in pred_comparison_values
-        )
-    else:
-        return FakeJumpResolution(new_target=None)
-
-    if always_taken:
+    if outcome.always_taken:
         return FakeJumpResolution(
             new_target=taken_target,
             always_taken=True,
             always_not_taken=False,
         )
-    if always_not_taken:
+    if outcome.always_not_taken:
         return FakeJumpResolution(
             new_target=fallthrough_target,
             always_taken=False,

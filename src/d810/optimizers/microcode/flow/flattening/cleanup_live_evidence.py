@@ -20,7 +20,23 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     DEFAULT_MIN_MAGIC,
     SingleIterationPredFix,
 )
+from d810.recon.flow.conditional_jump_eval import conditional_operand_size
 from d810.recon.flow.loop_prover import prove_single_iteration
+
+FAKE_JUMP_CONDITIONAL_OPCODES = frozenset(
+    {
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+    }
+)
 
 
 def collect_live_fake_jump_block_fixes(
@@ -33,7 +49,7 @@ def collect_live_fake_jump_block_fixes(
     """Analyze one live mblock and derive deterministic per-predecessor fixes."""
     if blk is None or blk.tail is None:
         return ()
-    if blk.tail.opcode not in (ida_hexrays.m_jz, ida_hexrays.m_jnz):
+    if blk.tail.opcode not in FAKE_JUMP_CONDITIONAL_OPCODES:
         return ()
     if blk.get_reginsn_qty() != 1:
         return ()
@@ -125,6 +141,15 @@ def collect_live_fake_jump_block_fixes(
             fallthrough_target=blk.nextb.serial,
             jz_opcode=ida_hexrays.m_jz,
             jnz_opcode=ida_hexrays.m_jnz,
+            jae_opcode=ida_hexrays.m_jae,
+            jb_opcode=ida_hexrays.m_jb,
+            ja_opcode=ida_hexrays.m_ja,
+            jbe_opcode=ida_hexrays.m_jbe,
+            jg_opcode=ida_hexrays.m_jg,
+            jge_opcode=ida_hexrays.m_jge,
+            jl_opcode=ida_hexrays.m_jl,
+            jle_opcode=ida_hexrays.m_jle,
+            operand_size=conditional_operand_size(blk.tail.l, blk.tail.r),
         )
         if resolution.new_target is None:
             if logger is not None:
