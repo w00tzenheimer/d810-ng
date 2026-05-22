@@ -11,6 +11,13 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     save_transition_report_to_store,
     write_return_frontier_artifact_from_store,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+    prepare_return_frontier_audit,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+    collect_live_residual_dispatcher_preds,
+    collect_post_apply_bst_cleanup_blockers,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     OwnershipScope,
@@ -19,7 +26,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
+    ExecutorPolicy,
+    FamilyRunState,
     PlannedPipeline,
+)
+from d810.optimizers.microcode.flow.flattening.engine.state_machine_snapshot_builder import (
+    StateMachineSnapshotBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
@@ -32,7 +44,30 @@ from d810.optimizers.microcode.flow.flattening.hodur import family as hodur_fami
 from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
     HodurUnflattener,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import unflattener as hodur_unflattener
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    runtime_services as hodur_runtime_services,
+)
+from d810.optimizers.microcode.flow.flattening.hodur import (
+    post_pipeline_hooks as hodur_post_pipeline_hooks,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.post_pipeline_hooks import (
+    HodurPostPipelineHooks,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.runtime_services import (
+    HodurRuntimeServices,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.live_rule_services import (
+    HodurLiveRuleServices,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
+    HodurRuleServices,
+)
+from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (
+    StateMachineRuleServices,
+)
+from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
+    HodurSnapshotPolicy,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
 )
@@ -163,7 +198,7 @@ def test_audit_pre_plan_prefers_recon_store_transition_report(monkeypatch, tmp_p
         fail_if_built,
     )
 
-    unflattener._audit_return_sites = unflattener._family.prepare_return_frontier_audit(
+    unflattener._audit_return_sites = prepare_return_frontier_audit(
         snapshot,
         current_return_sites=tuple(),
         return_site_provider=unflattener._return_site_provider,
@@ -194,7 +229,7 @@ def test_audit_pre_plan_persists_fallback_report_to_store(monkeypatch, tmp_path)
         lambda *_args, **_kwargs: report,
     )
 
-    unflattener._audit_return_sites = unflattener._family.prepare_return_frontier_audit(
+    unflattener._audit_return_sites = prepare_return_frontier_audit(
         snapshot,
         current_return_sites=tuple(),
         return_site_provider=unflattener._return_site_provider,
@@ -230,6 +265,62 @@ def test_hodur_unflattener_uses_hodur_strategy_family():
     assert unflattener._strategies is unflattener._family.strategies
 
 
+def test_hodur_unflattener_does_not_own_profile_hook_implementations():
+    assert not [
+        name
+        for name in vars(HodurUnflattener)
+        if name.startswith("_hook_") or name.startswith("_run_") and name.endswith("_hook")
+    ]
+    assert "bst_cleanup" in HodurPostPipelineHooks(object(), hook_runner=lambda *_a, **_k: None).handlers()
+
+
+def test_hodur_unflattener_does_not_own_runtime_policy_callbacks():
+    assert not {
+        "_family_runtime_policy",
+        "_build_family_planner_inputs",
+        "_select_family_strategies",
+        "_on_family_analysis",
+        "_on_family_planned",
+        "_on_family_executed",
+    } & set(vars(HodurUnflattener))
+    unflattener = HodurUnflattener()
+    assert isinstance(unflattener._rule_services, HodurRuleServices)
+    assert isinstance(unflattener._rule_services, StateMachineRuleServices)
+    assert isinstance(unflattener._services, HodurRuntimeServices)
+    assert unflattener._services.owner is unflattener._rule_services
+
+
+def test_hodur_rule_services_inherits_live_services_without_owning_them():
+    live_service_methods = {
+        "_tag_terminal_byte_mbl_keep",
+        "_build_successor_map",
+        "_find_exit_blocks",
+        "_capture_post_pipeline_diagnostic_snapshot",
+        "_capture_intermediate_snapshot",
+        "_extract_handler_paths_from_fragments",
+        "_log_state_machine",
+        "_log_pipeline_results",
+        "_collect_post_apply_may_only_probe_blocks",
+        "_apply_post_apply_may_only_probe",
+        "_post_apply_bst_cleanup",
+        "_nop_unreachable_blocks_after_bst_cleanup",
+        "_diagnostic_backward_scan",
+    }
+    # These live-MBA hooks are available on the composed Hodur adapter through
+    # HodurLiveRuleServices, but they should not be class-owned by the thin
+    # HodurRuleServices adapter or the generic state-machine proxy base.
+    assert not live_service_methods & set(vars(HodurRuleServices))
+    assert not live_service_methods & set(vars(StateMachineRuleServices))
+    assert live_service_methods <= set(dir(HodurLiveRuleServices))
+
+
+def test_hodur_family_uses_generic_state_machine_snapshot_builder():
+    family = HodurStrategyFamily()
+
+    assert isinstance(family._snapshot_builder, StateMachineSnapshotBuilder)
+    assert isinstance(family._snapshot_policy, HodurSnapshotPolicy)
+
+
 def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     unflattener = HodurUnflattener()
     state_machine = SimpleNamespace(transitions=["t0"])
@@ -239,8 +330,10 @@ def test_hodur_unflattener_compatibility_accessors_read_through_family_state():
     unflattener._family._state_machine = state_machine
     unflattener._family._detector = detector
     unflattener._family._switch_table_map = switch_table_map
-    unflattener._family._resolved_transitions = {(1, 2)}
-    unflattener._family._initial_transitions = ["initial"]
+    unflattener._family._run_state = FamilyRunState(
+        resolved_transitions=frozenset({(1, 2)}),
+        initial_transitions=("initial",),
+    )
 
     assert unflattener.state_machine is state_machine
     assert unflattener._detector is detector
@@ -588,7 +681,11 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
     calls: list[object] = []
 
     monkeypatch.setattr(unflattener, "check_if_rule_should_be_used", lambda _blk: True)
-    monkeypatch.setattr(unflattener, "_log_state_machine", lambda: calls.append("log"))
+    monkeypatch.setattr(
+        unflattener._rule_services,
+        "_log_state_machine",
+        lambda: calls.append("log"),
+    )
     monkeypatch.setattr(
         unflattener._family,
         "begin_pass",
@@ -608,17 +705,17 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
         or snapshot,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_transition_report_from_store",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_return_frontier_audit_from_store",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_terminal_return_audit_from_store",
         lambda **_kwargs: None,
     )
@@ -631,18 +728,10 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
         ),
     )
     monkeypatch.setattr(
-        unflattener,
+        unflattener._rule_services,
         "_capture_post_pipeline_diagnostic_snapshot",
         lambda: calls.append("post_pipeline_snapshot"),
     )
-    monkeypatch.setattr(
-        unflattener,
-        "_stabilize_sub7ffd_post_pipeline_bundle",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("recon-only no-plan path should not run bundle stabilization")
-        ),
-    )
-
     assert unflattener.optimize(blk) == 0
     assert ("begin_pass", 0) in calls
     assert ("detect", mba) in calls
@@ -718,7 +807,7 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     executor_factory_sentinel = object()
 
     monkeypatch.setattr(unflattener, "check_if_rule_should_be_used", lambda _blk: True)
-    monkeypatch.setattr(unflattener, "_log_state_machine", lambda: None)
+    monkeypatch.setattr(unflattener._rule_services, "_log_state_machine", lambda: None)
     monkeypatch.setattr(
         unflattener._family,
         "begin_pass",
@@ -735,22 +824,22 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         lambda mba_arg, detection_arg: snapshot,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_transition_report_from_store",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_return_frontier_audit_from_store",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_terminal_return_audit_from_store",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "plan_family_pipeline",
         lambda snap, strategies, *, planner, inputs=None: (
             calls.append(("plan_runtime", snap, strategies, planner, inputs))
@@ -761,7 +850,7 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "execute_family_pipeline",
         lambda snap, planned, *, executor_factory, flow_context=None: (
             calls.append(("execute_runtime", snap, planned, executor_factory, flow_context))
@@ -774,11 +863,26 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
-        "make_executor_factory",
-        lambda *, gate, allow_legacy_block_creation: (
-            calls.append(("make_executor_factory", gate, allow_legacy_block_creation))
+        hodur_runtime_services,
+        "make_transactional_executor_factory",
+        lambda policy: (
+            calls.append(("make_transactional_executor_factory", policy))
             or executor_factory_sentinel
+        ),
+    )
+    monkeypatch.setattr(
+        hodur_runtime_services,
+        "run_ordered_family_hooks",
+        lambda hook_names, hook_handlers, hook_context, **_kwargs: (
+            calls.append(
+                (
+                    "post_pipeline_hooks",
+                    hook_names,
+                    tuple(hook_handlers),
+                    hook_context,
+                )
+            )
+            or hook_context
         ),
     )
     monkeypatch.setattr(
@@ -788,7 +892,11 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
             ("record_execution_outcome", pipeline, results, kwargs)
         ),
     )
-    monkeypatch.setattr(unflattener, "_log_pipeline_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unflattener._rule_services,
+        "_log_pipeline_results",
+        lambda *_args, **_kwargs: None,
+    )
 
     assert unflattener.optimize(blk) == 0
 
@@ -799,17 +907,23 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     factory_calls = [
         call
         for call in calls
-        if isinstance(call, tuple) and call[0] == "make_executor_factory"
+        if isinstance(call, tuple) and call[0] == "make_transactional_executor_factory"
     ]
     outcome_calls = [
         call
         for call in calls
         if isinstance(call, tuple) and call[0] == "record_execution_outcome"
     ]
+    hook_calls = [
+        call
+        for call in calls
+        if isinstance(call, tuple) and call[0] == "post_pipeline_hooks"
+    ]
     assert len(plan_calls) == 1
     assert len(execute_calls) == 1
     assert len(factory_calls) == 1
     assert len(outcome_calls) == 1
+    assert len(hook_calls) == 1
     _, seen_snapshot, seen_strategies, seen_planner, seen_inputs = plan_calls[0]
     assert seen_snapshot is snapshot
     assert seen_strategies == unflattener._family.strategies_for_maturity(
@@ -822,9 +936,11 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     assert planned_pipeline.pipeline == [fragment]
     assert seen_flow_context is unflattener.flow_context
     assert _executor_factory is executor_factory_sentinel
-    _, seen_gate, seen_allow_legacy = factory_calls[0]
-    assert seen_gate is unflattener._gate
-    assert seen_allow_legacy is unflattener.allow_legacy_block_creation
+    _, seen_policy = factory_calls[0]
+    assert isinstance(seen_policy, ExecutorPolicy)
+    assert seen_policy.gate is unflattener._gate
+    assert seen_policy.safeguard_profile == "hodur"
+    assert seen_policy.allow_legacy_block_creation is unflattener.allow_legacy_block_creation
     _, seen_pipeline, seen_results, seen_kwargs = outcome_calls[0]
     assert seen_pipeline == [fragment]
     assert len(seen_results) == 1
@@ -832,6 +948,13 @@ def test_hodur_unflattener_optimize_routes_planning_and_execution_through_engine
     assert seen_kwargs["maturity"] == ida_hexrays.MMAT_GLBOPT1
     assert seen_kwargs["nb_changes"] == 0
     assert seen_kwargs["residual_dispatcher_preds_by_strategy"] == {}
+    _, seen_hook_names, seen_hook_handlers, seen_hook_context = hook_calls[0]
+    assert seen_hook_names == unflattener._profile.post_apply_hooks
+    assert "bst_cleanup" in seen_hook_handlers
+    assert "pipeline_summary" in seen_hook_handlers
+    assert "post_pipeline_audit" in seen_hook_handlers
+    assert seen_hook_context.pipeline == [fragment]
+    assert seen_hook_context.total_changes == 0
 
 
 def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machine(
@@ -1072,7 +1195,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
 
     monkeypatch.setattr(unflattener, "check_if_rule_should_be_used", lambda _blk: True)
     monkeypatch.setattr(
-        unflattener,
+        unflattener._rule_services,
         "_log_state_machine",
         lambda: (_ for _ in ()).throw(AssertionError("should not log state machine")),
     )
@@ -1095,35 +1218,35 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         or snapshot,
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_transition_report_from_store",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not load transition report")
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_return_frontier_audit_from_store",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not load return frontier audit")
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "load_terminal_return_audit_from_store",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not load terminal return audit")
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_runtime_services,
         "prepare_return_frontier_audit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not prepare return-frontier audit")
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "plan_family_pipeline",
         lambda snap, strategies, *, planner, inputs=None: (
             calls.append(("plan_runtime", snap, strategies, planner, inputs))
@@ -1134,7 +1257,7 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        hodur_unflattener,
+        hodur_runtime_services,
         "execute_family_pipeline",
         lambda snap, planned, *, executor_factory, flow_context=None: (
             calls.append(("execute_runtime", snap, planned, executor_factory, flow_context))
@@ -1153,12 +1276,10 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
-        "make_executor_factory",
-        lambda *, gate, allow_legacy_block_creation: (
-            calls.append(("make_executor_factory", gate, allow_legacy_block_creation))
-            or object()
-        ),
+        hodur_runtime_services,
+        "make_transactional_executor_factory",
+        lambda policy: calls.append(("make_transactional_executor_factory", policy))
+        or object(),
     )
     monkeypatch.setattr(
         unflattener._family,
@@ -1168,25 +1289,29 @@ def test_hodur_unflattener_optimize_allows_cleanup_only_pipeline_without_state_m
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_runtime_services,
         "persist_terminal_return_audit",
         lambda results, **kwargs: calls.append(
             ("persist_terminal_return_audit", results, kwargs)
         ),
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_post_pipeline_hooks,
         "collect_post_apply_bst_cleanup_blockers",
         lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(
-        unflattener._family,
+        hodur_post_pipeline_hooks,
         "finalize_return_frontier_audit",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cleanup-only path should not finalize return-frontier audit")
         ),
     )
-    monkeypatch.setattr(unflattener, "_log_pipeline_results", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        unflattener._rule_services,
+        "_log_pipeline_results",
+        lambda *_args, **_kwargs: None,
+    )
 
     assert unflattener.optimize(blk) == 1
     assert unflattener._last_bst_serials == set()
@@ -1528,7 +1653,7 @@ def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment, skipped_fragment],
         [
             StageResult(
@@ -1545,6 +1670,34 @@ def test_collect_post_apply_bst_cleanup_blockers_only_counts_applied_stages():
     )
 
     assert blockers == {"linearized_flow_graph": (95, 131)}
+
+
+def test_collect_live_residual_dispatcher_preds_uses_strategy_collector():
+    calls: list[object] = []
+    strategy = SimpleNamespace(
+        name="linearized_flow_graph",
+        _collect_dispatcher_predecessors=lambda flow_graph, dispatcher, **kwargs: (
+            calls.append((flow_graph, dispatcher, kwargs)) or (95, 131)
+        ),
+    )
+    cfg_translator = SimpleNamespace(lift=lambda mba: "live_flow_graph")
+    snapshot = SimpleNamespace(
+        bst_result=SimpleNamespace(bst_node_blocks={5, 6}),
+        bst_dispatcher_serial=42,
+    )
+
+    residual_preds = collect_live_residual_dispatcher_preds(
+        "mba",
+        snapshot,
+        strategies=[strategy],
+        strategy_name="linearized_flow_graph",
+        cfg_translator=cfg_translator,
+    )
+
+    assert residual_preds == (95, 131)
+    assert calls == [
+        ("live_flow_graph", 42, {"bst_node_blocks": {5, 6}}),
+    ]
 
 
 def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_sets():
@@ -1566,7 +1719,7 @@ def test_collect_post_apply_bst_cleanup_blockers_ignores_empty_residual_pred_set
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(
@@ -1600,7 +1753,7 @@ def test_collect_post_apply_bst_cleanup_blockers_preserves_reason_without_preds(
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(
@@ -1633,7 +1786,7 @@ def test_collect_post_apply_bst_cleanup_blockers_prefers_live_residual_pred_sets
         modifications=[],
     )
 
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
         [
             StageResult(
