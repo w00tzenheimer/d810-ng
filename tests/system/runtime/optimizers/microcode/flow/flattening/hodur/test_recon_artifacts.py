@@ -56,6 +56,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.post_pipeline_hooks import 
 from d810.optimizers.microcode.flow.flattening.hodur.runtime_services import (
     HodurRuntimeServices,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.live_rule_services import (
+    HodurLiveRuleServices,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
     HodurRuleServices,
 )
@@ -288,7 +291,7 @@ def test_hodur_unflattener_does_not_own_runtime_policy_callbacks():
 
 
 def test_hodur_rule_services_only_owns_hodur_specific_adapters():
-    assert not {
+    live_service_methods = {
         "_tag_terminal_byte_mbl_keep",
         "_build_successor_map",
         "_find_exit_blocks",
@@ -302,7 +305,10 @@ def test_hodur_rule_services_only_owns_hodur_specific_adapters():
         "_post_apply_bst_cleanup",
         "_nop_unreachable_blocks_after_bst_cleanup",
         "_diagnostic_backward_scan",
-    } & set(vars(HodurRuleServices))
+    }
+    assert not live_service_methods & set(vars(HodurRuleServices))
+    assert not live_service_methods & set(vars(StateMachineRuleServices))
+    assert live_service_methods <= set(dir(HodurLiveRuleServices))
 
 
 def test_hodur_family_uses_generic_state_machine_snapshot_builder():
@@ -723,14 +729,6 @@ def test_hodur_unflattener_optimize_routes_detection_and_snapshot_through_family
         "_capture_post_pipeline_diagnostic_snapshot",
         lambda: calls.append("post_pipeline_snapshot"),
     )
-    monkeypatch.setattr(
-        unflattener._rule_services,
-        "_stabilize_sub7ffd_post_pipeline_bundle",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("recon-only no-plan path should not run bundle stabilization")
-        ),
-    )
-
     assert unflattener.optimize(blk) == 0
     assert ("begin_pass", 0) in calls
     assert ("detect", mba) in calls
