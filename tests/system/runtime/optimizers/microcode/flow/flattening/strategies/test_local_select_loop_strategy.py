@@ -118,7 +118,6 @@ def _call() -> InsnSnapshot:
         opcode=56,
         ea=0x1000,
         operands=(),
-        operand_slots=(),
         kind=InsnKind.UNKNOWN,
     )
 
@@ -269,7 +268,7 @@ def _terminal_loop_cfg(
     explicit_exit: bool = False,
     external_exit: bool = False,
     external_continuation: bool = False,
-    nearby_noreturn: bool = False,
+    terminal_frontier: bool = False,
 ) -> FlowGraph:
     state = _reg(41)
     previous = _reg(42)
@@ -280,7 +279,7 @@ def _terminal_loop_cfg(
         36: _block(
             36,
             (37,),
-            (31,) if external_exit else (),
+            (31,) if external_exit or terminal_frontier else (),
             _mov(_num(0xE5BEDBCA), state),
         ),
         37: _block(
@@ -315,8 +314,12 @@ def _terminal_loop_cfg(
             blocks[42] = _block(42, (), (41,))
         else:
             blocks[41] = _block(41, (), (31,))
-    if nearby_noreturn:
-        blocks[57] = _block(57, (), (), _call())
+    elif terminal_frontier:
+        blocks[31] = _block(31, (36, 50), (), _jg(_reg(1), _num(1), 50))
+        blocks[35] = _block(35, (), (), _call())
+        blocks[50] = _block(50, (51,), (31,))
+        blocks[51] = _block(51, (90,), (50,))
+        blocks[90] = _block(90, (), (51,), _call())
     return FlowGraph(blocks=blocks, entry_serial=36, func_ea=0x1000)
 
 
@@ -537,7 +540,7 @@ def test_collect_local_select_loop_fixes_proves_closed_terminal_loop() -> None:
     )
 
 
-def test_local_select_loop_strategy_plans_terminal_loop_self_sink() -> None:
+def test_local_select_loop_strategy_rejects_unproven_terminal_self_sink() -> None:
     cfg = _terminal_loop_cfg()
     fixes = collect_local_select_loop_fixes(cfg)
     cfg = replace(
@@ -553,11 +556,7 @@ def test_local_select_loop_strategy_plans_terminal_loop_self_sink() -> None:
         AnalysisSnapshot(mba=object(), flow_graph=cfg),
     )
 
-    assert fragment is not None
-    assert fragment.modifications == [
-        RedirectGoto(from_serial=36, old_target=37, new_target=40),
-        RedirectGoto(from_serial=40, old_target=37, new_target=40),
-    ]
+    assert fragment is None
 
 
 def test_collect_local_select_loop_fixes_proves_closed_loop_external_exit() -> None:
@@ -607,30 +606,22 @@ def test_collect_local_select_loop_rejects_live_external_continuation() -> None:
     )
 
 
-def test_collect_local_select_loop_uses_nearby_noreturn_terminal() -> None:
+def test_collect_local_select_loop_fixes_proves_reachable_terminal_frontier() -> None:
     assert collect_local_select_loop_fixes(
-        _terminal_loop_cfg(
-            external_exit=True,
-            external_continuation=True,
-            nearby_noreturn=True,
-        )
+        _terminal_loop_cfg(terminal_frontier=True)
     ) == (
         LocalSelectTerminalLoopFix(
             init_block=36,
             init_old_target=37,
             sink_block=40,
             sink_old_target=37,
-            exit_target=57,
+            exit_target=90,
         ),
     )
 
 
-def test_local_select_loop_strategy_plans_nearby_noreturn_terminal() -> None:
-    cfg = _terminal_loop_cfg(
-        external_exit=True,
-        external_continuation=True,
-        nearby_noreturn=True,
-    )
+def test_local_select_loop_strategy_ignores_unreachable_nearby_terminal() -> None:
+    cfg = _terminal_loop_cfg(terminal_frontier=True)
     fixes = collect_local_select_loop_fixes(cfg)
     cfg = replace(
         cfg,
@@ -647,7 +638,7 @@ def test_local_select_loop_strategy_plans_nearby_noreturn_terminal() -> None:
 
     assert fragment is not None
     assert fragment.modifications == [
-        RedirectGoto(from_serial=36, old_target=37, new_target=57),
+        RedirectGoto(from_serial=36, old_target=37, new_target=90),
     ]
 
 
