@@ -227,6 +227,74 @@ def test_fake_jump_resolution_helpers_match_legacy_jz_jnz_rules() -> None:
     assert mixed.new_target is None
 
 
+def test_fake_jump_resolution_supports_unsigned_jump_conditions() -> None:
+    jae = 3
+    jb = 4
+
+    jae_taken = resolve_fake_jump_target(
+        opcode=jae,
+        compared_value=10,
+        pred_comparison_values=[10, 11, 12],
+        taken_target=20,
+        fallthrough_target=21,
+        jz_opcode=1,
+        jnz_opcode=2,
+        jae_opcode=jae,
+        jb_opcode=jb,
+    )
+    assert jae_taken.new_target == 20
+    assert jae_taken.always_taken is True
+
+    jb_not_taken = resolve_fake_jump_target(
+        opcode=jb,
+        compared_value=10,
+        pred_comparison_values=[10, 11, 12],
+        taken_target=20,
+        fallthrough_target=21,
+        jz_opcode=1,
+        jnz_opcode=2,
+        jae_opcode=jae,
+        jb_opcode=jb,
+    )
+    assert jb_not_taken.new_target == 21
+    assert jb_not_taken.always_not_taken is True
+
+
+def test_fake_jump_resolution_supports_signed_jump_conditions() -> None:
+    jg = 5
+    jl = 6
+
+    signed_less_taken = resolve_fake_jump_target(
+        opcode=jl,
+        compared_value=0,
+        pred_comparison_values=[0xFFFFFFFF, 0xFFFFFFFE],
+        taken_target=30,
+        fallthrough_target=31,
+        jz_opcode=1,
+        jnz_opcode=2,
+        jg_opcode=jg,
+        jl_opcode=jl,
+        operand_size=4,
+    )
+    assert signed_less_taken.new_target == 30
+    assert signed_less_taken.always_taken is True
+
+    signed_greater_not_taken = resolve_fake_jump_target(
+        opcode=jg,
+        compared_value=0,
+        pred_comparison_values=[0xFFFFFFFF, 0xFFFFFFFE],
+        taken_target=30,
+        fallthrough_target=31,
+        jz_opcode=1,
+        jnz_opcode=2,
+        jg_opcode=jg,
+        jl_opcode=jl,
+        operand_size=4,
+    )
+    assert signed_greater_not_taken.new_target == 31
+    assert signed_greater_not_taken.always_not_taken is True
+
+
 def test_fake_jump_unresolved_ratio_helper_matches_runtime_guard() -> None:
     assert should_skip_fake_jump_predecessor(0, 0) is True
     assert should_skip_fake_jump_predecessor(2, 21) is True
